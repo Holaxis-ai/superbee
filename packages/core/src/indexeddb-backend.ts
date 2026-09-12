@@ -281,13 +281,22 @@ export class IndexedDbBackend implements JournaledBackend {
     if (!factory) {
       return Promise.reject(new Error("IndexedDB is not available in this host; pass a factory or use another backend."));
     }
+    // `open()` can throw synchronously rather than failing through `onerror`: an opaque origin, or
+    // storage denied or partitioned for this context. Calling it before the promise exists keeps
+    // that failure out of `#opening`, so the next call starts a fresh attempt instead of replaying
+    // a settled rejection forever. The `onerror` path below already recovers this way.
+    let request: IdbOpenRequestLike;
+    try {
+      request = factory.open(this.#name, INDEXEDDB_SCHEMA_VERSION);
+    } catch (error) {
+      return Promise.reject(asError(error));
+    }
     // The promise is this attempt's token: `close()` drops it, and a later call may start another
     // attempt, so each handler below adopts or clears instance state only while it is still the
     // instance's current attempt.
     const opening = new Promise<IdbDatabaseLike>((resolve, reject) => {
       let refused: Error | null = null;
       const isCurrent = () => this.#opening === opening;
-      const request = factory.open(this.#name, INDEXEDDB_SCHEMA_VERSION);
       request.onupgradeneeded = (event: { oldVersion?: number }) => {
         const oldVersion = typeof event?.oldVersion === "number" ? event.oldVersion : 0;
         if (oldVersion !== 0) {

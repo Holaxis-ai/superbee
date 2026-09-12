@@ -436,6 +436,37 @@ test("close() while the first open is in flight leaks no connection: a later del
   }
 });
 
+test("a synchronous open() failure is not cached: the next call retries and succeeds once the condition clears", async () => {
+  const inner = new IDBFactory();
+  const denied = { value: true };
+  // A host that denies storage synchronously rather than through `onerror`: an opaque origin, or
+  // storage partitioned for this context. The condition then clears, as it does when a page moves
+  // out of that context or the user grants storage.
+  const factory: IdbFactoryLike = {
+    open(name: string, version?: number) {
+      if (denied.value) {
+        const error = new Error("storage is denied in this context");
+        error.name = "InvalidStateError";
+        throw error;
+      }
+      return inner.open(name, version) as unknown as ReturnType<IdbFactoryLike["open"]>;
+    },
+  };
+  const backend = new IndexedDbBackend({ databaseName: "open-denied", indexedDB: factory });
+
+  await assert.rejects(backend.list(), /storage is denied in this context/);
+  // Still denied: the failure repeats because the host still refuses, not because it was cached.
+  await assert.rejects(backend.list(), /storage is denied in this context/);
+
+  denied.value = false;
+  // The instance must recover on its own. Caching the first rejection in the open slot would
+  // replay it here forever, which is how the asynchronous `onerror` path already behaves.
+  assert.deepEqual(await backend.list(), []);
+  await backend.write("a/b", doc("a/b", "after recovery"));
+  assert.deepEqual(await backend.list(), ["a/b"]);
+  backend.close();
+});
+
 test("a decide callback that throws rejects the write with its own error and leaves the previous record readable", async () => {
   const inner = new IDBFactory();
   const armed = { value: false };
