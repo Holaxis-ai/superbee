@@ -194,7 +194,7 @@ try {
 
   const memory = new MemoryBackend();
   await memory.write("memory/proof", { id: "memory/proof", frontmatter: { type: "Proof" }, body: "works" });
-  if ((await memory.read("memory/proof")).doc.body !== "works") throw new Error("memory backend failed");
+  if ((await memory.read("memory/proof")).doc.body !== "works\\n") throw new Error("memory backend failed");
 
   const remote = new RemoteBackend({
     baseUrl: "http://external-proof.invalid",

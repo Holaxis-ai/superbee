@@ -89,6 +89,6 @@ test("RemoteBackend retries a router-classified runtime failure and succeeds", a
   });
 
   const result = await remote.read("concepts/a");
-  assert.equal(result.doc.body, "hello");
+  assert.equal(result.doc.body, "hello\n");
   assert.equal(backend.readAttempts, 2);
 });

@@ -26,6 +26,7 @@
  */
 
 import { resolveContentType } from "./content-type.js";
+import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, toPosix } from "./paths.js";
 import { blobVersion, contentVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
@@ -125,7 +126,10 @@ export class MemoryBackend implements StorageBackend {
     // The seam's `id` argument owns identity. Filesystem and wire adapters reconstruct/attach
     // that route id on reads because document bytes do not serialize `doc.id`; mirror them here
     // instead of retaining a mismatched caller-supplied `doc.id` in the in-memory snapshot.
-    const storedDoc = { ...doc, id };
+    // The body is likewise stored in its SERIALIZED shape: byte-storing adapters re-parse what
+    // they wrote, so their reads always carry the serializer's trailing-newline form. Mirroring
+    // that normalization keeps a read-built mutation's candidate identical on every adapter.
+    const storedDoc = { ...doc, id, body: normalizeDocumentBodyForStorage(doc.body ?? "") };
     const version = contentVersion(storedDoc);
     // Idempotent: re-writing byte-identical content is a no-op that does not grow the
     // chain (the content address is unchanged). A genuine content change appends a revision.

@@ -1720,7 +1720,7 @@ test("registered Roadmap View runs from unchanged source through the authorized 
         outcome: { reply: { result: { body: string } } };
       }
     ).outcome.reply.result.body,
-    "# Goal\n\nFirst task.",
+    "# Goal\n\nFirst task.\n",
   );
 
   const rendered = await client.callTool({
