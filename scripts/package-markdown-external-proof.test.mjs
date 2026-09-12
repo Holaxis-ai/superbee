@@ -33,7 +33,7 @@ test('packed Markdown renderer is a CLI-free browser and static library', async 
     const manifest = JSON.parse(await readFile(path.join(scratch, 'node_modules/@superbee/markdown-renderer/package.json'), 'utf8'));
     assert.equal(manifest.private, undefined);
     assert.equal(manifest.publishConfig.access, 'restricted');
-    assert.equal(manifest.peerDependencies['@superbee/core'], '^0.1.3 || 0.2.0-pre.1');
+    assert.equal(manifest.peerDependencies['@superbee/core'], '^0.1.3 || 0.2.0-pre.1 || 0.2.0-pre.2');
     const lock = JSON.parse(await readFile(path.join(scratch, 'package-lock.json'), 'utf8'));
     for (const pkg of Object.keys(lock.packages))
       assert.ok(!/(?:^|\/)node_modules\/(?:superbee|@superbee\/(?:server|ui-server|publication))$/.test(pkg), `unexpected dependency ${pkg}`);
