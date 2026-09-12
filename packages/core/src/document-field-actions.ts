@@ -1,7 +1,7 @@
 /** Explicit frontmatter intent. Collection construction is owned here, before CAS metadata. */
 import { InvalidInputError } from "./errors.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
-import { kindInputFieldNames, resolveKindFieldCoordinate, type KindRegistry } from "./kinds.js";
+import { kindInputFieldNames, resolveKindFieldCoordinate, PROGRESS_STATUS_FIELD, SUPERBEE_PROGRESS_STATUS_FIELD, type KindRegistry } from "./kinds.js";
 import type { Frontmatter, OkfDocument } from "./types.js";
 import type { DocumentMutationCandidate } from "./document-mutation.js";
 
@@ -84,12 +84,17 @@ function isScalar(value: unknown): value is Scalar {
 function isScalarList(value: unknown): boolean {
   return Array.isArray(value) && value.every(isScalar);
 }
+/** Workflow progress is scalar lifecycle state in every edition, whichever name stores it. */
+function scalarLifecycleField(field: string, okfVersion: "0.1" | "0.2"): boolean {
+  return field === PROGRESS_STATUS_FIELD || field === SUPERBEE_PROGRESS_STATUS_FIELD
+    || (field === "status" && okfVersion === "0.1");
+}
 export interface AssignmentContext { registry: KindRegistry; okfVersion: "0.1" | "0.2"; kindName?: string }
 const WHOLE_DOCUMENT_REPAIR = "Use complete-document replacement: pull --doc-key <id>.md --out <file>, edit that file, then promote <file> --doc-key <id>.md --expected-version <version-from-pull>.";
 /** The one answer to "an explicit collection action can reach this field on this document". */
 function collectionActionField(field: string, context: AssignmentContext | undefined, previous: unknown, value: unknown): boolean {
   if (field === "tags" || field === "sources") return true;
-  if (context === undefined || managed.has(field) || isStandardDocumentSetField(field, context.okfVersion)) return false;
+  if (context === undefined || managed.has(field) || isStandardDocumentSetField(field, context.okfVersion) || scalarLifecycleField(field, context.okfVersion)) return false;
   const kind = context.registry.kinds.get(String(context.kindName));
   return kind !== undefined
     && resolveKindFieldCoordinate(context.okfVersion, kind, field) !== undefined
@@ -106,6 +111,8 @@ export function assertNonCollectionAssignment(field: string, previous: unknown, 
   }
 }
 export function assertOrdinaryPatch(existing: Frontmatter, proposed: Frontmatter, context?: Omit<AssignmentContext, "kindName">): void {
+  // The correction must be actionable on the CURRENT document: a refused patch changes
+  // nothing, so the existing type's kind (not a proposed retype) is the authority.
   const kindName = existing.type;
   for (const field of new Set([...Object.keys(existing), ...Object.keys(proposed)])) {
     if (!okfValuesEqual(existing[field], proposed[field])) assertNonCollectionAssignment(field, existing[field], proposed[field], context === undefined ? undefined : { ...context, kindName });
@@ -209,6 +216,7 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
     if (act.action === "edit") throw new InvalidInputError("edit supports sources only.");
     if (managed.has(act.field)) throw new InvalidInputError(`'${act.field}' is managed metadata and cannot be assigned by a field action.`);
     if (isStandardDocumentSetField(act.field, context.okfVersion)) throw new InvalidInputError(`'${act.field}' is a scalar document field; use doc field set.`);
+    if (scalarLifecycleField(act.field, context.okfVersion)) throw new InvalidInputError(`'${act.field}' is a scalar lifecycle field; use doc field set.`);
     const declared = kind && resolveKindFieldCoordinate(context.okfVersion, kind, act.field);
     if (declared === undefined) throw new InvalidInputError(`'${act.field}' is not a collection target; collection actions support tags, sources, and Kind-declared list fields.`);
     storageField = declared.storageField;

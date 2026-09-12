@@ -200,7 +200,7 @@ test("source addition retains the standard string-ID contract, including an expl
   assert.throws(() => apply({ sources: [{ resource: "url" }] }, { action: "edit", field: "sources", selector: { resource: "url" }, patch: { id: "" } }), /nonempty/);
 });
 
-const reviewKind = { id: "conventions/review", title: "Review", governs: "Review", fields: { required: ["title"], optional: ["reviewers", "review_lenses", "score", "actor"], values: {}, terminal: {}, descriptions: {} } };
+const reviewKind = { id: "conventions/review", title: "Review", governs: "Review", fields: { required: ["title"], optional: ["reviewers", "review_lenses", "score", "actor", "superbee_progress_status", "status"], values: {}, terminal: {}, descriptions: {} } };
 const reviewRegistry = { kinds: new Map([["Review", reviewKind]]), warnings: [] };
 const reviewContext = { registry: reviewRegistry, okfVersion: "0.2" as const };
 const review = (fm: Record<string, unknown> = {}): OkfDocument => ({ id: "reviews/r1", frontmatter: { type: "Review", title: "R", ...fm }, body: "body" });
@@ -229,6 +229,12 @@ test("Kind-declared collection actions refuse undeclared, managed, edit and non-
   // A Kind-declared standard field keeps its scalar semantics: declaration never makes title a list.
   assert.throws(() => reviewApply({}, { action: "replace-all", field: "title", value: ["x"] }), /scalar document field/);
   assert.throws(() => reviewApply({ reviewers: ["a"] }, { action: "add", field: "title", value: "x" }), /scalar document field/);
+  // Workflow progress is scalar lifecycle state under every name and edition, alias included.
+  assert.throws(() => reviewApply({}, { action: "add", field: "progress_status", value: "done" }), /lifecycle/);
+  assert.throws(() => reviewApply({ superbee_progress_status: "todo" }, { action: "add", field: "superbee_progress_status", value: "done" }), /lifecycle/);
+  assert.throws(() => prepareDocumentFieldAction(review({}), { action: "add", field: "status", value: "done" }, { registry: reviewRegistry, okfVersion: "0.1" }), /lifecycle/);
+  // replace-all deliberately repairs a scalar current value into the declared list.
+  assert.deepEqual(reviewApply({ reviewers: "solo" }, { action: "replace-all", field: "reviewers", value: ["a", "b"] }).candidate.frontmatter.reviewers, ["a", "b"]);
   assert.throws(() => reviewApply({ reviewers: [{ name: "a" }] }, { action: "add", field: "reviewers", value: "b" }), error => {
     assert.ok(error instanceof Error);
     assert.match(error.message, /pull --doc-key <id>\.md --out <file>/);
@@ -271,4 +277,6 @@ test("list-assignment refusals name doc field for Kind list fields and pull/prom
     assert.match(error.message, /pull --doc-key <id>\.md --out <file>/);
     return true;
   });
+  // A refused retype changes nothing: the doc field correction names the EXISTING kind's field.
+  await assert.rejects(() => mutateDocument({ ...reviewPatch, buildCandidate: e => ({ frontmatter: { ...e!.frontmatter, type: "Task", reviewers: ["a", "b"] }, body: e!.body }) }), /doc field add\/remove\/replace-all/);
 });
