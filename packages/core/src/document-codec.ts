@@ -13,11 +13,14 @@ export {
 export { resolveContentType } from "./content-type.js";
 export type { Frontmatter, OkfDocument, Version } from "./types.js";
 
+import { sha256HexOfBytes } from "./sha256.js";
 import type { Version } from "./types.js";
 
-/** SHA-256 version of exact bytes, including binary data, using Web Crypto. */
+/**
+ * SHA-256 version of exact bytes, including binary data. Minted by the same pure
+ * implementation as every other version token, so one digest owner serves Node and
+ * browser runtimes; the async signature is kept for the codec's existing callers.
+ */
 export async function versionFromBytes(bytes: Uint8Array): Promise<Version> {
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", new Uint8Array(bytes).buffer);
-  const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `sha256:${hex}`;
+  return `sha256:${sha256HexOfBytes(bytes)}`;
 }
