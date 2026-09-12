@@ -436,6 +436,46 @@ test("close() while the first open is in flight leaks no connection: a later del
   }
 });
 
+test("when the reopen also fails, the retry's error surfaces and the first one is kept as its cause", async () => {
+  const inner = new IDBFactory();
+  // Every attempt to start a transaction throws, with a distinct error each time, so the retry
+  // fails too. A persistent non-close failure such as a bad store name behaves this way.
+  const thrown: Error[] = [];
+  const factory: IdbFactoryLike = {
+    open(name: string, version?: number) {
+      const request = inner.open(name, version);
+      return proxied(request, {
+        get result() {
+          const db = request.result;
+          return db
+            ? proxied(db, {
+                transaction() {
+                  const error = new Error(`transaction refused (attempt ${thrown.length + 1})`);
+                  error.name = "NotFoundError";
+                  thrown.push(error);
+                  throw error;
+                },
+              })
+            : db;
+        },
+      });
+    },
+  };
+
+  const backend = new IndexedDbBackend({ databaseName: "reopen-also-fails", indexedDB: factory });
+  const failure = await backend.list().then(
+    () => null,
+    (error: Error) => error,
+  );
+  assert.ok(failure, "the call must reject when both attempts fail");
+  // Exactly two attempts: one retry, not a loop.
+  assert.equal(thrown.length, 2);
+  // The caller acts on the retry's error, and the first is reachable rather than discarded.
+  assert.equal(failure.message, "transaction refused (attempt 2)");
+  assert.equal(failure.cause, thrown[0]);
+  backend.close();
+});
+
 test("close() in the same turn as an in-flight call on a warm instance reopens instead of surfacing the host's error", async () => {
   const factory = new IDBFactory();
   const backend = open(factory, "warm-close");

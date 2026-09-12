@@ -402,10 +402,19 @@ export class IndexedDbBackend implements JournaledBackend {
     let transaction: IdbTransactionLike;
     try {
       transaction = db.transaction(stores, mode);
-    } catch {
+    } catch (firstFailure) {
       if (this.#db === db) this.close();
       db = await this.#open();
-      transaction = db.transaction(stores, mode);
+      try {
+        transaction = db.transaction(stores, mode);
+      } catch (retryFailure) {
+        // The retry's failure is what the caller acts on. When the two differ the first one was
+        // never about a closed handle, so it is the more informative of the pair and is kept as
+        // the cause rather than discarded.
+        const failure = asError(retryFailure);
+        failure.cause ??= firstFailure;
+        throw failure;
+      }
     }
     return new Promise<T>((resolve, reject) => {
       const tx = transaction;
