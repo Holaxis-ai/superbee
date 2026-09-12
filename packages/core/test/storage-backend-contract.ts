@@ -17,6 +17,7 @@ import type {
   HeadResult,
   OkfDocument,
   QueryFilter,
+  ReservedFilename,
   StorageBackend,
   Version,
 } from "../src/types.js";
@@ -55,6 +56,40 @@ const TIMESTAMP = "2026-07-01T00:00:00.000Z";
 const enc = (value: string) => new TextEncoder().encode(value);
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
+// One table owns storage-key grammar across adapters, including runtime (untyped) callers.
+export const INVALID_STORAGE_PATHS = [
+  "/absolute", "../outside", "a/../b", "./a", "a/./b", "a//b", "a\\b", "a/",
+  "C:/x", "C:\\x", "c:relative",
+  ...Array.from({ length: 32 }, (_, code) => `a${String.fromCharCode(code)}b`),
+  "a\u007fb",
+];
+export const INVALID_RESERVED_NAMES: unknown[] = ["other.md", "INDEX.md", "nested/index.md", "", null, 42];
+
+/** Reused by real adapter fixtures and no-I/O fixtures to prove refusal precedes storage. */
+export async function assertStorageInputRefusals(backend: StorageBackend): Promise<void> {
+  for (const value of INVALID_STORAGE_PATHS) {
+    const operations = [
+      () => backend.read(value),
+      () => backend.readMany(["valid", value]),
+      () => backend.write(value, doc(value, "unchanged")),
+      () => backend.delete(value),
+      () => backend.exists(value),
+      () => backend.versions(value),
+      () => backend.readBlob(value),
+      () => backend.writeBlob(value, enc("unchanged")),
+      () => backend.deleteBlob(value),
+      () => backend.existsBlob(value),
+      () => backend.readReserved(value, "index.md"),
+      () => backend.writeReserved(value, "index.md", "unchanged"),
+    ];
+    for (const operation of operations) await assert.rejects(operation, InvalidInputError, JSON.stringify(value));
+  }
+  for (const name of INVALID_RESERVED_NAMES) {
+    await assert.rejects(() => backend.readReserved("", name as ReservedFilename), InvalidInputError);
+    await assert.rejects(() => backend.writeReserved("", name as ReservedFilename, "unchanged"), InvalidInputError);
+  }
+}
+
 async function withFixture(
   create: BackendContractOptions["create"],
   run: (backend: StorageBackend) => Promise<void>,
@@ -84,6 +119,20 @@ function assertConflict(
 
 export function registerStorageBackendBaseContract(options: BackendContractOptions): void {
   const { name, create } = options;
+
+  test(`${name} contract: shared invalid input rows refuse without changing stored content`, async () => {
+    await withFixture(create, async (backend) => {
+      await backend.write("valid", doc("valid", "original"));
+      await backend.writeBlob("valid.bin", enc("original"));
+      await backend.writeReserved("", "index.md", "original");
+      const original = await backend.read("valid");
+      await assertStorageInputRefusals(backend);
+      assert.deepEqual(await backend.read("valid"), original);
+      assert.deepEqual(await backend.list(), ["valid"]);
+      assert.deepEqual(await backend.listBlobs(), ["valid.bin"]);
+      assert.equal((await backend.readReserved("", "index.md"))?.content, "original");
+    });
+  });
 
   test(`${name} contract: document reads expose stable content versions`, async () => {
     await withFixture(create, async (backend) => {
@@ -625,6 +674,35 @@ export function registerStorageBackendIdentityContract(options: IdentityBackendC
       await fixture.cleanup();
     }
   }
+
+  test(`${name} contract: locale-equal listing ties have stable code-point order`, async () => {
+    await withIdentityFixture(async (backend, host) => {
+      // A normalizing filesystem cannot represent both keys; its refusal is covered by
+      // the normalization identity row below (and AC-17 for normalizing hosts).
+      if (host.normalization) return;
+      const ids = ["order/caf\u00e9", "order/cafe\u0301"];
+      assert.equal(ids[0]!.localeCompare(ids[1]!), 0);
+      for (const id of ids) {
+        await backend.write(id, doc(id, id));
+        await backend.writeBlob(`${id}.bin`, enc(id));
+      }
+      const expected = [ids[1]!, ids[0]!];
+      assert.deepEqual(await backend.list(), expected);
+      assert.deepEqual(await backend.list("order/"), expected);
+      assert.deepEqual(await backend.listBlobs(), expected.map((id) => `${id}.bin`));
+      assert.deepEqual(await backend.listBlobs("order/"), expected.map((id) => `${id}.bin`));
+      for (const id of ids) {
+        await backend.delete(id);
+        await backend.deleteBlob(`${id}.bin`);
+      }
+      for (const id of [...ids].reverse()) {
+        await backend.write(id, doc(id, id));
+        await backend.writeBlob(`${id}.bin`, enc(id));
+      }
+      assert.deepEqual(await backend.list("order/"), expected);
+      assert.deepEqual(await backend.listBlobs("order/"), expected.map((id) => `${id}.bin`));
+    });
+  });
 
   // The label is the pair KIND and indexes the host's per-kind verdict, so a row can never be
   // scored against a kind of aliasing its own pair does not exercise.

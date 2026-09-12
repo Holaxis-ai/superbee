@@ -26,7 +26,7 @@
  */
 
 import { resolveContentType } from "./content-type.js";
-import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, toPosix } from "./paths.js";
+import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys } from "./paths.js";
 import { blobVersion, contentVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
   BlobKey,
@@ -81,8 +81,7 @@ function notFound(id: ConceptId): NodeJS.ErrnoException {
 
 /** Bundle-relative key for a reserved file (`""` = bundle root), mirroring the fs adapter's layout. */
 function reservedKey(dir: string, name: ReservedFilename): string {
-  const d = toPosix(dir).replace(/^\.?\//, "").replace(/\/$/, "");
-  return d === "" ? name : `${d}/${name}`;
+  return dir === "" ? name : `${dir}/${name}`;
 }
 
 /**
@@ -165,7 +164,7 @@ export class MemoryBackend implements StorageBackend {
 
   async list(prefix?: string): Promise<ConceptId[]> {
     const ids = [...this.chains.keys()].filter((id) => !prefix || id.startsWith(prefix));
-    ids.sort((a, b) => a.localeCompare(b));
+    ids.sort(compareStorageKeys);
     return ids;
   }
 
@@ -182,6 +181,7 @@ export class MemoryBackend implements StorageBackend {
 
   async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const content = this.reserved.get(reservedKey(dir, name));
     if (content === undefined) return null;
     // Content-addressed, so the token matches the filesystem adapter's for identical bytes.
@@ -195,6 +195,7 @@ export class MemoryBackend implements StorageBackend {
     options: WriteOptions = {},
   ): Promise<Version> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const key = reservedKey(dir, name);
     const existing = this.reserved.get(key);
     const current = existing === undefined ? null : versionOfBytes(existing);
@@ -270,7 +271,7 @@ export class MemoryBackend implements StorageBackend {
 
   async listBlobs(prefix?: string): Promise<BlobKey[]> {
     const keys = [...this.blobs.keys()].filter((k) => !prefix || k.startsWith(prefix));
-    keys.sort((a, b) => a.localeCompare(b));
+    keys.sort(compareStorageKeys);
     return keys;
   }
 }

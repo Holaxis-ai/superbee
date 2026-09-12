@@ -44,7 +44,7 @@
 import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
 import { InvalidInputError } from "./errors.js";
 import { headsDigest, isHeadsDigest, type DocumentHead } from "./heads-digest.js";
-import { assertSafeBlobKey, assertSafeConceptId } from "./paths.js";
+import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys } from "./paths.js";
 import { isRequestIdentity, type Outcome } from "./uncertain-write.js";
 import { VersionConflict, stripETagWrapper } from "./version-transport.js";
 import type {
@@ -748,7 +748,7 @@ export class RemoteBackend implements StorageBackend {
   async list(prefix?: string): Promise<ConceptId[]> {
     const params = new URLSearchParams();
     if (prefix) params.set("prefix", prefix);
-    return this.pageDocs(params, (row) => row.id, prefix ?? "");
+    return (await this.pageDocs(params, (row) => row.id, prefix ?? "")).sort(compareStorageKeys);
   }
 
   /**
@@ -793,6 +793,8 @@ export class RemoteBackend implements StorageBackend {
   }
 
   async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
+    assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const qs = dir ? `?dir=${encodeURIComponent(dir)}` : "";
     const res = await this.send(`/reserved/${name}${qs}`, { method: "GET" });
     if (res.status === 404) return null;
@@ -808,6 +810,8 @@ export class RemoteBackend implements StorageBackend {
     content: string,
     options: WriteOptions = {},
   ): Promise<Version> {
+    assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     assertValidExpectedVersion(options.expectedVersion);
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (options.expectedVersion === null) headers["If-None-Match"] = "*";
@@ -930,6 +934,6 @@ export class RemoteBackend implements StorageBackend {
       if (!payload.next_cursor) break;
       cursor = payload.next_cursor;
     }
-    return keys;
+    return keys.sort(compareStorageKeys);
   }
 }

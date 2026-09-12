@@ -245,6 +245,8 @@ export {
   pathFromConceptId,
   assertSafeConceptId,
   assertSafeReservedDir,
+  assertSafeReservedFilename,
+  compareStorageKeys,
   assertSafeBlobKey,
   toPosix,
 } from "./paths.js";
