@@ -436,6 +436,46 @@ test("close() while the first open is in flight leaks no connection: a later del
   }
 });
 
+test("close() in the same turn as an in-flight call on a warm instance reopens instead of surfacing the host's error", async () => {
+  const factory = new IDBFactory();
+  const backend = open(factory, "warm-close");
+  // Warm the instance so the open resolves without suspending and the handle is held.
+  const seedVersion = await backend.write("a/b", doc("a/b", "seed"));
+
+  // The call is issued first, then close() lands in the same synchronous turn, before the call's
+  // microtask reaches the point where it starts its transaction. `close()` documents that the
+  // next operation reopens lazily; the cold path already joins the next open under exactly this
+  // interleaving, and the warm path must not instead surface a raw InvalidStateError.
+  const inFlight = backend.list();
+  backend.close();
+  assert.deepEqual(await inFlight, ["a/b"]);
+
+  // The same holds for a write, which commits exactly once at the version it returned.
+  const pendingWrite = backend.write("c/d", doc("c/d", "written across a close"));
+  backend.close();
+  const version = await pendingWrite;
+  assert.deepEqual(await backend.list(), ["a/b", "c/d"]);
+  const readBack = await backend.read("c/d");
+  assert.equal(readBack.version, version);
+  assert.equal(readBack.doc.body, "written across a close\n");
+
+  // Conditional writes keep their meaning across the retry: the stale token is still refused, and
+  // the current one still wins. A retry that resolved against a re-read would lose this.
+  await assert.rejects(
+    (async () => {
+      const stale = backend.write("c/d", doc("c/d", "from a stale token"), { expectedVersion: seedVersion });
+      backend.close();
+      await stale;
+    })(),
+    VersionConflict,
+  );
+  const conditional = backend.write("c/d", doc("c/d", "from the current token"), { expectedVersion: version });
+  backend.close();
+  await conditional;
+  assert.equal((await backend.read("c/d")).doc.body, "from the current token\n");
+  backend.close();
+});
+
 test("a synchronous open() failure is not cached: the next call retries and succeeds once the condition clears", async () => {
   const inner = new IDBFactory();
   const denied = { value: true };

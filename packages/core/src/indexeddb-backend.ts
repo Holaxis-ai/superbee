@@ -391,9 +391,24 @@ export class IndexedDbBackend implements JournaledBackend {
       guard: (handler: () => void) => () => void,
     ) => void,
   ): Promise<T> {
-    const db = await this.#open();
+    // Starting a transaction throws synchronously on a handle closed between the open resolving
+    // and this line, which is what a `close()` issued in the same turn as an in-flight call
+    // produces. `close()` promises that the next operation reopens lazily, and the cold path gets
+    // that for free by joining the next open; this is the warm equivalent. Retrying is safe here
+    // and only here: the throw means no transaction exists, so nothing was attempted and the
+    // retry cannot repeat work. A second failure is the host's own answer and propagates, which
+    // is also what a genuinely bad store name does after one wasted reopen.
+    let db = await this.#open();
+    let transaction: IdbTransactionLike;
+    try {
+      transaction = db.transaction(stores, mode);
+    } catch {
+      if (this.#db === db) this.close();
+      db = await this.#open();
+      transaction = db.transaction(stores, mode);
+    }
     return new Promise<T>((resolve, reject) => {
-      const tx = db.transaction(stores, mode);
+      const tx = transaction;
       let result: { value: T } | null = null;
       let failure: Error | null = null;
       tx.oncomplete = () => {
