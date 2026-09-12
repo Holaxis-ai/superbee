@@ -412,7 +412,17 @@ export class IndexedDbBackend implements JournaledBackend {
         // never about a closed handle, so it is the more informative of the pair and is kept as
         // the cause rather than discarded.
         const failure = asError(retryFailure);
-        failure.cause ??= firstFailure;
+        if (failure !== firstFailure && failure.cause == null) {
+          // Attaching a cause is a convenience and is never worth replacing the host's own error.
+          // This error belongs to the host, which may hand back a frozen one or one whose `cause`
+          // is a getter; assigning to either throws in strict mode, and that TypeError would reach
+          // the caller in place of the real failure.
+          try {
+            failure.cause = firstFailure;
+          } catch {
+            // Surface the host's error exactly as it came.
+          }
+        }
         throw failure;
       }
     }

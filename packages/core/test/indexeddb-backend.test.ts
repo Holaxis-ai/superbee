@@ -436,6 +436,80 @@ test("close() while the first open is in flight leaks no connection: a later del
   }
 });
 
+/** A factory whose every `transaction()` throws whatever `next()` hands back. */
+function transactionRefusingFactory(inner: IDBFactory, next: () => unknown): IdbFactoryLike {
+  return {
+    open(name: string, version?: number) {
+      const request = inner.open(name, version);
+      return proxied(request, {
+        get result() {
+          const db = request.result;
+          return db
+            ? proxied(db, {
+                transaction() {
+                  throw next();
+                },
+              })
+            : db;
+        },
+      });
+    },
+  };
+}
+
+test("a host error that refuses a cause reaches the caller unchanged, not as a TypeError about the cause", async () => {
+  // The host owns this error and handed back a frozen one. Attaching a cause is a convenience;
+  // replacing InvalidStateError with `TypeError: Cannot add property cause` would lose the only
+  // information the caller had.
+  const frozen = Object.freeze(Object.assign(new Error("host refused the transaction"), { name: "InvalidStateError" }));
+  const backend = new IndexedDbBackend({
+    databaseName: "frozen-error",
+    indexedDB: transactionRefusingFactory(new IDBFactory(), () => frozen),
+  });
+  const failure = await backend.list().then(
+    () => null,
+    (error: unknown) => error,
+  );
+  assert.equal(failure, frozen, "the caller must receive the host's own error object");
+  assert.equal((failure as Error).name, "InvalidStateError");
+  assert.equal((failure as Error).message, "host refused the transaction");
+  backend.close();
+
+  // The same holds when `cause` is present but not assignable.
+  const getterOnly = new Error("cause is a getter");
+  Object.defineProperty(getterOnly, "cause", { get: () => undefined, configurable: false });
+  const second = new IndexedDbBackend({
+    databaseName: "getter-cause",
+    indexedDB: transactionRefusingFactory(new IDBFactory(), () => getterOnly),
+  });
+  assert.equal(
+    await second.list().then(
+      () => null,
+      (error: unknown) => error,
+    ),
+    getterOnly,
+  );
+  second.close();
+});
+
+test("one cached host error thrown for both attempts is never made its own cause", async () => {
+  // A host that reuses one error object would otherwise produce `failure.cause === failure`, a
+  // cycle every consumer walking the chain then has to defend against.
+  const shared = new Error("the same object both times");
+  const backend = new IndexedDbBackend({
+    databaseName: "shared-error",
+    indexedDB: transactionRefusingFactory(new IDBFactory(), () => shared),
+  });
+  const failure = (await backend.list().then(
+    () => null,
+    (error: unknown) => error,
+  )) as Error;
+  assert.equal(failure, shared);
+  assert.notEqual(failure.cause, failure, "an error must never be its own cause");
+  assert.equal(failure.cause, undefined);
+  backend.close();
+});
+
 test("when the reopen also fails, the retry's error surfaces and the first one is kept as its cause", async () => {
   const inner = new IDBFactory();
   // Every attempt to start a transaction throws, with a distinct error each time, so the retry
