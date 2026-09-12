@@ -92,23 +92,21 @@ function scalarLifecycleField(field: string, okfVersion: "0.1" | "0.2"): boolean
 export interface AssignmentContext { registry: KindRegistry; okfVersion: "0.1" | "0.2"; kindName?: string }
 const WHOLE_DOCUMENT_REPAIR = "Use complete-document replacement: pull --doc-key <id>.md --out <file>, edit that file, then promote <file> --doc-key <id>.md --expected-version <version-from-pull>.";
 /** The one answer to "an explicit collection action can reach this field on this document". */
-function collectionActionField(field: string, context: AssignmentContext | undefined, value: unknown): boolean {
+function collectionActionField(field: string, context: AssignmentContext | undefined, previous: unknown, value: unknown): boolean {
   if (field === "tags" || field === "sources") return true;
   if (context === undefined || managed.has(field) || isStandardDocumentSetField(field, context.okfVersion) || scalarLifecycleField(field, context.okfVersion)) return false;
   if (context.okfVersion === "0.1" && (field === "stale_after" || field === "usage_window")) return false;
-  // Only a scalar-list proposal is reachable: replace-all repairs any current shape, but no
-  // collection action can produce mapping members or collapse a list back to a scalar.
-  if (!isScalarList(value)) return false;
   const kind = context.registry.kinds.get(String(context.kindName));
-  return kind !== undefined
-    && kind !== null
-    && resolveKindFieldCoordinate(context.okfVersion, kind, field) !== undefined;
+  if (kind === undefined || kind === null || resolveKindFieldCoordinate(context.okfVersion, kind, field) === undefined) return false;
+  // A scalar-list proposal is always reachable via replace-all; a scalar or absent proposal on
+  // a scalar-list field names the membership tools. Mapping/nested proposals need pull/promote.
+  return isScalarList(value) || (isScalarList(previous) && !containsCollection(value));
 }
 export function assertNonCollectionAssignment(field: string, previous: unknown, value: unknown, context?: AssignmentContext): void {
   if (containsCollection(previous) || containsCollection(value)) {
     const correction = field === "tags" || field === "sources"
       ? `Use an explicit ${field} add/remove/replace-all collection action.`
-      : collectionActionField(field, context, value)
+      : collectionActionField(field, context, previous, value)
         ? `Use doc field add/remove/replace-all <id> ${field}.`
         : WHOLE_DOCUMENT_REPAIR;
     throw new InvalidInputError(`Cannot assign '${field}': the old or new subtree contains a list. ${correction}`);
