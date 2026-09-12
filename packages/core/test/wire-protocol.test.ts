@@ -503,7 +503,7 @@ test("wire: serve() boots a real node:http listener; one GET round-trips, then c
     assert.equal(res.status, 200);
     const body = (await res.json()) as { id: string; body: string };
     assert.equal(body.id, "smoke");
-    assert.equal(body.body, "hello");
+    assert.equal(body.body, "hello\n");
     // Production repair (Stage-1 Unit 2b): the version now rides X-Version (bare, primary,
     // edge-proof) AND a properly RFC-7232-QUOTED ETag (secondary) — the original unquoted
     // bare-token ETag this pinned was itself the defect (Cloudflare's edge strips an invalid
@@ -746,7 +746,7 @@ test("wire: identified PUT is applied once; the same Idempotency-Key replays the
   const again = await answer(await router(identifiedPut("concepts/once", "v1 resent with a different body", { "Idempotency-Key": "req-1", "If-None-Match": "*" })));
   assert.deepEqual(again, first);
   assert.equal((await serverBackend.versions("concepts/once")).length, 1);
-  assert.equal((await serverBackend.read("concepts/once")).doc.body, "v1");
+  assert.equal((await serverBackend.read("concepts/once")).doc.body, "v1\n");
 });
 
 /** A backend whose writes take real time, so two submissions can overlap deterministically. */

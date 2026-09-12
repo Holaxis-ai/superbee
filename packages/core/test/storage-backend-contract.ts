@@ -21,6 +21,7 @@ import type {
   Version,
 } from "../src/types.js";
 import { blobVersion, contentVersion, VersionConflict } from "../src/versioning.js";
+import { normalizeDocumentBodyForStorage } from "../src/frontmatter.js";
 import { FilesystemIdentityAliasError, InvalidInputError } from "../src/errors.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { PreconditionFailed } from "../src/document-precondition.js";
@@ -99,6 +100,56 @@ export function registerStorageBackendBaseContract(options: BackendContractOptio
       assert.equal(first.doc.id, value.id);
       assert.deepEqual(first.doc.frontmatter, value.frontmatter);
       assert.equal(first.doc.body.trimEnd(), value.body);
+    });
+  });
+
+  // A read exposes the CANONICAL body — the exact shape the serializer emits — not the
+  // caller's submitted string. Byte-storing adapters get this free by re-parsing what they
+  // wrote; the object-storing in-memory adapter must normalize at write or it leaks the
+  // submission verbatim. The mutation leg is why the parity matters: `mutateDocument`
+  // builds its candidate from the read body, so a one-byte read divergence becomes a
+  // one-byte serialized divergence and a different version token on the next write.
+  test(`${name} contract: reads return the serialized body and read-built mutations keep one token`, async () => {
+    await withFixture(create, async (backend) => {
+      const submissions = [
+        "no trailing newline",
+        "already normalized\n",
+        "blank tail preserved\n\n\n",
+        "",
+        "carriage-return ending\r\n",
+        "lone carriage return\r",
+      ];
+      for (const [index, submitted] of submissions.entries()) {
+        const id = `concepts/body-shape-${index}`;
+        const written = await backend.write(id, doc(id, submitted), { expectedVersion: null });
+        const read = await backend.read(id);
+        const serializedBody = normalizeDocumentBodyForStorage(submitted);
+        assert.equal(read.doc.body, serializedBody);
+        assert.equal(read.version, written);
+
+        const bundle: Bundle = { root: "mem://body-shape", backend };
+        const appended = `${serializedBody}appended`;
+        const mutated = await mutateDocument({
+          bundle,
+          id,
+          mode: "patch",
+          registry: EMPTY_REGISTRY,
+          strict: false,
+          buildCandidate: (existing) => ({
+            frontmatter: { ...existing!.frontmatter, touched: true },
+            body: `${existing!.body}appended`,
+          }),
+        });
+        assert.equal(mutated.changed, true);
+
+        const reread = await backend.read(id);
+        assert.equal(reread.doc.body, normalizeDocumentBodyForStorage(appended));
+        assert.equal(reread.version, mutated.version);
+        assert.equal(
+          mutated.version,
+          contentVersion({ id, frontmatter: reread.doc.frontmatter, body: reread.doc.body }),
+        );
+      }
     });
   });
 
