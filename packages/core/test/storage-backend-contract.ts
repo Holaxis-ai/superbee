@@ -126,6 +126,9 @@ export function registerStorageBackendBaseContract(options: BackendContractOptio
         const serializedBody = normalizeDocumentBodyForStorage(submitted);
         assert.equal(read.doc.body, serializedBody);
         assert.equal(read.version, written);
+        const many = await backend.readMany([id]);
+        assert.equal(many[0]!.doc.body, serializedBody);
+        assert.equal(many[0]!.version, written);
 
         const bundle: Bundle = { root: "mem://body-shape", backend };
         const appended = `${serializedBody}appended`;
