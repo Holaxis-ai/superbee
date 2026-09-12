@@ -391,7 +391,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         candidate = prepared.candidate;
         scope = prepared.scope;
       } else if (input.kind === "assign") {
-        candidate = prepareDocumentAssignments(existing, input.assignments);
+        candidate = prepareDocumentAssignments(existing, input.assignments, { registry: opts.registry, okfVersion });
         if (input.body !== undefined) candidate.body = input.body;
         if (input.refreshTimestamp && okfVersion === "0.1") candidate.frontmatter.timestamp = decisionNow();
       } else if (input.kind === "verify") {
@@ -401,7 +401,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       else throw new InvalidInputError("Unknown document mutation input.");
     } else {
       candidate = await opts.buildCandidate!(existing === undefined ? undefined : structuredClone(existing), context);
-      if (existing && opts.mode === "patch") assertOrdinaryPatch(existing.frontmatter, candidate.frontmatter);
+      if (existing && opts.mode === "patch") assertOrdinaryPatch(existing.frontmatter, candidate.frontmatter, { registry: opts.registry, okfVersion });
     }
     await opts.assertCandidate?.(existing === undefined ? undefined : structuredClone(existing), structuredClone(candidate), context);
     return candidate;
