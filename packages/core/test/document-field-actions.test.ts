@@ -233,6 +233,12 @@ test("Kind-declared collection actions refuse undeclared, managed, edit and non-
   assert.throws(() => reviewApply({}, { action: "add", field: "progress_status", value: "done" }), /lifecycle/);
   assert.throws(() => reviewApply({ superbee_progress_status: "todo" }, { action: "add", field: "superbee_progress_status", value: "done" }), /lifecycle/);
   assert.throws(() => prepareDocumentFieldAction(review({}), { action: "add", field: "status", value: "done" }, { registry: reviewRegistry, okfVersion: "0.1" }), /lifecycle/);
+  // Edition-gated names refuse on v0.1 exactly as set does; the proto setter is never writable.
+  assert.throws(() => prepareDocumentFieldAction(review({}), { action: "add", field: "stale_after", value: "30d" }, { registry: reviewRegistry, okfVersion: "0.1" }), /requires OKF v0\.2/);
+  assert.throws(() => prepareDocumentFieldAction(review({}), { action: "replace-all", field: "__proto__", value: ["x"] }, reviewContext), /not a writable/);
+  // A malformed registry entry refuses cleanly rather than crashing on the missing kind.
+  const nullKindRegistry = { kinds: new Map([["Review", null]]), warnings: [] };
+  assert.throws(() => prepareDocumentFieldAction(review({}), { action: "add", field: "reviewers", value: "x" }, { registry: nullKindRegistry, okfVersion: "0.2" }), /not a collection target/);
   // replace-all deliberately repairs a scalar current value into the declared list.
   assert.deepEqual(reviewApply({ reviewers: "solo" }, { action: "replace-all", field: "reviewers", value: ["a", "b"] }).candidate.frontmatter.reviewers, ["a", "b"]);
   assert.throws(() => reviewApply({ reviewers: [{ name: "a" }] }, { action: "add", field: "reviewers", value: "b" }), error => {
@@ -279,4 +285,6 @@ test("list-assignment refusals name doc field for Kind list fields and pull/prom
   });
   // A refused retype changes nothing: the doc field correction names the EXISTING kind's field.
   await assert.rejects(() => mutateDocument({ ...reviewPatch, buildCandidate: e => ({ frontmatter: { ...e!.frontmatter, type: "Task", reviewers: ["a", "b"] }, body: e!.body }) }), /doc field add\/remove\/replace-all/);
+  // A mapping-member proposal is unreachable through doc field: only pull/promote can write it.
+  await assert.rejects(() => mutateDocument({ ...reviewPatch, input: { kind: "assign", assignments: { reviewers: [{ name: "x" }] } } }), /pull --doc-key <id>\.md --out <file>/);
 });

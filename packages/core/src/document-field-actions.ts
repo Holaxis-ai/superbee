@@ -92,19 +92,23 @@ function scalarLifecycleField(field: string, okfVersion: "0.1" | "0.2"): boolean
 export interface AssignmentContext { registry: KindRegistry; okfVersion: "0.1" | "0.2"; kindName?: string }
 const WHOLE_DOCUMENT_REPAIR = "Use complete-document replacement: pull --doc-key <id>.md --out <file>, edit that file, then promote <file> --doc-key <id>.md --expected-version <version-from-pull>.";
 /** The one answer to "an explicit collection action can reach this field on this document". */
-function collectionActionField(field: string, context: AssignmentContext | undefined, previous: unknown, value: unknown): boolean {
+function collectionActionField(field: string, context: AssignmentContext | undefined, value: unknown): boolean {
   if (field === "tags" || field === "sources") return true;
   if (context === undefined || managed.has(field) || isStandardDocumentSetField(field, context.okfVersion) || scalarLifecycleField(field, context.okfVersion)) return false;
+  if (context.okfVersion === "0.1" && (field === "stale_after" || field === "usage_window")) return false;
+  // Only a scalar-list proposal is reachable: replace-all repairs any current shape, but no
+  // collection action can produce mapping members or collapse a list back to a scalar.
+  if (!isScalarList(value)) return false;
   const kind = context.registry.kinds.get(String(context.kindName));
   return kind !== undefined
-    && resolveKindFieldCoordinate(context.okfVersion, kind, field) !== undefined
-    && (isScalarList(previous) || isScalarList(value));
+    && kind !== null
+    && resolveKindFieldCoordinate(context.okfVersion, kind, field) !== undefined;
 }
 export function assertNonCollectionAssignment(field: string, previous: unknown, value: unknown, context?: AssignmentContext): void {
   if (containsCollection(previous) || containsCollection(value)) {
     const correction = field === "tags" || field === "sources"
       ? `Use an explicit ${field} add/remove/replace-all collection action.`
-      : collectionActionField(field, context, previous, value)
+      : collectionActionField(field, context, value)
         ? `Use doc field add/remove/replace-all <id> ${field}.`
         : WHOLE_DOCUMENT_REPAIR;
     throw new InvalidInputError(`Cannot assign '${field}': the old or new subtree contains a list. ${correction}`);
@@ -217,7 +221,9 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
     if (managed.has(act.field)) throw new InvalidInputError(`'${act.field}' is managed metadata and cannot be assigned by a field action.`);
     if (isStandardDocumentSetField(act.field, context.okfVersion)) throw new InvalidInputError(`'${act.field}' is a scalar document field; use doc field set.`);
     if (scalarLifecycleField(act.field, context.okfVersion)) throw new InvalidInputError(`'${act.field}' is a scalar lifecycle field; use doc field set.`);
-    const declared = kind && resolveKindFieldCoordinate(context.okfVersion, kind, act.field);
+    if (context.okfVersion === "0.1" && (act.field === "stale_after" || act.field === "usage_window")) throw new InvalidInputError(`'${act.field}' requires OKF v0.2.`);
+    if (act.field === "__proto__") throw new InvalidInputError("'__proto__' is not a writable frontmatter field.");
+    const declared = kind ? resolveKindFieldCoordinate(context.okfVersion, kind, act.field) : undefined;
     if (declared === undefined) throw new InvalidInputError(`'${act.field}' is not a collection target; collection actions support tags, sources, and Kind-declared list fields.`);
     storageField = declared.storageField;
     const previous = existing.frontmatter[storageField];
