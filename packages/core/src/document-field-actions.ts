@@ -94,7 +94,7 @@ const WHOLE_DOCUMENT_REPAIR = "Use complete-document replacement: pull --doc-key
 /** The one answer to "an explicit collection action can reach this field on this document". */
 function collectionActionField(field: string, context: AssignmentContext | undefined, previous: unknown, value: unknown): boolean {
   if (field === "tags" || field === "sources") return true;
-  if (context === undefined || managed.has(field) || isStandardDocumentSetField(field, context.okfVersion) || scalarLifecycleField(field, context.okfVersion)) return false;
+  if (context === undefined || field === "__proto__" || managed.has(field) || isStandardDocumentSetField(field, context.okfVersion) || scalarLifecycleField(field, context.okfVersion)) return false;
   if (context.okfVersion === "0.1" && (field === "stale_after" || field === "usage_window")) return false;
   const kind = context.registry.kinds.get(String(context.kindName));
   if (kind === undefined || kind === null || resolveKindFieldCoordinate(context.okfVersion, kind, field) === undefined) return false;
