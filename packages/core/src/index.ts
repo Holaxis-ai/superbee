@@ -343,6 +343,6 @@ export { invalidOkfTimestamps, assertAuthoredOkfTimestamps, type InvalidOkfTimes
 
 export { isOkfLifecycleStatus, OKF_LIFECYCLE_STATUSES } from "./okf-lifecycle.js";
 
-export { prepareDocumentFieldAction, isStandardDocumentSetField, FieldActionError, type FieldActionErrorDetails, type SourceCandidateIdentity, type FieldAction, type SourceEntry, type SourceSelector, type FieldActionScope, type FieldActionContext, type PreparedDocumentFieldAction } from "./document-field-actions.js";
+export { prepareDocumentFieldAction, isStandardDocumentSetField, FieldActionError, type FieldActionErrorDetails, type SourceCandidateIdentity, type FieldAction, type Scalar, type SourceEntry, type SourceSelector, type FieldActionScope, type FieldActionContext, type PreparedDocumentFieldAction } from "./document-field-actions.js";
 export { prepareDocumentMutationCandidate, type PrepareDocumentMutationOptions, type DocumentMutationInput } from "./document-mutation.js";
 export { KindFieldMutationConflict, prepareKindFieldMutation, type KindFieldMutation } from "./kind-field-mutation.js";

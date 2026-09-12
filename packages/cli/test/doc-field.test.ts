@@ -220,6 +220,57 @@ test("doc field read hints retain an explicit local route when executed outside 
   }
 });
 
+test("doc field Kind-declared list fields: add/remove/replace-all through the CLI", async t => {
+  const f = await fixture(t);
+  await writeDoc(f.bundle, { id: "conventions/note", frontmatter: { type: "Convention", governs: "Note", fields: { required: [], optional: ["reviewers", "review_lenses", "verdict"] } }, body: "" });
+  const added = await f.run("add", "notes/a", "reviewers", "devin");
+  assert.equal(added.changed, true);
+  assert.equal(added.scope.outcome, "added");
+  const repeat = await f.run("add", "notes/a", "reviewers", "devin");
+  assert.equal(repeat.changed, false);
+  assert.equal(repeat.version, added.version);
+  const absent = await f.run("remove", "notes/a", "review_lenses", "never-added");
+  assert.equal(absent.changed, false);
+  const list = await f.file("- brian\n");
+  const replaced = await f.run("replace-all", "notes/a", "reviewers", "--from-file", list, "--expected-version", added.version);
+  assert.equal(replaced.scope.outcome, "replaced");
+  await assert.rejects(f.run("replace-all", "notes/a", "reviewers", "--from-file", list, "--expected-version", added.version), err => err instanceof CliError && err.code === "STALE_HEAD");
+  const removed = await f.run("remove", "notes/a", "reviewers", "brian");
+  assert.equal(removed.scope.outcome, "removed");
+  const { doc: result } = await readDocVersioned(f.bundle, "notes/a");
+  assert.deepEqual(result.frontmatter.reviewers, []);
+  assert.equal(result.body, "Keep this body.\n");
+  await assert.rejects(f.run("add", "notes/a", "undeclared", "x"), usage);
+  await assert.rejects(f.run("add", "notes/a", "verdict", "--from-file", await f.file("- map: true\n")), usage);
+  await assert.rejects(f.run("edit", "notes/a", "reviewers", "--id", "x", "--from-file", list, "--expected-version", removed.version), usage);
+});
+
+test("doc field help surfaces discover Kind-declared list fields", async () => {
+  for (const args of [["field", "--help"], ["field", "add", "--help"], ["field", "replace-all", "--help"]]) {
+    let output = "";
+    await doc(args, { stdout: text => { output += text; } });
+    assert.match(output, /Kind-declared/);
+  }
+});
+
+test("doc update refusal names doc field for Kind-declared list fields", async t => {
+  const f = await fixture(t);
+  await writeDoc(f.bundle, { id: "conventions/note", frontmatter: { type: "Convention", governs: "Note", fields: { required: [], optional: ["reviewers", "nested"] } }, body: "" });
+  await writeDoc(f.bundle, { id: "notes/b", frontmatter: { type: "Note", title: "B", reviewers: ["a"], nested: { list: [1] } }, body: "" });
+  await assert.rejects(doc(["update", "notes/b", "--reviewers", "b", "--dir", f.dir]), err => {
+    assert.ok(err instanceof CliError);
+    assert.equal(err.code, "USAGE");
+    assert.match(err.message, /doc field add\/remove\/replace-all/);
+    return true;
+  });
+  await assert.rejects(doc(["update", "notes/b", "--nested", "gone", "--dir", f.dir]), err => {
+    assert.ok(err instanceof CliError);
+    assert.equal(err.code, "USAGE");
+    assert.match(err.message, /pull --doc-key <id>\.md --out <file>/);
+    return true;
+  });
+});
+
 test("doc field read hints share the explicit remote option shape", async t => {
   const { serve } = await import("@superbee/server");
   const f = await fixture(t);
