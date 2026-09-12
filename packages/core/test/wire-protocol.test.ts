@@ -1744,9 +1744,10 @@ test("wire: a bundle seeded outside the wire with a line feed in an id fails hea
   const bundle: Bundle = { root: "mem://wire-unservable", backend: serverBackend };
   const router = createRouter(bundle);
   await seedDocs(bundle, ["fine"]);
-  // The core id rule admits this id locally; only the wire refuses it.
+  // Model a legacy/nonconforming adapter listing without bypassing today's write guard.
   const unservable = "line\nbreak";
-  await serverBackend.write(unservable, { id: unservable, frontmatter: { type: "T", title: "lf", timestamp: T_DOC }, body: "" });
+  const list = serverBackend.list.bind(serverBackend);
+  serverBackend.list = async (prefix) => [...await list(prefix), unservable];
 
   const heads = await router(new Request(HEADS_URL));
   assert.equal(heads.status, 500);
@@ -1803,7 +1804,7 @@ test("wire: the QA collision (two bundles, one digest) cannot be produced throug
   assert.equal(((await emptyB.json()) as { digest: string }).digest, `sha256:${sha256HexOfUtf8("")}`);
 
   // Seeded outside the wire, B fails closed: no 304 to A's digest, no digest at all.
-  await backendB.write(craftedId, { id: craftedId, frontmatter: yDoc.frontmatter, body: yDoc.body });
+  backendB.list = async () => [craftedId];
   const seededB = await routerB(new Request(HEADS_URL, { headers: { "If-None-Match": `"${headsA.digest}"` } }));
   assert.equal(seededB.status, 500);
   assert.equal(seededB.headers.get("etag"), null);

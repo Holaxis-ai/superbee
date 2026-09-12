@@ -45,7 +45,7 @@ import {
   type JournaledWriteOptions,
   type MetaRecord,
 } from "./journaled-backend.js";
-import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, pathFromConceptId, toPosix } from "./paths.js";
+import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys, pathFromConceptId } from "./paths.js";
 import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
 import type { OperationState } from "./uncertain-write.js";
 import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
@@ -186,8 +186,7 @@ function notFound(id: ConceptId): Error & { code: string } {
 
 /** Bundle-relative key for a reserved file (`""` = bundle root), the filesystem adapter's layout. */
 function reservedKey(dir: string, name: ReservedFilename): string {
-  const d = toPosix(dir).replace(/^\.?\//, "").replace(/\/$/, "");
-  return d === "" ? name : `${d}/${name}`;
+  return dir === "" ? name : `${dir}/${name}`;
 }
 
 function firstString(...vals: unknown[]): string | undefined {
@@ -208,7 +207,7 @@ function asError(error: unknown): Error {
 
 function sorted<T extends string>(keys: unknown[], prefix?: string): T[] {
   const out = keys.filter((key): key is T => typeof key === "string" && (!prefix || key.startsWith(prefix)));
-  out.sort((a, b) => a.localeCompare(b));
+  out.sort(compareStorageKeys);
   return out;
 }
 
@@ -612,6 +611,7 @@ export class IndexedDbBackend implements JournaledBackend {
 
   async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const record = await this.#getOne<ReservedRecord>(RESERVED, reservedKey(dir, name));
     if (!record) return null;
     return { content: record.content, version: record.version };
@@ -619,6 +619,7 @@ export class IndexedDbBackend implements JournaledBackend {
 
   async writeReserved(dir: string, name: ReservedFilename, content: string, options: WriteOptions = {}): Promise<Version> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const path = reservedKey(dir, name);
     return this.#compareAndSwap<ReservedRecord>(RESERVED, path, path, options.expectedVersion, () => ({
       record: { path, content, version: versionOfBytes(content) },

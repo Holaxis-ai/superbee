@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import test from "node:test";
+import assert from "node:assert/strict";
 
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 import { createRouter } from "@superbee/server";
@@ -16,6 +18,7 @@ import { VersionConflict } from "../src/versioning.js";
 import { registerJournaledBackendContract } from "./journaled-backend-contract.js";
 import {
   registerClaimPreconditionContract,
+  assertStorageInputRefusals,
   registerOkfAuthoringContract,
   registerStorageBackendAtomicCasContract,
   registerStorageBackendBaseContract,
@@ -78,6 +81,26 @@ const CONTRACTS = [
   { name: "RemoteBackend", create: remoteFixture, retention: "retained" as const },
   { name: "IndexedDbBackend", create: indexedDbFixture, retention: "current-only" as const },
 ];
+
+test("RemoteBackend contract: invalid input rows do not issue requests", async () => {
+  let requests = 0;
+  const backend = new RemoteBackend({
+    baseUrl: "http://wire.local", bundle: "contract", maxRetries: 0,
+    fetchImpl: async () => { requests++; throw new Error("Unexpected request"); },
+  });
+  await assertStorageInputRefusals(backend);
+  assert.equal(requests, 0);
+});
+
+test("IndexedDbBackend contract: invalid input rows do not open storage", async () => {
+  const factory = new IDBFactory();
+  let opens = 0;
+  factory.open = () => { opens++; throw new Error("Unexpected database open"); };
+  const backend = new IndexedDbBackend({ databaseName: "unopened", indexedDB: factory });
+  await assertStorageInputRefusals(backend);
+  assert.equal(opens, 0);
+  backend.close();
+});
 
 for (const contract of CONTRACTS) {
   registerStorageBackendBaseContract(contract);

@@ -26,6 +26,8 @@ export {
   assertSafeBlobKey,
   assertSafeConceptId,
   assertSafeReservedDir,
+  assertSafeReservedFilename,
+  compareStorageKeys,
   conceptIdFromPath,
   isReservedFile,
   pathFromConceptId,
