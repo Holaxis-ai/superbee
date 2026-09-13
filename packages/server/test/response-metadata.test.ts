@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MemoryBackend, RemoteBackend, type ConceptId, type Frontmatter } from "@superbee/core";
-import { REMOTE_LOSSY_METADATA } from "../../core/test/storage-backend-contract.ts";
+import { REMOTE_LOSSY_METADATA } from "../../core/test/remote-metadata-fixtures.ts";
 import { createRouterForBackend } from "../src/legacy-router.js";
 
 const base = "http://wire.local/v0/bundles/default";
