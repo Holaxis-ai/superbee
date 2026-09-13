@@ -56,12 +56,12 @@ for (const edition of [undefined, "0.1", "0.2"]) {
   });
 }
 
-test("structured memory reads retain their historical v0.1 values", async () => {
+test("memory reads use the shared v0.1 clock decoder", async () => {
   const backend = new MemoryBackend();
   for (const [index, clock] of clocks.entries()) {
     const id = `clock-${index}`;
     await backend.write(id, { id, frontmatter: { type: "Note", timestamp: clock.value }, body: "" });
-    assert.equal((await backend.read(id)).doc.frontmatter.timestamp, clock.value);
+    assert.equal((await backend.read(id)).doc.frontmatter.timestamp, clock.legacy);
   }
 });
 
