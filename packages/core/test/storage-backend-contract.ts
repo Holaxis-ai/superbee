@@ -75,6 +75,7 @@ export const REMOTE_LOSSY_METADATA: Array<{ name: string; make(): unknown }> = [
   { name: "boxed", make: () => new Number(1) },
   { name: "class", make: () => new (class { value = 1; })() },
   { name: "invalid date", make: () => new Date(NaN) },
+  { name: "date prototype impostor", make: () => Object.create(Date.prototype) },
   { name: "date properties", make: () => Object.assign(new Date(0), { extra: 1 }) },
   { name: "cycle", make: () => { const value: unknown[] = []; value.push(value); return value; } },
   { name: "array hole", make: () => new Array(1) },

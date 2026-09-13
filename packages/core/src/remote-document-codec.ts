@@ -37,7 +37,13 @@ export function encodeRemoteDocument(frontmatter: unknown, body: string): string
     }
     if (prototype === Date.prototype) {
       if (Object.values(descriptors).some(descriptor => descriptor.enumerable)) return refuse(path, "Date properties would be omitted");
-      if (!Number.isFinite(Date.prototype.getTime.call(value))) return refuse(path, "invalid Date would become null");
+      let instant: number;
+      try {
+        instant = Date.prototype.getTime.call(value);
+      } catch {
+        return refuse(path, "object has no Date value");
+      }
+      if (!Number.isFinite(instant)) return refuse(path, "invalid Date would become null");
       return Date.prototype.toISOString.call(value);
     }
     const array = Array.isArray(value);
