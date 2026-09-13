@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { checkPackageVersions, peerAdmits } from './package-version-preflight.mjs';
+import { checkPackageVersions, peerAdmits } from './package-version-policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const files = ['packages/core/package.json', 'packages/server/package.json', 'packages/markdown-renderer/package.json', 'package-lock.json'];
@@ -64,6 +64,20 @@ test('direct runner refuses unexpected arguments', () => {
   const result = spawnSync(process.execPath, [path.join(root, 'scripts/package-version-preflight.mjs'), '--fix'], { encoding: 'utf8' });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /no arguments/);
+});
+
+test('runner always evaluates source policy and reports invalid arguments separately', t => {
+  const directory = fixture(t, d => { d['packages/server/package.json'].version = '9.0.0'; });
+  mkdirSync(path.join(directory, 'scripts'));
+  for (const name of ['package-version-policy.mjs', 'package-version-preflight.mjs'])
+    writeFileSync(path.join(directory, 'scripts', name), readFileSync(path.join(root, 'scripts', name)));
+  for (const args of [[], ['--fix']]) {
+    const result = spawnSync(process.execPath, [path.join(directory, 'scripts/package-version-preflight.mjs'), ...args], { encoding: 'utf8' });
+    assert.equal(result.status, args.length ? 2 : 1);
+    assert.match(result.stderr, /packages\/server\/package.json version:.*from packages\/core\/package.json/);
+    assert.equal(result.stderr.includes('no arguments'), args.length > 0);
+    assert.equal(result.stdout, '');
+  }
 });
 
 test('missing and malformed JSON fail with a source file', t => {
