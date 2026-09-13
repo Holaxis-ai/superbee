@@ -25,6 +25,7 @@ import { blobVersion, contentVersion, VersionConflict } from "../src/versioning.
 import { FilesystemIdentityAliasError, InvalidInputError } from "../src/errors.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { PreconditionFailed } from "../src/document-precondition.js";
+import { parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
 import type { DocumentMutationResult } from "../src/document-mutation.js";
 import type { KindRegistry } from "../src/kinds.js";
 import type { HostAliasing } from "./host-class.js";
@@ -115,6 +116,105 @@ function assertConflict(
   assert.equal(error.expected, expected);
   assert.equal(error.actual, actual);
   return true;
+}
+
+/** YAML adapters share richer input shapes; the remote wire deliberately admits JSON only. */
+export function registerFrontmatterReadContract(
+  options: BackendContractOptions & { localYamlValues: boolean },
+): void {
+  const { name, create, localYamlValues } = options;
+  const instant = "2026-01-02T03:04:05.000Z";
+  const expectedDates = { when: instant, nested: { when: instant }, dates: [instant] };
+
+  for (const dates of [false, true]) {
+    test(`${name} frontmatter read contract: ${dates ? "Date" : "JSON"} extensions and read-built mutation agree`, async () => {
+      await withFixture(create, async (backend) => {
+        await backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n");
+        const value: OkfDocument = {
+          id: "metadata/dates",
+          frontmatter: {
+            type: "ContractFixture",
+            ...(dates ? { when: new Date(instant), nested: { when: new Date(instant) }, dates: [new Date(instant)] } : expectedDates),
+            timestamp: TIMESTAMP,
+          },
+          body: "original\n",
+        };
+        const version = await backend.write(value.id, value);
+        const expected = { type: "ContractFixture", ...expectedDates, timestamp: TIMESTAMP };
+        // JSON transport serializes Date before storage; local YAML writes keep their original bytes.
+        assert.equal(version, contentVersion({ ...value, frontmatter: localYamlValues ? value.frontmatter : expected }));
+        if (dates && localYamlValues) assert.notEqual(version, contentVersion({ ...value, frontmatter: expected }));
+        for (const read of [await backend.read(value.id), ...(await backend.readMany([value.id, value.id]))]) {
+          assert.equal(read.version, version);
+          assert.deepEqual(read.doc.frontmatter, expected);
+        }
+        const result = await mutateDocument({
+          bundle: { root: "unused://metadata", backend }, id: value.id, mode: "patch",
+          registry: EMPTY_REGISTRY, strict: false, now: () => TIMESTAMP,
+          buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: "changed\n" }),
+        });
+        assert.equal(result.changed, true);
+        assert.equal(result.version, contentVersion({ id: value.id, frontmatter: expected, body: "changed\n" }));
+        assert.deepEqual((await backend.read(value.id)).doc.frontmatter, expected);
+      });
+    });
+  }
+
+  if (!localYamlValues) return;
+
+  test(`${name} frontmatter read contract: current edition governs decoding without changing stored version`, async () => {
+    await withFixture(create, async (backend) => {
+      const value: OkfDocument = { id: "metadata/edition", frontmatter: { type: "ContractFixture", timestamp: 0 }, body: "body\n" };
+      const version = await backend.write(value.id, value);
+      const rows = [
+        { marker: undefined, timestamp: "1970-01-01T00:00:00.000Z" },
+        { marker: "---\nokf_version: '0.2'\n---\n", timestamp: 0 },
+        { marker: "---\nokf_version: '0.1'\n---\n", timestamp: "1970-01-01T00:00:00.000Z" },
+        { marker: "---\nokf_version: [\n---\n", timestamp: "1970-01-01T00:00:00.000Z" },
+      ];
+      for (const row of rows) {
+        if (row.marker !== undefined) await backend.writeReserved("", "index.md", row.marker);
+        for (const read of [await backend.read(value.id), ...(await backend.readMany([value.id]))]) {
+          assert.equal(read.version, version);
+          assert.equal(read.doc.frontmatter.timestamp, row.timestamp);
+        }
+      }
+    });
+  });
+
+  test(`${name} frontmatter read contract: YAML value graph round-trips with caller isolation`, async () => {
+    await withFixture(create, async (backend) => {
+      await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+      const shared = { value: "original" };
+      const cycle: Record<string, unknown> = { value: "cycle" };
+      cycle.self = cycle;
+      const value: OkfDocument = {
+        id: "metadata/yaml",
+        frontmatter: {
+          type: "ContractFixture", timestamp: TIMESTAMP,
+          nan: NaN, positive: Infinity, negative: -Infinity, binary: Buffer.from([0, 127, 255]),
+          first: shared, second: shared, cycle,
+        },
+        body: "body\n",
+      };
+      const expected = parseMarkdown(stringifyDoc(value.frontmatter, value.body), value.id, { okfVersion: "0.2" });
+      const version = await backend.write(value.id, value);
+      assert.equal(version, contentVersion(value));
+      shared.value = "caller changed input";
+      cycle.value = "caller changed input";
+      for (const read of [await backend.read(value.id), ...(await backend.readMany([value.id, value.id]))]) {
+        assert.equal(read.version, version);
+        assert.deepEqual(read.doc.frontmatter, expected.frontmatter);
+        assert.equal(read.doc.frontmatter.first, read.doc.frontmatter.second);
+        const readCycle = read.doc.frontmatter.cycle as Record<string, unknown>;
+        assert.equal(readCycle.self, readCycle);
+        (read.doc.frontmatter.first as Record<string, unknown>).value = "caller changed read";
+        readCycle.value = "caller changed read";
+        (read.doc.frontmatter.binary as Uint8Array)[0] = 100;
+      }
+      assert.deepEqual((await backend.read(value.id)).doc.frontmatter, expected.frontmatter);
+    });
+  });
 }
 
 export function registerStorageBackendBaseContract(options: BackendContractOptions): void {

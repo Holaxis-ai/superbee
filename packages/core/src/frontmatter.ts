@@ -96,14 +96,27 @@ export function parseMarkdown(
   const split = splitLeadingFrontmatter(raw, context);
   if (!("yamlSource" in split)) return { frontmatter: {} as Frontmatter, body: split.body };
 
+  return { frontmatter: parseFrontmatter(split.yamlSource, context, options), body: split.body };
+}
+
+/** Decode YAML metadata independently of document delimiters and body content. */
+export function parseFrontmatter(
+  source: string,
+  context?: string,
+  options: { okfVersion?: string } = {},
+): Frontmatter {
   let parsed;
   try {
-    parsed = yamlEngine.parse(split.yamlSource);
+    parsed = yamlEngine.parse(source);
   } catch (err) {
     throw new MalformedDocumentError(context, err);
   }
-  const frontmatter = normalizeFrontmatter(parsed as Record<string, unknown>, options.okfVersion);
-  return { frontmatter, body: split.body };
+  return normalizeFrontmatter(parsed as Record<string, unknown>, options.okfVersion);
+}
+
+/** The metadata bytes shared by document serialization and parsed-object stores. */
+export function stringifyFrontmatter(data: Record<string, unknown>): string {
+  return yaml.safeDump(data).trim();
 }
 
 /** Match the exact body shape emitted by the document serializer. */
@@ -113,7 +126,11 @@ export function normalizeDocumentBodyForStorage(body: string): string {
 
 /** Serialize an arbitrary YAML-mapping + body to OKF markdown (used for reserved files). */
 export function stringifyWithData(data: Record<string, unknown>, body: string): string {
-  const dumped = yaml.safeDump(data).trim();
+  return stringifyWithSerializedFrontmatter(stringifyFrontmatter(data), body);
+}
+
+/** Frame already-serialized metadata, so a snapshot and its version use the same bytes. */
+export function stringifyWithSerializedFrontmatter(dumped: string, body: string): string {
   const content = body ?? "";
   const newline = (value: string): string => (value.endsWith("\n") ? value : `${value}\n`);
   if (dumped === "{}") return normalizeDocumentBodyForStorage(content);
