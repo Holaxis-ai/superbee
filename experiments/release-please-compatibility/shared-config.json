@@ -1,0 +1,22 @@
+{
+  "packages": {
+    "packages/core": {
+      "release-type": "node",
+      "component": "libraries",
+      "tag-separator": "/",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "skip-github-release": true,
+      "versioning": "prerelease",
+      "prerelease": true,
+      "prerelease-type": "pre",
+      "extra-files": [
+        { "type": "json", "path": "/packages/server/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "/packages/server/package.json", "jsonpath": "$.dependencies['@superbee/core']" },
+        { "type": "json", "path": "/package-lock.json", "jsonpath": "$.packages['packages/core'].version" },
+        { "type": "json", "path": "/package-lock.json", "jsonpath": "$.packages['packages/server'].version" },
+        { "type": "json", "path": "/package-lock.json", "jsonpath": "$.packages['packages/server'].dependencies['@superbee/core']" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "superbee-release-please-compatibility-proof",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test proof.test.mjs" },
+  "dependencies": { "release-please": "17.11.2" }
+}
