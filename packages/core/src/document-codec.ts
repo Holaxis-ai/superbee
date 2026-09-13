@@ -11,6 +11,7 @@ export {
   MalformedDocumentError,
 } from "./frontmatter.js";
 export { resolveContentType } from "./content-type.js";
+export { captureRemoteFrontmatter, RemoteDocumentValueError } from "./remote-document-codec.js";
 export type { Frontmatter, OkfDocument, Version } from "./types.js";
 
 import type { Version } from "./types.js";

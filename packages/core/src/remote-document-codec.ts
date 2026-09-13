@@ -1,6 +1,6 @@
 import { InvalidInputError } from "./errors.js";
 
-/** A local refusal: no document write was sent and no authority outcome was recorded. */
+/** Metadata cannot be represented by the JSON document transport without loss. */
 export class RemoteDocumentValueError extends InvalidInputError {
   readonly path: string;
   constructor(path: string, reason: string) {
@@ -13,7 +13,7 @@ export class RemoteDocumentValueError extends InvalidInputError {
 type JsonValue = null | string | boolean | number | JsonValue[] | { [key: string]: JsonValue };
 
 /** Capture the wire value once, without invoking accessors or custom serialization hooks. */
-export function encodeRemoteDocument(frontmatter: unknown, body: string): string {
+export function captureRemoteFrontmatter(frontmatter: unknown): JsonValue {
   const ancestors = new Set<object>();
   const refuse = (path: string, reason: string): never => { throw new RemoteDocumentValueError(path, reason); };
   const visit = (value: unknown, path: string, depth: number): JsonValue => {
@@ -83,6 +83,11 @@ export function encodeRemoteDocument(frontmatter: unknown, body: string): string
       ancestors.delete(value);
     }
   };
-  const payload = Object.assign(Object.create(null), { frontmatter: visit(frontmatter, "frontmatter", 0), body });
+  return visit(frontmatter, "frontmatter", 0);
+}
+
+/** Encode only the captured value, never the caller's live metadata a second time. */
+export function encodeRemoteDocument(frontmatter: unknown, body: string): string {
+  const payload = Object.assign(Object.create(null), { frontmatter: captureRemoteFrontmatter(frontmatter), body });
   return JSON.stringify(payload);
 }

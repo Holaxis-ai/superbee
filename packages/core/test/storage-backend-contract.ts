@@ -57,32 +57,6 @@ const TIMESTAMP = "2026-07-01T00:00:00.000Z";
 const enc = (value: string) => new TextEncoder().encode(value);
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
-/** Values whose document metadata cannot cross the JSON write boundary unchanged. */
-export const REMOTE_LOSSY_METADATA: Array<{ name: string; make(): unknown }> = [
-  { name: "undefined", make: () => undefined },
-  { name: "function", make: () => () => 1 },
-  { name: "symbol", make: () => Symbol("value") },
-  { name: "bigint", make: () => 1n },
-  { name: "nan", make: () => NaN },
-  { name: "infinity", make: () => Infinity },
-  { name: "negative infinity", make: () => -Infinity },
-  { name: "negative zero", make: () => -0 },
-  { name: "map", make: () => new Map([["key", 1]]) },
-  { name: "set", make: () => new Set([1]) },
-  { name: "regexp", make: () => /x/ },
-  { name: "binary", make: () => Buffer.from([1]) },
-  { name: "typed array", make: () => new Uint8Array([1]) },
-  { name: "boxed", make: () => new Number(1) },
-  { name: "class", make: () => new (class { value = 1; })() },
-  { name: "invalid date", make: () => new Date(NaN) },
-  { name: "date prototype impostor", make: () => Object.create(Date.prototype) },
-  { name: "date properties", make: () => Object.assign(new Date(0), { extra: 1 }) },
-  { name: "cycle", make: () => { const value: unknown[] = []; value.push(value); return value; } },
-  { name: "array hole", make: () => new Array(1) },
-  { name: "array properties", make: () => Object.assign([1], { extra: 2 }) },
-  { name: "symbol key", make: () => ({ [Symbol("field")]: 1 }) },
-];
-
 // One table owns storage-key grammar across adapters, including runtime (untyped) callers.
 export const INVALID_STORAGE_PATHS = [
   "/absolute", "../outside", "a/../b", "./a", "a/./b", "a//b", "a\\b", "a/",

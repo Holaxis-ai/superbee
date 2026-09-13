@@ -42,6 +42,7 @@ import {
 } from "@superbee/core/storage";
 import { queryHeads, writeDocVersioned } from "@superbee/core/engine";
 import { isRequestIdentity } from "@superbee/core/storage";
+import { captureRemoteFrontmatter, RemoteDocumentValueError } from "@superbee/core/document-codec";
 
 import type {
   OperationOutcomeStore,
@@ -234,6 +235,9 @@ function errorFromCaught(err: unknown): Response {
   }
   if (isEnoent(err)) {
     return errorResponse(404, "NOT_FOUND", "document or blob not found");
+  }
+  if (err instanceof RemoteDocumentValueError) {
+    return errorResponse(500, "RUNTIME", err.message);
   }
   if (err instanceof InvalidInputError) {
     return errorResponse(400, "USAGE", err.message);
@@ -776,7 +780,7 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     assertValidDocId(id);
     try {
       const { doc, version } = await backend.read(id);
-      return jsonResponse(200, { id: doc.id, frontmatter: doc.frontmatter, body: doc.body }, versionHeaders(version));
+      return jsonResponse(200, { id: doc.id, frontmatter: captureRemoteFrontmatter(doc.frontmatter), body: doc.body }, versionHeaders(version));
     } catch (err) {
       if (isEnoent(err)) return errorResponse(404, "NOT_FOUND", `no concept document '${id}'`);
       throw err;
@@ -967,7 +971,7 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     }
     const results = await backend.readMany(ids);
     return jsonResponse(200, {
-      results: results.map((r) => ({ id: r.doc.id, frontmatter: r.doc.frontmatter, body: r.doc.body, version: r.version })),
+      results: results.map((r) => ({ id: r.doc.id, frontmatter: captureRemoteFrontmatter(r.doc.frontmatter), body: r.doc.body, version: r.version })),
     });
   }
 
@@ -1005,17 +1009,17 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     const limited = page.slice(0, limit);
     const nextCursor = page.length > limit ? (limited[limited.length - 1]?.id ?? null) : null;
 
-    const docs = limited.map(({ id, frontmatter, version }) =>
-      fields === "frontmatter"
-        ? { id, version, frontmatter }
-        : {
-            id,
-            version,
-            type: frontmatter.type,
-            title: frontmatter.title,
-            timestamp: frontmatter.timestamp,
-          },
-    );
+    const docs = limited.map(({ id, frontmatter, version }) => {
+      if (fields === "frontmatter") return { id, version, frontmatter: captureRemoteFrontmatter(frontmatter) };
+      // Only emitted fields need wire compatibility. Copy descriptors so projecting a field
+      // cannot invoke its getter before the shared capture checks it; absent fields stay absent.
+      const projected = Object.create(null);
+      for (const key of ["type", "title", "timestamp"]) {
+        const descriptor = Object.getOwnPropertyDescriptor(frontmatter, key);
+        if (descriptor) Object.defineProperty(projected, key, { ...descriptor, enumerable: true });
+      }
+      return { id, version, ...captureRemoteFrontmatter(projected) as object };
+    });
     return jsonResponse(200, { count, docs, next_cursor: nextCursor });
   }
 
@@ -1121,7 +1125,7 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
         if (result.version !== head.version) {
           throw new Error(`document '${head.id}' changed from version ${head.version} to ${result.version} while the snapshot streamed`);
         }
-        const line = { kind: "doc", id: head.id, version: head.version, frontmatter: result.doc.frontmatter, body: result.doc.body };
+        const line = { kind: "doc", id: head.id, version: head.version, frontmatter: captureRemoteFrontmatter(result.doc.frontmatter), body: result.doc.body };
         chunk += `${JSON.stringify(line)}\n`;
       });
       yield chunk;

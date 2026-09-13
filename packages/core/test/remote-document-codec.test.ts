@@ -4,7 +4,7 @@ import { RemoteBackend } from "../src/remote-backend.js";
 import { encodeRemoteDocument, RemoteDocumentValueError } from "../src/remote-document-codec.js";
 import { createRemoteOperationTransport, openRemoteOperationTransport } from "../src/remote-operations.js";
 import { performUncertainWrite } from "../src/uncertain-write.js";
-import { REMOTE_LOSSY_METADATA } from "./storage-backend-contract.js";
+import { REMOTE_LOSSY_METADATA } from "./remote-metadata-fixtures.js";
 
 const version = `sha256:${"a".repeat(64)}`;
 
