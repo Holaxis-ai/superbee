@@ -184,6 +184,18 @@ shape.
 
 ## Build and package
 
+Run `npm run check:package-versions` before installing or building after a runtime-library
+version edit. This dependency-free source check validates the synchronized core/server pair,
+their exact dependency, and core/server/markdown-renderer workspace lock metadata and links.
+It also checks their existing publish access and registry policy without publishing anything.
+Manifests own versions and dependency declarations; the lockfile is their checked projection.
+The renderer's core peer policy permits `||` alternatives of exact versions and stable
+`^major.minor.patch` ranges; prereleases require an exact alternative. Other range syntax or
+build metadata fails closed and needs a reviewed policy extension, not a guessed interpretation.
+The existing CI install jobs run this check before `npm ci`; no new build lane is introduced.
+Its timing covers JSON validation only, not registry availability or artifact compatibility.
+Existing packed consumer proofs and release controls remain required and separate.
+
 For in-process recipe parsing and record checks, see the
 [core recipe validation API](packages/core/RECIPES.md).
 
