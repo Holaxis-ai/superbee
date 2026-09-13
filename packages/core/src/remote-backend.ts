@@ -43,6 +43,7 @@
 
 import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
 import { InvalidInputError } from "./errors.js";
+import { encodeRemoteDocument } from "./remote-document-codec.js";
 import { headsDigest, isHeadsDigest, type DocumentHead } from "./heads-digest.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys } from "./paths.js";
 import { isRequestIdentity, type Outcome } from "./uncertain-write.js";
@@ -594,7 +595,7 @@ export class RemoteBackend implements StorageBackend {
     const res = await this.send(`/docs/${encodeId(id)}`, {
       method: "PUT",
       headers,
-      body: JSON.stringify({ frontmatter: doc.frontmatter, body: doc.body ?? "" }),
+      body: encodeRemoteDocument(doc.frontmatter, doc.body ?? ""),
     });
     if (!res.ok) throw await this.toError(res, id);
     const payload = (await res.json()) as { version: Version };
