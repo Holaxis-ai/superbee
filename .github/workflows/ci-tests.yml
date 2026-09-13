@@ -48,6 +48,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - name: Confirm the runner filesystem does not alias case
         run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
@@ -68,6 +70,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - name: Confirm the runner filesystem aliases case
         run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
@@ -86,6 +90,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - run: npm run ci:distribution
 
@@ -106,6 +112,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - name: Verify baked Playwright browser artifacts
         shell: bash
@@ -156,6 +164,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - run: npm run ci:scripts
 
@@ -171,6 +181,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - run: npm run build
       - uses: actions/setup-node@v4

@@ -1,6 +1,7 @@
 {
   "schema": "superbee.ci-lanes.v1",
   "path_skipping": false,
+  "source_preflight": "npm run check:package-versions",
   "runtime_nodes": [
     22,
     26
