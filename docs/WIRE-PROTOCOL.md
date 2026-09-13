@@ -122,6 +122,24 @@ canonical document, but external formatting, YAML key order, quoting, or whitesp
 a remote round trip even when document meaning does. The version header identifies server state; it
 must not be inferred by hashing the client's reconstructed export.
 
+`RemoteBackend.write()` captures document metadata through one client-side JSON encoder before
+sending the PUT. Plain records (including null-prototype records), dense arrays, null, strings,
+booleans, and finite numbers other than negative zero are supported. Valid ordinary Dates retain
+the existing ISO-string conversion. Shared references are expanded as JSON values; object identity
+and YAML aliases are not transported. Local YAML storage is not restricted by this client policy.
+
+Values that would be dropped or changed silently are refused with an `InvalidInputError` subtype
+and a field path: undefined, functions, symbols, BigInt, nonfinite numbers, negative zero, cycles,
+sparse arrays or extra enumerable array properties, enumerable symbol keys, custom instances,
+binary values, invalid or extended Dates, accessors, and custom serialization hooks. The encoder
+does not invoke user getters or `toJSON` hooks. Ordinary noncallable `toJSON` fields are data.
+Nesting beyond 512 containers is explicitly refused. No document PUT is sent on refusal.
+
+The identified-operation transport maps this local refusal to `refused` / `USAGE`, not an unknown
+delivery requiring retries. Capability discovery may already have issued a GET; the local refusal
+does not imply an outcome was recorded by the server. This guard does not fix inbound JSON loss
+from YAML-only server values, first-write Date version differences, or server write-key ordering.
+
 Blobs are the raw-byte channel. Blob `PUT` and `GET` carry exact bytes as the HTTP body, with content
 type in `Content-Type` and identity in the version headers. Blob keys ending in `.md` are rejected so
 the blob channel cannot become an accidental bypass around document parsing and ID safety.
