@@ -135,6 +135,7 @@ export async function buildCliBundle(outfile, options) {
       // List browser-safe core subpaths before the package root so esbuild does not append the
       // subpath to `index.ts` (which would resolve as the impossible `index.ts/page`).
       "@superbee/core/engine": r("../core/src/engine.ts"),
+      "@superbee/core/document-codec": r("../core/src/document-codec.ts"),
       "@superbee/core/recipes": r("../core/src/recipes.ts"),
       "@superbee/core/storage": r("../core/src/storage.ts"),
       "@superbee/core/view-admission": r("../core/src/view-admission.ts"),

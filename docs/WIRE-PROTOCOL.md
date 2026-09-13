@@ -137,8 +137,17 @@ Nesting beyond 512 containers is explicitly refused. No document PUT is sent on 
 
 The identified-operation transport maps this local refusal to `refused` / `USAGE`, not an unknown
 delivery requiring retries. Capability discovery may already have issued a GET; the local refusal
-does not imply an outcome was recorded by the server. This guard does not fix inbound JSON loss
-from YAML-only server values, first-write Date version differences, or server write-key ordering.
+does not imply an outcome was recorded by the server.
+
+The server uses the same captured metadata rule for document GET, batch reads, full list
+projections, and snapshot document frames. Incompatible stored metadata fails an ordinary
+response with `500 RUNTIME` and a field path, not a client-input error or changed data. Compact
+lists check only their emitted metadata fields; an incompatible hidden extension does not
+prevent listing. Absent optional fields stay absent. A snapshot encountering incompatible
+metadata errors its stream without an end frame, including after earlier valid batches. Clients
+must reject completion; browser bootstrap retains its incomplete marker and does not reconcile
+deletions from that failed snapshot. Local YAML reads and writes remain unrestricted.
+This does not fix first-write Date version differences or server write-key ordering.
 
 Blobs are the raw-byte channel. Blob `PUT` and `GET` carry exact bytes as the HTTP body, with content
 type in `Content-Type` and identity in the version headers. Blob keys ending in `.md` are rejected so

@@ -74,9 +74,14 @@ test("imported usage counts preserve actual storage values on body edits across 
     for (const [index, usage_count] of [-1, 0.5, "2", NaN, Infinity].entries()) {
       const id = `imported/count-${index}`;
       await writeDocVersioned(storage, { id, frontmatter: { type: "Note", sources: [{ resource: "scope", usage_count }] }, body: "old\n" });
+      if (bundle.backend instanceof RemoteBackend && typeof usage_count === "number" && !Number.isFinite(usage_count)) {
+        const before = await readDocVersioned(storage, id);
+        await assert.rejects(readDocVersioned(bundle, id), { code: "RUNTIME", status: 500 });
+        assert.deepEqual(await readDocVersioned(storage, id), before);
+        continue;
+      }
       const imported = await readDocVersioned(bundle, id);
-      const expected = (bundle.backend instanceof RemoteBackend) && typeof usage_count === "number" && !Number.isFinite(usage_count) ? null : usage_count;
-      assert.equal((imported.doc.frontmatter.sources as Array<Record<string, unknown>>)[0]!.usage_count, expected);
+      assert.equal((imported.doc.frontmatter.sources as Array<Record<string, unknown>>)[0]!.usage_count, usage_count);
       const edited = await mutateDocument({ bundle, id, mode: "patch", registry, strict: false, seedGenerationClock: false, buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: "new\n" }) });
       const after = await readDocVersioned(bundle, id);
       assert.equal(edited.changed, true);
