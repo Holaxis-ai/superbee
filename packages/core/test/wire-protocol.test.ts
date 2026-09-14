@@ -967,7 +967,7 @@ test("wire: MemoryOperationOutcomeStore releases the claim and settles waiters w
   const again = await store.claim("bundle", "clock-1");
   assert.equal(again.kind, "claimed");
   if (again.kind !== "claimed") return;
-  assert.equal(again.record(operation).recordedAt, 1_000);
+  assert.equal((await again.record(operation)).recordedAt, 1_000);
   assert.equal((await store.lookup("bundle", "clock-1"))?.outcome.kind, "committed");
 });
 

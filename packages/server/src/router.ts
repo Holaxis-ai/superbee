@@ -892,7 +892,7 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
         response = await apply();
       } catch (err) {
         if (!(err instanceof VersionConflict || err instanceof InvalidInputError || isEnoent(err))) {
-          claim.release();
+          await claim.release();
           throw err;
         }
         response = errorFromCaught(err);
@@ -903,10 +903,10 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
         recorded = await recordableResponse(response);
         outcome = outcomeOf(recorded);
       } catch (err) {
-        claim.release();
+        await claim.release();
         throw err;
       }
-      claim.record({ method, id, response: recorded, outcome });
+      await claim.record({ method, id, response: recorded, outcome });
       return replayResponse(recorded);
     }
   }
