@@ -10,7 +10,16 @@ export function normalizeDocument(bytes) {
     (_, prefix, quote, value) => { assert.equal(new Date(value).toISOString(), value); return `${prefix}${quote}<generated-at>${quote}`; });
   return `---\n${header}\n---\n${split[2]}`;
 }
-export function canonicalCommand(command, root, versions) {
+function persistedGeneratedAt(bytes) {
+  assert.equal(typeof bytes, 'string', 'normalization requires the corresponding persisted document');
+  const header = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(bytes)?.[1];
+  assert.ok(header, 'persisted document must have a frontmatter boundary');
+  const match = /(?:^|\n)generated:\n  by: ['"]?process:parity['"]?\n  at: (['"]?)(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z)\1(?=\n|$)/.exec(header);
+  assert.ok(match, 'persisted document must carry fixture-generated metadata');
+  assert.equal(new Date(match[2]).toISOString(), match[2]);
+  return match[2];
+}
+export function canonicalCommand(command, root, versions, snapshots = {}) {
   const { label, result } = command;
   assert.equal(result.failure, null, `${label}: ${result.failure}`); assert.equal(result.signal, null, label);
   const replaceRoots = (text) => text.replaceAll(root, '<fixture>');
@@ -25,16 +34,21 @@ export function canonicalCommand(command, root, versions) {
     for (const key of ['root', 'path']) if (typeof value[key] === 'string') value[key] = replaceRoots(value[key]);
     if (Array.isArray(value.help)) value.help = value.help.map(replaceRoots);
     if (['write-a','write-b','update-a','read-a','read-updated','read-linked','link'].includes(label)) {
+      const persistedAlias = versions[value.head_version ?? value.version];
       for (const key of ['version','head_version']) if (Object.hasOwn(value, key)) {
         assert.ok(versions[value[key]], `${label}: unverified token`); value[key] = versions[value[key]];
       }
       if (value.generated?.at !== undefined) {
-        assert.equal(value.generated.by, 'process:parity'); assert.equal(new Date(value.generated.at).toISOString(), value.generated.at);
+        assert.equal(value.generated.by, 'process:parity');
+        assert.equal(value.generated.at, persistedGeneratedAt(snapshots[persistedAlias]), `${label}: projection must match persisted generated.at`);
         value.generated.at = '<generated-at>';
       }
     }
     if (label === 'list') for (const row of value.docs) {
-      if (row.id === 'notes/a') { assert.equal(new Date(row.timestamp).toISOString(), row.timestamp); row.timestamp = '<generated-at>'; }
+      if (row.id === 'notes/a') {
+        assert.equal(row.timestamp, persistedGeneratedAt(snapshots['<a-linked>']), 'list projection must match persisted generated.at');
+        row.timestamp = '<generated-at>';
+      }
     }
     return value;
   }

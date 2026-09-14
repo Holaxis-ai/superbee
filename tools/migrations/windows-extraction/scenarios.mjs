@@ -55,7 +55,7 @@ export async function executeScenario(name, artifact, root, env, raw) {
     const status = json(await command('status', ['status','--dir',bundle,'--json'])); assert.equal(status.docs, 2); assert.equal(status.unresolved_links, 0);
     await command('init-refusal', ['init','--create-only','--recipe','none','--dir',bundle,'--json'], 5);
     raw.files = await snapshot(bundle);
-    semantic = { commands: raw.commands.map((c) => canonicalCommand(c, root, versions)), snapshots: Object.fromEntries(Object.entries(raw.snapshots).map(([k,v])=>[k,normalizeDocument(v)])), files: {} };
+    semantic = { commands: raw.commands.map((c) => canonicalCommand(c, root, versions, raw.snapshots)), snapshots: Object.fromEntries(Object.entries(raw.snapshots).map(([k,v])=>[k,normalizeDocument(v)])), files: {} };
     for (const [file, record] of Object.entries(raw.files)) semantic.files[file] = { ...record, bytes: normalizeDocument(Buffer.from(record.bytes,'base64').toString()) };
   } else if (name === 'integrations') {
     for (const verb of ['skill','hook']) {

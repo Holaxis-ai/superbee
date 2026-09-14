@@ -27,6 +27,23 @@ test('command normalization keeps unknown doc fields, exit status and error cont
   assert.equal(n.stdout.body,'/tmp/root/user'); assert.equal(n.stdout.user_clock,'2024-01-01');
   assert.throws(()=>canonicalCommand(c,'/tmp/root',{}),/unverified token/);
 });
+test('knowledge timestamp projections must match their persisted document before normalization',()=>{
+  const persistedAt='2026-09-14T17:23:02.487Z';
+  const snapshots={'<a-linked>':doc,'<a-updated>':doc};
+  const list={label:'list',result:{code:0,signal:null,failure:null,stdout:JSON.stringify({docs:[{id:'notes/a',timestamp:persistedAt}]}),stderr:''}};
+  const read={label:'read-updated',result:{code:0,signal:null,failure:null,stdout:JSON.stringify({head_version:'sha256:observed',generated:{by:'process:parity',at:persistedAt}}),stderr:''}};
+  const versions={'sha256:observed':'<a-updated>'};
+  assert.equal(canonicalCommand(list,'/fixture',versions,snapshots).stdout.docs[0].timestamp,'<generated-at>');
+  assert.equal(canonicalCommand(read,'/fixture',versions,snapshots).stdout.generated.at,'<generated-at>');
+  for (const command of [list,read]) {
+    const altered=structuredClone(command), output=JSON.parse(altered.result.stdout);
+    if (command.label==='list') output.docs[0].timestamp='2020-01-01T00:00:00.000Z';
+    else output.generated.at='2020-01-01T00:00:00.000Z';
+    altered.result.stdout=JSON.stringify(output);
+    assert.throws(()=>canonicalCommand(altered,'/fixture',versions,snapshots),/persisted generated.at/);
+    assert.throws(()=>canonicalCommand(command,'/fixture',versions,{}),/persisted document/);
+  }
+});
 test('input graph future gate rejects Windows contamination without gating baseline by default',()=>{
   const graph={schema:'superbee.windows-extraction.inputs.v1',source:'a'.repeat(40),artifact_sha256:'b'.repeat(64),inputs:['packages/core/src/index.ts']};
   assert.doesNotThrow(()=>assertNoWindowsInputs(graph));
@@ -52,6 +69,15 @@ test('retained report proves baseline self comparison when explicitly supplied',
   assert.equal(report.pass,true); assert.equal(report.cleanup,'removed');
   assert.deepEqual(report.selected,['knowledge','integrations','private-state','process']);
   assert.equal(report.artifacts.baseline.tarball.sha256,report.artifacts.candidate.tarball.sha256);
+  for (const side of ['baseline','candidate']) {
+    const evidence=report.raw[side].knowledge;
+    const list=structuredClone(evidence.commands.find((command)=>command.label==='list'));
+    assert.doesNotThrow(()=>canonicalCommand(list,'/fixture',{},evidence.snapshots));
+    const output=JSON.parse(list.result.stdout);
+    output.docs.find((row)=>row.id==='notes/a').timestamp='2020-01-01T00:00:00.000Z';
+    list.result.stdout=JSON.stringify(output);
+    assert.throws(()=>canonicalCommand(list,'/fixture',{},evidence.snapshots),/persisted generated.at/);
+  }
   const baseline=report.normalized.baseline;
   const controls=[
     ['wrong exit',(candidate)=>{candidate.knowledge.commands.find((c)=>c.label==='read-a').code=6;}],
