@@ -43,6 +43,12 @@ export {
 } from "./local-bundle.js";
 export { withPushRole, pushRoleName, hostLocks, type PushRoleResult, type PushRoleOptions, type LockManagerLike } from "./push-role.js";
 export {
+  withEditorRecovery, editorRecoveryKey, EditorRecoveryError, EDITOR_RECOVERY_LIMITS,
+  type EditorRecoveryScope, type EditorDraft, type EditorPreparedAttempt,
+  type EditorSettlement, type EditorRecoverySlot, type EditorRecoverySession,
+  type EditorRecoveryOptions, type EditorRecoveryResult,
+} from "./editor-recovery.js";
+export {
   createRequestDrivenRuntime,
   createBrowserLocalRuntime,
   UnconfirmedWorkingCopyError,
