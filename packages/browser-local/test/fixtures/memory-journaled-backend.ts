@@ -15,6 +15,7 @@
 import { stringifyDoc } from "@superbee/core/document-codec";
 import {
   assertJournalGuard,
+  assertJournalIntentChanges,
   assertJournalMetaChanges,
   assertMetaWrite,
   captureJournalGuard,
@@ -192,10 +193,19 @@ export class MemoryJournaledBackend implements JournaledBackend {
     assertJournalResolutionOptions(id, options);
     const snapshotGuard = options.guard === undefined ? undefined : captureJournalGuard(options.guard, id);
     if (snapshotGuard && (doc.id !== id || (options.intent && options.intent.target !== id))) throw new JournalGuardConflict(id);
-    this.#checkGuard(snapshotGuard);
-    if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()], options.intent?.requestId);
     const now = new Date().toISOString();
+    // The producer can synchronously cause another write. Finish it and capture its result
+    // before deciding any storage premise, matching the IndexedDB transaction boundary.
+    const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
+    const version = versionOfBytes(raw);
+    const producedMeta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta ?? [];
+    assertJournalMetaChanges(snapshotGuard, producedMeta, options.removeMeta);
+    const meta = structuredClone(producedMeta);
     const { intent, supersede, requireSettled } = options;
+    const preparedIntent = intent ? structuredClone({ ...intent, local: version, content: raw, sequence: this.#sequence + 1, attempts: 0, state: "pending" as const, updatedAt: now }) : null;
+    this.#checkGuard(snapshotGuard);
+    assertJournalIntentChanges(snapshotGuard, intent ? this.#intents.get(intent.requestId) : undefined, supersede ? this.#intents.get(supersede.requestId) : undefined);
+    if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()], options.intent?.requestId);
     // Every check runs before any mutation, with no await between them: that is this adapter's
     // transaction. A refusal at any check leaves the store exactly as it was.
     if (requireSettled) {
@@ -212,15 +222,6 @@ export class MemoryJournaledBackend implements JournaledBackend {
         throw new IntentStateConflict(supersede.requestId, supersede.expectedState, existing?.state ?? null);
       }
     }
-    // The caller's meta function is the last check that can throw, so it runs on the bytes
-    // that will be written before anything is mutated, as the IndexedDB adapter evaluates it
-    // before opening its transaction.
-    const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
-    const version = versionOfBytes(raw);
-    const producedMeta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta ?? [];
-    assertJournalMetaChanges(snapshotGuard, producedMeta, options.removeMeta);
-    const meta = structuredClone(producedMeta);
-    const preparedIntent = intent ? structuredClone({ ...intent, local: version, content: raw, sequence: this.#sequence + 1, attempts: 0, state: "pending" as const, updatedAt: now }) : null;
     this.#putDocument(id, doc, undefined, options.actor, now);
     if (supersede) this.#intents.delete(supersede.requestId);
     for (const row of options.resolveIntents?.expected ?? []) this.#intents.delete(row.requestId);

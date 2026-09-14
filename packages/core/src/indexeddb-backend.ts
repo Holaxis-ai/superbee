@@ -35,6 +35,7 @@ import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatt
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
 import {
   assertJournalGuard,
+  assertJournalIntentChanges,
   assertJournalMetaChanges,
   assertMetaWrite,
   captureJournalGuard,
@@ -801,7 +802,19 @@ export class IndexedDbBackend implements JournaledBackend {
             writeDocument();
           });
         };
-        this.#checkJournalGuard(tx, snapshotGuard, apply, fail, guard);
+        const checkIdentities = () => {
+          if (!snapshotGuard) { apply(); return; }
+          const checkSuperseded = (existingIdentity: IntentRecord | undefined) => {
+            if (!supersede) { assertJournalIntentChanges(snapshotGuard, existingIdentity, undefined); apply(); return; }
+            request(intents.get(supersede.requestId), "superseded identity read", row => {
+              assertJournalIntentChanges(snapshotGuard, existingIdentity, row as IntentRecord | undefined);
+              apply();
+            });
+          };
+          if (!intent) { checkSuperseded(undefined); return; }
+          request(intents.get(intent.requestId), "new identity read", row => checkSuperseded(row as IntentRecord | undefined));
+        };
+        this.#checkJournalGuard(tx, snapshotGuard, checkIdentities, fail, guard);
       },
     );
   }

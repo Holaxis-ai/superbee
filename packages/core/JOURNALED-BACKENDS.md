@@ -14,6 +14,9 @@ or `{present: true, value}`. A present row whose value is `undefined` differs fr
 must name keys included in the guard, and a key cannot appear in both lists. The adapter compares
 the entire snapshot before changing anything, in the same transaction as the write, journal
 changes, metadata puts, and removals. Removed keys require a guard even when already absent.
+Any superseded intent must belong to the guarded target. A newly recorded request identity must
+be absent from the entire journal, including acknowledged records and other targets; superseding
+does not permit reusing the retired identity. Both checks share the write's transaction.
 
 `updateIntent` accepts the same guard and optional replacement `document`. Replacement requires
 a guard; both the intent and the replacement must target that guard's document. The replacement
@@ -32,8 +35,9 @@ All guarded inputs are captured before asynchronous storage work. Their data dom
 values (including `undefined`), arrays, and acyclic plain records. Accessors, symbols, functions,
 cycles, and other object prototypes such as `Date`, `Map`, or `Set` are refused. This includes
 replacement documents and guarded metadata values. The existing synchronous `writeJournaled`
-metadata producer remains supported; its returned data is captured before storage work. Legacy
-unguarded metadata remains an opaque structured-clone value store.
+metadata producer remains supported; its returned data is captured before storage work.
+The producer completes before any guard decision, so a write it triggers can invalidate the
+captured premise. Legacy unguarded metadata remains an opaque structured-clone value store.
 
 A mismatched or unsupported guard raises `JournalGuardConflict` and writes nothing. Storage
 errors and transaction aborts also leave all participating records unchanged. Capture a fresh

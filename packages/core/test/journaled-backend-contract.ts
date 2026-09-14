@@ -66,6 +66,83 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
       meta: keys.map(key => ({ key, expected: read.meta.has(key) ? { present: true, value: read.meta.get(key) } : { present: false } })) };
   };
 
+  test(`${name} snapshot CAS: superseding cannot retire another target's journal`, async () => {
+    await withFixture(create, async backend => {
+      const id = "guard/owner", other = "guard/other";
+      await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("owner", id, null), meta: [{ key: "base", value: "before" }] });
+      await backend.writeJournaled(other, doc(other, "other"), { intent: newIntent("other", other, null) });
+      const before = await snapshot(backend, id), foreign = await snapshot(backend, other);
+      const sequence = await backend.readMeta("intents:sequence");
+      await assert.rejects(backend.writeJournaled(id, doc(id, "after"), {
+        guard: before, intent: newIntent("fresh", id, null), meta: [{ key: "base", value: "after" }],
+        supersede: { requestId: "other", expectedState: "pending", expectedAttempts: 0 },
+      }), { name: "JournalGuardConflict" });
+      assert.deepEqual(await snapshot(backend, id), before);
+      assert.deepEqual(await snapshot(backend, other), foreign);
+      assert.equal(await backend.readMeta("intents:sequence"), sequence);
+    });
+  });
+
+  for (const target of ["same", "other", "superseded"] as const) {
+    test(`${name} snapshot CAS: new request identity cannot replace ${target} target history`, async () => {
+      await withFixture(create, async backend => {
+        const id = "guard/fresh", other = "guard/retained";
+        await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("local", id, null), meta: [{ key: "base", value: "before" }] });
+        await backend.writeJournaled(other, doc(other, "other"), { intent: newIntent("foreign", other, null) });
+        const reused = target === "other" ? "foreign" : "local";
+        if (target !== "superseded") await backend.updateIntent(reused, "pending", { state: "acknowledged" });
+        const before = await snapshot(backend, id), foreign = await snapshot(backend, other);
+        const sequence = await backend.readMeta("intents:sequence");
+        await assert.rejects(backend.writeJournaled(id, doc(id, "after"), {
+          guard: before, intent: newIntent(reused, id, null), meta: [{ key: "base", value: "after" }],
+          ...(target === "superseded" ? { supersede: { requestId: reused, expectedState: "pending" as const, expectedAttempts: 0 } } : {}),
+        }), { name: "JournalGuardConflict" });
+        assert.deepEqual(await snapshot(backend, id), before);
+        assert.deepEqual(await snapshot(backend, other), foreign);
+        assert.equal(await backend.readMeta("intents:sequence"), sequence);
+      });
+    });
+  }
+
+  test(`${name} snapshot CAS: request identity admission is atomic across targets`, async () => {
+    await withFixture(create, async backend => {
+      const ids = ["guard/race-one", "guard/race-two"];
+      const guards = await Promise.all(ids.map(id => snapshot(backend, id, [id])));
+      const outcomes = await Promise.allSettled(ids.map((id, index) => backend.writeJournaled(id, doc(id, id), {
+        guard: guards[index]!, intent: newIntent("shared-request", id, null), meta: [{ key: id, value: "landed" }],
+      })));
+      assert.equal(outcomes.filter(row => row.status === "fulfilled").length, 1);
+      assert.equal(outcomes.filter(row => row.status === "rejected").length, 1);
+      const winner = (await backend.readIntent("shared-request"))!.target;
+      for (const id of ids) {
+        assert.equal(await backend.exists(id), id === winner);
+        assert.equal(await backend.readMeta(id), id === winner ? "landed" : undefined);
+      }
+    });
+  });
+
+  test(`${name} snapshot CAS: metadata producer finishes before guard evaluation`, async () => {
+    await withFixture(create, async backend => {
+      const id = "guard/producer";
+      await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("original", id, null), meta: [{ key: "base", value: "before" }] });
+      const before = await snapshot(backend, id);
+      let producerWrite: Promise<void> | undefined;
+      await assert.rejects(backend.writeJournaled(id, doc(id, "after"), {
+        guard: before, intent: newIntent("fresh", id, null),
+        meta: () => {
+          producerWrite = backend.writeMeta("base", "independent change");
+          return [{ key: "base", value: "must not land" }];
+        },
+      }), { name: "JournalGuardConflict" });
+      await producerWrite;
+      const after = await snapshot(backend, id);
+      assert.deepEqual(after.document, before.document);
+      assert.deepEqual(after.intents, before.intents);
+      assert.equal(await backend.readMeta("base"), "independent change");
+      assert.equal(await backend.readIntent("fresh"), undefined);
+    });
+  });
+
   for (const action of ["write", "update"] as const) {
     for (const drift of ["journal", "acknowledged", "document", "raw", "meta", "presence", "successor"] as const) {
       test(`${name} snapshot CAS: ${action} refuses ${drift} drift without partial writes`, async () => {

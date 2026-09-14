@@ -191,6 +191,11 @@ export function assertJournalMetaChanges(guard: JournalGuard | undefined, puts: 
       removals.some(key => puts.some(row => row.key === key) || !guard.meta.some(expected => expected.key === key))) throw new JournalGuardConflict(guard?.target ?? "meta");
 }
 
+/** A guarded write owns one target and creates a globally fresh journal identity. */
+export function assertJournalIntentChanges(guard: JournalGuard | undefined, existingIdentity: IntentRecord | undefined, superseded: IntentRecord | undefined): void {
+  if (guard && (existingIdentity !== undefined || (superseded !== undefined && superseded.target !== guard.target))) throw new JournalGuardConflict(guard.target);
+}
+
 /** Capture write options while retaining the existing synchronous metadata producer. */
 export function captureJournalWriteOptions(options: JournaledWriteOptions): JournaledWriteOptions {
   const descriptors = Object.getOwnPropertyDescriptors(options);
