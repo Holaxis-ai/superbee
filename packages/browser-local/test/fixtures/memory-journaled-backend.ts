@@ -19,6 +19,7 @@ import {
   assertJournalMetaChanges,
   assertMetaWrite,
   captureJournalGuardOption,
+  captureJournalDeleteOptions,
   captureJournalWriteOptions,
   captureIntentUpdate,
   captureMetaWrite,
@@ -237,8 +238,10 @@ export class MemoryJournaledBackend implements JournaledBackend {
   }
 
   async deleteJournaled(id: ConceptId, options: JournaledDeleteOptions = {}): Promise<JournaledDeleteResult> {
+    options = captureJournalDeleteOptions(id, options);
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
+    this.#checkGuard(options.guard);
     if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()]);
     // Every check runs before any mutation, with no await between them, as in `writeJournaled`.
     if (options.requireSettled) {

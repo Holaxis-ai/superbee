@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { IntentHoldConflict, IntentStateConflict, JournaledBackend, JournaledReadResult, NewIntentRecord, JournalGuard, IntentPatch } from "../src/journaled-backend.js";
+import type { IntentHoldConflict, IntentStateConflict, JournaledBackend, JournaledReadResult, NewIntentRecord, JournalGuard, IntentPatch, JournaledDeleteOptions } from "../src/journaled-backend.js";
 import type { OkfDocument, Version } from "../src/types.js";
 import type { OperationState } from "../src/uncertain-write.js";
 import type { VersionConflict } from "../src/versioning.js";
@@ -66,7 +66,7 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
       meta: keys.map(key => ({ key, expected: read.meta.has(key) ? { present: true, value: read.meta.get(key) } : { present: false } })) };
   };
 
-  for (const action of ["write", "update"] as const) {
+  for (const action of ["write", "update", "delete"] as const) {
     test(`${name} snapshot CAS: ${action} refuses every defined malformed guard without writes`, async () => {
       await withFixture(create, async backend => {
         const id = "guard/malformed";
@@ -75,6 +75,7 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
         for (const guard of [null, false, 0, "", [], {}, new Date(0)]) {
           await assert.rejects(action === "write"
             ? backend.writeJournaled(id, doc(id, "after"), { guard: guard as JournalGuard, intent: newIntent("must-not-land", id, null), meta: [{ key: "base", value: "after" }] })
+            : action === "delete" ? backend.deleteJournaled(id, { guard: guard as JournalGuard, meta: [{ key: "base", value: "after" }] })
             : backend.updateIntent("malformed", "pending", { state: "acknowledged", attempts: 1 }, { guard: guard as JournalGuard, meta: [{ key: "base", value: "after" }] }), { name: "JournalGuardConflict" });
           assert.deepEqual(await snapshot(backend, id), before);
         }
@@ -86,9 +87,11 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
         const id = "guard/undefined", value = new Date(0);
         await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("undefined", id, null) });
         if (action === "write") await backend.writeJournaled(id, doc(id, "after"), { guard: undefined, meta: [{ key: "base", value }] });
+        else if (action === "delete") await backend.deleteJournaled(id, { guard: undefined, meta: [{ key: "base", value }] });
         else await backend.updateIntent("undefined", "pending", { state: "acknowledged" }, { guard: undefined, meta: [{ key: "base", value }] });
         assert.deepEqual(await backend.readMeta("base"), value);
         if (action === "write") assert.equal((await backend.read(id)).doc.body?.trim(), "after");
+        else if (action === "delete") assert.equal(await backend.exists(id), false);
         else assert.equal((await backend.readIntent("undefined"))!.state, "acknowledged");
       });
     });
@@ -182,7 +185,7 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
     });
   });
 
-  for (const action of ["write", "update"] as const) {
+  for (const action of ["write", "update", "delete"] as const) {
     for (const drift of ["journal", "acknowledged", "document", "raw", "meta", "presence", "successor"] as const) {
       test(`${name} snapshot CAS: ${action} refuses ${drift} drift without partial writes`, async () => {
         await withFixture(create, async backend => {
@@ -201,12 +204,85 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
           const before = await snapshot(backend, id, ["base", "missing", "result"]);
           await assert.rejects(action === "write"
             ? backend.writeJournaled(id, doc(id, "replacement"), { guard: expected, intent: newIntent("must-not-land", id, null), meta: [{ key: "result", value: true }] })
+            : action === "delete" ? backend.deleteJournaled(id, { guard: expected, meta: [{ key: "result", value: true }] })
             : backend.updateIntent("guard-original", drift === "acknowledged" ? "acknowledged" : "pending", { state: "acknowledged" }, { guard: expected, document: doc(id, "replacement"), meta: [{ key: "result", value: true }] }), { name: "JournalGuardConflict" });
           assert.deepEqual(await snapshot(backend, id, ["base", "missing", "result"]), before);
         });
       });
     }
   }
+
+  for (const branch of ["deleted", "absent", "held", "resolved"] as const) {
+    test(`${name} snapshot CAS: ${branch} deletion captures every branch and refuses stale metadata`, async () => {
+      await withFixture(create, async backend => {
+        const id = "guard/delete";
+        await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("deletion", id, null), meta: [{ key: "base", value: "before" }, { key: "missing", value: undefined }, { key: "mode", value: "original" }] });
+        await backend.updateIntent("deletion", "pending", { state: branch === "resolved" ? "conflict" : branch === "held" ? "pending" : "acknowledged" });
+        if (branch === "absent") await backend.delete(id);
+        const before = await snapshot(backend, id, ["base", "missing", "mode"]);
+        const options: JournaledDeleteOptions = {
+          guard: before, expectedVersion: before.document?.version ?? null,
+          meta: [{ key: "base", value: { result: "normal" } }], removeMeta: ["missing"],
+          ...(branch === "held" ? { requireSettled: true, onHeld: { meta: [{ key: "base", value: { result: "held" } }] } } : {}),
+          ...(branch === "resolved" ? { resolveIntents: { expected: before.intents } } : {}),
+        };
+        await backend.writeMeta("mode", "changed");
+        const changed = await snapshot(backend, id, ["base", "missing", "mode"]);
+        await assert.rejects(backend.deleteJournaled(id, options), { name: "JournalGuardConflict" });
+        assert.deepEqual(await snapshot(backend, id, ["base", "missing", "mode"]), changed);
+        options.guard = changed;
+        const pending = backend.deleteJournaled(id, options);
+        (options.meta![0]!.value as { result: string }).result = "mutated";
+        if (options.onHeld) (options.onHeld.meta[0]!.value as { result: string }).result = "mutated";
+        (options.removeMeta as string[]).push("base");
+        options.guard.intents[0]!.attempts = 99;
+        if (options.resolveIntents) options.resolveIntents.expected.length = 0;
+        const result = await pending;
+        assert.equal(result.outcome, branch === "resolved" ? "deleted" : branch);
+        assert.equal(await backend.exists(id), branch === "held");
+        assert.deepEqual(await backend.readMeta("base"), { result: branch === "held" ? "held" : "normal" });
+        assert.equal((await backend.readWithJournal(id, { meta: ["missing"] })).meta.has("missing"), branch === "held");
+        assert.equal((await backend.listIntents()).length, branch === "resolved" ? 0 : 1);
+      });
+    });
+  }
+
+  test(`${name} snapshot CAS: deletion validates normal and held metadata before choosing a branch`, async () => {
+    await withFixture(create, async backend => {
+      const id = "guard/delete-meta";
+      await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("delete-meta", id, null), meta: [{ key: "base", value: "before" }] });
+      const before = await snapshot(backend, id);
+      const cases: JournaledDeleteOptions[] = [
+        { meta: [{ key: "unobserved", value: true }] },
+        { removeMeta: ["unobserved"] },
+        { meta: [{ key: "base", value: true }], removeMeta: ["base"] },
+        { onHeld: { meta: [{ key: "unobserved", value: true }] } },
+        { onHeld: { meta: [{ key: "base", value: () => true }] } },
+        { meta: [{ key: "base", value: () => true }] },
+      ];
+      for (const requireSettled of [false, true]) for (const entry of cases) {
+        await assert.rejects(backend.deleteJournaled(id, { guard: before, requireSettled, ...entry }), { name: "JournalGuardConflict" });
+        assert.deepEqual(await snapshot(backend, id), before);
+      }
+      await backend.deleteJournaled(id, { guard: before, requireSettled: true, removeMeta: ["base"], onHeld: { meta: [{ key: "base", value: "held" }] } });
+      assert.equal(await backend.readMeta("base"), "held");
+      assert.equal(await backend.exists(id), true);
+    });
+  });
+
+  test(`${name} snapshot CAS: deletion cannot retire foreign target history`, async () => {
+    await withFixture(create, async backend => {
+      const id = "guard/delete-owner", other = "guard/delete-foreign";
+      await backend.writeJournaled(id, doc(id, "local"), { intent: newIntent("delete-owner", id, null) });
+      await backend.writeJournaled(other, doc(other, "foreign"), { intent: newIntent("delete-foreign", other, null) });
+      await backend.updateIntent("delete-foreign", "pending", { state: "conflict" });
+      const before = await snapshot(backend, id), foreign = await snapshot(backend, other);
+      await assert.rejects(backend.deleteJournaled(id, { guard: before, expectedVersion: before.document!.version, resolveIntents: { expected: foreign.intents }, meta: [{ key: "base", value: "bad" }] }), { name: "JournalSnapshotConflict" });
+      await assert.rejects(backend.deleteJournaled(other, { guard: before }), { name: "JournalGuardConflict" });
+      assert.deepEqual(await snapshot(backend, id), before);
+      assert.deepEqual(await snapshot(backend, other), foreign);
+    });
+  });
 
   test(`${name} snapshot CAS: replacement and metadata settle together with original history intact`, async () => {
     await withFixture(create, async backend => {

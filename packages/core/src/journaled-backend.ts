@@ -228,6 +228,20 @@ export function captureJournalWriteOptions(options: JournaledWriteOptions): Jour
   return captured;
 }
 
+/** Capture every guarded deletion branch before evaluating held or absent state. */
+export function captureJournalDeleteOptions(target: ConceptId, options: JournaledDeleteOptions): JournaledDeleteOptions {
+  const guard = captureJournalGuardOption(options, target);
+  if (guard === undefined) return options;
+  const captured = captureJournalValue(options);
+  captured.guard = guard;
+  assertJournalMetaChanges(guard, captured.meta ?? [], captured.removeMeta);
+  if (captured.onHeld !== undefined) {
+    if (!captured.onHeld || !Array.isArray(captured.onHeld.meta)) throw new JournalGuardConflict(target);
+    assertJournalMetaChanges(guard, captured.onHeld.meta, undefined);
+  }
+  return captured;
+}
+
 /**
  * An intent's journal state was not the one the caller expected, or the intent is gone. Settling
  * and superseding are compare-and-swap operations on the intent's own record so two realms (a
@@ -364,6 +378,8 @@ export interface JournaledWriteOptions extends WriteOptions {
 
 /** Options for {@link JournaledBackend.deleteJournaled}. */
 export interface JournaledDeleteOptions extends DeleteOptions {
+  /** Compare the full target and named metadata before any deleted, absent, or held outcome. */
+  guard?: JournalGuard;
   /** As write recovery; requires document CAS even when the target is absent. */
   resolveIntents?: { expected: IntentRecord[] };
   /** Meta rows to put in the same transaction; they apply only when the deletion applies or the target is absent. */

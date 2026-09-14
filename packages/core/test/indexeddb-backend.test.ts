@@ -499,6 +499,32 @@ function newIntent(requestId: string, target: string, base: string | null): NewI
   return { requestId, kind: "document.write", target, base, baseContent: null, createdAt: "2026-09-10T00:00:00.000Z" };
 }
 
+for (const branch of ["deleted", "absent", "held", "resolved"] as const) {
+  test(`guarded ${branch} deletion rolls back document, history and metadata on abort and reopen`, async () => {
+    const inner = new IDBFactory(), armed = { value: false };
+    const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: abortAfterPutFactory(inner, armed) });
+    try {
+      const id = "guard/delete-abort";
+      await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("delete-abort", id, null), meta: [{ key: "base", value: "before" }] });
+      await backend.updateIntent("delete-abort", "pending", { state: branch === "resolved" ? "conflict" : branch === "held" ? "pending" : "acknowledged" });
+      if (branch === "absent") await backend.delete(id);
+      const before = await backend.readWithJournal(id, { meta: ["base", "receipt"] });
+      const guard: JournalGuard = { target: id, document: before.document ? { version: before.document.version, raw: before.raw! } : null, intents: before.intents,
+        meta: [{ key: "base", expected: { present: true, value: "before" } }, { key: "receipt", expected: { present: false } }] };
+      armed.value = true;
+      await assert.rejects(backend.deleteJournaled(id, {
+        guard, expectedVersion: before.document?.version ?? null, removeMeta: ["base"], meta: [{ key: "receipt", value: "after" }],
+        ...(branch === "held" ? { requireSettled: true, onHeld: { meta: [{ key: "receipt", value: "held" }] } } : {}),
+        ...(branch === "resolved" ? { resolveIntents: { expected: before.intents } } : {}),
+      }));
+      armed.value = false;
+      assert.deepEqual(await backend.readWithJournal(id, { meta: ["base", "receipt"] }), before);
+      backend.close();
+      assert.deepEqual(await backend.readWithJournal(id, { meta: ["base", "receipt"] }), before);
+    } finally { backend.close(); }
+  });
+}
+
 for (const action of ["write", "update", "meta"] as const) {
   test(`guarded ${action} rolls back all records on an IndexedDB transaction abort`, async () => {
     const inner = new IDBFactory();

@@ -20,6 +20,14 @@ Any superseded intent must belong to the guarded target. A newly recorded reques
 be absent from the entire journal, including acknowledged records and other targets; superseding
 does not permit reusing the retired identity. Both checks share the write's transaction.
 
+`deleteJournaled` accepts the same guard and compares it before every branch, including absent
+documents and held intents. Normal metadata puts/removals and `onHeld` puts must all name observed
+keys, even if their branch is not chosen. Overlapping puts/removals within a branch are refused;
+normal removal and an `onHeld` put of the same key are mutually exclusive and remain valid.
+Guarded deletion captures all options before storage work. Document deletion, permitted conflict
+retirement, and metadata changes commit together; retirement cannot affect another target's
+history. The existing `deleted`, `absent`, and `held` results and unguarded behavior remain.
+
 `updateIntent` accepts the same guard and optional replacement `document`. Replacement requires
 a guard; both the intent and the replacement must target that guard's document. The replacement
 uses the existing document serialization and local byte-version calculation, without stamping

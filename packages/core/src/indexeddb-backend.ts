@@ -39,6 +39,7 @@ import {
   assertJournalMetaChanges,
   assertMetaWrite,
   captureJournalGuardOption,
+  captureJournalDeleteOptions,
   captureJournalWriteOptions,
   captureIntentUpdate,
   captureMetaWrite,
@@ -829,6 +830,7 @@ export class IndexedDbBackend implements JournaledBackend {
    * with `false` even under a compare-and-swap.
    */
   async deleteJournaled(id: ConceptId, options: JournaledDeleteOptions = {}): Promise<JournaledDeleteResult> {
+    options = captureJournalDeleteOptions(id, options);
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
     const expected = options.expectedVersion;
@@ -836,6 +838,7 @@ export class IndexedDbBackend implements JournaledBackend {
     const puts = options.meta ?? [];
     const removals = options.removeMeta ?? [];
     return this.#transact<JournaledDeleteResult>([DOCUMENTS, INTENTS, META], "readwrite", (tx, done, fail, guard) => {
+      this.#checkJournalGuard(tx, options.guard, () => {
       const documents = tx.objectStore(DOCUMENTS);
       const intents = tx.objectStore(INTENTS);
       const metaStore = tx.objectStore(META);
@@ -908,6 +911,7 @@ export class IndexedDbBackend implements JournaledBackend {
         }
         deleteDocument();
       });
+      }, fail, guard);
     });
   }
 
