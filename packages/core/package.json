@@ -15,6 +15,10 @@
     "./dist/bundle.js"
   ],
   "exports": {
+    "./governed-body-write": {
+      "types": "./dist/governed-body-write.d.ts",
+      "default": "./dist/governed-body-write.js"
+    },
     "./view-admission": {
       "types": "./dist/view-admission.d.ts",
       "default": "./dist/view-admission.js"
