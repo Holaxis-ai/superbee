@@ -49,11 +49,7 @@ need WSL or Docker.
 npm install -g superbee
 ```
 
-Stable releases publish on npm's `latest` tag and prereleases on `next`. To try the prerelease:
-
-```sh
-npm install -g superbee@next
-```
+Stable releases publish on npm's `latest` tag and prereleases on `next`.
 
 On Windows, Superbee keeps its private per-user state, such as the workspace catalog and remote
 credentials, under `%LOCALAPPDATA%\Superbee`. npm installs `superbee.cmd` alongside the `superbee`

@@ -9,26 +9,25 @@ what they know invisible to the humans they work for. Superbee gives them
 shared, versioned, conflict-safe memory in plain text — offline-first, standards-based,
 owned by you.
 
-**Status: early and experimental.** A public npm prerelease is available for testing; formats and
-commands will change without ceremony, and some of the project's biggest ideas are still bets
-under test. The honest breakdown is below — read it before depending on anything.
+**Status: early and experimental.** A public npm stable release is available; formats and commands
+will change without ceremony, and some of the project's biggest ideas are still bets under test.
+The honest breakdown is below — read it before depending on anything.
 
 ## Install
 
 **Requirements: macOS, Linux, or native Windows, and Node.js 20 or newer.** Windows does not need
 WSL, Ubuntu, or Docker.
 
-The current test release is on npm's `next` prerelease channel; `latest` provides the stable
-release, also with native Windows support. Install the prerelease with:
+The stable release is on npm's `latest` channel and has native Windows support. Install it with:
 
 ```sh
-npm install -g superbee@next
+npm install -g superbee
 superbee setup
 ```
 
 On Windows, npm exposes the same command through `superbee.cmd`, which can be invoked explicitly
-when PowerShell blocks its `.ps1` wrapper. On macOS or Linux, `npm install -g superbee` remains the
-stable-channel install. The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
+when PowerShell blocks its `.ps1` wrapper. Prereleases publish on npm's `next` channel. The package's
+optional Agent Skill teaches Claude Code, Codex, and OpenCode
 how to use the installed command without carrying another copy of the executable. OpenCode uses
 its documented Claude-compatible Skill discovery, so it shares Claude Code's Skill bytes unless a
 custom Claude config root requires separate documented host paths.
