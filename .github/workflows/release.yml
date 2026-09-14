@@ -45,8 +45,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          V="$(node -p 'require("./packages/cli/package.json").version')"
-          test "v$V" = "$GITHUB_REF_NAME" || { echo "::error::tag $GITHUB_REF_NAME does not match packages/cli version $V"; exit 1; }
+          V="$(node -p 'require("./packages/superbee/package.json").version')"
+          test "v$V" = "$GITHUB_REF_NAME" || { echo "::error::tag $GITHUB_REF_NAME does not match packages/superbee version $V"; exit 1; }
           # Prereleases are tagged from protected main. A stable promotion may instead use the
           # version-only commit on release/<stable-version>, based on a retained prerelease tag;
           # its exact CI verdict below remains mandatory. No other branch can feed staging.

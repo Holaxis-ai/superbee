@@ -696,14 +696,14 @@ function assertWindowsPreflightJob(job, lane) {
   const kindDraftStep = requiredUnconditionalStep(steps, {
     label: "Windows command-emission contract",
     name: "Run Windows command-output regressions first",
-    workingDirectory: "packages/cli-runtime",
+    workingDirectory: "packages/cli",
     run: kindDraftProbe,
   });
   const managedUiProbe = 'node --test --test-name-pattern="built CLI returns while its managed document remains live|managed worker preserves an indexless project-binding boundary" --import ./test/ts-loader.mjs ./test/ui-managed-authority.test.ts ./test/ui.test.ts';
   const managedUiStep = requiredUnconditionalStep(steps, {
     label: "Windows managed UI startup contract",
     name: "Run the managed UI Windows startup proof first",
-    workingDirectory: "packages/cli-runtime",
+    workingDirectory: "packages/cli",
     run: managedUiProbe,
   });
   const typecheck = "npm run typecheck --workspaces --if-present --ignore-scripts";
@@ -753,7 +753,7 @@ function assertWindowsCliJob(job, lane) {
   requiredUnconditionalStep(steps, {
     label: "Windows parallel CLI shard",
     name: "Run the CLI runtime contract",
-    workingDirectory: "packages/cli-runtime",
+    workingDirectory: "packages/cli",
     run: shardCommand,
   });
   assert.match(job, /^ {6}- run: npm run build\s*$/m, "each fresh Windows shard must build before testing");
@@ -1167,7 +1167,7 @@ test("Windows runtime partition cannot lose its early probes, parallel shards, o
   const kindDraftProbe = "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts";
   const kindDraftStep = [
     "      - name: Run Windows command-output regressions first",
-    "        working-directory: packages/cli-runtime",
+    "        working-directory: packages/cli",
     `        run: ${kindDraftProbe}`,
   ].join("\n");
   const nonCliStep = [
@@ -1189,7 +1189,7 @@ test("Windows runtime partition cannot lose its early probes, parallel shards, o
   assert.throws(
     () => validateWindowsProofWorkflow(
       windowsWorkflow.replace(
-        "      - name: Run Windows command-output regressions first\n        working-directory: packages/cli-runtime",
+        "      - name: Run Windows command-output regressions first\n        working-directory: packages/cli",
         "      - name: Run Windows command-output regressions first\n        working-directory: .",
       ),
     ),
@@ -1198,7 +1198,7 @@ test("Windows runtime partition cannot lose its early probes, parallel shards, o
   assert.throws(
     () => validateWindowsProofWorkflow(
       windowsWorkflow.replace(
-        "      - name: Run the CLI runtime contract\n        working-directory: packages/cli-runtime",
+        "      - name: Run the CLI runtime contract\n        working-directory: packages/cli",
         "      - name: Run the CLI runtime contract\n        working-directory: .",
       ),
     ),

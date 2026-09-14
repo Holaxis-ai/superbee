@@ -22,7 +22,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 const DEFAULT_REPORTS = [
   path.join(repoRoot, "packages", "core", "reports", "mutation", "mutation.json"),
-  path.join(repoRoot, "packages", "cli-runtime", "reports", "mutation", "mutation.json"),
+  path.join(repoRoot, "packages", "cli", "reports", "mutation", "mutation.json"),
 ];
 
 export function survivorsFromReport(report, label) {

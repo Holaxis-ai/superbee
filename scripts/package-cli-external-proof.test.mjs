@@ -9,6 +9,18 @@ import { init, parse } from "es-module-lexer";
 const exec = promisify(execFile);
 const root = path.resolve(import.meta.dirname, "..");
 
+test("workspace directories and lock links follow package identities", async () => {
+  const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
+  for (const [directory, name] of [["cli", "@superbee/cli"], ["superbee", "superbee"]]) {
+    const packagePath = `packages/${directory}`;
+    const pkg = JSON.parse(await readFile(path.join(root, packagePath, "package.json"), "utf8"));
+    assert.equal(pkg.name, name);
+    assert.equal(lock.packages[packagePath].version, pkg.version);
+    assert.equal(lock.packages[`node_modules/${name}`].resolved, packagePath);
+    assert.equal(lock.packages[`node_modules/${name}`].link, true);
+  }
+});
+
 test("packed reusable CLI is closed, inert on import, and binds commands to its executable", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-cli-consumer-"));
   const npm = process.env.npm_execpath;
@@ -99,6 +111,6 @@ assert.equal(registryCalls, 0, 'ambient globals must not enable update checks');
     assert.match((await run([entry, "doc", "read", "notes/proof", "--dir", bundle], cwd, env)).stdout, /portable proof/);
     await assert.rejects(run([entry, "unknown-command"], cwd, env), error => error.code === 2);
     // superbee's private-state identity must not drift to the library package coordinate.
-    assert.equal((await readdir(home)).some(name => name.includes("cli-runtime") || name === "@superbee"), false);
+    assert.equal((await readdir(home)).some(name => name.includes("cli") || name === "@superbee"), false);
   } finally { await rm(scratch, { recursive: true, force: true }); }
 });

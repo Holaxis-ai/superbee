@@ -1,0 +1,149 @@
+import { CLI_COMMAND_GROUPS } from "./command-spec.js";
+import { commandName } from "./reference.js";
+
+// One inventory owns the npm package's auxiliary contracts, portable recipes, examples, and
+// fixtures. Source files remain authoritative; packages/superbee/references/ is the committed projection
+// shipped in the tarball via package.json's files allowlist.
+
+export const RESOURCE_ROLES = [
+  "operating-reference",
+  "portable-recipe",
+  "worked-example",
+  "interop-fixture",
+] as const;
+export type ResourceRole = (typeof RESOURCE_ROLES)[number];
+
+export interface DistributionResource {
+  /** Repo-root-relative source authority. */
+  src: string;
+  role: ResourceRole;
+  /** Destination within the npm package's references root. */
+  dest: string;
+}
+
+export interface ProjectedResource {
+  src: string;
+  dest: string;
+}
+
+type SourceDestination = readonly [src: string, dest: string];
+
+function npmResources(role: ResourceRole, entries: readonly SourceDestination[]): DistributionResource[] {
+  return entries.map(([src, dest]) => ({ src, role, dest }));
+}
+
+export const DISTRIBUTION_RESOURCES: DistributionResource[] = [
+  ...npmResources("operating-reference", [
+    ["examples/references/modeling-and-delivery.md", "modeling-and-delivery.md"],
+    ["examples/views/references/view-authoring-v0.md", "views/references/view-authoring-v0.md"],
+  ]),
+
+  // Bundle View worked examples. View-bearing recipes carry their own required operating model.
+  // Both columns renamed pages→views with the kind (the dest column is the skill's shipped
+  // resource namespace — regenerated atomically with the SKILL.md prose that points at it).
+  ...npmResources("worked-example", [
+    ["examples/views/pulse.html", "views/pulse.html"],
+    ["examples/views/roadmap.html", "views/roadmap.html"],
+    ["examples/views/about.html", "views/about.html"],
+    ["examples/views/conventions/view.md", "views/conventions/view.md"],
+    ["examples/views/views-registry/pulse.md", "views/views-registry/pulse.md"],
+    ["examples/views/views-registry/roadmap.md", "views/views-registry/roadmap.md"],
+    ["examples/views/views-registry/about.md", "views/views-registry/about.md"],
+  ]),
+
+  // Installable definitions: the Claims example and the complete Review Workflow package.
+  ...npmResources("portable-recipe", [
+    ["examples/recipes/claims/recipe.md", "recipes/claims/recipe.md"],
+    ["examples/recipes/claims/conventions/claim.md", "recipes/claims/conventions/claim.md"],
+    ["examples/recipes/review-workflow/recipe.md", "recipes/review-workflow/recipe.md"],
+    [
+      "examples/recipes/review-workflow/conventions/review-request.md",
+      "recipes/review-workflow/conventions/review-request.md",
+    ],
+    ["examples/recipes/review-workflow/conventions/view.md", "recipes/review-workflow/conventions/view.md"],
+    [
+      "examples/recipes/review-workflow/views-registry/review-workflow-reviews.md",
+      "recipes/review-workflow/views-registry/review-workflow-reviews.md",
+    ],
+    [
+      "examples/recipes/review-workflow/views/review-workflow/reviews.html",
+      "recipes/review-workflow/views/review-workflow/reviews.html",
+    ],
+    [
+      "examples/recipes/review-workflow/references/view-authoring-v0.md",
+      "recipes/review-workflow/references/view-authoring-v0.md",
+    ],
+  ]),
+
+  // Externally-shaped OKF interoperability fixture; never installed into an ordinary bundle.
+  ...npmResources("interop-fixture", [
+    ["examples/sample-bundle/index.md", "sample-bundle/index.md"],
+    ["examples/sample-bundle/log.md", "sample-bundle/log.md"],
+    ["examples/sample-bundle/concepts/index.md", "sample-bundle/concepts/index.md"],
+    ["examples/sample-bundle/concepts/link-graph.md", "sample-bundle/concepts/link-graph.md"],
+    ["examples/sample-bundle/concepts/okf-alignment.md", "sample-bundle/concepts/okf-alignment.md"],
+    ["examples/sample-bundle/context-notes/index.md", "sample-bundle/context-notes/index.md"],
+    [
+      "examples/sample-bundle/context-notes/cycle-okf-lite-vision.md",
+      "sample-bundle/context-notes/cycle-okf-lite-vision.md",
+    ],
+    ["examples/sample-bundle/references/index.md", "sample-bundle/references/index.md"],
+    ["examples/sample-bundle/references/okf-spec.md", "sample-bundle/references/okf-spec.md"],
+  ]),
+];
+
+/** The npm projection (packages/superbee/references/, shipped in the tarball). */
+export const NPM_RESOURCES: ProjectedResource[] = DISTRIBUTION_RESOURCES.map(({ src, dest }) => ({ src, dest }));
+
+// NOT DISTRIBUTED: the repository-owned wire-protocol contract lives at docs/WIRE-PROTOCOL.md.
+// It governs server/client development but is not an Agent Skill runtime reference, so it remains
+// outside the npm projection unless a later release decision deliberately adds that audience.
+
+/**
+ * Every command NAME (as {@link commandName} in reference.ts would extract it from a usage
+ * string) mapped to the shipped-reference `dest`s its advertised capability depends on. `[]`
+ * means self-contained — true of most commands. Empty defaults are projected from the canonical command
+ * graph, so a newly advertised row cannot be omitted from this resource inventory.
+ */
+const SKILL_COMMAND_RESOURCE_OVERRIDES = {
+  "recipe add": ["recipes/claims/recipe.md", "recipes/review-workflow/recipe.md"],
+  ui: ["views/references/view-authoring-v0.md"],
+} as const satisfies Partial<Record<string, readonly string[]>>;
+
+const advertisedCommandNames = [
+  ...new Set(CLI_COMMAND_GROUPS.flatMap((group) => group.commands.map((row) => commandName(row.usage)))),
+];
+
+export const SKILL_COMMAND_RESOURCES: Record<string, string[]> = Object.fromEntries(
+  advertisedCommandNames.map((name) => [
+    name,
+    [...(SKILL_COMMAND_RESOURCE_OVERRIDES[name as keyof typeof SKILL_COMMAND_RESOURCE_OVERRIDES] ?? [])],
+  ]),
+);
+
+/** One prose-level tripwire over the rendered npm-carried SKILL.md. */
+export interface SkillCapabilityPattern {
+  pattern: RegExp;
+  requires: string[];
+}
+
+/**
+ * Checked against the ACTUAL rendered SKILL.md by test/skill-distribution.test.ts, which fails on a
+ * DEAD pattern as well as on a `requires` entry missing from the npm projection.
+ *
+ * Honest limit: this cannot recognize a semantically novel capability described in prose that no
+ * pattern below anticipates — command-shaped coverage comes from SKILL_COMMAND_RESOURCES' exhaustiveness
+ * check above; adding a pattern row here is the same one-table discipline extended to free prose.
+ */
+export const SKILL_CAPABILITY_PATTERNS: SkillCapabilityPattern[] = [
+  {
+    // `type: Page` stays in the pattern: it is the accepted legacy kind name, and any prose
+    // mentioning it (even a legacy note) must ship the authoring reference alongside.
+    pattern: /type:\s*View|type:\s*Page|bundle view|postMessage|sandboxed iframe/i,
+    requires: ["views/references/view-authoring-v0.md"],
+  },
+  {
+    pattern: /recipe/i,
+    requires: ["recipes/claims/recipe.md", "recipes/review-workflow/recipe.md"],
+  },
+];

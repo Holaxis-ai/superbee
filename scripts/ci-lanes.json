@@ -55,14 +55,14 @@
     ],
     "representative_includes": [
       "packages/board-git/src/porcelain.ts",
-      "packages/cli-runtime/src/args.ts",
+      "packages/cli/src/args.ts",
       "packages/core/src/publication-filesystem.ts",
       "packages/publication/src/generated/publication-snapshot-v1.ts",
       "scripts/verify-npm-package.mjs"
     ],
     "representative_excludes": [
       "packages/board-git/test/git-porcelain.test.ts",
-      "packages/cli-runtime/test/fixtures/quoting-probes/probes.ts",
+      "packages/cli/test/fixtures/quoting-probes/probes.ts",
       "packages/ui/e2e/harness.ts",
       "scripts/verify-npm-package.test.mjs"
     ],
@@ -282,7 +282,7 @@
       ],
       "runtime_setup_node": 20,
       "version_guard": "node --version | grep -q '^v20\\.'",
-      "built_cli": "packages/cli/dist/superbee.mjs",
+      "built_cli": "packages/superbee/dist/superbee.mjs",
       "built_cli_commands": [
         "init",
         "doc write",

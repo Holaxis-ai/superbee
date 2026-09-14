@@ -119,7 +119,7 @@ The repository's detailed contribution contracts are intentionally one hop away:
 - [OKF compatibility](CONTRIBUTING.md#okf-compatibility)
 - [Findings and commitments](CONTRIBUTING.md#findings-and-commitments)
 - [Assurance evolution](CONTRIBUTING.md#assurance-evolution)
-- [CLI AXI contract](packages/cli/AXI-CONTRACT.md)
+- [CLI AXI contract](packages/superbee/AXI-CONTRACT.md)
 - [Wire protocol](docs/WIRE-PROTOCOL.md)
 
 Do not recreate package or shipped-feature inventories here. Read workspace manifests, package

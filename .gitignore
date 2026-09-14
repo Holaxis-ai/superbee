@@ -8,7 +8,7 @@ dist-worker/
 *.tgz
 # Build-time generated source (not committed — shared CLI input preparation regenerates from a
 # fresh `packages/ui` build, same convention as every other package's gitignored `dist/`).
-packages/cli-runtime/src/generated/
+packages/cli/src/generated/
 # Same build-time pattern for the fixed MCP App HTML resource.
 packages/mcp-app/src/generated/
 # Playwright E2E output (packages/ui) — never committed.

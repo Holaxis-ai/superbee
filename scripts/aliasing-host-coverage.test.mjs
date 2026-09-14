@@ -292,7 +292,7 @@ test("the scanner still sees the owning host-class machinery", () => {
   assert.ok(detected.size > 0, "the host-sensitivity scan found nothing; the detector is broken");
   const native = detected.get(path.join("packages", "core", "test", "filesystem-identity-native.test.ts"));
   assert.ok(native?.some((reason) => reason.includes("host-class")), "helper detection is broken");
-  const boundary = detected.get(path.join("packages", "cli-runtime", "test", "private-state-bundle-boundary.test.ts"));
+  const boundary = detected.get(path.join("packages", "cli", "test", "private-state-bundle-boundary.test.ts"));
   assert.ok(boundary?.some((reason) => reason.includes("normalization") || reason.includes("case-variant")), "fixture detection is broken");
 });
 
