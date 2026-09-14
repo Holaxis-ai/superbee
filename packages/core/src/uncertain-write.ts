@@ -70,6 +70,8 @@ export interface OperationTransport {
 export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 export interface UncertainWriteOptions {
+  /** Exact-content writes may settle matching conflicts; governed writes require recorded evidence. */
+  settlement?: "exact-content" | "recorded-only";
   /** How long one submission may take before its outcome is treated as unknown. */
   deadlineMs?: number;
   /** Lookups attempted after an unknown submission before giving up (default 3). */
@@ -208,14 +210,17 @@ async function submitOnce(transport: OperationTransport, intent: OperationIntent
  * twice, and even on one with it the retry can only ever learn what the lookup already knew.
  * The lookup is what turns "unknown" into a fact before any second delivery.
  *
- * Every outcome passes through {@link settleAgainstIntent} before it is returned, so a conflict
- * that names the intent's own version is reported as committed at that version.
+ * By default every outcome passes through {@link settleAgainstIntent}, so a conflict naming the
+ * intent's own version is committed. `recorded-only` preserves the recorded outcome instead.
  */
 export async function performUncertainWrite(
   transport: OperationTransport,
   intent: OperationIntent,
   options: UncertainWriteOptions = {},
 ): Promise<UncertainWriteResult> {
+  if (options.settlement !== undefined && options.settlement !== "exact-content" && options.settlement !== "recorded-only") {
+    throw new Error("Unknown uncertain-write settlement mode.");
+  }
   const sleep = options.sleep ?? defaultSleep;
   const maxLookups = Math.max(1, options.maxLookups ?? 3);
   const maxSubmissions = Math.max(1, options.maxSubmissions ?? 2);
@@ -225,7 +230,7 @@ export async function performUncertainWrite(
   let submissions = 0;
   let lookups = 0;
   const finish = (raw: Outcome): UncertainWriteResult => {
-    const outcome = settleAgainstIntent(raw, intent);
+    const outcome = options.settlement === "recorded-only" ? raw : settleAgainstIntent(raw, intent);
     return { intent: { ...intent, attempts, state: stateForOutcome(outcome) }, outcome, lookups };
   };
 

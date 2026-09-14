@@ -56,6 +56,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "bundle-ops.js", symbol: "backendFor" },
   { module: "document-mutation.js", symbol: "mutateDocument" },
   { module: "uncertain-write.js", symbol: "performUncertainWrite" },
+  { module: "governed-body-write.js", symbol: "performBodyDelivery" },
   { module: "platform.js", symbol: "provenanceLabel" },
 ];
 
