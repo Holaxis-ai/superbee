@@ -50,18 +50,28 @@ receipt. An arbitrary acknowledged-version token is not a substitute for the rec
 
 ## Reconciliation is a conditional proposal
 
-`reconcileBodyReceipt` accepts a consistent document version and full journal-record snapshot.
-It returns the authority's shared base plus either `preserve-local` or
-`replace-local-under-CAS`, carrying the complete captured snapshot as the expected premise.
+`reconcileBodyReceipt` accepts a consistent document version, full journal-record snapshot and
+current shared base (`{ version, content }` or `null`). It returns validated receipt evidence
+separately from proposed changes: a local action and a discriminated shared action. A
+`preserve-shared` action contains no replacement content. The complete captured snapshot is the
+expected premise, including the shared base, whose serialized content need not hash to its version.
 
-Replacement is proposed only when the current document still has the captured local version,
+Shared replacement requires a bound journal anchor, the current shared version matching the
+prepared expected version, and no later acknowledged intent for the target. An already identical
+receipt version and content requires no shared replacement. Missing anchors, incompatible shared
+bases and later acknowledgments preserve both local and shared state. Equal shared versions with
+different content also conservatively preserve both.
+
+Local replacement additionally requires compatible shared progression or an exactly identical
+current shared receipt, and the current document still having the captured local version,
 the exact request's original content and identity are present in the journal, and no later
 intent for that document exists. Every later local commit prevents replacement, even an
 acknowledged intent with identical bytes. Missing anchors preserve local content; duplicate
 identities or sequence numbers refuse an ambiguous snapshot.
 
-The persistence adapter must compare the full journal and document version **atomically** before
-replacement. A version-only comparison is insufficient. This module changes no journal state,
+The persistence adapter must compare the full journal, document version and shared snapshot
+**atomically** before replacement. Shared refresh can advance without changing the document or
+journal, so comparing only those two is insufficient. This module changes no journal state,
 database, document, or draft buffer; a proposal is not proof that persistence honored its CAS.
 The snapshot must include acknowledged records needed to establish ordering, not just pending
 records. Consumers must retain the anchor until reconciliation can complete.

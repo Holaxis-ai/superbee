@@ -68,8 +68,10 @@ const rows: Array<{ name: string; run: () => unknown | Promise<unknown> }> = [
     const recovered = await performBodyDelivery(a.transport, JSON.parse(JSON.stringify(p)), 1);
     assert.deepEqual(recovered.outcome, first.outcome);
     assert.equal(a.writes(), 2);
-    const proposal = reconcileBodyReceipt(p, r, { version: p.local, intents: [journal(p)] });
-    assert.equal(proposal.action, "replace-local-under-CAS"); assert.equal(proposal.shared.content, r.content);
+    const proposal = reconcileBodyReceipt(p, r, { version: p.local, intents: [journal(p)], shared: { version: p.expectedVersion, content: p.content } });
+    assert.equal(proposal.action, "replace-local-under-CAS");
+    assert.equal(proposal.shared.action, "replace-shared-under-CAS");
+    if (proposal.shared.action === "replace-shared-under-CAS") assert.equal(proposal.shared.content, r.content);
   } },
   { name: "lost reply reload looks up before submitting and mutates once", async run() {
     const a = await authority(), p = prepareBodyDelivery(input(), { expectedVersion: a.base });
@@ -148,18 +150,47 @@ const rows: Array<{ name: string; run: () => unknown | Promise<unknown> }> = [
   { name: "every newer local journal intent preserves content even when bytes match", run() {
     const p = prepared(), r = receipt(p), anchor = journal(p);
     for (const state of ["pending", "in_flight", "unknown", "conflict", "refused", "acknowledged"] as const) {
-      const snapshot = { version: p.local, intents: [anchor, { ...anchor, requestId: "later", sequence: 2, state }] };
+      const snapshot = { version: p.local, intents: [anchor, { ...anchor, requestId: "later", sequence: 2, state }], shared: { version: p.expectedVersion, content: p.content } };
       const before = JSON.stringify(snapshot);
       const result = reconcileBodyReceipt(p, r, snapshot);
       assert.equal(result.action, "preserve-local"); assert.equal(JSON.stringify(snapshot), before);
       assert.deepEqual(result.expected, snapshot); assert.ok(Object.isFrozen(result.expected.intents[1]));
     }
     for (const intents of [[], [{ ...anchor, target: "notes/other" }], [{ ...anchor, content: "other" }]]) {
-      assert.equal(reconcileBodyReceipt(p, r, { version: p.local, intents }).action, "preserve-local");
+      assert.equal(reconcileBodyReceipt(p, r, { version: p.local, intents, shared: { version: p.expectedVersion, content: p.content } }).action, "preserve-local");
     }
-    assert.equal(reconcileBodyReceipt(p, r, { version: token, intents: [anchor] }).action, "preserve-local");
-    assert.throws(() => reconcileBodyReceipt(p, r, { version: p.local, intents: [anchor, anchor] }));
-    assert.throws(() => reconcileBodyReceipt(p, r, { version: p.local, intents: [{ ...anchor, attempts: NaN }] }));
+    assert.equal(reconcileBodyReceipt(p, r, { version: token, intents: [anchor], shared: null }).action, "preserve-local");
+    assert.throws(() => reconcileBodyReceipt(p, r, { version: p.local, intents: [anchor, anchor], shared: null }));
+    assert.throws(() => reconcileBodyReceipt(p, r, { version: p.local, intents: [{ ...anchor, attempts: NaN }], shared: null }));
+  } },
+  { name: "stale receipts and independent shared refresh preserve the shared base", run() {
+    const p = prepared(), r = receipt(p), anchor = journal(p);
+    const next = prepareBodyDelivery(input("second", "second"), { prepared: p, receipt: r });
+    const nextReceipt = receipt(next);
+    const successor = { ...journal(next, 2), state: "acknowledged" as const, acknowledgedVersion: nextReceipt.version };
+    for (const snapshot of [
+      { version: next.local, intents: [anchor, successor], shared: { version: nextReceipt.version, content: nextReceipt.content } },
+      { version: p.local, intents: [anchor], shared: { version: nextReceipt.version, content: nextReceipt.content } },
+      { version: p.local, intents: [anchor, successor], shared: { version: p.expectedVersion, content: p.content } },
+      { version: p.local, intents: [], shared: { version: p.expectedVersion, content: p.content } },
+      { version: p.local, intents: [anchor], shared: null },
+    ]) {
+      const proposal = reconcileBodyReceipt(p, r, snapshot);
+      assert.equal(proposal.action, "preserve-local"); assert.deepEqual(proposal.shared, { action: "preserve-shared" });
+      assert.deepEqual(proposal.expected, snapshot); assert.deepEqual(proposal.receipt, r);
+      assert.ok(Object.isFrozen(proposal.expected.shared) || proposal.expected.shared === null);
+    }
+  } },
+  { name: "exact shared receipt permits idempotent local reconciliation but mismatched content does not", run() {
+    const p = prepared(), r = receipt(p);
+    for (const content of [r.content, p.content]) {
+      const proposal = reconcileBodyReceipt(p, r, { version: p.local, intents: [journal(p)], shared: { version: r.version, content } });
+      assert.equal(proposal.action, content === r.content ? "replace-local-under-CAS" : "preserve-local");
+      assert.deepEqual(proposal.shared, { action: "preserve-shared" });
+    }
+    const sameVersionReceipt = { ...r, version: p.expectedVersion };
+    const proposal = reconcileBodyReceipt(p, sameVersionReceipt, { version: p.local, intents: [journal(p)], shared: { version: p.expectedVersion, content: p.content } });
+    assert.equal(proposal.action, "preserve-local"); assert.deepEqual(proposal.shared, { action: "preserve-shared" });
   } },
   { name: "authorization refusal remains a refusal", async run() {
     const outcome = { kind: "refused" as const, code: "FORBIDDEN", message: "Write permission required" };

@@ -176,10 +176,15 @@ export async function performBodyDelivery(
     lookups: result.lookups, outcome: Object.freeze(outcome), ...(chosen.diagnostic ? { diagnostic: chosen.diagnostic } : {}) });
 }
 
-export interface BodyLocalSnapshot { readonly version: Version | null; readonly intents: readonly IntentRecord[] }
+export interface BodyLocalSnapshot {
+  readonly version: Version | null;
+  readonly intents: readonly IntentRecord[];
+  readonly shared: Readonly<{ version: Version; content: string }> | null;
+}
 export interface BodyReconciliationProposal {
   readonly action: "preserve-local" | "replace-local-under-CAS";
-  readonly shared: Readonly<{ version: Version; content: string }>;
+  readonly receipt: CommittedBodyReceipt;
+  readonly shared: Readonly<{ action: "preserve-shared" } | { action: "replace-shared-under-CAS"; version: Version; content: string }>;
   readonly expected: BodyLocalSnapshot;
 }
 function freezeDeep<T>(value: T): T {
@@ -205,15 +210,23 @@ function captureIntent(value: unknown): IntentRecord {
   if (Object.hasOwn(row, "refusal")) { const refusal = record(row.refusal, ["code", "message"]); string(refusal.code); string(refusal.message); }
   return JSON.parse(JSON.stringify(row)) as IntentRecord;
 }
-/** Pure proposal only. Applying a replacement requires an atomic full-journal AND document CAS. */
+/** Pure proposal only. Replacement requires an atomic full-journal, document AND shared-base CAS. */
 export function reconcileBodyReceipt(prepared: PreparedBodyDelivery, receipt: CommittedBodyReceipt, snapshot: BodyLocalSnapshot): BodyReconciliationProposal {
   const p = validatePreparedBodyDelivery(prepared), r = validateBodyReceipt(p, receipt);
-  record(snapshot, ["version", "intents"]);
+  record(snapshot, ["version", "intents", "shared"]);
   if (snapshot.version !== null) version(snapshot.version);
   if (!Array.isArray(snapshot.intents)) fail("invalid journal snapshot");
   if (Object.keys(snapshot.intents).length !== snapshot.intents.length) fail("invalid journal list");
-  // Capture all JSON journal fields, including outcome observations, as the future CAS premise.
-  const expected: BodyLocalSnapshot = bounded({ version: snapshot.version, intents: snapshot.intents.map(captureIntent) });
+  let shared: BodyLocalSnapshot["shared"] = null;
+  if (snapshot.shared !== null) {
+    const raw = record(snapshot.shared, ["version", "content"]);
+    const content = string(raw.content, BODY_DELIVERY_LIMITS.envelopeBytes, false);
+    const parsed = parseMarkdown(content, p.target, { okfVersion: p.okfVersion });
+    if (typeof parsed.frontmatter.type !== "string" || !parsed.frontmatter.type.trim()) fail("shared concept type required");
+    shared = { version: version(raw.version), content };
+  }
+  // Shared refresh can advance independently of the document and journal; compare all three.
+  const expected: BodyLocalSnapshot = bounded({ version: snapshot.version, intents: snapshot.intents.map(captureIntent), shared });
   const ids = new Set<string>(), sequences = new Set<number>();
   for (const row of expected.intents) {
     request(row.requestId); integer(row.sequence);
@@ -221,7 +234,12 @@ export function reconcileBodyReceipt(prepared: PreparedBodyDelivery, receipt: Co
     ids.add(row.requestId); sequences.add(row.sequence);
   }
   const anchor = expected.intents.find(row => row.requestId === p.requestId);
-  const replace = expected.version === p.local && anchor?.target === p.target && anchor.local === p.local && anchor.content === p.content &&
-    anchor.createdAt === p.createdAt && !expected.intents.some(row => row.target === p.target && row.sequence > anchor.sequence);
-  return freezeDeep({ action: replace ? "replace-local-under-CAS" : "preserve-local", shared: { version: r.version, content: r.content }, expected });
+  const boundAnchor = anchor?.target === p.target && anchor.local === p.local && anchor.content === p.content && anchor.createdAt === p.createdAt;
+  const newer = anchor ? expected.intents.filter(row => row.target === p.target && row.sequence > anchor.sequence) : [];
+  const compatible = boundAnchor && !newer.some(row => row.state === "acknowledged");
+  const alreadyShared = shared?.version === r.version && shared.content === r.content;
+  const advanceShared = compatible && shared?.version === p.expectedVersion && shared.version !== r.version;
+  const replace = compatible && (advanceShared || alreadyShared) && expected.version === p.local && newer.length === 0;
+  return freezeDeep({ action: replace ? "replace-local-under-CAS" : "preserve-local", receipt: r,
+    shared: advanceShared ? { action: "replace-shared-under-CAS", version: r.version, content: r.content } : { action: "preserve-shared" }, expected });
 }
