@@ -4,6 +4,8 @@
 advertises `journalSnapshotCas: true` only when it implements the complete optional guard contract.
 Consumers must check this capability before relying on guarded operations. IndexedDB implements it
 without changing its database schema. Existing unguarded calls retain their behavior.
+Only an omitted or `undefined` guard selects that compatibility path. Defined malformed guards,
+including `null`, `false`, zero, and the empty string, raise `JournalGuardConflict` before writes.
 
 Build a `JournalGuard` from one `readWithJournal` result. Include the target, its exact document
 `{version, raw}` or `null`, every target intent (including acknowledged history), and each metadata

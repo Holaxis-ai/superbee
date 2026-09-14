@@ -66,6 +66,45 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
       meta: keys.map(key => ({ key, expected: read.meta.has(key) ? { present: true, value: read.meta.get(key) } : { present: false } })) };
   };
 
+  for (const action of ["write", "update"] as const) {
+    test(`${name} snapshot CAS: ${action} refuses every defined malformed guard without writes`, async () => {
+      await withFixture(create, async backend => {
+        const id = "guard/malformed";
+        await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("malformed", id, null), meta: [{ key: "base", value: "before" }] });
+        const before = await snapshot(backend, id);
+        for (const guard of [null, false, 0, "", [], {}, new Date(0)]) {
+          await assert.rejects(action === "write"
+            ? backend.writeJournaled(id, doc(id, "after"), { guard: guard as JournalGuard, intent: newIntent("must-not-land", id, null), meta: [{ key: "base", value: "after" }] })
+            : backend.updateIntent("malformed", "pending", { state: "acknowledged", attempts: 1 }, { guard: guard as JournalGuard, meta: [{ key: "base", value: "after" }] }), { name: "JournalGuardConflict" });
+          assert.deepEqual(await snapshot(backend, id), before);
+        }
+      });
+    });
+
+    test(`${name} snapshot CAS: ${action} with undefined guard retains opaque compatibility`, async () => {
+      await withFixture(create, async backend => {
+        const id = "guard/undefined", value = new Date(0);
+        await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("undefined", id, null) });
+        if (action === "write") await backend.writeJournaled(id, doc(id, "after"), { guard: undefined, meta: [{ key: "base", value }] });
+        else await backend.updateIntent("undefined", "pending", { state: "acknowledged" }, { guard: undefined, meta: [{ key: "base", value }] });
+        assert.deepEqual(await backend.readMeta("base"), value);
+        if (action === "write") assert.equal((await backend.read(id)).doc.body?.trim(), "after");
+        else assert.equal((await backend.readIntent("undefined"))!.state, "acknowledged");
+      });
+    });
+  }
+
+  test(`${name} snapshot CAS: malformed metadata admission never disables its guards`, async () => {
+    await withFixture(create, async backend => {
+      await backend.writeMeta("admission", "before");
+      for (const value of [null, false, 0, ""]) {
+        await assert.rejects(backend.writeMeta("admission", "after", { expected: value as never }), { name: "JournalGuardConflict" });
+        if (typeof value !== "boolean") await assert.rejects(backend.writeMeta("admission", "after", { requireEmptyJournal: value as never }), { name: "JournalGuardConflict" });
+        assert.equal(await backend.readMeta("admission"), "before");
+      }
+    });
+  });
+
   test(`${name} snapshot CAS: superseding cannot retire another target's journal`, async () => {
     await withFixture(create, async backend => {
       const id = "guard/owner", other = "guard/other";

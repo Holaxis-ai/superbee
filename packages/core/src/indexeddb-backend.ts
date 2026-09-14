@@ -38,7 +38,7 @@ import {
   assertJournalIntentChanges,
   assertJournalMetaChanges,
   assertMetaWrite,
-  captureJournalGuard,
+  captureJournalGuardOption,
   captureJournalWriteOptions,
   captureIntentUpdate,
   captureMetaWrite,
@@ -652,7 +652,7 @@ export class IndexedDbBackend implements JournaledBackend {
 
   /** Read and compare a complete guard inside its caller's still-active transaction. */
   #checkJournalGuard(tx: IdbTransactionLike, expected: JournalGuard | undefined, next: () => void, fail: (error: Error) => void, guard: (fn: () => void) => () => void): void {
-    if (!expected) { next(); return; }
+    if (expected === undefined) { next(); return; }
     const current: JournalGuard = { target: expected.target, document: null, intents: [], meta: [] };
     let pending = 2 + expected.meta.length;
     const finish = () => { if (--pending === 0) { assertJournalGuard(expected, current); next(); } };
@@ -685,12 +685,12 @@ export class IndexedDbBackend implements JournaledBackend {
     doc: OkfDocument,
     options: JournaledWriteOptions = {},
   ): Promise<{ version: Version; raw: string; intent: IntentRecord | null }> {
-    if (Object.hasOwn(options, "guard")) { options = captureJournalWriteOptions(options); doc = captureJournalValue(doc); }
+    const snapshotGuard = captureJournalGuardOption(options, id);
+    if (snapshotGuard !== undefined) { options = captureJournalWriteOptions(options); doc = captureJournalValue(doc); }
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
     const version = versionOfBytes(raw);
-    const snapshotGuard = options.guard === undefined ? undefined : captureJournalGuard(options.guard, id);
     if (snapshotGuard && (doc.id !== id || (options.intent && options.intent.target !== id))) throw new JournalGuardConflict(id);
     const suppliedMeta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta;
     assertJournalMetaChanges(snapshotGuard, suppliedMeta ?? [], options.removeMeta);

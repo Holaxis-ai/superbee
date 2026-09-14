@@ -116,8 +116,11 @@ function assertMetaExpectation(value: MetaExpectation): void {
       !equalJournalValue(Object.keys(value).sort(), (value.present ? ["present", "value"] : ["present"]).sort())) throw new JournalGuardConflict("meta");
 }
 
-export function captureJournalGuard(value: JournalGuard, target = value.target): JournalGuard {
+export function captureJournalGuard(value: JournalGuard, target?: ConceptId): JournalGuard {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new JournalGuardConflict(target ?? "guard");
   const guard = captureJournalValue(value);
+  if (typeof guard.target !== "string") throw new JournalGuardConflict(target ?? "guard");
+  target ??= guard.target;
   assertSafeConceptId(guard.target);
   if (guard.target !== target || !Array.isArray(guard.intents) || !Array.isArray(guard.meta) ||
       (guard.document !== null && (!guard.document || typeof guard.document.version !== "string" || typeof guard.document.raw !== "string"))) throw new JournalGuardConflict(target);
@@ -131,6 +134,17 @@ export function captureJournalGuard(value: JournalGuard, target = value.target):
     keys.add(row.key); assertMetaExpectation(row.expected);
   }
   return guard;
+}
+
+/** Only omission or undefined selects the unguarded compatibility path. */
+export function captureJournalGuardOption(options: { guard?: JournalGuard }, target?: ConceptId): JournalGuard | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(options, "guard");
+  if (!descriptor) {
+    if ("guard" in options) throw new JournalGuardConflict(target ?? "guard");
+    return undefined;
+  }
+  if (!("value" in descriptor)) throw new JournalGuardConflict(target ?? "guard");
+  return descriptor.value === undefined ? undefined : captureJournalGuard(descriptor.value, target);
 }
 
 /** Compare all target records, including acknowledged history, and exact named row presence. */
@@ -156,11 +170,12 @@ export interface MetaWriteOptions {
 
 /** Capture guarded updates before any asynchronous adapter work and protect original history. */
 export function captureIntentUpdate(patch: IntentPatch, options: IntentUpdateOptions): { patch: IntentPatch; options: IntentUpdateOptions } {
-  if (Object.hasOwn(options, "guard")) captureJournalValue({ patch, options });
-  if (options.document && !options.guard) throw new JournalGuardConflict(options.document.id);
+  const guard = captureJournalGuardOption(options);
+  if (guard !== undefined) captureJournalValue({ patch, options });
+  if (options.document && guard === undefined) throw new JournalGuardConflict(options.document.id);
   const captured = structuredClone({ patch, options });
-  if (options.guard) {
-    captured.options.guard = captureJournalGuard(options.guard);
+  if (guard !== undefined) {
+    captured.options.guard = guard;
     const mutable = new Set(["state", "attempts", "acknowledgedVersion", "remote", "refusal", "finding", "updatedAt"]);
     if (Object.keys(patch).some(key => !mutable.has(key)) || (captured.options.document && captured.options.document.id !== captured.options.guard.target)) throw new JournalGuardConflict(captured.options.guard.target);
     assertJournalMetaChanges(captured.options.guard, captured.options.meta ?? [], undefined);

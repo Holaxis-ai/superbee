@@ -18,7 +18,7 @@ import {
   assertJournalIntentChanges,
   assertJournalMetaChanges,
   assertMetaWrite,
-  captureJournalGuard,
+  captureJournalGuardOption,
   captureJournalWriteOptions,
   captureIntentUpdate,
   captureMetaWrite,
@@ -177,7 +177,7 @@ export class MemoryJournaledBackend implements JournaledBackend {
   // ── the journal seam ──────────────────────────────────────────────────────────────────
 
   #checkGuard(guard: JournalGuard | undefined): void {
-    if (!guard) return;
+    if (guard === undefined) return;
     const document = this.#documents.get(guard.target);
     assertJournalGuard(guard, {
       target: guard.target,
@@ -188,10 +188,10 @@ export class MemoryJournaledBackend implements JournaledBackend {
   }
 
   async writeJournaled(id: ConceptId, doc: OkfDocument, options: JournaledWriteOptions = {}): Promise<{ version: Version; raw: string; intent: IntentRecord | null }> {
-    if (Object.hasOwn(options, "guard")) { options = captureJournalWriteOptions(options); doc = captureJournalValue(doc); }
+    const snapshotGuard = captureJournalGuardOption(options, id);
+    if (snapshotGuard !== undefined) { options = captureJournalWriteOptions(options); doc = captureJournalValue(doc); }
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
-    const snapshotGuard = options.guard === undefined ? undefined : captureJournalGuard(options.guard, id);
     if (snapshotGuard && (doc.id !== id || (options.intent && options.intent.target !== id))) throw new JournalGuardConflict(id);
     const now = new Date().toISOString();
     // The producer can synchronously cause another write. Finish it and capture its result
