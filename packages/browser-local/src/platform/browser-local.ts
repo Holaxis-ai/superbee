@@ -39,7 +39,7 @@
  * `syncStatus` counts such documents as `unconfirmed`.
  */
 
-import type { ConceptId, QueryFilter, RemoteBackend, StorageBackend } from "@superbee/core";
+import type { ConceptId, QueryFilter, StorageBackend } from "@superbee/core";
 import { queryHeads } from "@superbee/core/bundle-ops";
 import { assertReadableConceptId } from "@superbee/core/engine";
 import type { IntentRecord, JournaledReadResult } from "@superbee/core/journaled-backend";
@@ -69,7 +69,7 @@ export interface BrowserLocalRuntimeOptions {
   /** The opened working copy; the caller bootstraps it (or resumes one that is complete). */
   local: LocalBundle;
   /** The authority's read side, used by pull and to fetch a conflict's shared head. */
-  remote: RemoteBackend;
+  remote: StorageBackend;
   /** Carries intents to the authority as identified writes. */
   transport: OperationTransport;
   /** The lock manager that owns the push role; omitted, the host's. See `withPushRole`. */

@@ -1,7 +1,7 @@
 /**
  * The platform contract kit in Node: every row of `platform-contract.ts` against a
- * request-driven runtime over the in-process remote fixture and a browser-local runtime over
- * fake-indexeddb bootstrapped from the same fixture. Each session is a fresh authority seeded
+ * request-driven runtime over the in-process remote fixture and browser-local runtimes over
+ * both its wire backend and a structural host read adapter. Each session is a fresh authority seeded
  * with the synthetic bundle; the carrier can be cut off per session, and the fixture's write
  * knobs are flipped from here.
  *
@@ -15,17 +15,21 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { IDBFactory } from "fake-indexeddb";
+import ts from "typescript";
 
 import { FilesystemBackend, RemoteBackend } from "@superbee/core";
 import { readDocVersioned } from "@superbee/core/bundle-ops";
 import type { ExecutionMode, PlatformRuntime } from "@superbee/core/platform";
 import { createRemoteOperationTransport } from "@superbee/core/remote-operations";
+import type { OperationTransport } from "@superbee/core/uncertain-write";
 import { createRouter, MemoryOperationOutcomeStore } from "@superbee/server";
 
 import { bootstrap, openLocalBundle, UNSETTLED_STATES, type LocalBundle } from "../src/local-bundle.ts";
 import { createBrowserLocalRuntime, createRequestDrivenRuntime } from "../src/platform/index.ts";
 import { BASE_URL, BUNDLE, createRemoteFixture, type FixtureKnobs } from "./fixtures/remote-fixture.ts";
+import { hostReadAdapter } from "./fixtures/host-read-adapter.ts";
 import {
   authorityHandle,
   CONTRACT_ACTOR,
@@ -42,7 +46,7 @@ import {
 const immediate = { sleep: async () => {}, lookupDelayMs: 0 };
 const now = () => CONTRACT_NOW;
 
-const harness: ContractHarness = {
+const makeHarness = (structural: boolean): ContractHarness => ({
   async open(mode: ExecutionMode): Promise<ContractSession> {
     const fixture = await createRemoteFixture();
     await seedSyntheticBundle(fixture.authority);
@@ -52,13 +56,35 @@ const harness: ContractHarness = {
     const remote = new RemoteBackend({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl: carrier, maxRetries: 0 });
     const factory = new IDBFactory();
     const locals: LocalBundle[] = [];
+    const adapter = hostReadAdapter(remote, remote);
+    const readSide = structural ? adapter.backend : remote;
+    let submissions = 0;
+    let lookups = 0;
+    let needsLookup = false;
 
     const runtimeOf = async (name: string): Promise<PlatformRuntime> => {
       if (mode === "request-driven") return createRequestDrivenRuntime({ remote, actor: CONTRACT_ACTOR, now });
       const local = openLocalBundle(name, { indexedDB: factory });
       locals.push(local);
-      await bootstrap(remote, local);
-      return createBrowserLocalRuntime({ local, remote, transport: createRemoteOperationTransport(remote), write: immediate, actor: CONTRACT_ACTOR, now });
+      await bootstrap(readSide, local);
+      const wireTransport = createRemoteOperationTransport(remote);
+      const transport: OperationTransport = {
+        submit: async (intent, options) => {
+          submissions += 1;
+          const recorded = (await local.backend.listIntents()).find((row) => row.requestId === intent.requestId);
+          assert.ok(recorded, "the injected transport receives an existing durable identity");
+          for (const key of ["requestId", "kind", "target", "base", "local", "content", "createdAt"] as const) {
+            assert.equal(intent[key], recorded[key], `submission preserves the journal's original ${key}`);
+          }
+          return wireTransport.submit(intent, options);
+        },
+        lookup: async (requestId) => {
+          lookups += 1;
+          assert.ok((await local.backend.listIntents()).some((row) => row.requestId === requestId), "lookup preserves the durable identity");
+          return wireTransport.lookup(requestId);
+        },
+      };
+      return createBrowserLocalRuntime({ local, remote: readSide, transport, write: immediate, actor: CONTRACT_ACTOR, now });
     };
 
     const runtime = await runtimeOf("first");
@@ -74,6 +100,7 @@ const harness: ContractHarness = {
       },
       setKnob: async (name: WriteKnob, flag) => {
         (fixture.knobs as FixtureKnobs)[name] = flag;
+        if (flag && (name === "dropAfterApply" || name === "failBeforeApply")) needsLookup = true;
       },
       unsettled: async (id) => {
         const local = locals[0];
@@ -88,10 +115,15 @@ const harness: ContractHarness = {
       },
       close: async () => {
         for (const local of locals) local.close();
+        assert.deepEqual(adapter.mutations, [], "all mutations bypass the host read adapter");
+        if (mode === "browser-local" && needsLookup) {
+          assert.ok(submissions > 0, "uncertain write was submitted through the injected transport");
+          assert.ok(lookups > 0, "uncertain write was looked up through the injected transport");
+        }
       },
     };
   },
-};
+});
 
 const rows = platformContractRows();
 
@@ -99,11 +131,51 @@ test(`the contract kit covers ${rows.length} rows across ${MODES.length} modes`,
   if (rows.length < 10) throw new Error(`expected at least ten rows, found ${rows.length}`);
 });
 
-for (const row of rows) {
-  test(`${row.verb}: ${row.name}`, async () => {
-    await runRow(harness, row);
-  });
+for (const structural of [false, true]) {
+  for (const row of rows) {
+    test(`${structural ? "host read adapter" : "wire"}: ${row.verb}: ${row.name}`, async () => {
+      await runRow(makeHarness(structural), row);
+    });
+  }
 }
+
+test("a structural host read adapter constructs the runtime under the TypeScript checker", () => {
+  const program = ts.createProgram([fileURLToPath(new URL("./fixtures/host-read-construction.ts", import.meta.url))], {
+    strict: true, noEmit: true, skipLibCheck: true,
+    target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
+  });
+  const errors = ts.getPreEmitDiagnostics(program);
+  assert.equal(errors.length, 0, ts.formatDiagnosticsWithColorAndContext(errors, {
+    getCanonicalFileName: (name) => name, getCurrentDirectory: () => process.cwd(), getNewLine: () => "\n",
+  }));
+});
+
+test("bare StorageBackend refresh retains missing remote documents: fallback is not deletion-complete SaaS sync", async () => {
+  const fixture = await createRemoteFixture();
+  await seedSyntheticBundle(fixture.authority);
+  const adapter = hostReadAdapter(fixture.authority);
+  const local = openLocalBundle("bare-read-adapter", { indexedDB: new IDBFactory() });
+  try {
+    assert.equal("heads" in adapter.backend, false);
+    assert.equal("snapshot" in adapter.backend, false);
+    assert.equal("wireCapabilities" in adapter.backend, false);
+    await bootstrap(adapter.backend, local);
+    const runtime = createBrowserLocalRuntime({ local, remote: adapter.backend, transport: {
+      submit: async () => { throw new Error("read-only refresh must not submit"); },
+      lookup: async () => { throw new Error("read-only refresh must not lookup"); },
+    } });
+    const before = await runtime.read("notes/alpha");
+    const authority = authorityHandle(fixture.authority, new Set());
+    await authority.write("notes/alpha", "updated by authority\n");
+    await authority.delete("tasks/one");
+    await runtime.sync();
+    const after = await runtime.read("notes/alpha");
+    assert.notEqual(after.provenance.version, before.provenance.version);
+    assert.equal(after.doc.body, "updated by authority\n");
+    assert.equal((await runtime.read("tasks/one")).doc.id, "tasks/one", "list fallback does not establish deletion authority");
+    assert.deepEqual(adapter.mutations, []);
+  } finally { local.close(); }
+});
 
 // ── two token spaces: a filesystem authority over hand-authored files ──────────────────────
 
@@ -111,7 +183,7 @@ for (const row of rows) {
 const HAND_AUTHORED = "---\ntype: Note\ntitle: Hand authored\nstatus: draft\ntags: [proof, hand]\n---\nhand-authored v1\n";
 const ALSO_HAND_AUTHORED = "---\ntype: Note\ntitle: Also hand authored\nstatus: final\ntags: [proof, hand]\n---\nalso hand-authored v1\n";
 
-test("browser-local over a filesystem authority: version is the working copy's token, acknowledged the authority's, and a commit at version succeeds", async () => {
+for (const structural of [false, true]) test(`${structural ? "host read adapter" : "wire"} over a filesystem authority: version is the working copy's token, acknowledged the authority's, and a commit at version succeeds`, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-platform-fs-"));
   const local = openLocalBundle("filesystem-authority", { indexedDB: new IDBFactory() });
   try {
@@ -123,8 +195,10 @@ test("browser-local over a filesystem authority: version is the working copy's t
     // The reference router over the filesystem, served the same way the fixture serves memory.
     const hosted = createRouter({ root, backend: authority }, { outcomes: new MemoryOperationOutcomeStore() });
     const remote = new RemoteBackend({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl: hosted, maxRetries: 0 });
-    await bootstrap(remote, local);
-    const runtime = createBrowserLocalRuntime({ local, remote, transport: createRemoteOperationTransport(remote), write: immediate, actor: CONTRACT_ACTOR, now });
+    const adapter = hostReadAdapter(remote, remote);
+    const readSide = structural ? adapter.backend : remote;
+    await bootstrap(readSide, local);
+    const runtime = createBrowserLocalRuntime({ local, remote: readSide, transport: createRemoteOperationTransport(remote), write: immediate, actor: CONTRACT_ACTOR, now });
 
     const before = await runtime.read("notes/hand");
     assert.equal(before.provenance.state, "shared-confirmed");
@@ -161,6 +235,7 @@ test("browser-local over a filesystem authority: version is the working copy's t
     assert.equal(other.version, (await readDocVersioned(local.bundle, "notes/other")).version);
     assert.equal(other.acknowledged, (await authority.read("notes/other")).version);
     assert.notEqual(other.version, other.acknowledged, "the authority's token and the working copy's differ for the untouched hand-authored file");
+    assert.deepEqual(adapter.mutations, []);
   } finally {
     local.close();
     await rm(root, { recursive: true, force: true });
