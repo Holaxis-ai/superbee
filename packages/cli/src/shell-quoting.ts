@@ -109,7 +109,9 @@ export function renderWindowsToken(value: string): string | undefined {
   // it. Doubling that run is the CRT argument rule (mirrors host-command.ts:174). It is knowingly
   // asymmetric: PowerShell delivers the doubled run literally, so a value ending in a backslash
   // arrives with one extra. Inert either way; recorded as a known fidelity divergence.
-  return `"${value.replace(/(\\+)$/, "$1$1")}"`;
+  let suffixStart = value.length;
+  while (suffixStart > 0 && value[suffixStart - 1] === "\\") suffixStart--;
+  return `"${value}${value.slice(suffixStart)}"`;
 }
 
 /** Whether `platform` can render `value` as one inert argument at all. */
