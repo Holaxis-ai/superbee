@@ -278,6 +278,21 @@ client whose response was lost can look the answer up instead of guessing.
   host without a store answers any request carrying `Idempotency-Key`, and the lookup route, with
   `400 USAGE` "request identity is not supported by this host".
 
+### Outcome-store adapter completion
+
+The server's `OperationClaim.record` and `release` callbacks may be synchronous or asynchronous.
+TypeScript consumers of this interface must await callback results, including when accessing
+`recordedAt` from the reference memory store's returned record.
+The router awaits recording before returning the identified result (including a content refusal),
+and awaits release before returning an application failure. A rejected recording produces a runtime
+failure, not the successful mutation response, and the router does not automatically release that
+possibly applied operation. The store owns reconciliation and settlement of waiting duplicates.
+Callback failures remain `500 RUNTIME` even if an adapter throws a document-typed error.
+
+Awaiting these callbacks is not a durable exactly-once protocol by itself. A persistent host must
+couple mutation evidence to its storage commit and reconcile that evidence before permitting a
+failed or interrupted claim to apply again. The reference memory store has no restart durability.
+
 ## Client behavior
 
 `RemoteBackend` maps the HTTP surface back to the `StorageBackend` seam:
