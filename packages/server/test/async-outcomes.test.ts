@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import test from "node:test";
-import { MemoryBackend } from "@superbee/core";
+import { InvalidInputError, MemoryBackend, VersionConflict } from "@superbee/core";
 import { createRouter } from "../src/router.js";
 import { MemoryOperationOutcomeStore, type OperationOutcomeStore } from "../src/operation-outcomes.js";
 
@@ -78,19 +78,30 @@ for (const refused of [false, true]) {
   });
 }
 
-test("record failure returns no success and does not release a possibly applied write", { timeout: 5000 }, async () => {
-  const f = fixture();
-  const response = f.router(put());
-  await f.entered.promise;
-  assert.ok(await f.backend.read("concepts/a"), "the mutation already happened");
-  f.gate.reject(new Error("persistence unavailable"));
-  assert.equal((await response).status, 500);
-  assert.deepEqual(f.counts(), { releases: 0, records: 1 });
-  assert.equal((await f.memory.claim(bundle, "async-1")).kind, "in_progress");
-});
+const persistenceFailures = [
+  new Error("persistence unavailable"),
+  new InvalidInputError("invalid persistence row"),
+  new VersionConflict("receipt", "sha256:expected", "sha256:actual"),
+  Object.assign(new Error("missing persistence row"), { code: "ENOENT" }),
+];
 
-for (const fails of [false, true]) {
-  test(`runtime failure awaits asynchronous release${fails ? " rejection" : " completion"}`, { timeout: 5000 }, async () => {
+for (const failure of persistenceFailures) {
+  test(`record failure (${failure.message}) returns no success and does not release a possibly applied write`, { timeout: 5000 }, async () => {
+    const f = fixture();
+    const response = f.router(put());
+    await f.entered.promise;
+    assert.ok(await f.backend.read("concepts/a"), "the mutation already happened");
+    f.gate.reject(failure);
+    const result = await response;
+    assert.equal(result.status, 500);
+    assert.equal((await result.json()).error.code, "RUNTIME");
+    assert.deepEqual(f.counts(), { releases: 0, records: 1 });
+    assert.equal((await f.memory.claim(bundle, "async-1")).kind, "in_progress");
+  });
+}
+
+for (const failure of [undefined, ...persistenceFailures]) {
+  test(`runtime failure awaits asynchronous release (${failure?.message ?? "completion"})`, { timeout: 5000 }, async () => {
     class FailingBackend extends MemoryBackend {
       override async write(..._args: Parameters<MemoryBackend["write"]>): ReturnType<MemoryBackend["write"]> {
         throw new Error("backend unavailable");
@@ -103,10 +114,12 @@ for (const fails of [false, true]) {
     await setImmediate();
     assert.equal(completed, false);
     assert.equal((await f.memory.claim(bundle, "async-1")).kind, "in_progress");
-    if (fails) f.gate.reject(new Error("release unavailable"));
+    if (failure) f.gate.reject(failure);
     else f.gate.resolve();
-    assert.equal((await response).status, 500);
+    const result = await response;
+    assert.equal(result.status, 500);
+    assert.equal((await result.json()).error.code, "RUNTIME");
     assert.deepEqual(f.counts(), { releases: 1, records: 0 });
-    assert.equal((await f.memory.claim(bundle, "async-1")).kind, fails ? "in_progress" : "claimed");
+    assert.equal((await f.memory.claim(bundle, "async-1")).kind, failure ? "in_progress" : "claimed");
   });
 }

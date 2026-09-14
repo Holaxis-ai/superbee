@@ -892,7 +892,7 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
         response = await apply();
       } catch (err) {
         if (!(err instanceof VersionConflict || err instanceof InvalidInputError || isEnoent(err))) {
-          await claim.release();
+          await settleOutcomeClaim(() => claim.release());
           throw err;
         }
         response = errorFromCaught(err);
@@ -903,11 +903,20 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
         recorded = await recordableResponse(response);
         outcome = outcomeOf(recorded);
       } catch (err) {
-        await claim.release();
+        await settleOutcomeClaim(() => claim.release());
         throw err;
       }
-      await claim.record({ method, id, response: recorded, outcome });
+      await settleOutcomeClaim(() => claim.record({ method, id, response: recorded, outcome }));
       return replayResponse(recorded);
+    }
+  }
+
+  /** Persistence errors are not document refusals, even when an adapter uses engine error types. */
+  async function settleOutcomeClaim(settle: () => unknown): Promise<void> {
+    try {
+      await settle();
+    } catch (cause) {
+      throw new Error("operation outcome persistence failed", { cause });
     }
   }
 
