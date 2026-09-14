@@ -23,6 +23,11 @@ import {
   commitLocal,
   isComplete,
   openLocalBundle,
+  inspectConflict,
+  resolveConflict,
+  conflictResolutionKey,
+  type ConflictReview,
+  type ConflictChoice,
   pull,
   pushWithRole,
   reclaimInFlight,
@@ -312,6 +317,10 @@ const driver = {
   },
 
   // ── sync verbs ───────────────────────────────────────────────────────────────────────────
+
+  inspectConflict: (id: string) => attempt(() => inspectConflict(bundleOrThrow(), remoteOrThrow().backend, id)),
+  resolveConflict: (review: ConflictReview, choice: ConflictChoice) => attempt(() => resolveConflict(bundleOrThrow(), remoteOrThrow().backend, review, choice)),
+  conflictReceipt: (id: string) => attempt(() => bundleOrThrow().backend.readMeta(conflictResolutionKey(id))),
 
   /** Open the working copy under `name` (without seeding) and bind the authority at `remoteBaseUrl`. */
   attach: (remoteBaseUrl: string, name: string) =>
