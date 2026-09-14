@@ -4,9 +4,9 @@
 // which `server.ts` broadcasts to the shell over SSE. Version tokens are content-addressed, so a
 // changed token means changed bytes — no timestamps, no content compare.
 //
-// The pure {@link diffSnapshots} is the unit-tested core; the watcher driver around it is a thin
-// fs.watch (recursive, verified on this macOS node) / poll loop with a debounce. Snapshots ride
-// the SAME head projection `list` uses (`queryHeads` — no bodies), so a scan is cheap.
+// Native filesystem notifications accelerate updates; periodic reconciliation also catches changes
+// when a successfully attached watcher silently misses a notification. Snapshots ride
+// the same head projection `list` uses (`queryHeads`), with all storage reads owned by the engine.
 import { watch as fsWatch, type FSWatcher } from "node:fs";
 import { listBlobs, readBlob, queryHeads, type Bundle } from "@superbee/core";
 import { PAGE_BLOB_PREFIXES } from "./pages.js";
@@ -111,6 +111,11 @@ export interface WatcherHandle {
   stop: () => Promise<void>;
 }
 
+/** Native notifications are injectable independently of the bundle's storage backend. */
+type WatchDirectory = (root: string, onChange: () => void) => Pick<FSWatcher, "on" | "close">;
+
+const watchDirectory: WatchDirectory = (root, onChange) => fsWatch(root, { recursive: true }, onChange);
+
 interface CommonWatcherOptions {
   onChange: (e: ChangeEvent) => void;
   onError?: (err: unknown) => void;
@@ -142,8 +147,8 @@ async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise
 
 /**
  * Start watching for changes, emitting a {@link ChangeEvent} to `opts.onChange` whenever a doc or
- * page blob's version token moves. `--dir` uses `fs.watch` recursively (debounced) with a 2s poll
- * fallback if the platform rejects a recursive watch; `--remote` polls on a fixed interval. Awaits
+ * page blob's version token moves. `--dir` uses `fs.watch` recursively (debounced) plus periodic
+ * reconciliation, waiting 2s between scans; `--remote` polls on a fixed interval. Awaits
  * a baseline snapshot before resolving, so the first change is diffed against real state.
  *
  * Snapshot runs are SERIALIZED (tasks/ui-pages-spike P1 — remote concurrency): two overlapping
@@ -153,7 +158,7 @@ async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise
  * run is in flight marks a rerun instead of overlapping; `stop()` aborts any in-flight remote
  * request and suppresses every later emission.
  */
-export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle> {
+export async function startWatcher(opts: WatcherOptions, watch: WatchDirectory = watchDirectory): Promise<WatcherHandle> {
   const aborter = new AbortController();
   // Only the BOOT-time initial snapshot is time-boxed — `--dir` mode never leaves the process
   // (no bound needed), and `--remote` mode's ONGOING polls already recover on their own schedule
@@ -196,6 +201,7 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     const debounceMs = opts.debounceMs ?? 150;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const trigger = (): void => {
+      if (stopped) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = undefined;
@@ -204,22 +210,33 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
       timer.unref?.();
     };
 
-    let watcher: FSWatcher | undefined;
-    let pollFallback: ReturnType<typeof setInterval> | undefined;
-    const startPollFallback = (): void => {
-      if (pollFallback) return;
-      pollFallback = setInterval(() => void emitDiff(), 2000);
-      pollFallback.unref?.();
+    let watcher: ReturnType<WatchDirectory> | undefined;
+    // A successful native watch is not a delivery guarantee. Keep the same serialized snapshot
+    // path running even without hints, including after a transient scan error or attachment gap.
+    let reconciliation: ReturnType<typeof setTimeout> | undefined;
+    const scheduleReconciliation = (): void => {
+      if (stopped) return;
+      reconciliation = setTimeout(() => {
+        reconciliation = undefined;
+        // A slow scan already reconciles current state. Only a native hint requests a rerun;
+        // periodic ticks must not keep a large, unchanged bundle scanning without a pause.
+        if (running) {
+          scheduleReconciliation();
+          return;
+        }
+        void emitDiff().finally(scheduleReconciliation);
+      }, 2000);
+      reconciliation.unref?.();
     };
+    scheduleReconciliation();
     try {
-      watcher = fsWatch(opts.bundle.root, { recursive: true }, () => trigger());
+      watcher = watch(opts.bundle.root, trigger);
       watcher.on("error", () => {
         watcher?.close();
         watcher = undefined;
-        startPollFallback();
       });
     } catch {
-      startPollFallback();
+      // Periodic reconciliation remains active if native watching is unavailable.
     }
 
     return {
@@ -227,7 +244,8 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
         stopped = true;
         if (timer) clearTimeout(timer);
         watcher?.close();
-        if (pollFallback) clearInterval(pollFallback);
+        watcher = undefined;
+        if (reconciliation) clearTimeout(reconciliation);
         aborter.abort();
       },
     };

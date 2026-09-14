@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  deleteDoc,
   MemoryBackend,
   readDocVersioned,
   writeBlob,
@@ -88,6 +89,26 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+test("registry deletion revokes both a prepared action and new proposals without changing the target", async () => {
+  const { bundle, launch, service } = await fixture();
+  const before = await readDocVersioned(bundle, "tasks/alpha");
+  const action = {
+    kind: "document.set-field" as const,
+    docId: "tasks/alpha",
+    field: "status",
+    value: "done",
+    expectedVersion: before.version,
+  };
+  const prepared = await service.prepare(launch.launchId, action);
+  assert.equal(prepared.status, "prepared");
+  if (prepared.status !== "prepared") return;
+
+  await deleteDoc(bundle, "views-registry/actions");
+  assert.equal((await service.commit(prepared.approvalToken)).status, "revoked");
+  assert.equal((await service.prepare(launch.launchId, action)).status, "revoked");
+  assert.equal((await readDocVersioned(bundle, "tasks/alpha")).version, before.version);
+});
 
 test("trusted action: human-confirmed scalar update uses hard CAS and returns the final receipt", async () => {
   const { bundle, launch, service } = await fixture();

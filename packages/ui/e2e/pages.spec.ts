@@ -514,12 +514,27 @@ test("P1: deleting an open page's registry doc revokes the frame — the iframe 
   const ui = await bootUiOverPagesBundle(TASKS);
   try {
     await page.goto(ui.url);
+    const minted = page.waitForResponse((response) =>
+      response.url().endsWith("/__page/mint") &&
+      response.request().postDataJSON()?.registryId === "views-registry/roadmap",
+    );
     await openRegisteredView(page, "views-registry/roadmap");
     const frame = page.frameLocator("iframe.page-frame-iframe");
     await expect(frame.locator(".item .title", { hasText: "Spike work" })).toBeVisible();
+    const { launchId } = await (await minted).json();
+    const readThroughLaunch = async () => {
+      const response = await page.request.post(`${new URL(ui.url).origin}/__ui/views/bridge`, {
+        headers: { "x-requested-with": "agentstate-lite-ui" },
+        data: { launchId, request: { bridge: "v0", type: "read", id: "revocation-read", docId: "tasks/alpha" } },
+      });
+      expect(response.ok()).toBe(true);
+      return response.json();
+    };
+    expect((await readThroughLaunch()).reply.result.id).toBe("tasks/alpha");
 
     // Delete the registry doc on disk via the CLI — the watcher pushes the removal over SSE.
     execFileSync(process.execPath, [CLI_DIST, "doc", "delete", "views-registry/roadmap", "--dir", ui.dir], { stdio: "ignore" });
+    expect((await readThroughLaunch()).reply.error.code).toBe("FORBIDDEN");
 
     // The open frame is torn down (not merely stale) and an explicit revoked state shows.
     await expect(page.locator("iframe.page-frame-iframe")).toHaveCount(0, { timeout: 10_000 });
