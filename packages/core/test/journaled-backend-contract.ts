@@ -60,6 +60,77 @@ async function withFixture(create: JournaledBackendContractOptions["create"], ru
 export function registerJournaledBackendContract(options: JournaledBackendContractOptions): void {
   const { name, create, seam } = options;
 
+  for (const action of ["write", "delete"] as const) {
+    test(`${name} journal contract: ${action} resolution refuses unsafe retirement and missing CAS`, async () => {
+      await withFixture(create, async backend => {
+        const id = "journal/unsafe-resolution";
+        const local = await backend.writeJournaled(id, doc(id, "local"), { intent: newIntent("conflict", id, null) });
+        await backend.updateIntent("conflict", "pending", { state: "conflict" });
+        await backend.writeJournaled(id, doc(id, "local"), { intent: newIntent("successor", id, local.version) });
+        for (const state of ["unknown", "in_flight", "pending"] as const) {
+          const successor = await backend.readIntent("successor");
+          await backend.updateIntent("successor", successor!.state, { state, attempts: 1 });
+          const expected = await backend.listIntents();
+          const opts = { expectedVersion: local.version, resolveIntents: { expected } };
+          await assert.rejects(action === "write" ? backend.writeJournaled(id, doc(id, "replacement"), opts) : backend.deleteJournaled(id, opts), { name: "JournalSnapshotConflict" });
+          assert.deepEqual(await backend.listIntents(), expected);
+        }
+        const successor = await backend.readIntent("successor");
+        await backend.updateIntent("successor", successor!.state, { state: "refused" });
+        const expected = await backend.listIntents();
+        await assert.rejects(action === "write"
+          ? backend.writeJournaled(id, doc(id, "replacement"), { resolveIntents: { expected } })
+          : backend.deleteJournaled(id, { resolveIntents: { expected } }), { name: "JournalSnapshotConflict" });
+        await backend.delete(id);
+        await assert.rejects(backend.deleteJournaled(id, { expectedVersion: local.version, resolveIntents: { expected } }), seam.VersionConflict);
+        assert.deepEqual(await backend.listIntents(), expected);
+      });
+    });
+    test(`${name} journal contract: ${action} resolution atomically retires only the complete conflict snapshot`, async () => {
+      await withFixture(create, async backend => {
+        const id = "journal/resolve";
+        const first = await backend.writeJournaled(id, doc(id, "base"), { intent: newIntent("history", id, null) });
+        await backend.updateIntent("history", "pending", { state: "acknowledged" });
+        const local = await backend.writeJournaled(id, doc(id, "local"), { intent: newIntent("conflict", id, first.version) });
+        await backend.updateIntent("conflict", "pending", { state: "conflict" });
+        const expected = (await backend.listIntents()).filter(row => row.state !== "acknowledged");
+        const meta = [{ key: "archive", value: expected }];
+        if (action === "write") await backend.writeJournaled(id, doc(id, "resolved"), {
+          expectedVersion: local.version, resolveIntents: { expected }, meta, intent: newIntent("fresh", id, first.version),
+        });
+        else await backend.deleteJournaled(id, { expectedVersion: local.version, resolveIntents: { expected }, meta });
+        assert.equal((await backend.readIntent("history"))?.state, "acknowledged");
+        assert.equal(await backend.readIntent("conflict"), undefined);
+        assert.deepEqual(await backend.readMeta("archive"), expected);
+        if (action === "write") assert.equal((await backend.readIntent("fresh"))?.state, "pending");
+        else assert.equal(await backend.exists(id), false);
+      });
+    });
+
+    for (const drift of ["added", "missing", "state", "content", "attempts", "stale", "meta"] as const) {
+      test(`${name} journal contract: ${action} resolution ${drift} refusal rolls back all stores`, async () => {
+        await withFixture(create, async backend => {
+          const id = "journal/resolve-race";
+          const local = await backend.writeJournaled(id, doc(id, "local"), { intent: newIntent("conflict", id, null) });
+          await backend.updateIntent("conflict", "pending", { state: "conflict" });
+          const expected = await backend.listIntents();
+          if (drift === "added") await backend.writeJournaled(id, doc(id, "local"), { intent: newIntent("added", id, local.version) });
+          if (drift === "missing") expected.push({ ...expected[0]!, requestId: "missing" });
+          if (drift === "state") await backend.updateIntent("conflict", "conflict", { state: "unknown" });
+          if (drift === "content") await backend.updateIntent("conflict", "conflict", { content: "changed evidence" });
+          if (drift === "attempts") await backend.updateIntent("conflict", "conflict", { attempts: 1 });
+          const before = await backend.readWithJournal(id, { meta: ["archive"] });
+          const opts = { expectedVersion: drift === "stale" ? STALE : local.version, resolveIntents: { expected }, meta: [{ key: "archive", value: drift === "meta" ? () => 0 : "must rollback" }] };
+          await assert.rejects(action === "write"
+            ? backend.writeJournaled(id, doc(id, "replacement"), { ...opts, intent: newIntent("fresh", id, null) })
+            : backend.deleteJournaled(id, opts));
+          assert.deepEqual(await backend.readWithJournal(id, { meta: ["archive"] }), before);
+          assert.equal(await backend.readIntent("fresh"), undefined);
+        });
+      });
+    }
+  }
+
   test(`${name} journal contract: a journaled write records the document, its intent, and its meta rows together, and a failed document CAS records none of them`, async () => {
     await withFixture(create, async (backend) => {
       const id = "journal/atomic";

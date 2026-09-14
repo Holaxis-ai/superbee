@@ -30,6 +30,11 @@
  *   says `held` and names the holder. A caller that must rewrite a held document's shared base
  *   (a pull reconciling a remote deletion) does it there, so no other realm can settle the
  *   holding intent between the refusal and the rewrite.
+ * - `resolveIntents` on either journaled mutation requires document CAS and the exact complete
+ *   unsettled target journal. It retires those records atomically with the document, meta, and
+ *   optional replacement intent, leaving acknowledged history untouched. Recovery may retire
+ *   conflicts, refusals, and never-attempted pending successors, never uncertain delivery. The
+ *   caller preserves recovery evidence in meta; retirement does not assert remote acceptance.
  * - {@link JournaledBackend.readWithJournal} is ONE snapshot: the document, every intent
  *   targeting it, and the named meta rows, read in one readonly transaction, so a write in
  *   another realm between separate reads can never show a caller a document of one moment
@@ -125,8 +130,48 @@ export interface MetaRecord {
   value: unknown;
 }
 
+/** Recovery was composed against a different or unsafe unsettled journal snapshot. */
+export class JournalSnapshotConflict extends Error {
+  override readonly name = "JournalSnapshotConflict";
+  readonly target: ConceptId;
+  constructor(target: ConceptId) {
+    super(`journal snapshot for '${target}' changed or cannot be resolved`);
+    this.target = target;
+  }
+}
+
+export function assertJournalResolutionOptions(target: ConceptId, options: JournaledWriteOptions | JournaledDeleteOptions): void {
+  if (!options.resolveIntents) return;
+  if (options.expectedVersion === undefined || options.requireSettled !== undefined ||
+      ("intent" in options && options.intent !== undefined && options.intent.target !== target) ||
+      ("supersede" in options && options.supersede !== undefined) || ("onHeld" in options && options.onHeld !== undefined)) {
+    throw new JournalSnapshotConflict(target);
+  }
+}
+
+/** Compare full records, not only state: a changed outcome or retry is new recovery evidence. */
+export function assertJournalSnapshot(target: ConceptId, expected: IntentRecord[], current: IntentRecord[], freshRequestId?: string): void {
+  const equal = (a: unknown, b: unknown): boolean => {
+    if (Object.is(a, b)) return true;
+    if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every(key => Object.prototype.hasOwnProperty.call(b, key) &&
+      equal((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
+  };
+  const actual = current.filter(row => row.target === target && row.state !== "acknowledged");
+  const ids = new Set(expected.map(row => row.requestId));
+  if ((freshRequestId !== undefined && current.some(row => row.requestId === freshRequestId)) ||
+      ids.size !== expected.length || actual.length !== expected.length || !expected.some(row => row.state === "conflict") ||
+      expected.some(row => row.target !== target || !(row.state === "conflict" || row.state === "refused" || (row.state === "pending" && row.attempts === 0))) ||
+      expected.some(row => !equal(row, actual.find(candidate => candidate.requestId === row.requestId)))) {
+    throw new JournalSnapshotConflict(target);
+  }
+}
+
 /** Options for {@link JournaledBackend.writeJournaled}. */
 export interface JournaledWriteOptions extends WriteOptions {
+  /** Retire this exact complete unsettled target snapshot atomically with document and meta writes. */
+  resolveIntents?: { expected: IntentRecord[] };
   /** Record this intent in the same transaction as the document write. */
   intent?: NewIntentRecord;
   /** An unsettled intent this write composes over; deleted only while its state and attempts still match. */
@@ -144,6 +189,8 @@ export interface JournaledWriteOptions extends WriteOptions {
 
 /** Options for {@link JournaledBackend.deleteJournaled}. */
 export interface JournaledDeleteOptions extends DeleteOptions {
+  /** As write recovery; requires document CAS even when the target is absent. */
+  resolveIntents?: { expected: IntentRecord[] };
   /** Meta rows to put in the same transaction; they apply only when the deletion applies or the target is absent. */
   meta?: MetaRecord[];
   /** Meta keys to remove in the same transaction; a key with no row is not an error. Applied as `meta` is. */

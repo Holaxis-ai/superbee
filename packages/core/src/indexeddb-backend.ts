@@ -34,6 +34,8 @@ import { resolveContentType } from "./content-type.js";
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
 import {
+  assertJournalResolutionOptions,
+  assertJournalSnapshot,
   IntentHoldConflict,
   IntentStateConflict,
   type IntentPatch,
@@ -649,6 +651,7 @@ export class IndexedDbBackend implements JournaledBackend {
     options: JournaledWriteOptions = {},
   ): Promise<{ version: Version; raw: string; intent: IntentRecord | null }> {
     assertSafeConceptId(id);
+    assertJournalResolutionOptions(id, options);
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
     const version = versionOfBytes(raw);
     const updatedBy = options.actor?.trim() || defaultActor();
@@ -728,6 +731,17 @@ export class IndexedDbBackend implements JournaledBackend {
             removeSuperseded();
           });
         };
+        if (options.resolveIntents) {
+          request(intents.getAll(), "resolution snapshot", (rows) => {
+            assertJournalSnapshot(id, options.resolveIntents!.expected, rows as IntentRecord[], intent?.requestId);
+            for (const row of options.resolveIntents!.expected) {
+              const removal = intents.delete(row.requestId);
+              removal.onerror = () => fail(requestError(removal, "IndexedDB resolution delete failed"));
+            }
+            writeDocument();
+          });
+          return;
+        }
         if (!requireSettled) {
           writeDocument();
           return;
@@ -757,6 +771,7 @@ export class IndexedDbBackend implements JournaledBackend {
    */
   async deleteJournaled(id: ConceptId, options: JournaledDeleteOptions = {}): Promise<JournaledDeleteResult> {
     assertSafeConceptId(id);
+    assertJournalResolutionOptions(id, options);
     const expected = options.expectedVersion;
     const { requireSettled, onHeld } = options;
     const puts = options.meta ?? [];
@@ -785,6 +800,10 @@ export class IndexedDbBackend implements JournaledBackend {
       const deleteDocument = () => {
         request(documents.get(id), "read", (current) => {
           const record = current as DocumentRecord | undefined;
+          if (options.resolveIntents && expected !== (record?.version ?? null)) {
+            fail(new VersionConflict(id, expected!, record?.version ?? null));
+            return;
+          }
           if (!record) {
             applyMeta();
             done({ outcome: "absent" });
@@ -800,6 +819,17 @@ export class IndexedDbBackend implements JournaledBackend {
           done({ outcome: "deleted" });
         });
       };
+      if (options.resolveIntents) {
+        request(intents.getAll(), "resolution snapshot", (rows) => {
+          assertJournalSnapshot(id, options.resolveIntents!.expected, rows as IntentRecord[]);
+          for (const row of options.resolveIntents!.expected) {
+            const removal = intents.delete(row.requestId);
+            removal.onerror = () => fail(requestError(removal, "IndexedDB resolution delete failed"));
+          }
+          deleteDocument();
+        });
+        return;
+      }
       if (!requireSettled) {
         deleteDocument();
         return;

@@ -14,6 +14,8 @@
 
 import { stringifyDoc } from "@superbee/core/document-codec";
 import {
+  assertJournalResolutionOptions,
+  assertJournalSnapshot,
   IntentHoldConflict,
   IntentStateConflict,
   type IntentPatch,
@@ -162,6 +164,8 @@ export class MemoryJournaledBackend implements JournaledBackend {
 
   async writeJournaled(id: ConceptId, doc: OkfDocument, options: JournaledWriteOptions = {}): Promise<{ version: Version; raw: string; intent: IntentRecord | null }> {
     assertSafeConceptId(id);
+    assertJournalResolutionOptions(id, options);
+    if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()], options.intent?.requestId);
     const now = new Date().toISOString();
     const { intent, supersede, requireSettled } = options;
     // Every check runs before any mutation, with no await between them: that is this adapter's
@@ -185,13 +189,15 @@ export class MemoryJournaledBackend implements JournaledBackend {
     // before opening its transaction.
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
     const version = versionOfBytes(raw);
-    const meta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta ?? [];
+    const meta = structuredClone(typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta ?? []);
+    const preparedIntent = intent ? structuredClone({ ...intent, local: version, content: raw, sequence: this.#sequence + 1, attempts: 0, state: "pending" as const, updatedAt: now }) : null;
     this.#putDocument(id, doc, undefined, options.actor, now);
     if (supersede) this.#intents.delete(supersede.requestId);
+    for (const row of options.resolveIntents?.expected ?? []) this.#intents.delete(row.requestId);
     let record: IntentRecord | null = null;
     if (intent) {
       this.#sequence += 1;
-      record = { ...intent, local: version, content: raw, sequence: this.#sequence, attempts: 0, state: "pending", updatedAt: now };
+      record = preparedIntent!;
       this.#intents.set(record.requestId, structuredClone(record));
     }
     for (const row of meta) this.#meta.set(row.key, structuredClone(row.value));
@@ -200,6 +206,8 @@ export class MemoryJournaledBackend implements JournaledBackend {
 
   async deleteJournaled(id: ConceptId, options: JournaledDeleteOptions = {}): Promise<JournaledDeleteResult> {
     assertSafeConceptId(id);
+    assertJournalResolutionOptions(id, options);
+    if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()]);
     // Every check runs before any mutation, with no await between them, as in `writeJournaled`.
     if (options.requireSettled) {
       const holder = [...this.#intents.values()].sort(bySequence).find((row) => row.target === id && row.state !== "acknowledged");
@@ -210,11 +218,13 @@ export class MemoryJournaledBackend implements JournaledBackend {
       }
     }
     const current = this.#documents.get(id)?.version ?? null;
-    if (current !== null && options.expectedVersion !== undefined && options.expectedVersion !== current) {
+    if ((current !== null || options.resolveIntents) && options.expectedVersion !== undefined && options.expectedVersion !== current) {
       throw new VersionConflict(id, options.expectedVersion, current);
     }
+    const meta = structuredClone(options.meta ?? []);
     const removed = this.#documents.delete(id);
-    for (const row of options.meta ?? []) this.#meta.set(row.key, structuredClone(row.value));
+    for (const row of options.resolveIntents?.expected ?? []) this.#intents.delete(row.requestId);
+    for (const row of meta) this.#meta.set(row.key, row.value);
     for (const key of options.removeMeta ?? []) this.#meta.delete(key);
     return { outcome: removed ? "deleted" : "absent" };
   }

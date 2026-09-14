@@ -67,6 +67,7 @@ import { IndexedDbBackend, type IdbFactoryLike } from "@superbee/core/indexeddb-
 import {
   IntentHoldConflict,
   IntentStateConflict,
+  assertJournalSnapshot,
   type IntentRecord,
   type JournaledBackend,
   type MetaRecord,
@@ -693,6 +694,159 @@ export async function commitLocal(local: LocalTarget, id: ConceptId, mutation: L
     strict: strict ?? false,
   });
   return { ...result, intent: recorded.intent };
+}
+
+/** A reviewable snapshot, not permission to overwrite a later local or shared version. */
+export interface ConflictReview {
+  id: ConceptId;
+  local: { version: Version; content: string };
+  base: SharedBase;
+  remote: SharedBase;
+  intents: IntentRecord[];
+}
+
+export type ConflictChoice =
+  | { kind: "keep-local" }
+  | { kind: "take-remote" }
+  | { kind: "revise"; body: string; frontmatter?: OkfDocument["frontmatter"] };
+
+/** Retained in the same transaction as the resolution, including all replaced local intents. */
+export interface ConflictResolutionReceipt {
+  id: string;
+  reviewed: ConflictReview;
+  choice: ConflictChoice["kind"];
+  resolvedAt: string;
+  replacementRequestId: string | null;
+}
+
+export interface ConflictResolutionResult {
+  receipt: ConflictResolutionReceipt;
+  intent: IntentRecord | null;
+  version: Version | null;
+}
+
+export class ConflictReviewStaleError extends Error {
+  constructor() {
+    super("The conflict changed since review. Inspect it again before choosing a resolution.");
+    this.name = "ConflictReviewStaleError";
+  }
+}
+
+/** Durable recovery receipt key; receipts are retained, not silently pruned with pending edits. */
+export function conflictResolutionKey(id: string): string { return `conflict-resolution:${id}`; }
+
+async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promise<{ base: SharedBase; doc: OkfDocument | null }> {
+  try {
+    const read = await remote.read(id);
+    return { base: { version: read.version, content: stringifyDoc(read.doc.frontmatter, read.doc.body ?? "") }, doc: read.doc };
+  } catch (error) {
+    if ((error as { code?: unknown })?.code === "ENOENT") return { base: { version: null, content: null }, doc: null };
+    throw error;
+  }
+}
+
+async function conflictLocal(backend: JournaledBackend, id: ConceptId) {
+  const snapshot = await backend.readWithJournal(id);
+  const intents = snapshot.intents.filter(row => row.state !== "acknowledged");
+  assertJournalSnapshot(id, intents, snapshot.intents);
+  if (!snapshot.document || snapshot.raw === null || intents[0]?.state !== "conflict") {
+    throw new InvalidInputError("Conflict recovery requires an existing local document and a conflicted first pending edit.");
+  }
+  for (let index = 1; index < intents.length; index++) {
+    if (intents[index]!.after !== intents[index - 1]!.requestId || intents[index]!.base !== intents[index - 1]!.local) {
+      throw new InvalidInputError("Conflict recovery requires one dependent edit chain.");
+    }
+  }
+  const latest = intents[intents.length - 1]!;
+  if (latest.local !== snapshot.document.version || latest.content !== snapshot.raw) {
+    throw new InvalidInputError("The working document is not the latest journaled edit; preserve and reconcile it before resolving.");
+  }
+  return { snapshot, intents, document: snapshot.document };
+}
+
+/** Fetch the shared head explicitly; authorization/network failure is never treated as deletion. */
+export async function inspectConflict(local: LocalTarget, remote: StorageBackend, id: ConceptId): Promise<ConflictReview> {
+  const { snapshot, intents, document } = await conflictLocal(backendOf(local), id);
+  const shared = await readConflictRemote(remote, id);
+  return {
+    id,
+    local: { version: document.version, content: snapshot.raw! },
+    base: { version: intents[0]!.base, content: intents[0]!.baseContent },
+    remote: shared.base,
+    intents,
+  };
+}
+
+/**
+ * Resolve exactly the reviewed local chain against the reviewed shared head. A fresh remote
+ * read verifies the decision; a later remote edit is still protected by the replacement's CAS
+ * on push. Taking remote adopts that served snapshot, not a promise it can never change.
+ * No network write occurs here. Old content and identities remain in the recovery receipt.
+ */
+export async function resolveConflict(
+  local: LocalTarget,
+  remote: StorageBackend,
+  reviewed: ConflictReview,
+  choice: ConflictChoice,
+  options: Pick<LocalMutation, "actor" | "producer" | "now" | "registry" | "strict"> = {},
+): Promise<ConflictResolutionResult> {
+  const review = structuredClone(reviewed);
+  const selected = structuredClone(choice);
+  if (!["keep-local", "take-remote", "revise"].includes(selected.kind)) throw new InvalidInputError("Unknown conflict resolution choice.");
+  const backend = backendOf(local);
+  const current = await conflictLocal(backend, review.id);
+  assertJournalSnapshot(review.id, review.intents, current.intents);
+  if (current.document.version !== review.local.version || current.snapshot.raw !== review.local.content) throw new ConflictReviewStaleError();
+  const shared = await readConflictRemote(remote, review.id);
+  if (shared.base.version !== review.remote.version || shared.base.content !== review.remote.content) throw new ConflictReviewStaleError();
+  const resolvedAt = options.now?.() ?? new Date().toISOString();
+  const requestId = selected.kind === "take-remote" ? null : mintRequestId();
+  const receipt: ConflictResolutionReceipt = {
+    // The original conflict identity lets a caller recover the receipt after a lost local reply.
+    id: current.intents[0]!.requestId,
+    reviewed: { ...review, base: { version: current.intents[0]!.base, content: current.intents[0]!.baseContent }, intents: current.intents },
+    choice: selected.kind, resolvedAt, replacementRequestId: requestId,
+  };
+  const resolveIntents = { expected: current.intents };
+  const meta: MetaRecord[] = [
+    { key: conflictResolutionKey(receipt.id), value: receipt },
+    { key: baseKey(review.id), value: shared.base },
+  ];
+  const common = { expectedVersion: review.local.version, resolveIntents, meta, actor: options.actor };
+  if (selected.kind === "take-remote") {
+    if (!shared.doc) {
+      await backend.deleteJournaled(review.id, common);
+      return { receipt, version: null, intent: null };
+    }
+    const written = await backend.writeJournaled(review.id, shared.doc, common);
+    return { receipt, version: written.version, intent: null };
+  }
+  const intent: NewIntentRecord = {
+    requestId: requestId!, kind: "document.write", target: review.id,
+    base: shared.base.version, baseContent: shared.base.content, createdAt: resolvedAt,
+  };
+  let written: Awaited<ReturnType<JournaledBackend["writeJournaled"]>> | undefined;
+  const write = async (id: ConceptId, doc: OkfDocument): Promise<Version> => {
+    if (id !== review.id) throw new InvalidInputError("Conflict resolution cannot write another document.");
+    written = await backend.writeJournaled(id, doc, { ...common, intent });
+    return written.version;
+  };
+  const persistence = new Proxy(backend, { get(inner, key) {
+    if (key === "write") return write;
+    const value = Reflect.get(inner, key, inner);
+    return typeof value === "function" ? value.bind(inner) : value;
+  } });
+  const result = await mutateDocument({
+    ...options, bundle: { ...bundleOf(local), backend: persistence }, id: review.id,
+    mode: "patch", expectedVersion: review.local.version,
+    registry: options.registry ?? EMPTY_REGISTRY, strict: options.strict ?? false,
+    buildCandidate: existing => selected.kind === "keep-local"
+      ? { frontmatter: existing!.frontmatter, body: existing!.body }
+      : { frontmatter: selected.frontmatter ?? existing!.frontmatter, body: selected.body },
+  });
+  // A validated semantic no-op still resolves the rejected identity and records a fresh one.
+  if (!written) await write(review.id, result.doc);
+  return { receipt, version: written!.version, intent: written!.intent };
 }
 
 // ── push ───────────────────────────────────────────────────────────────────────────────────
