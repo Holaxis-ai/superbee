@@ -71,7 +71,7 @@
 //   7. `` `superbee doc read ${v}` `` — the same idea in a template: the CLI name as literal text
 //      and the value in a POSITIONAL slot, so there is neither a brand nor a flag to key on. The
 //      flag-adjacent form of this IS caught; only the positional form escapes.
-//   8. Scope: `.ts` files under `packages/cli/src` only. `.js` files inside `src` are skipped, and
+//   8. Scope: `.ts` files under `packages/cli-runtime/src` only. `.js` files inside `src` are skipped, and
 //      no other package is scanned. No command emission exists outside this package today; nothing
 //      enforces that it stays that way. The coverage canary pins the file set within that scope.
 //   9. `-o ${value}` — single-dash flags are not in the flag-adjacency pattern.
@@ -283,7 +283,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 /**
- * Type-check `packages/cli/src` and report every command-shaped template literal interpolation that
+ * Type-check `packages/cli-runtime/src` and report every command-shaped template literal interpolation that
  * did not come from the quoting authority. `srcDir` is the directory to scan; `tsconfigPath` supplies
  * the same compiler options the package builds with, so the branded type resolves identically.
  */
