@@ -21,7 +21,7 @@ import {
   verificationPolicy,
 } from "./verify-npm-package.mjs";
 import { publishedManifest } from "./pack-npm-package.mjs";
-import { npmInvocation as uiBuildNpmInvocation } from "../packages/cli/scripts/embed-ui-assets.mjs";
+import { npmInvocation as uiBuildNpmInvocation } from "../packages/cli-runtime/scripts/embed-ui-assets.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

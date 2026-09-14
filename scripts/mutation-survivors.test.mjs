@@ -40,11 +40,11 @@ test("survivorsFromReport: survived + no-coverage mutants become rows with the m
       { status: "NoCoverage", mutatorName: "BlockStatement", replacement: "{}", location: loc(1, 25, 26) },
       { status: "Killed", mutatorName: "EqualityOperator", replacement: "!==", location: loc(2, 12, 14) },
     ]),
-    "packages/cli",
+    "packages/cli-runtime",
   );
   assert.equal(rows.length, 2);
   const survived = rows.find((r) => r.status === "Survived");
-  assert.equal(survived.file, "packages/cli/src/f.ts");
+  assert.equal(survived.file, "packages/cli-runtime/src/f.ts");
   assert.equal(survived.line, 2);
   assert.equal(survived.original, "a + b");
   assert.equal(survived.replacement, "a - b");

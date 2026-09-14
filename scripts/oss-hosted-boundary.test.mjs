@@ -47,13 +47,13 @@ test("OSS distribution excludes the frozen hosted implementation and control-pla
   const retiredPaths = [
     "packages/worker",
     "packages/core/src/auth-wire.ts",
-    "packages/cli/src/auth-client.ts",
-    "packages/cli/src/commands/invite.ts",
-    "packages/cli/src/commands/join.ts",
-    "packages/cli/src/commands/key.ts",
-    "packages/cli/src/commands/login.ts",
-    "packages/cli/src/commands/member.ts",
-    "packages/cli/src/commands/whoami.ts",
+    "packages/cli-runtime/src/auth-client.ts",
+    "packages/cli-runtime/src/commands/invite.ts",
+    "packages/cli-runtime/src/commands/join.ts",
+    "packages/cli-runtime/src/commands/key.ts",
+    "packages/cli-runtime/src/commands/login.ts",
+    "packages/cli-runtime/src/commands/member.ts",
+    "packages/cli-runtime/src/commands/whoami.ts",
   ];
 
   const present = [];
@@ -115,7 +115,7 @@ test("generic wire source authorities remain public after hosted extraction", as
     readFile(path.join(root, "packages/server/src/legacy-router.ts"), "utf8"),
     readFile(path.join(root, "packages/server/src/index.ts"), "utf8"),
     readFile(path.join(root, "packages/server/package.json"), "utf8").then(JSON.parse),
-    readFile(path.join(root, "packages/cli/src/commands/serve.ts"), "utf8"),
+    readFile(path.join(root, "packages/cli-runtime/src/commands/serve.ts"), "utf8"),
   ]);
 
   assert.match(remoteBackend, /export class RemoteBackend/);

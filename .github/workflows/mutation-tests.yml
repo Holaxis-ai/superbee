@@ -1,7 +1,7 @@
 name: Mutation tests
 
 # Measures the SUITE, not the code: Stryker seeds artificial defects into packages/core/src and
-# packages/cli/src and reports how many the test suite kills — tasks/mutation-testing, item 2 of
+# packages/cli-runtime/src and reports how many the test suite kills — tasks/mutation-testing, item 2 of
 # plans/test-suite-confidence ("a number, not a feeling"). Survivors are the suite's named gaps;
 # the run's job summary lists them for filing as board tasks.
 #
@@ -68,7 +68,7 @@ jobs:
           TARGET: ${{ inputs.target }}
         run: |
           core='{"package":"core","workspace":"@superbee/core"}'
-          cli='{"package":"cli","workspace":"superbee"}'
+          cli='{"package":"cli-runtime","workspace":"@superbee/cli"}'
           boardgit='{"package":"board-git","workspace":"@superbee/board-git"}'
           case "${TARGET:-both}" in
             core) include="$core" ;;

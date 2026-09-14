@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { isMainModule } from "../../scripts/is-main-module.mjs";
 import { buildBundleDescriptorBundle, buildCliBundle, buildPublicationBundle } from "./scripts/build-bundle.mjs";
-import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
+import { prepareCliBundleInputs } from "../cli-runtime/scripts/prepare-bundle-inputs.mjs";
 import { FUNCTIONAL_VERSION_FLOOR } from "./scripts/functional-version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));

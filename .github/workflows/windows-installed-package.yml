@@ -41,10 +41,10 @@ jobs:
           npm test -w @superbee/publication
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run Windows command-output regressions first
-        working-directory: packages/cli
+        working-directory: packages/cli-runtime
         run: node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts
       - name: Run the managed UI Windows startup proof first
-        working-directory: packages/cli
+        working-directory: packages/cli-runtime
         run: node --test --test-name-pattern="built CLI returns while its managed document remains live|managed worker preserves an indexless project-binding boundary" --import ./test/ts-loader.mjs ./test/ui-managed-authority.test.ts ./test/ui.test.ts
       - name: Typecheck the complete workspace contract natively
         run: npm run typecheck --workspaces --if-present --ignore-scripts
@@ -70,7 +70,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Run the CLI runtime contract
-        working-directory: packages/cli
+        working-directory: packages/cli-runtime
         run: node scripts/run-test-command.mjs node --test --test-shard=${{ matrix.shard }}/4 --import ./test/ts-loader.mjs './test/*.test.ts'
 
   windows-package:
