@@ -58,7 +58,16 @@ assert.deepEqual(readdirSync(process.env.HOME), []); assert.deepEqual(readdirSyn
     await writeFile(path.join(scratch, "references", "proof.md"), "External resource proof\n");
     const entry = path.join(scratch, "dist", "fixture.mjs");
     await writeFile(entry, `import assert from 'node:assert/strict'; import { createHash } from 'node:crypto'; import { readFileSync, realpathSync } from 'node:fs'; import { fileURLToPath } from 'node:url';
-import { configureSourceIdentity, registerExecutableEntry, buildIdentityEnvelope, cliVersion, main } from '@superbee/cli';
+globalThis.__SUPERBEE_BUILD_IDENTITY__ = {
+  schema:'superbee.build-identity.v1', package:{name:'ambient-host',version:'9.9.9'},
+  source:{commit:null,dirty:null}, artifact:{channel:'npm-package'},
+  compatibility_contracts:{skill:1,hook:1,mcp:1}
+};
+globalThis.__SUPERBEE_FUNCTIONAL_VERSION_FLOOR__ = '1.0.0';
+globalThis.__SUPERBEE_UPDATE_POLICY__ = {enabled:true};
+let registryCalls = 0;
+globalThis.fetch = async () => { registryCalls++; throw new Error('unexpected registry access'); };
+const { configureSourceIdentity, registerExecutableEntry, buildIdentityEnvelope, cliVersion, main } = await import('@superbee/cli');
 const pkg = {name:'superbee',version:'1.2.3'}; configureSourceIdentity(pkg); pkg.version = '9.9.9';
 configureSourceIdentity({name:'superbee',version:'1.2.3'});
 assert.throws(() => configureSourceIdentity({name:'superbee',version:'2.0.0'}), /already/);
@@ -67,9 +76,19 @@ assert.throws(() => registerExecutableEntry(fileURLToPath(import.meta.resolve('@
 const envelope = buildIdentityEnvelope(); assert.equal(cliVersion(), '1.2.3'); assert.equal(envelope.identity.runtime.executable_path, entry);
 assert.equal(envelope.identity.artifact.sha256, 'sha256:' + createHash('sha256').update(readFileSync(entry)).digest('hex'));
 await main(process.argv.slice(2));
+assert.equal(registryCalls, 0, 'ambient globals must not enable update checks');
 `);
     const version = await run([entry, "version", "--json"], cwd, env);
-    assert.equal(JSON.parse(version.stdout).identity.package.version, "1.2.3");
+    assert.deepEqual(JSON.parse(version.stdout).identity.package, { name: "superbee", version: "1.2.3" });
+    await assert.rejects(run([entry, "version", "--check", "--json"], cwd, env), error => {
+      assert.equal(error.code, 1);
+      const output = JSON.parse(error.stdout);
+      assert.equal(output.check.unavailable.code, "policy_disabled");
+      assert.equal(output.check.unavailable.message, "supported-release checks are disabled for this build target");
+      assert.deepEqual(output.identity.package, { name: "superbee", version: "1.2.3" });
+      assert.equal(error.stderr, "");
+      return true;
+    });
     assert.match((await run([entry, "help"], cwd, env)).stdout, /superbee/);
     await run([entry, "skill", "install", "--scope", "project"], cwd, env);
     assert.equal(await readFile(path.join(cwd, ".claude/skills/superbee/SKILL.md"), "utf8"), "# External fixture skill\n");

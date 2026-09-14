@@ -8,7 +8,15 @@ import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
 const root = dirname(fileURLToPath(import.meta.url));
 await rm(resolve(root, "dist"), { recursive: true, force: true });
 await prepareCliBundleInputs();
-await build({ absWorkingDir: root, entryPoints: [resolve(root, "src/index.ts")], outfile: resolve(root, "dist/index.mjs"), bundle: true, platform: "node", format: "esm", target: "node20", alias: workspaceAliases, banner: runtimeBanner });
+await build({ absWorkingDir: root, entryPoints: [resolve(root, "src/index.ts")], outfile: resolve(root, "dist/index.mjs"), bundle: true, platform: "node", format: "esm", target: "node20", alias: workspaceAliases, banner: runtimeBanner,
+  // A reusable library has no baked distribution policy or identity. Fold their absence into the
+  // artifact so a host's same-named globals cannot override its explicit source identity.
+  define: {
+    __SUPERBEE_BUILD_IDENTITY__: "undefined",
+    __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__: "undefined",
+    __SUPERBEE_UPDATE_POLICY__: "undefined",
+  },
+});
 // The facade has explicit closed signatures. Generate declarations from these signatures instead
 // of publishing declarations for internal engine, transport, and command implementations.
 await mkdir(resolve(root, "dist"), { recursive: true });
