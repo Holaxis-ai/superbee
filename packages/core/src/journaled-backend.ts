@@ -56,6 +56,157 @@
 
 import type { OperationIntent, OperationState } from "./uncertain-write.js";
 import type { ConceptId, DeleteOptions, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "./types.js";
+import { assertSafeConceptId } from "./paths.js";
+
+/** Presence is independent of value: a stored undefined is not an absent row. */
+export type MetaExpectation = { present: false } | { present: true; value: unknown };
+
+/** A complete target snapshot and the explicitly named metadata premises for a mutation. */
+export interface JournalGuard {
+  target: ConceptId;
+  document: { version: Version; raw: string } | null;
+  intents: IntentRecord[];
+  meta: { key: string; expected: MetaExpectation }[];
+}
+
+/** A full snapshot or metadata admission premise changed; nothing was written. */
+export class JournalGuardConflict extends Error {
+  override readonly name = "JournalGuardConflict";
+  readonly target: string;
+  constructor(target: string) {
+    super(`journal guard for '${target}' does not match or is invalid`);
+    this.target = target;
+  }
+}
+
+/**
+ * Guard values are acyclic plain records, arrays, and primitive values (including undefined).
+ * Symbols, accessors, functions, and objects with other prototypes are refused. This restriction
+ * applies only to guarded operations; the unguarded metadata store remains opaque.
+ */
+export function captureJournalValue<T>(value: T): T {
+  const ancestors = new Set<object>();
+  const check = (entry: unknown): void => {
+    if (typeof entry === "function" || typeof entry === "symbol") throw new JournalGuardConflict("value");
+    if (entry === null || typeof entry !== "object") return;
+    if (ancestors.has(entry) || (!Array.isArray(entry) && Object.getPrototypeOf(entry) !== Object.prototype && Object.getPrototypeOf(entry) !== null)) throw new JournalGuardConflict("value");
+    ancestors.add(entry);
+    for (const key of Reflect.ownKeys(entry)) {
+      if (typeof key !== "string") throw new JournalGuardConflict("value");
+      const descriptor = Object.getOwnPropertyDescriptor(entry, key)!;
+      if (!("value" in descriptor) || (!descriptor.enumerable && !(Array.isArray(entry) && key === "length"))) throw new JournalGuardConflict("value");
+      check(descriptor.value);
+    }
+    ancestors.delete(entry);
+  };
+  check(value);
+  return structuredClone(value);
+}
+
+function equalJournalValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && a.length !== (b as unknown[]).length) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && equalJournalValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
+}
+
+function assertMetaExpectation(value: MetaExpectation): void {
+  if (!value || typeof value !== "object" || typeof value.present !== "boolean" ||
+      !equalJournalValue(Object.keys(value).sort(), (value.present ? ["present", "value"] : ["present"]).sort())) throw new JournalGuardConflict("meta");
+}
+
+export function captureJournalGuard(value: JournalGuard, target = value.target): JournalGuard {
+  const guard = captureJournalValue(value);
+  assertSafeConceptId(guard.target);
+  if (guard.target !== target || !Array.isArray(guard.intents) || !Array.isArray(guard.meta) ||
+      (guard.document !== null && (!guard.document || typeof guard.document.version !== "string" || typeof guard.document.raw !== "string"))) throw new JournalGuardConflict(target);
+  const requests = new Set<string>(), sequences = new Set<number>(), keys = new Set<string>();
+  for (const row of guard.intents) {
+    if (!row || row.target !== target || typeof row.requestId !== "string" || requests.has(row.requestId) || !Number.isSafeInteger(row.sequence) || sequences.has(row.sequence)) throw new JournalGuardConflict(target);
+    requests.add(row.requestId); sequences.add(row.sequence);
+  }
+  for (const row of guard.meta) {
+    if (!row || typeof row.key !== "string" || keys.has(row.key)) throw new JournalGuardConflict(target);
+    keys.add(row.key); assertMetaExpectation(row.expected);
+  }
+  return guard;
+}
+
+/** Compare all target records, including acknowledged history, and exact named row presence. */
+export function assertJournalGuard(expected: JournalGuard, current: JournalGuard): void {
+  const a = captureJournalGuard(expected), b = captureJournalGuard(current, a.target);
+  a.intents.sort((x, y) => x.sequence - y.sequence); b.intents.sort((x, y) => x.sequence - y.sequence);
+  a.meta.sort((x, y) => x.key.localeCompare(y.key)); b.meta.sort((x, y) => x.key.localeCompare(y.key));
+  if (!equalJournalValue(a, b)) throw new JournalGuardConflict(a.target);
+}
+
+export interface IntentUpdateOptions {
+  meta?: MetaRecord[];
+  guard?: JournalGuard;
+  /** Replaces persisted content without authoring metadata changes; requires a full guard. */
+  document?: OkfDocument;
+}
+
+export interface MetaWriteOptions {
+  expected?: MetaExpectation;
+  /** Admission succeeds only when the entire journal is empty, in the same transaction. */
+  requireEmptyJournal?: boolean;
+}
+
+/** Capture guarded updates before any asynchronous adapter work and protect original history. */
+export function captureIntentUpdate(patch: IntentPatch, options: IntentUpdateOptions): { patch: IntentPatch; options: IntentUpdateOptions } {
+  if (Object.hasOwn(options, "guard")) captureJournalValue({ patch, options });
+  if (options.document && !options.guard) throw new JournalGuardConflict(options.document.id);
+  const captured = structuredClone({ patch, options });
+  if (options.guard) {
+    captured.options.guard = captureJournalGuard(options.guard);
+    const mutable = new Set(["state", "attempts", "acknowledgedVersion", "remote", "refusal", "finding", "updatedAt"]);
+    if (Object.keys(patch).some(key => !mutable.has(key)) || (captured.options.document && captured.options.document.id !== captured.options.guard.target)) throw new JournalGuardConflict(captured.options.guard.target);
+    assertJournalMetaChanges(captured.options.guard, captured.options.meta ?? [], undefined);
+  }
+  return captured;
+}
+
+export function captureMetaWrite(options: MetaWriteOptions): MetaWriteOptions {
+  const result = captureJournalValue(options);
+  if (Object.hasOwn(result, "expected")) assertMetaExpectation(result.expected!);
+  if (result.requireEmptyJournal !== undefined && typeof result.requireEmptyJournal !== "boolean") throw new JournalGuardConflict("meta");
+  return result;
+}
+
+export function assertMetaWrite(key: string, options: MetaWriteOptions, actual: MetaExpectation, intents: readonly IntentRecord[]): void {
+  if (options.expected !== undefined && !equalJournalValue(captureJournalValue(options.expected), captureJournalValue(actual))) throw new JournalGuardConflict(key);
+  if (options.requireEmptyJournal && intents.length !== 0) throw new JournalGuardConflict(key);
+}
+
+/** Metadata removal is admitted only with an explicit full-snapshot premise. */
+export function assertJournalMetaChanges(guard: JournalGuard | undefined, puts: readonly MetaRecord[], removals: readonly string[] | undefined): void {
+  if (guard) {
+    captureJournalValue(puts);
+    if (puts.some(row => !guard.meta.some(expected => expected.key === row.key))) throw new JournalGuardConflict(guard.target);
+  }
+  if (removals === undefined) return;
+  if (!guard || !Array.isArray(removals) || removals.some(key => typeof key !== "string") || new Set(removals).size !== removals.length ||
+      removals.some(key => puts.some(row => row.key === key) || !guard.meta.some(expected => expected.key === key))) throw new JournalGuardConflict(guard?.target ?? "meta");
+}
+
+/** Capture write options while retaining the existing synchronous metadata producer. */
+export function captureJournalWriteOptions(options: JournaledWriteOptions): JournaledWriteOptions {
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  const data: Record<string, unknown> = {};
+  let producer: JournaledWriteOptions["meta"];
+  for (const key of Reflect.ownKeys(options)) {
+    if (typeof key !== "string") throw new JournalGuardConflict("options");
+    const descriptor = descriptors[key]!;
+    if (!("value" in descriptor) || !descriptor.enumerable) throw new JournalGuardConflict("options");
+    if (key === "meta" && typeof descriptor.value === "function") producer = descriptor.value;
+    else data[key] = descriptor.value;
+  }
+  const captured = captureJournalValue(data) as JournaledWriteOptions;
+  if (producer) captured.meta = producer;
+  return captured;
+}
 
 /**
  * An intent's journal state was not the one the caller expected, or the intent is gone. Settling
@@ -170,6 +321,10 @@ export function assertJournalSnapshot(target: ConceptId, expected: IntentRecord[
 
 /** Options for {@link JournaledBackend.writeJournaled}. */
 export interface JournaledWriteOptions extends WriteOptions {
+  /** Full document, journal, and named metadata CAS, evaluated before any mutation. */
+  guard?: JournalGuard;
+  /** Remove named metadata in the guarded write; keys must not also be put by this write. */
+  removeMeta?: readonly string[];
   /** Retire this exact complete unsettled target snapshot atomically with document and meta writes. */
   resolveIntents?: { expected: IntentRecord[] };
   /** Record this intent in the same transaction as the document write. */
@@ -239,6 +394,8 @@ export type IntentPatch = Partial<Omit<IntentRecord, "requestId" | "sequence" | 
  * rows, with the transaction and compare-and-swap guarantees stated in this module's header.
  */
 export interface JournaledBackend extends StorageBackend {
+  /** All guarded writes, updates, replacements, and metadata admission share atomic CAS. */
+  readonly journalSnapshotCas?: true;
   /**
    * One transaction over documents, intents, and meta: the document compare-and-swap of
    * `write`, plus (optionally) deleting a superseded intent, recording a new intent for the
@@ -285,9 +442,9 @@ export interface JournaledBackend extends StorageBackend {
    * `expectedState`, together with any meta rows, in one transaction. A different state or a
    * missing record rejects with {@link IntentStateConflict} and writes nothing.
    */
-  updateIntent(requestId: string, expectedState: OperationState, patch: IntentPatch, options?: { meta?: MetaRecord[] }): Promise<IntentRecord>;
+  updateIntent(requestId: string, expectedState: OperationState, patch: IntentPatch, options?: IntentUpdateOptions): Promise<IntentRecord>;
 
   readMeta<T = unknown>(key: string): Promise<T | undefined>;
 
-  writeMeta(key: string, value: unknown): Promise<void>;
+  writeMeta(key: string, value: unknown, options?: MetaWriteOptions): Promise<void>;
 }

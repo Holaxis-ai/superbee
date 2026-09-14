@@ -112,10 +112,14 @@ export { MemoryBackend } from "./memory-backend.js";
 // The journaled-backend seam (`journaled-backend.ts`): what an adapter adds to `StorageBackend`
 // so a browser-local working copy's sync runtime can journal intents through it. The IndexedDB
 // adapter implements it behind the `indexeddb-backend` subpath.
-export { IntentHoldConflict, IntentStateConflict } from "./journaled-backend.js";
+export { IntentHoldConflict, IntentStateConflict, JournalGuardConflict, captureJournalGuard } from "./journaled-backend.js";
 export type {
   IntentPatch,
   IntentRecord,
+  IntentUpdateOptions,
+  JournalGuard,
+  MetaExpectation,
+  MetaWriteOptions,
   JournaledBackend,
   JournaledDeleteOptions,
   JournaledDeleteResult,

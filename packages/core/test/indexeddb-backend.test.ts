@@ -19,7 +19,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { FilesystemBackend } from "../src/backend.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { IndexedDbBackend, IndexedDbSchemaError, INDEXEDDB_SCHEMA_VERSION, type IdbFactoryLike } from "../src/indexeddb-backend.js";
-import { IntentStateConflict, type NewIntentRecord } from "../src/journaled-backend.js";
+import { IntentStateConflict, type NewIntentRecord, type JournalGuard } from "../src/journaled-backend.js";
 import type { KindRegistry } from "../src/kinds.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import type { OkfDocument, StorageBackend, Version } from "../src/types.js";
@@ -497,6 +497,31 @@ test("a decide callback that throws rejects the write with its own error and lea
 
 function newIntent(requestId: string, target: string, base: string | null): NewIntentRecord {
   return { requestId, kind: "document.write", target, base, baseContent: null, createdAt: "2026-09-10T00:00:00.000Z" };
+}
+
+for (const action of ["write", "update", "meta"] as const) {
+  test(`guarded ${action} rolls back all records on an IndexedDB transaction abort`, async () => {
+    const inner = new IDBFactory();
+    const armed = { value: false };
+    const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: abortAfterPutFactory(inner, armed) });
+    try {
+      const id = "guard/abort";
+      await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("abort", id, null), meta: [{ key: "base", value: "before" }] });
+      const before = await backend.readWithJournal(id, { meta: ["base", "receipt"] });
+      const guard: JournalGuard = { target: id, document: { version: before.document!.version, raw: before.raw! }, intents: before.intents,
+        meta: [{ key: "base", expected: { present: true, value: "before" } }, { key: "receipt", expected: { present: false } }] };
+      armed.value = true;
+      await assert.rejects(action === "write"
+        ? backend.writeJournaled(id, doc(id, "after"), { guard, intent: newIntent("new", id, null), removeMeta: ["base"], meta: [{ key: "receipt", value: true }] })
+        : action === "update" ? backend.updateIntent("abort", "pending", { state: "acknowledged" }, { guard, document: doc(id, "after"), meta: [{ key: "receipt", value: true }] })
+        : backend.writeMeta("base", "after", { expected: { present: true, value: "before" } }));
+      armed.value = false;
+      assert.deepEqual(await backend.readWithJournal(id, { meta: ["base", "receipt"] }), before);
+      assert.equal(await backend.readMeta("intents:sequence"), 1);
+      backend.close();
+      assert.deepEqual(await backend.readWithJournal(id, { meta: ["base", "receipt"] }), before);
+    } finally { backend.close(); }
+  });
 }
 
 test("writeJournaled commits the document and its intent together: an aborted transaction leaves neither", async () => {
