@@ -13,6 +13,7 @@ export {
   type ConflictChoice,
   type ConflictResolutionReceipt,
   type ConflictResolutionResult,
+  type ConflictResolutionOptions,
   push,
   pushWithRole,
   settleIntent,
@@ -43,7 +44,7 @@ export {
   type ResumeReport,
   type SyncStatus,
 } from "./local-bundle.js";
-export { BODY_RUNTIME_LIMITS, BodyRuntimeError, BodyCapacityError, type BodyDeliveryOptions } from "./body-journal.js";
+export { BODY_RUNTIME_LIMITS, BODY_RESOLUTION_RECEIPT_BYTES, BodyRuntimeError, BodyCapacityError, validateBodyResolutionReceipt, type BodyDeliveryOptions, type BodyResolutionReceipt, type BodyResolutionChainRow } from "./body-journal.js";
 export { withPushRole, pushRoleName, hostLocks, type PushRoleResult, type PushRoleOptions, type LockManagerLike } from "./push-role.js";
 export {
   withEditorRecovery, editorRecoveryKey, EditorRecoveryError, EDITOR_RECOVERY_LIMITS,

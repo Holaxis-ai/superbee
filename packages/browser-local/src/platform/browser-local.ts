@@ -14,10 +14,12 @@
  * merely pending). Otherwise the latest unsettled intent in `pending`, `in_flight`, `unknown`,
  * or `refused` gives `local-pending`, because in each of those states the working copy holds an
  * edit the authority has not accepted (a refusal is reported through `syncStatus`, as the pause
- * and the refused count). With no unsettled intent the document is `shared-confirmed` when its
- * recorded shared base (`base:<id>`, written only by bootstrap, pull, or an acknowledgement)
- * names the document's bytes: the same version token, or the same serialized content when the
- * authority mints a different token for identical bytes.
+ * and the refused count; in body mode a content refusal at the head of the chain is the
+ * recoverable case `inspectConflict` and `resolveConflict` accept, while the provenance stays
+ * `local-pending`, since no shared head moved). With no unsettled intent the document is
+ * `shared-confirmed` when its recorded shared base (`base:<id>`, written only by bootstrap,
+ * pull, or an acknowledgement) names the document's bytes: the same version token, or the same
+ * serialized content when the authority mints a different token for identical bytes.
  *
  * Two token spaces meet here. `version` in every provenance is the working copy's own document
  * version, the premise a commit takes back; `acknowledged` in `shared-confirmed` is the

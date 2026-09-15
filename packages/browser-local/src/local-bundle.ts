@@ -63,10 +63,12 @@
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
 import { stringifyDoc } from "@superbee/core/document-codec";
 import { performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
+import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
-import { JournalGuardConflict } from "@superbee/core/journaled-backend";
-import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, BODY_MODE_KEY, BODY_RUNTIME_LIMITS, jsonBytes, BodyRuntimeError,
-  type BodyDeliveryOptions, type BodyRecord, type BodyMode } from "./body-journal.js";
+import { JournalGuardConflict, JournalSnapshotConflict } from "@superbee/core/journaled-backend";
+import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
+  validateBodyResolutionReceipt, validateBodyRecord, BODY_MODE_KEY, BODY_RUNTIME_LIMITS, jsonBytes, BodyRuntimeError,
+  type BodyDeliveryOptions, type BodyRecord, type BodyMode, type BodyResolutionReceipt, type BodySnapshot } from "./body-journal.js";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
 import { IndexedDbBackend, type IdbFactoryLike } from "@superbee/core/indexeddb-backend";
 import {
@@ -75,6 +77,7 @@ import {
   assertJournalSnapshot,
   type IntentRecord,
   type JournaledBackend,
+  type JournaledReadResult,
   type MetaRecord,
   type NewIntentRecord,
 } from "@superbee/core/journaled-backend";
@@ -739,7 +742,7 @@ export interface BodyLocalMutation { body: string; expectedVersion?: Version; ac
 /** Explicit body intent, authored by the existing engine and journaled in its document CAS. */
 export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutation: BodyLocalMutation): Promise<CommitResult> {
   const allowed = ["body", "expectedVersion", "actor", "now"];
-  if (!mutation || ![Object.prototype, null].includes(Object.getPrototypeOf(mutation)) || Reflect.ownKeys(mutation).some(key => typeof key !== "string" || !allowed.includes(key)) || Object.values(Object.getOwnPropertyDescriptors(mutation)).some(row => !("value" in row) || !row.enumerable) || typeof mutation.body !== "string" || new TextEncoder().encode(mutation.body).length > 64 * 1024 || (mutation.actor !== undefined && typeof mutation.actor !== "string") || (mutation.now !== undefined && typeof mutation.now !== "function")) throw new BodyRuntimeError("Expected a bounded body-only update.");
+  if (!mutation || ![Object.prototype, null].includes(Object.getPrototypeOf(mutation)) || Reflect.ownKeys(mutation).some(key => typeof key !== "string" || !allowed.includes(key)) || Object.values(Object.getOwnPropertyDescriptors(mutation)).some(row => !("value" in row) || !row.enumerable) || !isBoundedBody(mutation.body) || (mutation.actor !== undefined && typeof mutation.actor !== "string") || (mutation.now !== undefined && typeof mutation.now !== "function")) throw new BodyRuntimeError("Expected a bounded body-only update.");
   const input = { ...mutation };
   const backend = backendOf(local), mode = await admitBodyMode(backend);
   if (!mode) throw new BodyRuntimeError("Body delivery mode was not selected.");
@@ -765,7 +768,7 @@ export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutatio
       const createdAt = new Date().toISOString();
       const intent: NewIntentRecord = { requestId, kind: "document.body.update", target: id, base: base ?? null, baseContent: latest ? (supersede ? latest.baseContent : latest.content) : shared?.content ?? null, createdAt, ...(after ? { after } : {}) };
       const descriptor: BodyRecord = { schema: 1, requestId, target: id, scope: mode.scope, okfVersion: mode.okfVersion, body: input.body, initialVersion: after ? null : base! };
-      const meta = [{ key, value: descriptor }], removeMeta = supersede ? [bodyRecordKey(supersede.requestId)] : [];
+      const meta = [{ key, value: descriptor }], removeMeta = supersede ? retiredDescriptorKeys([supersede]) : [];
       const projected: IntentRecord = { ...intent, sequence: Number.MAX_SAFE_INTEGER, local: version, content: raw, updatedAt: createdAt, attempts: 0, state: "pending" };
       projectBodyGuard(snap.guard, { document: { version, raw }, intents: [...snap.read.intents.filter(row => row.requestId !== supersede?.requestId), projected], meta, removeMeta });
       try {
@@ -807,7 +810,8 @@ export interface ConflictResolutionReceipt {
 }
 
 export interface ConflictResolutionResult {
-  receipt: ConflictResolutionReceipt;
+  /** The exact-mode review receipt, or in body mode the bounded {@link BodyResolutionReceipt}. */
+  receipt: ConflictResolutionReceipt | BodyResolutionReceipt;
   intent: IntentRecord | null;
   version: Version | null;
 }
@@ -819,7 +823,11 @@ export class ConflictReviewStaleError extends Error {
   }
 }
 
-/** Durable recovery receipt key; receipts are retained, not silently pruned with pending edits. */
+/**
+ * Durable recovery receipt key; receipts are retained, not silently pruned with pending edits.
+ * Exact mode keeps the whole review; body mode a bounded record without content. Either way one
+ * row remains per resolution, so the store grows with resolutions.
+ */
 export function conflictResolutionKey(id: string): string { return `conflict-resolution:${id}`; }
 
 async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promise<{ base: SharedBase; doc: OkfDocument | null }> {
@@ -832,12 +840,29 @@ async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promis
   }
 }
 
-async function conflictLocal(backend: JournaledBackend, id: ConceptId) {
-  const snapshot = await backend.readWithJournal(id);
+/** A refused head is resolvable only when the refusal was about the content; lost permission keeps the resume path. */
+function isContentRefusal(row: IntentRecord): boolean {
+  return row.state === "refused" && row.refusal !== undefined && !AUTHORIZATION_REFUSAL_CODES.has(row.refusal.code);
+}
+
+/**
+ * The resolvable chain in one journal snapshot: the complete unsettled journal, headed by a
+ * recorded conflict (or, with `admitRefused`, a content refusal), continued only by dependent
+ * edits, whose latest bytes are the working document. Body mode admits the refused head, since
+ * a refused body update cannot be superseded by a later edit; exact mode keeps its rule, where
+ * a later edit supersedes a refused request.
+ */
+function conflictChain(id: ConceptId, snapshot: JournaledReadResult, admitRefused: boolean) {
   const intents = snapshot.intents.filter(row => row.state !== "acknowledged");
+  // Exact mode keeps the seam's earlier answer for a set with no conflict row, so its refusal
+  // of a refused head is the class it always was.
+  if (!admitRefused && !intents.some(row => row.state === "conflict")) throw new JournalSnapshotConflict(id);
   assertJournalSnapshot(id, intents, snapshot.intents);
-  if (!snapshot.document || snapshot.raw === null || intents[0]?.state !== "conflict") {
-    throw new InvalidInputError("Conflict recovery requires an existing local document and a conflicted first pending edit.");
+  const head = intents[0];
+  if (!snapshot.document || snapshot.raw === null || !head || !(head.state === "conflict" || (admitRefused && isContentRefusal(head)))) {
+    throw new InvalidInputError(admitRefused
+      ? "Conflict recovery requires an existing local document and a first pending edit the authority answered with a conflict or a content refusal; lost permission is resumed, not resolved."
+      : "Conflict recovery requires an existing local document and a conflicted first pending edit.");
   }
   for (let index = 1; index < intents.length; index++) {
     if (intents[index]!.after !== intents[index - 1]!.requestId || intents[index]!.base !== intents[index - 1]!.local) {
@@ -851,12 +876,16 @@ async function conflictLocal(backend: JournaledBackend, id: ConceptId) {
   return { snapshot, intents, document: snapshot.document };
 }
 
+async function conflictLocal(backend: JournaledBackend, id: ConceptId, admitRefused = false) {
+  return conflictChain(id, await backend.readWithJournal(id), admitRefused);
+}
+
 /** Fetch the shared head explicitly; authorization/network failure is never treated as deletion. */
 export async function inspectConflict(local: LocalTarget, remote: StorageBackend, id: ConceptId): Promise<ConflictReview> {
   const backend = await runtimeBackend(local);
   const mode = await admitBodyMode(backendOf(local));
   if (mode) await bodySnapshot(backendOf(local), id, mode);
-  const { snapshot, intents, document } = await conflictLocal(backend, id);
+  const { snapshot, intents, document } = await conflictLocal(backend, id, mode !== null);
   const shared = await readConflictRemote(remote, id);
   return {
     id,
@@ -867,26 +896,30 @@ export async function inspectConflict(local: LocalTarget, remote: StorageBackend
   };
 }
 
+/** The mutation options a resolution honours when it authors a fresh local edit. */
+export type ConflictResolutionOptions = Pick<LocalMutation, "actor" | "producer" | "now" | "registry" | "strict">;
+
 /**
  * Resolve exactly the reviewed local chain against the reviewed shared head. A fresh remote
  * read verifies the decision; a later remote edit is still protected by the replacement's CAS
  * on push. Taking remote adopts that served snapshot, not a promise it can never change.
  * No network write occurs here. Old content and identities remain in the recovery receipt.
+ * Body mode resolves through {@link resolveBodyConflict}: the same choices over a chain whose
+ * head is a recorded conflict or content refusal, with the retirement rules of that mode.
  */
 export async function resolveConflict(
   local: LocalTarget,
   remote: StorageBackend,
   reviewed: ConflictReview,
   choice: ConflictChoice,
-  options: Pick<LocalMutation, "actor" | "producer" | "now" | "registry" | "strict"> = {},
+  options: ConflictResolutionOptions = {},
 ): Promise<ConflictResolutionResult> {
   const review = structuredClone(reviewed);
   const selected = structuredClone(choice);
   if (!["keep-local", "take-remote", "revise"].includes(selected.kind)) throw new InvalidInputError("Unknown conflict resolution choice.");
+  const mode = await admitBodyMode(backendOf(local));
+  if (mode) return resolveBodyConflict(local, mode, remote, review, selected, options);
   const backend = await runtimeBackend(local);
-  if (await admitBodyMode(backendOf(local))) {
-    throw new BodyRuntimeError("Body conflict resolution is not supported. Inspect or export retained work; no automatic recovery is performed.");
-  }
   const current = await conflictLocal(backend, review.id);
   assertJournalSnapshot(review.id, review.intents, current.intents);
   if (current.document.version !== review.local.version || current.snapshot.raw !== review.local.content) throw new ConflictReviewStaleError();
@@ -940,6 +973,150 @@ export async function resolveConflict(
   // A validated semantic no-op still resolves the rejected identity and records a fresh one.
   if (!written) await write(review.id, result.doc);
   return { receipt, version: written!.version, intent: written!.intent };
+}
+
+/**
+ * Body mode's resolution. The reviewed chain (its head a recorded conflict or content refusal,
+ * its successors never attempted) retires with the descriptors of its rows and a bounded
+ * receipt, in one guarded write that also adopts the served head (`take-remote`; a served
+ * absence deletes the working copy's document and its base row) or journals one fresh
+ * body update at the served head (`keep-local`, `revise`). Body mode cannot create a
+ * document, so the fresh update needs a served head. The complete state after the resolution,
+ * receipt and removals included, is projected through the capacity check before anything is
+ * written; a journal that moves under the guard is retried up to the compose limit, after
+ * which the review is reported stale. The head is never rewritten to reach the exact-mode
+ * rule: a refused head retires as refused, and the receipt records it so.
+ */
+async function resolveBodyConflict(
+  local: LocalTarget,
+  mode: BodyMode,
+  remote: StorageBackend,
+  review: ConflictReview,
+  selected: ConflictChoice,
+  options: ConflictResolutionOptions,
+): Promise<ConflictResolutionResult> {
+  const backend = backendOf(local);
+  // The input is checked before any read of the target's journal, as the body commit checks it before any write.
+  if (selected.kind === "revise") {
+    if (Object.hasOwn(selected, "frontmatter")) throw new BodyRuntimeError("Body conflict resolution revises the body only; the authority owns the metadata.");
+    if (!isBoundedBody(selected.body)) throw new BodyRuntimeError("Expected a bounded body-only revision.");
+  }
+  const isRecord = (value: unknown): boolean => typeof value === "object" && value !== null;
+  if (typeof review.id !== "string" || !isRecord(review.local) || !isRecord(review.remote) || !Array.isArray(review.intents) || review.intents.length === 0 ||
+      review.intents.some(row => !isRecord(row) || typeof row.requestId !== "string" || !Number.isSafeInteger(row.sequence))) throw new InvalidInputError("Conflict resolution requires the review its inspection returned.");
+  const id = review.id;
+  const reviewedHead = review.intents.reduce((lowest, row) => row.sequence < lowest.sequence ? row : lowest);
+  const receiptKey = conflictResolutionKey(reviewedHead.requestId);
+  const requestId = selected.kind === "take-remote" ? null : mintRequestId();
+  await assertBodyEdition(backend, mode);
+  /** The working copy's side of the review, read fresh: the reviewed chain, at the reviewed bytes. */
+  const verifyLocal = async (): Promise<{ snap: BodySnapshot; chain: IntentRecord[]; expectedVersion: Version }> => {
+    const snap = await bodySnapshot(backend, id, mode, requestId === null ? [receiptKey] : [receiptKey, bodyRecordKey(requestId)]);
+    const current = conflictChain(id, snap.read, true);
+    assertJournalSnapshot(id, review.intents, current.intents);
+    if (current.document.version !== review.local.version || snap.read.raw !== review.local.content) throw new ConflictReviewStaleError();
+    return { snap, chain: current.intents, expectedVersion: current.document.version };
+  };
+  // The local premise is checked before the authority is asked, as in exact mode: a review that
+  // no longer describes the working copy is refused without a network read.
+  await verifyLocal();
+  await assertBodyRemoteEdition(remote, mode);
+  const shared = await readConflictRemote(remote, id);
+  if (shared.base.version !== review.remote.version || shared.base.content !== review.remote.content) throw new ConflictReviewStaleError();
+  // The served content enters the working copy in its own serialization, as a pull records it.
+  const served = shared.doc ? bodyDocument(shared.base.content!, id, mode) : null;
+  const servedRaw = served ? stringifyDoc(served.frontmatter, served.body ?? "") : null;
+  const servedBase: SharedBase = { version: shared.base.version, content: servedRaw };
+  if (selected.kind !== "take-remote" && !served) throw new BodyRuntimeError("The authority holds no document for this id and body delivery cannot create one; take the served deletion or export the retained work.");
+  const resolvedAt = options.now?.() ?? new Date().toISOString();
+  // The clock stamps the fresh row's createdAt, which the delivery grammar reads on every later snapshot.
+  if (typeof resolvedAt !== "string" || parseIsoInstant(resolvedAt) === null) throw new BodyRuntimeError("The resolution clock must produce an ISO-8601 instant with an explicit UTC offset.");
+
+  /** One fresh local verification plus the receipt the resolution will keep, composed against that snapshot. */
+  const prepare = async (): Promise<{ snap: BodySnapshot; chain: IntentRecord[]; expectedVersion: Version; receipt: BodyResolutionReceipt }> => {
+    const { snap, chain, expectedVersion } = await verifyLocal();
+    const receipt = validateBodyResolutionReceipt({
+      schema: 1, mode: "document.body.update", id: chain[0]!.requestId, target: id, choice: selected.kind, resolvedAt,
+      replacementRequestId: requestId, served: { version: shared.base.version }, expectedLocalVersion: expectedVersion,
+      chain: chain.map(row => ({
+        requestId: row.requestId, sequence: row.sequence, state: row.state, attempts: row.attempts, base: row.base, local: row.local,
+        ...(row.acknowledgedVersion === undefined ? {} : { acknowledgedVersion: row.acknowledgedVersion }),
+        ...(row.refusal === undefined ? {} : { refusalCode: row.refusal.code }),
+        ...(row.remote === undefined ? {} : { remoteVersion: row.remote.version }),
+      })),
+    });
+    return { snap, chain, expectedVersion, receipt };
+  };
+  const remaining = (snap: BodySnapshot, chain: IntentRecord[]): IntentRecord[] => snap.read.intents.filter(row => !chain.some(retired => retired.requestId === row.requestId));
+  const retry = (error: unknown, attempt: number): void => {
+    if (!(error instanceof JournalGuardConflict)) throw error;
+    if (attempt === COMPOSE_ATTEMPTS - 1) throw new ConflictReviewStaleError();
+  };
+
+  if (selected.kind === "take-remote") {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { snap, chain, expectedVersion, receipt } = await prepare();
+        const receiptRow: MetaRecord = { key: receiptKey, value: receipt };
+        const retired = retiredDescriptorKeys(chain);
+        const common = { guard: snap.guard, expectedVersion, resolveIntents: { expected: chain } };
+        if (!served) {
+          // A served absence leaves no base row behind, as a pull's own deletion leaves none: the
+          // refresh premise for an id with neither document nor intents expects the row absent,
+          // and the receipt's `served.version` already records the absence.
+          const meta = [receiptRow], removeMeta = [...retired, baseKey(id)];
+          projectBodyGuard(snap.guard, { document: null, intents: remaining(snap, chain), meta, removeMeta });
+          await backend.deleteJournaled(id, { ...common, meta, removeMeta });
+          return { receipt, version: null, intent: null };
+        }
+        const meta = [receiptRow, baseRow(id, servedBase)], removeMeta = retired;
+        projectBodyGuard(snap.guard, { document: { version: versionOfBytes(servedRaw!), raw: servedRaw! }, intents: remaining(snap, chain), meta, removeMeta });
+        const written = await backend.writeJournaled(id, served, { ...common, meta, removeMeta, ...(options.actor === undefined ? {} : { actor: options.actor }) });
+        return { receipt, version: written.version, intent: null };
+      } catch (error) { retry(error, attempt); }
+    }
+  }
+
+  let written: { version: Version; intent: IntentRecord | null; receipt: BodyResolutionReceipt } | undefined;
+  const write = async (target: ConceptId, candidate: OkfDocument, writeOptions: WriteOptions = {}): Promise<Version> => {
+    if (target !== id) throw new BodyRuntimeError("Conflict resolution cannot write another document.");
+    const doc = bodyDocument(stringifyDoc(candidate.frontmatter, candidate.body ?? ""), id, mode);
+    const raw = stringifyDoc(doc.frontmatter, doc.body ?? ""), version = versionOfBytes(raw);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { snap, chain, expectedVersion, receipt } = await prepare();
+        // Keeping the local edit re-journals the retained edit's own body text; its bytes are the working document.
+        const body = selected.kind === "revise" ? selected.body : snap.records.get(chain[chain.length - 1]!.requestId)!.body;
+        const intent: NewIntentRecord = { requestId: requestId!, kind: "document.body.update", target: id, base: shared.base.version, baseContent: servedRaw, createdAt: resolvedAt };
+        const descriptor: BodyRecord = { schema: 1, requestId: requestId!, target: id, scope: mode.scope, okfVersion: mode.okfVersion, body, initialVersion: shared.base.version };
+        const meta: MetaRecord[] = [{ key: receiptKey, value: receipt }, baseRow(id, servedBase), { key: bodyRecordKey(requestId!), value: descriptor }];
+        const removeMeta = retiredDescriptorKeys(chain);
+        const projected: IntentRecord = { ...intent, sequence: Number.MAX_SAFE_INTEGER, local: version, content: raw, updatedAt: resolvedAt, attempts: 0, state: "pending" };
+        // The fresh row must pass the validator every later snapshot runs over it, before it is
+        // written: a resolution clock or body outside the delivery grammar is the caller's input.
+        try { validateBodyRecord(mode, projected, descriptor); }
+        catch (error) { throw error instanceof BodyRuntimeError ? error : new BodyRuntimeError(`The fresh body update is outside the delivery grammar: ${(error as Error).message}`); }
+        projectBodyGuard(snap.guard, { document: { version, raw }, intents: [...remaining(snap, chain), projected], meta, removeMeta });
+        const result = await backend.writeJournaled(id, doc, { ...writeOptions, guard: snap.guard, expectedVersion, resolveIntents: { expected: chain }, intent, meta, removeMeta });
+        written = { version: result.version, intent: result.intent, receipt };
+        return result.version;
+      } catch (error) { retry(error, attempt); }
+    }
+  };
+  const persistence = new Proxy(backend, { get(inner, key) {
+    if (key === "write") return write;
+    const value = Reflect.get(inner, key, inner);
+    return typeof value === "function" ? value.bind(inner) : value;
+  } });
+  const result = await mutateDocument({
+    ...options, bundle: { ...bundleOf(local), backend: persistence }, id,
+    mode: "patch", expectedVersion: review.local.version,
+    registry: options.registry ?? EMPTY_REGISTRY, strict: options.strict ?? false,
+    buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: selected.kind === "keep-local" ? existing!.body : (selected as { body: string }).body }),
+  });
+  // A validated semantic no-op still retires the chain and records a fresh identity.
+  if (!written) await write(id, result.doc, { expectedVersion: review.local.version, ...(options.actor === undefined ? {} : { actor: options.actor }) });
+  return { receipt: written!.receipt, version: written!.version, intent: written!.intent };
 }
 
 // ── push ───────────────────────────────────────────────────────────────────────────────────

@@ -12,8 +12,10 @@ export async function createBodyAuthority(backend: StorageBackend = new MemoryBa
   const initial = await mutateDocument({ bundle, id: "notes/example", mode: "create-only", registry, strict: false, actor: "process:authority", now: () => "2026-09-15T00:00:00.000Z", buildCandidate: () => ({ frontmatter: { type: "Note", title: "Example" }, body: "Original body" }) });
   const records = new Map<string, { prepared: PreparedBodyDelivery; outcome?: BodyDeliveryOutcome }>();
   const counts = { submitted: 0, lookedUp: 0, applied: 0 };
-  const knobs = { offline: false, unauthorized: false, terminalRefusal: false, dropNextResponse: false, lookupUnavailable: false, delay: undefined as (() => Promise<void>) | undefined };
+  const knobs = { offline: false, unauthorized: false, terminalRefusal: false, contentRefusal: false, dropNextResponse: false, lookupUnavailable: false, delay: undefined as (() => Promise<void>) | undefined };
   const refusal = (): BodyDeliveryOutcome => ({ kind: "refused", code: "AUTH_REQUIRED", message: "Authorization required" });
+  /** A recorded content refusal, as a Kind rule answers a body the workspace will not accept. */
+  const contentRefusal = (): BodyDeliveryOutcome => ({ kind: "refused", code: "validation_failed", message: "The body does not satisfy the Kind rule" });
   const transport: BodyDeliveryTransport = {
     async submit(input) {
       const prepared = validatePreparedBodyDelivery(input);
@@ -26,6 +28,7 @@ export async function createBodyAuthority(backend: StorageBackend = new MemoryBa
       records.set(prepared.requestId, record);
       await knobs.delay?.();
       if (knobs.terminalRefusal) record.outcome = refusal();
+      else if (knobs.contentRefusal) record.outcome = contentRefusal();
       else {
         try {
           const result = await mutateDocument({ bundle, id: prepared.target, mode: "patch", registry, strict: false, expectedVersion: prepared.expectedVersion,
