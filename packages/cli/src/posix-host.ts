@@ -202,8 +202,8 @@ export function createPosixHostCommands(): HostCommands {
     lexicalHookTokens: lexicalPosixHookTokens,
     sameResolvedPath: (a, b) => a === b,
     comparisonKey: (value) => path.posix.normalize(value),
-    claudeDesktopConfigPath: (home) =>
-      process.platform === "darwin"
+    claudeDesktopConfigPath: (home, _env, platform = process.platform) =>
+      platform === "darwin"
         ? path.posix.join(
             home,
             "Library",

@@ -217,7 +217,7 @@ export function resolveMcpTargetConfigPath(
     case "claude-code":
       return resolveClaudeUserConfigFile(input.home, input.env, input.platform);
     case "claude-desktop":
-      return currentHost().claudeDesktopConfigPath(input.home,input.env);
+      return currentHost().claudeDesktopConfigPath(input.home, input.env, input.platform);
     case "opencode":
       return paths.join(resolveOpenCodeGlobalConfigRoot(input.home, input.env, input.platform), "opencode.json");
   }

@@ -102,6 +102,21 @@ test("host config paths honor relocated roots and remain read-only", () => {
   for (const [, expected] of cases) assert.ok(seen.includes(expected));
 });
 
+test("Claude Desktop paths follow the selected environment independently of the running host", () => {
+  const desktopPath = "/users/mike/Library/Application Support/Claude/claude_desktop_config.json";
+  for (const platform of ["darwin", "linux", "unsupported-host"]) {
+    const reads: string[] = [];
+    const result = inspectMcpHost(target("claude-desktop"), {
+      environment: env({}, platform),
+      authority: () => stable,
+      readFile: (file) => { reads.push(file); return "{}"; },
+    });
+    assert.equal(result.config, platform === "darwin" ? desktopPath : null);
+    assert.equal(result.state, platform === "darwin" ? "absent" : "unsupported");
+    assert.deepEqual(reads, platform === "darwin" ? [desktopPath] : []);
+  }
+});
+
 test("OpenCode recognizes the canonical JSONC filename without guessing comment syntax", () => {
   const command = stable.evidence.runtime_path!;
   const args = [stable.evidence.executable_path!, "mcp"];

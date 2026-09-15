@@ -81,6 +81,7 @@ export interface HostCommands {
   claudeDesktopConfigPath(
     home: string,
     env: NodeJS.ProcessEnv,
+    platform?: string,
   ): string | undefined;
   npmPrefixInvocation(
     runtimePath: string,
