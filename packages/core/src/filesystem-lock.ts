@@ -419,22 +419,61 @@ async function claimLockPath(
 
     return async () => {
       const current = await readOwner(lockPath);
-      if (current?.token !== owner.token) {
-        throw new FilesystemMutationLockError(
-          `refusing to release filesystem mutation lock '${lockPath}' because its owner token changed; the mutation may have completed, inspect the lock before retrying.`,
-          { lockPath, owner: current, stale: false, malformed: current === null },
-        );
-      }
-      try {
-        await fs.rm(lockPath, { recursive: true, force: false });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new FilesystemMutationLockError(
-          `mutation completed but filesystem lock '${lockPath}' could not be removed (${message}); inspect the lock before retrying.`,
-          { lockPath, owner: current, stale: false, malformed: false },
-        );
-      }
+      if (current?.token !== owner.token) throw changedOwnerRefusal(lockPath, current);
+      await removeReleasedLock(lockPath, owner, waitMs, pollMs, policy);
     };
+  }
+}
+
+function changedOwnerRefusal(lockPath: string, current: FilesystemMutationLockOwner | null): FilesystemMutationLockError {
+  return new FilesystemMutationLockError(
+    `refusing to release filesystem mutation lock '${lockPath}' because its owner token changed; the mutation may have completed, inspect the lock before retrying.`,
+    { lockPath, owner: current, stale: false, malformed: current === null },
+  );
+}
+
+/**
+ * Remove a lock directory whose owner record was just verified as this caller's. A host may
+ * report a contention-shaped error while another claimer still holds a handle on the owner
+ * record it polls: Windows unlink through Node 20's libuv only marks a file delete-on-close, so
+ * the unlinked `owner.json` stays listed until that reader's handle closes and the directory
+ * removal fails with ENOTEMPTY, EBUSY, or EPERM for a few milliseconds. Retry only what the host
+ * policy classifies as directory contention, inside the same bounded wait/poll budget as the
+ * claim. The default supported policy classifies nothing, so its release stays single-shot.
+ *
+ * The first attempt may already have unlinked this owner's record, so an absent record during
+ * retries still means this caller's directory; only a different owner record proves the
+ * directory changed hands, and that directory is never removed. A directory that disappeared
+ * between attempts is the requested outcome, not a failure.
+ */
+async function removeReleasedLock(
+  lockPath: string,
+  owner: FilesystemMutationLockOwner,
+  waitMs: number,
+  pollMs: number,
+  policy: FilesystemHostPolicy,
+): Promise<void> {
+  const started = Date.now();
+  let attempts = 0;
+  while (true) {
+    try {
+      await fs.rm(lockPath, { recursive: true, force: false });
+      return;
+    } catch (err) {
+      attempts += 1;
+      if (attempts > 1 && (err as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (!policy.isDirectoryContentionError(err) || Date.now() - started >= waitMs) {
+        const message = err instanceof Error ? err.message : String(err);
+        const suffix = attempts > 1 ? ` after ${attempts} bounded removal attempts` : "";
+        throw new FilesystemMutationLockError(
+          `mutation completed but filesystem lock '${lockPath}' could not be removed${suffix} (${message}); inspect the lock before retrying.`,
+          { lockPath, owner, stale: false, malformed: false },
+        );
+      }
+    }
+    await delay(pollMs);
+    const current = await readOwner(lockPath);
+    if (current !== null && current.token !== owner.token) throw changedOwnerRefusal(lockPath, current);
   }
 }
 
