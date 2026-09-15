@@ -32,7 +32,10 @@ Use `commitBodyLocal(local, id, { body, expectedVersion })`, or the existing pla
 `commit`, after bootstrap. Both use the shared mutation engine and atomically retain
 the local document and an immutable body intent. Pass a `BodyDeliveryTransport` as
 `bodyTransport` to `push` or `createBrowserLocalRuntime`; the exact-document
-transport is never substituted for it. The authority owns the committed metadata
+transport is never substituted for it. A body-mode runtime may omit `transport`,
+since body-mode push never calls it; a working copy in any other mode still needs
+it, and a runtime built without it rejects its first `sync` rather than delivering
+nothing. The authority owns the committed metadata
 and returns the core prepared-body receipt contract. Original local journal bytes
 remain unchanged when a receipt advances the shared base or visible document.
 A newer local intent, even with identical bytes, prevents replacement of that edit.

@@ -315,6 +315,12 @@ failed or interrupted claim to apply again. The reference memory store has no re
   whose rows do not digest to its header rejects it with `SNAPSHOT_DIGEST_MISMATCH`. Transient
   retry covers obtaining the response only; re-requesting a truncated snapshot is the consumer's
   decision.
+- The grammar those two methods admit is owned by `parseHeadsAnswer(payload)` and
+  `readSnapshotStream(body, { status })` in `@superbee/core/remote`, which also exports the
+  `SNAPSHOT_TRUNCATED` and `SNAPSHOT_DIGEST_MISMATCH` codes; the methods are thin callers over
+  them. A host that serves the same heads listing or NDJSON snapshot through routes of its own
+  validates the answers with these reference validators rather than a second parser, since the
+  admission they decide is what a working copy deletes locally.
 - `WriteOptions.requestId` and `DeleteOptions.requestId` travel as `Idempotency-Key`; a malformed
   one is an `InvalidInputError` before any request is sent. Transient retries of an identified
   write are true replays. `RemoteBackend.lookupOperation(requestId)` reads the outcome route and

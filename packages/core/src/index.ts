@@ -146,17 +146,11 @@ export type {
 // (docs/WIRE-PROTOCOL.md) — a FUTURE plug-in adapter, proven here against the
 // in-repo reference server (`@superbee/server`) by the tri-backend contract
 // tests. No CF/D1/production deployment is implied by its presence.
-export { RemoteBackend, RemoteError } from "./remote-backend.js";
-export type {
-  FetchLike,
-  HeadsOptions,
-  HeadsResult,
-  RemoteBackendOptions,
-  RemoteSnapshot,
-  SnapshotDocument,
-  SnapshotHeader,
-  WireCapabilities,
-} from "./remote-backend.js";
+export { RemoteBackend } from "./remote-backend.js";
+export type { FetchLike, HeadsOptions, RemoteBackendOptions, WireCapabilities } from "./remote-backend.js";
+export { RemoteError } from "./remote-error.js";
+export { SNAPSHOT_DIGEST_MISMATCH, SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream } from "./remote-parsers.js";
+export type { HeadsResult, ReadSnapshotStreamOptions, RemoteSnapshot, SnapshotDocument, SnapshotHeader } from "./remote-parsers.js";
 export { headsDigest, isHeadsDigest, sortHeads } from "./heads-digest.js";
 export type { DocumentHead } from "./heads-digest.js";
 // The uncertain-write transport over `RemoteBackend`: identified document writes plus outcome
