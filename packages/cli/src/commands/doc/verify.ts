@@ -1,3 +1,4 @@
+import { renderUsage } from "../../output.js";
 // `doc verify <id>` — append one OKF v0.2 verification event (`verified[]: { by, at }`) naming the
 // resolved actor as the verifier, and report the derived trust tier (SPEC 5.2, 5.3).
 //
@@ -57,7 +58,7 @@ export async function docVerify(argv: string[], deps: Partial<DocCliDeps>): Prom
     CLI_LEAVES.docVerify,
   );
   if (values.help) {
-    stdout(DOC_VERIFY_USAGE);
+    stdout(renderUsage(DOC_VERIFY_USAGE));
     return;
   }
 

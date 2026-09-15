@@ -1,3 +1,4 @@
+import { isFilesystemBundle } from "../filesystem-runtime.js";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
@@ -11,7 +12,7 @@ import { commandToken } from "../command-text.js";
  * than refuses; non-Markdown targets are inert to the next bundle walk.
  */
 export async function inBundlePollutionWarning(bundle: Bundle, out: string): Promise<string | undefined> {
-  if (bundle.backend) return undefined;
+  if (!isFilesystemBundle(bundle)) return undefined;
   const root = await fs.realpath(path.resolve(bundle.root)).catch(() => path.resolve(bundle.root));
   const resolvedOut = await effectiveOutputPath(path.resolve(out));
   const isInside = resolvedOut === root || resolvedOut.startsWith(root + path.sep);
@@ -47,7 +48,7 @@ export async function assertSafeNonDocumentOutTarget(
   payload: string,
   help: string,
 ): Promise<void> {
-  if (bundle.backend) return;
+  if (!isFilesystemBundle(bundle)) return;
   const lexicalTarget = path.resolve(outValue);
   const rootReal = await fs.realpath(path.resolve(bundle.root)).catch(() => path.resolve(bundle.root));
   const effectiveTarget = await effectiveOutputPath(lexicalTarget);

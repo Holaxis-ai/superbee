@@ -69,6 +69,7 @@
 //     command is about to read IS the board checkout — a read of an unrelated bundle that merely
 //     lives inside a board-sharing repo must not spend network on the board. `home` (which always
 //     renders the board block) passes {@link AutoPullOptions.requireBoardBundle} = false.
+import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
 import path from "node:path";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 
@@ -245,6 +246,7 @@ export type AutoPullOutcome =
 
 /** The injected seams a HOST wires once: WHERE state lives and HOW a bundle root resolves. */
 export interface AutoPullDeps {
+  hostPolicy?: BoardHostPolicy;
   /** The per-clone sync state store (the CLI wires its `defaultSyncStore`). */
   store: SyncStore;
   /**
@@ -290,6 +292,7 @@ export async function maybeAutoPull(
   try {
     const env = opts.env ?? process.env;
     if (env[SUPERBEE_NO_AUTOPULL_ENV] || env[NO_AUTOPULL_ENV]) return "disabled";
+    const hostPolicy = captureBoardHostPolicy(deps.hostPolicy);
     const now = opts.now ?? (() => new Date());
     const staleMs = opts.staleMs ?? AUTO_PULL_STALE_MS;
 
@@ -323,7 +326,7 @@ export async function maybeAutoPull(
     // unproven standalone checkout fails here), and (b) it is genuinely provisioned (the exact
     // active board path is proven by the shared topology resolver).
     const gitTop = repoTopLevel(candidate.top);
-    const activeBoardPath = gitTop ? resolveProvisionedBoardPath(gitTop) : null;
+    const activeBoardPath = gitTop ? resolveProvisionedBoardPath(gitTop, hostPolicy) : null;
     if (!activeBoardPath || realOrSame(activeBoardPath) !== realOrSame(boardPath)) {
       return "no-board";
     }

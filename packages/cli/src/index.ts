@@ -11,7 +11,11 @@ export function buildIdentityEnvelope(): BuildIdentityEnvelope { return identity
 export function staticBuildIdentity(): StaticBuildIdentity { return identity.staticBuildIdentity(); }
 export function registerExecutableEntry(entryPath: string): void { invocation.registerExecutableEntry(entryPath); }
 export function currentExecutableRealPath(): string | undefined { return invocation.currentExecutableRealPath(); }
-export async function main(argv: string[]): Promise<void> { await (await import("./cli.js")).main(argv); }
+export async function main(argv: string[]): Promise<void> { (await import("./posix-host.js")).assertSupportedCliHost(); await (await import("./cli.js")).main(argv); }
 /** Private worker protocols are routed by the executable, never by an import side effect. */
 export async function runManagedUiWorker(): Promise<void> { await (await import("./ui/managed-worker.js")).runManagedUiWorker(); }
 export async function runUpdateRefreshWorker(token: string): Promise<void> { await (await import("./update-orientation.js")).runUpdateRefreshWorker(token); }
+
+export { createCliRuntime, createPosixCliRuntime } from './runtime.js';
+export { HostCommandError } from './host-command-error.js';
+export type { CliRuntime, CliRuntimeOptions, CliDistribution, DistributionInstallLayout, HostCommands, PrivateStateHost, FilesystemHostPolicy, BoardHostPolicy, HostCommandEnvironment, ResolvedHostCommand, HostCommandDeps, LexicalHookToken, UserStateEnvironment, UserStatePolicy, MigrationSourceDescriptor } from './runtime-types.js';

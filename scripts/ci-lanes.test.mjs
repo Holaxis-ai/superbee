@@ -69,7 +69,6 @@ function validateContributorAuthority(
   for (const pointer of [
     "scripts/ci-lanes.json",
     ".github/workflows/ci-tests.yml",
-    ".github/workflows/windows-installed-package.yml",
     "conventions/task",
     "conventions/review",
   ]) {
@@ -251,14 +250,10 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and platform lane
   assert.equal(cliPkg.scripts.pretest, "node build.mjs local-dev", "ordinary npm test must keep its build prerequisite");
   assert.doesNotMatch(cliPkg.scripts.test, /build\.mjs/, "the CI runtime lane must be able to skip the pretest rebuild");
   for (const [name, lane] of Object.entries(manifest.lanes)) {
-    if (name === "runtime" || name === "smoke-node-20" || name === "windows") continue;
+    if (name === "runtime" || name === "smoke-node-20") continue;
     assert.deepEqual(lane.nodes, [manifest.singleton_node], `${name} must not amplify across runtime versions`);
   }
-  assert.deepEqual(manifest.lanes.windows.nodes, [22, 20]);
-  assert.equal(manifest.lanes.windows.runs_on, "windows-latest");
-  assert.equal(manifest.lanes.windows.runtime_node, 22);
-  assert.equal(manifest.lanes.windows.installed_package_node, 20);
-  assert.equal(cliPkg.os, undefined, "the publishable package must admit native Windows installs");
+  assert.deepEqual(cliPkg.os, ["darwin", "linux"], "the maintained executable admits only its supported hosts");
 });
 
 test("the aliasing-host lane pins a fail-closed host expectation on both host classes", () => {

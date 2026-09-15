@@ -1,6 +1,7 @@
 import { promises as fs, realpathSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { homedir, hostname, userInfo } from "node:os";
+import { homedir, hostname } from "node:os";
+import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -23,6 +24,8 @@ export interface FilesystemMutationLockOptions {
   portableRoot?: string;
   /** Explicit runtime namespace for isolated consumers/tests; the default remains per-user and external. */
   lockRoot?: string;
+  /** Trusted host construction; omitted for the supported default filesystem. */
+  hostPolicy?: FilesystemHostPolicy;
 }
 
 export interface FilesystemMutationLockRootFacts {
@@ -58,18 +61,6 @@ export class FilesystemMutationLockError extends Error {
   }
 }
 
-function runtimeOwnerKey(): string {
-  const uid = process.getuid?.();
-  if (uid !== undefined) return `uid-${uid}`;
-  let username = "unknown";
-  try {
-    username = userInfo().username;
-  } catch {
-    // Windows temp directories are already user-scoped; this is only a stable path segment.
-  }
-  return `user-${createHash("sha256").update(username).digest("hex").slice(0, 16)}`;
-}
-
 function canonicalExistingPath(value: string): string {
   try {
     return realpathSync(value);
@@ -84,18 +75,13 @@ function pathContains(root: string, candidate: string): boolean {
 }
 
 /** Stable per-user runtime namespace outside `portableRoot`; refuses an impossible root bundle. */
-export function filesystemMutationLockRoot(portableRoot?: string): string {
-  // POSIX TMPDIR is process/session-scoped (notably shell vs launchd on macOS). Use the
-  // system-wide sticky directory so every same-user writer derives one lock namespace. Windows
-  // temp variables are process-scoped too, so use the per-user LocalAppData known folder instead
-  // of tmpdir(); otherwise two shells can derive different locks for the same portable target.
-  const runtimeParent =
-    process.platform === "win32"
-      ? path.join(homedir(), "AppData", "Local")
-      : "/tmp";
+export function filesystemMutationLockRoot(portableRoot?: string, hostPolicy?: FilesystemHostPolicy): string {
+  const policy = captureFilesystemHostPolicy(hostPolicy);
+  // A stable host parent keeps different process/session temp settings in one namespace.
+  const runtimeParent = policy.runtimeLockParent();
   const tempParent = canonicalExistingPath(runtimeParent);
   const homeParent = canonicalExistingPath(homedir());
-  const ownerKey = runtimeOwnerKey();
+  const ownerKey = policy.runtimeOwnerKey();
   const candidates = [
     path.join(tempParent, `agentstate-lite-mutation-locks-${ownerKey}`),
     path.join(homeParent, ".agentstate", `mutation-locks-${ownerKey}`),
@@ -124,8 +110,8 @@ function explicitFilesystemMutationLockRoot(root: string, portableRoot?: string)
 }
 
 /** Runtime lock directory for one already-canonical physical target. */
-export function filesystemMutationLockPath(target: string, portableRoot?: string): string {
-  return filesystemMutationLockPathInRoot(target, filesystemMutationLockRoot(portableRoot));
+export function filesystemMutationLockPath(target: string, portableRoot?: string, hostPolicy?: FilesystemHostPolicy): string {
+  return filesystemMutationLockPathInRoot(target, filesystemMutationLockRoot(portableRoot, hostPolicy));
 }
 
 function filesystemMutationLockPathInRoot(target: string, lockRoot: string): string {
@@ -201,11 +187,12 @@ async function pathExists(candidate: string): Promise<boolean> {
 /**
  * Move one demonstrably dead same-host lock aside without deleting its evidence. The destination
  * is stable for the dead owner's token and remains non-empty, so a delayed competing reclaimer
- * cannot rename a replacement live lock over it on either POSIX or Windows.
+ * cannot rename a replacement live lock over it across supported filesystems.
  */
 async function quarantineStaleLock(
   lockPath: string,
   owner: FilesystemMutationLockOwner,
+  policy: FilesystemHostPolicy,
 ): Promise<boolean> {
   if (owner.hostname !== hostname() || processExists(owner.pid)) return false;
   const quarantinePath = staleLockQuarantinePath(lockPath, owner);
@@ -216,7 +203,7 @@ async function quarantineStaleLock(
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return false;
     if (await pathExists(quarantinePath)) return false;
-    if (process.platform === "win32" && WINDOWS_DIRECTORY_CONTENTION_CODES.has(code ?? "")) return false;
+    if (policy.isDirectoryContentionError(err)) return false;
     throw err;
   }
 }
@@ -240,7 +227,7 @@ export function isPrivateFilesystemMutationLockRoot(facts: FilesystemMutationLoc
   return facts.directory && !facts.symbolicLink && !wrongOwner && !unsafeMode;
 }
 
-async function ensurePrivateLockRoot(root: string): Promise<void> {
+async function ensurePrivateLockRoot(root: string, policy: FilesystemHostPolicy): Promise<void> {
   try {
     await fs.mkdir(root, { recursive: true, mode: 0o700 });
   } catch (err) {
@@ -256,7 +243,7 @@ async function ensurePrivateLockRoot(root: string): Promise<void> {
       ownerUid: stat.uid,
       expectedUid: uid,
       mode: stat.mode,
-      enforcePrivateMode: process.platform !== "win32",
+      enforcePrivateMode: policy.enforcePrivateMode,
     })
   ) {
     throw new FilesystemMutationLockError(
@@ -289,7 +276,7 @@ async function canonicalTargetInDirectory(directory: string, requestedBasename: 
     try {
       candidateStat = await fs.lstat(candidate);
     } catch {
-      // A sibling may disappear during the scan, or Windows may deny metadata for a protected
+      // A sibling may disappear during the scan, or the host may deny metadata for a protected
       // system entry in an otherwise-readable directory. Neither sibling can be the successfully
       // witnessed requested entry, so it contributes no alias evidence and must not block locking.
       continue;
@@ -342,25 +329,23 @@ async function resolvedPortableRoot(portableRoot: string | undefined): Promise<s
   return fs.realpath(portableRoot).catch(() => path.resolve(portableRoot));
 }
 
-async function selectLockRoot(options: FilesystemMutationLockOptions): Promise<string> {
+async function selectLockRoot(options: FilesystemMutationLockOptions, policy: FilesystemHostPolicy): Promise<string> {
   const portableRoot = await resolvedPortableRoot(options.portableRoot);
   const lockRoot = options.lockRoot !== undefined
     ? explicitFilesystemMutationLockRoot(options.lockRoot, portableRoot)
-    : filesystemMutationLockRoot(portableRoot);
-  await ensurePrivateLockRoot(lockRoot);
+    : filesystemMutationLockRoot(portableRoot, policy);
+  await ensurePrivateLockRoot(lockRoot, policy);
   return lockRoot;
 }
 
-const WINDOWS_DIRECTORY_CONTENTION_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+type LockClaimFailure = "contention" | "unwitnessed-contention-error" | "terminal";
 
-type LockClaimFailure = "contention" | "unwitnessed-windows-sharing-error" | "terminal";
-
-async function classifyLockClaimFailure(error: unknown, lockPath: string): Promise<LockClaimFailure> {
+async function classifyLockClaimFailure(error: unknown, lockPath: string, policy: FilesystemHostPolicy): Promise<LockClaimFailure> {
   const code = (error as NodeJS.ErrnoException).code;
   if (code === "EEXIST") return "contention";
-  if (process.platform !== "win32" || !WINDOWS_DIRECTORY_CONTENTION_CODES.has(code ?? "")) return "terminal";
+  if (!policy.isDirectoryContentionError(error)) return "terminal";
 
-  // Win32 may report a sharing-shaped error while another claimer creates or removes this exact
+  // A host may report a contention-shaped error while another claimer creates or removes this exact
   // directory. A witnessed path is contention. An absent path is ambiguous: permit one bounded
   // retry in case the competing directory operation just completed, but never turn a durable
   // create denial into a malformed-lock timeout. A denied probe remains terminal immediately.
@@ -370,7 +355,7 @@ async function classifyLockClaimFailure(error: unknown, lockPath: string): Promi
   } catch (probeError) {
     const probeCode = (probeError as NodeJS.ErrnoException).code;
     return probeCode === "ENOENT" || probeCode === "ENOTDIR"
-      ? "unwitnessed-windows-sharing-error"
+      ? "unwitnessed-contention-error"
       : "terminal";
   }
 }
@@ -385,28 +370,29 @@ async function claimLockPath(
   owner: FilesystemMutationLockOwner,
   waitMs: number,
   pollMs: number,
+  policy: FilesystemHostPolicy,
 ): Promise<() => Promise<void>> {
   const started = owner.created_at_ms;
-  let unwitnessedWindowsRetryUsed = false;
+  let unwitnessedRetryUsed = false;
   while (true) {
     try {
       await fs.mkdir(lockPath, { mode: 0o700 });
     } catch (err) {
-      const failure = await classifyLockClaimFailure(err, lockPath);
+      const failure = await classifyLockClaimFailure(err, lockPath, policy);
       if (failure === "terminal") throw err;
-      if (failure === "unwitnessed-windows-sharing-error") {
-        if (unwitnessedWindowsRetryUsed) throw err;
-        unwitnessedWindowsRetryUsed = true;
+      if (failure === "unwitnessed-contention-error") {
+        if (unwitnessedRetryUsed) throw err;
+        unwitnessedRetryUsed = true;
         // This is one immediate re-attempt, not a wait. It is permitted even with waitMs: 0 so
         // the next result can distinguish a one-shot sharing race from a durable create denial.
         continue;
       } else {
-        unwitnessedWindowsRetryUsed = false;
+        unwitnessedRetryUsed = false;
       }
 
       let existingOwner = await readOwner(lockPath);
       if (existingOwner !== null) {
-        if (await quarantineStaleLock(lockPath, existingOwner)) continue;
+        if (await quarantineStaleLock(lockPath, existingOwner, policy)) continue;
         // A failed quarantine attempt is non-progress: another reclaimer may have moved the stale
         // lock and installed a live replacement while this caller was delayed in rename. Diagnose
         // the owner that exists now, never the dead-owner snapshot that authorized the attempt.
@@ -419,7 +405,7 @@ async function claimLockPath(
     }
 
     // The claim is ours now. Owner initialization and rollback failures are not claim
-    // contention—even when Windows reports a sharing-shaped errno—and must propagate unchanged.
+    // contention, even when the host reports a contention-shaped error, and must propagate unchanged.
     try {
       await fs.writeFile(path.join(lockPath, OWNER_FILE), `${JSON.stringify(owner)}\n`, {
         encoding: "utf8",
@@ -475,14 +461,15 @@ export async function acquireFilesystemMutationLock(
   target: string,
   options: FilesystemMutationLockOptions = {},
 ): Promise<() => Promise<void>> {
+  const policy = captureFilesystemHostPolicy(options.hostPolicy);
   const waitMs = positiveOption(options.waitMs, DEFAULT_WAIT_MS, "waitMs");
   const pollMs = positiveOption(options.pollMs, DEFAULT_POLL_MS, "pollMs");
   const targetResolved = path.resolve(target);
   const targetDir = path.dirname(targetResolved);
   const owner = newOwner(targetResolved);
 
-  // An existing Windows drive root (for example C:\) can reject even a recursive mkdir with
-  // EPERM. Resolve first and create only when the parent is genuinely absent. This preserves the
+  // Existing filesystem roots can reject even a recursive mkdir. Resolve first and create
+  // only when the parent is genuinely absent. This preserves the
   // create-on-demand behavior without mutating an already-existing filesystem root.
   let canonicalDir: string;
   try {
@@ -495,9 +482,9 @@ export async function acquireFilesystemMutationLock(
   // Two callers may spell the same bundle through real and symlinked parent paths. Canonicalize
   // the now-existing parent so both claim the same runtime lock for the physical target.
   const targetCanonical = await canonicalTargetInDirectory(canonicalDir, path.basename(targetResolved));
-  const lockRoot = await selectLockRoot(options);
+  const lockRoot = await selectLockRoot(options, policy);
   const lockPath = filesystemMutationLockPathInRoot(targetCanonical, lockRoot);
-  return claimLockPath(lockPath, { ...owner, target: targetCanonical }, waitMs, pollMs);
+  return claimLockPath(lockPath, { ...owner, target: targetCanonical }, waitMs, pollMs, policy);
 }
 
 const IDENTITY_KEY_SHAPE = /^[0-9a-f]{64}$/;
@@ -507,9 +494,9 @@ function assertIdentityKey(key: string): void {
 }
 
 /** @internal Runtime lock directory for one identity key; the key is the whole path component. */
-export function filesystemIdentityLockPath(key: string, portableRoot?: string): string {
+export function filesystemIdentityLockPath(key: string, portableRoot?: string, hostPolicy?: FilesystemHostPolicy): string {
   assertIdentityKey(key);
-  return path.join(filesystemMutationLockRoot(portableRoot), `${key}.lock`);
+  return path.join(filesystemMutationLockRoot(portableRoot, hostPolicy), `${key}.lock`);
 }
 
 /**
@@ -524,11 +511,12 @@ export async function acquireFilesystemIdentityLock(
   options: FilesystemMutationLockOptions = {},
 ): Promise<() => Promise<void>> {
   assertIdentityKey(key);
+  const policy = captureFilesystemHostPolicy(options.hostPolicy);
   const waitMs = positiveOption(options.waitMs, DEFAULT_WAIT_MS, "waitMs");
   const pollMs = positiveOption(options.pollMs, DEFAULT_POLL_MS, "pollMs");
   const owner = newOwner(identity);
-  const lockRoot = await selectLockRoot(options);
-  return claimLockPath(path.join(lockRoot, `${key}.lock`), owner, waitMs, pollMs);
+  const lockRoot = await selectLockRoot(options, policy);
+  return claimLockPath(path.join(lockRoot, `${key}.lock`), owner, waitMs, pollMs, policy);
 }
 
 /** Run `fn` while holding the same-user cross-process mutation lock for `target`. */

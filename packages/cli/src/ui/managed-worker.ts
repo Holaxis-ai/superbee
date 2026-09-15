@@ -1,3 +1,4 @@
+import { configuredBundle } from "../filesystem-runtime.js";
 import type { UiServerHandle } from "./server.js";
 import { stat, realpath } from "node:fs/promises";
 import {
@@ -161,7 +162,7 @@ export async function runManagedUiWorkerInput(
   if (input.authority.actor !== null) args.push("--actor", input.authority.actor);
   await launchUi(args, {
     management,
-    localBundle: { root: input.authority.launch_root },
+    localBundle: configuredBundle(input.authority.launch_root),
     sessionCookieName: `superbee_ui_${input.authority.key.slice(0, 16)}`,
     stdout: (raw) => {
       if (readyWritten) return;

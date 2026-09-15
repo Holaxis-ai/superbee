@@ -37,8 +37,8 @@
  * and the root's spelling is folded into the lock key rather than verified.
  *
  * Every filesystem call goes through a {@link FilesystemIdentityPort} passed to the protocol
- * functions. Production binds {@link nodeFilesystemIdentityPort} once, as a module constant;
- * nothing on a backend instance can substitute it. Normalizing stores that rewrite names on
+ * functions. Production constructs a Node binding with the backend's captured host policy;
+ * the policy supplies classifications, never a replacement identity protocol. Normalizing stores that rewrite names on
  * write (legacy HFS+) are unsupported: an id whose NFD form differs from its own form is written
  * and then refused as an alias on every later observation, never silently aliased.
  */
@@ -51,6 +51,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
 import { acquireFilesystemIdentityLock } from "./filesystem-lock.js";
+import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 
 export type EntryKind = "file" | "directory" | "symlink" | "other";
 
@@ -89,7 +90,8 @@ export interface IdentityDescriptor {
  */
 export interface FilesystemIdentityPort {
   /** Host semantics used by the protocol for narrowly platform-specific filesystem recovery. */
-  readonly platform?: NodeJS.Platform;
+  readonly isTransientOpenError?: (error: unknown) => boolean;
+  readonly isReplacementConflict?: (error: unknown) => boolean;
   /** `lstat`; `null` when nothing is at the path (ENOENT or ENOTDIR). */
   probe(target: string): Promise<ProbeResult | null>;
   /** Directory listing, names and kinds only; `null` when the directory is absent. */
@@ -112,13 +114,11 @@ export interface FilesystemIdentityPort {
   claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>>;
 }
 
-const WINDOWS_REPLACE_CONFLICT_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
-
 /**
- * Windows can transiently deny replacement while another process is closing a read handle or a
+ * A host can transiently deny replacement while another process is closing a read handle or a
  * scanner holds the destination. An in-place rename retry cannot remain bound to the complete
  * parent-and-leaf observation: either can change after any final check. Abort this attempt instead,
- * mapping only the errno values Node uses for a Windows replacement sharing violation to the typed
+ * mapping only a host-classified replacement conflict to the typed
  * contention signal owned by the higher-level fresh read/decide/CAS loop. Every other platform and
  * errno remains the original immediate failure.
  */
@@ -131,8 +131,7 @@ async function replaceExistingLeaf(
   try {
     await port.rename(tmp, target);
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code ?? "";
-    if ((port.platform ?? process.platform) === "win32" && WINDOWS_REPLACE_CONFLICT_CODES.has(code)) {
+    if (port.isReplacementConflict?.(err)) {
       throw new ConcurrentReplacementError(rel, 1, 10);
     }
     throw err;
@@ -470,10 +469,9 @@ export async function observeExact<T>(
       opened = await port.open(target);
     } catch (err) {
       if (isAbsentPathError(err)) return { state: "absent" };
-      // Win32 can report EPERM when a concurrent delete/replace briefly denies an open. That is
-      // an uncertain generation, not a durable permission verdict; re-run the witnessed walk and
+      // A host-classified transient open failure reports an uncertain generation; re-run the witnessed walk and
       // let the existing bound turn persistent contention into ConcurrentReplacementError.
-      if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
+      if (port.isTransientOpenError?.(err)) {
         restarts = countRestart(restarts, rel);
         continue;
       }
@@ -528,7 +526,16 @@ export async function probeExact(
  * first-creation writers of a host-equated pair the fold misses are not excluded" applies there
  * and only there.
  */
-const linkUnsupportedRoots = new Set<string>();
+const linkUnsupportedRoots = new WeakMap<FilesystemIdentityPort, Set<string>>();
+
+function unsupportedLinkRoots(port: FilesystemIdentityPort): Set<string> {
+  let roots = linkUnsupportedRoots.get(port);
+  if (!roots) {
+    roots = new Set();
+    linkUnsupportedRoots.set(port, roots);
+  }
+  return roots;
+}
 
 /**
  * Process-local queue per identity key, shared by every `FilesystemBackend` instance: the
@@ -670,7 +677,7 @@ async function createExactLeaf(
     return;
   }
   if (outcome === "unsupported") {
-    linkUnsupportedRoots.add(rootResolved);
+    unsupportedLinkRoots(port).add(rootResolved);
     await port.rename(tmp, target);
     return;
   }
@@ -722,7 +729,7 @@ export async function mutateExact<T>(
               await replaceExistingLeaf(port, tmp, target, rel);
               return;
             }
-            if (linkUnsupportedRoots.has(rootResolved)) {
+            if (unsupportedLinkRoots(port).has(rootResolved)) {
               await port.rename(tmp, target);
               return;
             }
@@ -753,76 +760,80 @@ function kindOf(stats: { isSymbolicLink(): boolean; isDirectory(): boolean; isFi
 }
 
 /** The one production binding: `node:fs`, the temp-file convention, and the identity lock. */
-export const nodeFilesystemIdentityPort: FilesystemIdentityPort = Object.freeze({
-  platform: process.platform,
-  async probe(target: string): Promise<ProbeResult | null> {
-    let lstats: Stats;
-    try {
-      lstats = await fs.lstat(target);
-    } catch (err) {
-      if (isAbsentPathError(err)) return null;
-      throw err;
-    }
-    return { kind: kindOf(lstats), dev: lstats.dev, ino: lstats.ino };
-  },
-  async entries(dir: string): Promise<ListedEntry[] | null> {
-    try {
-      const dirents = await fs.readdir(dir, { withFileTypes: true });
-      return dirents.map((dirent) => ({ name: dirent.name, kind: kindOf(dirent) }));
-    } catch (err) {
-      if (isAbsentPathError(err)) return null;
-      throw err;
-    }
-  },
-  async open(target: string): Promise<OpenedFile> {
-    const handle = await fs.open(target, "r");
-    try {
-      const stats = await handle.stat();
-      return { handle, dev: stats.dev, ino: stats.ino };
-    } catch (err) {
-      await handle.close().catch(() => {});
-      throw err;
-    }
-  },
-  readAll(handle: PortHandle): Promise<Buffer> {
-    return (handle as FileHandle).readFile();
-  },
-  close(handle: PortHandle): Promise<void> {
-    return (handle as FileHandle).close();
-  },
-  async stat(target: string): Promise<{ mtime: Date }> {
-    return { mtime: (await fs.stat(target)).mtime };
-  },
-  async mkdir(dir: string): Promise<"created" | "exists"> {
-    try {
-      await fs.mkdir(dir);
-      return "created";
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") return "exists";
-      throw err;
-    }
-  },
-  async writeTemp(dir: string, name: string, bytes: Uint8Array): Promise<void> {
-    await fs.writeFile(path.join(dir, name), bytes);
-  },
-  async link(from: string, to: string): Promise<"linked" | "exists" | "unsupported"> {
-    try {
-      await fs.link(from, to);
-      return "linked";
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "EEXIST") return "exists";
-      if (code === "EPERM" || code === "ENOTSUP" || code === "EOPNOTSUPP" || code === "EXDEV") return "unsupported";
-      throw err;
-    }
-  },
-  async rename(from: string, to: string): Promise<void> {
-    await fs.rename(from, to);
-  },
-  async unlink(target: string): Promise<void> {
-    await fs.unlink(target);
-  },
-  claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>> {
-    return acquireFilesystemIdentityLock(key, `${identity.root}:${identity.rel}`, { portableRoot: identity.root });
-  },
-});
+export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPolicy): FilesystemIdentityPort {
+  const policy = captureFilesystemHostPolicy(hostPolicy);
+  return Object.freeze({
+    isTransientOpenError: policy.isTransientOpenError,
+    isReplacementConflict: policy.isReplacementConflict,
+    async probe(target: string): Promise<ProbeResult | null> {
+      let lstats: Stats;
+      try {
+        lstats = await fs.lstat(target);
+      } catch (err) {
+        if (isAbsentPathError(err)) return null;
+        throw err;
+      }
+      return { kind: kindOf(lstats), dev: lstats.dev, ino: lstats.ino };
+    },
+    async entries(dir: string): Promise<ListedEntry[] | null> {
+      try {
+        const dirents = await fs.readdir(dir, { withFileTypes: true });
+        return dirents.map((dirent) => ({ name: dirent.name, kind: kindOf(dirent) }));
+      } catch (err) {
+        if (isAbsentPathError(err)) return null;
+        throw err;
+      }
+    },
+    async open(target: string): Promise<OpenedFile> {
+      const handle = await fs.open(target, "r");
+      try {
+        const stats = await handle.stat();
+        return { handle, dev: stats.dev, ino: stats.ino };
+      } catch (err) {
+        await handle.close().catch(() => {});
+        throw err;
+      }
+    },
+    readAll(handle: PortHandle): Promise<Buffer> {
+      return (handle as FileHandle).readFile();
+    },
+    close(handle: PortHandle): Promise<void> {
+      return (handle as FileHandle).close();
+    },
+    async stat(target: string): Promise<{ mtime: Date }> {
+      return { mtime: (await fs.stat(target)).mtime };
+    },
+    async mkdir(dir: string): Promise<"created" | "exists"> {
+      try {
+        await fs.mkdir(dir);
+        return "created";
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+        throw err;
+      }
+    },
+    async writeTemp(dir: string, name: string, bytes: Uint8Array): Promise<void> {
+      await fs.writeFile(path.join(dir, name), bytes);
+    },
+    async link(from: string, to: string): Promise<"linked" | "exists" | "unsupported"> {
+      try {
+        await fs.link(from, to);
+        return "linked";
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "EEXIST") return "exists";
+        if (code === "EPERM" || code === "ENOTSUP" || code === "EOPNOTSUPP" || code === "EXDEV") return "unsupported";
+        throw err;
+      }
+    },
+    async rename(from: string, to: string): Promise<void> {
+      await fs.rename(from, to);
+    },
+    async unlink(target: string): Promise<void> {
+      await fs.unlink(target);
+    },
+    claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>> {
+      return acquireFilesystemIdentityLock(key, `${identity.root}:${identity.rel}`, { portableRoot: identity.root, hostPolicy: policy });
+    },
+  });
+}

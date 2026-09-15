@@ -1,3 +1,4 @@
+import type { FilesystemHostPolicy } from "@superbee/core/filesystem";
 import { createHash } from "node:crypto";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
@@ -480,9 +481,14 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
   return new SnapshotHandle({ ...withoutDigest, snapshotDigest }, objects);
 }
 
+export interface CapturePublicationRuntimeOptions {
+  readonly filesystemHostPolicy?: FilesystemHostPolicy;
+}
+
 /** Capture one coherent immutable filesystem publication snapshot. */
 export async function capturePublicationSnapshot(
   options: CapturePublicationSnapshotOptionsV1,
+  runtimeOptions: CapturePublicationRuntimeOptions = {},
 ): Promise<PublicationSnapshotHandleV1> {
   if (options.schema !== PUBLICATION_SNAPSHOT_V1) {
     throw new PublicationError("CAPABILITY_UNAVAILABLE", "the requested publication snapshot schema is unsupported");
@@ -494,6 +500,7 @@ export async function capturePublicationSnapshot(
     throw new PublicationError("INVALID_OBJECT_IDENTITY", "the filesystem publication root must be absolute");
   }
   const requestedRoot = path.resolve(options.source.root);
+  const backend = new FilesystemBackend(requestedRoot, { hostPolicy: runtimeOptions.filesystemHostPolicy });
   let rootIdentity: PublicationRootIdentity;
   try {
     rootIdentity = await authorizePublicationRoot(requestedRoot);
@@ -517,7 +524,6 @@ export async function capturePublicationSnapshot(
     }
   }
   const maxAttempts = options.maxAttempts ?? 2;
-  const backend = new FilesystemBackend(root);
   let lastError: PublicationError | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let handle: SnapshotHandle | undefined;

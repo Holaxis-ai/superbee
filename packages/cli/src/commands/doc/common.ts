@@ -1,3 +1,4 @@
+import { currentHost } from "../../runtime-context.js";
 // Shared surface for the `doc` verb modules (write/update/read/history/delete): the help text, the
 // deps interface, the stdin-detection helper, and the error-classification helper used by ≥2 verbs.
 // Verb modules import from HERE, never from `../doc.js` (the thin entry re-exports FROM here, and a
@@ -405,10 +406,7 @@ function hasRealStdinInput(): boolean {
   try {
     const stats = fstatSync(0);
     if (stats.isFIFO() || stats.isFile() || stats.isSocket()) return true;
-    // libuv does not classify an anonymous child-process pipe as a FIFO or socket on Windows.
-    // It is still a real byte source. NUL and other redirected-but-dataless handles remain
-    // character devices, so retain the original false-positive guard there.
-    return process.platform === "win32" && !stats.isCharacterDevice() && !stats.isDirectory();
+    return currentHost().hasAdditionalStdinInput(stats);
   } catch {
     return false;
   }

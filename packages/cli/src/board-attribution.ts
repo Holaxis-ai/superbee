@@ -1,3 +1,4 @@
+import { captureRuntimeCallback } from "./runtime-context.js";
 // `board-attribution.ts` — the POST-PERSIST self-actor hook's CLI wiring (board-git PR C).
 //
 // THE GAP THIS CLOSES: "self" is defined operationally — the actors THIS CLONE committed to the
@@ -29,11 +30,11 @@ export function boardPostPersistHook(
   actor: string | undefined,
 ): (() => Promise<void>) | undefined {
   if (!actor || actor === "unknown" || attribution.kind !== "board") return undefined;
-  return async () => {
+  return captureRuntimeCallback(async () => {
     try {
       await defaultSyncStore.recordSelfActors(attribution.stateKey, [actor]);
     } catch {
       /* best-effort by contract — attribution must never fail a successful write */
     }
-  };
+  });
 }

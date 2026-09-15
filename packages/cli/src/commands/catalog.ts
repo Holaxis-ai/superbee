@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 
@@ -120,7 +121,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
   );
 
   if (parsed.selection.kind === "help" || parsed.selection.kind === "navigation") {
-    stdout(CATALOG_USAGE);
+    stdout(renderUsage(CATALOG_USAGE));
     return;
   }
   if (parsed.selection.kind === "unknown") usage(`unknown catalog subcommand: ${parsed.selection.token}`);

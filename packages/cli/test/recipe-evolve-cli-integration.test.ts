@@ -45,20 +45,6 @@ function hostShell(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
 ): { file: string; args: string[]; windowsVerbatimArguments: boolean } {
-  if (platform === "win32") {
-    const file = env.ComSpec ?? env.COMSPEC;
-    assert.ok(file && path.win32.isAbsolute(file), "Windows exact command proof requires an absolute ComSpec");
-    // The final argument is already a complete cmd.exe command line. Node's normal Windows argv
-    // serializer would quote that argument again and escape its embedded quotes, causing those
-    // quotes to reach the CLI literally. Pass the generated characters through unchanged, just
-    // as an interactive paste does.
-    // Under `/s`, cmd strips the FIRST and LAST quote of the command line (`cmd /?`, rule 2).
-    // A rendered command begins with a quoted executable and can end with a quoted argument, so
-    // without an extra outer pair the stripping lands inside the real command and it fails with
-    // "The filename, directory name, or volume label syntax is incorrect." An interactive paste is
-    // not subject to rule 2; this wrapper is what makes `/c` behave like that paste.
-    return { file, args: ["/d", "/s", "/c", `"${command}"`], windowsVerbatimArguments: true };
-  }
   return { file: "/bin/sh", args: ["-c", command], windowsVerbatimArguments: false };
 }
 
@@ -68,30 +54,8 @@ test("exact apply commands use the native host shell contract", () => {
     args: ["-c", "superbee recipe evolve"],
     windowsVerbatimArguments: false,
   });
-  assert.deepEqual(
-    hostShell("superbee recipe evolve", "win32", { ComSpec: String.raw`C:\Windows\System32\cmd.exe` }),
-    {
-      file: String.raw`C:\Windows\System32\cmd.exe`,
-      args: ["/d", "/s", "/c", '"superbee recipe evolve"'],
-      windowsVerbatimArguments: true,
-    },
-  );
-  assert.throws(
-    () => hostShell("superbee recipe evolve", "win32", { ComSpec: "cmd.exe" }),
-    /absolute ComSpec/,
-  );
   assert.equal(commandArg("/tmp/recipe with spaces", "linux"), "'/tmp/recipe with spaces'");
-  // Backslashes are PRESERVED: the renderer no longer rewrites them, because it carries arbitrary
-  // bundle values and not only paths, and rewriting turned `Task\Sub` into a different value.
-  assert.equal(
-    commandArg(String.raw`C:\Program Files\Superbee\recipe`, "win32"),
-    String.raw`"C:\Program Files\Superbee\recipe"`,
-  );
-  // Always-quote: `shellArg` quotes unconditionally, so an inert token is quoted here too.
-  assert.equal(
-    commandArgs([String.raw`C:\Program Files\node.exe`, "--import", "file:///C:/loader.mjs"], "win32"),
-    String.raw`"C:\Program Files\node.exe" "--import" "file:///C:/loader.mjs"`,
-  );
+  assert.equal(commandArgs(["/tmp/node", "--import", "file:///tmp/loader.mjs"], "linux"), "'/tmp/node' '--import' 'file:///tmp/loader.mjs'");
 });
 
 function runCliJson(launcher: string[], args: string[]): Record<string, unknown> {
@@ -149,7 +113,7 @@ async function exerciseExactApply(launcher: string[], expectedPrefix: string): P
       windowsVerbatimArguments: shell.windowsVerbatimArguments,
       env: {
         ...process.env,
-        PATH: process.platform === "win32" ? path.dirname(realpathSync(process.execPath)) : "/usr/bin:/bin",
+        PATH: "/usr/bin:/bin",
         ASLITE_NO_UPDATE_CHECK: "1",
         SUPERBEE_NO_AUTOPULL: "1",
       },
