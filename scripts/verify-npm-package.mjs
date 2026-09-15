@@ -1117,7 +1117,7 @@ async function runInstalledProof(spec) {
     assert.match(normalizedInstalledReadme, /translates the\s+request into CLI calls/i);
     assert.match(normalizedInstalledReadme, /^## Install$/m);
     assert.match(normalizedInstalledReadme, /Node\.js 20 or newer on macOS and Linux/);
-    assert.match(normalizedInstalledReadme, /do not\s+need WSL/i);
+    assert.match(normalizedInstalledReadme, /Native Windows is not supported by this package/);
     assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
     assertPackageReadmeReleaseChannel(manifest.version, normalizedInstalledReadme);
 

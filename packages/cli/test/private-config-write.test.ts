@@ -218,7 +218,7 @@ test("Private writes honor host mode applicability and never call chmod", async 
   }
 });
 
-test("Private replacement retries only host-classified interference", async () => {
+test("Private replacement retries only interference selected by the injected policy", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-windows-retry-"));
   const target = path.join(dir, "settings.json");
   const originalRename = mutableFs.renameSync;
