@@ -43,6 +43,7 @@ import type { ConceptId, QueryFilter, StorageBackend } from "@superbee/core";
 import { queryHeads } from "@superbee/core/bundle-ops";
 import { assertReadableConceptId } from "@superbee/core/engine";
 import type { IntentRecord, JournaledReadResult } from "@superbee/core/journaled-backend";
+import { InvalidInputError } from "@superbee/core/storage";
 import {
   localConflict,
   localPending,
@@ -72,8 +73,14 @@ export interface BrowserLocalRuntimeOptions {
   local: LocalBundle;
   /** The authority's read side, used by pull and to fetch a conflict's shared head. */
   remote: StorageBackend;
-  /** Carries intents to the authority as identified writes. */
-  transport: OperationTransport;
+  /**
+   * Carries intents to the authority as identified writes. May be omitted only with
+   * `bodyTransport`, for a working copy in body mode, whose push never calls it; a working copy
+   * in any other mode needs it, and a runtime built without it rejects its first `sync` rather
+   * than delivering nothing.
+   */
+  transport?: OperationTransport;
+  /** Carries body intents; required by a body-mode working copy, never inferred from `transport`. */
   bodyTransport?: BodyDeliveryTransport;
   /** The lock manager that owns the push role; omitted, the host's. See `withPushRole`. */
   locks?: LockManagerLike | null;
@@ -104,6 +111,20 @@ function notFound(id: ConceptId): Error & { code: string } {
 
 const UNSETTLED = new Set(UNSETTLED_STATES);
 
+/**
+ * Stands in for the exact-document transport of a body-mode runtime built without one. Body
+ * mode delivers every intent through `bodyTransport`, so push never reaches this; a call is a
+ * defect, refused rather than answered.
+ */
+const NO_EXACT_TRANSPORT: OperationTransport = {
+  submit: async () => {
+    throw new InvalidInputError("a body-mode working copy delivers no exact-document intents");
+  },
+  lookup: async () => {
+    throw new InvalidInputError("a body-mode working copy delivers no exact-document intents");
+  },
+};
+
 /** The one line a status carries for a rejected sync: the error's name and message. */
 function describeFailure(failure: unknown): string {
   const err = failure as { name?: unknown; message?: unknown };
@@ -132,12 +153,27 @@ function deriveProvenance(snapshot: JournaledReadResult & { document: NonNullabl
 
 export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): PlatformRuntime {
   const { local, remote, transport, actor, now } = options;
+  if (transport === undefined && options.bodyTransport === undefined) {
+    throw new InvalidInputError("createBrowserLocalRuntime needs a transport: the exact-document transport, or bodyTransport for a working copy in body mode");
+  }
   const { bundle, backend } = local;
   let online: boolean | null = null;
   /** How this runtime's last sync ended; `null` until one has run here. */
   let lastOutcome: { ok: boolean; error?: string } | null = null;
 
   const capabilities = (): PlatformCapabilities => ({ mode: "browser-local", offlineCommits: true, localPersistence: true });
+
+  /**
+   * The exact-document transport a push runs with. A body-mode working copy delivers only body
+   * intents, so its host may omit `transport`; any other working copy needs the real one, and
+   * the omission is reported here, before the push role is taken and before any intent is
+   * claimed, so it never surfaces as a delivery that went nowhere.
+   */
+  const exactTransport = async (): Promise<OperationTransport> => {
+    if (transport !== undefined) return transport;
+    if (await admitBodyMode(backend)) return NO_EXACT_TRANSPORT;
+    throw new InvalidInputError("this working copy is not in body mode, so createBrowserLocalRuntime needs the exact-document transport to sync");
+  };
 
   /** One document with its journal and base, from one transaction; `null` when the store holds no record. */
   const snapshotOf = async (id: ConceptId): Promise<(JournaledReadResult & { document: NonNullable<JournaledReadResult["document"]>; raw: string }) | null> => {
@@ -247,7 +283,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     sync: async (syncOptions: PlatformSyncOptions = {}): Promise<PlatformSyncStatus> => {
       const readSide: StorageBackend = remote;
       try {
-        await pushWithRole(local, transport, { remote: readSide, bodyTransport: options.bodyTransport, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
+        await pushWithRole(local, await exactTransport(), { remote: readSide, bodyTransport: options.bodyTransport, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
       } catch (error) {
         lastOutcome = { ok: false, error: describeFailure(error) };
         throw error;
