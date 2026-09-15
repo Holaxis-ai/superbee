@@ -228,6 +228,8 @@ bundles remain supported without rewriting their declared edition.
 - **Native Windows support is separate.** The `superbee` executable supports macOS and Linux.
   Windows adapters and the `superbee-windows` executable are developed in a separate repository;
   they are not included in this package. The Windows distribution is experimental and unpublished.
+  See the [CLI upgrade guidance](packages/superbee/README.md#upgrading-an-existing-windows-installation)
+  and [core filesystem migration](packages/core/README.md#filesystem-platform-migration) before upgrading.
 - **Recipes as composition** is a thesis under test, not a result. The repository includes
   small first-party definitions-only packages, including a Kind-plus-View reference, but package
   dependencies, upgrades, migrations, and marketplace discovery remain future work. "Cookbooks"
