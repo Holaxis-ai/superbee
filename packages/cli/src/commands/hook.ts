@@ -1,3 +1,5 @@
+import { renderUsage } from "../output.js";
+import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "../runtime-context.js";
 // `superbee hook install|status|uninstall` — manage the SessionStart board-aware hook.
 //
 // The installed hook runs `<bin> session-start` — ONE subcommand doing a
@@ -361,7 +363,7 @@ export function readHookCompatibilityStatus(settings: HookSettings): HookStatus 
       compatibility: {
         state: "stale",
         reason: `found ${owned.length} generated hook entries; exactly one is expected`,
-        remedy: "re-run `superbee hook install` from the durable global npm installation",
+        remedy: `re-run \`${distributionBinName()} hook install\` from the durable global npm installation`,
       },
     };
   }
@@ -394,7 +396,7 @@ export interface HookTargets {
 }
 
 function targetsForBase(base: string, platform: string = process.platform): HookTargets {
-  const paths = platform === "win32" ? path.win32 : path.posix;
+  const paths = currentHost().paths;
   return {
     claudeSettings: paths.join(base, ".claude", "settings.json"),
     codexHooks: paths.join(base, ".codex", "hooks.json"),
@@ -410,7 +412,7 @@ export function globalHookTargets(
   env: NodeJS.ProcessEnv = process.env,
   platform: string = process.platform,
 ): HookTargets {
-  const paths = platform === "win32" ? path.win32 : path.posix;
+  const paths = currentHost().paths;
   const claudeHome = resolveHostConfigRoot(HOST_CONFIG_ROOTS.claude, home, env, platform);
   const codexHome = resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, home, env, platform);
   const opencodeHome = resolveOpenCodeConfigRoot(home, env, platform);
@@ -787,7 +789,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
         compatibility: {
           state: "stale",
           reason: "recognized generated plugin has a non-current timeout",
-          remedy: "re-run `superbee hook install` from the durable global npm installation",
+          remedy: `re-run \`${distributionBinName()} hook install\` from the durable global npm installation`,
         },
       };
     }
@@ -820,7 +822,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
       compatibility: {
         state: timeoutMs === HOOK_TIMEOUT_SECONDS * 1000 ? "legacy_identity" : "stale",
         reason: "recognized generated OpenCode plugin uses the legacy ASLite identity",
-        remedy: "re-run `superbee hook install` from the durable global npm installation",
+        remedy: `re-run \`${distributionBinName()} hook install\` from the durable global npm installation`,
       },
     };
   }
@@ -838,7 +840,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
       compatibility: {
         state: "stale",
         reason: "recognized pre-session-start axi-sdk-js plugin",
-        remedy: "re-run `superbee hook install` from the durable global npm installation",
+        remedy: `re-run \`${distributionBinName()} hook install\` from the durable global npm installation`,
       },
     };
   }
@@ -865,7 +867,7 @@ function readOpenCodeTargetsStatus(
       compatibility: {
         state: "stale",
         reason: "found both canonical and legacy generated OpenCode plugins; exactly one is expected",
-        remedy: "re-run `superbee hook install` from the durable global npm installation",
+        remedy: `re-run \`${distributionBinName()} hook install\` from the durable global npm installation`,
       },
     };
   }
@@ -1094,7 +1096,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {
-    stdout(HOOK_USAGE);
+    stdout(renderUsage(HOOK_USAGE));
     return;
   }
 
@@ -1211,7 +1213,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     } catch (err) {
       throw new CliError("RUNTIME", err instanceof Error ? err.message : String(err), {
         ...(authority ? { details: { install_authority: authority } } : {}),
-        help: "run `npm install -g superbee`, verify `superbee version --json`, then re-run hook install; npx remains supported for read-only/trial commands",
+        help: `run npm install -g ${distributionPackageName()}, verify ${distributionBinName()} version --json, then re-run hook install; npx remains supported for read-only/trial commands`,
       });
     }
     const command = launch.command;

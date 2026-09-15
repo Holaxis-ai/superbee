@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee artifact create <file> --title <title>` — the ONE command that owns the
 // produced-output sequence (designs/artifact-runtime Unit 1): derive a collision-safe id, promote
 // the bytes to `artifacts/<id>.html` (capturing the version in-process — the agent never sees a
@@ -99,7 +100,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
 
   const sub = argv[0];
   if (sub === undefined || sub === "--help" || sub === "-h" || sub === "help") {
-    stdout(ARTIFACT_USAGE);
+    stdout(renderUsage(ARTIFACT_USAGE));
     return;
   }
   if (sub !== "create") {
@@ -113,7 +114,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
     CLI_LEAVES.artifactCreate,
   );
   if (values.help) {
-    stdout(ARTIFACT_USAGE);
+    stdout(renderUsage(ARTIFACT_USAGE));
     return;
   }
 

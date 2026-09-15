@@ -1,3 +1,5 @@
+import { renderUsage } from "../output.js";
+import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "../runtime-context.js";
 // `superbee skill install|status|uninstall` — install this distribution's generated Agent Skill
 // (SKILL.md + references/) into host skill folders.
 //
@@ -156,7 +158,7 @@ export function resolveSkillAssets(executable?: string): SkillAssets {
       help: `${cliInvocation()} skill install --scope project|user`,
     });
   }
-  const root = dirname(dirname(exe));
+  const root = currentDistribution()?.assetRoot ?? dirname(dirname(exe));
   const skillMd = join(root, "SKILL.md");
   const referencesDir = join(root, "references");
   if (!existsSync(skillMd) || !existsSync(referencesDir)) {
@@ -205,7 +207,7 @@ function skillTargetsForName(
   deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv; platform?: string } = {},
 ): SkillTargets {
   const platform = deps.platform ?? process.platform;
-  const paths = platform === "win32" ? path.win32 : path.posix;
+  const paths = currentHost().paths;
   if (scope === "project") {
     const cwd = deps.cwd ?? process.cwd();
     return {
@@ -241,19 +243,19 @@ export function legacySkillTargets(
 
 /** Resolve a possibly absent target through its nearest existing ancestor for write deduplication. */
 function skillTargetIdentity(candidate: string, platform: string = process.platform): string {
-  const paths = platform === "win32" ? path.win32 : path.posix;
+  const paths = currentHost().paths;
   const original = paths.resolve(candidate);
   let cursor = original;
   const missingTail: string[] = [];
   while (true) {
     try {
       const resolved = paths.resolve(realpathSync.native(cursor), ...missingTail);
-      return platform === "win32" ? resolved.toLowerCase() : resolved;
+      return currentHost().comparisonKey(resolved);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       const parent = paths.dirname(cursor);
       if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === cursor) {
-        return platform === "win32" ? original.toLowerCase() : original;
+        return currentHost().comparisonKey(original);
       }
       missingTail.unshift(paths.basename(cursor));
       cursor = parent;
@@ -356,9 +358,9 @@ function readManifest(dir: string): SkillManifest | undefined | null {
 /** Legacy manifest-first transition: it owns union files without claiming not-yet-true digests. */
 function transitionalManifestContent(assets: SkillAssets, files: readonly string[]): string {
   const manifest = {
-    package: "superbee",
+    package: distributionPackageName(),
     version: assets.version,
-    installed_by: SKILL_INSTALLER,
+    installed_by: `${distributionBinName()} skill install`,
     files: [...files],
   };
   return `${JSON.stringify(manifest, null, 2)}\n`;
@@ -372,9 +374,9 @@ function manifestContent(assets: SkillAssets): string {
   }
   const manifest: Omit<SkillManifestV2, "kind" | "receipt_valid"> = {
     schema: SKILL_MANIFEST_SCHEMA,
-    package: "superbee",
+    package: distributionPackageName(),
     version: assets.version,
-    installed_by: SKILL_INSTALLER,
+    installed_by: `${distributionBinName()} skill install`,
     compatibility_contract: assets.compatibilityContract,
     source_identity: assets.sourceIdentity,
     files: [...assets.files],
@@ -953,7 +955,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {
-    stdout(SKILL_USAGE);
+    stdout(renderUsage(SKILL_USAGE));
     return;
   }
 
@@ -1028,7 +1030,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         `persistent skill install requires a durable npm-global CLI; authority is ${authority.state}: ${authority.reason}`,
         {
           details: { install_authority: authority },
-          help: "run `npm install -g superbee`, verify `superbee version --json`, then re-run skill install; npx remains supported for read-only/trial commands",
+          help: `run npm install -g ${distributionPackageName()}, verify ${distributionBinName()} version --json, then re-run skill install; npx remains supported for read-only/trial commands`,
         },
       );
     }

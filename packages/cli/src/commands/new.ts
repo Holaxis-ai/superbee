@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee new "<Kind>" <id> --<field> <value> …` — create a new instance of a
 // bundle-declared kind.
 //
@@ -393,7 +394,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // own schema (rendered below, once the kind is loaded) so an agent can author a valid instance
   // without a separate `kinds` round-trip.
   if (pre.values.help && !kindName) {
-    stdout(NEW_USAGE);
+    stdout(renderUsage(NEW_USAGE));
     return;
   }
   if (!kindName) {
@@ -416,7 +417,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     attribution = route ? boardAttributionForRoute(route) : { kind: "none" };
   } catch (err) {
     if (pre.values.help) {
-      stdout(NEW_USAGE);
+      stdout(renderUsage(NEW_USAGE));
       return;
     }
     throw err;
@@ -438,7 +439,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   const kind = resolvedKind && (pre.values.help || kindDeclaresAnything(resolvedKind)) ? resolvedKind : undefined;
   if (!kind) {
     if (pre.values.help) {
-      stdout(NEW_USAGE); // named kind isn't declared here — the generic help is the most we can show
+      stdout(renderUsage(NEW_USAGE)); // named kind isn't declared here — the generic help is the most we can show
       return;
     }
     const known = [...registry.kinds.entries()]

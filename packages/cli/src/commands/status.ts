@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee status` — a read-only, whole-bundle health report (bundle lint).
 //
 // COMPOSITION only: this command adds NO new core validation/link/freshness logic. It composes
@@ -314,7 +315,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     CLI_LEAVES.status,
   );
   if (values.help) {
-    stdout(STATUS_USAGE);
+    stdout(renderUsage(STATUS_USAGE));
     return;
   }
 

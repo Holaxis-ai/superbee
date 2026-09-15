@@ -1,3 +1,4 @@
+import { currentPrivateStateHost, distributionBinName, currentDistribution, currentHost } from "./runtime-context.js";
 import { randomBytes } from "node:crypto";
 import { spawn as spawnChild } from "node:child_process";
 import {
@@ -337,9 +338,9 @@ function errno(error: unknown): string | undefined {
 }
 
 function privateOwnerAndMode(home: string, stats: Stats, mode: number): boolean {
-  if (resolveUserStatePolicy(home).containment === "windows-user-local") return true;
+  if (!currentPrivateStateHost().enforcePrivateMode) return true;
   if ((stats.mode & 0o777) !== mode) return false;
-  const currentUid = process.getuid?.();
+  const currentUid = currentPrivateStateHost().currentUid();
   return currentUid === undefined || stats.uid === currentUid;
 }
 
@@ -549,7 +550,7 @@ function writeCompleteTemp(
       0o600,
     );
     writeFileSync(descriptor, content, "utf8");
-    if (resolveUserStatePolicy(home).containment === "posix-owner-mode") fchmodSync(descriptor, 0o600);
+    if (currentPrivateStateHost().enforcePrivateMode) fchmodSync(descriptor, 0o600);
     fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = undefined;
@@ -864,6 +865,7 @@ export interface PassiveUpdateOrientationDeps {
 export function runPassiveUpdateOrientation(
   deps: PassiveUpdateOrientationDeps = {},
 ): UpdateNotice | undefined {
+  if(currentDistribution()?.updatesEnabled===false)return undefined;
   const home = deps.home ?? homedir();
   const runningVersion = deps.runningVersion ?? staticBuildIdentity().package.version;
   const now = deps.now ?? (() => new Date());
@@ -903,7 +905,7 @@ export function runPassiveUpdateOrientation(
   }
   const spawn =
     deps.spawn ??
-    ((command, argv, options) => spawnChild(command, argv, options) as DetachedUpdateChild);
+    ((command, argv, options) => currentHost().spawnChild(command, argv, options) as DetachedUpdateChild);
 
   // Cleanup quarantine can ABA-capture this claim and let a successor claim the reopened fixed
   // path. Cache freshness alone cannot prove process-start authority: immediately before spawn,
@@ -945,6 +947,7 @@ export async function runUpdateRefreshWorker(
   token: string,
   deps: UpdateRefreshWorkerDeps = {},
 ): Promise<void> {
+  if(currentDistribution()?.updatesEnabled===false)return;
   if (!isUpdateLeaseToken(token)) return;
   const home = deps.home ?? homedir();
   const runningVersion = deps.runningVersion ?? staticBuildIdentity().package.version;

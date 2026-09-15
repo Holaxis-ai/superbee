@@ -1,3 +1,4 @@
+import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "./runtime-context.js";
 // One authority for the identity of the CLI bytes that are actually running.
 //
 // Build facts are baked into every bundle by scripts/build-bundle.mjs. Runtime facts are derived
@@ -104,6 +105,11 @@ let sourceIdentity: SourcePackageIdentity | undefined;
 
 /** Configure one immutable executable identity before any source identity is resolved. */
 export function configureSourceIdentity(identity: SourcePackageIdentity): void {
+  if(currentDistribution()) {
+    const bound=currentDistribution()!.identity.package;
+    if(bound.name!==identity.name||bound.version!==identity.version)throw new Error("CLI source identity conflicts with configured distribution");
+    return;
+  }
   if (!identity || !isPackageName(identity.name) || typeof identity.version !== "string" || !identity.version) {
     throw new Error("CLI source identity requires a valid package name and non-empty version");
   }
@@ -127,6 +133,7 @@ let staticIdentityCache: StaticBuildIdentity | undefined;
 
 /** Immutable facts baked into this bundle (or the explicit local-dev source fallback). */
 export function staticBuildIdentity(): StaticBuildIdentity {
+  if(currentDistribution()) return currentDistribution()!.identity;
   if (staticIdentityCache) return staticIdentityCache;
   const baked = bakedConstant();
   if (baked.present) {
@@ -182,7 +189,7 @@ function sameRealPath(left: string | undefined, right: string | null): boolean {
   try {
     const a = realpathSync(left);
     const b = realpathSync(right);
-    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return currentHost().sameResolvedPath(a,b);
   } catch {
     return false;
   }

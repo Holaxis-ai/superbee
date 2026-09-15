@@ -1,3 +1,4 @@
+import { isProvisioned } from "../../board-runtime.js";
 // The committed-folder establishment/recovery: the bundle is a plain folder committed on the
 // current branch. Same verb as greenfield, different safety model (preview-first, `--yes`-gated —
 // heavier because it stages a change to the CODE branch's future):
@@ -36,7 +37,6 @@ import {
   type CommittedBundleAtHead,
   gitDirMarkerPath,
   isAncestor,
-  isProvisioned,
   isShallowRepository,
   localBranchExists,
   mustGit,

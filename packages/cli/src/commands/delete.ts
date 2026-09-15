@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee delete --doc-key <key>` — hard-delete a doc or blob by its key, symmetric with
 // `promote`/`pull` (the DELETE-operation pass, binding plan item 9 — resolved decision).
 //
@@ -86,7 +87,7 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
     CLI_LEAVES.delete,
   );
   if (values.help) {
-    stdout(DELETE_USAGE);
+    stdout(renderUsage(DELETE_USAGE));
     return;
   }
   const key = values["doc-key"]?.trim();

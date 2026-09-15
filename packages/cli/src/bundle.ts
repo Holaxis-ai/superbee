@@ -1,3 +1,6 @@
+import { configuredBundle } from "./filesystem-runtime.js";
+import { withCliFilesystemMutationLock as withFilesystemMutationLock } from "./filesystem-runtime.js";
+import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "./runtime-context.js";
 // Bundle discovery for the Superbee CLI.
 //
 // Every OKF command operates on ONE Knowledge Bundle. Locally that's a directory tree; this module
@@ -65,7 +68,6 @@ import {
   RemoteBackend,
   RemoteError,
   VersionConflict,
-  withFilesystemMutationLock,
   type Bundle,
   type FetchLike,
   type FilesystemMutationLockOptions,
@@ -637,7 +639,7 @@ function createOnlyUncertainty(
 export function samePhysicalPath(a: string, b: string): boolean {
   const left = path.resolve(a);
   const right = path.resolve(b);
-  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+  return currentHost().sameResolvedPath(left,right);
 }
 
 /** Parent and child targets intentionally share this conservative physical-root arbitration key. */
@@ -1603,7 +1605,7 @@ export async function resolveLocalBundleRoute(
   startDir: string = process.cwd(),
 ): Promise<ResolvedLocalRoute> {
   const target = await resolveLocalBundleTarget(dirFlag, startDir);
-  const bundle: Bundle = { root: target.root };
+  const bundle: Bundle = configuredBundle(target.root);
   if (target.selectedBy !== "project-binding") return { kind: "unbound", target, bundle };
 
   const traversesBindingSymlink = await bindingRouteTraversesSymlink(target);
@@ -1613,7 +1615,7 @@ export async function resolveLocalBundleRoute(
     const route: ResolvedLocalRoute = {
       kind: "bound-local",
       target,
-      bundle: { root: identity.canonicalRoot },
+      bundle: configuredBundle(identity.canonicalRoot),
       identity,
     };
     await assertResolvedLocalRouteIdentity(route);

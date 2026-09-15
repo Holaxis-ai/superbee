@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee kinds` — list the kind conventions declared by this bundle.
 //
 // Phase-0 experiment result (binding — see `docs/plan-kind-conventions.md` Part B): agents given NO
@@ -142,7 +143,7 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
     CLI_LEAVES.kinds,
   );
   if (values.help) {
-    stdout(KINDS_USAGE);
+    stdout(renderUsage(KINDS_USAGE));
     return;
   }
 

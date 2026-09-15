@@ -1,3 +1,5 @@
+import { distributionPackageName, distributionBinName } from "../runtime-context.js";
+import { renderUsage } from "../output.js";
 // `superbee version [--check [--tag latest|next]] [--json]` — local identity plus an optional,
 // bounded read-only comparison against the exact public npm release track.
 import { parseArgs } from "node:util";
@@ -7,7 +9,7 @@ import { buildIdentityEnvelope } from "../build-identity.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
-import { STABLE_MCP_LAUNCH_GUIDANCE } from "../integration-guidance.js";
+import { stableMcpLaunchGuidance } from "../integration-guidance.js";
 import {
   checkSupportedRelease,
   parseStrictSemver,
@@ -28,7 +30,7 @@ package.json version drift. Without --check, this command is entirely local and 
 The selected dist-tag is authoritative even when it names a rollback. It never installs a package,
 changes a dist-tag, writes preferences, or modifies integrations or bundle content.
 
-${STABLE_MCP_LAUNCH_GUIDANCE}
+${stableMcpLaunchGuidance(distributionPackageName(),distributionBinName())}
 
 Options:
   --check             Compare the exact release selected by npm (default track: latest)
@@ -64,7 +66,7 @@ export async function versionCommand(
     CLI_LEAVES.version,
   );
   if (values.help) {
-    stdout(VERSION_USAGE);
+    stdout(renderUsage(VERSION_USAGE));
     return;
   }
   if (values.tag !== undefined && !values.check) {

@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee promote <file> --doc-key <key>` — the out-of-band byte-IN channel: move a local
 // file's bytes into the store WITHOUT the content ever entering the model context window (the
 // reverse of `doc read --out`; the write-side counterpart to `pull`).
@@ -149,7 +150,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
     CLI_LEAVES.promote,
   );
   if (values.help) {
-    stdout(PROMOTE_USAGE);
+    stdout(renderUsage(PROMOTE_USAGE));
     return;
   }
 

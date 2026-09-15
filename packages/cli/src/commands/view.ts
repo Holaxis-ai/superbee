@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 import { parseArgs } from "node:util";
 import { listViewCatalog } from "@superbee/view-runtime";
 import { parseSelectorOrUsage } from "../args.js";
@@ -51,7 +52,7 @@ export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Pro
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {
-    stdout(VIEW_USAGE);
+    stdout(renderUsage(VIEW_USAGE));
     return;
   }
   if (selection.kind === "unknown") {

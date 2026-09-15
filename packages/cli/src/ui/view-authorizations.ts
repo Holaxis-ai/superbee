@@ -1,3 +1,4 @@
+import { captureRuntimeCallback } from "../runtime-context.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -105,6 +106,8 @@ export class LocalViewAuthorizationStore implements ViewAuthorizationStore {
   constructor(bundleIdentity: string, home?: string) {
     this.bundleIdentity = bundleIdentity;
     this.home = home;
+    this.isAuthorized=captureRuntimeCallback(this.isAuthorized.bind(this));
+    this.authorize=captureRuntimeCallback(this.authorize.bind(this));
   }
 
   async isAuthorized(subject: ViewAuthorizationSubject): Promise<boolean> {

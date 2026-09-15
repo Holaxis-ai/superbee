@@ -1,3 +1,5 @@
+import { commandToken } from "./command-text.js";
+import { currentHost, distributionLayouts, distributionPackageName } from "./runtime-context.js";
 // Resolve the running CLI's OWN invocation for emitted follow-up commands + the home-view identity.
 //
 // The CLI is a standalone, npm-publishable package (`superbee`; the successor installs only that
@@ -46,7 +48,7 @@ export function collapseHomeDirectory(p: string): string {
  * is unconditionally safe, so a site already using it needs no change. New sites should prefer
  * `commandToken` from command-text.ts, which leaves inert values unquoted and keeps help readable.
  *
- * Note the win32 branch THROWS for the few values Windows cannot render inertly (see
+ * The selected host renderer throws for values it cannot render inertly (see
  * shell-quoting.ts); `commandToken` absorbs that, so such a value degrades one hint rather than
  * aborting the diagnostic carrying it.
  */
@@ -89,82 +91,21 @@ export function currentExecutableRealPath(): string | undefined {
   return undefined;
 }
 
-function windowsPathExtensions(): string[] {
-  const raw = process.env.PATHEXT?.trim() || ".COM;.EXE;.BAT;.CMD";
-  return raw.split(";").map((value) => value.trim()).filter(Boolean)
-    .map((value) => value.startsWith(".") ? value : `.${value}`);
-}
-
-function windowsCmdShimTargetsExecutable(candidate: string, executable: string): boolean {
-  let source: string;
-  try {
-    source = readFileSync(candidate, "utf8");
-  } catch {
-    return false;
-  }
-  const fold = (value: string): string => value.replaceAll("\\", "/").toLowerCase();
-  const lines = source.replaceAll("\r\n", "\n").split("\n").map((line) => line.trim()).filter(Boolean);
-  const direct = ["@echo off", `"${process.execPath}" "${executable}" %*`];
-  if (fold(lines.join("\n")) === fold(direct.join("\n"))) return true;
-
-  const relativeEntries = [
-    ["node_modules", "superbee", "dist", "superbee.mjs"],
-    ["node_modules", "@holaxis", "aslite", "dist", "superbee.mjs"],
-  ] as const;
-  return relativeEntries.some((parts) => {
-    const token = `%dp0%\\${parts.join("\\")}`;
-    if (realOrUndefined(join(dirname(candidate), ...parts)) !== executable) return false;
-    const fixedLines = [
-      /^@echo off$/i,
-      /^goto start$/i,
-      /^:find_dp0$/i,
-      /^set dp0=%~dp0$/i,
-      /^exit \/b$/i,
-      /^:start$/i,
-      /^setlocal$/i,
-      /^call :find_dp0$/i,
-      /^if exist "%dp0%\\node\.exe" \($/i,
-      /^set "_prog=%dp0%\\node\.exe"$/i,
-      /^\) else \($/i,
-      /^set "_prog=node"$/i,
-      /^set pathext=%pathext:;\.js;=;%$/i,
-      /^\)$/,
-    ];
-    const final = new RegExp(
-      `^endlocal & goto #_undefined_# 2>nul \\|\\| title %comspec% & "%_prog%"\\s+"${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" %\\*$`,
-      "i",
-    );
-    return lines.every((line) => fixedLines.some((pattern) => pattern.test(line)) || final.test(line))
-      && lines.some((line) => final.test(line));
-  });
-}
-
-/** If a managed current or legacy bin on PATH resolves to this executable, return its bare name. */
-export function managedBinNameOnPath(): string | undefined {
-  const exe = currentExecutableRealPath();
-  if (!exe) return undefined;
-  const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
-  for (const name of BIN_NAMES) {
-    for (const dir of dirs) {
-      const candidates = process.platform === "win32"
-        ? windowsPathExtensions().map((extension) => join(dir, `${name}${extension}`))
-        : [join(dir, name)];
-      let found = false;
-      for (const candidate of candidates) {
-        const resolved = realOrUndefined(candidate);
-        if (!resolved) continue;
-        found = true;
-        if (process.platform === "win32") {
-          if (candidate.toLowerCase().endsWith(".cmd") && windowsCmdShimTargetsExecutable(candidate, exe)) return name;
-        } else if (resolved === exe) {
-          return name;
-        }
-        break;
-      }
-      if (found) break;
-    }
-  }
-  return undefined;
+/** Resolve a managed bin against this registered executable and exact host shim grammar. */
+export function managedBinNameOnPath():string|undefined {
+ const exe=currentExecutableRealPath();if(!exe)return undefined;
+ const host=currentHost(); const layouts=distributionLayouts();
+ const dirs=(process.env.PATH??'').split(host.paths.delimiter).filter(Boolean);
+ for(const name of layouts.flatMap(layout=>layout.bins)) for(const dir of dirs) {
+   let found=false;
+   for(const candidate of host.executableCandidates(dir,name,process.env)) {
+     const resolved=realOrUndefined(candidate);if(!resolved)continue;found=true;
+     if(host.binMatches(candidate,resolved,exe,process.execPath,layouts))return name;
+     break;
+   }
+   if(found)break;
+ }
+ return undefined;
 }
 
 /**
@@ -175,7 +116,7 @@ export function managedBinNameOnPath(): string | undefined {
 export function cliInvocation(): CommandPrefix {
   const onPath = managedBinNameOnPath();
   if (onPath) return onPath as CommandPrefix;
-  return `npx --no-install ${PACKAGE_NAME}` as CommandPrefix;
+  return `npx --no-install ${commandToken(distributionPackageName())}` as CommandPrefix;
 }
 
 /**
@@ -198,7 +139,7 @@ export function exactCliInvocation(): CommandPrefix {
  */
 export function binPath(): string {
   const exe = currentExecutableRealPath();
-  return exe ? collapseHomeDirectory(exe) : PACKAGE_NAME;
+  return exe ? collapseHomeDirectory(exe) : distributionPackageName();
 }
 
 /**
@@ -208,5 +149,5 @@ export function binPath(): string {
  * `resolvePortableHookCommand` semantics, so the value we DISPLAY matches what the installer writes.
  */
 export function hookCommand(): string {
-  return managedBinNameOnPath() ?? currentExecutableRealPath() ?? PACKAGE_NAME;
+  return managedBinNameOnPath() ?? currentExecutableRealPath() ?? distributionPackageName();
 }

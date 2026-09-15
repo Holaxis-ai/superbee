@@ -1,3 +1,4 @@
+import { currentHost, captureRuntimeCallback } from "../runtime-context.js";
 // `superbee ui [--dir <path> | --remote <url>] [--port <n>] [--open]` — boot the local
 // web UI (plans/ui-v1.md rev 3.2): the SPA plus a same-origin `/v0/*` surface, either the
 // reference router mounted in-process over a local bundle (`--dir`) or a reverse proxy onto a
@@ -116,20 +117,9 @@ function defaultWaitForShutdown(): Promise<void> {
 }
 
 /** Best-effort cross-platform "open a URL in the default browser" — no dependency (the CLI bundle stays zero-runtime-deps); a failure here never fails the command, since the printed URL is always the fallback. */
-export function defaultOpenBrowser(url: string, spawnProcess: typeof spawn = spawn): void {
-  try {
-    const platform = process.platform;
-    const [cmd, args] =
-      platform === "darwin" ? ["open", [url]] : platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
-    const child = spawnProcess(cmd, args, { stdio: "ignore", detached: true });
-    // A missing platform opener (for example `xdg-open` in a minimal Linux image) reports ENOENT
-    // asynchronously on ChildProcess. Contain it here: browser launch is best-effort and the URL
-    // printed by the command remains the fallback.
-    child.once("error", () => {});
-    child.unref();
-  } catch {
-    // best-effort only
-  }
+export function defaultOpenBrowser(url:string,spawnProcess?:typeof spawn):void {
+ if(!spawnProcess) {currentHost().openBrowser(url);return;}
+ try {const child=spawnProcess(process.platform==='darwin'?'open':'xdg-open',[url],{stdio:'ignore',detached:true});child.once('error',()=>{});child.unref();}catch{}
 }
 
 /**
@@ -369,7 +359,7 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
 
   const remoteFlag = await resolveRemoteFlag(values.remote, values.dir);
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} ${commandWords(commandPath)} --actor <name>` });
-  const renderDocumentOpenCommand = (id: string): string | null => {
+  const renderDocumentOpenCommand = captureRuntimeCallback((id: string): string | null => {
     const source = remoteFlag ?? bundle.root;
     if (!isRenderableToken(id) || !isRenderableToken(source)) return null;
     const sourceFlag = remoteFlag ? "--remote" : "--dir";
@@ -379,7 +369,7 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     return explicitPort
       ? `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} --port ${commandToken(String(port))}${actorFlag} -- ${commandToken(id)}`
       : `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)}${actorFlag} -- ${commandToken(id)}`;
-  };
+  });
   let options: UiServerOptions;
   let rootLabel: string;
   let bundle: Bundle;

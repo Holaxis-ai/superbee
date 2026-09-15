@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // Thin dispatcher for the generic OKF document verbs. Per-verb behavior lives in `./doc/*.ts`;
 // shared usage, stdin detection, and error classification live in `./doc/common.ts`. Re-exports
 // preserve this module's public import surface.
@@ -54,7 +55,7 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
   if (sub === "history") return docHistory(rest, deps);
   if (sub === "delete") return docDelete(rest, deps);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
-    stdout(DOC_USAGE);
+    stdout(renderUsage(DOC_USAGE));
     return;
   }
   if (sub === "create") {

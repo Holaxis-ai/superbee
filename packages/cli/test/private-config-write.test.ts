@@ -1,3 +1,4 @@
+import { withTestPolicy } from "./support/host-policy.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -162,48 +163,6 @@ test("atomicWriteFileSync preserves the mode of an existing private file", {
   }
 });
 
-test("Windows private writes rely on inherited ACLs and never call chmod", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-windows-mode-"));
-  const target = path.join(dir, "settings.json");
-  const originalChmod = mutableFs.chmodSync;
-  try {
-    await writeFile(target, "before\n");
-    mutableFs.chmodSync = (() => {
-      throw new Error("chmod must not run for Windows policy");
-    }) as typeof mutableFs.chmodSync;
-    syncBuiltinESMExports();
-    atomicWriteFileSync(target, "after\n", { platform: "win32" });
-    assert.equal(await readFile(target, "utf8"), "after\n");
-  } finally {
-    mutableFs.chmodSync = originalChmod;
-    syncBuiltinESMExports();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("Windows private replacement retries only bounded sharing violations", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-windows-retry-"));
-  const target = path.join(dir, "settings.json");
-  const originalRename = mutableFs.renameSync;
-  try {
-    await writeFile(target, "before\n");
-    let attempts = 0;
-    mutableFs.renameSync = ((source, destination) => {
-      attempts += 1;
-      if (attempts < 3) throw Object.assign(new Error("busy"), { code: "EBUSY" });
-      return originalRename(source, destination);
-    }) as typeof mutableFs.renameSync;
-    syncBuiltinESMExports();
-    atomicWriteFileSync(target, "after\n", { platform: "win32" });
-    assert.equal(attempts, 3);
-    assert.equal(await readFile(target, "utf8"), "after\n");
-  } finally {
-    mutableFs.renameSync = originalRename;
-    syncBuiltinESMExports();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("atomicWriteFileSync can refuse a final symlink without changing either entry", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-symlink-"));
   const target = path.join(dir, "managed-target.js");
@@ -236,6 +195,48 @@ test("atomicWriteFileSync cleans its temporary file after a failed rename", asyn
     assert.deepEqual(await readdir(dir), ["settings.json"]);
     assert.equal(await readFile(path.join(target, "occupant"), "utf8"), "x\n");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Private writes honor host mode applicability and never call chmod", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-windows-mode-"));
+  const target = path.join(dir, "settings.json");
+  const originalChmod = mutableFs.chmodSync;
+  try {
+    await writeFile(target, "before\n");
+    mutableFs.chmodSync = (() => {
+      throw new Error("chmod must not run for Windows policy");
+    }) as typeof mutableFs.chmodSync;
+    syncBuiltinESMExports();
+    withTestPolicy({privateState:{enforcePrivateMode:false,isTransientConfigReplaceError:error=>(error as NodeJS.ErrnoException).code==="EBUSY"}},()=>atomicWriteFileSync(target, "after\n"));
+    assert.equal(await readFile(target, "utf8"), "after\n");
+  } finally {
+    mutableFs.chmodSync = originalChmod;
+    syncBuiltinESMExports();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Private replacement retries only host-classified interference", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-windows-retry-"));
+  const target = path.join(dir, "settings.json");
+  const originalRename = mutableFs.renameSync;
+  try {
+    await writeFile(target, "before\n");
+    let attempts = 0;
+    mutableFs.renameSync = ((source, destination) => {
+      attempts += 1;
+      if (attempts < 3) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+      return originalRename(source, destination);
+    }) as typeof mutableFs.renameSync;
+    syncBuiltinESMExports();
+    withTestPolicy({privateState:{enforcePrivateMode:false,isTransientConfigReplaceError:error=>(error as NodeJS.ErrnoException).code==="EBUSY"}},()=>atomicWriteFileSync(target, "after\n"));
+    assert.equal(attempts, 3);
+    assert.equal(await readFile(target, "utf8"), "after\n");
+  } finally {
+    mutableFs.renameSync = originalRename;
+    syncBuiltinESMExports();
     await rm(dir, { recursive: true, force: true });
   }
 });
