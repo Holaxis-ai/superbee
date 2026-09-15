@@ -5,10 +5,11 @@ import { IndexedDbBackend } from "@superbee/core/indexeddb-backend";
 import type { OperationTransport } from "@superbee/core/uncertain-write";
 import { BODY_DELIVERY_LIMITS } from "@superbee/core/governed-body-write";
 import { openLocalBundle, bootstrap, commitBodyLocal, commitLocal, push, pull, reclaimInFlight, resume, syncStatus, settleIntent, inspectConflict, resolveConflict, conflictResolutionKey, type ConflictChoice } from "../src/local-bundle.ts";
-import { admitBodyMode, bodyRecordKey, BODY_MODE_KEY, bodySnapshot, assertBodyCapacity, projectBodyGuard, jsonBytes, BODY_RUNTIME_LIMITS, writeBodyControl, validateBodyRecord, validateBodyResolutionReceipt } from "../src/body-journal.ts";
+import { admitBodyMode, bodyRecordKey, BODY_MODE_KEY, bodySnapshot, assertBodyCapacity, projectBodyGuard, jsonBytes, BODY_RUNTIME_LIMITS, writeBodyControl, validateBodyRecord, validateBodyResolutionReceipt, captureBodyRefresh } from "../src/body-journal.ts";
 import { createBrowserLocalRuntime } from "../src/platform/browser-local.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
 import { createBodyAuthority } from "./fixtures/body-authority.ts";
+import { createRemoteFixture } from "./fixtures/remote-fixture.ts";
 
 const exact: OperationTransport = { submit: async () => { throw new Error("Unexpected exact-document submission"); }, lookup: async () => { throw new Error("Unexpected exact-document lookup"); } };
 const immediate = { sleep: async () => {}, lookupDelayMs: 0, maxLookups: 1 };
@@ -256,10 +257,54 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       await assert.rejects(s.backend.read("notes/example"), { code: "ENOENT" });
       assert.deepEqual(await s.backend.listIntents(), []);
       assert.equal(await s.backend.readMeta(bodyRecordKey(headRow.requestId)), undefined);
-      assert.deepEqual(await s.backend.readMeta("base:notes/example"), { version: null, content: null });
-      assert.deepEqual(validateBodyResolutionReceipt(await s.backend.readMeta(conflictResolutionKey(headRow.requestId))), taken.receipt);
+      assert.equal(await s.backend.readMeta("base:notes/example"), undefined, "a served absence leaves no base row, as a pull's deletion leaves none");
+      const receipt = validateBodyResolutionReceipt(await s.backend.readMeta(conflictResolutionKey(headRow.requestId)));
+      assert.deepEqual(receipt, taken.receipt);
+      assert.deepEqual(receipt.served, { version: null });
       assert.deepEqual((await s.runtime.query()).map(row => row.id), []);
       assert.equal((await s.runtime.syncStatus()).unconfirmed, 0);
+    } finally { s.close(); }
+  });
+  test(`${adapter}: a taken served deletion leaves a working copy a snapshot bootstrap can hydrate again when the authority re-creates the id`, async () => {
+    const fixture = await createRemoteFixture();
+    const authority = await createBodyAuthority(fixture.authority);
+    const backend = adapter === "memory" ? new MemoryJournaledBackend() : new IndexedDbBackend({ databaseName: crypto.randomUUID(), indexedDB: new IDBFactory() });
+    const local = openLocalBundle("re-created", { backend, bodyDelivery: { scope: "fixture", okfVersion: "0.2", dedicated: true } });
+    try {
+      const first = await bootstrap(fixture.remote, local);
+      assert.ok(first.complete && first.headsDigest, "the wire snapshot path hydrates");
+      const runtime = createBrowserLocalRuntime({ local, remote: fixture.remote, transport: exact, bodyTransport: authority.transport, actor: "process:local", now: () => "2026-09-15T00:30:00.000Z", write: immediate });
+      await runtime.commit("notes/example", { body: "Retain this work" });
+      authority.knobs.contentRefusal = true;
+      await push(local, exact, { bodyTransport: authority.transport, remote: fixture.remote, write: immediate });
+      authority.knobs.contentRefusal = false;
+      await fixture.authority.delete("notes/example");
+      const review = await inspectConflict(local, fixture.remote, "notes/example");
+      const taken = await resolveConflict(local, fixture.remote, review, { kind: "take-remote" });
+      assert.deepEqual([taken.version, taken.intent, await backend.list(), await backend.readMeta("base:notes/example")], [null, null, [], undefined]);
+      // The refresh premise for an id with neither document nor intents holds after the deletion.
+      const premises = await captureBodyRefresh(backend, (await admitBodyMode(backend))!);
+      await premises.check("notes/example");
+      await fixture.authority.write("notes/example", { id: "notes/example", frontmatter: { type: "Note", title: "Example" }, body: "Re-created" });
+      const again = await bootstrap(fixture.remote, local);
+      assert.deepEqual([again.complete, again.generation, again.held, again.documentCount], [true, 2, undefined, 1]);
+      assert.ok(again.headsDigest, "the snapshot path completed");
+      const read = await runtime.read("notes/example");
+      assert.deepEqual([read.provenance.state, read.doc.body.trim()], ["shared-confirmed", "Re-created"]);
+      assert.deepEqual(validateBodyResolutionReceipt(await backend.readMeta(conflictResolutionKey(review.intents[0]!.requestId))), taken.receipt, "the receipt outlives the re-bootstrap");
+    } finally { local.close(); }
+  });
+  test(`${adapter}: a refusal code at the label bound is journaled and still resolvable`, async () => {
+    const s = await setup();
+    try {
+      const head = await contested(s, "refused");
+      const code = "x".repeat(BODY_DELIVERY_LIMITS.labelBytes);
+      await s.backend.updateIntent(head.requestId, "refused", { refusal: { code, message: "at the bound" } });
+      const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
+      assert.equal(review.intents[0]!.refusal!.code, code);
+      const result = await resolveConflict(s.local, s.authority.backend, review, { kind: "take-remote" });
+      assert.equal((result.receipt as { chain: { refusalCode?: string }[] }).chain[0]!.refusalCode, code);
+      assert.equal((await s.runtime.read("notes/example")).provenance.state, "shared-confirmed");
     } finally { s.close(); }
   });
   test(`${adapter}: an authorization refusal is not a resolvable head; resume keeps its path`, async () => {

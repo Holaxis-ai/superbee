@@ -147,15 +147,16 @@ export function bodyDocument(raw: string, id: string, mode: BodyMode): OkfDocume
   return { id, frontmatter: captureRemoteFrontmatter(parsed.frontmatter) as OkfDocument["frontmatter"], body: parsed.body };
 }
 const JOURNAL_STATES = ["pending", "in_flight", "acknowledged", "conflict", "refused", "unknown"];
+/** One label measure for journal rows and the receipts that record them, so every journaled row stays resolvable. */
+const boundedLabel = (value: unknown): value is string => typeof value === "string" && new TextEncoder().encode(value).length <= BODY_DELIVERY_LIMITS.labelBytes;
 export function validateBodyRecord(mode: BodyMode, intent: IntentRecord, value: unknown): BodyRecord {
   shape(intent, ["requestId", "kind", "target", "base", "local", "content", "createdAt", "attempts", "state", "sequence", "updatedAt", "baseContent"], ["after", "acknowledgedVersion", "remote", "refusal", "finding"]);
   if (!Number.isSafeInteger(intent.attempts) || intent.attempts < 0 || !Number.isSafeInteger(intent.sequence) || intent.sequence < 0 || !Number.isFinite(Date.parse(intent.updatedAt)) || !JOURNAL_STATES.includes(intent.state)) throw new BodyRuntimeError("Invalid body journal state.");
   if (intent.state !== "pending" && intent.attempts === 0) throw new BodyRuntimeError("Unattempted body journal has a delivery outcome.");
-  const text = (value: unknown) => typeof value === "string" && new TextEncoder().encode(value).length <= BODY_DELIVERY_LIMITS.labelBytes;
-  if (Object.hasOwn(intent, "finding") && !text(intent.finding)) throw new BodyRuntimeError("Invalid body finding.");
+  if (Object.hasOwn(intent, "finding") && !boundedLabel(intent.finding)) throw new BodyRuntimeError("Invalid body finding.");
   if (Object.hasOwn(intent, "refusal")) {
     const refusal = shape(intent.refusal, ["code", "message"]);
-    if (!text(refusal.code) || !text(refusal.message)) throw new BodyRuntimeError("Invalid retained refusal.");
+    if (!boundedLabel(refusal.code) || !boundedLabel(refusal.message)) throw new BodyRuntimeError("Invalid retained refusal.");
   }
   if (Object.hasOwn(intent, "remote")) {
     const remote = shape(intent.remote, ["version", "content"]);
@@ -209,7 +210,7 @@ export interface BodyResolutionReceipt {
 export const BODY_RESOLUTION_RECEIPT_BYTES = 64 * 1024;
 export function validateBodyResolutionReceipt(value: unknown): BodyResolutionReceipt {
   const row = shape(value, ["schema", "mode", "id", "target", "choice", "resolvedAt", "replacementRequestId", "served", "expectedLocalVersion", "chain"]);
-  const text = (value: unknown) => typeof value === "string" && value.length > 0 && jsonBytes(value) <= BODY_DELIVERY_LIMITS.labelBytes;
+  const text = (value: unknown) => boundedLabel(value) && value.length > 0;
   const optionalVersion = (item: Record<string, unknown>, key: string, nullable: boolean) => !Object.hasOwn(item, key) || isContentVersion(item[key]) || (nullable && item[key] === null);
   const served = shape(row.served, ["version"]);
   if (row.schema !== 1 || row.mode !== "document.body.update" || !text(row.id) || !text(row.target) || !["keep-local", "take-remote", "revise"].includes(row.choice as string) ||
@@ -220,7 +221,7 @@ export function validateBodyResolutionReceipt(value: unknown): BodyResolutionRec
     const item = shape(entry, ["requestId", "sequence", "state", "attempts", "base", "local"], ["acknowledgedVersion", "refusalCode", "remoteVersion"]);
     if (!text(item.requestId) || !Number.isSafeInteger(item.sequence) || !JOURNAL_STATES.includes(item.state as string) || !Number.isSafeInteger(item.attempts) || (item.attempts as number) < 0 ||
         (item.base !== null && !isContentVersion(item.base)) || !isContentVersion(item.local) || !optionalVersion(item, "acknowledgedVersion", false) ||
-        (Object.hasOwn(item, "refusalCode") && !text(item.refusalCode)) || !optionalVersion(item, "remoteVersion", true)) throw new BodyRuntimeError("Invalid body resolution receipt row.");
+        (Object.hasOwn(item, "refusalCode") && !boundedLabel(item.refusalCode)) || !optionalVersion(item, "remoteVersion", true)) throw new BodyRuntimeError("Invalid body resolution receipt row.");
   }
   if (jsonBytes(row) > BODY_RESOLUTION_RECEIPT_BYTES) throw new BodyCapacityError();
   return row as unknown as BodyResolutionReceipt;

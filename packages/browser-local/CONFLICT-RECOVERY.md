@@ -39,7 +39,8 @@ In body mode the same two operations apply, with these differences:
   before anything is read.
 - `keep-local` and `revise` retire the chain and journal one fresh body update whose premise is
   the served head. They refuse when the authority holds no document, because body mode cannot
-  create one; `take-remote` then deletes the working copy's document.
+  create one; `take-remote` then deletes the working copy's document together with its base
+  row, as a pull's own deletion does.
 - Retired rows leave the store with their descriptors and prepared envelopes. Acknowledged rows
   and their receipts are untouched.
 - The receipt is a bounded record of identities, versions, states, the refusal code and the

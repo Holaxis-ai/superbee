@@ -975,7 +975,7 @@ export async function resolveConflict(
  * Body mode's resolution. The reviewed chain (its head a recorded conflict or content refusal,
  * its successors never attempted) retires with the descriptors of its rows and a bounded
  * receipt, in one guarded write that also adopts the served head (`take-remote`; a served
- * absence deletes the working copy's document with the same options) or journals one fresh
+ * absence deletes the working copy's document and its base row) or journals one fresh
  * body update at the served head (`keep-local`, `revise`). Body mode cannot create a
  * document, so the fresh update needs a served head. The complete state after the resolution,
  * receipt and removals included, is projected through the capacity check before anything is
@@ -1051,16 +1051,21 @@ async function resolveBodyConflict(
     for (let attempt = 0; ; attempt++) {
       try {
         const { snap, chain, expectedVersion, receipt } = await prepare();
-        const meta: MetaRecord[] = [{ key: receiptKey, value: receipt }, baseRow(id, servedBase)];
-        const removeMeta = retiredDescriptorKeys(chain);
-        const common = { guard: snap.guard, expectedVersion, resolveIntents: { expected: chain }, meta, removeMeta };
+        const receiptRow: MetaRecord = { key: receiptKey, value: receipt };
+        const retired = retiredDescriptorKeys(chain);
+        const common = { guard: snap.guard, expectedVersion, resolveIntents: { expected: chain } };
         if (!served) {
+          // A served absence leaves no base row behind, as a pull's own deletion leaves none: the
+          // refresh premise for an id with neither document nor intents expects the row absent,
+          // and the receipt's `served.version` already records the absence.
+          const meta = [receiptRow], removeMeta = [...retired, baseKey(id)];
           projectBodyGuard(snap.guard, { document: null, intents: remaining(snap, chain), meta, removeMeta });
-          await backend.deleteJournaled(id, common);
+          await backend.deleteJournaled(id, { ...common, meta, removeMeta });
           return { receipt, version: null, intent: null };
         }
+        const meta = [receiptRow, baseRow(id, servedBase)], removeMeta = retired;
         projectBodyGuard(snap.guard, { document: { version: versionOfBytes(servedRaw!), raw: servedRaw! }, intents: remaining(snap, chain), meta, removeMeta });
-        const written = await backend.writeJournaled(id, served, { ...common, ...(options.actor === undefined ? {} : { actor: options.actor }) });
+        const written = await backend.writeJournaled(id, served, { ...common, meta, removeMeta, ...(options.actor === undefined ? {} : { actor: options.actor }) });
         return { receipt, version: written.version, intent: null };
       } catch (error) { retry(error, attempt); }
     }
