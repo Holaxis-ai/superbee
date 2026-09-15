@@ -164,6 +164,11 @@ export interface PrivateStateHost {
   ): string;
   bundleBoundaryRecovery(rootDisplay: string, invocationPrefix: string): string;
 }
+/**
+ * Host policies are structural snapshots of public fields, nested records/arrays and methods.
+ * Methods receive the captured public receiver. Opaque private fields/internal slots and
+ * pre-bound mutable receivers are unsupported; callbacks may observe external OS facts.
+ */
 export interface CliRuntimeOptions {
   readonly distribution: CliDistribution;
   readonly host: HostCommands;

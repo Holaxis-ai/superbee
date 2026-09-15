@@ -1,3 +1,4 @@
+import { snapshotHostPolicy } from "@superbee/core/filesystem";
 import { BoardGitError } from "./errors.js";
 
 /** Host spelling and guidance only; physical/Git ownership evidence remains with board-git. */
@@ -20,11 +21,7 @@ function defaultBoardHostPolicy(): BoardHostPolicy {
   };
 }
 
-/** Preserve member identity and method receivers without freezing the caller's object. */
+/** Capture the structural policy; see snapshotHostPolicy for its public receiver contract. */
 export function captureBoardHostPolicy(policy?: BoardHostPolicy): BoardHostPolicy {
-  const selected = policy ?? defaultBoardHostPolicy();
-  return Object.freeze({
-    sameResolvedPath: selected.sameResolvedPath.bind(selected),
-    moveAsideHelp: selected.moveAsideHelp.bind(selected),
-  });
+  return snapshotHostPolicy(policy ?? defaultBoardHostPolicy());
 }

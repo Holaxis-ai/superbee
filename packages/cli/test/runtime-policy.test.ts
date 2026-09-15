@@ -1,7 +1,7 @@
 import { checkSupportedRelease } from "../src/update-check.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -178,4 +178,129 @@ test("distribution disabled updates veto explicit policy before network access",
   );
   assert.equal(result.unavailable?.code, "policy_disabled");
   assert.equal(fetched, false);
+});
+
+test("all CLI policy projections compose through captured public receivers", () => {
+  const input = options("A", []);
+  const host = Object.assign(input.host, { data: { suffix: "old" } });
+  host.comparisonKey = function(this: typeof host, value: string) { return `${value}:${this.data.suffix}`; };
+  host.sameResolvedPath = function(a, b) { return this.comparisonKey(a) === this.comparisonKey(b); };
+  const privateState = Object.assign(input.privateState, { data: { root: "/old" } });
+  privateState.legacyRoot = function(this: typeof privateState) { return this.data.root; };
+  privateState.supersededRoots = function(env) { return [this.legacyRoot(env)]; };
+  const filesystemHost = Object.assign(input.filesystemHost, { owner: "old" });
+  filesystemHost.runtimeOwnerKey = function(this: typeof filesystemHost) { return this.owner; };
+  filesystemHost.runtimeLockParent = function() { return `/tmp/${this.runtimeOwnerKey()}`; };
+  input.boardHost.moveAsideHelp = function() { return String(this.sameResolvedPath("A", "a")); };
+  const captured = snapshotRuntimeOptions(input);
+  host.comparisonKey = () => "changed";
+  host.data.suffix = "changed";
+  privateState.legacyRoot = () => "/changed";
+  privateState.data.root = "/changed";
+  filesystemHost.runtimeOwnerKey = () => "changed";
+  filesystemHost.owner = "changed";
+  input.boardHost.sameResolvedPath = () => true;
+  runWithRuntime(captured, () => {
+    assert.equal(currentHost().sameResolvedPath("A", "a"), false);
+    assert.equal(currentHost().comparisonKey("x"), "x:old");
+    assert.deepEqual(currentPrivateStateHost().supersededRoots(currentPrivateStateHost().environment()), ["/old"]);
+    assert.equal(captured.filesystemHost!.runtimeLockParent(), "/tmp/old");
+    assert.equal(captured.boardHost!.moveAsideHelp("", ""), "false");
+  });
+  for (const policy of [host, privateState, filesystemHost, input.boardHost, host.data, privateState.data]) {
+    assert.equal(Object.isFrozen(policy), false);
+  }
+});
+
+test("MCP list/open and retained backend/authorization callbacks keep construction context outside A and under B", async (t) => {
+  const { createCatalogMcpWorkspaceResolver } = await import("../src/mcp-workspace-resolver.js");
+  const { addCatalogEntry } = await import("../src/catalog.js");
+  const home = await realpath(await mkdtemp(join(tmpdir(), "superbee-mcp-capture-")));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const seen: string[] = [];
+  function context(label: string) {
+    const input = options(label, seen);
+    const resolve = input.privateState.resolvePolicy;
+    input.privateState.resolvePolicy = (env) => resolve({ ...env, home: join(home, label) });
+    return snapshotRuntimeOptions(input);
+  }
+  const a = context("A"), b = context("B");
+  await runWithRuntime(a, async () => {
+    await configuredInitBundle(join(home, "bundle-A"));
+    await addCatalogEntry("selected-a", join(home, "bundle-A"), { home });
+  });
+  await runWithRuntime(b, async () => {
+    await configuredInitBundle(join(home, "bundle-B"));
+    await addCatalogEntry("selected-b", join(home, "bundle-B"), { home });
+  });
+  const resolver = runWithRuntime(a, () => createCatalogMcpWorkspaceResolver({ home }));
+  const subject = {
+    sourceKind: "registered" as const, registryId: "views/test", contentVersion: "sha256:test",
+    contentType: "text/html; charset=utf-8" as const, capability: "bundle-read" as const,
+    execution: "active" as const, policyVersion: "active-view-v1" as const,
+  };
+  for (const invoke of [<T>(fn: () => T) => fn(), <T>(fn: () => T) => runWithRuntime(b, fn)]) {
+    seen.length = 0;
+    const listed = await invoke(() => resolver.list());
+    assert.deepEqual(listed.map((entry) => entry.label), ["selected-a"]);
+    const selected = await invoke(() => resolver.open("selected-a"));
+    assert.equal(selected.bundle.root.endsWith("bundle-A"), true);
+    assert.ok(selected.bundle.backend);
+    seen.length = 0;
+    await invoke(() => selected.bundle.backend!.write("captured", {
+      id: "captured", frontmatter: { type: "Note" }, body: "A",
+    }));
+    assert.ok(seen.includes("A:lock"), "retained backend uses A's lock policy");
+    seen.length = 0;
+    await invoke(() => selected.viewAuthorization!.authorize(subject));
+    assert.ok(seen.includes("A"), "authorization writes use A's private-state policy");
+    assert.equal(seen.some((value) => value.startsWith("B")), false);
+    seen.length = 0;
+    assert.equal(await invoke(() => selected.viewAuthorization!.isAuthorized(subject)), true);
+    assert.ok(seen.includes("A"), "authorization reads use A's private-state policy");
+    assert.equal(seen.some((value) => value.startsWith("B")), false);
+  }
+  const selectedB = await runWithRuntime(b, () => createCatalogMcpWorkspaceResolver({ home }).open("selected-b"));
+  assert.equal(await selectedB.viewAuthorization!.isAuthorized(subject), false);
+});
+
+test("a callback created without a runtime does not inherit a later caller's policy", () => {
+  const callback = captureRuntimeCallback(() => currentHost().renderShellToken("x"));
+  const expected = callback();
+  const b = snapshotRuntimeOptions(options("B", []));
+  assert.equal(runWithRuntime(b, callback), expected);
+});
+
+test("deferred board attribution retains the constructing private-state context", async (t) => {
+  const { boardPostPersistHook } = await import("../src/board-attribution.js");
+  const { defaultSyncStore } = await import("../src/cursor.js");
+  const a = snapshotRuntimeOptions(options("A", []));
+  const b = snapshotRuntimeOptions(options("B", []));
+  const seen: string[] = [];
+  t.mock.method(defaultSyncStore, "recordSelfActors", async () => {
+    seen.push(currentHost().renderShellToken("actor")!);
+  });
+  const hook = runWithRuntime(a, () => boardPostPersistHook({ kind: "board", stateKey: "selected" }, "human:test"));
+  assert.ok(hook);
+  await hook();
+  await runWithRuntime(b, hook);
+  assert.deepEqual(seen, ["A:actor", "A:actor"]);
+});
+
+test("a retained remote backend renders transport failure hints under its constructing host", async (t) => {
+  const { openBundle } = await import("../src/bundle.js");
+  const a = options("A", []), b = options("B", []);
+  const seen: string[] = [];
+  for (const [input, label] of [[a, "A"], [b, "B"]] as const) {
+    input.host.executableCandidates = () => { seen.push(label); return []; };
+  }
+  const ca = snapshotRuntimeOptions(a), cb = snapshotRuntimeOptions(b);
+  const remote = await runWithRuntime(ca, () => openBundle(undefined, "http://127.0.0.1:1"));
+  t.mock.method(globalThis, "fetch", async () => { throw new Error("synthetic transport failure"); });
+  for (const invoke of [<T>(fn: () => T) => fn(), <T>(fn: () => T) => runWithRuntime(cb, fn)]) {
+    seen.length = 0;
+    await assert.rejects(invoke(() => remote.backend!.read("missing")), /could not reach the remote bundle/);
+    assert.ok(seen.includes("A"));
+    assert.equal(seen.includes("B"), false);
+  }
 });

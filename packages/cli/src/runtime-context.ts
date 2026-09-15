@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs";
+import { snapshotHostPolicy as snapshot } from "@superbee/core/filesystem";
+import { assertDistributionBuildIdentity } from "./build-identity.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   CliRuntimeOptions,
@@ -14,40 +17,35 @@ import {
 
 type RuntimeContext = Omit<CliRuntimeOptions, "filesystemHost" | "boardHost"> &
   Partial<Pick<CliRuntimeOptions, "filesystemHost" | "boardHost">>;
-const contexts = new AsyncLocalStorage<Readonly<RuntimeContext>>();
+const contexts = new AsyncLocalStorage<Readonly<RuntimeContext> | undefined>();
 let defaultHost: HostCommands | undefined;
 let defaultPrivateState: PrivateStateHost | undefined;
 let distribution: Readonly<CliDistribution> | undefined;
 let distributionKey: string | undefined;
-/** Snapshot methods without freezing or changing caller-owned objects. */
-function snapshot<T extends object>(
-  input: T,
-  seen = new WeakMap<object, object>(),
-): T {
-  const existing = seen.get(input);
-  if (existing) return existing as T;
-  const result: Record<string, unknown> = {};
-  seen.set(input, result);
-  const keys = new Set<string>();
-  for (
-    let owner: object | null = input;
-    owner && owner !== Object.prototype;
-    owner = Object.getPrototypeOf(owner)
-  )
-    Object.getOwnPropertyNames(owner).forEach((key) => {
-      if (key !== "constructor") keys.add(key);
-    });
-  for (const key of keys) {
-    const value = (input as Record<string, unknown>)[key];
-    result[key] =
-      typeof value === "function"
-        ? value.bind(input)
-        : value && typeof value === "object"
-          ? snapshot(value, seen)
-          : value;
-  }
-  return Object.freeze(result) as T;
+let registeredExecutableEntry: string | undefined;
+
+function resolveExecutableEntry(entryPath: string): string | undefined {
+  try { return realpathSync(entryPath); } catch { return undefined; }
 }
+
+function validateExecutableEntry(resolved: string): void {
+  if (registeredExecutableEntry && registeredExecutableEntry !== resolved) {
+    throw new Error(`CLI executable entry was already registered as ${registeredExecutableEntry}; refusing ${resolved}`);
+  }
+}
+
+/** Unresolvable standalone registrations remain inert; runtime construction requires a real entry. */
+export function registerExecutableEntry(entryPath: string): void {
+  const resolved = resolveExecutableEntry(entryPath);
+  if (!resolved) return;
+  validateExecutableEntry(resolved);
+  registeredExecutableEntry = resolved;
+}
+
+export function currentExecutableRealPath(): string | undefined {
+  return registeredExecutableEntry;
+}
+
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object") {
     Object.values(value).forEach(deepFreeze);
@@ -62,6 +60,15 @@ export function snapshotRuntimeOptions(
     JSON.parse(JSON.stringify(input.distribution)) as CliDistribution,
   );
   const key = JSON.stringify(copy);
+  const context = Object.freeze({
+    distribution: copy,
+    host: snapshot(input.host),
+    privateState: snapshot(input.privateState),
+    filesystemHost: input.filesystemHost
+      ? snapshot(input.filesystemHost)
+      : undefined,
+    boardHost: input.boardHost ? snapshot(input.boardHost) : undefined,
+  });
   if (distributionKey !== undefined && distributionKey !== key)
     throw new Error(
       "CLI distribution configuration was already bound; refusing conflicting configuration",
@@ -87,17 +94,15 @@ export function snapshotRuntimeOptions(
     throw new Error("Invalid CLI distribution entry layout");
   if (copy.updatesEnabled && copy.install.packageName !== "superbee")
     throw new Error("Update policy is unavailable for this distribution");
-  distribution = copy;
+  assertDistributionBuildIdentity(copy.identity);
+  const resolved = resolveExecutableEntry(copy.executablePath);
+  if (!resolved) throw new Error("CLI distribution executable entry could not be resolved");
+  validateExecutableEntry(resolved);
+  // All user-controlled reads and fallible validation precede this synchronous commit.
+  registeredExecutableEntry = resolved;
+  distribution ??= copy;
   distributionKey = key;
-  return Object.freeze({
-    distribution: copy,
-    host: snapshot(input.host),
-    privateState: snapshot(input.privateState),
-    filesystemHost: input.filesystemHost
-      ? snapshot(input.filesystemHost)
-      : undefined,
-    boardHost: input.boardHost ? snapshot(input.boardHost) : undefined,
-  });
+  return context;
 }
 export function runWithRuntime<T>(
   context: Readonly<RuntimeContext>,
@@ -109,11 +114,7 @@ export function captureRuntimeCallback<T extends (...args: any[]) => any>(
   fn: T,
 ): T {
   const context = contexts.getStore();
-  return (
-    context
-      ? (...args: Parameters<T>) => contexts.run(context, () => fn(...args))
-      : fn
-  ) as T;
+  return ((...args: Parameters<T>) => contexts.run(context, () => fn(...args))) as T;
 }
 export function currentHost(): HostCommands {
   return (

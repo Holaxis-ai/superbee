@@ -131,6 +131,18 @@ function bakedConstant(): { present: boolean; value: unknown } {
 
 let staticIdentityCache: StaticBuildIdentity | undefined;
 
+/** Validate without resolving/caching identity: a rejected construction must be inert. */
+export function assertDistributionBuildIdentity(proposed: StaticBuildIdentity): void {
+  const baked = bakedConstant();
+  const established = currentDistribution()?.identity ?? staticIdentityCache ??
+    (baked.present ? resolveBakedBuildIdentity(baked.value) : undefined);
+  const pkg = established?.package ?? sourceIdentity;
+  if (pkg && pkg.version !== "unknown" &&
+    (pkg.name !== proposed.package.name || pkg.version !== proposed.package.version)) {
+    throw new Error("CLI distribution conflicts with established build identity");
+  }
+}
+
 /** Immutable facts baked into this bundle (or the explicit local-dev source fallback). */
 export function staticBuildIdentity(): StaticBuildIdentity {
   if(currentDistribution()) return currentDistribution()!.identity;

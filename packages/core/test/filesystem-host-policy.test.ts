@@ -137,3 +137,28 @@ test("a fresh unsupported-host process can import core and use memory without se
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 });
+
+test("composed policy methods and public data cannot move a runtime's held lock namespace", async (t) => {
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "sb-host-compose-")));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const source = {
+    ...policy(dir, "original"),
+    data: { owner: "original" },
+    runtimeOwnerKey() { return this.data.owner; },
+    runtimeLockParent() { return path.join(dir, this.runtimeOwnerKey()); },
+  };
+  const runtime = createFilesystemRuntime(source);
+  const target = path.join(dir, "bundle", "doc.md");
+  const before = runtime.mutationLockPath(target);
+  await runtime.withMutationLock(target, async () => {
+    source.runtimeOwnerKey = () => "reassigned";
+    source.data.owner = "mutated";
+    assert.equal(Object.isFrozen(source), false);
+    assert.equal(Object.isFrozen(source.data), false);
+    assert.equal(runtime.mutationLockPath(target), before);
+    await assert.rejects(runtime.withMutationLock(target, async () => {
+      assert.fail("same runtime bypassed its held lock");
+    }, { waitMs: 0 }), FilesystemMutationLockError);
+  });
+  await runtime.withMutationLock(target, async () => {});
+});

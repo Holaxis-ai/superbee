@@ -1,3 +1,4 @@
+import { snapshotHostPolicy } from "./host-policy-snapshot.js";
 import { InvalidInputError } from "./errors.js";
 
 /** Host observations used by the Node filesystem protocols; never a source of write authority. */
@@ -30,15 +31,7 @@ function defaultFilesystemHostPolicy(): FilesystemHostPolicy {
   };
 }
 
-/** Capture member identity without freezing caller state; callbacks retain their original receiver. */
+/** Capture the structural policy; see snapshotHostPolicy for its public receiver contract. */
 export function captureFilesystemHostPolicy(policy?: FilesystemHostPolicy): FilesystemHostPolicy {
-  const selected = policy ?? defaultFilesystemHostPolicy();
-  return Object.freeze({
-    runtimeLockParent: selected.runtimeLockParent.bind(selected),
-    runtimeOwnerKey: selected.runtimeOwnerKey.bind(selected),
-    enforcePrivateMode: selected.enforcePrivateMode,
-    isTransientOpenError: selected.isTransientOpenError.bind(selected),
-    isReplacementConflict: selected.isReplacementConflict.bind(selected),
-    isDirectoryContentionError: selected.isDirectoryContentionError.bind(selected),
-  });
+  return snapshotHostPolicy(policy ?? defaultFilesystemHostPolicy());
 }

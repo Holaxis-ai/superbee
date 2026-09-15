@@ -66,30 +66,9 @@ function realOrUndefined(p: string): string | undefined {
   }
 }
 
-let registeredExecutableEntry: string | undefined;
-
-/**
- * Register the production entry module before command dispatch. In a bundle, the entry module's
- * import.meta.url is the emitted .mjs; in a loader-driven source run it is src/index.ts. Imported
- * helpers and test runners must never replace that explicit entry with their own module path.
- */
-export function registerExecutableEntry(entryPath: string): void {
-  const resolved = realOrUndefined(entryPath);
-  if (!resolved) return;
-  if (registeredExecutableEntry && registeredExecutableEntry !== resolved) {
-    throw new Error(
-      `CLI executable entry was already registered as ${registeredExecutableEntry}; refusing ${resolved}`,
-    );
-  }
-  registeredExecutableEntry = resolved;
-}
-
-/** The absolute real path of the registered CLI entry (bundled or source), if configured. */
-export function currentExecutableRealPath(): string | undefined {
-  if (registeredExecutableEntry) return registeredExecutableEntry;
-  // A library module and argv from an unrelated host are never executable authority.
-  return undefined;
-}
+// Process configuration has one validation/commit owner, shared with runtime construction.
+export { registerExecutableEntry, currentExecutableRealPath } from "./runtime-context.js";
+import { currentExecutableRealPath } from "./runtime-context.js";
 
 /** Resolve a managed bin against this registered executable and exact host shim grammar. */
 export function managedBinNameOnPath():string|undefined {
@@ -128,6 +107,7 @@ export function cliInvocation(): CommandPrefix {
 export function exactCliInvocation(): CommandPrefix {
   // Only src/index.ts can establish production command-dispatch identity. Helper-only unit imports
   // deliberately have no exact executable contract and retain the portable guidance fallback.
+  const registeredExecutableEntry = currentExecutableRealPath();
   if (!registeredExecutableEntry) return cliInvocation();
   const node = realOrUndefined(process.execPath) ?? process.execPath;
   return [node, ...process.execArgv, registeredExecutableEntry].map(shellArg).join(" ") as CommandPrefix;

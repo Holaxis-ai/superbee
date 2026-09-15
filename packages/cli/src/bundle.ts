@@ -1,3 +1,4 @@
+import { captureRuntimeCallback } from "./runtime-context.js";
 import { configuredBundle } from "./filesystem-runtime.js";
 import { withCliFilesystemMutationLock as withFilesystemMutationLock } from "./filesystem-runtime.js";
 import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "./runtime-context.js";
@@ -439,7 +440,7 @@ export async function resolveProjectBinding(startDir: string = process.cwd()): P
  * `Response` that `RemoteBackend` maps itself (see `core/src/remote-backend.ts`).
  */
 function wrapTransportErrors(remote: string): FetchLike {
-  return async (request: Request): Promise<Response> => {
+  return captureRuntimeCallback(async (request: Request): Promise<Response> => {
     try {
       return await globalThis.fetch(request);
     } catch (err) {
@@ -449,7 +450,7 @@ function wrapTransportErrors(remote: string): FetchLike {
         { help: `${cliInvocation()} serve --dir <path>` },
       );
     }
-  };
+  });
 }
 
 /** Session-wide override for the `--remote` API key. See {@link openRemoteBundle}. */

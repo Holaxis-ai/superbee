@@ -96,3 +96,19 @@ test("autopull captures the host before awaiting state and forwards it to owners
   assert.equal(attempts, 1, "the captured exact policy admits the proven board after the caller member changes");
   assert.equal(comparisons, 2, "both root and common-dir proofs receive the captured policy");
 });
+
+test("board policy composition uses captured public data and sibling methods", () => {
+  const source = {
+    data: { prefix: "selected" },
+    comparisonKey(value: string) { return `${this.data.prefix}:${value}`; },
+    sameResolvedPath(a: string, b: string) { return this.comparisonKey(a) === this.comparisonKey(b); },
+    moveAsideHelp(p: string) { return this.comparisonKey(p); },
+  };
+  const captured = captureBoardHostPolicy(source);
+  source.comparisonKey = () => "changed";
+  source.data.prefix = "changed";
+  assert.equal(captured.sameResolvedPath("A", "a"), false);
+  assert.equal(captured.moveAsideHelp("root", "note"), "selected:root");
+  assert.equal(Object.isFrozen(source), false);
+  assert.equal(Object.isFrozen(source.data), false);
+});

@@ -1,5 +1,3 @@
-import * as identity from "./build-identity.js";
-import * as invocation from "./invocation.js";
 import { snapshotRuntimeOptions, runWithRuntime } from "./runtime-context.js";
 import {
   assertSupportedCliHost,
@@ -15,19 +13,7 @@ import type {
 function construct(
   options: Parameters<typeof snapshotRuntimeOptions>[0],
 ): CliRuntime {
-  // Existing process identity and the full descriptor must agree before any command is dispatched.
-  const established = identity.staticBuildIdentity();
-  if (
-    established.package.version !== "unknown" &&
-    (established.package.name !== options.distribution.identity.package.name ||
-      established.package.version !==
-        options.distribution.identity.package.version)
-  )
-    throw new Error(
-      "CLI distribution conflicts with established build identity",
-    );
   const context = snapshotRuntimeOptions(options);
-  invocation.registerExecutableEntry(context.distribution.executablePath);
   return Object.freeze({
     run: (argv: readonly string[]) =>
       runWithRuntime(context, async () => {

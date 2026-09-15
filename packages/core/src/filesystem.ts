@@ -30,3 +30,5 @@ export function createFilesystemRuntime(policy?: FilesystemHostPolicy): Filesyst
     mutationLockPath: (target: string, portableRoot?: string) => filesystemMutationLockPath(target, portableRoot, hostPolicy),
   });
 }
+
+export { snapshotHostPolicy } from "./host-policy-snapshot.js";
