@@ -14,12 +14,26 @@
 
 import { stringifyDoc } from "@superbee/core/document-codec";
 import {
+  assertJournalGuard,
+  assertJournalIntentChanges,
+  assertJournalMetaChanges,
+  assertMetaWrite,
+  captureJournalGuardOption,
+  captureJournalDeleteOptions,
+  captureJournalWriteOptions,
+  captureIntentUpdate,
+  captureMetaWrite,
+  captureJournalValue,
+  JournalGuardConflict,
   assertJournalResolutionOptions,
   assertJournalSnapshot,
   IntentHoldConflict,
   IntentStateConflict,
   type IntentPatch,
   type IntentRecord,
+  type IntentUpdateOptions,
+  type JournalGuard,
+  type MetaWriteOptions,
   type JournaledBackend,
   type JournaledDeleteOptions,
   type JournaledDeleteResult,
@@ -64,6 +78,7 @@ function notFound(id: ConceptId): Error & { code: string } {
 const bySequence = (a: IntentRecord, b: IntentRecord) => a.sequence - b.sequence;
 
 export class MemoryJournaledBackend implements JournaledBackend {
+  readonly journalSnapshotCas = true as const;
   readonly #documents = new Map<ConceptId, DocumentRow>();
   readonly #intents = new Map<string, IntentRecord>();
   readonly #meta = new Map<string, unknown>();
@@ -162,12 +177,36 @@ export class MemoryJournaledBackend implements JournaledBackend {
 
   // ── the journal seam ──────────────────────────────────────────────────────────────────
 
+  #checkGuard(guard: JournalGuard | undefined): void {
+    if (guard === undefined) return;
+    const document = this.#documents.get(guard.target);
+    assertJournalGuard(guard, {
+      target: guard.target,
+      document: document ? { version: document.version, raw: document.raw } : null,
+      intents: [...this.#intents.values()].filter(row => row.target === guard.target),
+      meta: guard.meta.map(row => ({ key: row.key, expected: this.#meta.has(row.key) ? { present: true, value: this.#meta.get(row.key) } : { present: false } })),
+    });
+  }
+
   async writeJournaled(id: ConceptId, doc: OkfDocument, options: JournaledWriteOptions = {}): Promise<{ version: Version; raw: string; intent: IntentRecord | null }> {
+    const snapshotGuard = captureJournalGuardOption(options, id);
+    if (snapshotGuard !== undefined) { options = captureJournalWriteOptions(options); doc = captureJournalValue(doc); }
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
-    if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()], options.intent?.requestId);
+    if (snapshotGuard && (doc.id !== id || (options.intent && options.intent.target !== id))) throw new JournalGuardConflict(id);
     const now = new Date().toISOString();
+    // The producer can synchronously cause another write. Finish it and capture its result
+    // before deciding any storage premise, matching the IndexedDB transaction boundary.
+    const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
+    const version = versionOfBytes(raw);
+    const producedMeta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta ?? [];
+    assertJournalMetaChanges(snapshotGuard, producedMeta, options.removeMeta);
+    const meta = structuredClone(producedMeta);
     const { intent, supersede, requireSettled } = options;
+    const preparedIntent = intent ? structuredClone({ ...intent, local: version, content: raw, sequence: this.#sequence + 1, attempts: 0, state: "pending" as const, updatedAt: now }) : null;
+    this.#checkGuard(snapshotGuard);
+    assertJournalIntentChanges(snapshotGuard, intent ? this.#intents.get(intent.requestId) : undefined, supersede ? this.#intents.get(supersede.requestId) : undefined);
+    if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()], options.intent?.requestId);
     // Every check runs before any mutation, with no await between them: that is this adapter's
     // transaction. A refusal at any check leaves the store exactly as it was.
     if (requireSettled) {
@@ -184,13 +223,6 @@ export class MemoryJournaledBackend implements JournaledBackend {
         throw new IntentStateConflict(supersede.requestId, supersede.expectedState, existing?.state ?? null);
       }
     }
-    // The caller's meta function is the last check that can throw, so it runs on the bytes
-    // that will be written before anything is mutated, as the IndexedDB adapter evaluates it
-    // before opening its transaction.
-    const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
-    const version = versionOfBytes(raw);
-    const meta = structuredClone(typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta ?? []);
-    const preparedIntent = intent ? structuredClone({ ...intent, local: version, content: raw, sequence: this.#sequence + 1, attempts: 0, state: "pending" as const, updatedAt: now }) : null;
     this.#putDocument(id, doc, undefined, options.actor, now);
     if (supersede) this.#intents.delete(supersede.requestId);
     for (const row of options.resolveIntents?.expected ?? []) this.#intents.delete(row.requestId);
@@ -201,12 +233,15 @@ export class MemoryJournaledBackend implements JournaledBackend {
       this.#intents.set(record.requestId, structuredClone(record));
     }
     for (const row of meta) this.#meta.set(row.key, structuredClone(row.value));
+    for (const key of options.removeMeta ?? []) this.#meta.delete(key);
     return { version, raw, intent: record };
   }
 
   async deleteJournaled(id: ConceptId, options: JournaledDeleteOptions = {}): Promise<JournaledDeleteResult> {
+    options = captureJournalDeleteOptions(id, options);
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
+    this.#checkGuard(options.guard);
     if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()]);
     // Every check runs before any mutation, with no await between them, as in `writeJournaled`.
     if (options.requireSettled) {
@@ -254,12 +289,19 @@ export class MemoryJournaledBackend implements JournaledBackend {
     return row ? structuredClone(row) : undefined;
   }
 
-  async updateIntent(requestId: string, expectedState: OperationState, patch: IntentPatch, options: { meta?: MetaRecord[] } = {}): Promise<IntentRecord> {
+  async updateIntent(requestId: string, expectedState: OperationState, patch: IntentPatch, options: IntentUpdateOptions = {}): Promise<IntentRecord> {
+    ({ patch, options } = captureIntentUpdate(patch, options));
+    this.#checkGuard(options.guard);
     const current = this.#intents.get(requestId);
     if (!current || current.state !== expectedState) throw new IntentStateConflict(requestId, expectedState, current?.state ?? null);
+    if (options.guard && current.target !== options.guard.target) throw new JournalGuardConflict(current.target);
     const next: IntentRecord = { ...current, ...patch, requestId, sequence: current.sequence, updatedAt: new Date().toISOString() };
-    this.#intents.set(requestId, structuredClone(next));
-    for (const row of options.meta ?? []) this.#meta.set(row.key, structuredClone(row.value));
+    // All potentially throwing preparation precedes the synchronous commit section.
+    const captured = structuredClone(next);
+    const meta = structuredClone(options.meta ?? []);
+    if (options.document) this.#putDocument(options.document.id, options.document, undefined, undefined, next.updatedAt);
+    this.#intents.set(requestId, captured);
+    for (const row of meta) this.#meta.set(row.key, row.value);
     return next;
   }
 
@@ -267,7 +309,10 @@ export class MemoryJournaledBackend implements JournaledBackend {
     return this.#meta.has(key) ? (structuredClone(this.#meta.get(key)) as T) : undefined;
   }
 
-  async writeMeta(key: string, value: unknown): Promise<void> {
-    this.#meta.set(key, structuredClone(value));
+  async writeMeta(key: string, value: unknown, options: MetaWriteOptions = {}): Promise<void> {
+    options = captureMetaWrite(options);
+    const captured = options.expected !== undefined || options.requireEmptyJournal ? captureJournalValue(value) : structuredClone(value);
+    assertMetaWrite(key, options, this.#meta.has(key) ? { present: true, value: this.#meta.get(key) } : { present: false }, [...this.#intents.values()]);
+    this.#meta.set(key, captured);
   }
 }

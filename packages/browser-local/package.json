@@ -1,6 +1,6 @@
 {
   "name": "@superbee/browser-local",
-  "version": "0.1.0-pre.1",
+  "version": "0.1.0-pre.2",
   "type": "module",
   "description": "Browser-local working copy of a Superbee bundle: the IndexedDB bundle path proven in real Chromium, with the intent journal and sync verbs that relate it to a shared authority.",
   "license": "Apache-2.0",
@@ -41,7 +41,7 @@
     "measure:browser": "playwright install chromium && playwright test --config playwright.measure.config.ts"
   },
   "dependencies": {
-    "@superbee/core": "0.2.0-pre.3"
+    "@superbee/core": "0.2.0-pre.4"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
