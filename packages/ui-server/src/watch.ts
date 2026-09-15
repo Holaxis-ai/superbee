@@ -131,7 +131,7 @@ interface CommonWatcherOptions {
 export const DEFAULT_REMOTE_BOOT_TIMEOUT_MS = 5_000;
 
 export type WatcherOptions =
-  | (CommonWatcherOptions & { mode: "dir"; bundle: Bundle; debounceMs?: number })
+  | (CommonWatcherOptions & { mode: "dir"; bundle: Bundle; debounceMs?: number; watch?: WatchDirectory })
   | (CommonWatcherOptions & {
       mode: "remote";
       remoteBase: string;
@@ -148,7 +148,8 @@ async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise
 /**
  * Start watching for changes, emitting a {@link ChangeEvent} to `opts.onChange` whenever a doc or
  * page blob's version token moves. `--dir` uses `fs.watch` recursively (debounced) plus periodic
- * reconciliation, waiting 2s between scans; `--remote` polls on a fixed interval. Awaits
+ * reconciliation, resting at least 2s or ten times the last scan's duration between scans;
+ * `--remote` polls on a fixed interval. Awaits
  * a baseline snapshot before resolving, so the first change is diffed against real state.
  *
  * Snapshot runs are SERIALIZED (tasks/ui-pages-spike P1 — remote concurrency): two overlapping
@@ -158,7 +159,7 @@ async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise
  * run is in flight marks a rerun instead of overlapping; `stop()` aborts any in-flight remote
  * request and suppresses every later emission.
  */
-export async function startWatcher(opts: WatcherOptions, watch: WatchDirectory = watchDirectory): Promise<WatcherHandle> {
+export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle> {
   const aborter = new AbortController();
   // Only the BOOT-time initial snapshot is time-boxed — `--dir` mode never leaves the process
   // (no bound needed), and `--remote` mode's ONGOING polls already recover on their own schedule
@@ -169,10 +170,20 @@ export async function startWatcher(opts: WatcherOptions, watch: WatchDirectory =
   // resolve the UI boot WITHOUT a watcher rather than hang it.
   const bootSignal =
     opts.mode === "remote" ? AbortSignal.timeout(opts.bootTimeoutMs ?? DEFAULT_REMOTE_BOOT_TIMEOUT_MS) : aborter.signal;
-  let last = await takeSnapshot(opts, bootSignal);
+  let lastScanMs = 0;
+  const timedSnapshot = async (signal: AbortSignal): Promise<Snapshot> => {
+    const started = performance.now();
+    try {
+      return await takeSnapshot(opts, signal);
+    } finally {
+      lastScanMs = performance.now() - started;
+    }
+  };
+  let last = await timedSnapshot(bootSignal);
   let stopped = false;
   let running = false;
   let rerun = false;
+  let onSettled = (): void => {};
 
   const emitDiff = async (): Promise<void> => {
     if (stopped) return;
@@ -184,7 +195,7 @@ export async function startWatcher(opts: WatcherOptions, watch: WatchDirectory =
     try {
       do {
         rerun = false;
-        const next = await takeSnapshot(opts, aborter.signal);
+        const next = await timedSnapshot(aborter.signal);
         if (stopped) return;
         const change = diffSnapshots(last, next);
         last = next;
@@ -194,6 +205,7 @@ export async function startWatcher(opts: WatcherOptions, watch: WatchDirectory =
       if (!stopped) opts.onError?.(err);
     } finally {
       running = false;
+      onSettled();
     }
   };
 
@@ -216,21 +228,22 @@ export async function startWatcher(opts: WatcherOptions, watch: WatchDirectory =
     let reconciliation: ReturnType<typeof setTimeout> | undefined;
     const scheduleReconciliation = (): void => {
       if (stopped) return;
+      if (reconciliation) clearTimeout(reconciliation);
       reconciliation = setTimeout(() => {
         reconciliation = undefined;
         // A slow scan already reconciles current state. Only a native hint requests a rerun;
         // periodic ticks must not keep a large, unchanged bundle scanning without a pause.
-        if (running) {
-          scheduleReconciliation();
-          return;
-        }
-        void emitDiff().finally(scheduleReconciliation);
-      }, 2000);
+        if (running) return; // the active scan rearms on settlement
+        void emitDiff();
+      }, Math.max(2000, 10 * lastScanMs));
       reconciliation.unref?.();
     };
+    // Native-triggered and failed scans earn the same rest as periodic scans. Scaling with
+    // measured cost keeps large idle bundles from spending most of their time taking snapshots.
+    onSettled = scheduleReconciliation;
     scheduleReconciliation();
     try {
-      watcher = watch(opts.bundle.root, trigger);
+      watcher = (opts.watch ?? watchDirectory)(opts.bundle.root, trigger);
       watcher.on("error", () => {
         watcher?.close();
         watcher = undefined;

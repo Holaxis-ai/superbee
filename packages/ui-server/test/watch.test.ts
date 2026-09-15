@@ -30,8 +30,9 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function fixture(t: TestContext, attach?: (backend: ScanBackend) => void) {
+async function fixture(t: TestContext, attach?: (backend: ScanBackend) => void, now = () => 0) {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  t.mock.method(performance, "now", now);
   const backend = new ScanBackend();
   const bundle: Bundle = { root: "memory://watch-test", backend };
   await writeDoc(bundle, { id: REGISTRY, frontmatter: { type: "View", entry: "views/board.html" }, body: "" });
@@ -40,13 +41,13 @@ async function fixture(t: TestContext, attach?: (backend: ScanBackend) => void) 
   const errors: unknown[] = [];
   const native = new NativeWatcher();
   let attachments = 0;
-  const handle = await startWatcher({ mode: "dir", bundle, onChange: (e) => events.push(e), onError: (e) => errors.push(e) },
-    (_root, notify) => {
+  const handle = await startWatcher({ mode: "dir", bundle, onChange: (e) => events.push(e), onError: (e) => errors.push(e),
+    watch: (_root, notify) => {
       attachments++;
       native.notify = notify;
       attach?.(backend);
       return native;
-    });
+    } });
   t.after(() => handle.stop());
   const advance = async (ms = POLL_MS) => {
     t.mock.timers.tick(ms);
@@ -71,6 +72,76 @@ test("local reconciliation observes a deleted registration without any native no
   assert.equal(f.events.length, 1, "unchanged polls do not repeat a removal");
   assert.deepEqual(f.errors, []);
 });
+
+for (const duration of [0, 100, 4_000]) {
+  test(`the baseline scan's ${duration}ms cost sets the first idle rest`, async (t) => {
+    let clockCalls = 0;
+    const f = await fixture(t, undefined, () => clockCalls++ === 0 ? 0 : duration);
+    await deleteDoc(f.bundle, REGISTRY);
+    const rest = Math.max(POLL_MS, 10 * duration);
+    await f.advance(rest - 1);
+    assert.equal(f.backend.scans, 1, "no whole-bundle scan before the cost-scaled rest");
+    await f.advance(1);
+    assert.deepEqual(f.events.map((e) => e.docs.removed), [[REGISTRY]]);
+  });
+}
+
+test("idle rest grows after a slow scan and shrinks again after a cheap one", async (t) => {
+  let now = 0;
+  const f = await fixture(t, undefined, () => now);
+  const held = deferred();
+  f.backend.beforeScan = async () => { await held.promise; };
+  await f.advance();
+  assert.equal(f.backend.scans, 2);
+  now = 4_000;
+  f.backend.beforeScan = undefined;
+  held.resolve();
+  await setImmediate();
+  await f.advance(39_999);
+  assert.equal(f.backend.scans, 2, "four seconds of work earns forty seconds of rest");
+  await f.advance(1);
+  assert.equal(f.backend.scans, 3);
+  await f.advance(POLL_MS);
+  assert.equal(f.backend.scans, 4, "a cheap scan restores the short rest");
+});
+
+test("native hints bypass a long idle rest without overlapping or duplicating reconciliation", async (t) => {
+  let clockCalls = 0;
+  const f = await fixture(t, undefined, () => clockCalls++ === 0 ? 0 : 4_000);
+  await deleteDoc(f.bundle, REGISTRY);
+  f.native.notify();
+  await f.advance(150);
+  assert.deepEqual(f.events.map((e) => e.docs.removed), [[REGISTRY]]);
+  await f.advance(39_850);
+  assert.equal(f.events.length, 1);
+});
+
+for (const fails of [false, true]) {
+  test(`a slow native scan resets an old periodic deadline even when it ${fails ? "fails" : "succeeds"}`, async (t) => {
+    let now = 0;
+    const f = await fixture(t, undefined, () => now);
+    await deleteDoc(f.bundle, REGISTRY);
+    await f.advance(1_800);
+    const failure = new Error("slow failed scan");
+    f.backend.beforeScan = async () => {
+      now = 4_000;
+      f.backend.beforeScan = undefined;
+      if (fails) throw failure;
+    };
+    f.native.notify();
+    await f.advance(150);
+    assert.equal(f.backend.scans, 2);
+    assert.deepEqual(f.errors, fails ? [failure] : []);
+    await f.advance(39_999);
+    assert.equal(f.backend.scans, 2, "the old periodic deadline cannot bypass the new rest");
+    await f.advance(1);
+    assert.equal(f.backend.scans, 3);
+    assert.deepEqual(f.events.map((e) => e.docs.removed), [[REGISTRY]]);
+    await f.handle.stop();
+    await f.advance(40_000);
+    assert.equal(f.backend.scans, 3, "stop cancels adaptive reconciliation");
+  });
+}
 
 test("local reconciliation catches deletion between the baseline and native watch attachment", async (t) => {
   let deletion!: Promise<boolean>;
