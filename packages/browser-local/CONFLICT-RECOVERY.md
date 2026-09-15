@@ -27,5 +27,25 @@ conflicted request id, so a caller can find it even if the resolution reply was 
 They survive reload with the working copy but are not a backup against browser eviction. Hosts
 must scope stores and remote access correctly; this API does not add account or retention policy.
 
+## Body delivery mode
+
+In body mode the same two operations apply, with these differences:
+
+- The head of the chain may be a recorded conflict or a content refusal (a refusal whose code is
+  outside the authorization codes). An authorization refusal is not a recovery case; `resume`
+  keeps its path. The document reads `local-pending` until it is resolved; `syncStatus` counts
+  the refusal.
+- `revise` takes a body only, bounded as a body commit is; a `frontmatter` field is refused
+  before anything is read.
+- `keep-local` and `revise` retire the chain and journal one fresh body update whose premise is
+  the served head. They refuse when the authority holds no document, because body mode cannot
+  create one; `take-remote` then deletes the working copy's document together with its base
+  row, as a pull's own deletion does.
+- Retired rows leave the store with their descriptors and prepared envelopes. Acknowledged rows
+  and their receipts are untouched.
+- The receipt is a bounded record of identities, versions, states, the refusal code and the
+  observed remote version, never content. It is validated and counted against capacity before
+  the resolution writes, and retained afterwards.
+
 This is shared runtime support, not activation of the browser-first SaaS editor. Hosted wire,
 authentication, UI integration, offline shell, release and deployment remain separate work.

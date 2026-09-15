@@ -29,6 +29,14 @@ function journal(p = prepared(), sequence = 1): IntentRecord {
   return { requestId: p.requestId, kind: "document.write", target: p.target, base: token, local: p.local,
     content: p.content, createdAt: at, attempts: 0, state: "pending", sequence, updatedAt: at, baseContent: null };
 }
+test("complete reconciliation uses a separate sixteen MiB snapshot limit", () => {
+  const p = prepared(), r = receipt(p);
+  const rows = Array.from({ length: 10 }, (_, i) => ({ ...journal(p, i + 2), requestId: `retained-${i}`, content: "x".repeat(1024 * 1024) }));
+  const snapshot = { version: p.local, intents: [journal(p), ...rows], shared: null };
+  assert.equal(reconcileBodyReceipt(p, r, snapshot).action, "preserve-local");
+  snapshot.intents.push(...Array.from({ length: 7 }, (_, i) => ({ ...rows[0]!, sequence: i + 20, requestId: `excess-${i}` })));
+  assert.throws(() => reconcileBodyReceipt(p, r, snapshot), /size limit/);
+});
 async function authority() {
   const backend = new MemoryBackend();
   await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");

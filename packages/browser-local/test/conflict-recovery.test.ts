@@ -114,6 +114,52 @@ for (const adapter of ["indexeddb", "memory"]) {
       assert.equal(await local.backend.readMeta("uncloneable"), undefined);
     } finally { local.close(); }
   });
+  // Exact mode keeps its rule and its refusal class: a chain with no conflict row is not a recovery case, whatever the head's refusal code; a later edit supersedes a refused request.
+  for (const shape of ["refused", "refused+successor", "auth-refused", "conflict+refused-successor"] as const) {
+    test(`${adapter}: exact mode over a ${shape} chain: inspect and every verb keep their answer without mutation`, async () => {
+      const remote = await createRemoteFixture();
+      await remote.authority.write(id, doc("original\n"));
+      const local = openLocalBundle(`exact-${crypto.randomUUID()}`, adapter === "memory" ? { backend: new MemoryJournaledBackend() } : { indexedDB: new IDBFactory() });
+      try {
+        await bootstrap(remote.remote, local);
+        const first = await commitLocal(local, id, edit("first edit\n"));
+        const code = shape === "auth-refused" ? "PERMISSION_DENIED" : "validation_failed";
+        if (shape === "conflict+refused-successor") {
+          await local.backend.updateIntent(first.intent!.requestId, "pending", { state: "conflict", attempts: 1, remote: { version: null, content: null } });
+          const second = await commitLocal(local, id, edit("second edit\n"));
+          await local.backend.updateIntent(second.intent!.requestId, "pending", { state: "refused", attempts: 1, refusal: { code, message: "refused by a rule" } });
+        } else {
+          await local.backend.updateIntent(first.intent!.requestId, "pending", { state: "refused", attempts: 1, refusal: { code, message: "refused by a rule" } });
+          if (shape === "refused+successor") {
+            // Exact mode's later commit supersedes a refused request; keep the chain by journaling the successor directly.
+            const before = await local.backend.readWithJournal(id);
+            await local.backend.writeJournaled(id, doc("second edit\n"), { expectedVersion: before.document!.version, intent: { requestId: "successor", kind: "document.write", target: id, base: before.intents[0]!.local, baseContent: before.raw, createdAt: "2026-09-15T00:00:00.000Z", after: before.intents[0]!.requestId } });
+          }
+        }
+        const snapshot = await local.backend.readWithJournal(id);
+        const intents = snapshot.intents.filter(row => row.state !== "acknowledged");
+        const before = { snapshot, base: await local.backend.readMeta(`base:${id}`), receipt: await local.backend.readMeta(conflictResolutionKey(intents[0]!.requestId)) };
+        const forged = { id, local: { version: snapshot.document!.version, content: snapshot.raw! }, base: { version: intents[0]!.base, content: intents[0]!.baseContent }, remote: { version: (await remote.remote.read(id)).version, content: null }, intents };
+        const choices = [{ kind: "keep-local" }, { kind: "take-remote" }, { kind: "revise", body: "revised\n" }] as ConflictChoice[];
+        if (shape === "conflict+refused-successor") {
+          // A conflicted head with a refused successor was resolvable before this slice and stays so; the forged review's remote content makes every verb report it stale.
+          assert.equal((await inspectConflict(local, remote.remote, id)).intents.length, 2);
+          for (const choice of choices) await assert.rejects(resolveConflict(local, remote.remote, forged, choice), { name: "ConflictReviewStaleError" });
+        } else {
+          await assert.rejects(inspectConflict(local, remote.remote, id), { name: "JournalSnapshotConflict" });
+          for (const choice of choices) await assert.rejects(resolveConflict(local, remote.remote, forged, choice), { name: "JournalSnapshotConflict" });
+        }
+        assert.deepEqual({ snapshot: await local.backend.readWithJournal(id), base: await local.backend.readMeta(`base:${id}`), receipt: await local.backend.readMeta(conflictResolutionKey(intents[0]!.requestId)) }, before, "nothing was written");
+        assert.equal((await syncStatus(local)).counts.refused, 1);
+        if (shape === "refused") {
+          const superseded = await commitLocal(local, id, edit("edited again\n"));
+          assert.equal(await local.backend.readIntent(first.intent!.requestId), undefined);
+          assert.equal(superseded.intent!.state, "pending");
+          assert.equal((await syncStatus(local)).counts.refused, 0);
+        }
+      } finally { local.close(); }
+    });
+  }
   test(`${adapter}: a local edit during remote recheck and attempted descendant refuse resolution`, async () => {
     const { remote, local } = await fixture();
     try {
