@@ -1,67 +1,28 @@
 {
-  "name": "superbee",
-  "version": "0.2.1-pre.2",
+  "name": "@superbee/cli",
+  "version": "0.0.0",
+  "private": true,
   "type": "module",
-  "description": "Agent-facing Superbee CLI for reading and writing local OKF knowledge bundles: context notes, docs, cross-links, and live bundle Views.",
-  "keywords": [
-    "okf",
-    "knowledge",
-    "agent",
-    "axi",
-    "cli",
-    "markdown",
-    "context-notes"
-  ],
+  "description": "Reusable process-oriented Superbee command runtime.",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/Holaxis-ai/superbee#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Holaxis-ai/superbee.git"
-  },
-  "bugs": {
-    "url": "https://github.com/Holaxis-ai/superbee/issues"
-  },
-  "bin": {
-    "superbee": "dist/superbee.mjs"
-  },
-  "exports": {
-    ".": "./dist/superbee.mjs",
-    "./publication": {
-      "types": "./dist/publication/index.d.ts",
-      "default": "./dist/publication.mjs"
-    },
-    "./publication/bridge": {
-      "types": "./dist/publication/bridge-entry.d.ts",
-      "default": "./dist/publication-bridge.mjs"
-    },
-    "./bundle-descriptor": {
-      "types": "./dist/bundle-descriptor/index.d.ts",
-      "default": "./dist/bundle-descriptor.mjs"
-    }
-  },
-  "files": [
-    "dist",
-    "SKILL.md",
-    "references",
-    "NOTICE"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
   "engines": {
     "node": ">=20"
   },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    }
+  },
   "scripts": {
-    "build": "node build.mjs local-dev",
-    "build:npm-package": "node build.mjs npm-package",
+    "build": "node build.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
-    "pretest": "node build.mjs local-dev",
-    "test:host-class": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts ./test/command-text.test.ts",
     "test": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
-    "mutation": "node scripts/run-test-command.mjs npm-exec stryker run",
-    "gen:skill": "node scripts/gen-skill.mjs",
-    "check:skill": "node scripts/gen-skill.mjs --check",
-    "prepublishOnly": "node -e \"console.error('superbee is released by .github/workflows/release.yml (npm stage publish); do not run npm publish here'); process.exit(1)\""
+    "test:host-class": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts ./test/command-text.test.ts",
+    "mutation": "node scripts/run-test-command.mjs npm-exec stryker run"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -79,7 +40,7 @@
     "esbuild": "0.25.12",
     "jsonc-parser": "3.3.1",
     "pako": "2.1.0",
-    "typescript": "^5.4.0",
+    "typescript": "^5.5.0",
     "js-yaml": "3.15.2",
     "@types/js-yaml": "3.12.10"
   }

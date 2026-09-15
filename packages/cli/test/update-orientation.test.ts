@@ -59,7 +59,7 @@ const NOW = new Date("2026-08-05T12:00:01.000Z");
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString("base64")}`;
 const BUILT_CLI = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../dist/superbee.mjs",
+  "../../superbee/dist/superbee.mjs",
 );
 const TEST_LOADER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "ts-loader.mjs");
 const CONCURRENCY_FIXTURE = path.resolve(

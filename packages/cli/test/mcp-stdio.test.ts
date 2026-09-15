@@ -10,11 +10,12 @@ import { initBundle, writeBlob, writeDoc } from "@superbee/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { cliVersion } from "../src/build-identity.js";
+import { readFileSync } from "node:fs";
+const distributionVersion = JSON.parse(readFileSync(new URL("../../superbee/package.json", import.meta.url), "utf8")).version;
 import { addCatalogEntry } from "../src/catalog.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
-const CLI = fileURLToPath(new URL("../dist/superbee.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../../superbee/dist/superbee.mjs", import.meta.url));
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 
 function assertAdvertisedToolSchemaDialect(tools: readonly Tool[]): void {
@@ -77,7 +78,7 @@ test("built npm CLI serves the fixed MCP App contract over clean stdio", async (
   });
 
   await client.connect(transport);
-  assert.equal(client.getServerVersion()?.version, cliVersion());
+  assert.equal(client.getServerVersion()?.version, distributionVersion);
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((tool) => tool.name), [
     "show_document",

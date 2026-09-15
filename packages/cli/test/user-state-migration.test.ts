@@ -22,7 +22,7 @@ import {
 import { inspectUserStateMigration, migrateUserState, migrationSourceRoots } from "../src/user-state-migration.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
-const BUILT_CLI = resolve(dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
+const BUILT_CLI = resolve(dirname(fileURLToPath(import.meta.url)), "../../superbee/dist/superbee.mjs");
 const POSIX_MODE_AUTHORITY = process.platform !== "win32";
 const directoryLinkType: "dir" | "junction" = process.platform === "win32" ? "junction" : "dir";
 

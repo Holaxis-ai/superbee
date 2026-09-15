@@ -161,11 +161,11 @@ test("the npm verifier rejects every retired marketplace surface", async () => {
 });
 
 test("root README teaches the literal create-only quickstart; npm README teaches the agent-first journey", async () => {
-  const npmPackage = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
+  const npmPackage = JSON.parse(await readFile(path.join(repoRoot, "packages", "superbee", "package.json"), "utf8"));
   const prerelease = npmPackage.version.includes("-");
   for (const [label, file] of [
     ["root", path.join(repoRoot, "README.md")],
-    ["npm", path.join(repoRoot, "packages", "cli", "README.md")],
+    ["npm", path.join(repoRoot, "packages", "superbee", "README.md")],
   ]) {
     const readme = await readFile(file, "utf8");
     assertPackageReadmeReleaseChannel(npmPackage.version, readme);
@@ -206,7 +206,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
     "root README must explain the tutorial actor identity",
   );
 
-  const npmReadme = await readFile(path.join(repoRoot, "packages", "cli", "README.md"), "utf8");
+  const npmReadme = await readFile(path.join(repoRoot, "packages", "superbee", "README.md"), "utf8");
   assert.match(
     npmReadme,
     /^## Install$/m,
@@ -243,9 +243,9 @@ test("root README teaches the literal create-only quickstart; npm README teaches
 test("root and npm package license declarations agree", async () => {
   const [rootManifest, npmManifest, rootReadme, npmReadme] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8").then(JSON.parse),
-    readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "packages", "superbee", "package.json"), "utf8").then(JSON.parse),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
-    readFile(path.join(repoRoot, "packages", "cli", "README.md"), "utf8"),
+    readFile(path.join(repoRoot, "packages", "superbee", "README.md"), "utf8"),
   ]);
 
   assert.equal(npmManifest.license, rootManifest.license, "root and npm package manifests must use one license");
@@ -264,10 +264,10 @@ test("root and npm package license declarations agree", async () => {
 
 test("lockfile workspace metadata preserves the npm package platform contract", async () => {
   const [npmManifest, lockfile] = await Promise.all([
-    readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "packages", "superbee", "package.json"), "utf8").then(JSON.parse),
     readFile(path.join(repoRoot, "package-lock.json"), "utf8").then(JSON.parse),
   ]);
-  const locked = lockfile.packages?.["packages/cli"];
+  const locked = lockfile.packages?.["packages/superbee"];
   assert.ok(locked, "package-lock must describe the CLI workspace");
   assert.equal(locked.version, npmManifest.version, "lockfile CLI version must match the publish manifest");
   assert.deepEqual(locked.os, npmManifest.os, "lockfile must not retain a stale OS restriction");

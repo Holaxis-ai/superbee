@@ -21,7 +21,7 @@ try {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
-const cliPkg = JSON.parse(readFileSync(path.join(root, "packages", "cli", "package.json"), "utf8"));
+const cliPkg = JSON.parse(readFileSync(path.join(root, "packages", "superbee", "package.json"), "utf8"));
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
 const contributing = readFileSync(path.join(root, "CONTRIBUTING.md"), "utf8");
 const okfBundleSource = readFileSync(path.join(root, "packages", "core", "src", "bundle.ts"), "utf8");

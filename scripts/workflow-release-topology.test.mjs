@@ -209,7 +209,7 @@ test("finalize accepts staged-publish metadata with an empty registry readme", (
 test("an ordinary npm publish from the package directory trips before it can publish", () => {
   // Ergonomics only: npm's "require 2FA and disallow tokens" setting is the real boundary, and
   // --ignore-scripts bypasses this hook. It exists so a maintainer cannot publish by reflex.
-  const pkg = JSON.parse(readFileSync(path.join(root, "packages", "cli", "package.json"), "utf8"));
+  const pkg = JSON.parse(readFileSync(path.join(root, "packages", "superbee", "package.json"), "utf8"));
   assert.match(pkg.scripts.prepublishOnly ?? "", /process\.exit\(1\)/, "prepublishOnly must refuse");
   assert.doesNotMatch(pkg.scripts.prepublishOnly, /\.\.\/|scripts\//, "the tripwire must not depend on files outside the package");
 });

@@ -16,7 +16,7 @@ import { COMMAND_GROUPS } from "../src/reference.js";
 import { shellArg } from "../src/invocation.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliBin = path.resolve(here, "../dist/superbee.mjs");
+const cliBin = path.resolve(here, "../../superbee/dist/superbee.mjs");
 const T = "2026-07-20T00:00:00.000Z";
 
 async function tempBundle(name = "bundle"): Promise<{ root: string; cleanup: () => Promise<void> }> {

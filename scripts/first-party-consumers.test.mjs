@@ -20,7 +20,7 @@ test("first-party View demo seeds a self-contained Superbee bundle", async () =>
     });
     assert.equal(stderr, "");
     assert.match(stdout, /Seeded 3 views \(pulse, roadmap, about\)/);
-    assert.match(stdout, /packages\/cli\/dist\/superbee\.mjs ui/);
+    assert.match(stdout, /packages\/superbee\/dist\/superbee\.mjs ui/);
     assert.match(stdout, /tasks\/open-the-view/);
     assert.doesNotMatch(stdout, /dist\/agentstate-lite\.mjs|aslite-views-demo/);
   } finally {
@@ -42,7 +42,7 @@ test("the shipped sample bundle teaches Superbee while retaining its interoperab
     const sourceText = await readFile(path.join(repoRoot, source), "utf8");
     assert.doesNotMatch(sourceText, /agentstate-lite|\baslite\b/i, source);
     assert.equal(
-      await readFile(path.join(repoRoot, "packages/cli/references/sample-bundle", path.relative("examples/sample-bundle", source)), "utf8"),
+      await readFile(path.join(repoRoot, "packages/superbee/references/sample-bundle", path.relative("examples/sample-bundle", source)), "utf8"),
       sourceText,
       `${source} must match the generated npm projection`,
     );
@@ -77,7 +77,7 @@ test("development shims and the View demo resolve to the Superbee artifact", asy
   }
 
   const demo = await readFile(path.join(repoRoot, "examples/views/demo.sh"), "utf8");
-  assert.match(demo, /packages\/cli\/dist\/superbee\.mjs/);
+  assert.match(demo, /packages\/superbee\/dist\/superbee\.mjs/);
   assert.match(demo, /superbee-views-demo/);
   assert.doesNotMatch(demo, /REPO\/\.agentstate-lite/);
 });

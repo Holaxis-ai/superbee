@@ -535,7 +535,7 @@ async function runInstalledProof(spec) {
     const manifest = parseJson(await readFile(path.join(installedRoot, "package.json"), "utf8"), "installed package.json");
     const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
     assertPackageReadmeMetadata(manifest, installedReadme);
-    const committedSkillRoot = path.join(repoRoot, "packages", "cli");
+    const committedSkillRoot = path.join(repoRoot, "packages", "superbee");
     const referenceFiles = (await listFiles(path.join(committedSkillRoot, "references"))).map((relative) =>
       relative.split(path.sep).join("/"),
     );
@@ -1454,12 +1454,12 @@ export async function verifyNpmPackage({ mode }) {
     expectedChannel: policy.artifactChannel,
     async produce({ packDir, npmUserConfig, npmCache }) {
       const cleanBuildEnv = sanitizedNpmEnvironment(process.env, npmUserConfig, npmCache);
-      await run(process.execPath, [path.join(repoRoot, "packages", "cli", "build.mjs"), policy.artifactChannel], {
+      await run(process.execPath, [path.join(repoRoot, "packages", "superbee", "build.mjs"), policy.artifactChannel], {
         cwd: repoRoot,
         env: cleanBuildEnv,
       });
       const receipt = await packNpmPackage({
-        packageRoot: path.join(repoRoot, "packages", "cli"),
+        packageRoot: path.join(repoRoot, "packages", "superbee"),
         packDestination: packDir,
         npmExecPath: cleanBuildEnv.npm_execpath,
         env: cleanBuildEnv,
