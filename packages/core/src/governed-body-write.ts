@@ -8,6 +8,8 @@ import type { IntentRecord } from "./journaled-backend.js";
 import type { Version } from "./types.js";
 
 export const BODY_DELIVERY_LIMITS = Object.freeze({ labelBytes: 2048, bodyBytes: 64 * 1024, envelopeBytes: 2 * 1024 * 1024 });
+/** Complete journal reconciliation has a separate bound from each delivery envelope. */
+export const BODY_RECONCILIATION_BYTES = 16 * 1024 * 1024;
 export interface BodyUpdateOperation { readonly kind: "document.body.update"; readonly body: string }
 export interface PreparedBodyDelivery {
   readonly schema: 1;
@@ -226,7 +228,8 @@ export function reconcileBodyReceipt(prepared: PreparedBodyDelivery, receipt: Co
     shared = { version: version(raw.version), content };
   }
   // Shared refresh can advance independently of the document and journal; compare all three.
-  const expected: BodyLocalSnapshot = bounded({ version: snapshot.version, intents: snapshot.intents.map(captureIntent), shared });
+  const expected: BodyLocalSnapshot = { version: snapshot.version, intents: snapshot.intents.map(captureIntent), shared };
+  string(JSON.stringify(expected), BODY_RECONCILIATION_BYTES);
   const ids = new Set<string>(), sequences = new Set<number>();
   for (const row of expected.intents) {
     request(row.requestId); integer(row.sequence);

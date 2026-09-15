@@ -46,12 +46,13 @@ export async function startDriverServer(options: DriverServerOptions = {}): Prom
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>browser-local</title></head><body><script src="/driver.js"></script></body></html>`;
   const extra = options.headers ?? {};
   const server: Server = createServer((request, response) => {
-    if (request.url === "/driver.js") {
+    const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+    if (pathname === "/driver.js") {
       response.writeHead(200, { ...extra, "content-type": "text/javascript; charset=utf-8" });
       response.end(script);
       return;
     }
-    if (request.url === "/") {
+    if (pathname === "/") {
       response.writeHead(200, { ...extra, "content-type": "text/html; charset=utf-8" });
       response.end(html);
       return;

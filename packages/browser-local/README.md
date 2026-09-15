@@ -17,6 +17,63 @@ Unsaved drafts, durable local commits and shared acknowledgements are different
 states. Neither package installation nor a successful IndexedDB transaction means
 a document was admitted into shared state.
 
+## Opt-in body delivery
+
+`openLocalBundle(name, { bodyDelivery: { scope, okfVersion: "0.2" } })` selects
+body-only delivery in a separate `body-v1` IndexedDB namespace. The default exact
+document mode and its store remain unchanged. Supply a scope that partitions the
+working copy appropriately; this label is not authorization. A custom journaled
+backend must support `journalSnapshotCas` and be explicitly dedicated through
+`bodyDelivery.dedicated: true`. Existing nonempty journals cannot be adopted.
+There is no automatic migration, old-tab cutover or old-draft import. The same
+logical name continues to select the existing push role.
+
+Use `commitBodyLocal(local, id, { body, expectedVersion })`, or the existing platform
+`commit`, after bootstrap. Both use the shared mutation engine and atomically retain
+the local document and an immutable body intent. Pass a `BodyDeliveryTransport` as
+`bodyTransport` to `push` or `createBrowserLocalRuntime`; the exact-document
+transport is never substituted for it. The authority owns the committed metadata
+and returns the core prepared-body receipt contract. Original local journal bytes
+remain unchanged when a receipt advances the shared base or visible document.
+A newer local intent, even with identical bytes, prevents replacement of that edit.
+Refreshes also bind content and deletion listings to full local premises captured
+before fetching. A concurrent change invalidates stale incoming evidence; the
+refresh rejects and its completion marker remains incomplete. Retrying performs a
+new read rather than applying the old response against a newly captured guard.
+
+Body mode is not a mirror of reserved root metadata. After mode admission, an absent
+local root receives only a deterministic edition seed. An existing matching root,
+including custom metadata and body, is preserved byte-for-byte. Each concept import
+checks the authority's edition; malformed, unsupported or mismatched declarations
+refuse rather than rewriting either root. A genuinely missing edition retains the
+existing v0.1 fallback. Legacy bootstrap still imports the remote root unchanged.
+
+Preparation is saved with the attempted claim before submission. After interruption,
+the existing `reclaimInFlight` operation runs inside `pushWithRole` for body mode,
+including normal platform Sync. The next delivery looks up the same immutable
+identity before any resubmission. Callers using bare `push` own role and reclaim
+coordination; the in-process role fallback does not coordinate separate realms.
+`resume` schedules a lookup-first recheck while preserving refusal evidence. A
+recorded refusal remains refused; resuming does not promise progress. Unresolved
+or refused work is not reported as a successful complete synchronization.
+
+The runtime admits at most two unsettled intents per target. It reserves missing
+preparations, receipts and observations before accepting work: each envelope is
+bounded at 2 MiB, original journal fields at 8 MiB, reconciliation at 16 MiB and the
+complete guarded target at 32 MiB. JSON escape expansion and named metadata count.
+The composite mode/control row has a 64 KiB bound with remaining growth reserved
+per target. Capacity errors retain existing work and refuse new state; they do not
+prune history or receipts. Body input is bounded at 64 KiB. The existing document
+codec owns metadata normalization, including valid timestamp values.
+
+Body mode supports updates to existing documents, not creation or general metadata
+edits. Conflict inspection is available, but all conflict-resolution choices refuse
+without mutation: inspect or export retained work; no automatic recovery is
+performed. Legacy conflict resolution is unchanged. This mode does not install an
+offline application shell or guarantee persistence against browser eviction. A
+successful local commit, a queued delivery and authority confirmation remain
+distinct states.
+
 ## Platform runtime host boundary
 
 `createBrowserLocalRuntime({ local, remote, transport })` accepts an existing
