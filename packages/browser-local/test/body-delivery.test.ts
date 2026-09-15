@@ -1,27 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { IDBFactory } from "fake-indexeddb";
-import { IndexedDbBackend } from "@superbee/core/indexeddb-backend";
-import type { OperationTransport } from "@superbee/core/uncertain-write";
 import { BODY_DELIVERY_LIMITS } from "@superbee/core/governed-body-write";
+import { IDBFactory } from "fake-indexeddb";
 import { openLocalBundle, bootstrap, commitBodyLocal, commitLocal, push, pull, reclaimInFlight, resume, syncStatus, settleIntent, inspectConflict, resolveConflict, conflictResolutionKey, type ConflictChoice } from "../src/local-bundle.ts";
 import { admitBodyMode, bodyRecordKey, BODY_MODE_KEY, bodySnapshot, assertBodyCapacity, projectBodyGuard, jsonBytes, BODY_RUNTIME_LIMITS, writeBodyControl, validateBodyRecord, validateBodyResolutionReceipt, captureBodyRefresh } from "../src/body-journal.ts";
 import { createBrowserLocalRuntime } from "../src/platform/browser-local.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
 import { createBodyAuthority } from "./fixtures/body-authority.ts";
 import { createRemoteFixture } from "./fixtures/remote-fixture.ts";
+import { ADAPTERS, choices, contested, exact, guardOf, immediate, makeBackend, setup as setupBody, type Setup } from "./fixtures/body-resolution.ts";
 
-const exact: OperationTransport = { submit: async () => { throw new Error("Unexpected exact-document submission"); }, lookup: async () => { throw new Error("Unexpected exact-document lookup"); } };
-const immediate = { sleep: async () => {}, lookupDelayMs: 0, maxLookups: 1 };
-for (const adapter of ["memory", "indexeddb"] as const) {
-  async function setup(okfVersion: "0.1" | "0.2" = "0.2") {
-    const backend = adapter === "memory" ? new MemoryJournaledBackend() : new IndexedDbBackend({ databaseName: crypto.randomUUID(), indexedDB: new IDBFactory() });
-    const local = openLocalBundle("body-test", { backend, bodyDelivery: { scope: "fixture", okfVersion, dedicated: true } });
-    const authority = await createBodyAuthority(undefined, okfVersion);
-    await bootstrap(authority.backend, local);
-    const runtime = createBrowserLocalRuntime({ local, remote: authority.backend, transport: exact, bodyTransport: authority.transport, actor: "process:local", now: () => "2026-09-15T00:30:00.000Z", write: immediate });
-    return { local, backend, authority, runtime, close: () => local.close() };
-  }
+for (const adapter of ADAPTERS) {
+  const setup = (okfVersion?: "0.1" | "0.2") => setupBody(adapter, okfVersion);
   test(`${adapter}: explicit body commits settle canonical authority content and retain original history`, async () => {
     const s = await setup();
     try {
@@ -139,22 +129,8 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       await assert.rejects(resume(s.backend));
     } finally { s.close(); }
   });
-  /** A local body edit the authority answers with a moved head (`conflict`) or a content refusal (`refused`). */
-  async function contested(s: Awaited<ReturnType<typeof setup>>, head: "conflict" | "refused") {
-    await s.runtime.commit("notes/example", { body: "Retain this work" });
-    if (head === "conflict") {
-      const remote = await s.authority.backend.read("notes/example");
-      await s.authority.backend.write("notes/example", { ...remote.doc, body: "Concurrent authority edit" });
-    } else s.authority.knobs.contentRefusal = true;
-    await push(s.local, exact, { bodyTransport: s.authority.transport, remote: s.authority.backend, write: immediate });
-    s.authority.knobs.contentRefusal = false;
-    const chain = (await s.backend.listIntents()).filter(row => row.state !== "acknowledged");
-    assert.deepEqual(chain.map(row => row.state), [head]);
-    return chain[0]!;
-  }
-  const guardOf = async (s: Awaited<ReturnType<typeof setup>>) => (await bodySnapshot(s.backend, "notes/example", (await admitBodyMode(s.backend))!)).guard;
   /** The authority's read side with its document reads counted, so a local refusal can be shown to cost no network read. */
-  const countingRemote = (s: Awaited<ReturnType<typeof setup>>) => {
+  const countingRemote = (s: Setup) => {
     const reads = { count: 0 };
     const remote = new Proxy(s.authority.backend, { get(inner, key) {
       if (key === "read") return async (...args: Parameters<typeof inner.read>) => { reads.count += 1; return inner.read(...args); };
@@ -162,7 +138,6 @@ for (const adapter of ["memory", "indexeddb"] as const) {
     } });
     return { remote, reads };
   };
-  const choices = [{ kind: "keep-local" }, { kind: "take-remote" }, { kind: "revise", body: "Replacement" }] as const;
   test(`${adapter}: a content refusal reads local-pending, counts as refused without a pause, and is inspectable`, async () => {
     const s = await setup();
     try {
@@ -268,7 +243,7 @@ for (const adapter of ["memory", "indexeddb"] as const) {
   test(`${adapter}: a taken served deletion leaves a working copy a snapshot bootstrap can hydrate again when the authority re-creates the id`, async () => {
     const fixture = await createRemoteFixture();
     const authority = await createBodyAuthority(fixture.authority);
-    const backend = adapter === "memory" ? new MemoryJournaledBackend() : new IndexedDbBackend({ databaseName: crypto.randomUUID(), indexedDB: new IDBFactory() });
+    const backend = makeBackend(adapter);
     const local = openLocalBundle("re-created", { backend, bodyDelivery: { scope: "fixture", okfVersion: "0.2", dedicated: true } });
     try {
       const first = await bootstrap(fixture.remote, local);
@@ -424,6 +399,29 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       assert.ok(!reads.includes("notes/example"), "the input is refused before the target journal is read");
       assert.deepEqual(await guardOf(s), before);
     } finally { s.close(); }
+  });
+  test(`${adapter}: a resolution clock outside the delivery grammar is refused before any write, on both editions`, async () => {
+    // Date.parse accepts each of these; the delivery grammar, which every later snapshot applies to the fresh row, requires a zoned instant.
+    const clocks = ["2026-09-15", "2026-09-15T00:30:00", "Tue Sep 15 2026 00:30:00 GMT+0000"];
+    for (const edition of ["0.1", "0.2"] as const) for (const choice of [choices[0], choices[2]]) {
+      const s = await setup(edition);
+      try {
+        const head = await contested(s, "refused");
+        const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
+        const before = await guardOf(s);
+        for (const now of clocks) {
+          await assert.rejects(resolveConflict(s.local, s.authority.backend, review, choice, { now: () => now }), { name: "BodyRuntimeError" });
+          assert.deepEqual(await guardOf(s), before);
+          assert.equal(await s.backend.readMeta(conflictResolutionKey(head.requestId)), undefined);
+        }
+        // The working copy stays readable and the same review resolves under a clock within the grammar.
+        await syncStatus(s.local);
+        const result = await resolveConflict(s.local, s.authority.backend, review, choice, { now: () => "2026-09-15T00:45:00.000Z" });
+        assert.equal(result.intent!.createdAt, "2026-09-15T00:45:00.000Z");
+        const status = await s.runtime.sync();
+        assert.deepEqual([status.pending, status.refused, status.lastSync?.ok], [0, 0, true]);
+      } finally { s.close(); }
+    }
   });
   test(`${adapter}: a resolution receipt survives reopening the working copy and the fresh update delivers`, async () => {
     const s = await setup();
@@ -618,7 +616,7 @@ for (const adapter of ["memory", "indexeddb"] as const) {
     } finally { s.close(); }
   });
   test(`${adapter}: simultaneous absent-root initializers seed identical local bytes`, async () => {
-    const backend = adapter === "memory" ? new MemoryJournaledBackend() : new IndexedDbBackend({ databaseName: crypto.randomUUID(), indexedDB: new IDBFactory() });
+    const backend = makeBackend(adapter);
     const local = openLocalBundle("root-initializers", { backend, bodyDelivery: { scope: "root", okfVersion: "0.2", dedicated: true } });
     const remote = new MemoryJournaledBackend();
     await remote.writeReserved("", "index.md", "---\nokf_version: '0.2'\nname: Do not import\n---\n# Remote root\n");

@@ -63,10 +63,11 @@
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
 import { stringifyDoc } from "@superbee/core/document-codec";
 import { performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
+import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
-import { JournalGuardConflict } from "@superbee/core/journaled-backend";
+import { JournalGuardConflict, JournalSnapshotConflict } from "@superbee/core/journaled-backend";
 import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
-  validateBodyResolutionReceipt, BODY_MODE_KEY, BODY_RUNTIME_LIMITS, jsonBytes, BodyRuntimeError,
+  validateBodyResolutionReceipt, validateBodyRecord, BODY_MODE_KEY, BODY_RUNTIME_LIMITS, jsonBytes, BodyRuntimeError,
   type BodyDeliveryOptions, type BodyRecord, type BodyMode, type BodyResolutionReceipt, type BodySnapshot } from "./body-journal.js";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
 import { IndexedDbBackend, type IdbFactoryLike } from "@superbee/core/indexeddb-backend";
@@ -853,6 +854,9 @@ function isContentRefusal(row: IntentRecord): boolean {
  */
 function conflictChain(id: ConceptId, snapshot: JournaledReadResult, admitRefused: boolean) {
   const intents = snapshot.intents.filter(row => row.state !== "acknowledged");
+  // Exact mode keeps the seam's earlier answer for a set with no conflict row, so its refusal
+  // of a refused head is the class it always was.
+  if (!admitRefused && !intents.some(row => row.state === "conflict")) throw new JournalSnapshotConflict(id);
   assertJournalSnapshot(id, intents, snapshot.intents);
   const head = intents[0];
   if (!snapshot.document || snapshot.raw === null || !head || !(head.state === "conflict" || (admitRefused && isContentRefusal(head)))) {
@@ -1025,6 +1029,8 @@ async function resolveBodyConflict(
   const servedBase: SharedBase = { version: shared.base.version, content: servedRaw };
   if (selected.kind !== "take-remote" && !served) throw new BodyRuntimeError("The authority holds no document for this id and body delivery cannot create one; take the served deletion or export the retained work.");
   const resolvedAt = options.now?.() ?? new Date().toISOString();
+  // The clock stamps the fresh row's createdAt, which the delivery grammar reads on every later snapshot.
+  if (typeof resolvedAt !== "string" || parseIsoInstant(resolvedAt) === null) throw new BodyRuntimeError("The resolution clock must produce an ISO-8601 instant with an explicit UTC offset.");
 
   /** One fresh local verification plus the receipt the resolution will keep, composed against that snapshot. */
   const prepare = async (): Promise<{ snap: BodySnapshot; chain: IntentRecord[]; expectedVersion: Version; receipt: BodyResolutionReceipt }> => {
@@ -1086,6 +1092,10 @@ async function resolveBodyConflict(
         const meta: MetaRecord[] = [{ key: receiptKey, value: receipt }, baseRow(id, servedBase), { key: bodyRecordKey(requestId!), value: descriptor }];
         const removeMeta = retiredDescriptorKeys(chain);
         const projected: IntentRecord = { ...intent, sequence: Number.MAX_SAFE_INTEGER, local: version, content: raw, updatedAt: resolvedAt, attempts: 0, state: "pending" };
+        // The fresh row must pass the validator every later snapshot runs over it, before it is
+        // written: a resolution clock or body outside the delivery grammar is the caller's input.
+        try { validateBodyRecord(mode, projected, descriptor); }
+        catch (error) { throw error instanceof BodyRuntimeError ? error : new BodyRuntimeError(`The fresh body update is outside the delivery grammar: ${(error as Error).message}`); }
         projectBodyGuard(snap.guard, { document: { version, raw }, intents: [...remaining(snap, chain), projected], meta, removeMeta });
         const result = await backend.writeJournaled(id, doc, { ...writeOptions, guard: snap.guard, expectedVersion, resolveIntents: { expected: chain }, intent, meta, removeMeta });
         written = { version: result.version, intent: result.intent, receipt };
