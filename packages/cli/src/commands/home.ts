@@ -1,3 +1,6 @@
+import { renderUsage } from "../output.js";
+import { detectBoardChannel } from "../board-runtime.js";
+import { resolveProvisionedBoardPath } from "../board-runtime.js";
 // `axi` (zero-arg) — the content-first home view.
 //
 // This is the SessionStart hook payload: it loads on EVERY new session, so it MUST render cheaply
@@ -84,11 +87,9 @@ import {
   inTreeUnpushedCount,
   inTreeUpstreamSha,
   repoTopLevel,
-  resolveProvisionedBoardPath,
   resolveInTreeUpstream,
   runGit,
   unpushedCount,
-  detectBoardChannel,
   isBoardGitError,
   resolveBundleKey,
   retargetBoardInterior,
@@ -1017,7 +1018,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
     /* ignore — fall back to the bare local view */
   }
   if (helpMode) {
-    stdout(HOME_USAGE);
+    stdout(renderUsage(HOME_USAGE));
     return;
   }
 

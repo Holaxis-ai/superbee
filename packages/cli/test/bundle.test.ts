@@ -1,3 +1,4 @@
+import { isFilesystemBundle } from "../src/filesystem-runtime.js";
 /**
  * `bundle.ts` — the project-binding resolution rung (item 43 follow-on): a committed
  * `.agentstate.json` (`{ "bundle": "<path>" }`) discovered by walking up from the cwd.
@@ -471,7 +472,7 @@ test("openBundle: a directory-type project binding resolves the bundle when neit
     await inDir(projectDir, async () => {
       const bundle = await openBundle(undefined, undefined);
       assert.equal(bundle.root, path.resolve(sharedBundle));
-      assert.equal("backend" in bundle, false, "a directory binding must never produce a RemoteBackend");
+      assert.equal(isFilesystemBundle(bundle), true, "a directory binding must retain filesystem access");
     });
   } finally {
     await rm(root, { recursive: true, force: true });

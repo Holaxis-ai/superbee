@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile, readdir, lstat, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, appendFile, readdir, lstat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -30,8 +30,10 @@ test("packed reusable CLI is closed, inert on import, and binds commands to its 
     const packed = await run([npm, "pack", "-w", "@superbee/cli", "--json", "--pack-destination", scratch], root);
     const [receipt] = JSON.parse(packed.stdout);
     assert.ok(receipt.files.every(({ path: file }) => ["package.json", "README.md"].includes(file) || file.startsWith("dist/")));
-    await writeFile(path.join(scratch, "package.json"), JSON.stringify({ private: true, type: "module", dependencies: { "@superbee/cli": `file:${path.join(scratch, receipt.filename)}` } }));
-    await run([npm, "install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund"]);
+    const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
+    await writeFile(path.join(scratch, "package.json"), JSON.stringify({ private: true, type: "module", devDependencies: { "@types/node": lock.packages["node_modules/@types/node"].version }, dependencies: { "@superbee/cli": `file:${path.join(scratch, receipt.filename)}` } }));
+    // Node adapter declarations need consumer-owned Node types; cold caches require registry metadata.
+    await run([npm, "install", "--prefer-offline", "--ignore-scripts", "--no-audit", "--no-fund"]);
     const library = path.join(scratch, "node_modules/@superbee/cli");
     assert.equal((await lstat(library)).isSymbolicLink(), false);
     assert.deepEqual(await readdir(path.join(scratch, "node_modules/@superbee")), ["cli"]);
@@ -42,7 +44,18 @@ test("packed reusable CLI is closed, inert on import, and binds commands to its 
     const [imports] = parse(await readFile(path.join(library, "dist/index.mjs"), "utf8"));
     for (const imported of imports.filter(item => item.d !== -2)) assert.ok(imported.n?.startsWith("node:"), `unclosed import ${imported.n}`);
     await writeFile(path.join(scratch, "consumer.ts"), `import { main, configureSourceIdentity, registerExecutableEntry, buildIdentityEnvelope, type BuildIdentityEnvelope } from '@superbee/cli';\nconfigureSourceIdentity({ name: 'superbee', version: '1.2.3' });\nregisterExecutableEntry('fixture.mjs');\nconst identity: BuildIdentityEnvelope = buildIdentityEnvelope();\nvoid main(['help']); void identity;\n`);
-    await writeFile(path.join(scratch, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: "NodeNext", target: "ES2022", types: [], skipLibCheck: false }, files: ["consumer.ts"] }));
+    await appendFile(path.join(scratch, "consumer.ts"), `
+import { createCliRuntime, createPosixCliRuntime, type CliRuntimeOptions, type CliDistribution } from '@superbee/cli';
+import { getDistributionResources } from '@superbee/cli/resources';
+declare const options: CliRuntimeOptions;
+declare const distribution: CliDistribution;
+void createCliRuntime(options).run(['help']);
+void createPosixCliRuntime(distribution).runManagedUiWorker();
+const resources = getDistributionResources({ packageName: '@fixture/cli', binName: 'fixture' });
+const text: string = resources.skill;
+void [text, resources.references];
+`);
+    await writeFile(path.join(scratch, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: "NodeNext", target: "ES2022", types: ["node"], skipLibCheck: false }, files: ["consumer.ts"] }));
     await run([path.join(root, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"]);
     const home = path.join(scratch, "home"); const cwd = path.join(scratch, "work"); await mkdir(home); await mkdir(cwd);
     const env = { HOME: home, USERPROFILE: home, LOCALAPPDATA: home, ASLITE_NO_UPDATE_CHECK: "1", AGENTSTATE_LITE_NO_AUTOPULL: "1" };
@@ -54,6 +67,10 @@ net.Server.prototype.listen = () => { throw new Error('import opened listener');
 const env = JSON.stringify(process.env); process.exitCode = 37;
 process.exit = () => { throw new Error('import exited process'); };
 const cli = await import('@superbee/cli');
+const resources = await import('@superbee/cli/resources');
+const rendered = resources.getDistributionResources({packageName:'@fixture/cli',binName:'fixture'});
+assert.ok(rendered.skill.includes('fixture setup'));
+assert.ok(rendered.references.length > 0);
 assert.equal(JSON.stringify(process.env), env); assert.equal(process.exitCode, 37); process.exitCode = 0;
 assert.equal(cli.currentExecutableRealPath(), undefined);
 assert.equal(cli.cliVersion(), 'unknown');

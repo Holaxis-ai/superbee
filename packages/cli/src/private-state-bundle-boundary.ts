@@ -1,3 +1,4 @@
+import { currentPrivateStateHost } from "./runtime-context.js";
 // One invariant between Superbee's two local filesystem domains: private operational state and
 // Knowledge Bundle content are PHYSICALLY DISJOINT. Neither directory may equal or contain the
 // other, and no path the CLI reads from or writes to may cross the boundary.
@@ -286,12 +287,7 @@ function bundleBoundaryError(finding: PrivateStateFinding): CliError {
       "CONFLICT",
       "an OKF bundle cannot enclose Superbee's private user-state directory",
       {
-        help: finding.platform === "win32"
-          ? `${finding.root} lives inside it — choose a project directory outside private state, `
-            + `open it, and run ${inv} init --create-only --dir .superbee`
-          : `${finding.root} lives inside it — create the bundle in a project directory instead: `
-            + `mkdir -p ~/projects/<name> && cd ~/projects/<name> && ${inv} init --create-only --dir .superbee`
-            + " (move any bundle files that already exist here into that directory first)",
+        help: currentPrivateStateHost().bundleBoundaryRecovery(finding.root,inv),
       },
     );
   }

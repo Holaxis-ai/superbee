@@ -108,6 +108,9 @@ export type { AppendVerificationOptions, TrustTier, TrustTierCounts, Verificatio
 // `MemoryBackend` implements the SAME contract for the hard case (real version chain,
 // enforced compare-and-swap, per-write actor) and proves the engine is backend-neutral.
 export { FilesystemBackend } from "./backend.js";
+export { createFilesystemRuntime } from "./filesystem.js";
+export type { FilesystemRuntime } from "./filesystem.js";
+export type { FilesystemBackendOptions, FilesystemHostPolicy } from "./filesystem-host.js";
 export { MemoryBackend } from "./memory-backend.js";
 // The journaled-backend seam (`journaled-backend.ts`): what an adapter adds to `StorageBackend`
 // so a browser-local working copy's sync runtime can journal intents through it. The IndexedDB

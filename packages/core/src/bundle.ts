@@ -11,6 +11,7 @@
 import path from "node:path";
 
 import { FilesystemBackend } from "./backend.js";
+import type { FilesystemBackendOptions } from "./filesystem-host.js";
 import { setDefaultBackendFactory } from "./bundle-ops.js";
 import { InvalidInputError } from "./errors.js";
 import { stringifyWithData } from "./frontmatter.js";
@@ -61,10 +62,10 @@ export function resolveOkfAuthoringVersion(requested?: string): string {
 }
 
 /** Initialize or open a filesystem-backed bundle. */
-export async function initBundle(root: string, options: InitBundleOptions = {}): Promise<Bundle> {
+export async function initBundle(root: string, options: InitBundleOptions = {}, filesystemOptions: FilesystemBackendOptions = {}): Promise<Bundle> {
   const okfVersion = resolveOkfAuthoringVersion(options.okfVersion);
   const resolved = path.resolve(root);
-  const backend = new FilesystemBackend(resolved);
+  const backend = new FilesystemBackend(resolved, filesystemOptions);
   if (options.expectNew || (await backend.readReserved("", "index.md")) === null) {
     const name = path.basename(resolved);
     const body = `${GENERATED_INDEX_MARKER}\n# ${name}\n\nAn Open Knowledge Format bundle.\n`;
@@ -76,5 +77,5 @@ export async function initBundle(root: string, options: InitBundleOptions = {}):
       if (options.expectNew || !(err instanceof VersionConflict)) throw err;
     }
   }
-  return { root: resolved };
+  return { root: resolved, backend };
 }

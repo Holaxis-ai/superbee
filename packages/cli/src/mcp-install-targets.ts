@@ -1,3 +1,4 @@
+import { currentHost } from "./runtime-context.js";
 // Pure host catalog, bounded read-only inspection, and conservative registration classification
 // for `superbee mcp status`. This module deliberately contains no configuration writer.
 import type { ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
@@ -206,7 +207,7 @@ export function resolveMcpTargetConfigPath(
   target: McpInstallTargetId,
   input: McpStatusEnvironment,
 ): string | undefined {
-  const paths = input.platform === "win32" ? path.win32 : path.posix;
+  const paths = currentHost().paths;
   switch (target) {
     case "codex":
       return paths.join(
@@ -216,20 +217,14 @@ export function resolveMcpTargetConfigPath(
     case "claude-code":
       return resolveClaudeUserConfigFile(input.home, input.env, input.platform);
     case "claude-desktop":
-      if (input.platform === "darwin") {
-        return paths.join(input.home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
-      }
-      if (input.platform === "win32" && input.env.APPDATA) {
-        return paths.join(input.env.APPDATA, "Claude", "claude_desktop_config.json");
-      }
-      return undefined;
+      return currentHost().claudeDesktopConfigPath(input.home, input.env, input.platform);
     case "opencode":
       return paths.join(resolveOpenCodeGlobalConfigRoot(input.home, input.env, input.platform), "opencode.json");
   }
 }
 
 export function openCodeConfigCandidates(input: McpStatusEnvironment): string[] {
-  const paths = input.platform === "win32" ? path.win32 : path.posix;
+  const paths = currentHost().paths;
   const root = resolveOpenCodeGlobalConfigRoot(input.home, input.env, input.platform);
   const candidates = [paths.join(root, "opencode.json"), paths.join(root, "opencode.jsonc")];
   const additional = input.env.OPENCODE_CONFIG?.trim();

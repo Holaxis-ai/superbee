@@ -1,3 +1,5 @@
+import { isFilesystemBundle } from "../../filesystem-runtime.js";
+import { renderUsage } from "../../output.js";
 // `doc read <id>` — see `../doc.ts`'s header comment for the full F3 (P2, bundle pollution)
 // rationale for the `--out` byte channel and `inBundlePollutionWarning` below.
 import { parseArgs } from "node:util";
@@ -75,7 +77,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     CLI_LEAVES.docRead,
   );
   if (values.help) {
-    stdout(DOC_READ_USAGE);
+    stdout(renderUsage(DOC_READ_USAGE));
     return;
   }
 
@@ -339,7 +341,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
   const runToTarget = async (): Promise<void> => {
     let bytes: Uint8Array;
     let rel: string;
-    if (bundle.backend) {
+    if (!isFilesystemBundle(bundle)) {
       // Remote (or any non-filesystem) backend: there is NO raw-bytes wire endpoint yet — the
       // wire ships only parsed { frontmatter, body } (docs/WIRE-PROTOCOL.md, deferred to v1).
       // Source the body through the engine read and re-serialize via core's canonical

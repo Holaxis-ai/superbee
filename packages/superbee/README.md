@@ -42,8 +42,7 @@ Skill, an instruction file your agent loads, that teaches it how to use the tool
 
 ## Install
 
-Requires Node.js 20 or newer on macOS, Linux, or Windows. Native Windows is supported; you do not
-need WSL or Docker.
+Requires Node.js 20 or newer on macOS and Linux. Native Windows is not supported by this package.
 
 ```sh
 npm install -g superbee
@@ -55,9 +54,8 @@ Stable releases publish on npm's `latest` tag and prereleases on `next`. To try 
 npm install -g superbee@next
 ```
 
-On Windows, Superbee keeps its private per-user state, such as the workspace catalog and remote
-credentials, under `%LOCALAPPDATA%\Superbee`. npm installs `superbee.cmd` alongside the `superbee`
-command; if PowerShell's execution policy blocks the `.ps1` wrapper, call `superbee.cmd` instead.
+Windows adapters and the `superbee-windows` executable live in a separate repository. That
+experimental distribution is unpublished and is not included in `superbee`.
 
 Run `superbee version --check` to compare your install with the current stable release.
 

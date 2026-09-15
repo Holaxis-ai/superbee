@@ -84,12 +84,14 @@ test("the BUILT CLI: `--version`, `-v`, and `-V` print the version and exit 0", 
 test("the executable entry decides bare version aliases before loading the CLI command graph", () => {
   const source = readFileSync(path.resolve(cliPackageRoot, "src/index.ts"), "utf8");
   assert.doesNotMatch(source, /^import .*from "\.\/cli\.js";/m);
-  const shared = readFileSync(path.resolve(here, "../src/index.ts"), "utf8");
-  assert.match(shared, /await import\("\.\/cli\.js"\)/);
-  assert.ok(
-    source.indexOf("isBareVersionFlag(argv[0])") < source.indexOf('const { main } = await import("@superbee/cli")'),
-    "the version decision must precede the dynamic command-graph import",
-  );
+  const runtime = readFileSync(path.resolve(here, "../src/runtime.ts"), "utf8");
+  assert.doesNotMatch(runtime, /^import .*from ["']\.\/cli\.js["'];/m);
+  assert.match(runtime, /await import\("\.\/cli\.js"\)/);
+  const versionDecision = source.indexOf("isBareVersionFlag(argv[0])");
+  const runtimeConstruction = source.search(/const\s+runtime\s*=\s*createPosixCliRuntime\(/);
+  const commandDispatch = source.indexOf("runtime.run(argv)");
+  assert.ok(versionDecision >= 0 && runtimeConstruction > versionDecision && commandDispatch > runtimeConstruction,
+    "the version decision must precede runtime construction and command dispatch");
 });
 
 test("the BUILT CLI exposes the exact complete envelope in JSON and TOON", () => {

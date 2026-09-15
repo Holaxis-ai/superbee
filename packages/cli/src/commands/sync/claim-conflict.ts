@@ -1,3 +1,4 @@
+import { configuredBundle } from "../../filesystem-runtime.js";
 // Sync converge's OWNERSHIP half: which frontmatter coordinates a conflicted doc's kind DECLARES
 // as claim fields, and the one arbiter a lost claim may be attributed to. Split from
 // `converge.ts` (which owns the conflict strings and row projection) so the workflow vocabulary
@@ -86,7 +87,7 @@ export async function loadClaimPolicy(boardPath: string): Promise<ClaimPolicy> {
   try {
     const originSha = resolveOriginRef(boardPath);
     if (originSha === null) return INACTIVE_POLICY;
-    const bundle = { root: boardPath };
+    const bundle = configuredBundle(boardPath);
     const [registry, okfVersion] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
     if (registry.kinds.size === 0) return INACTIVE_POLICY;
 

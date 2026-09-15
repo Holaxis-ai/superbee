@@ -1,12 +1,13 @@
 /** Node-specific compatibility adapter for the historical single-backend package root. */
 
 import {
-  FilesystemBackend,
   MemoryBackend,
   type Bundle,
   type StorageBackend,
   type StorageCapabilities,
 } from "@superbee/core";
+
+import { backendFor } from "@superbee/core/bundle-ops";
 
 import { MemoryOperationOutcomeStore, type OperationOutcomeStore } from "./operation-outcomes.js";
 import {
@@ -74,5 +75,5 @@ export function createRouterForBackend(backend: StorageBackend, options: LegacyR
 
 /** Historical Bundle entry point retained at the Node package root, including `/bundles/default`. */
 export function createRouter(bundle: Bundle, options: LegacyRouterOptions = {}): (request: Request) => Promise<Response> {
-  return buildLegacyRouter(bundle.backend ?? new FilesystemBackend(bundle.root), options);
+  return buildLegacyRouter(backendFor(bundle), options);
 }

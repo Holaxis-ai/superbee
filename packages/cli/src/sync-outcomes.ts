@@ -1,3 +1,4 @@
+import { existingDirRefusal } from "./board-runtime.js";
 // `sync-outcomes.ts` — the ONE enumerable table of the sync-family's refusal/guidance outcomes.
 //
 // Every in-scope refusal envelope (sync/establish/home) is constructed from a row here via
@@ -18,7 +19,6 @@ import {
   BOARD_REMOTE,
   BUNDLE_DIR,
   dualBoardError,
-  existingDirRefusal,
   preShareWindowError,
   runGit,
   type StatusRow,

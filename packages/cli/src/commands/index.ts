@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // Explicit local consumer of core's governed portable-index projection. Generation never runs
 // from reads, mutations, sync, session start, or any ambient hook.
 import { parseArgs } from "node:util";
@@ -149,7 +150,7 @@ export async function indexCommand(argv: string[], deps: Partial<IndexCliDeps> =
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {
-    stdout(INDEX_USAGE);
+    stdout(renderUsage(INDEX_USAGE));
     return;
   }
   if (selection.kind === "unknown") {

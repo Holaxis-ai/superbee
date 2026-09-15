@@ -1,3 +1,4 @@
+import { renderUsage } from "../../output.js";
 // `doc update <id>` — the field-level PATCH verb; see `../doc.ts`'s header comment for the full
 // rationale (Fork 1/Fork 2 of `plans/kind-aware-doc-surface.md`). Dynamic fields also accept the
 // version-aware logical aliases declared by core's Kind field-coordinate policy.
@@ -228,7 +229,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
 
   const p = parseDocUpdateArgs(argv);
   if (p.help) {
-    stdout(DOC_UPDATE_USAGE);
+    stdout(renderUsage(DOC_UPDATE_USAGE));
     return;
   }
   assertLeafArity(CLI_LEAVES.docUpdate, p.positionals);

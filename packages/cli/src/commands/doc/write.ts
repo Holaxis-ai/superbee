@@ -1,3 +1,4 @@
+import { renderUsage } from "../../output.js";
 // `doc write <id>` — see `../doc.ts`'s header comment for the full F1 (P1, data loss) rationale and
 // the stdin-detection rule this verb's body-source guard depends on.
 import { parseArgs } from "node:util";
@@ -58,7 +59,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     CLI_LEAVES.docWrite,
   );
   if (values.help) {
-    stdout(DOC_WRITE_USAGE);
+    stdout(renderUsage(DOC_WRITE_USAGE));
     return;
   }
 

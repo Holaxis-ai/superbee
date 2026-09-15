@@ -1,3 +1,4 @@
+import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "./runtime-context.js";
 // One authority for the identity of the CLI bytes that are actually running.
 //
 // Build facts are baked into every bundle by scripts/build-bundle.mjs. Runtime facts are derived
@@ -104,6 +105,11 @@ let sourceIdentity: SourcePackageIdentity | undefined;
 
 /** Configure one immutable executable identity before any source identity is resolved. */
 export function configureSourceIdentity(identity: SourcePackageIdentity): void {
+  if(currentDistribution()) {
+    const bound=currentDistribution()!.identity.package;
+    if(bound.name!==identity.name||bound.version!==identity.version)throw new Error("CLI source identity conflicts with configured distribution");
+    return;
+  }
   if (!identity || !isPackageName(identity.name) || typeof identity.version !== "string" || !identity.version) {
     throw new Error("CLI source identity requires a valid package name and non-empty version");
   }
@@ -125,8 +131,21 @@ function bakedConstant(): { present: boolean; value: unknown } {
 
 let staticIdentityCache: StaticBuildIdentity | undefined;
 
+/** Validate without resolving/caching identity: a rejected construction must be inert. */
+export function assertDistributionBuildIdentity(proposed: StaticBuildIdentity): void {
+  const baked = bakedConstant();
+  const established = currentDistribution()?.identity ?? staticIdentityCache ??
+    (baked.present ? resolveBakedBuildIdentity(baked.value) : undefined);
+  const pkg = established?.package ?? sourceIdentity;
+  if (pkg && pkg.version !== "unknown" &&
+    (pkg.name !== proposed.package.name || pkg.version !== proposed.package.version)) {
+    throw new Error("CLI distribution conflicts with established build identity");
+  }
+}
+
 /** Immutable facts baked into this bundle (or the explicit local-dev source fallback). */
 export function staticBuildIdentity(): StaticBuildIdentity {
+  if(currentDistribution()) return currentDistribution()!.identity;
   if (staticIdentityCache) return staticIdentityCache;
   const baked = bakedConstant();
   if (baked.present) {
@@ -182,7 +201,7 @@ function sameRealPath(left: string | undefined, right: string | null): boolean {
   try {
     const a = realpathSync(left);
     const b = realpathSync(right);
-    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return currentHost().sameResolvedPath(a,b);
   } catch {
     return false;
   }

@@ -1,3 +1,4 @@
+import { currentDistribution, distributionBinName } from "./runtime-context.js";
 // Pure ownership and compatibility contract for installed Agent Skill receipts.
 //
 // Ownership is intentionally narrower than JSON parseability: only the two package spellings
@@ -19,9 +20,9 @@ export interface SkillSourceIdentity {
   artifact_sha256: string | null;
 }
 interface OwnedSkillManifestBase {
-  package: (typeof OWNED_SKILL_PACKAGES)[number];
+  package: string;
   version: string;
-  installed_by: (typeof OWNED_SKILL_INSTALLERS)[number];
+  installed_by: string;
   files: string[];
   receipt_valid: boolean;
 }
@@ -108,9 +109,9 @@ function parseDigestMap(value: unknown, files: readonly string[]): Record<string
 /** Parse the exact historical ownership boundary. `null` means no mutation authority. */
 export function parseOwnedSkillManifest(value: unknown): OwnedSkillManifest | null {
   if (!isRecord(value)) return null;
-  if (!OWNED_SKILL_PACKAGES.includes(value.package as never)) return null;
+  if (!(currentDistribution()?.ownedSkillPackages??OWNED_SKILL_PACKAGES).includes(value.package as never)) return null;
   if (typeof value.version !== "string" || value.version.length === 0) return null;
-  if (!OWNED_SKILL_INSTALLERS.includes(value.installed_by as never)) return null;
+  if (!(currentDistribution()?[`${distributionBinName()} skill install`,...currentDistribution()!.predecessorLayouts.flatMap(layout=>layout.bins.map(bin=>`${bin} skill install`))]:OWNED_SKILL_INSTALLERS).includes(value.installed_by as never)) return null;
   const files = parseOwnedFiles(value.files);
   if (files === null) return null;
   const base = {

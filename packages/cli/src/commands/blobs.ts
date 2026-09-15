@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee blobs [--prefix <p>] [--limit <n>]` — enumerate the store's blob (non-document) keys.
 //
 // Blobs are opaque byte artifacts (generated HTML, images, binary assets) addressed by key — the
@@ -58,7 +59,7 @@ export async function blobs(argv: string[], deps: Partial<BlobsCliDeps> = {}): P
     CLI_LEAVES.blobs,
   );
   if (values.help) {
-    stdout(BLOBS_USAGE);
+    stdout(renderUsage(BLOBS_USAGE));
     return;
   }
 

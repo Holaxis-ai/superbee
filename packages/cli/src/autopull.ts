@@ -1,3 +1,4 @@
+import { currentBoardHost } from "./runtime-context.js";
 // `autopull.ts` — the opportunistic-freshness trigger's CLI WIRING (board-git A1).
 //
 // The mechanic (staleness window, fs-only pre-gate, attempt throttle, the shared
@@ -38,7 +39,7 @@ export async function maybeAutoPull(
   if (route?.kind === "bound-board") {
     if (route.readiness !== "ready") return "no-board";
     return maybeAutoPullWith(
-      { store: defaultSyncStore, resolveBundleRoot: async () => route.owner.bundleRoot },
+      { hostPolicy: currentBoardHost(), store: defaultSyncStore, resolveBundleRoot: async () => route.owner.bundleRoot },
       route.owner.bundleRoot,
       opts,
     );
@@ -55,7 +56,7 @@ export async function maybeAutoPull(
       if (resolved.kind === "bound-board") {
         if (resolved.readiness !== "ready") return "no-board";
         return maybeAutoPullWith(
-          { store: defaultSyncStore, resolveBundleRoot: async () => resolved.owner.bundleRoot },
+          { hostPolicy: currentBoardHost(), store: defaultSyncStore, resolveBundleRoot: async () => resolved.owner.bundleRoot },
           resolved.owner.bundleRoot,
           opts,
         );
@@ -68,7 +69,7 @@ export async function maybeAutoPull(
       return "error";
     }
   }
-  return maybeAutoPullWith({ store: defaultSyncStore, resolveBundleRoot: findBundleRoot }, dir, opts);
+  return maybeAutoPullWith({ hostPolicy: currentBoardHost(), store: defaultSyncStore, resolveBundleRoot: findBundleRoot }, dir, opts);
 }
 
 /** See the package's `pullBoardAndRecord` — this binds the CLI's `defaultSyncStore`. */

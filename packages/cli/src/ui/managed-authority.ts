@@ -1,3 +1,5 @@
+import { currentHost } from "../runtime-context.js";
+import { withCliFilesystemMutationLock as withFilesystemMutationLock } from "../filesystem-runtime.js";
 // One managed local UI authority per exact canonical bundle + resolved actor. This module owns the
 // private record transaction and authenticated controller protocol; it never owns bundle reads,
 // browser-session auth, rendering, or the HTTP listener itself.
@@ -6,7 +8,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readdir, realpath, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { withFilesystemMutationLock } from "@superbee/core";
+import { } from "@superbee/core";
 
 import { CliError } from "../errors.js";
 import { samePhysicalPath } from "../bundle.js";
@@ -427,9 +429,8 @@ function portConflict(record: ManagedUiRecord, requestedPort: number): CliError 
 async function defaultSpawnWorker(input: ManagedUiWorkerInput): Promise<ManagedUiWorkerReady> {
   const entry = currentExecutableRealPath();
   if (!entry) throw new Error("the exact running Superbee executable could not be resolved");
-  const child = spawn(process.execPath, [...process.execArgv, entry, "__managed-ui-v1"], {
+  const child = currentHost().spawnChild(process.execPath, [...process.execArgv, entry, "__managed-ui-v1"], {
     detached: true,
-    windowsHide: true,
     // stderr is a private, bounded startup diagnostic channel. It is closed as soon as readiness
     // arrives, so the adopted worker retains no parent-owned pipe for its long-lived lifecycle.
     stdio: ["pipe", "pipe", "pipe"],

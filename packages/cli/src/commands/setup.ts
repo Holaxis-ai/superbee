@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee setup` — one read-only AXI conductor plus one explicit, bounded state-migration leaf.
 
 import { homedir } from "node:os";
@@ -280,25 +281,25 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
   );
   const { values } = parsed;
   if (values.help) {
-    stdout(SETUP_USAGE);
+    stdout(renderUsage(SETUP_USAGE));
     return;
   }
   if (parsed.selection.kind === "unknown" || parsed.selection.kind === "navigation") {
     throw new CliError("USAGE", `unknown setup subcommand: ${parsed.selection.kind === "unknown" ? parsed.selection.token : ""}`, {
-      help: "superbee setup --help",
+      help: `${cliInvocation()} setup --help`,
     });
   }
   const scope = normalizeInstallScope(values.scope ?? "user");
   if (!scope) {
     throw new CliError("USAGE", `unsupported setup scope: ${values.scope} (expected project|user)`, {
-      help: "superbee setup --scope project|user",
+      help: `${cliInvocation()} setup --scope project|user`,
     });
   }
   const requestedHost = setupHost(values.host);
   if (values.host !== undefined && !requestedHost) {
     throw new CliError("USAGE", `unknown setup host '${values.host}'`, {
       details: { supported_hosts: MCP_INSTALL_TARGETS.map(({ id }) => id) },
-      help: "superbee setup --host <id>",
+      help: `${cliInvocation()} setup --host <id>`,
     });
   }
   const deps: SetupDeps = {
@@ -320,7 +321,7 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
   if (parsed.selection.kind === "selected" && parsed.selection.payload.action !== "inspect") {
     if (values.host !== undefined || values.scope !== undefined) {
       throw new CliError("USAGE", `setup ${parsed.selection.payload.action}-state does not accept --host or --scope`, {
-        help: `superbee setup ${parsed.selection.payload.action}-state [--json]`,
+        help: `${cliInvocation()} setup ${parsed.selection.payload.action}-state [--json]`,
       });
     }
     try {
@@ -334,7 +335,7 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     } catch (error) {
       if (error instanceof CliError) throw error;
       throw new CliError("CONFLICT", error instanceof Error ? error.message : "private-state recovery failed", {
-        help: "superbee setup",
+        help: `${cliInvocation()} setup`,
       });
     }
     return;

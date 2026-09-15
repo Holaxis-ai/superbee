@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee bundle locate` — expose the exact local bundle target the CLI would use.
 import { parseArgs } from "node:util";
 import { parseSelectorOrUsage } from "../args.js";
@@ -53,7 +54,7 @@ export async function bundleCommand(argv: string[], deps: Partial<BundleCliDeps>
   );
 
   if (parsed.selection.kind === "help" || parsed.selection.kind === "navigation") {
-    stdout(BUNDLE_USAGE);
+    stdout(renderUsage(BUNDLE_USAGE));
     return;
   }
   if (parsed.selection.kind === "unknown") {

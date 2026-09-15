@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee recipe add <name-or-path>` installs definitions create-only; `recipe evolve` is the
 // separate explicit, state-bound authority for updating already-installed conventions in place.
 // Both operate on an EXISTING
@@ -76,7 +77,7 @@ export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}):
   if (sub === "add") return recipeAdd(rest, stdout);
   if (sub === "evolve") return recipeEvolve(rest, stdout);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
-    stdout(RECIPE_USAGE);
+    stdout(renderUsage(RECIPE_USAGE));
     return;
   }
   throw new CliError("USAGE", `unknown recipe subcommand: ${sub} (expected add or evolve)`, {
@@ -102,7 +103,7 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     CLI_LEAVES.recipeEvolve,
   );
   if (values.help) {
-    stdout(RECIPE_USAGE);
+    stdout(renderUsage(RECIPE_USAGE));
     return;
   }
 
@@ -175,7 +176,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
     CLI_LEAVES.recipeAdd,
   );
   if (values.help) {
-    stdout(RECIPE_USAGE);
+    stdout(renderUsage(RECIPE_USAGE));
     return;
   }
 
