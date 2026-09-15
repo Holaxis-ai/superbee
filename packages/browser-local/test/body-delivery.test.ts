@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
 import { IndexedDbBackend } from "@superbee/core/indexeddb-backend";
 import type { OperationTransport } from "@superbee/core/uncertain-write";
-import { openLocalBundle, bootstrap, commitBodyLocal, commitLocal, push, pull, reclaimInFlight, resume, syncStatus, settleIntent, inspectConflict, resolveConflict } from "../src/local-bundle.ts";
-import { admitBodyMode, bodyRecordKey, BODY_MODE_KEY, bodySnapshot, assertBodyCapacity, projectBodyGuard, jsonBytes, BODY_RUNTIME_LIMITS, writeBodyControl } from "../src/body-journal.ts";
+import { BODY_DELIVERY_LIMITS } from "@superbee/core/governed-body-write";
+import { openLocalBundle, bootstrap, commitBodyLocal, commitLocal, push, pull, reclaimInFlight, resume, syncStatus, settleIntent, inspectConflict, resolveConflict, conflictResolutionKey, type ConflictChoice } from "../src/local-bundle.ts";
+import { admitBodyMode, bodyRecordKey, BODY_MODE_KEY, bodySnapshot, assertBodyCapacity, projectBodyGuard, jsonBytes, BODY_RUNTIME_LIMITS, writeBodyControl, validateBodyRecord, validateBodyResolutionReceipt } from "../src/body-journal.ts";
 import { createBrowserLocalRuntime } from "../src/platform/browser-local.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
 import { createBodyAuthority } from "./fixtures/body-authority.ts";
@@ -137,22 +138,252 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       await assert.rejects(resume(s.backend));
     } finally { s.close(); }
   });
-  test(`${adapter}: every governed conflict choice preserves document, complete history, evidence and controls`, async () => {
-    const s = await setup();
-    try {
-      await s.runtime.commit("notes/example", { body: "Retain this work" });
+  /** A local body edit the authority answers with a moved head (`conflict`) or a content refusal (`refused`). */
+  async function contested(s: Awaited<ReturnType<typeof setup>>, head: "conflict" | "refused") {
+    await s.runtime.commit("notes/example", { body: "Retain this work" });
+    if (head === "conflict") {
       const remote = await s.authority.backend.read("notes/example");
       await s.authority.backend.write("notes/example", { ...remote.doc, body: "Concurrent authority edit" });
-      await push(s.local, exact, { bodyTransport: s.authority.transport, remote: s.authority.backend, write: immediate });
+    } else s.authority.knobs.contentRefusal = true;
+    await push(s.local, exact, { bodyTransport: s.authority.transport, remote: s.authority.backend, write: immediate });
+    s.authority.knobs.contentRefusal = false;
+    const chain = (await s.backend.listIntents()).filter(row => row.state !== "acknowledged");
+    assert.deepEqual(chain.map(row => row.state), [head]);
+    return chain[0]!;
+  }
+  const guardOf = async (s: Awaited<ReturnType<typeof setup>>) => (await bodySnapshot(s.backend, "notes/example", (await admitBodyMode(s.backend))!)).guard;
+  const choices = [{ kind: "keep-local" }, { kind: "take-remote" }, { kind: "revise", body: "Replacement" }] as const;
+  test(`${adapter}: a content refusal reads local-pending, counts as refused without a pause, and is inspectable`, async () => {
+    const s = await setup();
+    try {
+      const head = await contested(s, "refused");
+      const read = await s.runtime.read("notes/example");
+      assert.equal(read.provenance.state, "local-pending");
+      assert.equal((read.provenance as { requestId: string }).requestId, head.requestId);
+      const status = await s.runtime.syncStatus();
+      assert.equal(status.refused, 1); assert.equal(status.paused, false); assert.equal(status.conflicts, 0);
       const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
-      const mode = (await admitBodyMode(s.backend))!;
-      const before = (await bodySnapshot(s.backend, "notes/example", mode)).guard;
-      const calls = { ...s.authority.counts };
-      for (const choice of [{ kind: "keep-local" }, { kind: "take-remote" }, { kind: "revise", body: "Replacement" }] as const) {
-        await assert.rejects(resolveConflict(s.local, s.authority.backend, review, choice), /Inspect or export retained work; no automatic recovery/);
-        assert.deepEqual((await bodySnapshot(s.backend, "notes/example", mode)).guard, before);
-        assert.deepEqual(s.authority.counts, calls);
+      assert.deepEqual(review.intents.map(row => [row.requestId, row.state, row.refusal?.code]), [[head.requestId, "refused", "validation_failed"]]);
+      assert.equal(review.local.content, head.content);
+      assert.deepEqual(review.base, { version: head.base, content: head.baseContent });
+      assert.equal(review.remote.version, s.authority.initial.version);
+    } finally { s.close(); }
+  });
+  for (const head of ["conflict", "refused"] as const) for (const choice of choices) {
+    test(`${adapter}: ${choice.kind} retires a ${head} head with its descriptors, keeps a bounded receipt and leaves the document deliverable`, async () => {
+      const s = await setup();
+      try {
+        const headRow = await contested(s, head);
+        await s.runtime.commit("notes/example", { body: "Later local edit" });
+        assert.equal((await s.runtime.read("notes/example")).provenance.state, head === "conflict" ? "local-conflict" : "local-pending");
+        const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
+        assert.deepEqual(review.intents.map(row => row.state), [head, "pending"]);
+        const patches: unknown[] = [];
+        const update = s.backend.updateIntent.bind(s.backend);
+        s.backend.updateIntent = async (...args) => { patches.push(args[2]); return update(...args); };
+        const calls = { ...s.authority.counts };
+        const result = await resolveConflict(s.local, s.authority.backend, review, choice);
+        s.backend.updateIntent = update;
+        assert.deepEqual(patches, [], "the head is retired as it was, never rewritten");
+        assert.deepEqual(s.authority.counts, calls, "resolution sends nothing");
+        for (const row of review.intents) {
+          assert.equal(await s.backend.readIntent(row.requestId), undefined);
+          assert.equal(await s.backend.readMeta(bodyRecordKey(row.requestId)), undefined);
+        }
+        const receipt = validateBodyResolutionReceipt(await s.backend.readMeta(conflictResolutionKey(headRow.requestId)));
+        assert.deepEqual(receipt, result.receipt);
+        assert.equal(receipt.id, headRow.requestId);
+        assert.equal(receipt.choice, choice.kind);
+        assert.deepEqual(receipt.chain.map(row => [row.requestId, row.state, row.attempts, row.refusalCode, row.remoteVersion]),
+          review.intents.map(row => [row.requestId, row.state, row.attempts, head === "refused" && row.state === "refused" ? "validation_failed" : undefined, row.state === "conflict" ? review.remote.version : undefined]));
+        assert.deepEqual(receipt.served, { version: review.remote.version });
+        assert.equal(receipt.expectedLocalVersion, review.local.version);
+        assert.ok(!JSON.stringify(receipt).includes("Retain this work") && !JSON.stringify(receipt).includes("Later local edit"), "the receipt carries no content");
+        const after = await s.runtime.read("notes/example");
+        const base = await s.backend.readMeta<{ version: string; content: string }>("base:notes/example");
+        assert.equal(base!.version, review.remote.version);
+        if (choice.kind === "take-remote") {
+          assert.equal(result.intent, null);
+          assert.equal(after.provenance.state, "shared-confirmed");
+          assert.equal(after.doc.body.trim(), head === "conflict" ? "Concurrent authority edit" : "Original body");
+          assert.equal(base!.content, (await s.backend.readWithJournal("notes/example")).raw, "the base names the adopted bytes");
+          assert.deepEqual(await s.backend.listIntents(), []);
+        } else {
+          const fresh = result.intent!;
+          assert.equal(after.provenance.state, "local-pending");
+          assert.equal((after.provenance as { requestId: string }).requestId, fresh.requestId);
+          assert.equal(after.doc.body.trim(), choice.kind === "revise" ? "Replacement" : "Later local edit");
+          assert.equal(fresh.after, undefined);
+          assert.deepEqual([fresh.base, fresh.attempts, fresh.state], [review.remote.version, 0, "pending"]);
+          assert.equal(receipt.replacementRequestId, fresh.requestId);
+          const record = validateBodyRecord((await admitBodyMode(s.backend))!, fresh, await s.backend.readMeta(bodyRecordKey(fresh.requestId)));
+          assert.equal(record.initialVersion, review.remote.version);
+          assert.equal(record.body, choice.kind === "revise" ? "Replacement" : "Later local edit");
+          const status = await s.runtime.sync();
+          assert.deepEqual([status.pending, status.refused, status.conflicts, status.lastSync?.ok], [0, 0, 0, true]);
+          assert.equal((await s.runtime.read("notes/example")).provenance.state, "shared-confirmed");
+          assert.equal((await s.authority.backend.read("notes/example")).doc.body.trim(), choice.kind === "revise" ? "Replacement" : "Later local edit");
+        }
+        await s.runtime.commit("notes/example", { body: "Next edit" });
+        assert.equal((await syncStatus(s.local)).counts.pending, 1);
+      } finally { s.close(); }
+    });
+  }
+  for (const head of ["conflict", "refused"] as const) test(`${adapter}: an absent served head over a ${head} head is taken as a deletion; keep-local and revise refuse without mutation`, async () => {
+    const s = await setup();
+    try {
+      const headRow = await contested(s, head);
+      await s.authority.backend.delete("notes/example");
+      const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
+      assert.deepEqual(review.remote, { version: null, content: null });
+      const before = await guardOf(s);
+      for (const choice of choices) {
+        if (choice.kind === "take-remote") continue;
+        await assert.rejects(resolveConflict(s.local, s.authority.backend, review, choice), { name: "BodyRuntimeError" });
+        assert.deepEqual(await guardOf(s), before);
       }
+      const taken = await resolveConflict(s.local, s.authority.backend, review, { kind: "take-remote" });
+      assert.deepEqual([taken.version, taken.intent], [null, null]);
+      await assert.rejects(s.backend.read("notes/example"), { code: "ENOENT" });
+      assert.deepEqual(await s.backend.listIntents(), []);
+      assert.equal(await s.backend.readMeta(bodyRecordKey(headRow.requestId)), undefined);
+      assert.deepEqual(await s.backend.readMeta("base:notes/example"), { version: null, content: null });
+      assert.deepEqual(validateBodyResolutionReceipt(await s.backend.readMeta(conflictResolutionKey(headRow.requestId))), taken.receipt);
+      assert.deepEqual((await s.runtime.query()).map(row => row.id), []);
+      assert.equal((await s.runtime.syncStatus()).unconfirmed, 0);
+    } finally { s.close(); }
+  });
+  test(`${adapter}: an authorization refusal is not a resolvable head; resume keeps its path`, async () => {
+    const s = await setup();
+    try {
+      await s.runtime.commit("notes/example", { body: "Refused by permission" });
+      s.authority.knobs.terminalRefusal = true;
+      await s.runtime.sync();
+      s.authority.knobs.terminalRefusal = false;
+      assert.deepEqual([(await syncStatus(s.local)).counts.refused, (await syncStatus(s.local)).paused], [1, true]);
+      const head = (await s.backend.listIntents())[0]!;
+      const before = await guardOf(s);
+      await assert.rejects(inspectConflict(s.local, s.authority.backend, "notes/example"), { name: "InvalidInputError" });
+      const forged = { id: "notes/example", local: { version: head.local, content: head.content }, base: { version: head.base, content: head.baseContent }, remote: { version: null, content: null }, intents: [head] };
+      for (const choice of choices) await assert.rejects(resolveConflict(s.local, s.authority.backend, forged, choice), { name: "InvalidInputError" });
+      assert.deepEqual(await guardOf(s), before);
+      assert.equal((await resume(s.backend)).requeued, 1);
+      const status = await s.runtime.sync();
+      assert.deepEqual([status.refused, status.lastSync?.ok], [1, false], "a recorded refusal stays refused after resume");
+    } finally { s.close(); }
+  });
+  test(`${adapter}: a stale review refuses every choice without mutation, and a guard that keeps moving reports the review stale`, async () => {
+    const s = await setup();
+    try {
+      await contested(s, "refused");
+      const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
+      const remote = await s.authority.backend.read("notes/example");
+      await s.authority.backend.write("notes/example", { ...remote.doc, body: "Moved since review" });
+      let before = await guardOf(s);
+      for (const choice of choices) {
+        await assert.rejects(resolveConflict(s.local, s.authority.backend, review, choice), { name: "ConflictReviewStaleError" });
+        assert.deepEqual(await guardOf(s), before);
+      }
+      const fresh = await inspectConflict(s.local, s.authority.backend, "notes/example");
+      await s.runtime.commit("notes/example", { body: "Edited since review" });
+      before = await guardOf(s);
+      for (const choice of choices) {
+        await assert.rejects(resolveConflict(s.local, s.authority.backend, fresh, choice), { name: "JournalSnapshotConflict" });
+        assert.deepEqual(await guardOf(s), before);
+      }
+      const current = await inspectConflict(s.local, s.authority.backend, "notes/example");
+      const mode = (await admitBodyMode(s.backend))!;
+      const write = s.backend.writeJournaled.bind(s.backend);
+      let moves = 0;
+      s.backend.writeJournaled = async (...args) => { moves += 1; await writeBodyControl(s.backend, mode, "pull", { startedAt: `move-${moves}`, completedAt: null }); return write(...args); };
+      await assert.rejects(resolveConflict(s.local, s.authority.backend, current, { kind: "revise", body: "Never lands" }), { name: "ConflictReviewStaleError" });
+      s.backend.writeJournaled = write;
+      assert.equal(moves, 3, "the guarded write is retried up to the compose limit");
+      assert.deepEqual((await s.backend.readWithJournal("notes/example")).intents.map(row => row.requestId), current.intents.map(row => row.requestId));
+      assert.equal(await s.backend.readMeta(conflictResolutionKey(current.intents[0]!.requestId)), undefined);
+    } finally { s.close(); }
+  });
+  test(`${adapter}: concurrent resolutions of one review accept exactly one and leave one consistent state`, async () => {
+    for (const head of ["conflict", "refused"] as const) {
+      const s = await setup();
+      try {
+        const headRow = await contested(s, head);
+        const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
+        const results = await Promise.allSettled(choices.map(choice => resolveConflict(s.local, s.authority.backend, review, choice)));
+        const winners = results.filter((row): row is PromiseFulfilledResult<Awaited<ReturnType<typeof resolveConflict>>> => row.status === "fulfilled");
+        assert.equal(winners.length, 1);
+        for (const row of results) if (row.status === "rejected") assert.ok(["JournalSnapshotConflict", "ConflictReviewStaleError", "VersionConflict"].includes((row.reason as Error).name), String(row.reason));
+        const receipt = validateBodyResolutionReceipt(await s.backend.readMeta(conflictResolutionKey(headRow.requestId)));
+        assert.deepEqual(receipt, winners[0]!.value.receipt);
+        assert.equal(await s.backend.readIntent(headRow.requestId), undefined);
+        const unsettled = (await s.backend.listIntents()).filter(row => row.state !== "acknowledged");
+        assert.deepEqual(unsettled.map(row => row.requestId), receipt.replacementRequestId === null ? [] : [receipt.replacementRequestId]);
+        await guardOf(s);
+        assert.equal((await s.runtime.syncStatus()).unconfirmed, 0);
+        assert.equal(s.authority.counts.applied, 0);
+      } finally { s.close(); }
+    }
+  });
+  test(`${adapter}: the resolution receipt is strictly shaped and bounded, and capacity refuses before mutation`, async () => {
+    const s = await setup();
+    try {
+      const head = await contested(s, "refused");
+      const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
+      const valid = { schema: 1, mode: "document.body.update", id: head.requestId, target: "notes/example", choice: "take-remote", resolvedAt: "2026-09-15T00:00:00.000Z", replacementRequestId: null,
+        served: { version: review.remote.version }, expectedLocalVersion: review.local.version, chain: [{ requestId: head.requestId, sequence: head.sequence, state: "refused", attempts: 1, base: head.base, local: head.local, refusalCode: "validation_failed" }] };
+      assert.deepEqual(validateBodyResolutionReceipt(valid), valid);
+      const row = valid.chain[0]!;
+      for (const bad of [{ ...valid, content: "x" }, { ...valid, chain: [] }, { ...valid, choice: "merge" }, { ...valid, served: { version: "moved" } }, { ...valid, resolvedAt: "yesterday" },
+        { ...valid, chain: [{ ...row, remote: { version: null, content: "x" } }] }, { ...valid, chain: [{ ...row, state: "settled" }] }, { ...valid, chain: [{ ...row, local: "sha256:short" }] }]) {
+        assert.throws(() => validateBodyResolutionReceipt(bad), { name: "BodyRuntimeError" });
+      }
+      assert.throws(() => validateBodyResolutionReceipt({ ...valid, chain: Array.from({ length: 40 }, (_, index) => ({ ...row, sequence: index, refusalCode: "x".repeat(2000) })) }), { name: "BodyCapacityError" });
+      // A served head beyond the envelope bound can be neither adopted nor recorded as a base: refused before any mutation.
+      const remote = await s.authority.backend.read("notes/example");
+      await s.authority.backend.write("notes/example", { ...remote.doc, body: "y".repeat(BODY_DELIVERY_LIMITS.envelopeBytes + 16) });
+      const oversized = await inspectConflict(s.local, s.authority.backend, "notes/example");
+      const before = await guardOf(s);
+      for (const choice of choices) {
+        await assert.rejects(resolveConflict(s.local, s.authority.backend, oversized, choice), { name: "BodyCapacityError" });
+        assert.deepEqual(await guardOf(s), before);
+      }
+      assert.equal(await s.backend.readMeta(conflictResolutionKey(head.requestId)), undefined);
+    } finally { s.close(); }
+  });
+  test(`${adapter}: revise validates its input before reading the target journal and writes nothing`, async () => {
+    const s = await setup();
+    try {
+      await contested(s, "refused");
+      const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
+      const before = await guardOf(s);
+      const reads: string[] = [];
+      const read = s.backend.readWithJournal.bind(s.backend);
+      s.backend.readWithJournal = async (...args) => { reads.push(args[0]); return read(...args); };
+      for (const choice of [{ kind: "revise", body: "x".repeat(65537) }, { kind: "revise", body: "Typed", frontmatter: { type: "Note" } }, { kind: "revise", body: 42 }]) {
+        await assert.rejects(resolveConflict(s.local, s.authority.backend, review, choice as ConflictChoice), { name: "BodyRuntimeError" });
+      }
+      s.backend.readWithJournal = read;
+      assert.ok(!reads.includes("notes/example"), "the input is refused before the target journal is read");
+      assert.deepEqual(await guardOf(s), before);
+    } finally { s.close(); }
+  });
+  test(`${adapter}: a resolution receipt survives reopening the working copy and the fresh update delivers`, async () => {
+    const s = await setup();
+    try {
+      const head = await contested(s, "refused");
+      const review = await inspectConflict(s.local, s.authority.backend, "notes/example");
+      const result = await resolveConflict(s.local, s.authority.backend, review, { kind: "revise", body: "Revised after refusal" });
+      s.close();
+      const reopened = openLocalBundle("body-test", { backend: s.backend, bodyDelivery: { scope: "fixture", okfVersion: "0.2", dedicated: true } });
+      const receipt = validateBodyResolutionReceipt(await reopened.backend.readMeta(conflictResolutionKey(head.requestId)));
+      assert.deepEqual(receipt, result.receipt);
+      assert.equal(receipt.replacementRequestId, result.intent!.requestId);
+      assert.equal((await reopened.backend.readIntent(result.intent!.requestId))!.state, "pending");
+      await push(reopened, exact, { bodyTransport: s.authority.transport, remote: s.authority.backend, write: immediate });
+      assert.equal(s.authority.counts.applied, 1);
+      assert.equal((await s.authority.backend.read("notes/example")).doc.body.trim(), "Revised after refusal");
+      assert.equal((await reopened.backend.readIntent(result.intent!.requestId))!.state, "acknowledged");
+      assert.deepEqual(await reopened.backend.readMeta(conflictResolutionKey(head.requestId)), receipt, "the receipt outlives the acknowledgement");
     } finally { s.close(); }
   });
   test(`${adapter}: oversized edits, malformed history and absent mode cannot silently adopt legacy delivery`, async () => {

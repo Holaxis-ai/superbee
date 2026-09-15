@@ -32,9 +32,10 @@
  *   holding intent between the refusal and the rewrite.
  * - `resolveIntents` on either journaled mutation requires document CAS and the exact complete
  *   unsettled target journal. It retires those records atomically with the document, meta, and
- *   optional replacement intent, leaving acknowledged history untouched. Recovery may retire
- *   conflicts, refusals, and never-attempted pending successors, never uncertain delivery. The
- *   caller preserves recovery evidence in meta; retirement does not assert remote acceptance.
+ *   optional replacement intent, leaving acknowledged history untouched. Recovery may retire a
+ *   chain whose head is a recorded conflict or refusal, with conflicted, refused, and
+ *   never-attempted pending successors behind it, never uncertain delivery. The caller
+ *   preserves recovery evidence in meta; retirement does not assert remote acceptance.
  * - {@link JournaledBackend.readWithJournal} is ONE snapshot: the document, every intent
  *   targeting it, and the named meta rows, read in one readonly transaction, so a write in
  *   another realm between separate reads can never show a caller a document of one moment
@@ -334,7 +335,12 @@ export function assertJournalResolutionOptions(target: ConceptId, options: Journ
   }
 }
 
-/** Compare full records, not only state: a changed outcome or retry is new recovery evidence. */
+/**
+ * Compare full records, not only state: a changed outcome or retry is new recovery evidence.
+ * The head of the set (its lowest sequence) must hold a recorded terminal answer, `conflict` or
+ * `refused`; every later row must be `conflict`, `refused` or never-attempted `pending`. An
+ * `unknown`, `in_flight` or attempted `pending` head is uncertain delivery and stays refused.
+ */
 export function assertJournalSnapshot(target: ConceptId, expected: IntentRecord[], current: IntentRecord[], freshRequestId?: string): void {
   const equal = (a: unknown, b: unknown): boolean => {
     if (Object.is(a, b)) return true;
@@ -345,8 +351,9 @@ export function assertJournalSnapshot(target: ConceptId, expected: IntentRecord[
   };
   const actual = current.filter(row => row.target === target && row.state !== "acknowledged");
   const ids = new Set(expected.map(row => row.requestId));
+  const head = expected.reduce<IntentRecord | undefined>((lowest, row) => lowest === undefined || row.sequence < lowest.sequence ? row : lowest, undefined);
   if ((freshRequestId !== undefined && current.some(row => row.requestId === freshRequestId)) ||
-      ids.size !== expected.length || actual.length !== expected.length || !expected.some(row => row.state === "conflict") ||
+      ids.size !== expected.length || actual.length !== expected.length || head === undefined || !(head.state === "conflict" || head.state === "refused") ||
       expected.some(row => row.target !== target || !(row.state === "conflict" || row.state === "refused" || (row.state === "pending" && row.attempts === 0))) ||
       expected.some(row => !equal(row, actual.find(candidate => candidate.requestId === row.requestId)))) {
     throw new JournalSnapshotConflict(target);

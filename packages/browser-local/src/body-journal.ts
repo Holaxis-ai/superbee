@@ -61,6 +61,23 @@ function storedMode(value: unknown): BodyMode {
 }
 export const bodyRecordKey = (requestId: string): string => `body-delivery:request:${requestId}`;
 export const bodyDatabaseName = (name: string, mode: BodyMode): string => `body-v1:${JSON.stringify([name, mode.scope])}`;
+/** A body-only input is a string within the delivery bound; callers check it before any journal read. */
+export function isBoundedBody(value: unknown): value is string {
+  return typeof value === "string" && new TextEncoder().encode(value).length <= BODY_DELIVERY_LIMITS.bodyBytes;
+}
+/**
+ * Descriptor disposition. A request's descriptor (`body-delivery:request:<requestId>`, with its
+ * prepared envelope) leaves the store only together with its intent, under the full guard, in
+ * two cases: a never-attempted pending request superseded by a later local edit, and a chain
+ * retired by conflict resolution, whose head holds a recorded terminal answer (a conflict or a
+ * content refusal) and whose successors were never attempted. The second case amends the
+ * earlier rule that only a superseded never-attempted request retires its descriptor: a
+ * definitively refused or conflicted head is never resubmitted, so its evidence retires with
+ * it. Acknowledged rows, their descriptors and their receipts are never removed.
+ */
+export function retiredDescriptorKeys(intents: readonly IntentRecord[]): string[] {
+  return intents.map(row => bodyRecordKey(row.requestId));
+}
 const selected = new WeakMap<JournaledBackend, BodyMode>();
 export function selectBodyMode(backend: JournaledBackend, mode: BodyMode): void {
   if (backend.journalSnapshotCas !== true) throw new BodyRuntimeError("Body delivery requires atomic journal snapshots.");
@@ -129,9 +146,10 @@ export function bodyDocument(raw: string, id: string, mode: BodyMode): OkfDocume
   // v0.1's standard timestamp can decode as a Date; re-encode through the existing codec.
   return { id, frontmatter: captureRemoteFrontmatter(parsed.frontmatter) as OkfDocument["frontmatter"], body: parsed.body };
 }
+const JOURNAL_STATES = ["pending", "in_flight", "acknowledged", "conflict", "refused", "unknown"];
 export function validateBodyRecord(mode: BodyMode, intent: IntentRecord, value: unknown): BodyRecord {
   shape(intent, ["requestId", "kind", "target", "base", "local", "content", "createdAt", "attempts", "state", "sequence", "updatedAt", "baseContent"], ["after", "acknowledgedVersion", "remote", "refusal", "finding"]);
-  if (!Number.isSafeInteger(intent.attempts) || intent.attempts < 0 || !Number.isSafeInteger(intent.sequence) || intent.sequence < 0 || !Number.isFinite(Date.parse(intent.updatedAt)) || !["pending", "in_flight", "acknowledged", "conflict", "refused", "unknown"].includes(intent.state)) throw new BodyRuntimeError("Invalid body journal state.");
+  if (!Number.isSafeInteger(intent.attempts) || intent.attempts < 0 || !Number.isSafeInteger(intent.sequence) || intent.sequence < 0 || !Number.isFinite(Date.parse(intent.updatedAt)) || !JOURNAL_STATES.includes(intent.state)) throw new BodyRuntimeError("Invalid body journal state.");
   if (intent.state !== "pending" && intent.attempts === 0) throw new BodyRuntimeError("Unattempted body journal has a delivery outcome.");
   const text = (value: unknown) => typeof value === "string" && new TextEncoder().encode(value).length <= BODY_DELIVERY_LIMITS.labelBytes;
   if (Object.hasOwn(intent, "finding") && !text(intent.finding)) throw new BodyRuntimeError("Invalid body finding.");
@@ -171,6 +189,41 @@ export interface BodySnapshot { read: JournaledReadResult; guard: JournalGuard; 
 function assertSharedBase(value: unknown): void {
   const base = shape(value, ["version", "content"]);
   if (base.version !== null && !isContentVersion(base.version) || base.content !== null && typeof base.content !== "string" || base.version !== null && base.content === null) throw new BodyRuntimeError("Invalid shared content premise.");
+}
+/** One retired row of a body-mode resolution receipt: identity, versions, state and outcome codes, never content. */
+export interface BodyResolutionChainRow {
+  requestId: string; sequence: number; state: IntentRecord["state"]; attempts: number; base: Version | null; local: Version;
+  acknowledgedVersion?: Version; refusalCode?: string; remoteVersion?: Version | null;
+}
+/**
+ * The body-mode recovery receipt kept at `conflict-resolution:<id>`: what a resolution retired
+ * and what replaced it, with no document content. Each receipt is bounded at
+ * {@link BODY_RESOLUTION_RECEIPT_BYTES} and counted in the projected guard before the resolution
+ * writes; receipts are retained afterwards, so their number grows with resolutions.
+ */
+export interface BodyResolutionReceipt {
+  schema: 1; mode: "document.body.update"; id: string; target: string; choice: "keep-local" | "take-remote" | "revise";
+  resolvedAt: string; replacementRequestId: string | null; served: { version: Version | null }; expectedLocalVersion: Version | null;
+  chain: BodyResolutionChainRow[];
+}
+export const BODY_RESOLUTION_RECEIPT_BYTES = 64 * 1024;
+export function validateBodyResolutionReceipt(value: unknown): BodyResolutionReceipt {
+  const row = shape(value, ["schema", "mode", "id", "target", "choice", "resolvedAt", "replacementRequestId", "served", "expectedLocalVersion", "chain"]);
+  const text = (value: unknown) => typeof value === "string" && value.length > 0 && jsonBytes(value) <= BODY_DELIVERY_LIMITS.labelBytes;
+  const optionalVersion = (item: Record<string, unknown>, key: string, nullable: boolean) => !Object.hasOwn(item, key) || isContentVersion(item[key]) || (nullable && item[key] === null);
+  const served = shape(row.served, ["version"]);
+  if (row.schema !== 1 || row.mode !== "document.body.update" || !text(row.id) || !text(row.target) || !["keep-local", "take-remote", "revise"].includes(row.choice as string) ||
+      typeof row.resolvedAt !== "string" || !Number.isFinite(Date.parse(row.resolvedAt)) || (row.replacementRequestId !== null && !text(row.replacementRequestId)) ||
+      (row.expectedLocalVersion !== null && !isContentVersion(row.expectedLocalVersion)) || (served.version !== null && !isContentVersion(served.version)) ||
+      !Array.isArray(row.chain) || row.chain.length === 0) throw new BodyRuntimeError("Invalid body resolution receipt.");
+  for (const entry of row.chain) {
+    const item = shape(entry, ["requestId", "sequence", "state", "attempts", "base", "local"], ["acknowledgedVersion", "refusalCode", "remoteVersion"]);
+    if (!text(item.requestId) || !Number.isSafeInteger(item.sequence) || !JOURNAL_STATES.includes(item.state as string) || !Number.isSafeInteger(item.attempts) || (item.attempts as number) < 0 ||
+        (item.base !== null && !isContentVersion(item.base)) || !isContentVersion(item.local) || !optionalVersion(item, "acknowledgedVersion", false) ||
+        (Object.hasOwn(item, "refusalCode") && !text(item.refusalCode)) || !optionalVersion(item, "remoteVersion", true)) throw new BodyRuntimeError("Invalid body resolution receipt row.");
+  }
+  if (jsonBytes(row) > BODY_RESOLUTION_RECEIPT_BYTES) throw new BodyCapacityError();
+  return row as unknown as BodyResolutionReceipt;
 }
 export interface BodyRefreshPremises {
   guard(id: string): JournalGuard;

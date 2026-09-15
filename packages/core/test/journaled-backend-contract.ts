@@ -440,6 +440,55 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
       });
     });
 
+    test(`${name} journal contract: ${action} resolution retires a refused head and its never-attempted successor atomically with document and meta`, async () => {
+      await withFixture(create, async backend => {
+        const id = "journal/refused-head";
+        const first = await backend.writeJournaled(id, doc(id, "base"), { intent: newIntent("history", id, null) });
+        await backend.updateIntent("history", "pending", { state: "acknowledged" });
+        const refused = await backend.writeJournaled(id, doc(id, "refused edit"), { intent: newIntent("refused", id, first.version) });
+        await backend.updateIntent("refused", "pending", { state: "refused", attempts: 1, refusal: { code: "validation_failed", message: "refused by a rule" } });
+        const queued = await backend.writeJournaled(id, doc(id, "queued edit"), { intent: newIntent("queued", id, refused.version, "refused") });
+        const expected = (await backend.listIntents()).filter(row => row.state !== "acknowledged");
+        assert.deepEqual(expected.map(row => [row.requestId, row.state, row.attempts]), [["refused", "refused", 1], ["queued", "pending", 0]]);
+        const meta = [{ key: "archive", value: expected.map(row => row.requestId) }];
+        if (action === "write") await backend.writeJournaled(id, doc(id, "resolved"), {
+          expectedVersion: queued.version, resolveIntents: { expected }, meta, intent: newIntent("fresh", id, first.version),
+        });
+        else await backend.deleteJournaled(id, { expectedVersion: queued.version, resolveIntents: { expected }, meta });
+        assert.equal((await backend.readIntent("history"))?.state, "acknowledged");
+        assert.equal(await backend.readIntent("refused"), undefined);
+        assert.equal(await backend.readIntent("queued"), undefined);
+        assert.deepEqual(await backend.readMeta("archive"), ["refused", "queued"]);
+        if (action === "write") {
+          assert.equal((await backend.readIntent("fresh"))?.state, "pending");
+          assert.equal((await backend.read(id)).doc.body?.trim(), "resolved");
+        } else assert.equal(await backend.exists(id), false);
+      });
+    });
+
+    for (const head of ["attempted-successor", "unknown", "in_flight", "changed"] as const) {
+      test(`${name} journal contract: ${action} resolution refuses a refused head with ${head} and writes nothing`, async () => {
+        await withFixture(create, async backend => {
+          const id = "journal/refused-unsafe";
+          const local = await backend.writeJournaled(id, doc(id, "refused edit"), { intent: newIntent("head", id, null) });
+          const state = head === "unknown" || head === "in_flight" ? head : "refused";
+          await backend.updateIntent("head", "pending", { state, attempts: 1, ...(state === "refused" ? { refusal: { code: "validation_failed", message: "refused by a rule" } } : {}) });
+          const queued = await backend.writeJournaled(id, doc(id, "queued edit"), { intent: newIntent("queued", id, local.version, "head") });
+          if (head === "attempted-successor") await backend.updateIntent("queued", "pending", { attempts: 1 });
+          const expected = (await backend.listIntents()).filter(row => row.state !== "acknowledged");
+          if (head === "changed") await backend.updateIntent("head", "refused", { refusal: { code: "validation_failed", message: "a later answer" } });
+          const before = await backend.readWithJournal(id, { meta: ["archive"] });
+          const opts = { expectedVersion: queued.version, resolveIntents: { expected }, meta: [{ key: "archive", value: "must not land" }] };
+          await assert.rejects(action === "write"
+            ? backend.writeJournaled(id, doc(id, "replacement"), { ...opts, intent: newIntent("fresh", id, null) })
+            : backend.deleteJournaled(id, opts), { name: "JournalSnapshotConflict" });
+          assert.deepEqual(await backend.readWithJournal(id, { meta: ["archive"] }), before);
+          assert.equal(await backend.readIntent("fresh"), undefined);
+          assert.equal(await backend.readMeta("archive"), undefined);
+        });
+      });
+    }
+
     for (const drift of ["added", "missing", "state", "content", "attempts", "stale", "meta"] as const) {
       test(`${name} journal contract: ${action} resolution ${drift} refusal rolls back all stores`, async () => {
         await withFixture(create, async backend => {

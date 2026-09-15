@@ -70,9 +70,15 @@ prune history or receipts. Body input is bounded at 64 KiB. The existing documen
 codec owns metadata normalization, including valid timestamp values.
 
 Body mode supports updates to existing documents, not creation or general metadata
-edits. Conflict inspection is available, but all conflict-resolution choices refuse
-without mutation: inspect or export retained work; no automatic recovery is
-performed. Legacy conflict resolution is unchanged. This mode does not install an
+edits. Conflict recovery accepts a chain whose head the authority answered with a
+conflict or a content refusal (a refusal outside the authorization codes; lost
+permission keeps the resume path). `take-remote` retires the chain and adopts the
+served document, or deletes locally when the authority no longer holds it.
+`keep-local` and `revise` retire the chain and journal one fresh body update at the
+served head; they refuse when the authority holds nothing, since body mode cannot
+create. Retired rows leave with their descriptors; a bounded receipt without content
+is retained at `conflictResolutionKey(headRequestId)`. Nothing is sent by a
+resolution. Legacy conflict resolution is unchanged. This mode does not install an
 offline application shell or guarantee persistence against browser eviction. A
 successful local commit, a queued delivery and authority confirmation remain
 distinct states.

@@ -114,6 +114,23 @@ for (const adapter of ["indexeddb", "memory"]) {
       assert.equal(await local.backend.readMeta("uncloneable"), undefined);
     } finally { local.close(); }
   });
+  test(`${adapter}: exact mode keeps a refused head out of conflict recovery; a later edit supersedes it`, async () => {
+    const remote = await createRemoteFixture();
+    await remote.authority.write(id, doc("original\n"));
+    const local = openLocalBundle(`refused-${crypto.randomUUID()}`, adapter === "memory" ? { backend: new MemoryJournaledBackend() } : { indexedDB: new IDBFactory() });
+    try {
+      await bootstrap(remote.remote, local);
+      const committed = await commitLocal(local, id, edit("refused edit\n"));
+      await local.backend.updateIntent(committed.intent!.requestId, "pending", { state: "refused", attempts: 1, refusal: { code: "validation_failed", message: "refused by a rule" } });
+      const before = await local.backend.readWithJournal(id);
+      await assert.rejects(inspectConflict(local, remote.remote, id), { name: "InvalidInputError" });
+      assert.deepEqual(await local.backend.readWithJournal(id), before);
+      const superseded = await commitLocal(local, id, edit("edited again\n"));
+      assert.equal(await local.backend.readIntent(committed.intent!.requestId), undefined);
+      assert.equal(superseded.intent!.state, "pending");
+      assert.equal((await syncStatus(local)).counts.refused, 0);
+    } finally { local.close(); }
+  });
   test(`${adapter}: a local edit during remote recheck and attempted descendant refuse resolution`, async () => {
     const { remote, local } = await fixture();
     try {
