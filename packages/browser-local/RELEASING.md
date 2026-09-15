@@ -14,8 +14,9 @@ is the durable process for every browser-local prerelease.
 | @superbee/markdown-renderer | 0.1.2 | existing restricted access / latest |
 
 This candidate carries structural host read adapters, prepared body delivery with
-receipt reconciliation, atomic journal snapshot guards, and durable body delivery in
-the browser-local working copy.
+receipt reconciliation, atomic journal snapshot guards, durable body delivery in the
+browser-local working copy, exported heads and snapshot wire parsers, and retirement
+of refused and conflicted body chains.
 
 Browser-local depends exactly on core pre.4. Registry core pre.3 lacks the
 `governed-body-write` entry and the journal guard APIs this package imports; do not
