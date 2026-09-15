@@ -4,9 +4,9 @@
 // which `server.ts` broadcasts to the shell over SSE. Version tokens are content-addressed, so a
 // changed token means changed bytes — no timestamps, no content compare.
 //
-// The pure {@link diffSnapshots} is the unit-tested core; the watcher driver around it is a thin
-// fs.watch (recursive, verified on this macOS node) / poll loop with a debounce. Snapshots ride
-// the SAME head projection `list` uses (`queryHeads` — no bodies), so a scan is cheap.
+// Native filesystem notifications accelerate updates; periodic reconciliation also catches changes
+// when a successfully attached watcher silently misses a notification. Snapshots ride
+// the same head projection `list` uses (`queryHeads`), with all storage reads owned by the engine.
 import { watch as fsWatch, type FSWatcher } from "node:fs";
 import { listBlobs, readBlob, queryHeads, type Bundle } from "@superbee/core";
 import { PAGE_BLOB_PREFIXES } from "./pages.js";
@@ -111,6 +111,11 @@ export interface WatcherHandle {
   stop: () => Promise<void>;
 }
 
+/** Native notifications are injectable independently of the bundle's storage backend. */
+type WatchDirectory = (root: string, onChange: () => void) => Pick<FSWatcher, "on" | "close">;
+
+const watchDirectory: WatchDirectory = (root, onChange) => fsWatch(root, { recursive: true }, onChange);
+
 interface CommonWatcherOptions {
   onChange: (e: ChangeEvent) => void;
   onError?: (err: unknown) => void;
@@ -126,7 +131,7 @@ interface CommonWatcherOptions {
 export const DEFAULT_REMOTE_BOOT_TIMEOUT_MS = 5_000;
 
 export type WatcherOptions =
-  | (CommonWatcherOptions & { mode: "dir"; bundle: Bundle; debounceMs?: number })
+  | (CommonWatcherOptions & { mode: "dir"; bundle: Bundle; debounceMs?: number; watch?: WatchDirectory })
   | (CommonWatcherOptions & {
       mode: "remote";
       remoteBase: string;
@@ -142,8 +147,9 @@ async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise
 
 /**
  * Start watching for changes, emitting a {@link ChangeEvent} to `opts.onChange` whenever a doc or
- * page blob's version token moves. `--dir` uses `fs.watch` recursively (debounced) with a 2s poll
- * fallback if the platform rejects a recursive watch; `--remote` polls on a fixed interval. Awaits
+ * page blob's version token moves. `--dir` uses `fs.watch` recursively (debounced) plus periodic
+ * reconciliation, resting at least 2s or ten times the last scan's duration between scans;
+ * `--remote` polls on a fixed interval. Awaits
  * a baseline snapshot before resolving, so the first change is diffed against real state.
  *
  * Snapshot runs are SERIALIZED (tasks/ui-pages-spike P1 — remote concurrency): two overlapping
@@ -164,10 +170,20 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
   // resolve the UI boot WITHOUT a watcher rather than hang it.
   const bootSignal =
     opts.mode === "remote" ? AbortSignal.timeout(opts.bootTimeoutMs ?? DEFAULT_REMOTE_BOOT_TIMEOUT_MS) : aborter.signal;
-  let last = await takeSnapshot(opts, bootSignal);
+  let lastScanMs = 0;
+  const timedSnapshot = async (signal: AbortSignal): Promise<Snapshot> => {
+    const started = performance.now();
+    try {
+      return await takeSnapshot(opts, signal);
+    } finally {
+      lastScanMs = performance.now() - started;
+    }
+  };
+  let last = await timedSnapshot(bootSignal);
   let stopped = false;
   let running = false;
   let rerun = false;
+  let onSettled = (): void => {};
 
   const emitDiff = async (): Promise<void> => {
     if (stopped) return;
@@ -179,7 +195,7 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     try {
       do {
         rerun = false;
-        const next = await takeSnapshot(opts, aborter.signal);
+        const next = await timedSnapshot(aborter.signal);
         if (stopped) return;
         const change = diffSnapshots(last, next);
         last = next;
@@ -189,6 +205,7 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
       if (!stopped) opts.onError?.(err);
     } finally {
       running = false;
+      onSettled();
     }
   };
 
@@ -196,6 +213,7 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     const debounceMs = opts.debounceMs ?? 150;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const trigger = (): void => {
+      if (stopped) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = undefined;
@@ -204,22 +222,34 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
       timer.unref?.();
     };
 
-    let watcher: FSWatcher | undefined;
-    let pollFallback: ReturnType<typeof setInterval> | undefined;
-    const startPollFallback = (): void => {
-      if (pollFallback) return;
-      pollFallback = setInterval(() => void emitDiff(), 2000);
-      pollFallback.unref?.();
+    let watcher: ReturnType<WatchDirectory> | undefined;
+    // A successful native watch is not a delivery guarantee. Keep the same serialized snapshot
+    // path running even without hints, including after a transient scan error or attachment gap.
+    let reconciliation: ReturnType<typeof setTimeout> | undefined;
+    const scheduleReconciliation = (): void => {
+      if (stopped) return;
+      if (reconciliation) clearTimeout(reconciliation);
+      reconciliation = setTimeout(() => {
+        reconciliation = undefined;
+        // A slow scan already reconciles current state. Only a native hint requests a rerun;
+        // periodic ticks must not keep a large, unchanged bundle scanning without a pause.
+        if (running) return; // the active scan rearms on settlement
+        void emitDiff();
+      }, Math.max(2000, 10 * lastScanMs));
+      reconciliation.unref?.();
     };
+    // Native-triggered and failed scans earn the same rest as periodic scans. Scaling with
+    // measured cost keeps large idle bundles from spending most of their time taking snapshots.
+    onSettled = scheduleReconciliation;
+    scheduleReconciliation();
     try {
-      watcher = fsWatch(opts.bundle.root, { recursive: true }, () => trigger());
+      watcher = (opts.watch ?? watchDirectory)(opts.bundle.root, trigger);
       watcher.on("error", () => {
         watcher?.close();
         watcher = undefined;
-        startPollFallback();
       });
     } catch {
-      startPollFallback();
+      // Periodic reconciliation remains active if native watching is unavailable.
     }
 
     return {
@@ -227,7 +257,8 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
         stopped = true;
         if (timer) clearTimeout(timer);
         watcher?.close();
-        if (pollFallback) clearInterval(pollFallback);
+        watcher = undefined;
+        if (reconciliation) clearTimeout(reconciliation);
         aborter.abort();
       },
     };
