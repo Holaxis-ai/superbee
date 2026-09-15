@@ -5,7 +5,7 @@ import { BODY_DELIVERY_LIMITS, BODY_RECONCILIATION_BYTES, prepareBodyDelivery, v
   assertSameBodyDelivery, type PreparedBodyDelivery, type CommittedBodyReceipt } from "@superbee/core/governed-body-write";
 import { captureJournalValue, JournalGuardConflict, type JournalGuard, type JournaledBackend, type JournaledReadResult, type IntentRecord, type MetaRecord, type JournaledWriteOptions, type JournaledDeleteOptions, type IntentPatch, type IntentUpdateOptions } from "@superbee/core/journaled-backend";
 import { isContentVersion, versionOfBytes } from "@superbee/core/versioning";
-import type { OkfDocument, Version } from "@superbee/core";
+import type { OkfDocument, Version, StorageBackend } from "@superbee/core";
 import { assertJournalGuard } from "@superbee/core/journaled-backend";
 
 export const BODY_MODE_KEY = "body-delivery:mode";
@@ -85,7 +85,7 @@ export async function admitBodyMode(backend: JournaledBackend): Promise<BodyMode
     }
     if (intents.length) throw new BodyRuntimeError("Cannot adopt a nonempty journal into body delivery.");
     const root = await backend.readReserved("", "index.md");
-    if (root && ((await readBundleOkfVersion(backend)) ?? "0.1") !== expected.okfVersion) throw new BodyRuntimeError("Existing working copy edition is incompatible.");
+    if (root && await declaredBodyEdition(backend) !== expected.okfVersion) throw new BodyRuntimeError("Existing working copy edition is incompatible.");
     for (const id of await backend.list()) {
       const value = await backend.readWithJournal(id, { meta: [`base:${id}`] });
       if (value.meta.has(`base:${id}`)) assertSharedBase(value.meta.get(`base:${id}`));
@@ -98,7 +98,30 @@ export async function admitBodyMode(backend: JournaledBackend): Promise<BodyMode
   throw new BodyRuntimeError("Working copy admission changed concurrently.");
 }
 export async function assertBodyEdition(backend: JournaledBackend, mode: BodyMode): Promise<void> {
-  if (((await readBundleOkfVersion(backend)) ?? "0.1") !== mode.okfVersion) throw new BodyRuntimeError("Working copy edition differs from delivery mode.");
+  if (await declaredBodyEdition(backend) !== mode.okfVersion) throw new BodyRuntimeError("Working copy edition differs from delivery mode.");
+}
+/** Keep the edition reader's missing-marker fallback, but never turn an invalid declaration into it. */
+async function declaredBodyEdition(backend: StorageBackend): Promise<BodyMode["okfVersion"]> {
+  const root = await backend.readReserved("", "index.md");
+  const captured = new Proxy(backend, { get(inner, key) {
+    if (key === "readReserved") return async () => root;
+    const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value;
+  } });
+  const edition = (await readBundleOkfVersion(captured)) ?? "0.1";
+  const fields: Record<string, unknown> = root ? parseMarkdown(root.content, "index.md", { okfVersion: "0.2" }).frontmatter : {};
+  if (Object.hasOwn(fields, "okf_version") && fields.okf_version !== "0.1" && fields.okf_version !== "0.2" || edition !== "0.1" && edition !== "0.2") throw new BodyRuntimeError("Invalid or unsupported declared edition.");
+  return edition;
+}
+export async function assertBodyRemoteEdition(remote: StorageBackend, mode: BodyMode): Promise<void> {
+  if (await declaredBodyEdition(remote) !== mode.okfVersion) throw new BodyRuntimeError("Authority edition differs from delivery mode.");
+}
+/** Body mode owns a minimal local edition seed, never a mutable mirror of reserved metadata. */
+export async function seedBodyRoot(backend: JournaledBackend, mode: BodyMode): Promise<void> {
+  if (await backend.readReserved("", "index.md")) { await assertBodyEdition(backend, mode); return; }
+  await controlRow(backend, mode);
+  try { await backend.writeReserved("", "index.md", `---\nokf_version: '${mode.okfVersion}'\n---\n`, { expectedVersion: null }); }
+  catch (error) { if ((error as { name?: unknown })?.name !== "VersionConflict") throw error; }
+  await assertBodyEdition(backend, mode);
 }
 /** Codec conversion preserves its declared edition and produces guard-compatible plain data. */
 export function bodyDocument(raw: string, id: string, mode: BodyMode): OkfDocument {
@@ -301,10 +324,7 @@ export function bodyBackend(backend: JournaledBackend, mode: BodyMode): Journale
       if (!CONTROL_KEYS.has(name)) throw new BodyRuntimeError("Body metadata writes require a target guard.");
       await writeBodyControl(backend, mode, name, value);
     };
-    if (key === "writeReserved") return async (dir: string, name: string, content: string, options?: unknown) => {
-      if (dir !== "" || name !== "index.md" || ((parseMarkdown(content, "index").frontmatter.okf_version ?? "0.1") !== mode.okfVersion)) throw new BodyRuntimeError("Body bootstrap edition is incompatible.");
-      return backend.writeReserved(dir, "index.md", content, options as never);
-    };
+    if (key === "writeReserved") return async () => { throw new BodyRuntimeError("Body mode does not mirror reserved metadata."); };
     const value = Reflect.get(inner, key, inner);
     return typeof value === "function" ? value.bind(inner) : value;
   } });

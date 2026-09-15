@@ -41,6 +41,13 @@ before fetching. A concurrent change invalidates stale incoming evidence; the
 refresh rejects and its completion marker remains incomplete. Retrying performs a
 new read rather than applying the old response against a newly captured guard.
 
+Body mode is not a mirror of reserved root metadata. After mode admission, an absent
+local root receives only a deterministic edition seed. An existing matching root,
+including custom metadata and body, is preserved byte-for-byte. Each concept import
+checks the authority's edition; malformed, unsupported or mismatched declarations
+refuse rather than rewriting either root. A genuinely missing edition retains the
+existing v0.1 fallback. Legacy bootstrap still imports the remote root unchanged.
+
 Preparation is saved with the attempted claim before submission. After interruption,
 the existing `reclaimInFlight` operation runs inside `pushWithRole` for body mode,
 including normal platform Sync. The next delivery looks up the same immutable

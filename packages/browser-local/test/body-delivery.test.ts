@@ -307,7 +307,94 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       } finally { s.close(); }
     }
   });
+  test(`${adapter}: body bootstrap preserves custom local root across delayed remote metadata`, async () => {
+    const s = await setup();
+    try {
+      const custom = "---\nokf_version: '0.2'\nname: Local custom metadata\n---\n# Keep this local root\n";
+      await s.backend.writeReserved("", "index.md", custom);
+      let release!: () => void, started!: () => void;
+      const reached = new Promise<void>(resolve => { started = resolve; });
+      const blocked = new Promise<void>(resolve => { release = resolve; });
+      const remote = new Proxy(s.authority.backend, { get(inner, key) {
+        if (key === "readReserved") return async (...args: Parameters<typeof inner.readReserved>) => { const old = await inner.readReserved(...args); started(); await blocked; return old; };
+        const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value;
+      } });
+      const older = bootstrap(remote, s.local);
+      await reached;
+      await s.authority.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\nname: New remote metadata\n---\n# New\n");
+      await bootstrap(s.authority.backend, s.local);
+      assert.equal((await s.backend.readReserved("", "index.md"))!.content, custom);
+      release(); await older;
+      assert.equal((await s.backend.readReserved("", "index.md"))!.content, custom);
+    } finally { s.close(); }
+  });
+  test(`${adapter}: simultaneous absent-root initializers seed identical local bytes`, async () => {
+    const backend = adapter === "memory" ? new MemoryJournaledBackend() : new IndexedDbBackend({ databaseName: crypto.randomUUID(), indexedDB: new IDBFactory() });
+    const local = openLocalBundle("root-initializers", { backend, bodyDelivery: { scope: "root", okfVersion: "0.2", dedicated: true } });
+    const remote = new MemoryJournaledBackend();
+    await remote.writeReserved("", "index.md", "---\nokf_version: '0.2'\nname: Do not import\n---\n# Remote root\n");
+    try {
+      await Promise.all([bootstrap(remote, local), bootstrap(remote, local)]);
+      assert.equal((await backend.readReserved("", "index.md"))!.content, "---\nokf_version: '0.2'\n---\n");
+    } finally { local.close(); }
+  });
+  test(`${adapter}: every import refuses incompatible or malformed declared editions without replacing roots`, async () => {
+    const s = await setup();
+    try {
+      const originalRoot = await s.backend.readReserved("", "index.md");
+      const original = await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] });
+      for (const root of ["---\nokf_version: '0.1'\n---\n", "---\nokf_version: '0.9'\n---\n", "---\nokf_version: 0.2\n---\n", "---\nokf_version: [\n---\n"]) {
+        await s.authority.backend.writeReserved("", "index.md", root);
+        await assert.rejects(pull(s.local, s.authority.backend));
+        assert.equal((await s.backend.readMeta<any>(BODY_MODE_KEY)).controls.pull.completedAt, null);
+        await assert.rejects(bootstrap(s.authority.backend, s.local));
+        assert.equal((await s.backend.readMeta<any>(BODY_MODE_KEY)).controls.bootstrap.complete, false);
+        assert.deepEqual(await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] }), original);
+        assert.deepEqual(await s.backend.readReserved("", "index.md"), originalRoot);
+      }
+      await s.authority.backend.writeReserved("", "index.md", originalRoot!.content);
+      await s.backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n# Retain incompatible root\n");
+      const incompatible = await s.backend.readReserved("", "index.md");
+      await assert.rejects(bootstrap(s.authority.backend, s.local), /edition differs/);
+      assert.deepEqual(await s.backend.readReserved("", "index.md"), incompatible);
+    } finally { s.close(); }
+  });
+  test(`${adapter}: edition changes during a content fetch are refused at import`, async () => {
+    for (const operation of ["pull", "bootstrap"]) {
+      const s = await setup();
+      try {
+        const original = await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] });
+        let release!: () => void, started!: () => void;
+        const reached = new Promise<void>(resolve => { started = resolve; });
+        const blocked = new Promise<void>(resolve => { release = resolve; });
+        const remote = new Proxy(s.authority.backend, { get(inner, key) {
+          if (key === "readMany") return async (ids: string[]) => { const rows = await inner.readMany(ids); started(); await blocked; return rows; };
+          const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value;
+        } });
+        const importing = operation === "pull" ? pull(s.local, remote) : bootstrap(remote, s.local);
+        const rejected = assert.rejects(importing, /Authority edition differs/);
+        await reached;
+        await s.authority.backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n");
+        release(); await rejected;
+        assert.deepEqual(await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] }), original);
+      } finally { s.close(); }
+    }
+  });
 }
+
+test("legacy bootstrap still mirrors root metadata; missing edition legitimately defaults to v0.1", async () => {
+  const authority = await createBodyAuthority(undefined, "0.1");
+  const root = "---\nname: Legacy root without edition marker\n---\n# Preserve legacy import\n";
+  await authority.backend.writeReserved("", "index.md", root);
+  const legacy = openLocalBundle("legacy-root", { backend: new MemoryJournaledBackend() });
+  const body = openLocalBundle("body-root", { backend: new MemoryJournaledBackend(), bodyDelivery: { scope: "fallback", okfVersion: "0.1", dedicated: true } });
+  try {
+    await bootstrap(authority.backend, legacy);
+    assert.equal((await legacy.backend.readReserved("", "index.md"))!.content, root);
+    await bootstrap(authority.backend, body);
+    assert.equal((await body.backend.readReserved("", "index.md"))!.content, "---\nokf_version: '0.1'\n---\n");
+  } finally { legacy.close(); body.close(); }
+});
 
 test("capacity measures exact UTF-8 serialized boundaries and consumes reserved evidence monotonically", () => {
   const E = 2 * 1024 * 1024;

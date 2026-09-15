@@ -95,7 +95,7 @@ import {
 } from "@superbee/core/uncertain-write";
 
 import { pushRoleName, withPushRole, type PushRoleOptions, type PushRoleResult } from "./push-role.js";
-import { captureBodyRefresh, type BodyRefreshPremises } from "./body-journal.js";
+import { captureBodyRefresh, seedBodyRoot, assertBodyRemoteEdition, type BodyRefreshPremises } from "./body-journal.js";
 
 export interface OpenLocalBundleOptions {
   /** Explicit isolated body-delivery store. Custom adapters must be dedicated to this mode. */
@@ -504,8 +504,13 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   const startedAt = new Date().toISOString();
   await backend.writeMeta(BOOTSTRAP_KEY, { generation, startedAt, complete: false } satisfies BootstrapMarker);
 
-  const rootIndex = await remote.readReserved("", "index.md");
-  if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
+  if (bodyMode) {
+    await seedBodyRoot(backendOf(local), bodyMode);
+    await assertBodyRemoteEdition(remote, bodyMode);
+  } else {
+    const rootIndex = await remote.readReserved("", "index.md");
+    if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
+  }
 
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const findings: string[] = [];
@@ -513,6 +518,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   let index = 0;
   /** One document as the authority served it, into the working copy, with the marker's bookkeeping. */
   const hydrate = async (head: ReadResult, total: number, premises?: BodyRefreshPremises): Promise<void> => {
+    if (bodyMode) await assertBodyRemoteEdition(remote, bodyMode);
     const id = head.doc.id;
     try {
       const { version } = await backend.writeJournaled(id, head.doc, {
@@ -1259,6 +1265,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   const known = await lastKnownDigest(backend);
   const startedAt = new Date().toISOString();
   await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false } satisfies PullMarker);
+  if (bodyMode) { await assertBodyEdition(backendOf(local), bodyMode); await assertBodyRemoteEdition(remote, bodyMode); }
   const report: PullReport = { refreshed: [], held: [], unchanged: [], deleted: [] };
   const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
   const complete = async (headsDigest: string | undefined, unchanged: boolean): Promise<PullReport> => {
@@ -1275,6 +1282,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
 
   /** Apply one fetched head to the working copy under the same guards, whichever path fetched it. */
   const apply = async (head: ReadResult, premises?: BodyRefreshPremises): Promise<void> => {
+    if (bodyMode) await assertBodyRemoteEdition(remote, bodyMode);
     const id = head.doc.id;
     await premises?.check(id);
     const base = await backend.readMeta<SharedBase>(baseKey(id));
