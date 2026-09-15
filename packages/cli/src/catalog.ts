@@ -1,3 +1,4 @@
+import { currentPrivateStateHost, distributionBinName, currentDistribution, currentHost } from "./runtime-context.js";
 import { randomUUID } from "node:crypto";
 import { open, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -237,7 +238,7 @@ async function acquireCatalogLock(options: CatalogOptions): Promise<() => Promis
       const handle = await open(lockPath, "wx", LOCK_MODE);
       try {
         await handle.writeFile(JSON.stringify({ pid, created_at_ms: now(), token }) + "\n");
-        if (resolveUserStatePolicy(home).containment === "posix-owner-mode") await handle.chmod(LOCK_MODE);
+        if (currentPrivateStateHost().enforcePrivateMode) await handle.chmod(LOCK_MODE);
         await handle.sync();
       } catch (err) {
         await handle.close().catch(() => {});

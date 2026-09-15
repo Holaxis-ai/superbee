@@ -1,3 +1,4 @@
+import { currentPrivateStateHost, distributionBinName, currentDistribution, currentHost } from "./runtime-context.js";
 // Explicit, one-shot migration from Superbee's historical operational-state root into its one
 // canonical root. This module is imported only by `setup`; ordinary state readers stay single-root.
 import { createHash } from "node:crypto";
@@ -32,6 +33,7 @@ import {
   legacyUserStateDir,
   readPrivateStateFile,
   resolveUserStatePolicy,
+  userStateEnvironment,
   supersededUserStateDirs,
   type UserStateInput,
   userStatePathDisplay,
@@ -123,11 +125,11 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 async function assertPrivateDirectory(directory: string, input: UserStateInput): Promise<void> {
   const status = await lstat(directory);
   const policy = resolveUserStatePolicy(input);
-  const currentUid = policy.containment === "posix-owner-mode" ? process.getuid?.() : undefined;
+  const currentUid = currentPrivateStateHost().enforcePrivateMode ? currentPrivateStateHost().currentUid() : undefined;
   if (
     status.isSymbolicLink()
     || !status.isDirectory()
-    || (policy.containment === "posix-owner-mode" && (status.mode & 0o077) !== 0)
+    || (currentPrivateStateHost().enforcePrivateMode && (status.mode & 0o077) !== 0)
     || (currentUid !== undefined && status.uid !== currentUid)
   ) {
     throw new Error("legacy private state directory is unsafe");
@@ -137,11 +139,11 @@ async function assertPrivateDirectory(directory: string, input: UserStateInput):
 async function assertPrivateRegularFile(file: string, input: UserStateInput): Promise<void> {
   const status = await lstat(file);
   const policy = resolveUserStatePolicy(input);
-  const currentUid = policy.containment === "posix-owner-mode" ? process.getuid?.() : undefined;
+  const currentUid = currentPrivateStateHost().enforcePrivateMode ? currentPrivateStateHost().currentUid() : undefined;
   if (
     status.isSymbolicLink()
     || !status.isFile()
-    || (policy.containment === "posix-owner-mode" && (status.mode & 0o077) !== 0)
+    || (currentPrivateStateHost().enforcePrivateMode && (status.mode & 0o077) !== 0)
     || (currentUid !== undefined && status.uid !== currentUid)
   ) {
     throw new Error("private state file is unsafe");
@@ -200,12 +202,7 @@ async function preflightDurableRecords(root: string, input: UserStateInput): Pro
  * that supplies a given record wins, so precedence is a property of this list rather than of
  * directory-walk order.
  */
-export function migrationSourceRoots(input: UserStateInput): string[] {
-  const policy = resolveUserStatePolicy(input);
-  return policy.platform === "win32"
-    ? [...new Set([...supersededUserStateDirs(input), legacyUserStateDir(input)])]
-    : [...new Set([legacyUserStateDir(input), ...supersededUserStateDirs(input)])];
-}
+export function migrationSourceRoots(input:UserStateInput):string[] {return currentPrivateStateHost().migrationSources(userStateEnvironment(input)).map(source=>source.root);}
 
 /**
  * A source root the product cannot decide about. It names the root in `~`-relative form and
@@ -232,10 +229,8 @@ export class UnsafeMigrationSource extends Error {
  * closed. Returning `[]` here reported a live catalog, credential, and View-approval store as
  * "nothing to migrate".
  */
-function sourceInspectionCommand(display: string, input: UserStateInput, detailed: boolean): string {
-  return resolveUserStatePolicy(input).platform === "win32"
-    ? "superbee setup"
-    : `ls -l${detailed ? "a" : "d"} ${display}`;
+function sourceInspectionCommand(display:string,_input:UserStateInput,detailed:boolean):string {
+   return currentPrivateStateHost().sourceInspectionCommand(display,detailed,`${distributionBinName()} setup`);
 }
 
 async function preflightSourceRoot(
@@ -275,11 +270,7 @@ async function preflightLegacy(input: UserStateInput): Promise<MigrationRecord[]
   const policy = resolveUserStatePolicy(input);
   const merged: MigrationRecord[] = [];
   const claimed = new Set<string>();
-  for (const root of migrationSourceRoots(input)) {
-    const display = policy.platform === "win32"
-      ? userStatePathDisplay(input, root)
-      : homeRelativeDisplay(policy.home, root);
-    const requiresMarker = policy.platform === "win32" && root !== legacyUserStateDir(input);
+  for (const {root,display,requiresMarker} of currentPrivateStateHost().migrationSources(userStateEnvironment(input))) {
     for (const record of await preflightSourceRoot(root, display, input, requiresMarker)) {
       if (claimed.has(record.relative)) continue;
       claimed.add(record.relative);
@@ -304,7 +295,7 @@ export async function inspectUserStateMigration(input: UserStateInput = homedir(
   if (policy.state === "blocked") {
     return {
       state: "blocked",
-      reason: policy.reason ?? "the Windows private-state location is unavailable",
+      reason: policy.reason ?? "the selected host private-state location is unavailable",
       records: 0,
       command: "superbee setup",
     };
@@ -318,7 +309,7 @@ export async function inspectUserStateMigration(input: UserStateInput = homedir(
           state: "repairable",
           reason: "the canonical Superbee user-state root is recognized but its permissions are group- or world-accessible",
           records: 0,
-          command: USER_STATE_HARDEN_COMMAND,
+          command: `${distributionBinName()} setup harden-state`,
         }
       : { state: "ready", reason: "the canonical Superbee user-state root is ready", records: 0 };
   }
@@ -327,7 +318,7 @@ export async function inspectUserStateMigration(input: UserStateInput = homedir(
       state: "blocked",
       reason: "the canonical Superbee user-state root is unrecognized",
       records: 0,
-      command: USER_STATE_QUARANTINE_COMMAND,
+      command: `${distributionBinName()} setup quarantine-state`,
     };
   }
   try {
@@ -405,7 +396,7 @@ async function writeNoReplace(root: string, relative: string, bytes: string, inp
   const handle = await open(temporary, "wx", FILE_MODE);
   try {
     await handle.writeFile(bytes);
-    if (policy.containment === "posix-owner-mode") await handle.chmod(FILE_MODE);
+    if (currentPrivateStateHost().enforcePrivateMode) await handle.chmod(FILE_MODE);
     await handle.sync();
   } finally {
     await handle.close();
@@ -534,13 +525,13 @@ export async function migrateUserState(
   }
   const policy = resolveUserStatePolicy(input);
   if (policy.state === "blocked") {
-    throw new CliError("CONFLICT", policy.reason ?? "the Windows private-state location is unavailable", { help: "superbee setup" });
+    throw new CliError("CONFLICT", policy.reason ?? "the selected host private-state location is unavailable", { help: `${distributionBinName()} setup` });
   }
   const canonical = await inspectCanonicalUserStateRoot(input);
   const root = canonicalUserStateDir(input);
   if (canonical === "ready") {
     const current = await preflightDurableRecords(root, input).catch(() => {
-      throw new CliError("CONFLICT", "canonical Superbee user state contains an invalid durable record", { help: "superbee setup" });
+      throw new CliError("CONFLICT", "canonical Superbee user state contains an invalid durable record", { help: `${distributionBinName()} setup` });
     });
     await removeStaleJournal(root, input);
     await ensureStateRootGitignore(root, input);
@@ -558,11 +549,11 @@ export async function migrateUserState(
       await assertPrivateDirectory(root, input);
       raw = await readPrivateStateFile(join(root, MIGRATION_JOURNAL_FILE_NAME), MAX_CATALOG_BYTES, undefined, input);
     } catch {
-      throw new CliError("CONFLICT", "canonical Superbee user state already exists but is not recognized", { help: "superbee setup" });
+      throw new CliError("CONFLICT", "canonical Superbee user state already exists but is not recognized", { help: `${distributionBinName()} setup` });
     }
     const journal = parseJournal(raw);
     if (!journal || raw !== journalBytes(records)) {
-      throw new CliError("CONFLICT", "an incomplete or foreign canonical user-state root requires inspection", { help: "superbee setup" });
+      throw new CliError("CONFLICT", "an incomplete or foreign canonical user-state root requires inspection", { help: `${distributionBinName()} setup` });
     }
   } else {
     await ensureMigrationParent(input);
@@ -570,7 +561,7 @@ export async function migrateUserState(
       await hooks.beforeCanonicalClaim?.();
       await mkdir(root, { mode: DIR_MODE });
     } catch (error) {
-      throw new CliError("CONFLICT", "canonical Superbee user state appeared during migration", { help: "superbee setup" });
+      throw new CliError("CONFLICT", "canonical Superbee user state appeared during migration", { help: `${distributionBinName()} setup` });
     }
     await writeNoReplace(root, MIGRATION_JOURNAL_FILE_NAME, journalBytes(records), input);
   }
@@ -585,7 +576,7 @@ export async function migrateUserState(
       await hooks.beforeRecordPublish?.(record.relative);
       await writeNoReplace(root, record.relative, record.bytes, input);
     } catch {
-      throw new CliError("CONFLICT", "canonical Superbee user state changed during migration", { help: "superbee setup" });
+      throw new CliError("CONFLICT", "canonical Superbee user state changed during migration", { help: `${distributionBinName()} setup` });
     }
   }
   try {
@@ -599,12 +590,12 @@ export async function migrateUserState(
     throw new CliError(
       "CONFLICT",
       "user state changed during migration; legacy state remains preserved",
-      { help: USER_STATE_QUARANTINE_COMMAND },
+      { help: `${distributionBinName()} setup quarantine-state` },
     );
   }
   await hooks.afterMarkerPublish?.();
   await unlink(join(root, MIGRATION_JOURNAL_FILE_NAME)).catch(() => {});
-  if (policy.containment === "posix-owner-mode") await chmod(root, DIR_MODE);
+  if (currentPrivateStateHost().enforcePrivateMode) await chmod(root, DIR_MODE);
   // The exact-topology assertions above are over, so the promised `*` .gitignore can finally be
   // published: a migrated root must be as unstageable as one created by `ensureUserStateRoot`.
   await ensureStateRootGitignore(root, input);

@@ -81,5 +81,9 @@
     "js-yaml": "3.15.2",
     "@types/js-yaml": "3.12.10",
     "@superbee/cli": "*"
-  }
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ]
 }

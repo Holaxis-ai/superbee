@@ -1,3 +1,4 @@
+import { distributionBinName } from "./runtime-context.js";
 // Pure AXI setup planning. Host/file inspection lives at the command boundary; this module owns
 // only the bounded capability matrix, deterministic ordering, and one-next-command projection.
 
@@ -203,7 +204,7 @@ function actionDescription(capability: SetupCapability): string {
 
 export function setupNextForCapability(
   capability: SetupCapability,
-  invocation: readonly string[] = ["superbee"],
+  invocation: readonly string[] = [distributionBinName()],
 ): SetupAction | undefined {
   if (!capability.command) return undefined;
   const mutates = mutatesCapability(capability);
@@ -556,7 +557,7 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
   const actionable = capabilities.find((capability) =>
     capability.state === "needs_action" || capability.state === "blocked",
   );
-  const invocation = input.invocation ?? ["superbee"];
+  const invocation = input.invocation ?? [distributionBinName()];
   const next = actionable ? setupNextForCapability(actionable, invocation) : undefined;
   const ready = required.every((capability) => capability.state === "ready");
   const complete = capabilities.every((capability) => capability.state === "ready" || capability.state === "not_applicable");

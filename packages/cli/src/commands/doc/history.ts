@@ -1,3 +1,4 @@
+import { renderUsage } from "../../output.js";
 // `doc history <id>` — see `../doc.ts`'s header comment for the CAS-token / attribution rationale.
 import { parseArgs } from "node:util";
 import { docVersions, type VersionInfo } from "@superbee/core";
@@ -40,7 +41,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     CLI_LEAVES.docHistory,
   );
   if (values.help) {
-    stdout(DOC_HISTORY_USAGE);
+    stdout(renderUsage(DOC_HISTORY_USAGE));
     return;
   }
 

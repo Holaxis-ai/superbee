@@ -1,3 +1,4 @@
+import { distributionBinName } from "./runtime-context.js";
 // Output rendering for the `axi` CLI (agent-facing default: TOON).
 //
 // TOON by default; `--json` is a compact-JSON escape hatch for callers already parsing JSON. The
@@ -50,4 +51,10 @@ export function render(value: unknown, mode: OutputMode): string {
  */
 export function renderErrorEnvelope(envelope: ErrorEnvelope): string {
   return `${encode(envelope)}\n`;
+}
+
+/** Usage is CLI-owned prose; substitute only its known executable command token. */
+export function renderUsage(usage:string):string {
+ const bin=distributionBinName();
+ return bin==='superbee'?usage:usage.replace(/\bsuperbee(?= (?:doc|init|new|bundle|catalog|index|artifact|link|list|query|delete|blobs|kind|kinds|recipe|recipes|status|serve|ui|mcp|sync|home|hook|skill|session-start|version|view|setup|promote|pull|--help)(?:\s|$))/g,bin);
 }

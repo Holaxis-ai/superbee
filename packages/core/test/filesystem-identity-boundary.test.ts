@@ -17,7 +17,7 @@ import { FilesystemBackend } from "../src/backend.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE_ROOT = path.resolve(here, "..", "src");
-const IDENTITY_MODULES = ["backend.ts", "filesystem-identity.ts", "filesystem-lock.ts"];
+const IDENTITY_MODULES = ["backend.ts", "filesystem-identity.ts", "filesystem-lock.ts", "filesystem-host.ts", "filesystem.ts"];
 const FS_SPECIFIERS = new Set(["node:fs", "node:fs/promises", "fs", "fs/promises"]);
 const IDENTITY_MODULE = "./filesystem-identity.js";
 const IDENTITY_MODULE_PATH = path.join(SOURCE_ROOT, "filesystem-identity");
@@ -160,7 +160,7 @@ test("N1: index.ts exports exactly the allowlisted names from the storage module
 
 // ── N2: structural class shape ────────────────────────────────────────────────
 
-test("N2: FilesystemBackend has a one-argument constructor, exactly the contract prototype, and no statics", () => {
+test("N2: FilesystemBackend retains one required constructor argument, the contract prototype, and no statics", () => {
   assert.equal(FilesystemBackend.length, 1);
   assert.deepEqual(Object.getOwnPropertyNames(FilesystemBackend.prototype).sort(), [
     "capabilities",
@@ -188,7 +188,7 @@ test("N2: FilesystemBackend has a one-argument constructor, exactly the contract
   assert.deepEqual(Object.getOwnPropertyNames(instance), [], "state is private, not an own property");
 });
 
-test("N2: FilesystemMutationLockOptions has exactly waitMs, pollMs, portableRoot, lockRoot", async () => {
+test("N2: FilesystemMutationLockOptions has only bounded lock options and trusted host policy", async () => {
   const lock = await parse("filesystem-lock.ts");
   let members: string[] | undefined;
   const visit = (node: ts.Node): void => {
@@ -198,7 +198,7 @@ test("N2: FilesystemMutationLockOptions has exactly waitMs, pollMs, portableRoot
     ts.forEachChild(node, visit);
   };
   visit(lock);
-  assert.deepEqual(members, ["waitMs", "pollMs", "portableRoot", "lockRoot"]);
+  assert.deepEqual(members, ["waitMs", "pollMs", "portableRoot", "lockRoot", "hostPolicy"]);
 });
 
 // ── N4: import surface and environment isolation ──────────────────────────────
@@ -219,7 +219,7 @@ test("N4: only the identity and lock modules import node:fs, and the backend rea
   assert.ok(backend.includes("./filesystem-identity.js"), "the backend reaches the filesystem only through the identity port");
 });
 
-test("N4: the three runtime modules never read process.env", async () => {
+test("N4: the filesystem runtime modules never read process.env", async () => {
   for (const file of IDENTITY_MODULES) {
     const source = await parse(file);
     assert.deepEqual(processEnvAccesses(source), [], `${file} references process.env`);
@@ -250,7 +250,7 @@ test("N4: only the lock module reads an ambient host input", async () => {
   }
 });
 
-// ── N4: the backend binds the one production port ─────────────────────────────
+// ── N4: the backend binds the production port factory ─────────────────────────────
 
 // `backend.ts` reaching the filesystem only through the identity module (asserted above) does not
 // say WHICH port implementation it binds. A second port declared beside the production one and
@@ -314,7 +314,7 @@ test("N4: the identity module has exactly one importer in the package", async ()
   assert.deepEqual(importers, ["backend.ts"], "only the backend may import the identity module; a second importer can forward its entry points");
 });
 
-test("N4: backend.ts imports exactly the protocol entry points and the one production port", async () => {
+test("N4: backend.ts imports exactly the protocol entry points and the production port factory", async () => {
   const backend = await parse("backend.ts");
   const values: string[] = [];
   const visit = (node: ts.Node): void => {
@@ -334,26 +334,19 @@ test("N4: backend.ts imports exactly the protocol entry points and the one produ
     ts.forEachChild(node, visit);
   };
   visit(backend);
-  assert.deepEqual(values.sort(), ["mutateExact", "nodeFilesystemIdentityPort", "observeExact", "probeExact"]);
+  assert.deepEqual(values.sort(), ["createNodeFilesystemIdentityPort", "mutateExact", "observeExact", "probeExact"]);
 });
 
-test("N4: the identity module declares exactly one FilesystemIdentityPort constant", async () => {
+test("N4: production ports are constructed per backend rather than exported as mutable singleton state", async () => {
   const identity = await parse("filesystem-identity.ts");
-  const ports: string[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && node.type && ts.isTypeReferenceNode(node.type)) {
-      const annotation = node.type.typeName;
-      if (ts.isIdentifier(annotation) && annotation.text === "FilesystemIdentityPort" && ts.isIdentifier(node.name)) {
-        ports.push(node.name.text);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(identity);
-  assert.deepEqual(ports, ["nodeFilesystemIdentityPort"], "a second port in the owning module is a binding the backend could take");
+  assert.doesNotMatch(identity.text, /export const nodeFilesystemIdentityPort/);
+  assert.match(identity.text, /export function createNodeFilesystemIdentityPort/);
+  const backend = await parse("backend.ts");
+  assert.match(backend.text, /this\.#port = createNodeFilesystemIdentityPort\(options.hostPolicy\)/);
+  assert.match(backend.text, /publicationContexts.set\(this, \{ root: this\.#root, port: this\.#port \}\)/);
 });
 
-test("N4: every protocol call in backend.ts passes the imported production port", async () => {
+test("N4: every protocol call uses the backend port or its private publication context", async () => {
   const backend = await parse("backend.ts");
   const protocolEntryPoints = new Set(["mutateExact", "observeExact", "probeExact"]);
   const line = (node: ts.Node): number => backend.getLineAndCharacterOfPosition(node.getStart(backend)).line + 1;
@@ -365,7 +358,7 @@ test("N4: every protocol call in backend.ts passes the imported production port"
   const otherRoutes: string[] = [];
   const identityImports: ts.ImportDeclaration[] = [];
   const protocolBindings = new Map<string, string>();
-  let portBinding: string | undefined;
+  let portFactoryBinding: string | undefined;
   const routes = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
       const specifier = node.moduleSpecifier.text;
@@ -376,7 +369,7 @@ test("N4: every protocol call in backend.ts passes the imported production port"
           // Local names, so an `as` alias on the port or on an entry point is followed, and the
           // entry points are recognized by their imported name whatever module supplies them.
           const imported = (element.propertyName ?? element.name).text;
-          if (imported === "nodeFilesystemIdentityPort" && specifier === IDENTITY_MODULE) portBinding = element.name.text;
+          if (imported === "createNodeFilesystemIdentityPort" && specifier === IDENTITY_MODULE) portFactoryBinding = element.name.text;
           if (protocolEntryPoints.has(imported)) protocolBindings.set(element.name.text, specifier);
         }
       }
@@ -395,7 +388,7 @@ test("N4: every protocol call in backend.ts passes the imported production port"
 
   assert.deepEqual(otherRoutes, [], "backend.ts must reach every module it uses through a static import declaration");
   assert.equal(identityImports.length, 1, "the identity module must be imported by exactly one declaration");
-  assert.ok(portBinding, "backend.ts must import the production port");
+  assert.ok(portFactoryBinding, "backend.ts must import the production port factory");
   assert.deepEqual(
     [...protocolBindings].filter(([, specifier]) => specifier !== IDENTITY_MODULE),
     [],
@@ -409,7 +402,7 @@ test("N4: every protocol call in backend.ts passes the imported production port"
     if (ts.isIdentifier(node) && protocolBindings.has(node.text) && !ts.isImportSpecifier(node.parent)) {
       if (ts.isCallExpression(node.parent) && node.parent.expression === node) {
         const [port] = node.parent.arguments;
-        passed.push(port && ts.isIdentifier(port) ? port.text : "a derived expression");
+        passed.push(port ? port.getText(backend) : "missing port");
       } else {
         // Fail closed on every other reference shape rather than resolving arbitrary bindings:
         // once an entry point is aliased, assigned, or passed on, no static rule here can tell
@@ -431,7 +424,8 @@ test("N4: every protocol call in backend.ts passes the imported production port"
   // The publication-only exact document and reserved-object reads add two observation calls while
   // retaining the same production port and without widening the StorageBackend prototype.
   assert.equal(passed.length, 13, `expected the backend's protocol call sites, found ${passed.length}`);
-  assert.deepEqual([...new Set(passed)], [portBinding], "a protocol call takes a port other than the imported production constant");
+  assert.deepEqual([...new Set(passed)].sort(), ["port", "this.#port"], "a protocol call bypasses the instance/publication context");
+  assert.equal(passed.filter((name) => name === "port").length, 2, "only the two raw publication readers use their captured context port");
 });
 
 test("N4: the boundary scanner recognizes every ambient-input import form", () => {

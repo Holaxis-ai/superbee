@@ -34,6 +34,8 @@ import {
 } from "../src/filesystem-identity.js";
 import { opOf, ScriptedPort } from "./scripted-identity-port.js";
 
+const replacementConflict = (error: unknown): boolean => (error as { code?: string })?.code === "TEST_REPLACEMENT_CONFLICT";
+
 const HOST_ROOT = path.parse(process.cwd()).root;
 const ROOT = path.resolve(HOST_ROOT, "root");
 const BASE = path.resolve(HOST_ROOT, "base");
@@ -596,9 +598,9 @@ test("AC-4: an existing leaf is read for CAS before mkdir/write, replaced by ren
   assert.equal(port.openCount, 0);
 });
 
-test("AC-4: Windows existing-leaf replacement maps sharing failures to a fresh-attempt conflict", async () => {
-  for (const code of ["EACCES", "EBUSY", "EPERM"]) {
-    const port = new ScriptedPort({ platform: "win32" });
+test("AC-4: host-classified existing-leaf replacement maps sharing failures to a fresh-attempt conflict", async () => {
+  for (const code of ["TEST_REPLACEMENT_CONFLICT"]) {
+    const port = new ScriptedPort({ isReplacementConflict: replacementConflict });
     port.file(TARGET, "old", 9);
     port.override("rename", async () => {
       throw Object.assign(new Error(code), { code });
@@ -611,13 +613,13 @@ test("AC-4: Windows existing-leaf replacement maps sharing failures to a fresh-a
   }
 });
 
-test("AC-4: Windows sharing failure cannot overwrite through a concurrently respelled parent", async () => {
-  const port = new ScriptedPort({ platform: "win32", aliasing: true });
+test("AC-4: host-classified sharing failure cannot overwrite through a concurrently respelled parent", async () => {
+  const port = new ScriptedPort({ isReplacementConflict: replacementConflict, aliasing: true });
   port.file(TARGET, "old", 9);
   const respelledTarget = path.join(ROOT, "Concepts", "x.md");
   port.override("rename", async () => {
     port.respell(CONCEPTS, "Concepts");
-    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    throw Object.assign(new Error("TEST_REPLACEMENT_CONFLICT"), { code: "TEST_REPLACEMENT_CONFLICT" });
   });
 
   await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
@@ -630,13 +632,13 @@ test("AC-4: Windows sharing failure cannot overwrite through a concurrently resp
   );
 });
 
-test("AC-4: Windows sharing failure cannot overwrite a replacement parent that reuses the leaf witness", async () => {
-  const port = new ScriptedPort({ platform: "win32" });
+test("AC-4: host-classified sharing failure cannot overwrite a replacement parent that reuses the leaf witness", async () => {
+  const port = new ScriptedPort({ isReplacementConflict: replacementConflict });
   port.file(TARGET, "old", 9);
   port.override("rename", async () => {
     port.remove(CONCEPTS);
     port.file(TARGET, "external", 9);
-    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    throw Object.assign(new Error("TEST_REPLACEMENT_CONFLICT"), { code: "TEST_REPLACEMENT_CONFLICT" });
   });
 
   await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
@@ -645,15 +647,15 @@ test("AC-4: Windows sharing failure cannot overwrite a replacement parent that r
   assert.deepEqual([...port.node(CONCEPTS)!.children.keys()], ["x.md"], "no temp is left in the replacement parent");
 });
 
-test("AC-4: Windows sharing failure preserves a newer exact-leaf generation", async () => {
-  const port = new ScriptedPort({ platform: "win32" });
+test("AC-4: host-classified sharing failure preserves a newer exact-leaf generation", async () => {
+  const port = new ScriptedPort({ isReplacementConflict: replacementConflict });
   port.file(TARGET, "old", 9);
   let first = true;
   port.override("rename", async (_args, base) => {
     if (first) {
       first = false;
       port.file(TARGET, "external", 10);
-      throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+      throw Object.assign(new Error("TEST_REPLACEMENT_CONFLICT"), { code: "TEST_REPLACEMENT_CONFLICT" });
     }
     return base();
   });
@@ -668,11 +670,11 @@ test("AC-4: Windows sharing failure preserves a newer exact-leaf generation", as
   assert.equal(port.ops("unlink").length, 1, "the refused writer removes only its own temporary file");
 });
 
-test("AC-4: Windows sharing failure preserves a leaf changed after the last possible witness validation", async () => {
-  const port = new ScriptedPort({ platform: "win32" });
+test("AC-4: host-classified sharing failure preserves a leaf changed after the last possible witness validation", async () => {
+  const port = new ScriptedPort({ isReplacementConflict: replacementConflict });
   port.file(TARGET, "old", 9);
   port.override("rename", async () => {
-    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    throw Object.assign(new Error("TEST_REPLACEMENT_CONFLICT"), { code: "TEST_REPLACEMENT_CONFLICT" });
   });
   port.after("writeTemp", 1, () => port.file(TARGET, "external-after-validation", 10));
 
@@ -682,12 +684,12 @@ test("AC-4: Windows sharing failure preserves a leaf changed after the last poss
   assert.equal(port.ops("unlink").length, 1, "the failed attempt removes its own temporary file");
 });
 
-test("AC-4: Windows sharing failure preserves removal of the original witness", async () => {
-  const port = new ScriptedPort({ platform: "win32" });
+test("AC-4: host-classified sharing failure preserves removal of the original witness", async () => {
+  const port = new ScriptedPort({ isReplacementConflict: replacementConflict });
   port.file(TARGET, "old", 9);
   port.override("rename", async () => {
     port.remove(TARGET);
-    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    throw Object.assign(new Error("TEST_REPLACEMENT_CONFLICT"), { code: "TEST_REPLACEMENT_CONFLICT" });
   });
 
   await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
@@ -695,13 +697,13 @@ test("AC-4: Windows sharing failure preserves removal of the original witness", 
   assert.equal(port.node(TARGET), null);
 });
 
-test("AC-4: Windows sharing failure preserves an externally respelled original witness for fresh reclassification", async () => {
-  const port = new ScriptedPort({ platform: "win32", aliasing: true });
+test("AC-4: host-classified sharing failure preserves an externally respelled original witness for fresh reclassification", async () => {
+  const port = new ScriptedPort({ isReplacementConflict: replacementConflict, aliasing: true });
   port.file(TARGET, "old", 9);
   const alias = path.join(path.dirname(TARGET), "X.md");
   port.override("rename", async () => {
     port.respell(TARGET, "X.md");
-    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    throw Object.assign(new Error("TEST_REPLACEMENT_CONFLICT"), { code: "TEST_REPLACEMENT_CONFLICT" });
   });
 
   await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
@@ -710,9 +712,9 @@ test("AC-4: Windows sharing failure preserves an externally respelled original w
   assert.equal(port.node(alias)?.bytes.toString(), "old");
 });
 
-test("AC-4: Windows existing-leaf replacement does not retry unrelated rename errors", async () => {
+test("AC-4: host-classified existing-leaf replacement does not retry unrelated rename errors", async () => {
   for (const code of ["EEXIST", "EIO", "ENOENT"]) {
-    const port = new ScriptedPort({ platform: "win32" });
+    const port = new ScriptedPort({ isReplacementConflict: replacementConflict });
     port.file(TARGET, "old", 9);
     port.override("rename", async () => {
       throw Object.assign(new Error(code), { code });
@@ -722,35 +724,35 @@ test("AC-4: Windows existing-leaf replacement does not retry unrelated rename er
   }
 });
 
-test("AC-4: replacement sharing errors are not retried on POSIX hosts", async () => {
-  const port = new ScriptedPort({ platform: "linux" });
+test("AC-4: unclassified replacement errors propagate unchanged", async () => {
+  const port = new ScriptedPort({ isReplacementConflict: () => false });
   port.file(TARGET, "old", 9);
   port.override("rename", async () => {
-    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    throw Object.assign(new Error("TEST_REPLACEMENT_CONFLICT"), { code: "TEST_REPLACEMENT_CONFLICT" });
   });
 
-  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), { code: "EBUSY" });
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), { code: "TEST_REPLACEMENT_CONFLICT" });
   assert.equal(port.ops("rename").length, 1);
 });
 
-test("AC-4: Windows first-creation rename fallback is not treated as an existing-leaf replacement", async () => {
-  const root = path.resolve(HOST_ROOT, "windows-nolink");
-  const port = new ScriptedPort({ platform: "win32" });
+test("AC-4: host-classified first-creation rename fallback is not treated as an existing-leaf replacement", async () => {
+  const root = path.resolve(HOST_ROOT, "host-nolink");
+  const port = new ScriptedPort({ isReplacementConflict: replacementConflict });
   port.mkdirp(path.join(root, "concepts"));
   port.override("link", async () => "unsupported");
   port.override("rename", async () => {
-    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    throw Object.assign(new Error("TEST_REPLACEMENT_CONFLICT"), { code: "TEST_REPLACEMENT_CONFLICT" });
   });
 
-  await assert.rejects(() => mutateExact(port, root, REL, casWrite(null)), { code: "EBUSY" });
+  await assert.rejects(() => mutateExact(port, root, REL, casWrite(null)), { code: "TEST_REPLACEMENT_CONFLICT" });
   assert.equal(port.ops("rename").length, 1);
 });
 
-test("AC-4: Windows existing-leaf replacement does not consume a private rename retry budget", async () => {
-  const port = new ScriptedPort({ platform: "win32" });
+test("AC-4: host-classified existing-leaf replacement does not consume a private rename retry budget", async () => {
+  const port = new ScriptedPort({ isReplacementConflict: replacementConflict });
   port.file(TARGET, "old", 9);
   port.override("rename", async () => {
-    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    throw Object.assign(new Error("TEST_REPLACEMENT_CONFLICT"), { code: "TEST_REPLACEMENT_CONFLICT" });
   });
 
   await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
@@ -870,6 +872,18 @@ test("F1: a filesystem without hard links falls back to rename for first creatio
   port.trace.length = 0;
   assert.equal(await mutateExact(port, HAS_LINK, REL, casWrite(null)), "written");
   assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "link", "unlink"]);
+});
+
+test("F1: hard-link capability learned by one port cannot disable another port's first-create protection", async () => {
+  const noLinks = new ScriptedPort();
+  noLinks.mkdirp(CONCEPTS);
+  noLinks.override("link", async () => "unsupported");
+  await mutateExact(noLinks, ROOT, "concepts/no-links.md", casWrite(null));
+  const withLinks = new ScriptedPort();
+  withLinks.mkdirp(CONCEPTS);
+  await mutateExact(withLinks, ROOT, "concepts/with-links.md", casWrite(null));
+  assert.equal(withLinks.ops("link").length, 1, "a different port must still use atomic no-clobber publication");
+  assert.equal(withLinks.ops("rename").length, 0);
 });
 
 test("F2: a failed unlink of the temp name after a successful link does not fail the write", async () => {
@@ -1135,4 +1149,21 @@ test("AC-5: fold digest over the checked-in spelling list is pinned", {
     digest.update(`${await identityKey("/", `concepts/${b}.md`)}\n`);
   }
   assert.equal(digest.digest("hex"), "7307f1939479537efaac08c000c1e3552d855434e29bb93ba1ee493c086d5f4e");
+});
+
+
+test("host-classified open contention reruns the witnessed walk and retains the observation restart bound", async () => {
+  const transient = new Error("synthetic open contention");
+  const port = new ScriptedPort({ isTransientOpenError: (error) => error === transient });
+  port.file(TARGET, "old", 9);
+  port.override("open", async () => { throw transient; });
+  await assert.rejects(observe(port), ConcurrentReplacementError);
+  assert.equal(port.ops("open").length, 4);
+  assert.equal(probeWalks(port), 4, "every retry starts from fresh path witnesses");
+  assert.equal(port.openCount, 0);
+  const terminal = new ScriptedPort();
+  terminal.file(TARGET, "old", 9);
+  terminal.override("open", async () => { throw transient; });
+  await assert.rejects(observe(terminal), (error) => error === transient);
+  assert.equal(terminal.ops("open").length, 1);
 });

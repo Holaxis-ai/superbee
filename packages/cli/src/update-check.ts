@@ -1,3 +1,4 @@
+import { currentDistribution } from "./runtime-context.js";
 import {
   compareStrictSemver,
   parseStrictSemver,
@@ -71,6 +72,7 @@ export function bakedFunctionalVersionFloor(): string | undefined {
 }
 
 export function bakedUpdatePolicy(): { enabled: boolean } {
+  if (currentDistribution()?.updatesEnabled === false) return { enabled: false };
   const policy = record(typeof __SUPERBEE_UPDATE_POLICY__ === "undefined" ? undefined : __SUPERBEE_UPDATE_POLICY__);
   if (policy?.enabled === true) {
     return { enabled: true };
@@ -430,7 +432,7 @@ export async function checkSupportedRelease(
     throw new Error("running package version is not valid strict SemVer");
   }
   const checkedAt = (deps.now ?? (() => new Date()))().toISOString();
-  if (!(deps.updatePolicy ?? bakedUpdatePolicy()).enabled) {
+  if (currentDistribution()?.updatesEnabled === false || !(deps.updatePolicy ?? bakedUpdatePolicy()).enabled) {
     return unavailable(
       input.runningVersion,
       input.track,

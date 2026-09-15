@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee serve [--dir <path>] [--host <h>] [--port <p>]` — boot the reference
 // wire-protocol server (`@superbee/server`) over a local bundle.
 //
@@ -94,7 +95,7 @@ export async function serve(argv: string[], deps: Partial<ServeCliDeps> = {}): P
     CLI_LEAVES.serve,
   );
   if (values.help) {
-    stdout(SERVE_USAGE);
+    stdout(renderUsage(SERVE_USAGE));
     return;
   }
 

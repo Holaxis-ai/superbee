@@ -9,6 +9,8 @@ export const workspaceAliases = {
       "jsonc-parser": r("../../node_modules/jsonc-parser/lib/esm/main.js"),
       // List browser-safe core subpaths before the package root so esbuild does not append the
       // subpath to `index.ts` (which would resolve as the impossible `index.ts/page`).
+      "@superbee/core/bundle-ops": r("../core/src/bundle-ops.ts"),
+      "@superbee/core/filesystem": r("../core/src/filesystem.ts"),
       "@superbee/core/engine": r("../core/src/engine.ts"),
       "@superbee/core/document-codec": r("../core/src/document-codec.ts"),
       "@superbee/core/recipes": r("../core/src/recipes.ts"),

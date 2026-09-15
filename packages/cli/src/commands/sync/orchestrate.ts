@@ -1,3 +1,6 @@
+import { renderUsage } from "../../output.js";
+import { detectBoardChannel } from "../../board-runtime.js";
+import { provisionBoardWorktree } from "../../board-runtime.js";
 // `superbee sync` — the entry flow, composed of explicit phases:
 // heal → detect → provision → commit → pull → push → receipt (`--pull-only` skips commit + push).
 //
@@ -22,7 +25,6 @@ import {
   changesSince,
   countUncommitted,
   currentHead,
-  detectBoardChannel,
   fetchRebaseResolving,
   ffPull,
   hasLocalOnlyBundle,
@@ -30,7 +32,6 @@ import {
   inTreeFetchAndRecord,
   isBoardGitError,
   originDocsBetween,
-  provisionBoardWorktree,
   push,
   repoTopLevel,
   resolveBundleKey,
@@ -735,7 +736,7 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
 
   const dispatch = await parseSyncInvocation(argv, inv);
   if (dispatch.kind === "help") {
-    stdout(SYNC_USAGE);
+    stdout(renderUsage(SYNC_USAGE));
     return;
   }
   if (dispatch.kind === "show-incoming") {

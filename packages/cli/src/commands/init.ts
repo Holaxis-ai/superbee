@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee init [--dir <path>] [--okf-version <v>]` — create (or open) an OKF knowledge bundle.
 //
 // Thin wrapper over core `initBundle(root, { okfVersion })`: creates the directory and a root
@@ -8,7 +9,8 @@
 import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
+import { loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
+import { configuredInitBundle as initBundle } from "../filesystem-runtime.js";
 import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -92,7 +94,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     CLI_LEAVES.init,
   );
   if (values.help) {
-    stdout(INIT_USAGE);
+    stdout(renderUsage(INIT_USAGE));
     return;
   }
   if (values.remote) {

@@ -1,3 +1,4 @@
+import { captureRuntimeCallback } from "../runtime-context.js";
 // CLI-owned adapter for the reusable loopback UI runtime. Generated asset bytes and bundle-name
 // policy stay in this package; the listener/session/proxy/View/SSE mechanics live below it.
 import {
@@ -35,7 +36,7 @@ export function bootUiServer(options: UiServerOptions): Promise<UiServerHandle> 
       viewAuthorization: new LocalViewAuthorizationStore(options.bundle.root),
       renderDocument: renderDocumentToStaticHtml,
       serveAsset: serveEmbeddedUiAsset,
-      resolveBundleDisplayName: async (bundle: Bundle) => (await deriveBundleDisplayName(bundle)).name,
+      resolveBundleDisplayName: captureRuntimeCallback(async (bundle: Bundle) => (await deriveBundleDisplayName(bundle)).name),
       loadSharingSummary: createSharingLoader(options.bundle.root),
       loadWorkspaces: createWorkspacesLoader(options.bundle.root),
     });

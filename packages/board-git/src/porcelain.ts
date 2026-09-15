@@ -40,6 +40,7 @@
  * {@link fetchRebaseResolving}: keep the upstream version, export the local version, and complete
  * the rebase.
  */
+import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -432,11 +433,11 @@ function realOrSame(p: string): string {
   }
 }
 
-/** Compare physical paths without treating Windows case/drive-letter aliases as different roots. */
-function samePhysicalPath(a: string, b: string): boolean {
+/** Compare physically resolved coordinates using the selected host spelling policy. */
+function samePhysicalPath(a: string, b: string, hostPolicy: BoardHostPolicy): boolean {
   const left = path.resolve(realOrSame(a));
   const right = path.resolve(realOrSame(b));
-  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+  return hostPolicy.sameResolvedPath(left, right);
 }
 
 /** The repo/worktree's git common-dir, realpathed for ownership comparisons. */
@@ -449,10 +450,10 @@ function gitCommonDir(dir: string): string | null {
 }
 
 /** True when both paths are worktrees of the same git repository/common-dir. */
-function sameGitCommonDir(a: string, b: string): boolean {
+function sameGitCommonDir(a: string, b: string, hostPolicy: BoardHostPolicy): boolean {
   const aCommon = gitCommonDir(a);
   const bCommon = gitCommonDir(b);
-  return aCommon !== null && bCommon !== null && samePhysicalPath(aCommon, bCommon);
+  return aCommon !== null && bCommon !== null && samePhysicalPath(aCommon, bCommon, hostPolicy);
 }
 
 /**
@@ -467,9 +468,10 @@ function sameGitCommonDir(a: string, b: string): boolean {
  * worktree was ALSO wedged (the heal-ordering edge — the caller re-runs the entry heal for that).
  * Exported for channel detection's rule 1 (`channel.ts`), which keys on this same weak signature.
  */
-export function worktreeRootResolves(boardPath: string): boolean {
+export function worktreeRootResolves(boardPath: string, hostPolicy?: BoardHostPolicy): boolean {
+  const policy = captureBoardHostPolicy(hostPolicy);
   const boardTop = repoTopLevel(boardPath);
-  return boardTop !== null && samePhysicalPath(boardTop, boardPath);
+  return boardTop !== null && samePhysicalPath(boardTop, boardPath, policy);
 }
 
 /**
@@ -477,8 +479,9 @@ export function worktreeRootResolves(boardPath: string): boolean {
  * same git common-dir as the project that wants to adopt it. This rejects a foreign repo's board
  * worktree parked at this project's conventional path. Exported for channel detection's rule 1.
  */
-export function worktreeRootResolvesForOwner(boardPath: string, ownerTop: string): boolean {
-  return worktreeRootResolves(boardPath) && sameGitCommonDir(boardPath, ownerTop);
+export function worktreeRootResolvesForOwner(boardPath: string, ownerTop: string, hostPolicy?: BoardHostPolicy): boolean {
+  const policy = captureBoardHostPolicy(hostPolicy);
+  return worktreeRootResolves(boardPath, policy) && sameGitCommonDir(boardPath, ownerTop, policy);
 }
 
 /**
@@ -517,8 +520,8 @@ export function rebaseWasFromBoardBranch(boardPath: string): boolean {
  * of a wedged rebase that was itself started FROM `board` ({@link rebaseWasFromBoardBranch}) — any
  * other detached state (or any other named branch) is NOT accepted, and falls through to refusal.
  */
-function repairedWorktreeIsBoard(boardPath: string, ownerTop: string): boolean {
-  if (!worktreeRootResolvesForOwner(boardPath, ownerTop)) return false;
+function repairedWorktreeIsBoard(boardPath: string, ownerTop: string, hostPolicy: BoardHostPolicy): boolean {
+  if (!worktreeRootResolvesForOwner(boardPath, ownerTop, hostPolicy)) return false;
   const branch = runGit(boardPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (branch.status === 0 && branch.stdout.trim() === BOARD_BRANCH) return true;
   return detectStaleRebase(boardPath) && rebaseWasFromBoardBranch(boardPath);
@@ -529,17 +532,17 @@ function repairedWorktreeIsBoard(boardPath: string, ownerTop: string): boolean {
  * `dir`: the selected conventional directory exists, is ITSELF a worktree root (not a plain directory
  * falling through to the parent repo), and has the `board` branch checked out.
  */
-function conventionalProvisionedBoardPath(dir: string): string | null {
+function conventionalProvisionedBoardPath(dir: string, hostPolicy: BoardHostPolicy): string | null {
   const top = repoTopLevel(dir);
   if (!top) return null;
   const boardPath = path.join(top, bundleDirNameForProject(top));
-  if (!existsSync(boardPath) || !worktreeRootResolvesForOwner(boardPath, top)) return null;
+  if (!existsSync(boardPath) || !worktreeRootResolvesForOwner(boardPath, top, hostPolicy)) return null;
   const branch = runGit(boardPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
   return branch.status === 0 && branch.stdout.trim() === BOARD_BRANCH ? boardPath : null;
 }
 
-export function isProvisioned(dir: string): boolean {
-  return conventionalProvisionedBoardPath(dir) !== null;
+export function isProvisioned(dir: string, hostPolicy?: BoardHostPolicy): boolean {
+  return conventionalProvisionedBoardPath(dir, captureBoardHostPolicy(hostPolicy)) !== null;
 }
 
 /**
@@ -608,12 +611,13 @@ export function isRecoverableStandaloneBoardCheckout(dir: string): boolean {
 }
 
 /** The active board path for read-side consumers: standalone root first, then conventional worktree. */
-export function resolveProvisionedBoardPath(dir: string): string | null {
+export function resolveProvisionedBoardPath(dir: string, hostPolicy?: BoardHostPolicy): string | null {
+  const policy = captureBoardHostPolicy(hostPolicy);
   const top = repoTopLevel(dir);
   if (!top) return null;
   const standalone = resolveStandaloneBoardCheckout(top);
   if (standalone) return standalone;
-  return conventionalProvisionedBoardPath(top);
+  return conventionalProvisionedBoardPath(top, policy);
 }
 
 function standaloneRootWrongBranch(top: string, branch: string): BoardGitError {
@@ -698,27 +702,6 @@ export function hasWorktreeSignature(dir: string): boolean {
 function repairWorktree(top: string, boardPath: string): boolean {
   const r = runGit(top, [...RELATIVE_WORKTREE_CONFIG, "worktree", "repair", boardPath]);
   return r.status === 0;
-}
-
-/** Single-quote shell escaping for remediation commands printed in error help. */
-function shellQuote(s: string): string {
-  return `'${s.replaceAll("'", "'\\''")}'`;
-}
-
-/** Single-quote escaping inside a PowerShell script literal. */
-function powershellQuote(s: string): string {
-  return `'${s.replaceAll("'", "''")}'`;
-}
-
-function moveAsideHelp(boardPath: string, note: string): string {
-  if (process.platform === "win32") {
-    return (
-      `powershell.exe -NoProfile -NonInteractive -Command "` +
-      `$ErrorActionPreference='Stop'; Rename-Item -LiteralPath ${powershellQuote(boardPath)} ` +
-      `-NewName ${powershellQuote(`${path.basename(boardPath)}.bak`)} -ErrorAction Stop"`
-    );
-  }
-  return `mv ${shellQuote(boardPath)} ${shellQuote(`${boardPath}.bak`)}  # ${note}`;
 }
 
 /**
@@ -900,24 +883,25 @@ export type ExistingDirRefusalReason = "foreign" | "foreign_checkout" | "unrepai
  * worthless, only unsafe for sync to adopt automatically. ONE factory so the CLI's sync-outcome
  * table can enumerate the four arms against provisioning's own bytes.
  */
-export function existingDirRefusal(reason: ExistingDirRefusalReason, boardPath: string, top: string): BoardGitError {
+export function existingDirRefusal(reason: ExistingDirRefusalReason, boardPath: string, top: string, hostPolicy?: BoardHostPolicy): BoardGitError {
+  const policy = captureBoardHostPolicy(hostPolicy);
   const bundleDir = path.basename(boardPath);
   const messages: Record<ExistingDirRefusalReason, { message: string; help: string }> = {
     foreign: {
       message: `a non-empty '${bundleDir}' directory already exists at ${boardPath} but is not the shared board checkout — move it aside, then re-run sync`,
-      help: moveAsideHelp(boardPath, "then re-run sync; reconcile any local-only docs afterwards"),
+      help: policy.moveAsideHelp(boardPath, "then re-run sync; reconcile any local-only docs afterwards"),
     },
     foreign_checkout: {
       message: `'${bundleDir}' at ${boardPath} is git checkout machinery, but it belongs to a different git repository than ${top} — move it aside, then re-run sync to provision this repo's board from origin/board`,
-      help: moveAsideHelp(boardPath, "then re-run sync; the existing checkout is untouched, just relocated"),
+      help: policy.moveAsideHelp(boardPath, "then re-run sync; the existing checkout is untouched, just relocated"),
     },
     unrepairable: {
       message: `'${bundleDir}' at ${boardPath} looks like the board checkout with stale pointers that 'git worktree repair' could not fix (its git-internal registration is likely gone) — move it aside, then re-run sync to re-provision fresh from origin/board`,
-      help: moveAsideHelp(boardPath, "then re-run sync; recover any local-only, unpushed docs from the backup afterwards"),
+      help: policy.moveAsideHelp(boardPath, "then re-run sync; recover any local-only, unpushed docs from the backup afterwards"),
     },
     wrong_branch: {
       message: `'${bundleDir}' at ${boardPath} is git checkout machinery (a linked worktree or nested repo), but it is not checked out to the '${BOARD_BRANCH}' branch (nor mid-rebase from it) — it is likely used for something else — move it aside, then re-run sync to re-provision the board fresh from origin/board`,
-      help: moveAsideHelp(boardPath, "then re-run sync; the existing checkout is untouched, just relocated"),
+      help: policy.moveAsideHelp(boardPath, "then re-run sync; the existing checkout is untouched, just relocated"),
     },
   };
   return new BoardGitError("RUNTIME", messages[reason].message, {
@@ -958,7 +942,8 @@ export interface NetworkBudgetOptions {
   ensureIgnore?: boolean;
 }
 
-export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions = {}): ProvisionOutcome {
+export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions = {}, hostPolicy?: BoardHostPolicy): ProvisionOutcome {
+  const policy = captureBoardHostPolicy(hostPolicy);
   const top = repoTopLevel(dir);
   if (!top) return { kind: "no_repo" };
   const rootIsBundle = hasTrackedBundleRootAtHead(top);
@@ -987,7 +972,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     const gitignore = ensureBoardGitignoreWorkingTree(top);
     return gitignore.changed ? { ...outcome, gitignore } : outcome;
   };
-  if (isProvisioned(top)) return withIgnoreCoverage({ kind: "already" as const, boardPath });
+  if (isProvisioned(top, policy)) return withIgnoreCoverage({ kind: "already" as const, boardPath });
 
   // Probe the board ref explicitly: a clone's configured fetch refspec may exclude it.
   const hasOrigin = runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0;
@@ -1131,7 +1116,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
       const hadSignature = hasWorktreeSignature(boardPath);
       let reason: ExistingDirRefusalReason = "foreign";
       if (hadSignature) {
-        if (worktreeRootResolves(boardPath) && !sameGitCommonDir(boardPath, top)) {
+        if (worktreeRootResolves(boardPath, policy) && !sameGitCommonDir(boardPath, top, policy)) {
           reason = "foreign_checkout";
         } else {
           repairWorktree(top, boardPath);
@@ -1144,19 +1129,19 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
         // safe no-op on an ALREADY-healthy worktree regardless of which branch it's on, so a
         // sidecar worktree someone genuinely uses for something else, or one merely left on a
         // plain detached HEAD, would otherwise be silently misreported as "repaired").
-        if (repairedWorktreeIsBoard(boardPath, top)) {
+        if (repairedWorktreeIsBoard(boardPath, top, policy)) {
           return withIgnoreCoverage({ kind: "repaired" as const, boardPath });
         }
         if (reason !== "foreign_checkout") {
-          if (worktreeRootResolves(boardPath) && !sameGitCommonDir(boardPath, top)) {
+          if (worktreeRootResolves(boardPath, policy) && !sameGitCommonDir(boardPath, top, policy)) {
             reason = "foreign_checkout";
           } else {
-            reason = worktreeRootResolves(boardPath) ? "wrong_branch" : "unrepairable";
+            reason = worktreeRootResolves(boardPath, policy) ? "wrong_branch" : "unrepairable";
           }
         }
       }
       // REFUSE, worded to the case actually observed (see {@link existingDirRefusal}).
-      throw existingDirRefusal(reason, boardPath, top);
+      throw existingDirRefusal(reason, boardPath, top, policy);
     }
     if (hasLocal && budget.allowLocalBranch === false && !localMatchesRemote && !adoptLocalBoard()) {
       return { kind: "local_board", boardPath, remoteExists: hasRemote };

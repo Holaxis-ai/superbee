@@ -1,3 +1,4 @@
+import { renderUsage } from "../../output.js";
 // `doc delete <id>` — see `../doc.ts`'s header comment; hard-delete, idempotent, non-cascading.
 import { parseArgs } from "node:util";
 import { deleteDoc, pathFromConceptId, isReservedFile, VersionConflict } from "@superbee/core";
@@ -30,7 +31,7 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
     CLI_LEAVES.docDelete,
   );
   if (values.help) {
-    stdout(DOC_DELETE_USAGE);
+    stdout(renderUsage(DOC_DELETE_USAGE));
     return;
   }
 

@@ -3,9 +3,8 @@ name: CI tests
 # Runtime-sensitive suites run identically on Node 22 and 26, then once more on macOS so that
 # tests whose native branch only executes on a case-aliasing filesystem actually run. Distribution,
 # browser/UI, local release policy, and exhaustive target proofs are platform-independent lanes on
-# one supported runtime. The separate `windows-installed-package.yml` workflow retains the native
-# Windows and Node 20 package proof as an explicit manual release-candidate check. The first
-# implementation is deliberately unconditional: path
+# one supported runtime. Windows adapters and their native installed-package proof live in the
+# separate Windows distribution repository. Required lanes remain unconditional: path
 # classification and skip receipts require a separate fail-closed classifier contract.
 #
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its

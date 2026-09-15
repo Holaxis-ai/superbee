@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee list` / `superbee query` — query concepts over their frontmatter.
 //
 // Thin wrapper over core `queryHeads(bundle, { type?, tags?, prefix?, fields? })` (the filter facets
@@ -142,7 +143,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     { optionNames: Object.keys(LIST_OPTIONS) },
   );
   if (values.help) {
-    stdout(LIST_USAGE);
+    stdout(renderUsage(LIST_USAGE));
     return;
   }
 

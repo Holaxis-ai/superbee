@@ -1,3 +1,4 @@
+import { withTestPolicy } from "./support/host-policy.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -101,84 +102,19 @@ test("host config paths honor relocated roots and remain read-only", () => {
   for (const [, expected] of cases) assert.ok(seen.includes(expected));
 });
 
-test("Windows MCP targets use documented profile roots and AppData only for Claude Desktop", () => {
-  const home = String.raw`C:\Users\Mike`;
-  const environment: McpStatusEnvironment = {
-    home,
-    platform: "win32",
-    env: {
-      HOME: home,
-      USERPROFILE: home,
-      APPDATA: String.raw`C:\Users\Mike\AppData\Roaming`,
-    },
-  };
-  const expected = new Map([
-    ["codex", String.raw`C:\Users\Mike\.codex\config.toml`],
-    ["claude-code", String.raw`C:\Users\Mike\.claude.json`],
-    ["claude-desktop", String.raw`C:\Users\Mike\AppData\Roaming\Claude\claude_desktop_config.json`],
-    ["opencode", String.raw`C:\Users\Mike\.config\opencode\opencode.json`],
-  ]);
-  for (const [id, config] of expected) {
-    const result = inspectMcpHost(target(id), {
-      environment,
-      authority: () => unknown,
-      readFile: (candidate) => {
-        if (candidate === config) return "{}";
-        throw Object.assign(new Error("missing"), { code: "ENOENT" });
-      },
-      execFile: () => "[]",
+test("Claude Desktop paths follow the selected environment independently of the running host", () => {
+  const desktopPath = "/users/mike/Library/Application Support/Claude/claude_desktop_config.json";
+  for (const platform of ["darwin", "linux", "unsupported-host"]) {
+    const reads: string[] = [];
+    const result = inspectMcpHost(target("claude-desktop"), {
+      environment: env({}, platform),
+      authority: () => stable,
+      readFile: (file) => { reads.push(file); return "{}"; },
     });
-    assert.equal(result.config, config);
+    assert.equal(result.config, platform === "darwin" ? desktopPath : null);
+    assert.equal(result.state, platform === "darwin" ? "absent" : "unsupported");
+    assert.deepEqual(reads, platform === "darwin" ? [desktopPath] : []);
   }
-});
-
-test("Windows Codex status uses the resolved cmd shim and distinguishes command failures", () => {
-  const home = String.raw`C:\Users\Mike`;
-  const shim = String.raw`C:\Users\Mike\AppData\Roaming\npm\codex.cmd`;
-  const comspec = String.raw`C:\Windows\System32\cmd.exe`;
-  const base = {
-    environment: {
-      home,
-      platform: "win32",
-      env: {
-        USERPROFILE: home,
-        PATH: String.raw`C:\Users\Mike\AppData\Roaming\npm;C:\Windows\System32`,
-        PATHEXT: ".EXE;.CMD",
-        ComSpec: comspec,
-      },
-    },
-    authority: () => stable,
-    resolveCommandPath: (candidate: string) => {
-      if (candidate.toLowerCase() === shim.toLowerCase()) return shim;
-      if (candidate.toLowerCase() === comspec.toLowerCase()) return comspec;
-      return undefined;
-    },
-  };
-  const calls: Array<{ file: string; args: readonly string[] }> = [];
-  const empty = inspectMcpHost(target("codex"), {
-    ...base,
-    execFile: (file, args) => {
-      calls.push({ file, args: [...args] });
-      return "[]";
-    },
-  });
-  assert.equal(empty.state, "absent");
-  assert.deepEqual(calls, [{
-    file: comspec,
-    args: ["/d", "/s", "/c", `""${shim}" "mcp" "list" "--json""`],
-  }]);
-
-  const absent = inspectMcpHost(target("codex"), {
-    ...base,
-    resolveCommandPath: () => undefined,
-  });
-  assert.equal(absent.state, "cli_absent");
-
-  const unreadable = inspectMcpHost(target("codex"), {
-    ...base,
-    execFile: () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); },
-  });
-  assert.equal(unreadable.state, "unreadable");
 });
 
 test("OpenCode recognizes the canonical JSONC filename without guessing comment syntax", () => {
@@ -335,10 +271,10 @@ test("commented JSONC is read losslessly while malformed config and unsupported 
     authority: () => stable,
     readFile: () => '{"mcpServers":{},"mcpServers":{}}',
   });
-  const unsupported = inspectMcpHost(target("claude-desktop"), {
+  const unsupported = withTestPolicy({ host: { claudeDesktopConfigPath: () => undefined } }, () => inspectMcpHost(target("claude-desktop"), {
     environment: env({}, "linux"),
     authority: () => stable,
-  });
+  }));
   assert.equal(commented.state, "absent");
   assert.equal(malformed.state, "unreadable");
   assert.match(malformed.reason, /status unavailable/);
@@ -359,4 +295,17 @@ test("read-only status never includes absolute host paths in unreadable reasons"
   });
   assert.equal(result.state, "unreadable");
   assert.doesNotMatch(result.reason, /users\/mike|Application Support|claude_desktop_config/);
+});
+
+test("host command status preserves absent and unreadable outcomes", () => {
+  const absent = inspectMcpHost(target("codex"), {
+    environment: env(), authority: () => stable,
+    execFile: () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); },
+  });
+  const unreadable = inspectMcpHost(target("codex"), {
+    environment: env(), authority: () => stable,
+    execFile: () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); },
+  });
+  assert.equal(absent.state, "cli_absent");
+  assert.equal(unreadable.state, "unreadable");
 });

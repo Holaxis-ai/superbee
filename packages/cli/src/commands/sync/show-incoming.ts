@@ -1,3 +1,4 @@
+import { configuredBundle } from "../../filesystem-runtime.js";
 // `sync --show-incoming <id>` — the conflict VIEWER: prints the upstream version of one doc via
 // `git show origin/board:<path>` with full doc-read semantics (truncation, raw `--out` and parsed
 // `--body-out` byte hatches, stdout-stream stderr envelopes), labeled "as of last fetch" (no
@@ -218,7 +219,7 @@ export async function showIncoming(
       const bundleRoot = route?.kind === "bound-board"
         ? route.owner.bundleRoot
         : path.join(top, inTreeBundleDir);
-      const warning = await inBundlePollutionWarning({ root: bundleRoot }, out);
+      const warning = await inBundlePollutionWarning(configuredBundle(bundleRoot), out);
       if (warning) receipt.warning = warning;
       await fs.writeFile(out, bytes);
       stdout(render(receipt, mode));
@@ -260,7 +261,7 @@ export async function showIncoming(
         : path.join(top, inTreeBundleDir);
       if (!streamMode) {
         await assertSafeNonDocumentOutTarget(
-          { root: bundleRoot },
+          configuredBundle(bundleRoot),
           "--body-out",
           bodyOut,
           "body-only markdown",

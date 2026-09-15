@@ -1,3 +1,4 @@
+import { captureRuntimeCallback } from "./runtime-context.js";
 import {
   MAX_WORKSPACE_CATALOG_PAGE,
   createMcpBundleContext,
@@ -34,7 +35,7 @@ export function createCatalogMcpWorkspaceResolver(
   const deriveName = options.deriveName ?? deriveBundleDisplayName;
 
   return {
-    list: async () => {
+    list: captureRuntimeCallback(async () => {
       const entries = await listEntries(options.home);
       return Promise.all(entries.map(async (entry, index) => {
         if (!entry.available) {
@@ -70,8 +71,8 @@ export function createCatalogMcpWorkspaceResolver(
           };
         }
       }));
-    },
-    open: async (selector) => {
+    }),
+    open: captureRuntimeCallback(async (selector) => {
       const entry = await resolveEntry(selector, options.home);
       const bundle = await open(entry.locator.path);
       const target = await resolveTarget(entry.locator.path);
@@ -86,8 +87,8 @@ export function createCatalogMcpWorkspaceResolver(
         bundle,
         bundleName,
         ...(options.actor !== undefined ? { actor: options.actor } : {}),
-        viewAuthorization: new LocalViewAuthorizationStore(bundle.root),
+        viewAuthorization: new LocalViewAuthorizationStore(bundle.root, options.home),
       });
-    },
+    }),
   };
 }
