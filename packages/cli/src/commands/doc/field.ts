@@ -25,10 +25,10 @@ const leaves = {
 type Action = keyof typeof leaves;
 const descriptions: Record<Action, string> = {
   set: "Assign one supported non-collection field. Literal values are strings; use --from-file for typed scalars or a complete list-free mapping. Other fields and the body remain unchanged.",
-  add: "Make one exact tag string or source entry present. New members append; an identical addition is a no-op. Supply a tag literally or one source mapping with --from-file.",
-  remove: "Make one exact tag membership or selected source absent. A missing member is a no-op. For sources, supply exactly one --id or --resource; no value is accepted.",
+  add: "Make one exact tag string, Kind-declared list member or source entry present. New members append; an identical addition is a no-op. Supply a member literally or one source mapping with --from-file.",
+  remove: "Make one exact tag membership, Kind-declared list member or selected source absent. A missing member is a no-op. For sources, supply exactly one --id or --resource; no value is accepted.",
   edit: "Update supplied properties of one source, preserving its position, sibling sources and other properties. Requires --from-file, --expected-version and exactly one --id or --resource. An ID-less source may receive its first nonempty ID; an existing ID cannot be renamed.",
-  "replace-all": "Supply the complete final tags or sources list with --from-file and --expected-version. [] empties the list; omitted members are deliberately removed.",
+  "replace-all": "Supply the complete final tags, sources or Kind-declared list with --from-file and --expected-version. [] empties the list; omitted members are deliberately removed.",
 };
 export const DOC_FIELD_USAGE = `superbee doc field - explicit frontmatter actions
 
@@ -36,7 +36,8 @@ Usage:
   superbee doc field <action> <id> <field> [value/options]
 
 Actions: set, add, remove, edit, replace-all
-Collections: tags and sources only. sources requires OKF v0.2.
+Collections: tags, sources, and Kind-declared list fields holding scalar
+members. sources requires OKF v0.2.
 Set supports type, title, description, resource, edition-supported status,
 stale_after and usage_window, and declared non-collection Kind fields.
 Managed provenance and verification fields are not generic set targets.
@@ -85,7 +86,6 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
   const selectorCount = Number(values.id !== undefined) + Number(values.resource !== undefined);
   if (needsSelector ? selectorCount !== 1 : selectorCount !== 0) fail(needsSelector ? "Select one source with exactly one --id or --resource." : "Selectors are only accepted for source edit/remove.");
   if (action === "edit" && field !== "sources") fail("edit supports sources only.");
-  if (action !== "set" && field !== "tags" && field !== "sources") fail("Collection actions support only tags and sources.");
   if (action === "remove" && field === "sources") {
     if (literal !== undefined || fromFile !== undefined) fail("Source remove accepts a selector, not a value.");
   } else if (literal === undefined && fromFile === undefined) fail("Supply one literal value or --from-file.");
@@ -115,7 +115,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
   try {
     const result = await mutateDoc({
       bundle, id, mode: "patch", onAbsent: "fail", registry,
-      strict: Boolean(values.strict) || (action === "set" && !isStandardDocumentSetField(field, edition)),
+      strict: Boolean(values.strict) || (field !== "tags" && field !== "sources" && !isStandardDocumentSetField(field, edition)),
       helpOnKindReject: `${cliInvocation()} kinds`, actor, persistActor: true,
       expectedVersion: expectedVersion?.trim(), remoteUrl: values.remote,
       input: (_existing, context) => {

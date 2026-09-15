@@ -199,3 +199,92 @@ test("source addition retains the standard string-ID contract, including an expl
   assert.equal(apply({ sources: [row] }, { action: "remove", field: "sources", selector: { id: "" } }).scope.outcome, "removed");
   assert.throws(() => apply({ sources: [{ resource: "url" }] }, { action: "edit", field: "sources", selector: { resource: "url" }, patch: { id: "" } }), /nonempty/);
 });
+
+const reviewKind = { id: "conventions/review", title: "Review", governs: "Review", fields: { required: ["title"], optional: ["reviewers", "review_lenses", "score", "actor", "superbee_progress_status", "status"], values: {}, terminal: {}, descriptions: {} } };
+const reviewRegistry = { kinds: new Map([["Review", reviewKind]]), warnings: [] };
+const reviewContext = { registry: reviewRegistry, okfVersion: "0.2" as const };
+const review = (fm: Record<string, unknown> = {}): OkfDocument => ({ id: "reviews/r1", frontmatter: { type: "Review", title: "R", ...fm }, body: "body" });
+const reviewApply = (fm: Record<string, unknown>, action: any) => prepareDocumentFieldAction(review(fm), action, reviewContext);
+
+test("Kind-declared list fields share the tags membership contract", () => {
+  assert.deepEqual(reviewApply({}, { action: "add", field: "reviewers", value: "devin" }).candidate.frontmatter.reviewers, ["devin"]);
+  assert.equal(reviewApply({ reviewers: ["devin"] }, { action: "add", field: "reviewers", value: "devin" }).scope.outcome, "unchanged");
+  assert.deepEqual(reviewApply({ reviewers: ["a", "A", "a"] }, { action: "remove", field: "reviewers", value: "a" }).candidate.frontmatter.reviewers, ["A"]);
+  const absent = reviewApply({}, { action: "remove", field: "reviewers", value: "gone" });
+  assert.equal(absent.scope.outcome, "unchanged");
+  assert.equal("reviewers" in absent.candidate.frontmatter, false);
+  assert.deepEqual(reviewApply({ review_lenses: ["security"] }, { action: "add", field: "review_lenses", value: "api" }).candidate.frontmatter.review_lenses, ["security", "api"]);
+  // Scalar members are not limited to strings; membership remains exact.
+  assert.equal(reviewApply({ score: [1] }, { action: "add", field: "score", value: 2 }).scope.outcome, "added");
+  assert.equal(reviewApply({ score: [1] }, { action: "add", field: "score", value: "1" }).scope.outcome, "added");
+});
+
+test("Kind-declared collection actions refuse undeclared, managed, edit and non-scalar targets", () => {
+  for (const action of [
+    { action: "add", field: "undeclared", value: "x" },
+    { action: "add", field: "actor", value: "x" },
+    { action: "edit", field: "reviewers", selector: { id: "x" }, patch: {} },
+    { action: "add", field: "reviewers", value: { map: true } },
+  ]) assert.throws(() => reviewApply({ reviewers: ["a"] }, action), /collection|managed|sources|scalar/);
+  // A Kind-declared standard field keeps its scalar semantics: declaration never makes title a list.
+  assert.throws(() => reviewApply({}, { action: "replace-all", field: "title", value: ["x"] }), /scalar document field/);
+  assert.throws(() => reviewApply({ reviewers: ["a"] }, { action: "add", field: "title", value: "x" }), /scalar document field/);
+  // Workflow progress is scalar lifecycle state under every name and edition, alias included.
+  assert.throws(() => reviewApply({}, { action: "add", field: "progress_status", value: "done" }), /lifecycle/);
+  assert.throws(() => reviewApply({ superbee_progress_status: "todo" }, { action: "add", field: "superbee_progress_status", value: "done" }), /lifecycle/);
+  assert.throws(() => prepareDocumentFieldAction(review({}), { action: "add", field: "status", value: "done" }, { registry: reviewRegistry, okfVersion: "0.1" }), /lifecycle/);
+  // Edition-gated names refuse on v0.1 exactly as set does; the proto setter is never writable.
+  assert.throws(() => prepareDocumentFieldAction(review({}), { action: "add", field: "stale_after", value: "30d" }, { registry: reviewRegistry, okfVersion: "0.1" }), /requires OKF v0\.2/);
+  assert.throws(() => prepareDocumentFieldAction(review({}), { action: "replace-all", field: "__proto__", value: ["x"] }, reviewContext), /not a writable/);
+  // A malformed registry entry refuses cleanly rather than crashing on the missing kind.
+  const nullKindRegistry = { kinds: new Map([["Review", null]]), warnings: [] };
+  assert.throws(() => prepareDocumentFieldAction(review({}), { action: "add", field: "reviewers", value: "x" }, { registry: nullKindRegistry, okfVersion: "0.2" }), /not a collection target/);
+  // replace-all deliberately repairs a scalar current value into the declared list.
+  assert.deepEqual(reviewApply({ reviewers: "solo" }, { action: "replace-all", field: "reviewers", value: ["a", "b"] }).candidate.frontmatter.reviewers, ["a", "b"]);
+  assert.throws(() => reviewApply({ reviewers: [{ name: "a" }] }, { action: "add", field: "reviewers", value: "b" }), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /pull --doc-key <id>\.md --out <file>/);
+    assert.match(error.message, /promote <file> --doc-key <id>\.md --expected-version <version-from-pull>/);
+    return true;
+  });
+  assert.throws(() => reviewApply({ reviewers: "solo" }, { action: "add", field: "reviewers", value: "b" }), /not a list/);
+  assert.throws(() => reviewApply({}, { action: "replace-all", field: "reviewers", value: ["a", { bad: 1 }] }), /scalar/);
+  assert.deepEqual(reviewApply({ reviewers: ["a"] }, { action: "replace-all", field: "reviewers", value: ["b", "b"] }).candidate.frontmatter.reviewers, ["b", "b"]);
+  assert.equal(reviewApply({ reviewers: ["a"] }, { action: "replace-all", field: "reviewers", value: ["a"] }).scope.outcome, "unchanged");
+});
+
+test("Kind-declared list membership retries on fresh state and replace-all rejects stale versions", async () => {
+  const backend = new RaceBackend();
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  const bundle: Bundle = { root: "/unused", backend };
+  const written = await writeDocVersioned(bundle, review({ reviewers: ["base"] }));
+  const base = { bundle, id: "reviews/r1", mode: "patch" as const, registry: reviewRegistry, strict: true };
+  backend.race = review({ reviewers: ["base", "other"] });
+  const result = await mutateDocument({ ...base, input: { kind: "field-action", action: { action: "add", field: "reviewers", value: "mine" } } });
+  assert.deepEqual(result.doc.frontmatter.reviewers, ["base", "other", "mine"]);
+  assert.equal(result.scope?.outcome, "added");
+  await assert.rejects(() => mutateDocument({ ...base, expectedVersion: written.version, input: { kind: "field-action", action: { action: "replace-all", field: "reviewers", value: [] } } }), VersionConflict);
+});
+
+test("list-assignment refusals name doc field for Kind list fields and pull/promote elsewhere", async () => {
+  const backend2 = new RaceBackend();
+  await backend2.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  const bundle2: Bundle = { root: "/unused", backend: backend2 };
+  await writeDocVersioned(bundle2, review({ reviewers: ["a"], nested: { list: [1] } }));
+  const reviewPatch = { bundle: bundle2, id: "reviews/r1", mode: "patch" as const, registry: reviewRegistry, strict: false };
+  await assert.rejects(() => mutateDocument({ ...reviewPatch, buildCandidate: e => ({ frontmatter: { ...e!.frontmatter, reviewers: ["a", "b"] }, body: e!.body }) }), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /doc field add\/remove\/replace-all <id> reviewers/);
+    return true;
+  });
+  await assert.rejects(() => mutateDocument({ ...reviewPatch, input: { kind: "assign", assignments: { reviewers: ["x"] } } }), /doc field add\/remove\/replace-all/);
+  await assert.rejects(() => mutateDocument({ ...reviewPatch, buildCandidate: e => ({ frontmatter: { ...e!.frontmatter, nested: "gone" }, body: e!.body }) }), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /pull --doc-key <id>\.md --out <file>/);
+    return true;
+  });
+  // A refused retype changes nothing: the doc field correction names the EXISTING kind's field.
+  await assert.rejects(() => mutateDocument({ ...reviewPatch, buildCandidate: e => ({ frontmatter: { ...e!.frontmatter, type: "Task", reviewers: ["a", "b"] }, body: e!.body }) }), /doc field add\/remove\/replace-all/);
+  // A mapping-member proposal is unreachable through doc field: only pull/promote can write it.
+  await assert.rejects(() => mutateDocument({ ...reviewPatch, input: { kind: "assign", assignments: { reviewers: [{ name: "x" }] } } }), /pull --doc-key <id>\.md --out <file>/);
+});
