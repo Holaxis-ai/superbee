@@ -105,7 +105,8 @@ export async function buildCliBundle(outfile, options) {
     artifact: { channel: artifactChannel },
     compatibility_contracts: { skill: 1, hook: 1, mcp: 1 },
   };
-  await build({
+  return build({
+    metafile: options?.metafile ?? false,
     // Pin esbuild's working directory — it otherwise defaults to `process.cwd()` and embeds
     // paths relative to it in the CJS-interop module comments/keys (e.g. `node_modules/foo/…`
     // vs `../../node_modules/foo/…`), making the OUTPUT BYTES depend on the CALLER's cwd. Every

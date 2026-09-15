@@ -15,20 +15,17 @@ under test. The honest breakdown is below — read it before depending on anythi
 
 ## Install
 
-**Requirements: macOS, Linux, or native Windows, and Node.js 20 or newer.** Windows does not need
-WSL, Ubuntu, or Docker.
+**Requirements: macOS or Linux, and Node.js 20 or newer.**
 
 The current test release is on npm's `next` prerelease channel; `latest` provides the stable
-release, also with native Windows support. Install the prerelease with:
+release. Install the prerelease with:
 
 ```sh
 npm install -g superbee@next
 superbee setup
 ```
 
-On Windows, npm exposes the same command through `superbee.cmd`, which can be invoked explicitly
-when PowerShell blocks its `.ps1` wrapper. On macOS or Linux, `npm install -g superbee` remains the
-stable-channel install. The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
+`npm install -g superbee` installs the stable channel. The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
 how to use the installed command without carrying another copy of the executable. OpenCode uses
 its documented Claude-compatible Skill discovery, so it shares Claude Code's Skill bytes unless a
 custom Claude config root requires separate documented host paths.
@@ -228,11 +225,9 @@ bundles remain supported without rewriting their declared edition.
 ## What's early or experimental
 
 - **Everything is pre-1.0.** The npm package is a prerelease and breaking changes are likely.
-- **Windows uses native policy rather than POSIX mode emulation.** Per-user operational state lives
-  under `%LOCALAPPDATA%`, whose ACL boundary is the Windows containment authority. The required
-  Windows CI lane runs every workspace suite on Node 22 and installs and exercises the packed npm
-  artifact on Node 20. WSL2 remains a Linux environment and is not a substitute for that native
-  Windows coverage.
+- **Native Windows support is separate.** The `superbee` executable supports macOS and Linux.
+  Windows adapters and the `superbee-windows` executable are developed in a separate repository;
+  they are not included in this package. The Windows distribution is experimental and unpublished.
 - **Recipes as composition** is a thesis under test, not a result. The repository includes
   small first-party definitions-only packages, including a Kind-plus-View reference, but package
   dependencies, upgrades, migrations, and marketplace discovery remain future work. "Cookbooks"
