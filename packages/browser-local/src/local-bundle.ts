@@ -95,6 +95,7 @@ import {
 } from "@superbee/core/uncertain-write";
 
 import { pushRoleName, withPushRole, type PushRoleOptions, type PushRoleResult } from "./push-role.js";
+import { captureBodyRefresh, type BodyRefreshPremises } from "./body-journal.js";
 
 export interface OpenLocalBundleOptions {
   /** Explicit isolated body-delivery store. Custom adapters must be dedicated to this mode. */
@@ -384,6 +385,7 @@ async function reconcileDeletions(
   listed: ReadonlySet<ConceptId>,
   digest: string,
   accept?: DeletionRefusal,
+  premises?: BodyRefreshPremises,
 ): Promise<{ deleted: ConceptId[]; held: ConceptId[]; refused?: DeletionRefusal }> {
   const present = await backend.list();
   const candidates = present.filter((id) => !listed.has(id));
@@ -399,6 +401,7 @@ async function reconcileDeletions(
     const expectedVersion = await localVersion(backend, id);
     try {
       const result = await backend.deleteJournaled(id, {
+        ...(premises ? { guard: premises.guard(id) } : {}),
         ...(expectedVersion === null ? {} : { expectedVersion }),
         requireSettled: true,
         removeMeta: [baseKey(id)],
@@ -491,6 +494,7 @@ export interface BootstrapOptions extends FetchOptions {
 export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
   const concurrency = concurrencyOf(options);
   const backend = await runtimeBackend(local);
+  const bodyMode = await admitBodyMode(backendOf(local));
   const unsettled = await backend.listIntents(UNSETTLED_STATES);
   if (unsettled.length > 0) {
     throw new Error(`bootstrap refused: ${unsettled.length} unsettled intent(s) would be discarded; push or resolve them first.`);
@@ -508,10 +512,11 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   const held: ConceptId[] = [];
   let index = 0;
   /** One document as the authority served it, into the working copy, with the marker's bookkeeping. */
-  const hydrate = async (head: ReadResult, total: number): Promise<void> => {
+  const hydrate = async (head: ReadResult, total: number, premises?: BodyRefreshPremises): Promise<void> => {
     const id = head.doc.id;
     try {
       const { version } = await backend.writeJournaled(id, head.doc, {
+        ...(premises ? { guard: premises.guard(id) } : {}),
         requireSettled: true,
         meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
       });
@@ -535,6 +540,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   let refused: DeletionRefusal | undefined;
   const wire = await wireFor(remote, local, "snapshot", options);
   if (wire) {
+    const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode) : undefined;
     // One stream: concurrency does not apply. Each batch is written as soon as it has arrived,
     // so a cut stream leaves whole batches behind and the marker incomplete.
     const { header, docs } = await wire.snapshot();
@@ -544,13 +550,13 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
       listed.add(doc.id);
       batch.push({ doc: { id: doc.id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version });
       if (batch.length < batchSize) continue;
-      for (const head of batch) await hydrate(head, header.count);
+      for (const head of batch) await hydrate(head, header.count, premises);
       batch = [];
     }
-    for (const head of batch) await hydrate(head, header.count);
+    for (const head of batch) await hydrate(head, header.count, premises);
     // The loop ended normally, so the stream was whole and its rows digest to the header: the
     // listing may now say what the working copy should not hold.
-    const reconciled = await reconcileDeletions(backend, listed, header.digest);
+    const reconciled = await reconcileDeletions(backend, listed, header.digest, undefined, premises);
     deleted = reconciled.deleted;
     held.push(...reconciled.held);
     refused = reconciled.refused;
@@ -559,7 +565,8 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   } else {
     const ids = await remote.list();
     await forEachBatch(chunked(ids, batchSize), concurrency, async (batch) => {
-      for (const head of await remote.readMany(batch)) await hydrate(head, ids.length);
+      const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
+      for (const head of await remote.readMany(batch)) await hydrate(head, ids.length, premises);
     });
     documentCount = ids.length;
   }
@@ -1247,6 +1254,7 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<string | unde
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
   const concurrency = concurrencyOf(options);
   const backend = await runtimeBackend(local);
+  const bodyMode = await admitBodyMode(backendOf(local));
   // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
   const known = await lastKnownDigest(backend);
   const startedAt = new Date().toISOString();
@@ -1266,8 +1274,9 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   };
 
   /** Apply one fetched head to the working copy under the same guards, whichever path fetched it. */
-  const apply = async (head: ReadResult): Promise<void> => {
+  const apply = async (head: ReadResult, premises?: BodyRefreshPremises): Promise<void> => {
     const id = head.doc.id;
+    await premises?.check(id);
     const base = await backend.readMeta<SharedBase>(baseKey(id));
     if (base?.version === head.version) {
       report.unchanged.push(id);
@@ -1276,6 +1285,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     const expectedVersion = await localVersion(backend, id);
     try {
       await backend.writeJournaled(id, head.doc, {
+        ...(premises ? { guard: premises.guard(id) } : {}),
         expectedVersion,
         requireSettled: true,
         meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
@@ -1293,7 +1303,8 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   };
   const fetchAndApply = (candidates: ConceptId[]): Promise<void> =>
     forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
-      for (const head of await remote.readMany(batch)) await apply(head);
+      const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
+      for (const head of await remote.readMany(batch)) await apply(head, premises);
     });
 
   const wire = await wireFor(remote, local, "heads", options);
@@ -1307,7 +1318,9 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     return complete(undefined, false);
   }
 
+  const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode) : undefined;
   const answer = await wire.heads(known === undefined ? {} : { ifNoneMatch: known });
+  await premises?.checkAll();
   if (answer === null) {
     report.unchanged = await backend.list();
     return complete(known, true);
@@ -1325,7 +1338,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     else candidates.push(head.id);
   }
   await fetchAndApply(candidates);
-  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions);
+  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions, premises);
   report.deleted = reconciled.deleted;
   report.held.push(...reconciled.held);
   if (reconciled.refused) {

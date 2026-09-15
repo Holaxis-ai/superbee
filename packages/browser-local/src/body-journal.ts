@@ -6,6 +6,7 @@ import { BODY_DELIVERY_LIMITS, BODY_RECONCILIATION_BYTES, prepareBodyDelivery, v
 import { captureJournalValue, JournalGuardConflict, type JournalGuard, type JournaledBackend, type JournaledReadResult, type IntentRecord, type MetaRecord, type JournaledWriteOptions, type JournaledDeleteOptions, type IntentPatch, type IntentUpdateOptions } from "@superbee/core/journaled-backend";
 import { isContentVersion, versionOfBytes } from "@superbee/core/versioning";
 import type { OkfDocument, Version } from "@superbee/core";
+import { assertJournalGuard } from "@superbee/core/journaled-backend";
 
 export const BODY_MODE_KEY = "body-delivery:mode";
 export const BODY_RUNTIME_LIMITS = Object.freeze({ journalBytes: 8 * 1024 * 1024, guardedBytes: 32 * 1024 * 1024, unsettled: 2, transitionBytes: 2 * 1024 * 1024, controlBytes: 64 * 1024 });
@@ -146,7 +147,29 @@ export function validateBodyRecord(mode: BodyMode, intent: IntentRecord, value: 
 export interface BodySnapshot { read: JournaledReadResult; guard: JournalGuard; records: Map<string, BodyRecord> }
 function assertSharedBase(value: unknown): void {
   const base = shape(value, ["version", "content"]);
-  if (base.version === null ? base.content !== null : !isContentVersion(base.version) || typeof base.content !== "string") throw new BodyRuntimeError("Invalid shared content premise.");
+  if (base.version !== null && !isContentVersion(base.version) || base.content !== null && typeof base.content !== "string" || base.version !== null && base.content === null) throw new BodyRuntimeError("Invalid shared content premise.");
+}
+export interface BodyRefreshPremises {
+  guard(id: string): JournalGuard;
+  check(id: string): Promise<void>;
+  checkAll(): Promise<void>;
+}
+/** Bind incoming evidence to local state observed before its request, never after its response. */
+export async function captureBodyRefresh(backend: JournaledBackend, mode: BodyMode, ids?: readonly string[]): Promise<BodyRefreshPremises> {
+  const targets = ids ?? [...new Set([...await backend.list(), ...(await backend.listIntents()).map(row => row.target)])];
+  const guards = new Map<string, JournalGuard>();
+  for (const id of targets) guards.set(id, (await bodySnapshot(backend, id, mode)).guard);
+  const marker = await controlRow(backend, mode);
+  // A streamed snapshot can name an unseen target. Its import is conditional on complete absence.
+  const guard = (id: string): JournalGuard => guards.get(id) ?? { target: id, document: null, intents: [], meta: [
+    { key: BODY_MODE_KEY, expected: { present: true, value: marker } }, { key: `base:${id}`, expected: { present: false } },
+  ] };
+  const check = async (id: string) => assertJournalGuard(guard(id), (await bodySnapshot(backend, id, mode)).guard);
+  return { guard, check, checkAll: async () => {
+    const control = (value: unknown): JournalGuard => ({ target: "runtime-state", document: null, intents: [], meta: [{ key: BODY_MODE_KEY, expected: { present: true, value } }] });
+    assertJournalGuard(control(marker), control(await controlRow(backend, mode)));
+    for (const id of guards.keys()) await check(id);
+  } };
 }
 export async function bodySnapshot(backend: JournaledBackend, target: string, mode: BodyMode, extra: readonly string[] = []): Promise<BodySnapshot> {
   await assertBodyEdition(backend, mode);
@@ -252,10 +275,11 @@ export function bodyBackend(backend: JournaledBackend, mode: BodyMode): Journale
     const captured = captureJournalValue(options);
     const keys = [...(captured.meta ?? []).map(row => row.key), ...(captured.removeMeta ?? []), ...(captured.onHeld?.meta ?? []).map(row => row.key)];
     const snap = await bodySnapshot(backend, id, mode, keys);
-    const held = captured.requireSettled && snap.read.intents.some(row => row.state !== "acknowledged");
-    if (held && captured.onHeld) projectBodyGuard(snap.guard, { meta: captured.onHeld.meta });
-    else projectBodyGuard(snap.guard, { document: null, intents: captured.resolveIntents ? snap.read.intents.filter(row => !captured.resolveIntents!.expected.some(retired => retired.requestId === row.requestId)) : snap.read.intents, meta: captured.meta, removeMeta: captured.removeMeta });
-    return backend.deleteJournaled(id, { ...captured, guard: snap.guard });
+    const guard = captured.guard ?? snap.guard;
+    const held = captured.requireSettled && guard.intents.some(row => row.state !== "acknowledged");
+    if (held && captured.onHeld) projectBodyGuard(guard, { meta: captured.onHeld.meta });
+    else projectBodyGuard(guard, { document: null, intents: captured.resolveIntents ? guard.intents.filter(row => !captured.resolveIntents!.expected.some(retired => retired.requestId === row.requestId)) : guard.intents, meta: captured.meta, removeMeta: captured.removeMeta });
+    return backend.deleteJournaled(id, { ...captured, guard });
   };
   const update = async (requestId: string, state: IntentRecord["state"], patch: IntentPatch, options: IntentUpdateOptions = {}) => {
     const captured = captureJournalValue({ patch, options });

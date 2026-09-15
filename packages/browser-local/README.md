@@ -36,6 +36,10 @@ transport is never substituted for it. The authority owns the committed metadata
 and returns the core prepared-body receipt contract. Original local journal bytes
 remain unchanged when a receipt advances the shared base or visible document.
 A newer local intent, even with identical bytes, prevents replacement of that edit.
+Refreshes also bind content and deletion listings to full local premises captured
+before fetching. A concurrent change invalidates stale incoming evidence; the
+refresh rejects and its completion marker remains incomplete. Retrying performs a
+new read rather than applying the old response against a newly captured guard.
 
 Preparation is saved with the attempted claim before submission. After interruption,
 the existing `reclaimInFlight` operation runs inside `pushWithRole` for body mode,

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
 import { IndexedDbBackend } from "@superbee/core/indexeddb-backend";
 import type { OperationTransport } from "@superbee/core/uncertain-write";
-import { openLocalBundle, bootstrap, commitBodyLocal, commitLocal, push, reclaimInFlight, resume, syncStatus, settleIntent, inspectConflict, resolveConflict } from "../src/local-bundle.ts";
+import { openLocalBundle, bootstrap, commitBodyLocal, commitLocal, push, pull, reclaimInFlight, resume, syncStatus, settleIntent, inspectConflict, resolveConflict } from "../src/local-bundle.ts";
 import { admitBodyMode, bodyRecordKey, BODY_MODE_KEY, bodySnapshot, assertBodyCapacity, projectBodyGuard, jsonBytes, BODY_RUNTIME_LIMITS, writeBodyControl } from "../src/body-journal.ts";
 import { createBrowserLocalRuntime } from "../src/platform/browser-local.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
@@ -225,6 +225,87 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       assert.equal((await s.backend.readIntent(successor.requestId))!.state, "pending");
       assert.equal(s.authority.counts.submitted, 1);
     } finally { s.close(); }
+  });
+  test(`${adapter}: pre-fetch content guards reject stale reads after acknowledgment, including identical bytes`, async () => {
+    for (const sameBytes of [false, true]) {
+      const s = await setup();
+      try {
+        if (sameBytes) { await s.runtime.commit("notes/example", { body: "Returning body" }); await s.runtime.sync(); }
+        const original = await s.backend.readWithJournal("notes/example");
+        let release!: () => void, started!: () => void;
+        const reached = new Promise<void>(resolve => { started = resolve; });
+        const blocked = new Promise<void>(resolve => { release = resolve; });
+        const remote = new Proxy(s.authority.backend, { get(inner, key) {
+          if (key === "readMany") return async (ids: string[]) => { const rows = await inner.readMany(ids); started(); await blocked; return rows; };
+          const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value;
+        } });
+        const pulling = pull(s.local, remote);
+        const rejected = assert.rejects(pulling, /journal guard/);
+        await reached;
+        await s.runtime.commit("notes/example", { body: "New acknowledged body" });
+        await push(s.local, exact, { bodyTransport: s.authority.transport, write: immediate });
+        if (sameBytes) { await s.runtime.commit("notes/example", { body: "Returning body" }); await push(s.local, exact, { bodyTransport: s.authority.transport, write: immediate }); }
+        const before = await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] });
+        if (sameBytes) { assert.equal(before.raw, original.raw); assert.ok(before.intents.length > original.intents.length); }
+        release(); await rejected;
+        assert.deepEqual(await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] }), before);
+        const control = await s.backend.readMeta<{ controls: { pull: { completedAt: string | null } } }>(BODY_MODE_KEY);
+        assert.equal(control!.controls.pull.completedAt, null);
+      } finally { s.close(); }
+    }
+  });
+  test(`${adapter}: stale inventory cannot delete newly acknowledged work`, async () => {
+    const s = await setup();
+    try {
+      let release!: () => void, started!: () => void;
+      const reached = new Promise<void>(resolve => { started = resolve; });
+      const blocked = new Promise<void>(resolve => { release = resolve; });
+      // Structural inventory adapter: an older complete empty listing is withheld in transit.
+      const remote = new Proxy(s.authority.backend, { get(inner, key) {
+        if (key === "wireCapabilities") return async () => ({ heads: true, snapshot: false });
+        if (key === "snapshot") return async () => { throw new Error("Unused snapshot"); };
+        if (key === "heads") return async () => { started(); await blocked; return { heads: [], digest: "old-empty-listing" }; };
+        const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value;
+      } });
+      const pulling = pull(s.local, remote), rejected = assert.rejects(pulling, /journal guard/);
+      await reached;
+      await s.runtime.commit("notes/example", { body: "New acknowledged body" });
+      await push(s.local, exact, { bodyTransport: s.authority.transport, write: immediate });
+      const before = await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] });
+      release(); await rejected;
+      assert.deepEqual(await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] }), before);
+      assert.equal((await s.backend.readMeta<any>(BODY_MODE_KEY)).controls.pull.completedAt, null);
+    } finally { s.close(); }
+  });
+  test(`${adapter}: snapshot bootstrap cannot overwrite a newer refresh or delete its new target`, async () => {
+    for (const scenario of ["content", "deletion", "new-target"]) {
+      const s = await setup();
+      try {
+        const omit = scenario === "deletion", target = scenario === "new-target" ? "notes/new" : "notes/example";
+        if (scenario === "new-target") await s.authority.backend.write(target, { id: target, frontmatter: { type: "Note" }, body: "Original new target" });
+        let release!: () => void, started!: () => void;
+        const reached = new Promise<void>(resolve => { started = resolve; });
+        const blocked = new Promise<void>(resolve => { release = resolve; });
+        const remote = new Proxy(s.authority.backend, { get(inner, key) {
+          if (key === "wireCapabilities") return async () => ({ heads: true, snapshot: true });
+          if (key === "heads") return async () => { throw new Error("Unused heads"); };
+          if (key === "snapshot") return async () => {
+            const old = await inner.read(target); started(); await blocked;
+            return { header: { count: omit ? 0 : 1, digest: "old-snapshot" }, docs: (async function* () { if (!omit) yield { ...old.doc, version: old.version }; })() };
+          };
+          const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value;
+        } });
+        const booting = bootstrap(remote, s.local), rejected = assert.rejects(booting, /journal guard/);
+        await reached;
+        const current = await s.authority.backend.read(target);
+        await s.authority.backend.write(target, { ...current.doc, body: "Fresh authority observation" });
+        await pull(s.local, s.authority.backend);
+        const before = await s.backend.readWithJournal(target, { meta: [`base:${target}`] });
+        release(); await rejected;
+        assert.deepEqual(await s.backend.readWithJournal(target, { meta: [`base:${target}`] }), before);
+        assert.equal((await s.backend.readMeta<any>(BODY_MODE_KEY)).controls.bootstrap.complete, false);
+      } finally { s.close(); }
+    }
   });
 }
 
