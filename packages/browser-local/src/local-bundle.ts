@@ -386,6 +386,7 @@ async function reconcileDeletions(
   digest: string,
   accept?: DeletionRefusal,
   premises?: BodyRefreshPremises,
+  beforeDelete?: () => Promise<void>,
 ): Promise<{ deleted: ConceptId[]; held: ConceptId[]; refused?: DeletionRefusal }> {
   const present = await backend.list();
   const candidates = present.filter((id) => !listed.has(id));
@@ -400,6 +401,7 @@ async function reconcileDeletions(
     // The premise is the version just listed; a document gone since is answered as absent.
     const expectedVersion = await localVersion(backend, id);
     try {
+      await beforeDelete?.();
       const result = await backend.deleteJournaled(id, {
         ...(premises ? { guard: premises.guard(id) } : {}),
         ...(expectedVersion === null ? {} : { expectedVersion }),
@@ -468,8 +470,9 @@ export interface BootstrapOptions extends FetchOptions {
 
 /**
  * Hydrate the working copy from the authority: every remote document is written locally with
- * the shared version recorded as its base, the root `index.md` is copied so the local edition
- * matches, and only after every write has committed does the marker say `complete`. The marker
+ * the shared version recorded as its base. Legacy mode copies the root `index.md`; body mode
+ * seeds only an absent local root and validates the remote edition without mirroring metadata.
+ * Only after every write has committed does the marker say `complete`. The marker
  * is written incomplete first, so an interruption at any point leaves a bundle that reports
  * itself incomplete rather than an apparently complete, partially hydrated one.
  *
@@ -495,6 +498,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   const concurrency = concurrencyOf(options);
   const backend = await runtimeBackend(local);
   const bodyMode = await admitBodyMode(backendOf(local));
+  const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
   const unsettled = await backend.listIntents(UNSETTLED_STATES);
   if (unsettled.length > 0) {
     throw new Error(`bootstrap refused: ${unsettled.length} unsettled intent(s) would be discarded; push or resolve them first.`);
@@ -550,6 +554,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     // One stream: concurrency does not apply. Each batch is written as soon as it has arrived,
     // so a cut stream leaves whole batches behind and the marker incomplete.
     const { header, docs } = await wire.snapshot();
+    await validateReadSide?.();
     const listed = new Set<ConceptId>();
     let batch: ReadResult[] = [];
     for await (const doc of docs) {
@@ -562,7 +567,8 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     for (const head of batch) await hydrate(head, header.count, premises);
     // The loop ended normally, so the stream was whole and its rows digest to the header: the
     // listing may now say what the working copy should not hold.
-    const reconciled = await reconcileDeletions(backend, listed, header.digest, undefined, premises);
+    await validateReadSide?.();
+    const reconciled = await reconcileDeletions(backend, listed, header.digest, undefined, premises, validateReadSide);
     deleted = reconciled.deleted;
     held.push(...reconciled.held);
     refused = reconciled.refused;
@@ -577,6 +583,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     documentCount = ids.length;
   }
 
+  await validateReadSide?.();
   const marker: BootstrapMarker = {
     generation,
     startedAt,
@@ -1261,6 +1268,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   const concurrency = concurrencyOf(options);
   const backend = await runtimeBackend(local);
   const bodyMode = await admitBodyMode(backendOf(local));
+  const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
   // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
   const known = await lastKnownDigest(backend);
   const startedAt = new Date().toISOString();
@@ -1269,6 +1277,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   const report: PullReport = { refreshed: [], held: [], unchanged: [], deleted: [] };
   const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
   const complete = async (headsDigest: string | undefined, unchanged: boolean): Promise<PullReport> => {
+    await validateReadSide?.();
     await backend.writeMeta(PULL_KEY, {
       startedAt,
       completedAt: new Date().toISOString(),
@@ -1328,6 +1337,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
 
   const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode) : undefined;
   const answer = await wire.heads(known === undefined ? {} : { ifNoneMatch: known });
+  await validateReadSide?.();
   await premises?.checkAll();
   if (answer === null) {
     report.unchanged = await backend.list();
@@ -1346,7 +1356,8 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     else candidates.push(head.id);
   }
   await fetchAndApply(candidates);
-  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions, premises);
+  await validateReadSide?.();
+  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions, premises, validateReadSide);
   report.deleted = reconciled.deleted;
   report.held.push(...reconciled.held);
   if (reconciled.refused) {

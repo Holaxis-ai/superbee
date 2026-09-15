@@ -380,6 +380,31 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       } finally { s.close(); }
     }
   });
+  test(`${adapter}: incompatible empty inventories, unchanged answers and streams cannot delete or complete`, async () => {
+    for (const response of ["heads-empty", "heads-304", "snapshot-empty", "list-empty"]) {
+      const s = await setup();
+      try {
+        await s.runtime.commit("notes/example", { body: "Retained acknowledged evidence" });
+        await s.runtime.sync();
+        const requestId = (await s.backend.listIntents())[0]!.requestId;
+        const keys = ["base:notes/example", bodyRecordKey(requestId)];
+        const before = await s.backend.readWithJournal("notes/example", { meta: keys });
+        const changeEdition = () => s.authority.backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n");
+        const remote = new Proxy(s.authority.backend, { get(inner, key) {
+          if (key === "wireCapabilities" && response !== "list-empty") return async () => ({ heads: true, snapshot: true });
+          if (key === "heads" && response !== "list-empty") return async () => { await changeEdition(); return response === "heads-304" ? null : { heads: [], digest: "empty-new-edition" }; };
+          if (key === "snapshot" && response !== "list-empty") return async () => ({ header: { count: 0, digest: "empty-new-edition" }, docs: (async function* () { await changeEdition(); })() });
+          if (key === "list" && response === "list-empty") return async () => { await changeEdition(); return []; };
+          const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value;
+        } });
+        await assert.rejects(response === "snapshot-empty" ? bootstrap(remote, s.local) : pull(s.local, remote), /Authority edition differs/);
+        assert.deepEqual(await s.backend.readWithJournal("notes/example", { meta: keys }), before);
+        const controls = (await s.backend.readMeta<any>(BODY_MODE_KEY)).controls;
+        if (response === "snapshot-empty") assert.equal(controls.bootstrap.complete, false);
+        else assert.equal(controls.pull.completedAt, null);
+      } finally { s.close(); }
+    }
+  });
 }
 
 test("legacy bootstrap still mirrors root metadata; missing edition legitimately defaults to v0.1", async () => {
