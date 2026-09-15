@@ -125,7 +125,8 @@ test("generic wire source authorities remain public after hosted extraction", as
   assert.match(router, /export function createRouter/);
   assert.doesNotMatch(router, /from ["']@superbee\/core["']/);
   assert.match(legacyRouter, /export function createRouterForBackend/);
-  assert.match(legacyRouter, /new FilesystemBackend/);
+  assert.match(legacyRouter, /from ["']@superbee\/core\/bundle-ops["']/);
+  assert.match(legacyRouter, /buildLegacyRouter\(backendFor\(bundle\), options\)/);
   assert.match(serverIndex, /from ["']\.\/legacy-router\.js["']/);
   assert.deepEqual(serverPackage.exports["./router"], {
     types: "./dist/router.d.ts",
