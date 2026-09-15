@@ -3,6 +3,8 @@ export {
   bootstrap,
   isComplete,
   commitLocal,
+  commitBodyLocal,
+  type BodyLocalMutation,
   inspectConflict,
   resolveConflict,
   conflictResolutionKey,
@@ -41,6 +43,7 @@ export {
   type ResumeReport,
   type SyncStatus,
 } from "./local-bundle.js";
+export { BODY_RUNTIME_LIMITS, BodyRuntimeError, BodyCapacityError, type BodyDeliveryOptions } from "./body-journal.js";
 export { withPushRole, pushRoleName, hostLocks, type PushRoleResult, type PushRoleOptions, type LockManagerLike } from "./push-role.js";
 export {
   withEditorRecovery, editorRecoveryKey, EditorRecoveryError, EDITOR_RECOVERY_LIMITS,

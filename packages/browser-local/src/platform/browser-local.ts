@@ -60,8 +60,10 @@ import {
   type Provenance,
 } from "@superbee/core/platform";
 import type { OperationTransport, UncertainWriteOptions } from "@superbee/core/uncertain-write";
+import type { BodyDeliveryTransport } from "@superbee/core/governed-body-write";
+import { admitBodyMode, bodySnapshot } from "../body-journal.js";
 
-import { baseKey, commitLocal, pull, pushWithRole, syncStatus as localSyncStatus, UNSETTLED_STATES, type LocalBundle, type SharedBase } from "../local-bundle.js";
+import { baseKey, commitLocal, commitBodyLocal, pull, pushWithRole, syncStatus as localSyncStatus, UNSETTLED_STATES, type LocalBundle, type SharedBase } from "../local-bundle.js";
 import type { LockManagerLike } from "../push-role.js";
 import { isAuthorityAnswer, isInputError, kindWarningsFor } from "./shared.js";
 
@@ -72,6 +74,7 @@ export interface BrowserLocalRuntimeOptions {
   remote: StorageBackend;
   /** Carries intents to the authority as identified writes. */
   transport: OperationTransport;
+  bodyTransport?: BodyDeliveryTransport;
   /** The lock manager that owns the push role; omitted, the host's. See `withPushRole`. */
   locks?: LockManagerLike | null;
   /** Options for the uncertain-write primitive each push runs. */
@@ -138,7 +141,8 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
 
   /** One document with its journal and base, from one transaction; `null` when the store holds no record. */
   const snapshotOf = async (id: ConceptId): Promise<(JournaledReadResult & { document: NonNullable<JournaledReadResult["document"]>; raw: string }) | null> => {
-    const snapshot = await backend.readWithJournal(id, { meta: [baseKey(id)] });
+    const mode = await admitBodyMode(backend);
+    const snapshot = mode ? (await bodySnapshot(backend, id, mode)).read : await backend.readWithJournal(id, { meta: [baseKey(id)] });
     if (snapshot.document === null || snapshot.raw === null) return null;
     return { ...snapshot, document: snapshot.document, raw: snapshot.raw };
   };
@@ -197,6 +201,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     read: readWithProvenance,
 
     query: async (filter: QueryFilter = {}): Promise<PlatformQueryRow[]> => {
+      await admitBodyMode(backend);
       const heads = await queryHeads(bundle, filter);
       const rows: PlatformQueryRow[] = [];
       for (const head of heads) {
@@ -217,7 +222,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     },
 
     commit: async (id: ConceptId, edit: PlatformEdit): Promise<PlatformCommit> => {
-      const result = await commitLocal(local, id, {
+      const result = await admitBodyMode(backend) ? await commitBodyLocal(local, id, { body: edit.body, ...(edit.expectedVersion === undefined ? {} : { expectedVersion: edit.expectedVersion }), actor, now }) : await commitLocal(local, id, {
         ...(edit.expectedVersion === undefined ? {} : { expectedVersion: edit.expectedVersion }),
         ...(actor === undefined ? {} : { actor }),
         ...(now === undefined ? {} : { now }),
@@ -242,7 +247,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     sync: async (syncOptions: PlatformSyncOptions = {}): Promise<PlatformSyncStatus> => {
       const readSide: StorageBackend = remote;
       try {
-        await pushWithRole(local, transport, { remote: readSide, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
+        await pushWithRole(local, transport, { remote: readSide, bodyTransport: options.bodyTransport, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
       } catch (error) {
         lastOutcome = { ok: false, error: describeFailure(error) };
         throw error;
@@ -251,7 +256,10 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
         // The opened bundle, not its backend: the pull keeps the authority's capabilities on it.
         await pull(local, readSide, syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions });
         online = true;
-        lastOutcome = { ok: true };
+        if (await admitBodyMode(backend)) {
+          const remaining = await localSyncStatus(local);
+          lastOutcome = { ok: remaining.counts.pending + remaining.counts.in_flight + remaining.counts.unknown + remaining.counts.refused + remaining.counts.conflict === 0 && !remaining.paused };
+        } else lastOutcome = { ok: true };
       } catch (error) {
         lastOutcome = { ok: false, error: describeFailure(error) };
         if (isInputError(error) || isAuthorityAnswer(error)) throw error;
