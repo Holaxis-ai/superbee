@@ -15,3 +15,5 @@ export {
   type PublicationSnapshotHandleV1,
   type PublicationSnapshotV1,
 } from "./types.js";
+
+export type { CapturePublicationRuntimeOptions } from "./capture.js";

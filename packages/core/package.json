@@ -2,7 +2,7 @@
   "name": "@superbee/core",
   "version": "0.2.0-pre.4",
   "type": "module",
-  "description": "OKF store engine — bundle I/O, cross-links, derived backlinks, freshness, and versioned writes.",
+  "description": "OKF store engine \u2014 bundle I/O, cross-links, derived backlinks, freshness, and versioned writes.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -118,6 +118,10 @@
     "./platform": {
       "types": "./dist/platform.d.ts",
       "default": "./dist/platform.js"
+    },
+    "./filesystem": {
+      "types": "./dist/filesystem.d.ts",
+      "default": "./dist/filesystem.js"
     }
   },
   "files": [
