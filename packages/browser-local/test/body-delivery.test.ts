@@ -152,6 +152,15 @@ for (const adapter of ["memory", "indexeddb"] as const) {
     return chain[0]!;
   }
   const guardOf = async (s: Awaited<ReturnType<typeof setup>>) => (await bodySnapshot(s.backend, "notes/example", (await admitBodyMode(s.backend))!)).guard;
+  /** The authority's read side with its document reads counted, so a local refusal can be shown to cost no network read. */
+  const countingRemote = (s: Awaited<ReturnType<typeof setup>>) => {
+    const reads = { count: 0 };
+    const remote = new Proxy(s.authority.backend, { get(inner, key) {
+      if (key === "read") return async (...args: Parameters<typeof inner.read>) => { reads.count += 1; return inner.read(...args); };
+      const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value;
+    } });
+    return { remote, reads };
+  };
   const choices = [{ kind: "keep-local" }, { kind: "take-remote" }, { kind: "revise", body: "Replacement" }] as const;
   test(`${adapter}: a content refusal reads local-pending, counts as refused without a pause, and is inspectable`, async () => {
     const s = await setup();
@@ -265,7 +274,9 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       const before = await guardOf(s);
       await assert.rejects(inspectConflict(s.local, s.authority.backend, "notes/example"), { name: "InvalidInputError" });
       const forged = { id: "notes/example", local: { version: head.local, content: head.content }, base: { version: head.base, content: head.baseContent }, remote: { version: null, content: null }, intents: [head] };
-      for (const choice of choices) await assert.rejects(resolveConflict(s.local, s.authority.backend, forged, choice), { name: "InvalidInputError" });
+      const { remote, reads } = countingRemote(s);
+      for (const choice of choices) await assert.rejects(resolveConflict(s.local, remote, forged, choice), { name: "InvalidInputError" });
+      assert.equal(reads.count, 0, "a head outside recovery is refused before the authority is asked");
       assert.deepEqual(await guardOf(s), before);
       assert.equal((await resume(s.backend)).requeued, 1);
       const status = await s.runtime.sync();
@@ -287,10 +298,12 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       const fresh = await inspectConflict(s.local, s.authority.backend, "notes/example");
       await s.runtime.commit("notes/example", { body: "Edited since review" });
       before = await guardOf(s);
+      const { remote: counted, reads } = countingRemote(s);
       for (const choice of choices) {
-        await assert.rejects(resolveConflict(s.local, s.authority.backend, fresh, choice), { name: "JournalSnapshotConflict" });
+        await assert.rejects(resolveConflict(s.local, counted, fresh, choice), { name: "JournalSnapshotConflict" });
         assert.deepEqual(await guardOf(s), before);
       }
+      assert.equal(reads.count, 0, "a review the working copy no longer matches is refused before the authority is asked");
       const current = await inspectConflict(s.local, s.authority.backend, "notes/example");
       const mode = (await admitBodyMode(s.backend))!;
       const write = s.backend.writeJournaled.bind(s.backend);

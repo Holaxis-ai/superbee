@@ -1005,8 +1005,20 @@ async function resolveBodyConflict(
   const receiptKey = conflictResolutionKey(reviewedHead.requestId);
   const requestId = selected.kind === "take-remote" ? null : mintRequestId();
   await assertBodyEdition(backend, mode);
+  /** The working copy's side of the review, read fresh: the reviewed chain, at the reviewed bytes. */
+  const verifyLocal = async (): Promise<{ snap: BodySnapshot; chain: IntentRecord[]; expectedVersion: Version }> => {
+    const snap = await bodySnapshot(backend, id, mode, requestId === null ? [receiptKey] : [receiptKey, bodyRecordKey(requestId)]);
+    const current = conflictChain(id, snap.read, true);
+    assertJournalSnapshot(id, review.intents, current.intents);
+    if (current.document.version !== review.local.version || snap.read.raw !== review.local.content) throw new ConflictReviewStaleError();
+    return { snap, chain: current.intents, expectedVersion: current.document.version };
+  };
+  // The local premise is checked before the authority is asked, as in exact mode: a review that
+  // no longer describes the working copy is refused without a network read.
+  await verifyLocal();
   await assertBodyRemoteEdition(remote, mode);
   const shared = await readConflictRemote(remote, id);
+  if (shared.base.version !== review.remote.version || shared.base.content !== review.remote.content) throw new ConflictReviewStaleError();
   // The served content enters the working copy in its own serialization, as a pull records it.
   const served = shared.doc ? bodyDocument(shared.base.content!, id, mode) : null;
   const servedRaw = served ? stringifyDoc(served.frontmatter, served.body ?? "") : null;
@@ -1014,24 +1026,20 @@ async function resolveBodyConflict(
   if (selected.kind !== "take-remote" && !served) throw new BodyRuntimeError("The authority holds no document for this id and body delivery cannot create one; take the served deletion or export the retained work.");
   const resolvedAt = options.now?.() ?? new Date().toISOString();
 
-  /** One snapshot with the review verified against it, and the receipt the resolution will keep. */
+  /** One fresh local verification plus the receipt the resolution will keep, composed against that snapshot. */
   const prepare = async (): Promise<{ snap: BodySnapshot; chain: IntentRecord[]; expectedVersion: Version; receipt: BodyResolutionReceipt }> => {
-    const snap = await bodySnapshot(backend, id, mode, requestId === null ? [receiptKey] : [receiptKey, bodyRecordKey(requestId)]);
-    const current = conflictChain(id, snap.read, true);
-    assertJournalSnapshot(id, review.intents, current.intents);
-    if (current.document.version !== review.local.version || snap.read.raw !== review.local.content) throw new ConflictReviewStaleError();
-    if (shared.base.version !== review.remote.version || shared.base.content !== review.remote.content) throw new ConflictReviewStaleError();
+    const { snap, chain, expectedVersion } = await verifyLocal();
     const receipt = validateBodyResolutionReceipt({
-      schema: 1, mode: "document.body.update", id: current.intents[0]!.requestId, target: id, choice: selected.kind, resolvedAt,
-      replacementRequestId: requestId, served: { version: shared.base.version }, expectedLocalVersion: current.document.version,
-      chain: current.intents.map(row => ({
+      schema: 1, mode: "document.body.update", id: chain[0]!.requestId, target: id, choice: selected.kind, resolvedAt,
+      replacementRequestId: requestId, served: { version: shared.base.version }, expectedLocalVersion: expectedVersion,
+      chain: chain.map(row => ({
         requestId: row.requestId, sequence: row.sequence, state: row.state, attempts: row.attempts, base: row.base, local: row.local,
         ...(row.acknowledgedVersion === undefined ? {} : { acknowledgedVersion: row.acknowledgedVersion }),
         ...(row.refusal === undefined ? {} : { refusalCode: row.refusal.code }),
         ...(row.remote === undefined ? {} : { remoteVersion: row.remote.version }),
       })),
     });
-    return { snap, chain: current.intents, expectedVersion: current.document.version, receipt };
+    return { snap, chain, expectedVersion, receipt };
   };
   const remaining = (snap: BodySnapshot, chain: IntentRecord[]): IntentRecord[] => snap.read.intents.filter(row => !chain.some(retired => retired.requestId === row.requestId));
   const retry = (error: unknown, attempt: number): void => {
@@ -1058,8 +1066,6 @@ async function resolveBodyConflict(
     }
   }
 
-  // A stale review is reported as such before the engine reads; the write below re-verifies under the guard.
-  await prepare();
   let written: { version: Version; intent: IntentRecord | null; receipt: BodyResolutionReceipt } | undefined;
   const write = async (target: ConceptId, candidate: OkfDocument, writeOptions: WriteOptions = {}): Promise<Version> => {
     if (target !== id) throw new BodyRuntimeError("Conflict resolution cannot write another document.");
