@@ -165,7 +165,7 @@ test("doc open verifies and opens one exact document through the existing DocPag
 test("managed worker preserves an indexless project-binding boundary beside an indexed conventional child", async () => {
   const project = await mkdtemp(path.join(tmpdir(), "superbee-managed-binding-boundary-"));
   const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-binding-home-"));
-  const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
+  const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../superbee/dist/superbee.mjs");
   await writeDoc(
     { root: project },
     { id: "docs/root-only", frontmatter: { type: "Doc", title: "Root only" }, body: "# Root only" },

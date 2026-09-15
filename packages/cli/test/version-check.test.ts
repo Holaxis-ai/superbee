@@ -4,10 +4,12 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { buildIdentityEnvelope } from "../src/build-identity.js";
+import { configureSourceIdentity, buildIdentityEnvelope } from "../src/build-identity.js";
 import { CliError } from "../src/errors.js";
 import { versionCommand } from "../src/commands/version.js";
 import { UPDATE_CHECK_SCHEMA, type UpdateCheckResult } from "../src/update-check.js";
+
+configureSourceIdentity({ name: "superbee", version: "0.1.0-pre.3" });
 
 const CHECKED_AT = "2026-08-05T12:00:00.000Z";
 

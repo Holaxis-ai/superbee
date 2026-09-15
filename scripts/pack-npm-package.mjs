@@ -10,7 +10,7 @@ import { isMainModule } from "./is-main-module.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const cliPackageRoot = path.join(repoRoot, "packages", "cli");
+const cliPackageRoot = path.join(repoRoot, "packages", "superbee");
 
 export function publishedManifest(source, readme) {
   return {

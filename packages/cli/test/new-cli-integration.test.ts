@@ -11,7 +11,7 @@ import { CONVENTION_TYPE, initBundle, readDoc, writeDoc, type Bundle } from "@su
 import { shellArg } from "../src/invocation.js";
 import { extractSerializedField } from "./support/rendered-command.js";
 
-const cliBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
+const cliBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../superbee/dist/superbee.mjs");
 const T = "2026-07-01T00:00:00.000Z";
 
 test("built CLI new persists prototype-looking options as exact own properties and rejects omissions", async () => {

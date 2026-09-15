@@ -15,7 +15,7 @@ import { ensureUserStateRoot } from "../../src/user-state.js";
 import { isolatedUserEnv } from "./user-env.js";
 
 /** The BUILT CLI: every crossing-point row exercises the artifact users actually run. */
-export const BUILT_CLI = fileURLToPath(new URL("../../dist/superbee.mjs", import.meta.url));
+export const BUILT_CLI = fileURLToPath(new URL("../../../superbee/dist/superbee.mjs", import.meta.url));
 
 export function scratch(prefix = "superbee-private-state-"): string {
   return mkdtempSync(path.join(tmpdir(), prefix));

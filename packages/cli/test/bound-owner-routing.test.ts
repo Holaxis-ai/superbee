@@ -34,7 +34,7 @@ import {
   wedgeMidRebase,
 } from "../../board-git/test/git-harness.js";
 
-const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
+const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../superbee/dist/superbee.mjs");
 
 async function inDir<T>(dir: string, run: () => Promise<T>): Promise<T> {
   const before = process.cwd();

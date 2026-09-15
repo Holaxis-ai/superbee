@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { extractSerializedField } from "./support/rendered-command.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliPackageRoot = path.resolve(here, "..");
+const cliPackageRoot = path.resolve(here, "../../superbee");
 const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 // Build ONLY if the bundle is absent — the package `test` script builds once up front, so this is

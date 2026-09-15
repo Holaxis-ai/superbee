@@ -400,7 +400,7 @@ test("local-dev policy remains explicit while unknown fails closed", () => {
     runtime_path: "/opt/superbee-npm/bin/node",
   });
 
-  const repoExecutable = "/workspace/superbee/packages/cli/dist/superbee.mjs";
+  const repoExecutable = "/workspace/superbee/packages/superbee/dist/superbee.mjs";
   let npmPrefixCalls = 0;
   assert.deepEqual(
     classifyPersistentInstallAuthority({

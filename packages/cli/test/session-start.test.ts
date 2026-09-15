@@ -89,7 +89,7 @@ import { testInvocation } from "./support/command-prefix.js";
 // ── scaffolding (mirrors sync.test.ts) ───────────────────────────────────────
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliPackageRoot = path.resolve(here, "..");
+const cliPackageRoot = path.resolve(here, "../../superbee");
 const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 /**
@@ -1028,7 +1028,7 @@ test("hook re-install prompt: a pre-session-start managed hook is detected and s
 
 test("sessionStartHookCommand: bare base passes through; a spaced path is quoted; plugin spawns argv", () => {
   assert.equal(sessionStartHookCommand("aslite"), "aslite session-start");
-  const spaced = "/Users/f b/packages/cli/dist/superbee.mjs";
+  const spaced = "/Users/f b/packages/superbee/dist/superbee.mjs";
   assert.equal(sessionStartHookCommand(spaced), `${renderGeneratedHookToken(spaced)} session-start`);
   const src = buildOpenCodePluginSource("/opt/bin/agentstate-lite");
   assert.ok(src.includes('const command = "/opt/bin/agentstate-lite"'));
@@ -1261,9 +1261,9 @@ test("built uninstall recognizes every canonical lexical envelope", { skip: proc
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-lexical-owned-"));
   const canonicalCommands = [
     "aslite session-start",
-    "'/tmp/a b/packages/cli/dist/superbee.mjs' session-start",
-    String.raw`'/tmp/a'\''b/packages/cli/dist/superbee.mjs' session-start`,
-    '"/tmp/a b/packages/cli/dist/superbee.mjs" session-start',
+    "'/tmp/a b/packages/superbee/dist/superbee.mjs' session-start",
+    String.raw`'/tmp/a'\''b/packages/superbee/dist/superbee.mjs' session-start`,
+    '"/tmp/a b/packages/superbee/dist/superbee.mjs" session-start',
     String.raw`'/opt/a'\''b/bin/node' '/opt/a'\''b/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs' session-start`,
   ];
   const settings = JSON.stringify(

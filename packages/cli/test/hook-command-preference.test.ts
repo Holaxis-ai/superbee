@@ -10,14 +10,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { BIN_NAMES, hookCommand } from "../src/invocation.js";
+import { BIN_NAMES, hookCommand, registerExecutableEntry } from "../src/invocation.js";
 import { sessionStartHookCommand } from "../src/commands/hook.js";
 
 test("hookCommand() prefers `superbee` when all managed bins resolve on PATH to the running executable", () => {
   assert.deepEqual([...BIN_NAMES], ["superbee", "aslite", "agentstate-lite"], "superbee must be the preferred successor bin");
   // Under the test loader the "running executable" is src/invocation.ts itself; make all managed
   // bin names resolve to it from one PATH directory.
-  const exe = realpathSync(fileURLToPath(new URL("../src/invocation.ts", import.meta.url)));
+  const exe = realpathSync(fileURLToPath(new URL("../../superbee/dist/superbee.mjs", import.meta.url)));
+  registerExecutableEntry(exe);
   const binDir = mkdtempSync(path.join(tmpdir(), "superbee-bin-preference-"));
   for (const name of BIN_NAMES) {
     if (process.platform === "win32") {
@@ -40,7 +41,8 @@ test("hookCommand() prefers `superbee` when all managed bins resolve on PATH to 
 test("Windows command lookup refuses an edited shim even when it mentions the current executable", {
   skip: process.platform === "win32" ? undefined : "Windows cmd-shim ownership grammar",
 }, () => {
-  const exe = realpathSync(fileURLToPath(new URL("../src/invocation.ts", import.meta.url)));
+  const exe = realpathSync(fileURLToPath(new URL("../../superbee/dist/superbee.mjs", import.meta.url)));
+  registerExecutableEntry(exe);
   const binDir = mkdtempSync(path.join(tmpdir(), "superbee-bin-foreign-"));
   writeFileSync(
     path.join(binDir, "superbee.cmd"),

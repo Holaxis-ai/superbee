@@ -282,7 +282,7 @@
       ],
       "runtime_setup_node": 20,
       "version_guard": "node --version | grep -q '^v20\\.'",
-      "built_cli": "packages/cli/dist/superbee.mjs",
+      "built_cli": "packages/superbee/dist/superbee.mjs",
       "built_cli_commands": [
         "init",
         "doc write",

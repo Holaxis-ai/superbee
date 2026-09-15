@@ -1,7 +1,7 @@
 # Superbee AXI contract
 
 This file is the repository authority for Superbee's agent-facing CLI interaction contract. It
-owns the meaning of the ten numbered AXI rules used by `packages/cli`; implementation comments,
+owns the meaning of the ten numbered AXI rules used by `packages/superbee`; implementation comments,
 command help, and tests are evidence of that contract, not competing definitions.
 
 The contract applies to every public CLI command. Human-only presentation surfaces may choose a
