@@ -272,7 +272,7 @@ function managedExecutableLayout(value: string, platform: string): ManagedExecut
   if (/\/node_modules\/(?:@holaxis\/aslite|aslite|agentstate-lite)\/dist\/agentstate-lite\.mjs$/.test(portable)) {
     return "legacy_npm";
   }
-  if (/\/packages\/cli\/dist\/superbee\.mjs$/.test(portable)) return "canonical_local_dev";
+  if (/\/packages\/(?:cli|superbee)\/dist\/superbee\.mjs$/.test(portable)) return "canonical_local_dev";
   if (/\/packages\/cli\/dist\/agentstate-lite\.mjs$/.test(portable)) return "legacy_local_dev";
   if (
     /\/(?:\.claude|\.codex)\/plugins\/cache\/[^/]+\/agentstate-lite\/[^/]+\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable) ||

@@ -18,8 +18,8 @@ import { dirname, resolve, relative, sep, join } from "node:path";
 import { isMainModule } from "../../../scripts/is-main-module.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const skillRenderTs = resolve(here, "../src/skill-render.ts");
-// packages/cli/scripts -> repo root
+const skillRenderTs = resolve(here, "../../cli/src/skill-render.ts");
+// packages/superbee/scripts -> repo root
 const repoRoot = resolve(here, "../../..");
 
 const packageSkillRoot = resolve(here, "..");
@@ -30,7 +30,7 @@ const devinSourceReceipt = `${JSON.stringify(
     package: "superbee",
     source: "packages/cli/src/skill-render.ts",
     resource_manifest: "packages/cli/src/distribution-resources.ts",
-    generated_by: "packages/cli/scripts/gen-skill.mjs",
+    generated_by: "packages/superbee/scripts/gen-skill.mjs",
     installed_for: "devin",
     discovery_path: ".cognition/skills/superbee",
   },

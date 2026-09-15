@@ -10,7 +10,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-CLI="$REPO/packages/cli/dist/superbee.mjs"
+CLI="$REPO/packages/superbee/dist/superbee.mjs"
 
 if [ ! -f "$CLI" ]; then
   echo "The built CLI is missing: $CLI" >&2

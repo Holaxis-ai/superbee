@@ -51,10 +51,17 @@ export type OperationClaim =
     }
   | {
       kind: "claimed";
-      /** Record the application's response under the key; the key stays claimed until this or `release` runs. */
-      record(operation: Omit<RecordedOperation, "recordedAt">): RecordedOperation;
-      /** Give the key back with nothing recorded, so a later submission applies fresh. */
-      release(): void;
+      /**
+       * Record the application's response under the key. The router awaits completion before
+       * returning it, and does not release the claim if recording fails after application.
+       * Durable stores must reconcile a possibly committed mutation before allowing reapplication.
+       */
+      record(operation: Omit<RecordedOperation, "recordedAt">): RecordedOperation | Promise<RecordedOperation>;
+      /**
+       * Settle an application failure before the router returns it. A durable store must check
+       * for a committed mutation before making the key available for a fresh application.
+       */
+      release(): void | Promise<void>;
     };
 
 export interface OperationOutcomeStore {

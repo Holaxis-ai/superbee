@@ -187,6 +187,7 @@ test("command compatibility recognizes exact generated history and rejects near-
     ["/usr/local/bin/aslite session-start", "unmanaged"],
     ["/x/packages/cli/dist/agentstate-lite.mjs session-start", "legacy_identity"],
     ["/opt/node/bin/node /x/packages/cli/dist/agentstate-lite.mjs session-start", "legacy_identity"],
+    ["/opt/node/bin/node /x/packages/superbee/dist/superbee.mjs session-start", "current"],
     ["/opt/node/bin/node /x/packages/cli/dist/superbee.mjs session-start", "current"],
     ["node /tmp/agentstate-lite.mjs session-start", "unmanaged"],
     ["/tmp/bin/node /tmp/agentstate-lite.mjs session-start", "unmanaged"],

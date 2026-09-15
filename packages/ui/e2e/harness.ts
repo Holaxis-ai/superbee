@@ -21,8 +21,8 @@ import {
 } from "@superbee/ui-server";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-// packages/ui/e2e -> repo root -> packages/cli/dist/superbee.mjs
-export const CLI_DIST = path.resolve(here, "../../cli/dist/superbee.mjs");
+// packages/ui/e2e -> repo root -> packages/superbee/dist/superbee.mjs
+export const CLI_DIST = path.resolve(here, "../../superbee/dist/superbee.mjs");
 const UI_DIST = path.resolve(here, "../dist");
 // The production CLI persists exact-byte approvals outside the bundle. The in-process restart
 // harness cannot import that CLI-owned adapter without reversing the package graph, so retain one

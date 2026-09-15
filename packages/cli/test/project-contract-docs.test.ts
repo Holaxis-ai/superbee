@@ -66,7 +66,7 @@ function assertNamedTestContains(relativePath: string, name: string, needles: re
 }
 
 test("AXI contract has ten ordered rows, live proof anchors, and a separate idempotency invariant", () => {
-  const contract = readProjectFile("packages/cli/AXI-CONTRACT.md");
+  const contract = readProjectFile("packages/superbee/AXI-CONTRACT.md");
   const numberedRows = contract.split("\n").filter((line) => /^\| AXI-\d{2} \|/.test(line));
   assertEvidenceRows(
     numberedRows,
@@ -77,7 +77,7 @@ test("AXI contract has ten ordered rows, live proof anchors, and a separate idem
   assertEvidenceRows(mutationRows, ["MUTATION"]);
 
   const repositoryReadme = readProjectFile("README.md");
-  assert.match(repositoryReadme, /\[AXI contract\]\(packages\/cli\/AXI-CONTRACT\.md\)/);
+  assert.match(repositoryReadme, /\[AXI contract\]\(packages\/superbee\/AXI-CONTRACT\.md\)/);
   assert.match(repositoryReadme, /\[wire protocol\]\(docs\/WIRE-PROTOCOL\.md\)/);
   assert.match(repositoryReadme, /\[SECURITY\.md\]\(SECURITY\.md\)/);
   assert.match(contract, /\[wire protocol\]\(\.\.\/\.\.\/docs\/WIRE-PROTOCOL\.md\)/);
@@ -266,7 +266,7 @@ test("mandatory agent entrypoints stay compact, routed, and safe in degraded sta
     "[OKF compatibility](CONTRIBUTING.md#okf-compatibility)",
     "[Findings and commitments](CONTRIBUTING.md#findings-and-commitments)",
     "[Assurance evolution](CONTRIBUTING.md#assurance-evolution)",
-    "[CLI AXI contract](packages/cli/AXI-CONTRACT.md)",
+    "[CLI AXI contract](packages/superbee/AXI-CONTRACT.md)",
     "[Wire protocol](docs/WIRE-PROTOCOL.md)",
     "[SECURITY.md](SECURITY.md)",
   ]) {

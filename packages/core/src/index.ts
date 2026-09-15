@@ -112,10 +112,14 @@ export { MemoryBackend } from "./memory-backend.js";
 // The journaled-backend seam (`journaled-backend.ts`): what an adapter adds to `StorageBackend`
 // so a browser-local working copy's sync runtime can journal intents through it. The IndexedDB
 // adapter implements it behind the `indexeddb-backend` subpath.
-export { IntentHoldConflict, IntentStateConflict } from "./journaled-backend.js";
+export { IntentHoldConflict, IntentStateConflict, JournalGuardConflict, captureJournalGuard } from "./journaled-backend.js";
 export type {
   IntentPatch,
   IntentRecord,
+  IntentUpdateOptions,
+  JournalGuard,
+  MetaExpectation,
+  MetaWriteOptions,
   JournaledBackend,
   JournaledDeleteOptions,
   JournaledDeleteResult,
@@ -142,17 +146,11 @@ export type {
 // (docs/WIRE-PROTOCOL.md) — a FUTURE plug-in adapter, proven here against the
 // in-repo reference server (`@superbee/server`) by the tri-backend contract
 // tests. No CF/D1/production deployment is implied by its presence.
-export { RemoteBackend, RemoteError } from "./remote-backend.js";
-export type {
-  FetchLike,
-  HeadsOptions,
-  HeadsResult,
-  RemoteBackendOptions,
-  RemoteSnapshot,
-  SnapshotDocument,
-  SnapshotHeader,
-  WireCapabilities,
-} from "./remote-backend.js";
+export { RemoteBackend } from "./remote-backend.js";
+export type { FetchLike, HeadsOptions, RemoteBackendOptions, WireCapabilities } from "./remote-backend.js";
+export { RemoteError } from "./remote-error.js";
+export { SNAPSHOT_DIGEST_MISMATCH, SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream } from "./remote-parsers.js";
+export type { HeadsResult, ReadSnapshotStreamOptions, RemoteSnapshot, SnapshotDocument, SnapshotHeader } from "./remote-parsers.js";
 export { headsDigest, isHeadsDigest, sortHeads } from "./heads-digest.js";
 export type { DocumentHead } from "./heads-digest.js";
 // The uncertain-write transport over `RemoteBackend`: identified document writes plus outcome
@@ -245,6 +243,8 @@ export {
   pathFromConceptId,
   assertSafeConceptId,
   assertSafeReservedDir,
+  assertSafeReservedFilename,
+  compareStorageKeys,
   assertSafeBlobKey,
   toPosix,
 } from "./paths.js";
@@ -344,3 +344,12 @@ export { isOkfLifecycleStatus, OKF_LIFECYCLE_STATUSES } from "./okf-lifecycle.js
 export { prepareDocumentFieldAction, isStandardDocumentSetField, FieldActionError, type FieldActionErrorDetails, type SourceCandidateIdentity, type FieldAction, type SourceEntry, type SourceSelector, type FieldActionScope, type FieldActionContext, type PreparedDocumentFieldAction } from "./document-field-actions.js";
 export { prepareDocumentMutationCandidate, type PrepareDocumentMutationOptions, type DocumentMutationInput } from "./document-mutation.js";
 export { KindFieldMutationConflict, prepareKindFieldMutation, type KindFieldMutation } from "./kind-field-mutation.js";
+export {
+  BODY_DELIVERY_LIMITS, prepareBodyDelivery, validatePreparedBodyDelivery, assertSameBodyDelivery,
+  validateBodyReceipt, performBodyDelivery, reconcileBodyReceipt,
+} from "./governed-body-write.js";
+export type {
+  BodyUpdateOperation, PreparedBodyDelivery, CommittedBodyReceipt, BodyDeliveryOutcome,
+  BodyDeliveryTransport, BodyDeliveryResult, BodyDeliveryInput, BodyDeliveryPremise,
+  BodyLocalSnapshot, BodyReconciliationProposal,
+} from "./governed-body-write.js";

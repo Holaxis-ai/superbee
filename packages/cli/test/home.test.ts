@@ -75,7 +75,7 @@ const ALL_APPLIED_CONVENTION_IDS = [
   "conventions/roadmap",
   "conventions/roadmap-item",
 ];
-const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
+const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../superbee/dist/superbee.mjs");
 
 function row(id: string, timestamp: string): HomeRow {
   return { id, type: "Note", title: id.split("/").pop() ?? id, timestamp };

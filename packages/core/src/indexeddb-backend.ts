@@ -34,10 +34,26 @@ import { resolveContentType } from "./content-type.js";
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
 import {
+  assertJournalGuard,
+  assertJournalIntentChanges,
+  assertJournalMetaChanges,
+  assertMetaWrite,
+  captureJournalGuardOption,
+  captureJournalDeleteOptions,
+  captureJournalWriteOptions,
+  captureIntentUpdate,
+  captureMetaWrite,
+  captureJournalValue,
+  JournalGuardConflict,
+  assertJournalResolutionOptions,
+  assertJournalSnapshot,
   IntentHoldConflict,
   IntentStateConflict,
   type IntentPatch,
   type IntentRecord,
+  type IntentUpdateOptions,
+  type JournalGuard,
+  type MetaWriteOptions,
   type JournaledBackend,
   type JournaledDeleteOptions,
   type JournaledDeleteResult,
@@ -45,7 +61,7 @@ import {
   type JournaledWriteOptions,
   type MetaRecord,
 } from "./journaled-backend.js";
-import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, pathFromConceptId, toPosix } from "./paths.js";
+import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys, pathFromConceptId } from "./paths.js";
 import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
 import type { OperationState } from "./uncertain-write.js";
 import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
@@ -186,8 +202,7 @@ function notFound(id: ConceptId): Error & { code: string } {
 
 /** Bundle-relative key for a reserved file (`""` = bundle root), the filesystem adapter's layout. */
 function reservedKey(dir: string, name: ReservedFilename): string {
-  const d = toPosix(dir).replace(/^\.?\//, "").replace(/\/$/, "");
-  return d === "" ? name : `${d}/${name}`;
+  return dir === "" ? name : `${dir}/${name}`;
 }
 
 function firstString(...vals: unknown[]): string | undefined {
@@ -208,7 +223,7 @@ function asError(error: unknown): Error {
 
 function sorted<T extends string>(keys: unknown[], prefix?: string): T[] {
   const out = keys.filter((key): key is T => typeof key === "string" && (!prefix || key.startsWith(prefix)));
-  out.sort((a, b) => a.localeCompare(b));
+  out.sort(compareStorageKeys);
   return out;
 }
 
@@ -230,6 +245,7 @@ function editionOf(index: ReservedRecord | undefined): string | undefined {
  * database name are peers whose conditional writes are serialized by the database.
  */
 export class IndexedDbBackend implements JournaledBackend {
+  readonly journalSnapshotCas = true as const;
   /**
    * What a resolved write promises: the IndexedDB transaction reported `complete`. Whether the
    * committed pages survive power loss is the browser's and the operating system's decision.
@@ -646,6 +662,7 @@ export class IndexedDbBackend implements JournaledBackend {
 
   async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const record = await this.#getOne<ReservedRecord>(RESERVED, reservedKey(dir, name));
     if (!record) return null;
     return { content: record.content, version: record.version };
@@ -653,6 +670,7 @@ export class IndexedDbBackend implements JournaledBackend {
 
   async writeReserved(dir: string, name: ReservedFilename, content: string, options: WriteOptions = {}): Promise<Version> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const path = reservedKey(dir, name);
     return this.#compareAndSwap<ReservedRecord>(RESERVED, path, path, options.expectedVersion, () => ({
       record: { path, content, version: versionOfBytes(content) },
@@ -666,6 +684,27 @@ export class IndexedDbBackend implements JournaledBackend {
   // pending-change record and no record exists for an edit that never committed. Settling an
   // intent is a compare-and-swap on the intent's own `state`, so a stale realm cannot settle
   // an intent another realm already settled.
+
+  /** Read and compare a complete guard inside its caller's still-active transaction. */
+  #checkJournalGuard(tx: IdbTransactionLike, expected: JournalGuard | undefined, next: () => void, fail: (error: Error) => void, guard: (fn: () => void) => () => void): void {
+    if (expected === undefined) { next(); return; }
+    const current: JournalGuard = { target: expected.target, document: null, intents: [], meta: [] };
+    let pending = 2 + expected.meta.length;
+    const finish = () => { if (--pending === 0) { assertJournalGuard(expected, current); next(); } };
+    const read = <T>(request: IdbRequestLike<T>, accept: (value: T) => void) => {
+      request.onerror = () => fail(requestError(request, "IndexedDB journal guard read failed"));
+      request.onsuccess = guard(() => { accept(request.result); finish(); });
+    };
+    read(tx.objectStore(DOCUMENTS).get(expected.target), value => {
+      const row = value as DocumentRecord | undefined;
+      current.document = row ? { version: row.version, raw: row.raw } : null;
+    });
+    read(tx.objectStore(INTENTS).getAll(), value => { current.intents = (value as IntentRecord[]).filter(row => row.target === expected.target); });
+    for (const entry of expected.meta) read(tx.objectStore(META).get(entry.key), value => {
+      const row = value as MetaRecord | undefined;
+      current.meta.push({ key: entry.key, expected: row === undefined ? { present: false } : { present: true, value: row.value } });
+    });
+  }
 
   /**
    * One transaction over documents, intents, and meta: the document compare-and-swap of
@@ -681,14 +720,21 @@ export class IndexedDbBackend implements JournaledBackend {
     doc: OkfDocument,
     options: JournaledWriteOptions = {},
   ): Promise<{ version: Version; raw: string; intent: IntentRecord | null }> {
+    const snapshotGuard = captureJournalGuardOption(options, id);
+    if (snapshotGuard !== undefined) { options = captureJournalWriteOptions(options); doc = captureJournalValue(doc); }
     assertSafeConceptId(id);
+    assertJournalResolutionOptions(id, options);
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
     const version = versionOfBytes(raw);
+    if (snapshotGuard && (doc.id !== id || (options.intent && options.intent.target !== id))) throw new JournalGuardConflict(id);
+    const suppliedMeta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta;
+    assertJournalMetaChanges(snapshotGuard, suppliedMeta ?? [], options.removeMeta);
+    options = structuredClone({ ...options, meta: suppliedMeta, ...(snapshotGuard ? { guard: snapshotGuard } : {}) });
     const updatedBy = options.actor?.trim() || defaultActor();
     const now = new Date().toISOString();
     const expected = options.expectedVersion;
     const { intent, supersede, requireSettled } = options;
-    const meta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta;
+    const meta = options.meta as MetaRecord[] | undefined;
     return this.#transact<{ version: Version; raw: string; intent: IntentRecord | null }>(
       [DOCUMENTS, INTENTS, META],
       "readwrite",
@@ -704,6 +750,10 @@ export class IndexedDbBackend implements JournaledBackend {
           for (const row of meta ?? []) {
             const put = metaStore.put(row);
             put.onerror = () => fail(requestError(put, `IndexedDB meta write failed for '${row.key}'`));
+          }
+          for (const key of options.removeMeta ?? []) {
+            const remove = metaStore.delete(key);
+            remove.onerror = () => fail(requestError(remove, `IndexedDB meta delete failed for '${key}'`));
           }
         };
         const recordIntent = () => {
@@ -761,20 +811,45 @@ export class IndexedDbBackend implements JournaledBackend {
             removeSuperseded();
           });
         };
-        if (!requireSettled) {
-          writeDocument();
-          return;
-        }
-        // The journal has no index by target, so the hold check scans it; the scan runs inside
-        // this transaction, which is what makes the answer hold for the write that follows.
-        request(intents.getAll(), "intent scan", (rows) => {
-          const holder = (rows as IntentRecord[]).find((row) => row.target === id && row.state !== "acknowledged");
-          if (holder) {
-            fail(new IntentHoldConflict(id, holder.requestId, holder.state));
+        const apply = () => {
+          if (options.resolveIntents) {
+            request(intents.getAll(), "resolution snapshot", (rows) => {
+              assertJournalSnapshot(id, options.resolveIntents!.expected, rows as IntentRecord[], intent?.requestId);
+              for (const row of options.resolveIntents!.expected) {
+                const removal = intents.delete(row.requestId);
+                removal.onerror = () => fail(requestError(removal, "IndexedDB resolution delete failed"));
+              }
+              writeDocument();
+            });
             return;
           }
-          writeDocument();
-        });
+          if (!requireSettled) {
+            writeDocument();
+            return;
+          }
+          // The journal has no target index; this scan shares the write's transaction.
+          request(intents.getAll(), "intent scan", (rows) => {
+            const holder = (rows as IntentRecord[]).find((row) => row.target === id && row.state !== "acknowledged");
+            if (holder) {
+              fail(new IntentHoldConflict(id, holder.requestId, holder.state));
+              return;
+            }
+            writeDocument();
+          });
+        };
+        const checkIdentities = () => {
+          if (!snapshotGuard) { apply(); return; }
+          const checkSuperseded = (existingIdentity: IntentRecord | undefined) => {
+            if (!supersede) { assertJournalIntentChanges(snapshotGuard, existingIdentity, undefined); apply(); return; }
+            request(intents.get(supersede.requestId), "superseded identity read", row => {
+              assertJournalIntentChanges(snapshotGuard, existingIdentity, row as IntentRecord | undefined);
+              apply();
+            });
+          };
+          if (!intent) { checkSuperseded(undefined); return; }
+          request(intents.get(intent.requestId), "new identity read", row => checkSuperseded(row as IntentRecord | undefined));
+        };
+        this.#checkJournalGuard(tx, snapshotGuard, checkIdentities, fail, guard);
       },
     );
   }
@@ -789,12 +864,15 @@ export class IndexedDbBackend implements JournaledBackend {
    * with `false` even under a compare-and-swap.
    */
   async deleteJournaled(id: ConceptId, options: JournaledDeleteOptions = {}): Promise<JournaledDeleteResult> {
+    options = captureJournalDeleteOptions(id, options);
     assertSafeConceptId(id);
+    assertJournalResolutionOptions(id, options);
     const expected = options.expectedVersion;
     const { requireSettled, onHeld } = options;
     const puts = options.meta ?? [];
     const removals = options.removeMeta ?? [];
     return this.#transact<JournaledDeleteResult>([DOCUMENTS, INTENTS, META], "readwrite", (tx, done, fail, guard) => {
+      this.#checkJournalGuard(tx, options.guard, () => {
       const documents = tx.objectStore(DOCUMENTS);
       const intents = tx.objectStore(INTENTS);
       const metaStore = tx.objectStore(META);
@@ -818,6 +896,10 @@ export class IndexedDbBackend implements JournaledBackend {
       const deleteDocument = () => {
         request(documents.get(id), "read", (current) => {
           const record = current as DocumentRecord | undefined;
+          if (options.resolveIntents && expected !== (record?.version ?? null)) {
+            fail(new VersionConflict(id, expected!, record?.version ?? null));
+            return;
+          }
           if (!record) {
             applyMeta();
             done({ outcome: "absent" });
@@ -833,6 +915,17 @@ export class IndexedDbBackend implements JournaledBackend {
           done({ outcome: "deleted" });
         });
       };
+      if (options.resolveIntents) {
+        request(intents.getAll(), "resolution snapshot", (rows) => {
+          assertJournalSnapshot(id, options.resolveIntents!.expected, rows as IntentRecord[]);
+          for (const row of options.resolveIntents!.expected) {
+            const removal = intents.delete(row.requestId);
+            removal.onerror = () => fail(requestError(removal, "IndexedDB resolution delete failed"));
+          }
+          deleteDocument();
+        });
+        return;
+      }
       if (!requireSettled) {
         deleteDocument();
         return;
@@ -852,6 +945,7 @@ export class IndexedDbBackend implements JournaledBackend {
         }
         deleteDocument();
       });
+      }, fail, guard);
     });
   }
 
@@ -935,29 +1029,39 @@ export class IndexedDbBackend implements JournaledBackend {
     requestId: string,
     expectedState: OperationState,
     patch: IntentPatch,
-    options: { meta?: MetaRecord[] } = {},
+    options: IntentUpdateOptions = {},
   ): Promise<IntentRecord> {
+    ({ patch, options } = captureIntentUpdate(patch, options));
     const now = new Date().toISOString();
-    return this.#transact<IntentRecord>([INTENTS, META], "readwrite", (tx, done, fail, guard) => {
-      const intents = tx.objectStore(INTENTS);
-      const read = intents.get(requestId);
-      read.onerror = () => fail(requestError(read, `IndexedDB intent read failed for '${requestId}'`));
-      read.onsuccess = guard(() => {
-        const current = read.result as IntentRecord | undefined;
-        if (!current || current.state !== expectedState) {
-          fail(new IntentStateConflict(requestId, expectedState, current?.state ?? null));
-          return;
-        }
-        const next: IntentRecord = { ...current, ...patch, requestId, sequence: current.sequence, updatedAt: now };
-        const put = intents.put(next);
-        put.onerror = () => fail(requestError(put, `IndexedDB intent write failed for '${requestId}'`));
-        const metaStore = tx.objectStore(META);
-        for (const row of options.meta ?? []) {
-          const metaPut = metaStore.put(row);
-          metaPut.onerror = () => fail(requestError(metaPut, `IndexedDB meta write failed for '${row.key}'`));
-        }
-        done(next);
-      });
+    const raw = options.document ? stringifyDoc(options.document.frontmatter, options.document.body ?? "") : undefined;
+    const replacement = raw === undefined ? undefined : { id: options.document!.id, raw, version: versionOfBytes(raw), updatedBy: defaultActor(), updatedAt: now };
+    return this.#transact<IntentRecord>([DOCUMENTS, INTENTS, META], "readwrite", (tx, done, fail, guard) => {
+      this.#checkJournalGuard(tx, options.guard, () => {
+        const intents = tx.objectStore(INTENTS);
+        const read = intents.get(requestId);
+        read.onerror = () => fail(requestError(read, `IndexedDB intent read failed for '${requestId}'`));
+        read.onsuccess = guard(() => {
+          const current = read.result as IntentRecord | undefined;
+          if (!current || current.state !== expectedState) {
+            fail(new IntentStateConflict(requestId, expectedState, current?.state ?? null));
+            return;
+          }
+          if (options.guard && current.target !== options.guard.target) throw new JournalGuardConflict(current.target);
+          const next: IntentRecord = { ...current, ...patch, requestId, sequence: current.sequence, updatedAt: now };
+          if (replacement) {
+            const write = tx.objectStore(DOCUMENTS).put(replacement);
+            write.onerror = () => fail(requestError(write, "IndexedDB replacement write failed"));
+          }
+          const put = intents.put(next);
+          put.onerror = () => fail(requestError(put, `IndexedDB intent write failed for '${requestId}'`));
+          const metaStore = tx.objectStore(META);
+          for (const row of options.meta ?? []) {
+            const metaPut = metaStore.put(row);
+            metaPut.onerror = () => fail(requestError(metaPut, `IndexedDB meta write failed for '${row.key}'`));
+          }
+          done(next);
+        });
+      }, fail, guard);
     });
   }
 
@@ -966,11 +1070,26 @@ export class IndexedDbBackend implements JournaledBackend {
     return row === undefined ? undefined : (row.value as T);
   }
 
-  async writeMeta(key: string, value: unknown): Promise<void> {
-    await this.#transact<void>(META, "readwrite", (tx, done, fail) => {
-      const put = tx.objectStore(META).put({ key, value });
-      put.onerror = () => fail(requestError(put, `IndexedDB meta write failed for '${key}'`));
-      done(undefined);
+  async writeMeta(key: string, value: unknown, options: MetaWriteOptions = {}): Promise<void> {
+    options = captureMetaWrite(options);
+    value = options.expected !== undefined || options.requireEmptyJournal ? captureJournalValue(value) : structuredClone(value);
+    await this.#transact<void>([INTENTS, META], "readwrite", (tx, done, fail, guard) => {
+      const meta = tx.objectStore(META);
+      const read = meta.get(key);
+      read.onerror = () => fail(requestError(read, "IndexedDB admission read failed"));
+      read.onsuccess = guard(() => {
+        const row = read.result as MetaRecord | undefined;
+        const finish = (intents: IntentRecord[]) => {
+          assertMetaWrite(key, options, row === undefined ? { present: false } : { present: true, value: row.value }, intents);
+          const put = meta.put({ key, value });
+          put.onerror = () => fail(requestError(put, `IndexedDB meta write failed for '${key}'`));
+          done(undefined);
+        };
+        if (!options.requireEmptyJournal) { finish([]); return; }
+        const scan = tx.objectStore(INTENTS).getAll();
+        scan.onerror = () => fail(requestError(scan, "IndexedDB admission journal scan failed"));
+        scan.onsuccess = guard(() => finish(scan.result as IntentRecord[]));
+      });
     });
   }
 

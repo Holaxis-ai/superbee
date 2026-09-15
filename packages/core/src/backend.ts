@@ -33,6 +33,8 @@ import {
   assertSafeBlobKey,
   assertSafeConceptId,
   assertSafeReservedDir,
+  assertSafeReservedFilename,
+  compareStorageKeys,
   conceptIdFromPath,
   isReservedFile,
   pathFromConceptId,
@@ -126,8 +128,7 @@ async function walkFiles(root: string, keep: (name: string) => boolean, sub = ""
 
 /** Bundle-relative reserved-file path for a directory (`""` = bundle root). */
 function reservedPath(dir: string, name: ReservedFilename): string {
-  const d = toPosix(dir).replace(/^\.?\//, "").replace(/\/$/, "");
-  return d === "" ? name : `${d}/${name}`;
+  return dir === "" ? name : `${dir}/${name}`;
 }
 
 /**
@@ -284,12 +285,13 @@ export class FilesystemBackend implements StorageBackend {
       if (prefix && !id.startsWith(prefix)) continue;
       ids.push(id);
     }
-    ids.sort((a, b) => a.localeCompare(b));
+    ids.sort(compareStorageKeys);
     return ids;
   }
 
   async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const observed = await observeExact(port, this.#root, reservedPath(dir, name), readBytes);
     if (observed.state === "absent") return null;
     const content = observed.value.toString("utf8");
@@ -305,6 +307,7 @@ export class FilesystemBackend implements StorageBackend {
     options: WriteOptions = {},
   ): Promise<Version> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const rel = reservedPath(dir, name);
     // Same identity-keyed critical section as `write()`. A reserved-file read-modify-write
     // depends on a genuine `VersionConflict` under contention.
@@ -395,7 +398,7 @@ export class FilesystemBackend implements StorageBackend {
     const files = await walkFiles(this.#root, (name) => !name.toLowerCase().endsWith(".md"));
     const keys = files.map(toPosix);
     const filtered = prefix ? keys.filter((k) => k.startsWith(prefix)) : keys;
-    filtered.sort((a, b) => a.localeCompare(b));
+    filtered.sort(compareStorageKeys);
     return filtered;
   }
 
@@ -437,6 +440,7 @@ export async function readRawFilesystemReserved(
   name: ReservedFilename,
 ): Promise<{ bytes: Uint8Array; version: Version } | null> {
   assertSafeReservedDir(dir);
+  assertSafeReservedFilename(name);
   const root = publicationRoot(backend);
   const observed = await observeExact(port, root, reservedPath(dir, name), readBytes);
   if (observed.state === "absent") return null;
@@ -458,7 +462,8 @@ export async function listFilesystemReservedObjects(
       const dir = slash === -1 ? "" : relative.slice(0, slash);
       const name = relative.slice(slash + 1) as ReservedFilename;
       assertSafeReservedDir(dir);
+      assertSafeReservedFilename(name);
       return { dir, name };
     })
-    .sort((a, b) => reservedPath(a.dir, a.name).localeCompare(reservedPath(b.dir, b.name)));
+    .sort((a, b) => compareStorageKeys(reservedPath(a.dir, a.name), reservedPath(b.dir, b.name)));
 }

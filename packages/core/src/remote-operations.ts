@@ -12,7 +12,9 @@
  * carrier failure and a 5xx response both propagate unchanged: a 502 or 504 from an intermediary,
  * or the authority's own runtime failure, says nothing about whether the write was applied, so
  * the primitive classifies it as unknown and resolves it by lookup, which is the whole reason
- * the identity exists. Only a 4xx is final: the authority answered and declined.
+ * the identity exists. A 4xx is final because the authority answered and declined. A local
+ * metadata encoding refusal is also final because no PUT was sent, not because the authority
+ * recorded an outcome.
  *
  * The transport is only sound against an authority that implements identity. A host that
  * predates it ignores the header, applies every retry as a fresh write, and answers the lookup
@@ -40,6 +42,7 @@
 import { parseMarkdown } from "./frontmatter.js";
 import { pathFromConceptId } from "./paths.js";
 import { RemoteBackend, RemoteError } from "./remote-backend.js";
+import { RemoteDocumentValueError } from "./remote-document-codec.js";
 import type { OperationIntent, OperationTransport, Outcome } from "./uncertain-write.js";
 import { VersionConflict } from "./version-transport.js";
 
@@ -101,6 +104,7 @@ function buildTransport(remote: RemoteBackend, options: RemoteOperationTransport
         const version = await remote.write(intent.target, { id: intent.target, frontmatter, body }, writeOptions);
         return { kind: "committed", version };
       } catch (error) {
+        if (error instanceof RemoteDocumentValueError) return { kind: "refused", code: "USAGE", message: error.message };
         if (error instanceof VersionConflict) return { kind: "conflict", actual: error.actual };
         if (error instanceof RemoteError && error.status < 500) return { kind: "refused", code: error.code, message: error.message };
         throw error;

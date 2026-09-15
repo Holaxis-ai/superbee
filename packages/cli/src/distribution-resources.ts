@@ -2,7 +2,7 @@ import { CLI_COMMAND_GROUPS } from "./command-spec.js";
 import { commandName } from "./reference.js";
 
 // One inventory owns the npm package's auxiliary contracts, portable recipes, examples, and
-// fixtures. Source files remain authoritative; packages/cli/references/ is the committed projection
+// fixtures. Source files remain authoritative; packages/superbee/references/ is the committed projection
 // shipped in the tarball via package.json's files allowlist.
 
 export const RESOURCE_ROLES = [
@@ -92,7 +92,7 @@ export const DISTRIBUTION_RESOURCES: DistributionResource[] = [
   ]),
 ];
 
-/** The npm projection (packages/cli/references/, shipped in the tarball). */
+/** The npm projection (packages/superbee/references/, shipped in the tarball). */
 export const NPM_RESOURCES: ProjectedResource[] = DISTRIBUTION_RESOURCES.map(({ src, dest }) => ({ src, dest }));
 
 // NOT DISTRIBUTED: the repository-owned wire-protocol contract lives at docs/WIRE-PROTOCOL.md.

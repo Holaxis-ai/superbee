@@ -36,7 +36,7 @@ import {
 import { CliError } from "../src/errors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliBin = path.resolve(here, "..", "dist", "superbee.mjs");
+const cliBin = path.resolve(here, "../../superbee", "dist", "superbee.mjs");
 
 async function tempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "agentstate-lite-create-only-test-"));
@@ -100,7 +100,7 @@ test("a fresh explicit target initializes with every supported recipe form", asy
     ]);
     assert.equal(named.recipe, "work-tracking");
     // A path-form recipe folder — the shipped worked example, exercising the external RecipeSource.
-    const recipeDir = path.resolve(here, "..", "references", "recipes", "claims");
+    const recipeDir = path.resolve(here, "../../superbee", "references", "recipes", "claims");
     const fromPath = await runInit(["--create-only", "--dir", path.join(base, "d"), "--recipe", recipeDir]);
     assert.equal(fromPath.init, "ok");
     assert.equal(fromPath.recipe, "claims");

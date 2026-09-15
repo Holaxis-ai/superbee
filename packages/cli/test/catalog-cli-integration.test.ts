@@ -12,7 +12,7 @@ import { credentialsDir } from "../src/credentials.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliPackageRoot = path.resolve(here, "..");
+const cliPackageRoot = path.resolve(here, "../../superbee");
 const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 before(() => {

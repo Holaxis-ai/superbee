@@ -74,9 +74,14 @@ test("imported usage counts preserve actual storage values on body edits across 
     for (const [index, usage_count] of [-1, 0.5, "2", NaN, Infinity].entries()) {
       const id = `imported/count-${index}`;
       await writeDocVersioned(storage, { id, frontmatter: { type: "Note", sources: [{ resource: "scope", usage_count }] }, body: "old\n" });
+      if (bundle.backend instanceof RemoteBackend && typeof usage_count === "number" && !Number.isFinite(usage_count)) {
+        const before = await readDocVersioned(storage, id);
+        await assert.rejects(readDocVersioned(bundle, id), { code: "RUNTIME", status: 500 });
+        assert.deepEqual(await readDocVersioned(storage, id), before);
+        continue;
+      }
       const imported = await readDocVersioned(bundle, id);
-      const expected = (bundle.backend instanceof RemoteBackend) && typeof usage_count === "number" && !Number.isFinite(usage_count) ? null : usage_count;
-      assert.equal((imported.doc.frontmatter.sources as Array<Record<string, unknown>>)[0]!.usage_count, expected);
+      assert.equal((imported.doc.frontmatter.sources as Array<Record<string, unknown>>)[0]!.usage_count, usage_count);
       const edited = await mutateDocument({ bundle, id, mode: "patch", registry, strict: false, seedGenerationClock: false, buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: "new\n" }) });
       const after = await readDocVersioned(bundle, id);
       assert.equal(edited.changed, true);
@@ -87,18 +92,20 @@ test("imported usage counts preserve actual storage values on body edits across 
   });
 });
 
-test("producer Date changes persist while equal Date values remain no-ops", async () => {
-  const bundle: Bundle = { root: "mem://dates", backend: new MemoryBackend() };
-  await bundle.backend!.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
-  const first = new Date("2026-09-08T12:00:00Z");
-  const second = new Date("2026-09-09T12:00:00Z");
-  await writeDocVersioned(bundle, { id: "dates", frontmatter: { type: "Note", producer: { at: first } }, body: "unchanged\n" });
-  const mutate = (at: Date) => mutateDocument({ bundle, id: "dates", mode: "patch", registry, strict: false, buildCandidate: existing => ({ frontmatter: { ...existing!.frontmatter, producer: { at } }, body: existing!.body }) });
-  const before = await readDocVersioned(bundle, "dates");
-  assert.equal((await mutate(new Date(first))).changed, false);
-  assert.deepEqual(await readDocVersioned(bundle, "dates"), before);
-  assert.equal((await mutate(second)).changed, true);
-  const after = await readDocVersioned(bundle, "dates");
-  assert.deepEqual(after.doc.frontmatter.producer, { at: second });
-  assert.notEqual(after.version, before.version);
+test("producer Date changes persist while equal read values remain no-ops across adapters", async () => {
+  await adapters(async (bundle, storage) => {
+    await storage.backend!.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+    const first = new Date("2026-09-08T12:00:00Z");
+    const second = new Date("2026-09-09T12:00:00Z");
+    await writeDocVersioned(storage, { id: "dates", frontmatter: { type: "Note", producer: { at: first } }, body: "unchanged\n" });
+    const mutate = (at: Date | string) => mutateDocument({ bundle, id: "dates", mode: "patch", registry, strict: false, buildCandidate: existing => ({ frontmatter: { ...existing!.frontmatter, producer: { at } }, body: existing!.body }) });
+    const before = await readDocVersioned(bundle, "dates");
+    assert.deepEqual(before.doc.frontmatter.producer, { at: first.toISOString() });
+    assert.equal((await mutate(first.toISOString())).changed, false);
+    assert.deepEqual(await readDocVersioned(bundle, "dates"), before);
+    assert.equal((await mutate(second)).changed, true);
+    const after = await readDocVersioned(bundle, "dates");
+    assert.deepEqual(after.doc.frontmatter.producer, { at: second.toISOString() });
+    assert.notEqual(after.version, before.version);
+  });
 });

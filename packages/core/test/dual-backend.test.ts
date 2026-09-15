@@ -594,22 +594,3 @@ test("pin: MemoryBackend trims write attribution — whitespace-only actor falls
   await backend.write("b", { id: "b", frontmatter: { type: "Concept", timestamp: T_DOC }, body: "" }, { actor: "x", agent: "   " });
   assert.equal((await backend.versions("b"))[0]?.agent, undefined);
 });
-
-// kills: backend.ts:178:34 Regex #96
-// kills: backend.ts:178:44 StringLiteral #98
-// kills: memory-backend.ts:84:34 Regex #2364
-// kills: memory-backend.ts:84:44 StringLiteral #2366
-// kills: memory-backend.ts:84:56 Regex #2367
-// kills: memory-backend.ts:84:63 StringLiteral #2368
-for (const [name, run] of RUNNERS) {
-  test(`pin: ${name}: reserved-file dir spellings './x', 'x/', and 'x' address the SAME file`, async () => {
-    await run(async (bundle) => {
-      await bundle.backend.writeReserved("sub/nested", "index.md", "nested-index");
-      assert.equal((await bundle.backend.readReserved("sub/nested", "index.md"))?.content, "nested-index");
-      assert.equal((await bundle.backend.readReserved("./sub/nested", "index.md"))?.content, "nested-index");
-      assert.equal((await bundle.backend.readReserved("sub/nested/", "index.md"))?.content, "nested-index");
-      await bundle.backend.writeReserved("", "log.md", "root-log");
-      assert.equal((await bundle.backend.readReserved("", "log.md"))?.content, "root-log");
-    });
-  });
-}

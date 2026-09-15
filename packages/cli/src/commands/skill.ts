@@ -3,7 +3,7 @@
 //
 // ASSET SOURCE: the running distribution's own package root (`dirname(executable)/..` → SKILL.md +
 // references/) — the npm layout (`<pkg>/dist/superbee.mjs`) and a dev/repo build
-// (`packages/cli/dist/…`) both resolve naturally.
+// (`packages/superbee/dist/…`) both resolve naturally.
 //
 // TARGETS: Claude Code + Codex through the ONE HOST_CONFIG_ROOTS authority (the same env-var
 // semantics `hook install --scope user` uses). OpenCode reuses the Claude-compatible project path

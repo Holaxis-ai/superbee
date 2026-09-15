@@ -268,7 +268,7 @@ bundles remain supported without rewriting their declared edition.
 This project dogfoods itself: the plans, research, design docs, product statement, and
 the full change history live in the project's own Superbee bundle, which the
 team develops against daily. The repo also carries three narrow contracts at the boundary where a
-fresh clone must remain sufficient: the CLI's [AXI contract](packages/cli/AXI-CONTRACT.md), the
+fresh clone must remain sufficient: the CLI's [AXI contract](packages/superbee/AXI-CONTRACT.md), the
 implemented [wire protocol](docs/WIRE-PROTOCOL.md), and private vulnerability routing in
 [SECURITY.md](SECURITY.md). Other deep documentation remains in the bundle rather than creating a
 second manually coordinated product authority.

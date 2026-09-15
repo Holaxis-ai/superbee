@@ -21,7 +21,7 @@ import {
 } from "./arity-equivalence-matrix.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
-const CLI = resolve(import.meta.dirname, "../dist/superbee.mjs");
+const CLI = resolve(import.meta.dirname, "../../superbee/dist/superbee.mjs");
 const SURPLUS = "arity-surplus-sentinel";
 
 interface FixtureContext {

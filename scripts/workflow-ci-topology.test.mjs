@@ -958,6 +958,14 @@ function validateCiTopology(
   for (const required of candidate.required_jobs) {
     assert.ok(jobs[required], `missing required job ${required}`);
     assert.equal(displayNameOf(jobs[required]), candidate.lanes[required].display_name, `${required} display name drifted`);
+    const steps = stepsOf(jobs[required]);
+    const preflight = requiredUnconditionalStep(steps, {
+      name: 'Check package version sources before installation',
+      run: candidate.source_preflight,
+      label: `${required} package source preflight`,
+    });
+    const install = steps.find(step => step.fields.run === 'npm ci');
+    assert.ok(install && preflight.position < install.position, `${required} source preflight must precede installation`);
   }
   assert.match(jobs.runtime, /node-version: \[22, 26\]/);
   assert.match(jobs.runtime, /run: npm run ci:runtime/);
@@ -1004,6 +1012,15 @@ function validateWindowsProofWorkflow(text, candidate = manifest) {
   assertWindowsPackageJob(jobs["windows-package"], lane);
   return jobs;
 }
+
+test('package source preflight cannot be removed, skipped or moved after installation', () => {
+  const step = '      - name: Check package version sources before installation\n        run: npm run check:package-versions';
+  for (const changed of [
+    workflow.replace(step, ''),
+    workflow.replace(step, `${step}\n        if: false`),
+    workflow.replace(`${step}\n      - run: npm ci`, `      - run: npm ci\n${step}`),
+  ]) assert.throws(() => validateCiTopology(changed), /source preflight/);
+});
 
 test("CI runs every automatic lane unconditionally and keeps Windows proof manual", () => {
   validateCiTopology(workflow);

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { initBundle } from "@superbee/core";
 import { list } from "../src/commands/list.js";
 
-const BUILT_CLI = fileURLToPath(new URL("../dist/superbee.mjs", import.meta.url));
+const BUILT_CLI = fileURLToPath(new URL("../../superbee/dist/superbee.mjs", import.meta.url));
 const ZONES = ["UTC", "Asia/Kolkata", "America/Los_Angeles"] as const;
 
 for (const edition of ["0.1", "0.2"] as const) {

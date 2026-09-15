@@ -2,13 +2,12 @@
 //
 // Build facts are baked into every bundle by scripts/build-bundle.mjs. Runtime facts are derived
 // locally and read-only: executable path, launch evidence, an adjacent package.json drift signal,
-// and the SHA-256 of the executing file. Source-run tests have no baked constant, so they use the
-// package manifest only as a development fallback. A malformed baked constant fails closed instead
+// and the SHA-256 of the executing file. Source executables supply their own immutable package
+// identity before dispatch; an unconfigured library never infers it from the library manifest. A malformed baked constant fails closed instead
 // of silently promoting an adjacent manifest to authority.
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   cliInvocation,
   currentExecutableRealPath,
@@ -25,43 +24,11 @@ export const ARTIFACT_CHANNELS = [
   "local-dev",
   "unknown",
 ] as const;
-export type ArtifactChannel = (typeof ARTIFACT_CHANNELS)[number];
-export type LaunchMode = "path" | "direct" | "npx-inferred" | "source" | "unknown";
-export type LaunchConfidence = "certain" | "inferred" | "unknown";
+export type { ArtifactChannel, LaunchMode, LaunchConfidence, CompatibilityContracts, StaticBuildIdentity, BuildIdentityEnvelope, SourcePackageIdentity } from "./public-types.js";
+import type { ArtifactChannel, LaunchMode, LaunchConfidence, StaticBuildIdentity, BuildIdentityEnvelope, SourcePackageIdentity } from "./public-types.js";
 
 export function isBareVersionFlag(value: string | undefined): boolean {
   return BARE_VERSION_FLAGS.some((flag) => flag === value);
-}
-
-export interface CompatibilityContracts {
-  skill: number | null;
-  hook: number | null;
-  mcp: number | null;
-}
-
-export interface StaticBuildIdentity {
-  schema: typeof BUILD_IDENTITY_SCHEMA;
-  package: { name: string; version: string };
-  source: { commit: string | null; dirty: boolean | null };
-  artifact: { channel: ArtifactChannel };
-  compatibility_contracts: CompatibilityContracts;
-}
-
-export interface BuildIdentityEnvelope {
-  identity: {
-    schema: typeof BUILD_IDENTITY_SCHEMA;
-    package: { name: string; version: string };
-    source: { commit: string | null; dirty: boolean | null };
-    artifact: { channel: ArtifactChannel; sha256: string | null };
-    runtime: {
-      executable_path: string | null;
-      invocation: string;
-      launch_mode: LaunchMode;
-      launch_confidence: LaunchConfidence;
-    };
-    compatibility_contracts: CompatibilityContracts;
-  };
-  drift: { adjacent_package_version: string | null; version_mismatch: boolean };
 }
 
 function isNullableContract(value: unknown): value is number | null {
@@ -133,24 +100,22 @@ export function resolveBakedBuildIdentity(value: unknown): StaticBuildIdentity {
   return freezeBuildIdentity(parseBakedBuildIdentity(value) ?? unknownBuildIdentity());
 }
 
-function sourcePackageIdentity(): { name: string; version: string } {
-  try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
-    const manifest = JSON.parse(readFileSync(pkgPath, "utf8")) as {
-      name?: unknown;
-      version?: unknown;
-    };
-    if (
-      isPackageName(manifest.name) &&
-      typeof manifest.version === "string" &&
-      manifest.version.length > 0
-    ) {
-      return { name: manifest.name, version: manifest.version };
-    }
-  } catch {
-    // Fall through to the explicit fail-closed development identity.
+let sourceIdentity: SourcePackageIdentity | undefined;
+
+/** Configure one immutable executable identity before any source identity is resolved. */
+export function configureSourceIdentity(identity: SourcePackageIdentity): void {
+  if (!identity || !isPackageName(identity.name) || typeof identity.version !== "string" || !identity.version) {
+    throw new Error("CLI source identity requires a valid package name and non-empty version");
   }
-  return { name: PACKAGE_NAME, version: "unknown" };
+  if (sourceIdentity?.name === identity.name && sourceIdentity.version === identity.version) return;
+  if (sourceIdentity || staticIdentityCache) {
+    throw new Error("CLI source identity is already configured or resolved");
+  }
+  sourceIdentity = Object.freeze({ name: identity.name, version: identity.version });
+}
+
+function sourcePackageIdentity(): SourcePackageIdentity {
+  return sourceIdentity ?? { name: PACKAGE_NAME, version: "unknown" };
 }
 
 function bakedConstant(): { present: boolean; value: unknown } {

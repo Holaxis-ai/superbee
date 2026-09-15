@@ -3,6 +3,17 @@ export {
   bootstrap,
   isComplete,
   commitLocal,
+  commitBodyLocal,
+  type BodyLocalMutation,
+  inspectConflict,
+  resolveConflict,
+  conflictResolutionKey,
+  ConflictReviewStaleError,
+  type ConflictReview,
+  type ConflictChoice,
+  type ConflictResolutionReceipt,
+  type ConflictResolutionResult,
+  type ConflictResolutionOptions,
   push,
   pushWithRole,
   settleIntent,
@@ -33,7 +44,14 @@ export {
   type ResumeReport,
   type SyncStatus,
 } from "./local-bundle.js";
+export { BODY_RUNTIME_LIMITS, BODY_RESOLUTION_RECEIPT_BYTES, BodyRuntimeError, BodyCapacityError, validateBodyResolutionReceipt, type BodyDeliveryOptions, type BodyResolutionReceipt, type BodyResolutionChainRow } from "./body-journal.js";
 export { withPushRole, pushRoleName, hostLocks, type PushRoleResult, type PushRoleOptions, type LockManagerLike } from "./push-role.js";
+export {
+  withEditorRecovery, editorRecoveryKey, EditorRecoveryError, EDITOR_RECOVERY_LIMITS,
+  type EditorRecoveryScope, type EditorDraft, type EditorPreparedAttempt,
+  type EditorSettlement, type EditorRecoverySlot, type EditorRecoverySession,
+  type EditorRecoveryOptions, type EditorRecoveryResult,
+} from "./editor-recovery.js";
 export {
   createRequestDrivenRuntime,
   createBrowserLocalRuntime,

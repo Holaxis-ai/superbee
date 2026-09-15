@@ -12,8 +12,8 @@
  *   - per-write ACTOR attribution recorded on every revision;
  *   - a real batch {@link MemoryBackend.readMany}.
  *
- * It touches NO filesystem and NO markdown serialization for storage — documents are
- * held as parsed {@link OkfDocument} objects, keyed by concept id — so running the
+ * It touches NO filesystem — bodies and YAML metadata snapshots are held in memory,
+ * keyed by concept id — so running the
  * core operations over it exercises exactly the parts of the engine that must be
  * backend-neutral. Version tokens are still content-addressed via {@link contentVersion},
  * so an engine-written document carries the SAME token here as on disk.
@@ -26,8 +26,10 @@
  */
 
 import { resolveContentType } from "./content-type.js";
-import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, toPosix } from "./paths.js";
-import { blobVersion, contentVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
+import { readBundleOkfVersion } from "./engine.js";
+import { MalformedDocumentError, parseFrontmatter, stringifyFrontmatter, stringifyWithSerializedFrontmatter } from "./frontmatter.js";
+import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys } from "./paths.js";
+import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
   BlobKey,
   ConceptId,
@@ -50,13 +52,9 @@ interface Revision {
   timestamp: string;
   /** The client-declared agent label attested under `actor`, when one was given. Absent otherwise. */
   agent?: string;
-  /** A defensively-cloned snapshot of the document at this revision. */
-  doc: OkfDocument;
-}
-
-/** Deep copy so stored state never aliases a caller's object (and vice-versa). */
-function snapshot<T>(value: T): T {
-  return structuredClone(value);
+  /** Metadata retains YAML values rather than structuredClone's JS type conversions. */
+  frontmatterSource: string;
+  doc: Pick<OkfDocument, "id" | "body">;
 }
 
 /**
@@ -81,8 +79,7 @@ function notFound(id: ConceptId): NodeJS.ErrnoException {
 
 /** Bundle-relative key for a reserved file (`""` = bundle root), mirroring the fs adapter's layout. */
 function reservedKey(dir: string, name: ReservedFilename): string {
-  const d = toPosix(dir).replace(/^\.?\//, "").replace(/\/$/, "");
-  return d === "" ? name : `${d}/${name}`;
+  return dir === "" ? name : `${dir}/${name}`;
 }
 
 /**
@@ -104,7 +101,16 @@ export class MemoryBackend implements StorageBackend {
     assertSafeConceptId(id);
     const head = this.chains.get(id)?.[0];
     if (!head) throw notFound(id);
-    return { doc: snapshot(head.doc), version: head.version };
+    let okfVersion: string | undefined;
+    try {
+      okfVersion = await readBundleOkfVersion(this);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+    }
+    return {
+      doc: { ...head.doc, frontmatter: parseFrontmatter(head.frontmatterSource, id, { okfVersion }) },
+      version: head.version,
+    };
   }
 
   async readMany(ids: ConceptId[]): Promise<ReadResult[]> {
@@ -126,7 +132,8 @@ export class MemoryBackend implements StorageBackend {
     // that route id on reads because document bytes do not serialize `doc.id`; mirror them here
     // instead of retaining a mismatched caller-supplied `doc.id` in the in-memory snapshot.
     const storedDoc = { ...doc, id };
-    const version = contentVersion(storedDoc);
+    const frontmatterSource = stringifyFrontmatter(storedDoc.frontmatter);
+    const version = versionOfBytes(stringifyWithSerializedFrontmatter(frontmatterSource, storedDoc.body));
     // Idempotent: re-writing byte-identical content is a no-op that does not grow the
     // chain (the content address is unchanged). A genuine content change appends a revision.
     if (current === version) return version;
@@ -136,7 +143,8 @@ export class MemoryBackend implements StorageBackend {
       timestamp: new Date().toISOString(),
       // Unlike `actor`, an unattested agent is simply absent — no default is applied.
       agent: options.agent?.trim() || undefined,
-      doc: snapshot(storedDoc),
+      frontmatterSource,
+      doc: { id, body: storedDoc.body },
     };
     this.chains.set(id, chain ? [revision, ...chain] : [revision]);
     return version;
@@ -165,7 +173,7 @@ export class MemoryBackend implements StorageBackend {
 
   async list(prefix?: string): Promise<ConceptId[]> {
     const ids = [...this.chains.keys()].filter((id) => !prefix || id.startsWith(prefix));
-    ids.sort((a, b) => a.localeCompare(b));
+    ids.sort(compareStorageKeys);
     return ids;
   }
 
@@ -182,6 +190,7 @@ export class MemoryBackend implements StorageBackend {
 
   async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const content = this.reserved.get(reservedKey(dir, name));
     if (content === undefined) return null;
     // Content-addressed, so the token matches the filesystem adapter's for identical bytes.
@@ -195,6 +204,7 @@ export class MemoryBackend implements StorageBackend {
     options: WriteOptions = {},
   ): Promise<Version> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const key = reservedKey(dir, name);
     const existing = this.reserved.get(key);
     const current = existing === undefined ? null : versionOfBytes(existing);
@@ -270,7 +280,7 @@ export class MemoryBackend implements StorageBackend {
 
   async listBlobs(prefix?: string): Promise<BlobKey[]> {
     const keys = [...this.blobs.keys()].filter((k) => !prefix || k.startsWith(prefix));
-    keys.sort((a, b) => a.localeCompare(b));
+    keys.sort(compareStorageKeys);
     return keys;
   }
 }

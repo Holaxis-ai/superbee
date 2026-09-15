@@ -16,9 +16,7 @@
 //   • binPath() — the home-collapsed ABSOLUTE path of the running executable, for the home view's
 //     `bin:` identity field (AXI §10: "identify the tool itself before the live data").
 //
-// This resolves against the REAL running module (import.meta.url / process.argv[1]) — no committed
-// shim, no `dist/axi`. The former phantom-shim resolver is gone.
-import { fileURLToPath } from "node:url";
+// The executable registers its real entry explicitly; imported helpers never become worker targets.
 import { readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -84,15 +82,11 @@ export function registerExecutableEntry(entryPath: string): void {
   registeredExecutableEntry = resolved;
 }
 
-/** The absolute real path of the registered CLI entry (bundled or source), or a helper fallback. */
+/** The absolute real path of the registered CLI entry (bundled or source), if configured. */
 export function currentExecutableRealPath(): string | undefined {
   if (registeredExecutableEntry) return registeredExecutableEntry;
-  // import.meta.url is the running module; under the bundle that IS the executable file.
-  // Helper-only unit tests do not evaluate src/index.ts and deliberately retain this fallback.
-  const fromModule = realOrUndefined(fileURLToPath(import.meta.url));
-  if (fromModule) return fromModule;
-  const argv1 = process.argv[1];
-  return argv1 ? realOrUndefined(argv1) : undefined;
+  // A library module and argv from an unrelated host are never executable authority.
+  return undefined;
 }
 
 function windowsPathExtensions(): string[] {

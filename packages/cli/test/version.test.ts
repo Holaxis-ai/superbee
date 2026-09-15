@@ -27,15 +27,17 @@ import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 
 import { cliVersion, KNOWN_COMMANDS } from "../src/cli.js";
-import { BUILD_IDENTITY_SCHEMA } from "../src/build-identity.js";
-import { buildCliBundle } from "../scripts/build-bundle.mjs";
+import { configureSourceIdentity, BUILD_IDENTITY_SCHEMA } from "../src/build-identity.js";
+import { buildCliBundle } from "../../superbee/scripts/build-bundle.mjs";
 import { COMMAND_GROUPS } from "../src/reference.js";
 import { VERSION_USAGE } from "../src/commands/version.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliPackageRoot = path.resolve(here, "..");
+const cliPackageRoot = path.resolve(here, "../../superbee");
 const cliBin = path.resolve(cliPackageRoot, "dist/superbee.mjs");
 const pkgVersion = (JSON.parse(readFileSync(path.resolve(cliPackageRoot, "package.json"), "utf8")) as { version: string }).version;
+
+configureSourceIdentity({ name: "superbee", version: pkgVersion });
 
 function runCli(executable: string, args: string[]) {
   return spawnSync("node", [executable, ...args], { encoding: "utf8" });
@@ -82,9 +84,10 @@ test("the BUILT CLI: `--version`, `-v`, and `-V` print the version and exit 0", 
 test("the executable entry decides bare version aliases before loading the CLI command graph", () => {
   const source = readFileSync(path.resolve(cliPackageRoot, "src/index.ts"), "utf8");
   assert.doesNotMatch(source, /^import .*from "\.\/cli\.js";/m);
-  assert.match(source, /await import\("\.\/cli\.js"\)/);
+  const shared = readFileSync(path.resolve(here, "../src/index.ts"), "utf8");
+  assert.match(shared, /await import\("\.\/cli\.js"\)/);
   assert.ok(
-    source.indexOf("isBareVersionFlag(argv[0])") < source.indexOf('await import("./cli.js")'),
+    source.indexOf("isBareVersionFlag(argv[0])") < source.indexOf('const { main } = await import("@superbee/cli")'),
     "the version decision must precede the dynamic command-graph import",
   );
 });
@@ -119,7 +122,7 @@ test("the built local artifact fails closed before registry I/O when no producti
 
 test("a real loader-driven source launch identifies and hashes src/index.ts, not an imported helper", () => {
   const sourceEntry = path.resolve(cliPackageRoot, "src/index.ts");
-  const loader = path.resolve(cliPackageRoot, "test/ts-loader.mjs");
+  const loader = path.resolve(here, "ts-loader.mjs");
   const result = spawnSync(
     "node",
     ["--import", pathToFileURL(loader).href, sourceEntry, "version", "--json"],
