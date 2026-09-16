@@ -584,8 +584,8 @@ export async function runMeasurement(browser: Browser, plan: MeasurePlan, option
   return { schema: MEASURE_SCHEMA, environment: environment(browser), plan, operations: OPERATIONS, cells };
 }
 
-/** JSON with NaN rendered as null, so the file stays parseable. */
-export function writeReport(report: MeasurementReport, outPath: string): string {
+/** JSON with NaN rendered as null, so the file stays parseable; the main report and the listing report both go through here. */
+export function writeReport(report: object, outPath: string): string {
   const resolved = path.resolve(outPath);
   mkdirSync(path.dirname(resolved), { recursive: true });
   writeFileSync(resolved, `${JSON.stringify(report, (_key, value) => (typeof value === "number" && !Number.isFinite(value) ? null : value), 2)}\n`);

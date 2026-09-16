@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
  * Render a measurement report (see ../measurements/README.md) as Markdown: the conditions block,
- * then one row per cell with the cell summary's medians (and the footprint's min and max). The
+ * then one row per cell with the cell summary's medians (and the footprint's min and max), or,
+ * for a listing report, one row per verb with its median time, transactions and heap. The
  * report arrives on standard input,
  * so the script opens no path of its own. Usage:
  *   node packages/browser-local/scripts/measurement-table.mjs < packages/browser-local/measurements/latest.json
+ *   node packages/browser-local/scripts/measurement-table.mjs < packages/browser-local/measurements/listing.json
  */
 
 import { readFileSync } from "node:fs";
@@ -21,6 +23,7 @@ const { environment: env, plan } = report;
 const ms = (value) => (value === null || value === undefined || Number.isNaN(value) ? "n/a" : value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2));
 const count = (value) => (value === null || value === undefined || Number.isNaN(value) ? "n/a" : String(Math.round(value)));
 const kib = (value) => (value === null || value === undefined || Number.isNaN(value) ? "n/a" : `${(value / 1024).toFixed(0)} KiB`);
+const mib = (value) => (value === null || value === undefined || Number.isNaN(value) ? "n/a" : `${(value / 1024 / 1024).toFixed(1)} MiB`);
 const gib = (bytes) => `${(bytes / 1024 ** 3).toFixed(0)} GiB`;
 
 const lines = [];
@@ -33,6 +36,27 @@ lines.push(`- timestamp: ${env.timestamp}`);
 lines.push(`- git SHA: ${env.gitSha}${env.gitDirty ? "-dirty" : ""}`);
 lines.push(`- Node ${env.node}, Chromium ${env.chromium}, Playwright ${env.playwright}`);
 lines.push(`- ${env.os.platform} ${env.os.release} ${env.os.arch}, ${env.os.cpuModel}, ${env.os.cores} cores, ${gib(env.os.memoryBytes)}`);
+
+if (report.schema === "superbee.browser-local-listing-measurement.v1") {
+  const range = plan.bodyRange ? `${kib(plan.bodyRange.minBytes)} to ${kib(plan.bodyRange.maxBytes)}` : "mixed";
+  lines.push(`- plan: ${plan.size} documents, bodies ${range}, ${plan.rounds} rounds of each verb, ${plan.repetitions} repetitions`);
+  lines.push("- every time is the median across repetitions of the repetition's own median over its rounds; transactions are the median count; heap peak is the highest 1 ms sample during the verb minus a collected baseline (garbage not yet collected included), heap after the collected reading after the verb minus the same baseline, and heap held the peak under a sampler that collects on every tick (memory only; those rounds are not timed)");
+  lines.push("");
+  lines.push("## Listing, filtered query, status");
+  lines.push("");
+  lines.push("| verb | rows | median ms | p95 ms | transactions | heap peak | heap after | heap held |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  const heldOf = { listing: report.summary.held?.listingPeakBytes ?? null, byType: null, status: report.summary.held?.statusPeakBytes ?? null };
+  for (const [verb, label] of [["listing", "query (no filter)"], ["byType", "query by type"], ["status", "syncStatus"]]) {
+    const s = report.summary[verb];
+    lines.push(`| ${label} | ${count(s.rows)} | ${ms(s.medianMs)} | ${ms(s.p95Ms)} | ${count(s.transactions)} | ${mib(s.heapPeakMedianBytes)} | ${mib(s.heapAfterMedianBytes)} | ${mib(heldOf[verb])} |`);
+  }
+  lines.push("");
+  lines.push(`Cold open (bootstrap plus first screen, for context): ${report.repetitions.map((rep) => `${ms(rep.coldOpen.ms)} ms for ${rep.coldOpen.documents} documents`).join("; ")}. See ../measurements/README.md.`);
+  process.stdout.write(`${lines.join("\n")}\n`);
+  process.exit(0);
+}
+
 lines.push(`- plan: sizes ${plan.sizes.join(", ")}; latencies ${plan.latencies.join(", ")} ms; repetitions per size ${plan.repetitions.join(", ")}; modes ${plan.modes.join(", ")}`);
 const isolated = report.cells.length > 0 && report.cells.every((cell) => cell.crossOriginIsolated === true);
 lines.push(`- clock: performance.now() in a ${isolated ? "cross-origin isolated page (5 us resolution)" : "page that is not cross-origin isolated (100 us floor; reads under 0.2 ms are a bound at the clock floor)"}`);
