@@ -18,7 +18,7 @@ import {
   type HeadResult,
   type QuerySelectionParams,
 } from "@superbee/core";
-import { BridgeService } from "@superbee/view-runtime";
+import { BRIDGE_SERVICE_CAPABILITIES, BRIDGE_SERVICE_LIMITS, BridgeService } from "@superbee/view-runtime";
 
 import { list } from "../src/commands/list.js";
 
@@ -97,6 +97,7 @@ async function bridgeResult(
     },
     config: async () => ({ root: bundle.root, name: "agreement", mode: "dir" }),
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    host: { kind: "oss", capabilities: BRIDGE_SERVICE_CAPABILITIES, limits: BRIDGE_SERVICE_LIMITS },
   });
   const outcome = await service.handle(
     "agreement-launch",
