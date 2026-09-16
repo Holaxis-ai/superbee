@@ -16,9 +16,9 @@ is the durable process for every browser-local prerelease.
 This candidate carries the heads-only working-copy listing (`readHeads` on the
 journaled backend seam; the runtime's `query` and `status` read heads in one
 transaction without parsing bodies), the warm IndexedDB instance reopening instead
-of surfacing a closed-handle error, and the filesystem and board host policies as
-explicit runtimes (server's legacy router resolves its backend through
-`backendFor`).
+of surfacing a closed-handle error, and the filesystem host policy as an explicit
+runtime (`createFilesystemRuntime` and the `@superbee/core/filesystem` entry; the
+server's legacy router resolves its backend through `backendFor`).
 
 Browser-local depends exactly on core pre.5. Registry core pre.4 lacks `readHeads`
 on the journaled backend seam that this package's runtime calls; do not patch around
