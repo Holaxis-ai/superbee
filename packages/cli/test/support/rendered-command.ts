@@ -1,16 +1,10 @@
 /**
- * Expectations about EMITTED COMMANDS, written for the platform the test is running on.
- *
- * The renderer deliberately produces different bytes per platform — POSIX single-quotes, Windows
- * double-quotes, and Windows withholds values it cannot make inert. A test that hard-codes
- * `'Context Note'` therefore passes on POSIX and fails on Windows while the CODE is correct, which
- * is how this suite took a green Windows lane to eighteen failures.
+ * Expectations about emitted commands from the supported POSIX renderer.
  *
  * These helpers delegate to the shipped renderer rather than re-implementing it. That is deliberate:
  * a second copy of the quoting rules inside the tests is exactly what drifted here — one test grew
- * its own `commandArg`, kept the pre-fix Windows semantics, and silently stopped describing the
- * shipped behaviour. What the rendering IS stays pinned by `command-text.test.ts` (which forces the
- * platform) and by the injection probes (which execute the result); what these helpers assert is
+ * its own `commandArg` and silently stopped describing the shipped behaviour. What the rendering IS
+ * stays pinned by `command-text.test.ts` and by the injection probes; what these helpers assert is
  * WHICH command was emitted, not how a token is spelled.
  */
 import { commandQuoted, commandToken } from "../../src/command-text.js";
@@ -42,32 +36,21 @@ export function renderedQuotedPattern(value: string): string {
 
 /**
  * Split an emitted command line into argv the way a SHELL would, honouring the quoting the renderer
- * produced. Tests that "execute the emitted command" previously split on plain spaces, which works
- * only while every token happens to be unquoted — true on POSIX for inert values, false on Windows
- * the moment a path carries a backslash. The result was a harness that failed while the emitted
- * command was correct, which is the most expensive kind of red.
- *
- * Handles both conventions because the renderer emits both: POSIX `'…'` (literal, with `'\''` for an
- * embedded quote) and Windows `"…"` (with `""` for an embedded quote).
+ * produced. Tests that "execute the emitted command" previously split on plain spaces, which fails
+ * as soon as a value needs quoting. The result was a harness that failed while the emitted command
+ * was correct. This parser handles the POSIX `'…'` convention, including `'\''` for an apostrophe.
  */
 export function parseCommandLine(line: string): string[] {
   const argv: string[] = [];
   let current = "";
   let started = false;
-  let quote: '"' | "'" | undefined;
+  let quote = false;
 
   for (let i = 0; i < line.length; i += 1) {
     const character = line[i]!;
-    if (quote === "'") {
-      if (character === "'") quote = undefined;
+    if (quote) {
+      if (character === "'") quote = false;
       else current += character;
-      continue;
-    }
-    if (quote === '"') {
-      if (character === '"') {
-        // `""` inside a double-quoted run is one literal quote (cmd/CRT and PowerShell agree).
-        if (line[i + 1] === '"') { current += '"'; i += 1; } else quote = undefined;
-      } else current += character;
       continue;
     }
     // Outside quotes a backslash escapes the next character. This is not decoration: POSIX
@@ -79,7 +62,7 @@ export function parseCommandLine(line: string): string[] {
       started = true;
       continue;
     }
-    if (character === "'" || character === '"') { quote = character; started = true; continue; }
+    if (character === "'") { quote = true; started = true; continue; }
     if (/\s/.test(character)) {
       if (started) { argv.push(current); current = ""; started = false; }
       continue;
@@ -93,8 +76,7 @@ export function parseCommandLine(line: string): string[] {
 
 /**
  * Escape a rendered token for embedding inside a serialized double-quoted scalar (TOON or JSON).
- * A Windows-rendered token contains `"`, which the serializer escapes — so a baseline that pins
- * serialized bytes has to escape it too, or it compares the wrong thing.
+ * Serialized fields may contain `"`, so a baseline that pins bytes has to escape it too.
  */
 export function escapeForSerializedString(value: string): string {
   return JSON.stringify(value).slice(1, -1);
@@ -103,13 +85,8 @@ export function escapeForSerializedString(value: string): string {
 /**
  * Decode a serialized scalar's PRESENTATION ENVELOPE.
  *
- * TOON and JSON both quote-and-escape a scalar that contains a `"`. A Windows-rendered token
- * contains `"`; a POSIX-rendered one contains only `'`, which needs no escaping. So a test that
- * pulls a command out of serialized output with a regex and string-compares it reads the bare value
- * on POSIX and the ENVELOPE on Windows — and the failure looks like a quoting difference when it is
- * a serialization difference. That is one root cause behind two separate Windows failures.
- *
- * Decode first, then compare the command.
+ * TOON and JSON may quote and escape a scalar. Decode that presentation envelope before comparing
+ * the command value.
  */
 export function decodeSerializedScalar(value: string): string {
   const trimmed = value.trim();

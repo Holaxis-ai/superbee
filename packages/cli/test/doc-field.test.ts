@@ -103,10 +103,9 @@ test("doc field validates complete file values and finite field surface", async 
 
 test("doc field redirects use exact quoted ID and ambiguity carries bounded candidates", async t => {
   const f = await fixture(t);
-  // This correction is executed below. `$` is deliberately omitted from Windows hints, so use an
-  // apostrophe-bearing value that remains one runnable token on both supported shell families.
+  // This correction is executed below. Use an apostrophe-bearing value to exercise POSIX quoting.
   const key = "owner's report (literal)";
-  assert.equal(isRenderableToken(key, "win32"), true);
+  assert.equal(isRenderableToken(key), true);
   await f.run("add", "notes/a", "sources", "--from-file", await f.file(JSON.stringify({ id: key, resource: "special report" })));
   let correction = "";
   await assert.rejects(f.run("remove", "notes/a", "sources", "--resource", "special report"), err => {
