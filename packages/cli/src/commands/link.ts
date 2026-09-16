@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee link add|show` — cross-links and derived backlinks.
 //
 // OKF cross-links are STANDARD markdown links in a concept's body (never wikilinks); backlinks are
@@ -317,7 +318,7 @@ export async function link(argv: string[], deps: Partial<LinkCliDeps> = {}): Pro
   if (sub === "show") return linkShow(rest, stdout, deps.autoPull);
   if (sub === "list") return linkList(rest, stdout);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
-    stdout(LINK_USAGE);
+    stdout(renderUsage(LINK_USAGE));
     return;
   }
   throw new CliError("USAGE", `unknown link subcommand: ${sub} (expected add|show|list)`, {
@@ -523,7 +524,7 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
     CLI_LEAVES.linkAdd,
   );
   if (values.help) {
-    stdout(LINK_ADD_USAGE);
+    stdout(renderUsage(LINK_ADD_USAGE));
     return;
   }
 
@@ -597,7 +598,7 @@ async function linkShow(
     CLI_LEAVES.linkShow,
   );
   if (values.help) {
-    stdout(LINK_SHOW_USAGE);
+    stdout(renderUsage(LINK_SHOW_USAGE));
     return;
   }
 
@@ -750,7 +751,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
     CLI_LEAVES.linkList,
   );
   if (values.help) {
-    stdout(LINK_LIST_USAGE);
+    stdout(renderUsage(LINK_LIST_USAGE));
     return;
   }
 

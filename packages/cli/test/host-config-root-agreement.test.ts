@@ -95,23 +95,3 @@ test("Claude Code user MCP registry honors CLAUDE_CONFIG_DIR without nesting the
     "/profiles/claude/.claude.json",
   );
 });
-
-test("Windows host roots use the user profile conventions of each host", () => {
-  const home = String.raw`C:\Users\Mike`;
-  const env = {
-    USERPROFILE: home,
-    APPDATA: String.raw`C:\Users\Mike\AppData\Roaming`,
-  };
-  assert.deepEqual(globalHookTargets(home, env, "win32"), {
-    claudeSettings: String.raw`C:\Users\Mike\.claude\settings.json`,
-    codexHooks: String.raw`C:\Users\Mike\.codex\hooks.json`,
-    codexConfig: String.raw`C:\Users\Mike\.codex\config.toml`,
-    opencodePlugin: String.raw`C:\Users\Mike\.config\opencode\plugins\axi-superbee.js`,
-    legacyOpencodePlugin: String.raw`C:\Users\Mike\.config\opencode\plugins\axi-agentstate-lite.js`,
-  });
-  assert.deepEqual(skillTargets("user", { home, env, platform: "win32" }), {
-    claude: String.raw`C:\Users\Mike\.claude\skills\superbee`,
-    codex: String.raw`C:\Users\Mike\.codex\skills\superbee`,
-    opencode: String.raw`C:\Users\Mike\.claude\skills\superbee`,
-  });
-});

@@ -3,9 +3,8 @@ name: CI tests
 # Runtime-sensitive suites run identically on Node 22 and 26, then once more on macOS so that
 # tests whose native branch only executes on a case-aliasing filesystem actually run. Distribution,
 # browser/UI, local release policy, and exhaustive target proofs are platform-independent lanes on
-# one supported runtime. The separate `windows-installed-package.yml` workflow retains the native
-# Windows and Node 20 package proof as an explicit manual release-candidate check. The first
-# implementation is deliberately unconditional: path
+# one supported runtime. Windows adapters and their native installed-package proof live in the
+# separate Windows distribution repository. Required lanes remain unconditional: path
 # classification and skip receipts require a separate fail-closed classifier contract.
 #
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
@@ -48,6 +47,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - name: Confirm the runner filesystem does not alias case
         run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
@@ -68,6 +69,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - name: Confirm the runner filesystem aliases case
         run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
@@ -86,6 +89,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - run: npm run ci:distribution
 
@@ -106,6 +111,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - name: Verify baked Playwright browser artifacts
         shell: bash
@@ -156,6 +163,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - run: npm run ci:scripts
 
@@ -171,6 +180,8 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
       - run: npm ci
       - run: npm run build
       - uses: actions/setup-node@v4
@@ -179,7 +190,7 @@ jobs:
       - name: Drive the built bundle on Node 20
         run: |
           node --version | grep -q '^v20\.'
-          CLI=packages/cli/dist/superbee.mjs
+          CLI=packages/superbee/dist/superbee.mjs
           DIR="$RUNNER_TEMP/smoke-bundle"
           node "$CLI" init --dir "$DIR"
           node "$CLI" doc write specs/auth --type Spec --title "Auth" --body "smoke body" --dir "$DIR"

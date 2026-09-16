@@ -15,6 +15,35 @@ import { InvalidInputError } from "./errors.js";
 /** The two OKF reserved filenames, valid at any directory level (§3.1). */
 export const RESERVED_FILENAMES = ["index.md", "log.md"] as const;
 
+/** Keep locale ordering, but never let distinct spellings depend on insertion order. */
+export function compareStorageKeys(a: string, b: string): number {
+  const primary = a.localeCompare(b);
+  if (primary !== 0 || a === b) return primary;
+  const left = Array.from(a, (character) => character.codePointAt(0)!);
+  const right = Array.from(b, (character) => character.codePointAt(0)!);
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    if (left[i] !== right[i]) return left[i]! - right[i]!;
+  }
+  return left.length - right.length;
+}
+
+/** Reject spellings that cannot remain the same key across storage and wire adapters. */
+function assertPortablePath(value: string, label: string): void {
+  if (/[\u0000-\u001f\u007f]/u.test(value) || /^[a-z]:/i.test(value)) {
+    throw new InvalidInputError(`${label} must not contain controls or start with a drive prefix.`);
+  }
+  if (value.includes("\\") || value.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new InvalidInputError(`${label} must be canonical and bundle-relative.`);
+  }
+}
+
+/** Runtime callers must obey the same finite reserved-name type as TypeScript callers. */
+export function assertSafeReservedFilename(name: unknown): asserts name is typeof RESERVED_FILENAMES[number] {
+  if (!(RESERVED_FILENAMES as readonly unknown[]).includes(name)) {
+    throw new InvalidInputError("Reserved filename must be index.md or log.md.");
+  }
+}
+
 /** Normalize any separators to forward slashes and collapse duplicate slashes. */
 export function toPosix(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
@@ -66,21 +95,8 @@ export function assertSafeConceptId(id: ConceptId): void {
   if (typeof id !== "string" || id.trim() === "") {
     throw new InvalidInputError("Concept id must be a non-empty string.");
   }
-  if (id.startsWith("/")) {
-    throw new InvalidInputError(`Concept id must be bundle-relative, got absolute '${id}'.`);
-  }
-  if (id.includes("\\")) {
-    throw new InvalidInputError(`Concept id must use forward slashes: '${id}'.`);
-  }
+  assertPortablePath(id, "Concept id");
   const segments = id.split("/");
-  if (segments.some((seg) => seg === "..")) {
-    throw new InvalidInputError(`Concept id must not contain '..' segments: '${id}'.`);
-  }
-  if (segments.some((seg) => seg === "." || seg === "")) {
-    throw new InvalidInputError(
-      `Concept id must be canonical (no '.', duplicate-slash, leading './', or trailing-slash segments): '${id}'.`,
-    );
-  }
   if (segments.slice(0, -1).some((seg) => seg.toLowerCase().endsWith(".md"))) {
     throw new InvalidInputError(
       `Concept id must not contain a non-final segment ending in '.md': '${id}' (it collides with a concept file at that path).`,
@@ -118,20 +134,10 @@ export function assertSafeBlobKey(key: string): void {
   if (typeof key !== "string" || key.trim() === "") {
     throw new InvalidInputError("Blob key must be a non-empty string.");
   }
-  const norm = toPosix(key);
-  if (norm.startsWith("/")) {
-    throw new InvalidInputError(`Blob key must be bundle-relative, got absolute '${key}'.`);
-  }
-  const segments = norm.split("/");
-  if (segments.some((seg) => seg === "..")) {
-    throw new InvalidInputError(`Blob key must not contain '..' segments: '${key}'.`);
-  }
+  assertPortablePath(key, "Blob key");
+  const segments = key.split("/");
   if (segments.some((seg) => seg.startsWith("."))) {
     throw new InvalidInputError(`Blob key must not contain dot-prefixed segments: '${key}'.`);
-  }
-  const last = segments[segments.length - 1] ?? "";
-  if (last === "") {
-    throw new InvalidInputError(`Blob key must name a file, not end with '/': '${key}'.`);
   }
   if (segments.some((seg) => seg.toLowerCase().endsWith(".md"))) {
     throw new InvalidInputError(
@@ -146,18 +152,12 @@ export function assertSafeBlobKey(key: string): void {
  * Guard a reserved-file directory (the `dir` argument to `readReserved`/`writeReserved`,
  * where `""` denotes the bundle root) against path traversal / absolute escape before it
  * is joined onto the bundle root. Unlike {@link assertSafeConceptId}, an empty string IS
- * valid here (it means "the bundle root itself"). Throws on a non-string, an absolute
- * dir, or any `..` segment.
+ * valid here (it means "the bundle root itself"). Other spellings must be canonical;
+ * aliases are rejected rather than silently normalized.
  */
 export function assertSafeReservedDir(dir: string): void {
   if (typeof dir !== "string") {
     throw new InvalidInputError("Reserved-file directory must be a string.");
   }
-  const norm = toPosix(dir);
-  if (norm.startsWith("/")) {
-    throw new InvalidInputError(`Reserved-file directory must be bundle-relative, got absolute '${dir}'.`);
-  }
-  if (norm.split("/").some((seg) => seg === "..")) {
-    throw new InvalidInputError(`Reserved-file directory must not contain '..' segments: '${dir}'.`);
-  }
+  if (dir !== "") assertPortablePath(dir, "Reserved-file directory");
 }

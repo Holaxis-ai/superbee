@@ -61,13 +61,13 @@ const baseExpectedFiles = [
   ...bundleDescriptorExpectedFiles,
 ];
 
-/** Independently project the always-quoted native shell argument the installed CLI must advertise. */
+function assertSupportedPlatform(platform) {
+  assert.ok(["darwin", "linux"].includes(platform), "the superbee package proof supports only macOS and Linux");
+}
+
+/** Independently project the always-quoted POSIX shell argument the installed CLI advertises. */
 export function expectedQuotedShellArgument(value, platform = process.platform) {
-  if (platform === "win32") {
-    // Preserve native path bytes. A terminal backslash run must be doubled so it cannot escape the
-    // closing quote under the Windows CRT argv rule.
-    return `"${value.replace(/(\\+)$/, "$1$1")}"`;
-  }
+  assertSupportedPlatform(platform);
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
@@ -84,11 +84,8 @@ const runtimeDependencyFields = [
 ];
 
 /** Independently project the canonical private-state root used by the installed CLI. */
-export function expectedPrivateStateRoot(home, platform = process.platform, env = process.env) {
-  if (platform === "win32") {
-    assert.ok(env.LOCALAPPDATA, "Windows package proof requires an isolated LOCALAPPDATA");
-    return path.win32.join(env.LOCALAPPDATA, "Superbee");
-  }
+export function expectedPrivateStateRoot(home, platform = process.platform) {
+  assertSupportedPlatform(platform);
   return path.join(home, ".superbee-state");
 }
 
@@ -318,6 +315,7 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
     "the tarball must carry the declared executable and declared public subpath bundles",
   );
   assert.equal(manifest.name, target.package.name);
+  assert.deepEqual(manifest.os, ["darwin", "linux"], "the executable must declare its supported hosts");
   // NOTICE must be listed explicitly: npm ships LICENSE regardless of files[], but NOTICE only
   // when named, and Apache-2.0 section 4(d) requires the notice to travel with the distribution.
   assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references", "NOTICE"]);
@@ -414,41 +412,27 @@ function parseJson(stdout, label) {
   }
 }
 
-function pathDelimiter(platform) {
-  return platform === "win32" ? ";" : ":";
-}
-
-function normalizedPath(value, platform) {
-  const resolved = path.resolve(value);
-  return platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
 export async function resolveCommandOnPath(command, env, platform = process.platform) {
-  const directories = (env.PATH ?? "").split(pathDelimiter(platform)).filter(Boolean);
-  const extensions =
-    platform === "win32"
-      ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
-      : [""];
+  assertSupportedPlatform(platform);
+  const directories = (env.PATH ?? "").split(":").filter(Boolean);
   for (const directory of directories) {
-    for (const extension of extensions) {
-      const candidate = path.join(directory, `${command}${extension.toLowerCase()}`);
-      try {
-        await access(candidate, platform === "win32" ? constants.F_OK : constants.X_OK);
-        return candidate;
-      } catch {
-        // Keep searching the explicit PATH.
-      }
+    const candidate = path.join(directory, command);
+    try {
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Keep searching the explicit PATH.
     }
   }
   return undefined;
 }
 
 export async function assertCommandInBin(command, env, binDir, platform = process.platform) {
-  const expected = path.join(binDir, platform === "win32" ? `${command}.cmd` : command);
+  const expected = path.join(binDir, command);
   const resolved = await resolveCommandOnPath(command, env, platform);
   assert.equal(
-    resolved && normalizedPath(resolved, platform),
-    normalizedPath(expected, platform),
+    resolved && path.resolve(resolved),
+    path.resolve(expected),
     `${command} must resolve from the isolated npm prefix`,
   );
   return expected;
@@ -488,6 +472,7 @@ async function writeOfflineRecipe(root, version, withDetail = false) {
  * the bytes we prove are the bytes that ship.
  */
 async function runInstalledProof(spec) {
+  assertSupportedPlatform(process.platform);
   const target = spec.target ?? SUCCESSOR_TARGET;
   const scratch = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-npm-proof-")));
   const packDir = path.join(scratch, "pack");
@@ -521,10 +506,7 @@ async function runInstalledProof(spec) {
       { cwd: scratch, npmUserConfig, npmCache },
     );
 
-    const installedRoot =
-      process.platform === "win32"
-        ? path.join(prefix, "node_modules", ...target.package.directory)
-        : path.join(prefix, "lib", "node_modules", ...target.package.directory);
+    const installedRoot = path.join(prefix, "lib", "node_modules", ...target.package.directory);
     for (const privatePackage of ["recipe-studio", "docs-tooling", "docs-projection", "portal-docs"]) {
       await assert.rejects(
         stat(path.join(path.dirname(installedRoot), "@superbee", privatePackage)),
@@ -535,7 +517,7 @@ async function runInstalledProof(spec) {
     const manifest = parseJson(await readFile(path.join(installedRoot, "package.json"), "utf8"), "installed package.json");
     const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
     assertPackageReadmeMetadata(manifest, installedReadme);
-    const committedSkillRoot = path.join(repoRoot, "packages", "cli");
+    const committedSkillRoot = path.join(repoRoot, "packages", "superbee");
     const referenceFiles = (await listFiles(path.join(committedSkillRoot, "references"))).map((relative) =>
       relative.split(path.sep).join("/"),
     );
@@ -609,15 +591,11 @@ async function runInstalledProof(spec) {
       );
     }
 
-    const binDir = process.platform === "win32" ? prefix : path.join(prefix, "bin");
-    if (process.platform !== "win32") {
-      // `npm install --prefix` builds an isolated package prefix but not a Node installation.
-      // Model the supported real-world POSIX global layout so durable hook authority can prove
-      // and persist the stable <prefix>/bin/node launcher.
-      await symlink(process.execPath, path.join(binDir, "node"));
-      const npmShim = path.join(binDir, "npm");
-      await writeFile(npmShim, npmPrefixShimSource(prefix), { mode: 0o755 });
-    }
+    const binDir = path.join(prefix, "bin");
+    // Model the supported global npm layout, including the stable Node launcher used by hooks.
+    await symlink(process.execPath, path.join(binDir, "node"));
+    const npmShim = path.join(binDir, "npm");
+    await writeFile(npmShim, npmPrefixShimSource(prefix), { mode: 0o755 });
     const commandEnv = {
       ...sanitizedNpmEnvironment(process.env, npmUserConfig, npmCache),
       PATH: `${binDir}${path.delimiter}${path.dirname(process.execPath)}`,
@@ -625,12 +603,6 @@ async function runInstalledProof(spec) {
       HOME: home,
       USERPROFILE: home,
       XDG_CONFIG_HOME: path.join(home, ".config"),
-      ...(process.platform === "win32"
-        ? {
-            LOCALAPPDATA: path.join(home, "AppData", "Local"),
-            APPDATA: path.join(home, "AppData", "Roaming"),
-          }
-        : {}),
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
     };
     const canonicalState = expectedPrivateStateRoot(home, process.platform, commandEnv);
@@ -647,9 +619,7 @@ async function runInstalledProof(spec) {
     const runCli = (command, args, options = {}) => {
       const cwd = options.cwd ?? scratch;
       const env = { ...commandEnv, ...(options.env ?? {}) };
-      return process.platform === "win32"
-        ? run(process.execPath, [installedEntrypoint, ...args], { cwd, env })
-        : run(command, args, { cwd, env });
+      return run(command, args, { cwd, env });
     };
 
     // Every command declared by the selected release target agrees with the immutable build
@@ -1146,8 +1116,8 @@ async function runInstalledProof(spec) {
     assert.match(normalizedInstalledReadme, /You rarely type Superbee commands yourself/);
     assert.match(normalizedInstalledReadme, /translates the\s+request into CLI calls/i);
     assert.match(normalizedInstalledReadme, /^## Install$/m);
-    assert.match(normalizedInstalledReadme, /Node\.js 20 or newer on macOS, Linux, or Windows/);
-    assert.match(normalizedInstalledReadme, /do not\s+need WSL/i);
+    assert.match(normalizedInstalledReadme, /Node\.js 20 or newer on macOS and Linux/);
+    assert.match(normalizedInstalledReadme, /Native Windows is not supported by this package/);
     assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
     assertPackageReadmeReleaseChannel(manifest.version, normalizedInstalledReadme);
 
@@ -1322,18 +1292,11 @@ async function runInstalledProof(spec) {
     const hookCommands = (settings.hooks?.SessionStart ?? []).flatMap((group) =>
       (group.hooks ?? []).map((h) => h.command),
     );
-    if (process.platform === "win32") {
-      assert.equal(hookCommands.length, 1, "exactly one managed SessionStart hook");
-      assert.ok(hookCommands[0].endsWith(" session-start"), "hook must run session-start");
-    } else {
-      assert.deepEqual(
-        hookCommands,
-        [
-          `${path.join(prefix, "bin", "node")} ${installedEntrypointRealPath} session-start`,
-        ],
-        "the installed hook must use absolute Node and package-entry paths",
-      );
-    }
+    assert.deepEqual(
+      hookCommands,
+      [`${path.join(prefix, "bin", "node")} ${installedEntrypointRealPath} session-start`],
+      "the installed hook must use absolute Node and package-entry paths",
+    );
     parseJson(
       (await runCli(target.preferred_command, ["hook", "uninstall", "--scope", "project", "--json"], { cwd: project })).stdout,
       "hook uninstall",
@@ -1454,12 +1417,12 @@ export async function verifyNpmPackage({ mode }) {
     expectedChannel: policy.artifactChannel,
     async produce({ packDir, npmUserConfig, npmCache }) {
       const cleanBuildEnv = sanitizedNpmEnvironment(process.env, npmUserConfig, npmCache);
-      await run(process.execPath, [path.join(repoRoot, "packages", "cli", "build.mjs"), policy.artifactChannel], {
+      await run(process.execPath, [path.join(repoRoot, "packages", "superbee", "build.mjs"), policy.artifactChannel], {
         cwd: repoRoot,
         env: cleanBuildEnv,
       });
       const receipt = await packNpmPackage({
-        packageRoot: path.join(repoRoot, "packages", "cli"),
+        packageRoot: path.join(repoRoot, "packages", "superbee"),
         packDestination: packDir,
         npmExecPath: cleanBuildEnv.npm_execpath,
         env: cleanBuildEnv,

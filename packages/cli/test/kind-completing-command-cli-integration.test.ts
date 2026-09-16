@@ -28,7 +28,7 @@ import { existsSync } from "node:fs";
 import { extractSerializedField, parseCommandLine, rendered } from "./support/rendered-command.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliPackageRoot = path.resolve(here, "..");
+const cliPackageRoot = path.resolve(here, "../../superbee");
 const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 // Build ONLY if the bundle is absent (see doc-cli-integration.test.ts's identical comment: the

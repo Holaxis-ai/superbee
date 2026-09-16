@@ -612,7 +612,7 @@ test("built CLI returns while its managed document remains live, then reuses, re
   const root = await mkdtemp(path.join(tmpdir(), "superbee-managed-built-"));
   const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-built-home-"));
   const bundleRoot = path.join(root, "bundle");
-  const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
+  const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../superbee/dist/superbee.mjs");
   await initBundle(bundleRoot);
   await writeDoc({ root: bundleRoot }, { id: "docs/live", frontmatter: { type: "Doc", title: "Live" }, body: "# Live" });
   const env = {

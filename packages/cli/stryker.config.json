@@ -3,11 +3,22 @@
   "packageManager": "npm",
   "testRunner": "tap",
   "tap": {
-    "testFiles": ["test/*.test.ts"],
-    "nodeArgs": ["--import", "./test/ts-loader.mjs", "--test-reporter=tap", "-r", "../../scripts/stryker-cwd-pin.cjs", "-r", "{{hookFile}}", "{{testFile}}"],
+    "testFiles": [
+      "test/*.test.ts"
+    ],
+    "nodeArgs": [
+      "--import",
+      "./test/ts-loader.mjs",
+      "--test-reporter=tap",
+      "-r",
+      "../../scripts/stryker-cwd-pin.cjs",
+      "-r",
+      "{{hookFile}}",
+      "{{testFile}}"
+    ],
     "forceBail": true
   },
-  "buildCommand": "node build.mjs local-dev",
+  "buildCommand": "node ../superbee/build.mjs local-dev",
   "mutate": [
     "src/errors.ts",
     "src/mutate.ts",
@@ -21,10 +32,19 @@
   "inPlace": true,
   "disableTypeChecks": true,
   "coverageAnalysis": "perTest",
-  "reporters": ["html", "json", "clear-text", "progress"],
+  "reporters": [
+    "html",
+    "json",
+    "clear-text",
+    "progress"
+  ],
   "ignoreStatic": true,
   "incrementalFile": "reports/stryker-incremental.json",
-  "htmlReporter": { "fileName": "reports/mutation/mutation.html" },
-  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
+  "htmlReporter": {
+    "fileName": "reports/mutation/mutation.html"
+  },
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation.json"
+  },
   "tempDirName": ".stryker-tmp"
 }

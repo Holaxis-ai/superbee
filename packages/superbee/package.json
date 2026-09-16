@@ -1,0 +1,89 @@
+{
+  "name": "superbee",
+  "version": "0.2.1-pre.2",
+  "type": "module",
+  "description": "Agent-facing Superbee CLI for reading and writing local OKF knowledge bundles: context notes, docs, cross-links, and live bundle Views.",
+  "keywords": [
+    "okf",
+    "knowledge",
+    "agent",
+    "axi",
+    "cli",
+    "markdown",
+    "context-notes"
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Holaxis-ai/superbee#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Holaxis-ai/superbee.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Holaxis-ai/superbee/issues"
+  },
+  "bin": {
+    "superbee": "dist/superbee.mjs"
+  },
+  "exports": {
+    ".": "./dist/superbee.mjs",
+    "./publication": {
+      "types": "./dist/publication/index.d.ts",
+      "default": "./dist/publication.mjs"
+    },
+    "./publication/bridge": {
+      "types": "./dist/publication/bridge-entry.d.ts",
+      "default": "./dist/publication-bridge.mjs"
+    },
+    "./bundle-descriptor": {
+      "types": "./dist/bundle-descriptor/index.d.ts",
+      "default": "./dist/bundle-descriptor.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "SKILL.md",
+    "references",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs local-dev",
+    "build:npm-package": "node build.mjs npm-package",
+    "typecheck": "tsc --noEmit",
+    "pretest": "node build.mjs local-dev",
+    "test": "node --test test/*.test.mjs",
+    "gen:skill": "node scripts/gen-skill.mjs",
+    "check:skill": "node scripts/gen-skill.mjs --check",
+    "prepublishOnly": "node -e \"console.error('superbee is released by .github/workflows/release.yml (npm stage publish); do not run npm publish here'); process.exit(1)\""
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@superbee/board-git": "*",
+    "@superbee/bundle-descriptor": "*",
+    "@superbee/core": "*",
+    "@superbee/markdown-renderer": "*",
+    "@superbee/mcp-app": "*",
+    "@superbee/publication": "*",
+    "@superbee/server": "*",
+    "@superbee/ui-server": "*",
+    "@toon-format/toon": "2.3.0",
+    "@types/node": "^22.0.0",
+    "axi-sdk-js": "0.1.8",
+    "esbuild": "0.25.12",
+    "jsonc-parser": "3.3.1",
+    "pako": "2.1.0",
+    "typescript": "^5.4.0",
+    "js-yaml": "3.15.2",
+    "@types/js-yaml": "3.12.10",
+    "@superbee/cli": "*"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ]
+}

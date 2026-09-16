@@ -47,7 +47,7 @@ import {
   USER_STATE_MARKER_FILE_NAME,
 } from "../src/user-state.js";
 
-const CLI = fileURLToPath(new URL("../dist/superbee.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../../superbee/dist/superbee.mjs", import.meta.url));
 
 function scratch(): string {
   return mkdtempSync(path.join(tmpdir(), "superbee-state-bundle-boundary-"));

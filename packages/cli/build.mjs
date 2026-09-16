@@ -1,128 +1,36 @@
-// Build the single, self-contained, publishable CLI bundle.
-//
-// esbuild bundles src/index.ts together with its workspace source packages
-// (@superbee/core, @superbee/server, @superbee/ui-server,
-// @superbee/mcp-app) and every npm dependency into ONE ESM file with a
-// `#!/usr/bin/env node` shebang. The published `superbee` package therefore has NO runtime
-// dependencies and NO unresolved `workspace:*` links — `npx -y superbee …` runs with zero
-// workspace resolution.
-//
-// The workspace deps are aliased to their SOURCE entry points so this build is self-contained:
-// it does NOT require core/server to be pre-compiled to dist first (esbuild transpiles the .ts and
-// resolves their NodeNext `.js`-extension imports to the sibling `.ts` files). That keeps
-// the release build a single step.
-//
-// A createRequire shim is injected in the banner because a bundled CommonJS dependency (gray-matter)
-// may call require() at runtime; ESM output has no ambient `require`, so we provide one.
-//
-// This explicitly flavored dev/npm build writes only dist/ plus gitignored generated inputs.
-import { rm, chmod, cp, mkdir, readdir } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { build } from "esbuild";
+import { rm, mkdir, writeFile, readFile } from "node:fs/promises";
+import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-import { isMainModule } from "../../scripts/is-main-module.mjs";
-import { buildBundleDescriptorBundle, buildCliBundle, buildPublicationBundle } from "./scripts/build-bundle.mjs";
+import ts from "typescript";
+import { workspaceAliases, runtimeBanner } from "./scripts/bundle-options.mjs";
 import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
-import { FUNCTIONAL_VERSION_FLOOR } from "./scripts/functional-version-floor.mjs";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const r = (p) => resolve(here, p);
-const outfile = r("dist/superbee.mjs");
-const publicationOutfile = r("dist/publication.mjs");
-const publicationBridgeOutfile = r("dist/publication-bridge.mjs");
-const bundleDescriptorOutfile = r("dist/bundle-descriptor.mjs");
-const execFileAsync = promisify(execFile);
-
-async function copyDeclarationTree(source, destination) {
-  await mkdir(destination, { recursive: true });
-  for (const entry of await readdir(source, { withFileTypes: true })) {
-    const from = resolve(source, entry.name);
-    const to = resolve(destination, entry.name);
-    if (entry.isDirectory()) await copyDeclarationTree(from, to);
-    else if (entry.name.endsWith(".d.ts")) await cp(from, to);
-  }
+const root = dirname(fileURLToPath(import.meta.url));
+await rm(resolve(root, "dist"), { recursive: true, force: true });
+await prepareCliBundleInputs();
+const runtimeBuild = await build({ metafile:true, absWorkingDir: root, entryPoints: [resolve(root, "src/index.ts")], outfile: resolve(root, "dist/index.mjs"), bundle: true, platform: "node", format: "esm", target: "node20", alias: workspaceAliases, banner: runtimeBanner,
+  // A reusable library has no baked distribution policy or identity. Fold their absence into the
+  // artifact so a host's same-named globals cannot override its explicit source identity.
+  define: {
+    __SUPERBEE_BUILD_IDENTITY__: "undefined",
+    __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__: "undefined",
+    __SUPERBEE_UPDATE_POLICY__: "undefined",
+  },
+});
+// The facade has explicit closed signatures. Generate declarations from these signatures instead
+// of publishing declarations for internal engine, transport, and command implementations.
+await mkdir(resolve(root, "dist"), { recursive: true });
+for (const name of ["index", "public-types", "runtime-types", "host-command-error", "resources"]) {
+  let source = await readFile(resolve(root, `src/${name}.ts`), "utf8");
+  if(name==="index")source=source.replace('export { createCliRuntime, createPosixCliRuntime } from \'./runtime.js\';', 'import type { CliRuntime, CliRuntimeOptions, CliDistribution } from "./runtime-types.js";\nexport declare function createCliRuntime(options:CliRuntimeOptions):CliRuntime;\nexport declare function createPosixCliRuntime(distribution:CliDistribution):CliRuntime;');
+  const result = ts.transpileDeclaration(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext }, fileName: `${name}.ts` });
+  if (result.diagnostics?.length) throw new Error(ts.formatDiagnosticsWithColorAndContext(result.diagnostics, { getCanonicalFileName: p => p, getCurrentDirectory: () => root, getNewLine: () => "\n" }));
+  await writeFile(resolve(root, `dist/${name}.d.ts`), result.outputText);
 }
 
-async function buildPublicationTypes() {
-  const repoRoot = r("../..");
-  const tsc = r("../../node_modules/typescript/bin/tsc");
-  for (const workspace of ["core", "markdown-renderer", "view-runtime", "publication"]) {
-    await execFileAsync(process.execPath, [tsc, "--project", r(`../${workspace}/tsconfig.json`)], {
-      cwd: repoRoot,
-      maxBuffer: 20 * 1024 * 1024,
-    });
-  }
-  await copyDeclarationTree(r("../publication/dist"), r("dist/publication"));
-  await mkdir(r("dist/publication/schema"), { recursive: true });
-  await cp(
-    r("../publication/schema/publication-snapshot-v1.schema.json"),
-    r("dist/publication/schema/publication-snapshot-v1.schema.json"),
-  );
-}
-
-async function buildBundleDescriptorTypes() {
-  const repoRoot = r("../..");
-  const tsc = r("../../node_modules/typescript/bin/tsc");
-  await execFileAsync(process.execPath, [tsc, "--project", r("../bundle-descriptor/tsconfig.json")], {
-    cwd: repoRoot,
-    maxBuffer: 20 * 1024 * 1024,
-  });
-  await copyDeclarationTree(r("../bundle-descriptor/dist"), r("dist/bundle-descriptor"));
-  await mkdir(r("dist/bundle-descriptor/schema"), { recursive: true });
-  await cp(
-    r("../bundle-descriptor/schema/bundle-descriptor-v1.schema.json"),
-    r("dist/bundle-descriptor/schema/bundle-descriptor-v1.schema.json"),
-  );
-}
-
-/**
- * The ONE dev/npm build entrypoint used by `npm run build`, `verify-npm-package.mjs`, and the
- * release workflow. It cleans dist, regenerates the
- * embedded inputs, bundles, and marks the bin executable — exactly once per call.
- *
- * `source` and `packageIdentity` are OPTIONAL injections for tests; when omitted, build-bundle
- * derives the source facts itself (the ordinary dev, verify, and release path).
- */
-export async function buildCli(artifactChannel, { source, packageIdentity, updatePolicy } = {}) {
-  if (artifactChannel !== "local-dev" && artifactChannel !== "npm-package") {
-    throw new Error("usage: buildCli(local-dev|npm-package)");
-  }
-  // Clean dist so the packed tarball never carries stale files (files: ["dist"]).
-  await rm(r("dist"), { recursive: true, force: true });
-  // FIRST: generate every embedded input (the local UI assets and fixed MCP App shell) through the
-  // same preparation helper used by release verification. The esbuild
-  // bundle below imports those generated modules transitively, so none may be missing or stale.
-  await prepareCliBundleInputs();
-  await buildCliBundle(outfile, {
-    artifactChannel,
-    functionalVersionFloor: FUNCTIONAL_VERSION_FLOOR,
-    updatePolicy: updatePolicy ?? { enabled: false },
-    ...(source === undefined ? {} : { source }),
-    ...(packageIdentity === undefined ? {} : { packageIdentity }),
-  });
-  await Promise.all([
-    buildPublicationBundle(publicationOutfile),
-    buildPublicationBundle(publicationBridgeOutfile, "bridge"),
-    buildBundleDescriptorBundle(bundleDescriptorOutfile),
-    buildPublicationTypes(),
-    buildBundleDescriptorTypes(),
-  ]);
-  // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
-  // in the tarball and for direct `./dist/superbee.mjs` runs).
-  await chmod(outfile, 0o755);
-  return outfile;
-}
-
-async function main(argv = process.argv.slice(2)) {
-  const built = await buildCli(argv[0]);
-  console.log(`built ${built}`);
-}
-
-// Direct CLI invocation: `node build.mjs local-dev|npm-package`.
-if (isMainModule(import.meta.url)) {
-  main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  });
-}
+await mkdir(resolve(root,'../../out'),{recursive:true});
+await writeFile(resolve(root,'../../out/cli-runtime-metafile.json'),JSON.stringify(runtimeBuild.metafile,null,2)+'\n');
+const inventoryBuild=await build({entryPoints:[resolve(root,'src/distribution-resources.ts')],bundle:true,format:'esm',platform:'node',write:false});
+const {DISTRIBUTION_RESOURCES}=await import('data:text/javascript;base64,'+Buffer.from(inventoryBuild.outputFiles[0].text).toString('base64'));
+const references=await Promise.all(DISTRIBUTION_RESOURCES.map(async row=>({path:'references/'+row.dest,content:await readFile(resolve(root,'../..',row.src),'utf8')})));
+await build({entryPoints:[resolve(root,'src/resources.ts')],outfile:resolve(root,'dist/resources.mjs'),bundle:true,format:'esm',platform:'node',target:'node20',define:{__SUPERBEE_DISTRIBUTION_REFERENCES__:JSON.stringify(references)}});

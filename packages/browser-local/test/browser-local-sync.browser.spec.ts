@@ -299,6 +299,30 @@ test("d: a conflicting remote edit becomes an explicit conflict with base, local
   expect(ok(await call(page, "readSync", "notes/alpha"), "readSync").shared.acknowledged).toBe(false);
 });
 
+test("conflict recovery survives reload and deliberately replaces the shared edit through a fresh identity", async ({ page }) => {
+  await load(page);
+  ok(await call(page, "bootstrap", served.origin, "recover-conflict"), "bootstrap");
+  ok(await call(page, "commitLocal", "notes/alpha", "my edit\n"), "commit");
+  await served.fixture.remote.write("notes/alpha", note("notes/alpha", "their edit\n"));
+  ok(await call(page, "push"), "push");
+  const review = ok(await call(page, "inspectConflict", "notes/alpha"), "inspect");
+  expect(review.local.content).toContain("my edit");
+  expect(review.remote.content).toContain("their edit");
+  await page.reload();
+  await waitForDriver(page);
+  ok(await call(page, "attach", served.origin, "recover-conflict"), "attach");
+  const resolved = ok(await call(page, "resolveConflict", review, { kind: "revise", body: "reviewed revision\n" }), "resolve");
+  expect(resolved.intent!.requestId).not.toBe(review.intents[0]!.requestId);
+  expect((await served.fixture.authority.read("notes/alpha")).doc.body).toBe("their edit\n");
+  await page.reload();
+  await waitForDriver(page);
+  ok(await call(page, "attach", served.origin, "recover-conflict"), "attach");
+  expect(ok(await call(page, "conflictReceipt", resolved.receipt.id), "receipt")).toEqual(resolved.receipt);
+  ok(await call(page, "push"), "push resolved");
+  expect((await served.fixture.authority.read("notes/alpha")).doc.body).toBe("reviewed revision\n");
+  expect(ok(await call(page, "syncStatus"), "status").counts).toMatchObject({ conflict: 0, pending: 0 });
+});
+
 test("e: a lost acknowledgement leaves the intent pending, and the next push settles it through lookup with one application", async ({ page }) => {
   await load(page);
   ok(await call(page, "bootstrap", served.origin, "e-lost"), "bootstrap");

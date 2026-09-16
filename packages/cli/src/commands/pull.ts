@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee pull --doc-key <key> --out (<path> | -)` — the out-of-band byte-OUT channel: the
 // reverse of `promote`.
 //
@@ -182,7 +183,7 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
     CLI_LEAVES.pull,
   );
   if (values.help) {
-    stdout(PULL_USAGE);
+    stdout(renderUsage(PULL_USAGE));
     return;
   }
   const key = values["doc-key"]?.trim();

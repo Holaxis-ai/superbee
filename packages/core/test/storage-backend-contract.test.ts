@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import test from "node:test";
+import assert from "node:assert/strict";
 
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 import { createRouter } from "@superbee/server";
@@ -12,10 +14,13 @@ import { IntentHoldConflict, IntentStateConflict } from "../src/journaled-backen
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
 import type { StorageBackend } from "../src/types.js";
-import { VersionConflict } from "../src/versioning.js";
+import { normalizeDocumentBodyForStorage } from "../src/frontmatter.js";
+import { contentVersion, VersionConflict } from "../src/versioning.js";
 import { registerJournaledBackendContract } from "./journaled-backend-contract.js";
 import {
   registerClaimPreconditionContract,
+  registerFrontmatterReadContract,
+  assertStorageInputRefusals,
   registerOkfAuthoringContract,
   registerStorageBackendAtomicCasContract,
   registerStorageBackendBaseContract,
@@ -67,20 +72,77 @@ function remoteFixture(): BackendFixture {
 }
 
 const CONTRACTS = [
-  { name: "FilesystemBackend", create: filesystemFixture, retention: "current-only" as const },
+  { name: "FilesystemBackend", create: filesystemFixture, retention: "current-only" as const, localYamlValues: true },
   {
     name: "MemoryBackend",
     create: memoryFixture,
     retention: "retained" as const,
     retainsClientAgent: true,
+    localYamlValues: true,
   },
   // The authenticated hosted worker, not RemoteBackend clients, manufactures X-Agent.
-  { name: "RemoteBackend", create: remoteFixture, retention: "retained" as const },
-  { name: "IndexedDbBackend", create: indexedDbFixture, retention: "current-only" as const },
+  { name: "RemoteBackend", create: remoteFixture, retention: "retained" as const, localYamlValues: false },
+  { name: "IndexedDbBackend", create: indexedDbFixture, retention: "current-only" as const, localYamlValues: true },
 ];
+
+test("MemoryBackend frontmatter read contract: metadata decoding does not reinterpret delimiter-leading bodies", async () => {
+  const backend = new MemoryBackend();
+  for (const [index, body] of ["---\nvalue: body text\n---\nbody", "\uFEFF---\nvalue: body text\n---\nbody"].entries()) {
+    const value = { id: `metadata/body-${index}`, frontmatter: {}, body };
+    const version = await backend.write(value.id, value);
+    assert.equal(version, contentVersion(value));
+    for (const read of [await backend.read(value.id), ...(await backend.readMany([value.id]))]) {
+      assert.equal(read.version, version);
+      assert.deepEqual(read.doc.frontmatter, {});
+      // The delimiter-leading body survives INTACT — only the serializer's trailing newline is
+      // added, the same canonical shape every adapter reports (see the base contract's
+      // serialized-body row). No part of it is re-read as metadata.
+      assert.equal(read.doc.body, normalizeDocumentBodyForStorage(body));
+    }
+  }
+});
+
+test("MemoryBackend frontmatter read contract: returned metadata and version describe the same getter snapshot", async () => {
+  const backend = new MemoryBackend();
+  let observed = 0;
+  const value = {
+    id: "metadata/getter",
+    frontmatter: { type: "Note", get value() { return ++observed; } },
+    body: "body\n",
+  };
+  const version = await backend.write(value.id, value);
+  const read = await backend.read(value.id);
+  assert.equal(typeof read.doc.frontmatter.value, "number");
+  assert.equal(version, contentVersion({
+    ...value, frontmatter: { type: "Note", value: read.doc.frontmatter.value },
+  }));
+  assert.equal(read.version, version);
+  assert.deepEqual(await backend.read(value.id), read);
+});
+
+test("RemoteBackend contract: invalid input rows do not issue requests", async () => {
+  let requests = 0;
+  const backend = new RemoteBackend({
+    baseUrl: "http://wire.local", bundle: "contract", maxRetries: 0,
+    fetchImpl: async () => { requests++; throw new Error("Unexpected request"); },
+  });
+  await assertStorageInputRefusals(backend);
+  assert.equal(requests, 0);
+});
+
+test("IndexedDbBackend contract: invalid input rows do not open storage", async () => {
+  const factory = new IDBFactory();
+  let opens = 0;
+  factory.open = () => { opens++; throw new Error("Unexpected database open"); };
+  const backend = new IndexedDbBackend({ databaseName: "unopened", indexedDB: factory });
+  await assertStorageInputRefusals(backend);
+  assert.equal(opens, 0);
+  backend.close();
+});
 
 for (const contract of CONTRACTS) {
   registerStorageBackendBaseContract(contract);
+  registerFrontmatterReadContract(contract);
   registerOkfAuthoringContract(contract);
   registerStorageBackendBlobContract(contract);
   registerStorageBackendHistoryContract(contract);

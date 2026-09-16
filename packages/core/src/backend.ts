@@ -33,6 +33,8 @@ import {
   assertSafeBlobKey,
   assertSafeConceptId,
   assertSafeReservedDir,
+  assertSafeReservedFilename,
+  compareStorageKeys,
   conceptIdFromPath,
   isReservedFile,
   pathFromConceptId,
@@ -41,7 +43,8 @@ import {
 import { InvalidInputError } from "./errors.js";
 import {
   mutateExact,
-  nodeFilesystemIdentityPort as port,
+  createNodeFilesystemIdentityPort,
+  type FilesystemIdentityPort,
   observeExact,
   probeExact,
   type PortHandle,
@@ -62,8 +65,9 @@ import type {
   VersionInfo,
   WriteOptions,
 } from "./types.js";
+import type { FilesystemBackendOptions } from "./filesystem-host.js";
 
-const publicationRoots = new WeakMap<FilesystemBackend, string>();
+const publicationContexts = new WeakMap<FilesystemBackend, { root: string; port: FilesystemIdentityPort }>();
 
 /** First trimmed non-empty string among `vals`, else `undefined`. */
 function firstString(...vals: unknown[]): string | undefined {
@@ -96,7 +100,7 @@ function notFound(root: string, rel: string): NodeJS.ErrnoException {
 }
 
 /** Observation read: every byte through the open handle; `null` when no file is there. */
-async function readBytes(handle: PortHandle): Promise<Buffer | null> {
+async function readBytes(port: FilesystemIdentityPort, handle: PortHandle): Promise<Buffer | null> {
   try {
     return await port.readAll(handle);
   } catch (err) {
@@ -106,14 +110,14 @@ async function readBytes(handle: PortHandle): Promise<Buffer | null> {
 }
 
 /** Recursively collect bundle-relative posix paths of files `keep` accepts (skips dot-entries). */
-async function walkFiles(root: string, keep: (name: string) => boolean, sub = ""): Promise<string[]> {
+async function walkFiles(port: FilesystemIdentityPort, root: string, keep: (name: string) => boolean, sub = ""): Promise<string[]> {
   const entries = (await port.entries(path.join(root, sub))) ?? [];
   const out: string[] = [];
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue; // .git, temp files, dot-dirs: invisible to the walk
     const rel = sub === "" ? entry.name : `${sub}/${entry.name}`;
     if (entry.kind === "directory") {
-      out.push(...(await walkFiles(root, keep, rel)));
+      out.push(...(await walkFiles(port, root, keep, rel)));
     } else if (entry.kind === "file" && keep(entry.name)) {
       // `rel` is already assembled with `/`. Preserve any literal backslash in an entry name so
       // `list()` can reject it as a noncanonical on-disk identity instead of silently converting
@@ -126,8 +130,7 @@ async function walkFiles(root: string, keep: (name: string) => boolean, sub = ""
 
 /** Bundle-relative reserved-file path for a directory (`""` = bundle root). */
 function reservedPath(dir: string, name: ReservedFilename): string {
-  const d = toPosix(dir).replace(/^\.?\//, "").replace(/\/$/, "");
-  return d === "" ? name : `${d}/${name}`;
+  return dir === "" ? name : `${dir}/${name}`;
 }
 
 /**
@@ -137,15 +140,17 @@ function reservedPath(dir: string, name: ReservedFilename): string {
  */
 export class FilesystemBackend implements StorageBackend {
   readonly #root: string;
+  readonly #port: FilesystemIdentityPort;
 
   /**
    * The root is resolved once here: a relative root would otherwise re-resolve against the
    * process's current directory on every operation, so a later `chdir` would silently move the
    * bundle and derive a different identity key.
    */
-  constructor(root: string) {
+  constructor(root: string, options: FilesystemBackendOptions = {}) {
+    this.#port = createNodeFilesystemIdentityPort(options.hostPolicy);
     this.#root = path.resolve(root);
-    publicationRoots.set(this, this.#root);
+    publicationContexts.set(this, { root: this.#root, port: this.#port });
   }
 
   async read(id: ConceptId): Promise<ReadResult> {
@@ -168,7 +173,7 @@ export class FilesystemBackend implements StorageBackend {
   ): Promise<ReadResult> {
     assertSafeConceptId(id);
     const rel = pathFromConceptId(id);
-    const observed = await observeExact(port, this.#root, rel, readBytes);
+    const observed = await observeExact(this.#port, this.#root, rel, (handle) => readBytes(this.#port, handle));
     if (observed.state === "absent") throw notFound(this.#root, rel);
     const raw = observed.value.toString("utf8");
     const { frontmatter, body } = parseMarkdown(raw, rel, { okfVersion: await edition() });
@@ -199,7 +204,7 @@ export class FilesystemBackend implements StorageBackend {
     // The whole check-then-write section runs inside one identity-keyed critical section, local
     // and same-user cross-process; an unconditional writer holds it too so it cannot move the
     // target between another process's version check and write.
-    return mutateExact(port, this.#root, rel, async (target) => {
+    return mutateExact(this.#port, this.#root, rel, async (target) => {
       if (options.expectedVersion !== undefined) {
         const bytes = await target.current();
         const current = bytes === null ? null : versionOfBytes(bytes.toString("utf8"));
@@ -220,7 +225,7 @@ export class FilesystemBackend implements StorageBackend {
 
   async delete(id: ConceptId, options: DeleteOptions = {}): Promise<boolean> {
     assertSafeConceptId(id);
-    return mutateExact(port, this.#root, pathFromConceptId(id), async (target) => {
+    return mutateExact(this.#port, this.#root, pathFromConceptId(id), async (target) => {
       const bytes = await target.current();
       if (bytes === null) return false; // absent ⇒ idempotent no-op, EVEN under CAS
       const current = versionOfBytes(bytes.toString("utf8"));
@@ -238,9 +243,9 @@ export class FilesystemBackend implements StorageBackend {
   async versions(id: ConceptId): Promise<VersionInfo[]> {
     assertSafeConceptId(id);
     const rel = pathFromConceptId(id);
-    const observed = await observeExact(port, this.#root, rel, async (handle, target) => {
+    const observed = await observeExact(this.#port, this.#root, rel, async (handle, target) => {
       try {
-        const bytes = await port.readAll(handle);
+        const bytes = await this.#port.readAll(handle);
         // mtime is taken by path rather than through the open handle: the port has no
         // stat-by-handle call, and widening the protocol surface for a fallback timestamp used
         // only when the frontmatter carries none is not worth it. It cannot attribute another
@@ -249,7 +254,7 @@ export class FilesystemBackend implements StorageBackend {
         // still be its recorded one, so a swap between this call and that check restarts the
         // observation instead of returning EXACT — under the same A11 witness limit the walk
         // itself carries.
-        const { mtime } = await port.stat(target);
+        const { mtime } = await this.#port.stat(target);
         return { raw: bytes.toString("utf8"), mtime };
       } catch {
         return null; // no readable document ⇒ no history
@@ -266,11 +271,11 @@ export class FilesystemBackend implements StorageBackend {
 
   async exists(id: ConceptId): Promise<boolean> {
     assertSafeConceptId(id);
-    return (await probeExact(port, this.#root, pathFromConceptId(id))).state === "exact";
+    return (await probeExact(this.#port, this.#root, pathFromConceptId(id))).state === "exact";
   }
 
   async list(prefix?: string): Promise<ConceptId[]> {
-    const files = await walkFiles(this.#root, (name) => name.endsWith(".md"));
+    const files = await walkFiles(this.#port, this.#root, (name) => name.endsWith(".md"));
     const ids: ConceptId[] = [];
     for (const rel of files) {
       if (isReservedFile(rel)) continue;
@@ -284,13 +289,14 @@ export class FilesystemBackend implements StorageBackend {
       if (prefix && !id.startsWith(prefix)) continue;
       ids.push(id);
     }
-    ids.sort((a, b) => a.localeCompare(b));
+    ids.sort(compareStorageKeys);
     return ids;
   }
 
   async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
     assertSafeReservedDir(dir);
-    const observed = await observeExact(port, this.#root, reservedPath(dir, name), readBytes);
+    assertSafeReservedFilename(name);
+    const observed = await observeExact(this.#port, this.#root, reservedPath(dir, name), (handle) => readBytes(this.#port, handle));
     if (observed.state === "absent") return null;
     const content = observed.value.toString("utf8");
     // Reserved files are unparsed markdown, so the version is the content-address of the
@@ -305,10 +311,11 @@ export class FilesystemBackend implements StorageBackend {
     options: WriteOptions = {},
   ): Promise<Version> {
     assertSafeReservedDir(dir);
+    assertSafeReservedFilename(name);
     const rel = reservedPath(dir, name);
     // Same identity-keyed critical section as `write()`. A reserved-file read-modify-write
     // depends on a genuine `VersionConflict` under contention.
-    return mutateExact(port, this.#root, rel, async (target) => {
+    return mutateExact(this.#port, this.#root, rel, async (target) => {
       if (options.expectedVersion !== undefined) {
         const bytes = await target.current();
         const current = bytes === null ? null : versionOfBytes(bytes.toString("utf8"));
@@ -327,7 +334,7 @@ export class FilesystemBackend implements StorageBackend {
     assertSafeBlobKey(key);
     // Absence (ENOENT) or a directory sitting at this path (EISDIR) is a normal "no blob here"
     // result; `readBytes` propagates everything else (EACCES, EPERM, …) as the real failure it is.
-    const observed = await observeExact(port, this.#root, key, readBytes);
+    const observed = await observeExact(this.#port, this.#root, key, (handle) => readBytes(this.#port, handle));
     if (observed.state === "absent") return null;
     const bytes = observed.value; // raw bytes, NO encoding (B1)
     // Content-type is ALWAYS inferred-on-read here: the filesystem adapter accepts but
@@ -346,7 +353,7 @@ export class FilesystemBackend implements StorageBackend {
     // The WHOLE check-then-write section runs inside the identity lock, exactly like write(),
     // so N concurrent CAS writers to the SAME blob key queue instead of racing the version
     // check (B3). Raw-bytes versioning: hashing through a UTF-8 decode would corrupt binary (B1).
-    return mutateExact(port, this.#root, key, async (target) => {
+    return mutateExact(this.#port, this.#root, key, async (target) => {
       if (options.expectedVersion !== undefined) {
         const existing = await target.current();
         const current = existing === null ? null : blobVersion(existing);
@@ -366,7 +373,7 @@ export class FilesystemBackend implements StorageBackend {
 
   async deleteBlob(key: BlobKey, options: DeleteOptions = {}): Promise<boolean> {
     assertSafeBlobKey(key);
-    return mutateExact(port, this.#root, key, async (target) => {
+    return mutateExact(this.#port, this.#root, key, async (target) => {
       const existing = await target.current();
       if (existing === null) return false; // absent (or a directory-shaped path) ⇒ idempotent no-op
       const current = blobVersion(existing);
@@ -384,7 +391,7 @@ export class FilesystemBackend implements StorageBackend {
     // key like `artifacts/x/y.bin` leaves `artifacts/x` a directory) must report `false` here,
     // matching MemoryBackend/RemoteBackend — neither has a filesystem notion of "a path that is
     // a directory," so a directory-counts-as-exists answer would break tri-adapter parity.
-    const observed = await probeExact(port, this.#root, key);
+    const observed = await probeExact(this.#port, this.#root, key);
     return observed.state === "exact" && observed.value.kind === "file";
   }
 
@@ -392,10 +399,10 @@ export class FilesystemBackend implements StorageBackend {
     // Skipping dot-entries is what excludes the adapter's own dot-prefixed temp files and `.git`
     // from a blob listing (I3), not just the write-time `assertSafeBlobKey` guard. The
     // `.md`-extension check is case-insensitive, mirroring `assertSafeBlobKey`.
-    const files = await walkFiles(this.#root, (name) => !name.toLowerCase().endsWith(".md"));
+    const files = await walkFiles(this.#port, this.#root, (name) => !name.toLowerCase().endsWith(".md"));
     const keys = files.map(toPosix);
     const filtered = prefix ? keys.filter((k) => k.startsWith(prefix)) : keys;
-    filtered.sort((a, b) => a.localeCompare(b));
+    filtered.sort(compareStorageKeys);
     return filtered;
   }
 
@@ -410,10 +417,10 @@ export class FilesystemBackend implements StorageBackend {
   }
 }
 
-function publicationRoot(backend: FilesystemBackend): string {
-  const root = publicationRoots.get(backend);
-  if (!root) throw new InvalidInputError("Unknown filesystem backend publication source.");
-  return root;
+function publicationContext(backend: FilesystemBackend): { root: string; port: FilesystemIdentityPort } {
+  const context = publicationContexts.get(backend);
+  if (!context) throw new InvalidInputError("Unknown filesystem backend publication source.");
+  return context;
 }
 
 /** Internal exact-byte authority for the publication adapter; not part of StorageBackend. */
@@ -422,9 +429,9 @@ export async function readRawFilesystemDocument(
   id: ConceptId,
 ): Promise<{ bytes: Uint8Array; version: Version }> {
   assertSafeConceptId(id);
-  const root = publicationRoot(backend);
+  const { root, port } = publicationContext(backend);
   const rel = pathFromConceptId(id);
-  const observed = await observeExact(port, root, rel, readBytes);
+  const observed = await observeExact(port, root, rel, (handle) => readBytes(port, handle));
   if (observed.state === "absent") throw notFound(root, rel);
   const raw = new TextDecoder("utf-8", { fatal: true }).decode(observed.value);
   return { bytes: observed.value.slice(), version: versionOfBytes(raw) };
@@ -437,8 +444,9 @@ export async function readRawFilesystemReserved(
   name: ReservedFilename,
 ): Promise<{ bytes: Uint8Array; version: Version } | null> {
   assertSafeReservedDir(dir);
-  const root = publicationRoot(backend);
-  const observed = await observeExact(port, root, reservedPath(dir, name), readBytes);
+  assertSafeReservedFilename(name);
+  const { root, port } = publicationContext(backend);
+  const observed = await observeExact(port, root, reservedPath(dir, name), (handle) => readBytes(port, handle));
   if (observed.state === "absent") return null;
   return {
     bytes: observed.value.slice(),
@@ -450,15 +458,16 @@ export async function readRawFilesystemReserved(
 export async function listFilesystemReservedObjects(
   backend: FilesystemBackend,
 ): Promise<Array<{ dir: string; name: ReservedFilename }>> {
-  const root = publicationRoot(backend);
-  const files = await walkFiles(root, (name) => name === "index.md" || name === "log.md");
+  const { root, port } = publicationContext(backend);
+  const files = await walkFiles(port, root, (name) => name === "index.md" || name === "log.md");
   return files
     .map((relative) => {
       const slash = relative.lastIndexOf("/");
       const dir = slash === -1 ? "" : relative.slice(0, slash);
       const name = relative.slice(slash + 1) as ReservedFilename;
       assertSafeReservedDir(dir);
+      assertSafeReservedFilename(name);
       return { dir, name };
     })
-    .sort((a, b) => reservedPath(a.dir, a.name).localeCompare(reservedPath(b.dir, b.name)));
+    .sort((a, b) => compareStorageKeys(reservedPath(a.dir, a.name), reservedPath(b.dir, b.name)));
 }

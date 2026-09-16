@@ -68,13 +68,12 @@ test("paths: safe nonblank concept ids retain their exact boundary bytes", () =>
     'quoted/"id"',
     "--option-like",
     "utf8/café-🚀",
-    "line\nbreak",
   ];
   for (const id of ids) {
     assert.doesNotThrow(() => assertSafeConceptId(id), JSON.stringify(id));
     assert.equal(pathFromConceptId(id), `${id}.md`, JSON.stringify(id));
   }
-  for (const id of ["", " ", "\t\n"]) {
+  for (const id of ["", " ", "\t\n", "line\nbreak"]) {
     assert.throws(() => assertSafeConceptId(id), InvalidInputError, JSON.stringify(id));
   }
 });
@@ -85,6 +84,14 @@ test("paths: assertSafeReservedDir rejects traversal / absolute but allows the b
   assert.throws(() => assertSafeReservedDir("../escape"));
   assert.throws(() => assertSafeReservedDir("/abs/dir"));
   assert.throws(() => assertSafeReservedDir("sub/../../../tmp")); // mixed sub + escape
+});
+
+test("paths: storage order preserves locale sorting with a code-point tie-break", async () => {
+  const { compareStorageKeys } = await import("../src/paths.js");
+  assert.equal(compareStorageKeys("same", "same"), 0);
+  assert.equal(Math.sign(compareStorageKeys("z", "a")), Math.sign("z".localeCompare("a")));
+  assert.ok(compareStorageKeys("cafe\u0301", "caf\u00e9") < 0);
+  assert.ok(compareStorageKeys("caf\u00e9", "cafe\u0301") > 0);
 });
 
 test("links: extractMarkdownLinks skips images, keeps text links", () => {

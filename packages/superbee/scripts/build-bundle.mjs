@@ -1,5 +1,6 @@
+import { workspaceAliases } from "../../cli/scripts/bundle-options.mjs";
 // Shared esbuild config for the self-contained npm CLI bundle. build.mjs selects the local-dev or
-// npm-package flavor and writes packages/cli/dist.
+// npm-package flavor and writes packages/superbee/dist.
 import { build } from "esbuild";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -8,7 +9,7 @@ import { dirname, resolve } from "node:path";
 import { isStrictSemver } from "../../../scripts/strict-semver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-// packages/cli/scripts -> packages/cli
+// packages/superbee/scripts -> packages/superbee
 const pkgRoot = resolve(here, "..");
 const r = (p) => resolve(pkgRoot, p);
 
@@ -25,7 +26,7 @@ if (
   typeof version !== "string" ||
   version.length === 0
 ) {
-  throw new Error("packages/cli/package.json must contain a valid npm package name and non-empty version");
+  throw new Error("packages/superbee/package.json must contain a valid npm package name and non-empty version");
 }
 const repoRoot = resolve(pkgRoot, "../..");
 export const BUILD_ARTIFACT_CHANNELS = ["npm-package", "local-dev"];
@@ -104,7 +105,8 @@ export async function buildCliBundle(outfile, options) {
     artifact: { channel: artifactChannel },
     compatibility_contracts: { skill: 1, hook: 1, mcp: 1 },
   };
-  await build({
+  return build({
+    metafile: options?.metafile ?? false,
     // Pin esbuild's working directory — it otherwise defaults to `process.cwd()` and embeds
     // paths relative to it in the CJS-interop module comments/keys (e.g. `node_modules/foo/…`
     // vs `../../node_modules/foo/…`), making the OUTPUT BYTES depend on the CALLER's cwd. Every
@@ -127,42 +129,7 @@ export async function buildCliBundle(outfile, options) {
       __SUPERBEE_UPDATE_POLICY__: JSON.stringify(updatePolicy),
     },
     // Resolve the workspace deps to their TypeScript source so no dist pre-build is needed.
-    alias: {
-      // jsonc-parser's package "main" points at a UMD build whose relative require() calls cannot
-      // survive inside our one-file ESM artifact. Pin its published ESM entry for bundling while
-      // ordinary TypeScript/tests continue to consume the package's declared typings.
-      "jsonc-parser": r("../../node_modules/jsonc-parser/lib/esm/main.js"),
-      // List browser-safe core subpaths before the package root so esbuild does not append the
-      // subpath to `index.ts` (which would resolve as the impossible `index.ts/page`).
-      "@superbee/core/engine": r("../core/src/engine.ts"),
-      "@superbee/core/recipes": r("../core/src/recipes.ts"),
-      "@superbee/core/storage": r("../core/src/storage.ts"),
-      "@superbee/core/view-admission": r("../core/src/view-admission.ts"),
-      "@superbee/core/page": r("../core/src/page.ts"),
-      "@superbee/core/links": r("../core/src/links.ts"),
-      "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
-      "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
-      "@superbee/core/publication-filesystem": r("../core/src/publication-filesystem.ts"),
-      "@superbee/core": r("../core/src/index.ts"),
-      // The git tier lives in its own workspace package (board-git A1); alias to source so the
-      // npm artifact stays ONE self-contained file with no dist pre-build.
-      "@superbee/board-git": r("../board-git/src/index.ts"),
-      // server/src/index.ts is guard-free re-exports (createRouter + serve) — its only deps are
-      // core + node:http, so aliasing straight to it keeps the esbuild bundle ONE self-contained file.
-      "@superbee/server": r("../server/src/index.ts"),
-      // The experimental conversational View adapter is private workspace source. It is bundled
-      // into the npm CLI exactly like the other internal packages, leaving no runtime workspace
-      // dependency for users to install or resolve.
-      "@superbee/mcp-app": r("../mcp-app/src/index.ts"),
-      // Shared human-surface primitives are private workspace source too. Alias them explicitly
-      // so a clean npm build never depends on sibling dist/ directories existing.
-      "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
-      "@superbee/markdown-renderer": r("../markdown-renderer/src/index.tsx"),
-      "@superbee/view-runtime": r("../view-runtime/src/index.ts"),
-      // The loopback UI runtime is a private workspace package; source-alias it so the npm CLI
-      // remains one self-contained artifact with no workspace dependency at install time.
-      "@superbee/ui-server": r("../ui-server/src/index.ts"),
-    },
+    alias: { ...workspaceAliases, "@superbee/cli": r("../cli/src/index.ts") },
     // NOTE: esbuild hoists the entry file's own `#!/usr/bin/env node` shebang (src/index.ts) to
     // the top of the output, so the banner must NOT repeat it (two shebangs = a syntax error).
     banner: {

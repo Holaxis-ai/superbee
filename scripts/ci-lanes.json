@@ -1,6 +1,7 @@
 {
   "schema": "superbee.ci-lanes.v1",
   "path_skipping": false,
+  "source_preflight": "npm run check:package-versions",
   "runtime_nodes": [
     22,
     26
@@ -174,65 +175,6 @@
       "expect_aliasing_host": "1",
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
     },
-    "windows": {
-      "display_name": "native Windows runtime and installed package",
-      "workflow_only": true,
-      "required": false,
-      "trigger": "workflow_dispatch",
-      "workflow": ".github/workflows/windows-installed-package.yml",
-      "components": [],
-      "nodes": [
-        22,
-        20
-      ],
-      "runs_on": "windows-latest",
-      "runtime_node": 22,
-      "installed_package_node": 20,
-      "installed_package_proof_script": "scripts/windows-installed-package-proof.mjs",
-      "installed_package_proof_sha256": "272ba07a0f0beb0e792802d4b82b32361689fed8d2206e69cca72efa4d097c26",
-      "installed_package_proof_digest_update": {
-        "command": "node scripts/windows-installed-package-proof-digest.mjs",
-        "instructions": "After an intentional review of the proof bytes, run the command and update installed_package_proof_sha256 in this manifest in the same commit."
-      },
-      "installed_package_scenarios": {
-        "catalog-lifecycle": [
-          "catalog add",
-          "catalog list",
-          "catalog resolve"
-        ],
-        "local-remote-sync": [
-          "sync --establish",
-          "sync"
-        ],
-        "ui-url-lifecycle": [
-          "ui --dir",
-          "ui-url observed",
-          "ui-url cleared"
-        ],
-        "managed-document-lifecycle": [
-          "doc open",
-          "parent exit",
-          "authority reuse/isolation/convergence",
-          "real Chrome render",
-          "exact stop"
-        ],
-        "mcp-config-lifecycle": [
-          "mcp install",
-          "mcp status",
-          "mcp config read-back",
-          "mcp uninstall"
-        ]
-      },
-      "built_cli_commands": [
-        "init",
-        "doc write",
-        "doc read",
-        "link add",
-        "link show",
-        "list",
-        "status"
-      ]
-    },
     "distribution": {
       "display_name": "distribution package and installed behavior",
       "script": "ci:distribution",
@@ -281,7 +223,7 @@
       ],
       "runtime_setup_node": 20,
       "version_guard": "node --version | grep -q '^v20\\.'",
-      "built_cli": "packages/cli/dist/superbee.mjs",
+      "built_cli": "packages/superbee/dist/superbee.mjs",
       "built_cli_commands": [
         "init",
         "doc write",

@@ -1,14 +1,14 @@
+import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "./runtime-context.js";
 // One authority for the identity of the CLI bytes that are actually running.
 //
 // Build facts are baked into every bundle by scripts/build-bundle.mjs. Runtime facts are derived
 // locally and read-only: executable path, launch evidence, an adjacent package.json drift signal,
-// and the SHA-256 of the executing file. Source-run tests have no baked constant, so they use the
-// package manifest only as a development fallback. A malformed baked constant fails closed instead
+// and the SHA-256 of the executing file. Source executables supply their own immutable package
+// identity before dispatch; an unconfigured library never infers it from the library manifest. A malformed baked constant fails closed instead
 // of silently promoting an adjacent manifest to authority.
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   cliInvocation,
   currentExecutableRealPath,
@@ -25,43 +25,11 @@ export const ARTIFACT_CHANNELS = [
   "local-dev",
   "unknown",
 ] as const;
-export type ArtifactChannel = (typeof ARTIFACT_CHANNELS)[number];
-export type LaunchMode = "path" | "direct" | "npx-inferred" | "source" | "unknown";
-export type LaunchConfidence = "certain" | "inferred" | "unknown";
+export type { ArtifactChannel, LaunchMode, LaunchConfidence, CompatibilityContracts, StaticBuildIdentity, BuildIdentityEnvelope, SourcePackageIdentity } from "./public-types.js";
+import type { ArtifactChannel, LaunchMode, LaunchConfidence, StaticBuildIdentity, BuildIdentityEnvelope, SourcePackageIdentity } from "./public-types.js";
 
 export function isBareVersionFlag(value: string | undefined): boolean {
   return BARE_VERSION_FLAGS.some((flag) => flag === value);
-}
-
-export interface CompatibilityContracts {
-  skill: number | null;
-  hook: number | null;
-  mcp: number | null;
-}
-
-export interface StaticBuildIdentity {
-  schema: typeof BUILD_IDENTITY_SCHEMA;
-  package: { name: string; version: string };
-  source: { commit: string | null; dirty: boolean | null };
-  artifact: { channel: ArtifactChannel };
-  compatibility_contracts: CompatibilityContracts;
-}
-
-export interface BuildIdentityEnvelope {
-  identity: {
-    schema: typeof BUILD_IDENTITY_SCHEMA;
-    package: { name: string; version: string };
-    source: { commit: string | null; dirty: boolean | null };
-    artifact: { channel: ArtifactChannel; sha256: string | null };
-    runtime: {
-      executable_path: string | null;
-      invocation: string;
-      launch_mode: LaunchMode;
-      launch_confidence: LaunchConfidence;
-    };
-    compatibility_contracts: CompatibilityContracts;
-  };
-  drift: { adjacent_package_version: string | null; version_mismatch: boolean };
 }
 
 function isNullableContract(value: unknown): value is number | null {
@@ -133,24 +101,27 @@ export function resolveBakedBuildIdentity(value: unknown): StaticBuildIdentity {
   return freezeBuildIdentity(parseBakedBuildIdentity(value) ?? unknownBuildIdentity());
 }
 
-function sourcePackageIdentity(): { name: string; version: string } {
-  try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
-    const manifest = JSON.parse(readFileSync(pkgPath, "utf8")) as {
-      name?: unknown;
-      version?: unknown;
-    };
-    if (
-      isPackageName(manifest.name) &&
-      typeof manifest.version === "string" &&
-      manifest.version.length > 0
-    ) {
-      return { name: manifest.name, version: manifest.version };
-    }
-  } catch {
-    // Fall through to the explicit fail-closed development identity.
+let sourceIdentity: SourcePackageIdentity | undefined;
+
+/** Configure one immutable executable identity before any source identity is resolved. */
+export function configureSourceIdentity(identity: SourcePackageIdentity): void {
+  if(currentDistribution()) {
+    const bound=currentDistribution()!.identity.package;
+    if(bound.name!==identity.name||bound.version!==identity.version)throw new Error("CLI source identity conflicts with configured distribution");
+    return;
   }
-  return { name: PACKAGE_NAME, version: "unknown" };
+  if (!identity || !isPackageName(identity.name) || typeof identity.version !== "string" || !identity.version) {
+    throw new Error("CLI source identity requires a valid package name and non-empty version");
+  }
+  if (sourceIdentity?.name === identity.name && sourceIdentity.version === identity.version) return;
+  if (sourceIdentity || staticIdentityCache) {
+    throw new Error("CLI source identity is already configured or resolved");
+  }
+  sourceIdentity = Object.freeze({ name: identity.name, version: identity.version });
+}
+
+function sourcePackageIdentity(): SourcePackageIdentity {
+  return sourceIdentity ?? { name: PACKAGE_NAME, version: "unknown" };
 }
 
 function bakedConstant(): { present: boolean; value: unknown } {
@@ -160,8 +131,21 @@ function bakedConstant(): { present: boolean; value: unknown } {
 
 let staticIdentityCache: StaticBuildIdentity | undefined;
 
+/** Validate without resolving/caching identity: a rejected construction must be inert. */
+export function assertDistributionBuildIdentity(proposed: StaticBuildIdentity): void {
+  const baked = bakedConstant();
+  const established = currentDistribution()?.identity ?? staticIdentityCache ??
+    (baked.present ? resolveBakedBuildIdentity(baked.value) : undefined);
+  const pkg = established?.package ?? sourceIdentity;
+  if (pkg && pkg.version !== "unknown" &&
+    (pkg.name !== proposed.package.name || pkg.version !== proposed.package.version)) {
+    throw new Error("CLI distribution conflicts with established build identity");
+  }
+}
+
 /** Immutable facts baked into this bundle (or the explicit local-dev source fallback). */
 export function staticBuildIdentity(): StaticBuildIdentity {
+  if(currentDistribution()) return currentDistribution()!.identity;
   if (staticIdentityCache) return staticIdentityCache;
   const baked = bakedConstant();
   if (baked.present) {
@@ -217,7 +201,7 @@ function sameRealPath(left: string | undefined, right: string | null): boolean {
   try {
     const a = realpathSync(left);
     const b = realpathSync(right);
-    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return currentHost().sameResolvedPath(a,b);
   } catch {
     return false;
   }

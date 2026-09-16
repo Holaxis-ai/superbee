@@ -14,10 +14,12 @@
  * merely pending). Otherwise the latest unsettled intent in `pending`, `in_flight`, `unknown`,
  * or `refused` gives `local-pending`, because in each of those states the working copy holds an
  * edit the authority has not accepted (a refusal is reported through `syncStatus`, as the pause
- * and the refused count). With no unsettled intent the document is `shared-confirmed` when its
- * recorded shared base (`base:<id>`, written only by bootstrap, pull, or an acknowledgement)
- * names the document's bytes: the same version token, or the same serialized content when the
- * authority mints a different token for identical bytes.
+ * and the refused count; in body mode a content refusal at the head of the chain is the
+ * recoverable case `inspectConflict` and `resolveConflict` accept, while the provenance stays
+ * `local-pending`, since no shared head moved). With no unsettled intent the document is
+ * `shared-confirmed` when its recorded shared base (`base:<id>`, written only by bootstrap,
+ * pull, or an acknowledgement) names the document's bytes: the same version token, or the same
+ * serialized content when the authority mints a different token for identical bytes.
  *
  * Two token spaces meet here. `version` in every provenance is the working copy's own document
  * version, the premise a commit takes back; `acknowledged` in `shared-confirmed` is the
@@ -39,10 +41,11 @@
  * `syncStatus` counts such documents as `unconfirmed`.
  */
 
-import type { ConceptId, QueryFilter, RemoteBackend, StorageBackend } from "@superbee/core";
+import type { ConceptId, QueryFilter, StorageBackend } from "@superbee/core";
 import { queryHeads } from "@superbee/core/bundle-ops";
 import { assertReadableConceptId } from "@superbee/core/engine";
 import type { IntentRecord, JournaledReadResult } from "@superbee/core/journaled-backend";
+import { InvalidInputError } from "@superbee/core/storage";
 import {
   localConflict,
   localPending,
@@ -60,8 +63,10 @@ import {
   type Provenance,
 } from "@superbee/core/platform";
 import type { OperationTransport, UncertainWriteOptions } from "@superbee/core/uncertain-write";
+import type { BodyDeliveryTransport } from "@superbee/core/governed-body-write";
+import { admitBodyMode, bodySnapshot } from "../body-journal.js";
 
-import { baseKey, commitLocal, pull, pushWithRole, syncStatus as localSyncStatus, UNSETTLED_STATES, type LocalBundle, type SharedBase } from "../local-bundle.js";
+import { baseKey, commitLocal, commitBodyLocal, pull, pushWithRole, syncStatus as localSyncStatus, UNSETTLED_STATES, type LocalBundle, type SharedBase } from "../local-bundle.js";
 import type { LockManagerLike } from "../push-role.js";
 import { isAuthorityAnswer, isInputError, kindWarningsFor } from "./shared.js";
 
@@ -69,9 +74,16 @@ export interface BrowserLocalRuntimeOptions {
   /** The opened working copy; the caller bootstraps it (or resumes one that is complete). */
   local: LocalBundle;
   /** The authority's read side, used by pull and to fetch a conflict's shared head. */
-  remote: RemoteBackend;
-  /** Carries intents to the authority as identified writes. */
-  transport: OperationTransport;
+  remote: StorageBackend;
+  /**
+   * Carries intents to the authority as identified writes. May be omitted only with
+   * `bodyTransport`, for a working copy in body mode, whose push never calls it; a working copy
+   * in any other mode needs it, and a runtime built without it rejects its first `sync` rather
+   * than delivering nothing.
+   */
+  transport?: OperationTransport;
+  /** Carries body intents; required by a body-mode working copy, never inferred from `transport`. */
+  bodyTransport?: BodyDeliveryTransport;
   /** The lock manager that owns the push role; omitted, the host's. See `withPushRole`. */
   locks?: LockManagerLike | null;
   /** Options for the uncertain-write primitive each push runs. */
@@ -101,6 +113,20 @@ function notFound(id: ConceptId): Error & { code: string } {
 
 const UNSETTLED = new Set(UNSETTLED_STATES);
 
+/**
+ * Stands in for the exact-document transport of a body-mode runtime built without one. Body
+ * mode delivers every intent through `bodyTransport`, so push never reaches this; a call is a
+ * defect, refused rather than answered.
+ */
+const NO_EXACT_TRANSPORT: OperationTransport = {
+  submit: async () => {
+    throw new InvalidInputError("a body-mode working copy delivers no exact-document intents");
+  },
+  lookup: async () => {
+    throw new InvalidInputError("a body-mode working copy delivers no exact-document intents");
+  },
+};
+
 /** The one line a status carries for a rejected sync: the error's name and message. */
 function describeFailure(failure: unknown): string {
   const err = failure as { name?: unknown; message?: unknown };
@@ -129,6 +155,9 @@ function deriveProvenance(snapshot: JournaledReadResult & { document: NonNullabl
 
 export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): PlatformRuntime {
   const { local, remote, transport, actor, now } = options;
+  if (transport === undefined && options.bodyTransport === undefined) {
+    throw new InvalidInputError("createBrowserLocalRuntime needs a transport: the exact-document transport, or bodyTransport for a working copy in body mode");
+  }
   const { bundle, backend } = local;
   let online: boolean | null = null;
   /** How this runtime's last sync ended; `null` until one has run here. */
@@ -136,9 +165,22 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
 
   const capabilities = (): PlatformCapabilities => ({ mode: "browser-local", offlineCommits: true, localPersistence: true });
 
+  /**
+   * The exact-document transport a push runs with. A body-mode working copy delivers only body
+   * intents, so its host may omit `transport`; any other working copy needs the real one, and
+   * the omission is reported here, before the push role is taken and before any intent is
+   * claimed, so it never surfaces as a delivery that went nowhere.
+   */
+  const exactTransport = async (): Promise<OperationTransport> => {
+    if (transport !== undefined) return transport;
+    if (await admitBodyMode(backend)) return NO_EXACT_TRANSPORT;
+    throw new InvalidInputError("this working copy is not in body mode, so createBrowserLocalRuntime needs the exact-document transport to sync");
+  };
+
   /** One document with its journal and base, from one transaction; `null` when the store holds no record. */
   const snapshotOf = async (id: ConceptId): Promise<(JournaledReadResult & { document: NonNullable<JournaledReadResult["document"]>; raw: string }) | null> => {
-    const snapshot = await backend.readWithJournal(id, { meta: [baseKey(id)] });
+    const mode = await admitBodyMode(backend);
+    const snapshot = mode ? (await bodySnapshot(backend, id, mode)).read : await backend.readWithJournal(id, { meta: [baseKey(id)] });
     if (snapshot.document === null || snapshot.raw === null) return null;
     return { ...snapshot, document: snapshot.document, raw: snapshot.raw };
   };
@@ -197,6 +239,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     read: readWithProvenance,
 
     query: async (filter: QueryFilter = {}): Promise<PlatformQueryRow[]> => {
+      await admitBodyMode(backend);
       const heads = await queryHeads(bundle, filter);
       const rows: PlatformQueryRow[] = [];
       for (const head of heads) {
@@ -217,7 +260,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     },
 
     commit: async (id: ConceptId, edit: PlatformEdit): Promise<PlatformCommit> => {
-      const result = await commitLocal(local, id, {
+      const result = await admitBodyMode(backend) ? await commitBodyLocal(local, id, { body: edit.body, ...(edit.expectedVersion === undefined ? {} : { expectedVersion: edit.expectedVersion }), actor, now }) : await commitLocal(local, id, {
         ...(edit.expectedVersion === undefined ? {} : { expectedVersion: edit.expectedVersion }),
         ...(actor === undefined ? {} : { actor }),
         ...(now === undefined ? {} : { now }),
@@ -242,7 +285,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     sync: async (syncOptions: PlatformSyncOptions = {}): Promise<PlatformSyncStatus> => {
       const readSide: StorageBackend = remote;
       try {
-        await pushWithRole(local, transport, { remote: readSide, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
+        await pushWithRole(local, await exactTransport(), { remote: readSide, bodyTransport: options.bodyTransport, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
       } catch (error) {
         lastOutcome = { ok: false, error: describeFailure(error) };
         throw error;
@@ -251,7 +294,10 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
         // The opened bundle, not its backend: the pull keeps the authority's capabilities on it.
         await pull(local, readSide, syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions });
         online = true;
-        lastOutcome = { ok: true };
+        if (await admitBodyMode(backend)) {
+          const remaining = await localSyncStatus(local);
+          lastOutcome = { ok: remaining.counts.pending + remaining.counts.in_flight + remaining.counts.unknown + remaining.counts.refused + remaining.counts.conflict === 0 && !remaining.paused };
+        } else lastOutcome = { ok: true };
       } catch (error) {
         lastOutcome = { ok: false, error: describeFailure(error) };
         if (isInputError(error) || isAuthorityAnswer(error)) throw error;

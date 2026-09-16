@@ -32,6 +32,7 @@ const receipt = {
 };
 const manifest = {
   name: "superbee",
+  os: ["darwin", "linux"],
   files: ["dist", "SKILL.md", "references", "NOTICE"],
   bin: {
     superbee: "dist/superbee.mjs",
@@ -55,19 +56,15 @@ const manifest = {
   devDependencies: { local: "*" },
 };
 
-test("installed-package expectations preserve always-quoted native shell paths", () => {
+test("installed-package expectations quote POSIX paths and refuse unsupported hosts", () => {
   assert.equal(expectedQuotedShellArgument(".superbee", "linux"), "'.superbee'");
-  assert.equal(expectedQuotedShellArgument(".superbee", "win32"), '".superbee"');
-  assert.equal(
-    expectedQuotedShellArgument("C:\\a\\_temp\\bundle", "win32"),
-    '"C:\\a\\_temp\\bundle"',
-  );
-  assert.equal(expectedQuotedShellArgument("C:\\dir\\", "win32"), '"C:\\dir\\\\"');
+  assert.equal(expectedQuotedShellArgument("a'b", "darwin"), "'a'\\''b'");
+  assert.throws(() => expectedQuotedShellArgument(".superbee", "win32"), /only macOS and Linux/);
 });
 
 test("the retained tarball manifest carries the exact npm page bytes", () => {
   const source = { name: "superbee", version: "1.2.3" };
-  const readme = "# Superbee\n\nNative Windows.\n";
+  const readme = "# Superbee\n\nmacOS and Linux.\n";
   assert.deepEqual(publishedManifest(source, readme), {
     ...source,
     readme,
@@ -79,7 +76,7 @@ test("the retained tarball manifest carries the exact npm page bytes", () => {
 test("stable npm docs reject a relocated prerelease install command anywhere in the README", () => {
   const relocated = [
     "# Install",
-    "Windows",
+    "Platforms",
     "x".repeat(321),
     "npm install -g superbee",
     "npm install -g superbee@next",
@@ -121,8 +118,8 @@ test("the Superbee package installs beside Aslite and survives its removal", asy
     await npm(...installArgs, legacyRoot);
     await npm(...installArgs, successorRoot);
 
-    const binDir = process.platform === "win32" ? prefix : path.join(prefix, "bin");
-    if (process.platform !== "win32") await symlink(process.execPath, path.join(binDir, "node"));
+    const binDir = path.join(prefix, "bin");
+    await symlink(process.execPath, path.join(binDir, "node"));
     const commandEnv = { ...env, PATH: binDir };
     for (const command of ["superbee", "aslite", "agentstate-lite"]) {
       await assertCommandInBin(command, commandEnv, binDir);
@@ -161,11 +158,11 @@ test("the npm verifier rejects every retired marketplace surface", async () => {
 });
 
 test("root README teaches the literal create-only quickstart; npm README teaches the agent-first journey", async () => {
-  const npmPackage = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
+  const npmPackage = JSON.parse(await readFile(path.join(repoRoot, "packages", "superbee", "package.json"), "utf8"));
   const prerelease = npmPackage.version.includes("-");
   for (const [label, file] of [
     ["root", path.join(repoRoot, "README.md")],
-    ["npm", path.join(repoRoot, "packages", "cli", "README.md")],
+    ["npm", path.join(repoRoot, "packages", "superbee", "README.md")],
   ]) {
     const readme = await readFile(file, "utf8");
     assertPackageReadmeReleaseChannel(npmPackage.version, readme);
@@ -206,7 +203,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
     "root README must explain the tutorial actor identity",
   );
 
-  const npmReadme = await readFile(path.join(repoRoot, "packages", "cli", "README.md"), "utf8");
+  const npmReadme = await readFile(path.join(repoRoot, "packages", "superbee", "README.md"), "utf8");
   assert.match(
     npmReadme,
     /^## Install$/m,
@@ -229,23 +226,20 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   );
   assert.match(
     npmReadme,
-    /Node\.js 20 or newer on macOS, Linux, or Windows/,
+    /Node\.js 20 or newer on macOS and Linux/,
     "npm README must advertise every supported native platform",
   );
-  assert.doesNotMatch(
-    npmReadme,
-    /Windows is not supported|EBADPLATFORM|["']!win32["']/i,
-    "npm README must not retain the retired Windows package block",
-  );
-  assert.match(npmReadme, /do not\s+need WSL/i, "npm README must not send native Windows users through WSL");
+  assert.match(npmReadme, /Native Windows is not supported by this package/);
+  assert.doesNotMatch(npmReadme, /Native Windows is supported|do not\s+need WSL/i);
+
 });
 
 test("root and npm package license declarations agree", async () => {
   const [rootManifest, npmManifest, rootReadme, npmReadme] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8").then(JSON.parse),
-    readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "packages", "superbee", "package.json"), "utf8").then(JSON.parse),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
-    readFile(path.join(repoRoot, "packages", "cli", "README.md"), "utf8"),
+    readFile(path.join(repoRoot, "packages", "superbee", "README.md"), "utf8"),
   ]);
 
   assert.equal(npmManifest.license, rootManifest.license, "root and npm package manifests must use one license");
@@ -264,10 +258,10 @@ test("root and npm package license declarations agree", async () => {
 
 test("lockfile workspace metadata preserves the npm package platform contract", async () => {
   const [npmManifest, lockfile] = await Promise.all([
-    readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "packages", "superbee", "package.json"), "utf8").then(JSON.parse),
     readFile(path.join(repoRoot, "package-lock.json"), "utf8").then(JSON.parse),
   ]);
-  const locked = lockfile.packages?.["packages/cli"];
+  const locked = lockfile.packages?.["packages/superbee"];
   assert.ok(locked, "package-lock must describe the CLI workspace");
   assert.equal(locked.version, npmManifest.version, "lockfile CLI version must match the publish manifest");
   assert.deepEqual(locked.os, npmManifest.os, "lockfile must not retain a stale OS restriction");
@@ -305,18 +299,9 @@ test("the expected tarball set is the fixed base plus the references tree", () =
   ]);
 });
 
-test("the package proof projects the platform-native private-state root", () => {
-  assert.equal(expectedPrivateStateRoot("/tmp/home", "linux", {}), "/tmp/home/.superbee-state");
-  assert.equal(
-    expectedPrivateStateRoot("C:\\Users\\proof", "win32", {
-      LOCALAPPDATA: String.raw`C:\Users\proof\AppData\Local`,
-    }),
-    String.raw`C:\Users\proof\AppData\Local\Superbee`,
-  );
-  assert.throws(
-    () => expectedPrivateStateRoot("C:\\Users\\proof", "win32", {}),
-    /requires an isolated LOCALAPPDATA/,
-  );
+test("the package proof projects supported private-state roots and refuses Windows", () => {
+  assert.equal(expectedPrivateStateRoot("/tmp/home", "linux"), "/tmp/home/.superbee-state");
+  assert.throws(() => expectedPrivateStateRoot("/tmp/home", "win32"), /only macOS and Linux/);
 });
 
 test("the npm package contract accepts the intended self-contained artifact", () => {
@@ -453,16 +438,8 @@ test("command resolution cannot fall through to a same-named host binary", async
   }
 });
 
-test("Windows resolution requires the npm .cmd shim inside the prefix", async () => {
-  const scratch = await mkdtemp(path.join(tmpdir(), "agentstate-lite-windows-bin-"));
-  try {
-    const shim = path.join(scratch, "aslite.cmd");
-    await writeFile(shim, "@echo off\r\n");
-    const env = { PATH: scratch, PATHEXT: ".EXE;.CMD" };
-    assert.equal(await assertCommandInBin("aslite", env, scratch, "win32"), shim);
-  } finally {
-    await rm(scratch, { recursive: true, force: true });
-  }
+test("the maintained package verifier refuses Windows command resolution", async () => {
+  await assert.rejects(() => resolveCommandOnPath("superbee", {}, "win32"), /only macOS and Linux/);
 });
 
 test("installed create-only proof holds the real production lock boundary before publication", async () => {

@@ -1,3 +1,4 @@
+import { renderUsage } from "../../output.js";
 import { parseArgs } from "node:util";
 import yaml from "js-yaml";
 import { isStandardDocumentSetField, loadKinds, readBundleOkfVersion, type FieldActionErrorDetails, type FieldAction, type SourceSelector } from "@superbee/core";
@@ -49,7 +50,7 @@ function help(action: Action): string {
 export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
   const token = argv[0];
-  if (token === undefined || token === "--help" || token === "-h") { stdout(DOC_FIELD_USAGE); return; }
+  if (token === undefined || token === "--help" || token === "-h") { stdout(renderUsage(DOC_FIELD_USAGE)); return; }
   if (!Object.prototype.hasOwnProperty.call(leaves, token)) throw new CliError("USAGE", `unknown doc field action: ${token}`, { help: `${cliInvocation()} doc field --help` });
   const action = token as Action;
   const leaf = leaves[action];

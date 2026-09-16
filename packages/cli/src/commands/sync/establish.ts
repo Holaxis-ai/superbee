@@ -1,3 +1,5 @@
+import { provisionBoardWorktree } from "../../board-runtime.js";
+import { isProvisioned } from "../../board-runtime.js";
 // `superbee sync --establish` — the explicit local-bundle -> shared-board transition.
 // TWO CASES, ONE VERB. Greenfield (the folder is uncommitted — THIS module): snapshot first,
 // publish second, convert the local folder last — until the exact board commit exists on origin,
@@ -27,8 +29,6 @@ import {
   folderPresentInCodeIndex,
   committedBundleAtHead,
   isAncestor,
-  isProvisioned,
-  provisionBoardWorktree,
   pushBoardCommit,
   pushBoardUpstream,
   readGitDirMarker,

@@ -1,3 +1,4 @@
+import { currentHost } from "./runtime-context.js";
 import path from "node:path";
 
 /** Claude/Codex config-root conventions shared by hook targeting and skill discovery. */
@@ -17,7 +18,7 @@ export function resolveHostConfigRoot(
 ): string {
   const configured = env[config.env];
   return configured === undefined || configured.length === 0
-    ? (platform === "win32" ? path.win32 : path.posix).join(home, config.fallbackDirectory)
+    ? currentHost().paths.join(home, config.fallbackDirectory)
     : configured;
 }
 
@@ -32,7 +33,7 @@ export function resolveOpenCodeGlobalConfigRoot(
   env: NodeJS.ProcessEnv,
   platform: string = process.platform,
 ): string {
-  const paths = platform === "win32" ? path.win32 : path.posix;
+  const paths = currentHost().paths;
   // OpenCode documents the same USERPROFILE/.config convention on Windows. XDG remains a
   // supported explicit override, but AppData is not an authority for this host surface.
   const xdg = env.XDG_CONFIG_HOME?.trim() || paths.join(home, ".config");
@@ -54,7 +55,7 @@ export function resolveClaudeUserConfigFile(
   env: NodeJS.ProcessEnv,
   platform: string = process.platform,
 ): string {
-  const paths = platform === "win32" ? path.win32 : path.posix;
+  const paths = currentHost().paths;
   const relocated = env.CLAUDE_CONFIG_DIR?.trim();
   return paths.join(relocated || home, ".claude.json");
 }

@@ -9,3 +9,6 @@ export * from "./engine.js";
 export * from "./flow.js";
 export * from "./autopull.js";
 export * from "./intree.js";
+
+export { captureBoardHostPolicy } from "./host-policy.js";
+export type { BoardHostPolicy } from "./host-policy.js";

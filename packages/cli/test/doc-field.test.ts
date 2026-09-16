@@ -146,7 +146,7 @@ test("doc field set preserves standard warning posture and strictly validates Ki
 test("built field leaves have static help and bounded arity outside a bundle", async t => {
   const root = await mkdtemp(join(tmpdir(), "superbee-fields-help-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const cli = join(import.meta.dirname, "../dist/superbee.mjs");
+  const cli = join(import.meta.dirname, "../../superbee/dist/superbee.mjs");
   for (const action of ["set", "add", "remove", "edit", "replace-all"]) {
     const help = spawnSync(process.execPath, [cli, "doc", "field", action, "--help"], { cwd: root, encoding: "utf8" });
     assert.equal(help.status, 0, help.stdout + help.stderr);
@@ -213,7 +213,7 @@ test("doc field read hints retain an explicit local route when executed outside 
   });
   for (const hint of hints) {
     const argv = parseCommandLine(hint);
-    const result = spawnSync(process.execPath, [join(import.meta.dirname, "../dist/superbee.mjs"), ...argv.slice(argv.indexOf("doc"))], { cwd: outside, encoding: "utf8" });
+    const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../superbee/dist/superbee.mjs"), ...argv.slice(argv.indexOf("doc"))], { cwd: outside, encoding: "utf8" });
     assert.equal(result.status, 0, `${hint}\n${result.stdout}${result.stderr}`);
     assert.ok(argv.includes(`--dir=${f.dir}`), hint);
     assert.match(result.stdout, /report one/);

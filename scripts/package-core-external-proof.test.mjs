@@ -74,6 +74,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/remote.d.ts"));
     assert.ok(paths.includes("dist/storage.js"));
     assert.ok(paths.includes("dist/storage.d.ts"));
+    assert.ok(paths.includes("dist/filesystem.js"));
+    assert.ok(paths.includes("dist/filesystem.d.ts"));
     assert.ok(paths.includes("dist/view-admission.js"));
     assert.ok(paths.includes("dist/view-admission.d.ts"));
     assert.ok(paths.every((file) => file === "package.json" || file.startsWith("dist/")));
@@ -108,6 +110,7 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
   type OkfDocument,
   type StorageBackend,
 } from "@superbee/core";
+import { createFilesystemRuntime, type FilesystemHostPolicy, type FilesystemRuntime } from "@superbee/core/filesystem";
 import { isTerminal, type KindConvention } from "@superbee/core/kinds";
 import {
   MalformedDocumentError,
@@ -120,6 +123,13 @@ import { admitActiveView, MAX_ACTIVE_VIEW_BYTES, ACTIVE_VIEW_CONTENT_TYPE } from
 const admitted: { bytes: Uint8Array; contentType: "text/html; charset=utf-8" } = admitActiveView(new Uint8Array(), ACTIVE_VIEW_CONTENT_TYPE);
 void [admitted, MAX_ACTIVE_VIEW_BYTES];
 
+const policy: FilesystemHostPolicy = {
+  runtimeLockParent: () => "/tmp", runtimeOwnerKey: () => "proof",
+  enforcePrivateMode: true, isTransientOpenError: () => false,
+  isReplacementConflict: () => false, isDirectoryContentionError: () => false,
+};
+const runtime: FilesystemRuntime = createFilesystemRuntime(policy);
+void runtime.backend(".");
 const document: OkfDocument = { id: "proof", frontmatter: { type: "Proof" }, body: "works" };
 const backends: StorageBackend[] = [
   new FilesystemBackend("."),
@@ -184,10 +194,17 @@ import {
   writeDoc,
 } from "@superbee/core";
 import { freshnessHorizonMs } from "@superbee/core/kinds";
+import { createFilesystemRuntime } from "@superbee/core/filesystem";
 
 const root = await mkdtemp(path.join(tmpdir(), "core-packed-runtime-"));
 try {
-  const bundle = await initBundle(root);
+  const runtime = createFilesystemRuntime({
+    runtimeLockParent: () => tmpdir(), runtimeOwnerKey: () => "packed-proof",
+    enforcePrivateMode: true, isTransientOpenError: () => false,
+    isReplacementConflict: () => false, isDirectoryContentionError: () => false,
+  });
+  const bundle = await runtime.initBundle(root);
+  if (!(bundle.backend instanceof FilesystemBackend)) throw new Error("runtime lost its backend");
   await writeDoc(bundle, { id: "filesystem/proof", frontmatter: { type: "Proof" }, body: "works" });
   if ((await readDoc(bundle, "filesystem/proof")).body.trim() !== "works") throw new Error("filesystem engine failed");
   if (!(await new FilesystemBackend(root).exists("filesystem/proof"))) throw new Error("filesystem backend failed");
@@ -479,6 +496,7 @@ export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBacke
     assert.ok(installedManifest.exports["./engine"]);
     assert.ok(installedManifest.exports["./remote"]);
     assert.ok(installedManifest.exports["./storage"]);
+    assert.ok(installedManifest.exports["./filesystem"]);
     assert.ok(installedManifest.exports["./view-admission"]);
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file.startsWith("dist/")));

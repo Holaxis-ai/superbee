@@ -1,3 +1,6 @@
+import { renderUsage } from "../output.js";
+import { detectBoardChannel } from "../board-runtime.js";
+import { provisionBoardWorktree } from "../board-runtime.js";
 // `superbee session-start` — the SessionStart hook payload.
 //
 // One subcommand, pull-then-render in-process — never two hook entries or a compound shell string:
@@ -54,10 +57,8 @@ import path from "node:path";
 import {
   bundleDirNameForProject,
   committedBundleAtHead,
-  detectBoardChannel,
   inTreeFetchAndRecord,
   provisionAnnouncement,
-  provisionBoardWorktree,
   repoTopLevel,
   resolveBundleKey,
   retargetBoardInterior,
@@ -320,7 +321,7 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
     CLI_LEAVES.sessionStart,
   );
   if (values.help) {
-    stdout(SESSION_START_USAGE);
+    stdout(renderUsage(SESSION_START_USAGE));
     return;
   }
 

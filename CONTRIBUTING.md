@@ -15,10 +15,9 @@ answer.
    decision, make it explicit and order it first.
 4. Build from the repository root. Use the root `./superbee` shim when exercising the freshly built
    CLI.
-5. Develop with Node.js 20 or newer on macOS, Linux, or Windows. Windows private state lives under
-   `%LOCALAPPDATA%` and relies on that per-user known folder's ACL boundary; POSIX hosts additionally
-   verify private file modes. The manually dispatched `windows-latest` proof runs every workspace
-   test natively and installs the packed CLI on Node 20 for a release candidate or targeted check.
+5. Develop with Node.js 20 or newer on macOS or Linux. Windows-specific adapters, installation,
+   and native runtime checks belong to the separate Windows distribution repository. Shared
+   engine and CLI protocols remain here; changing them does not promise Windows compatibility.
 
 A fresh clone does not need an installed Agent Skill or a project bundle to build, test, or submit
 code. It does need the maintainer-supplied bundle or an exact scoped handoff to claim project
@@ -109,7 +108,6 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 | --- | --- | --- | --- |
 | runtime | `npm run ci:runtime` | `runtime` | 22, 26 |
 | aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 26 |
-| windows | workflow_dispatch only | `windows` | 22, 20 |
 | distribution | `npm run ci:distribution` | `distribution` | 26 |
 | browser | `npm run ci:browser` | `browser` | 26 |
 | scripts | `npm run ci:scripts` | `scripts` | 26 |
@@ -149,7 +147,7 @@ Minimum iteration lanes by reach:
 
 | Touched surface | Run at minimum |
 | --- | --- |
-| Package source or tests | `npm run ci:runtime` (native Windows behavior is gated in CI) |
+| Package source or tests | `npm run ci:runtime` |
 | `package.json`, `scripts/`, or packaging code | `npm run ci:distribution` and `npm run ci:scripts` |
 | `packages/ui`, `packages/mcp-app`, `packages/browser-local`, or embedded browser code | `npm run ci:browser` |
 | Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts`; for CodeQL-only iteration, start with `node --test scripts/workflow-codeql-topology.test.mjs` |
@@ -162,10 +160,8 @@ plus the `aliasing-host` lane, which runs `npm run ci:aliasing-host` on macOS wi
 `SUPERBEE_TEST_EXPECT_ALIASING_HOST=1` (the Linux runtime jobs set `0`) so tests whose native
 branch needs a case-aliasing filesystem execute and fail closed on a mismatched host. The lane's
 scope is a constraint, not a list: `scripts/aliasing-host-coverage.test.mjs` fails when a
-host-sensitive workspace test is not executed by the lane's script chain. The manually dispatched
-`.github/workflows/windows-installed-package.yml` runs the Windows contract on Node 22 and then
-installs and drives the exact packed npm artifact on Node 20. Run it against a release candidate or
-when Windows behavior changes; a Linux-only green result cannot substitute for that explicit proof.
+host-sensitive workspace test is not executed by the lane's script chain. Windows adapter tests and native installed-package
+proof run in the Windows repository against explicitly pinned core and CLI artifacts.
 
 ### Running checks
 
@@ -184,11 +180,23 @@ shape.
 
 ## Build and package
 
+Run `npm run check:package-versions` before installing or building after a runtime-library
+version edit. This dependency-free source check validates the synchronized core/server pair,
+their exact dependency, and core/server/markdown-renderer workspace lock metadata and links.
+It also checks their existing publish access and registry policy without publishing anything.
+Manifests own versions and dependency declarations; the lockfile is their checked projection.
+The renderer's core peer policy permits `||` alternatives of exact versions and stable
+`^major.minor.patch` ranges; prereleases require an exact alternative. Other range syntax or
+build metadata fails closed and needs a reviewed policy extension, not a guessed interpretation.
+The existing CI install jobs run this check before `npm ci`; no new build lane is introduced.
+Its timing covers JSON validation only, not registry availability or artifact compatibility.
+Existing packed consumer proofs and release controls remain required and separate.
+
 For in-process recipe parsing and record checks, see the
 [core recipe validation API](packages/core/RECIPES.md).
 
 `npm run build` produces sibling package outputs and bundles the CLI at
-`packages/cli/dist/superbee.mjs`; a package-scoped build can leave imported sibling outputs stale.
+`packages/superbee/dist/superbee.mjs`; a package-scoped build can leave imported sibling outputs stale.
 Use `./superbee` for in-repository CLI journeys. At minimum, exercise `init`, `doc write` and
 `doc read`, `list`, `link add` and `link show`, and `status` against a scratch bundle when CLI
 behavior changes.

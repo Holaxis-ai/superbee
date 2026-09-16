@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee kind field "<Kind>" <add|remove> <name> …` — EDIT a kind convention's declared
 // schema (add/remove a field, restrict it to an enum). The plural `kinds` command LISTS what a bundle
 // declares; this SINGULAR `kind` command MUTATES one convention doc — the same plural-lists /
@@ -133,7 +134,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {
-    stdout(KIND_USAGE);
+    stdout(renderUsage(KIND_USAGE));
     return;
   }
 

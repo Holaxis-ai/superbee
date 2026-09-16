@@ -70,7 +70,7 @@ test("the npm projection has unique destinations backed by real repo sources", (
 });
 
 test("the npm tarball allowlist ships the generated skill, references, and the Apache NOTICE", () => {
-  const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "packages/cli/package.json"), "utf8"));
+  const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "packages/superbee/package.json"), "utf8"));
   // NOTICE must be listed explicitly. npm always ships LICENSE regardless of files[], but never
   // NOTICE, and Apache-2.0 section 4(d) requires the notice to travel with the distribution.
   assert.deepEqual(packageJson.files, ["dist", "SKILL.md", "references", "NOTICE"]);
@@ -462,7 +462,7 @@ test("no teaching surface makes a PERMANENCE claim about legacy naming (fix-roun
       .map((f) => `src/commands/${f}`),
   ];
   for (const relative of sourceFiles) sources.push([relative, readFileSync(path.join(here, "..", relative), "utf8")]);
-  for (const relative of ["CLAUDE.md", "README.md", "packages/cli/README.md"]) {
+  for (const relative of ["CLAUDE.md", "README.md", "packages/superbee/README.md"]) {
     const filePath = path.join(REPO_ROOT, relative);
     if (existsSync(filePath)) sources.push([relative, readFileSync(filePath, "utf8")]);
   }
@@ -504,7 +504,7 @@ test("no teaching surface makes an ACCEPTANCE claim about legacy naming (post-re
       .map((f) => `src/commands/${f}`),
   ];
   for (const relative of sourceFiles) sources.push([relative, readFileSync(path.join(here, "..", relative), "utf8")]);
-  for (const relative of ["CLAUDE.md", "README.md", "packages/cli/README.md"]) {
+  for (const relative of ["CLAUDE.md", "README.md", "packages/superbee/README.md"]) {
     const filePath = path.join(REPO_ROOT, relative);
     if (existsSync(filePath)) sources.push([relative, readFileSync(filePath, "utf8")]);
   }
@@ -539,8 +539,8 @@ test("repo-level teaching docs (published README/package.json, root CLAUDE.md/RE
   // published npm README + package description, and the repo-root orchestrator guidance every
   // agent session auto-reads. Same per-line rule as above.
   const repoLevelSources = [
-    "packages/cli/README.md",
-    "packages/cli/package.json",
+    "packages/superbee/README.md",
+    "packages/superbee/package.json",
     "CLAUDE.md",
     "README.md",
     "AGENTS.md",

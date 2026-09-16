@@ -15,7 +15,7 @@ import {
   FilesystemSymlinkEntryError,
   identityKey,
   mutateExact,
-  nodeFilesystemIdentityPort,
+  createNodeFilesystemIdentityPort,
   observeExact,
   type FilesystemIdentityPort,
   type PortHandle,
@@ -78,6 +78,8 @@ async function hardLinkSupport(dir: string): Promise<boolean> {
   }
 }
 
+const nodeFilesystemIdentityPort = createNodeFilesystemIdentityPort();
+
 type PortMember = keyof FilesystemIdentityPort;
 
 /**
@@ -100,7 +102,7 @@ function observedPort(): ObservedPort {
   const hooks = new Map<string, (args: unknown[], result: unknown) => Promise<void>>();
   const production = nodeFilesystemIdentityPort as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
   const port = Object.fromEntries(
-    Object.keys(production).map((member) => [
+    Object.keys(production).filter((member) => !member.startsWith("is")).map((member) => [
       member,
       async (...args: unknown[]): Promise<unknown> => {
         const nth = (counts.get(member) ?? 0) + 1;

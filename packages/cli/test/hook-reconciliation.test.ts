@@ -266,28 +266,6 @@ test("durable authority composes a stable npm-prefix Node launch", () => {
   });
 });
 
-test("Windows durable authority composes one shell-safe command and argv-safe launch", () => {
-  const authority: PersistentInstallAuthority = {
-    allowed: true,
-    state: "durable_global",
-    reason: "durable Windows npm-global executable",
-    evidence: {
-      npm_prefix: String.raw`C:\Users\Mike\AppData\Roaming\npm`,
-      bin_path: String.raw`C:\Users\Mike\AppData\Roaming\npm\superbee.cmd`,
-      runtime_path: String.raw`C:\Program Files\nodejs\node.exe`,
-      executable_path: String.raw`C:\Users\Mike\AppData\Roaming\npm\node_modules\superbee\dist\superbee.mjs`,
-    },
-  };
-  assert.deepEqual(buildHookLaunchSpec(authority, "win32"), {
-    program: String.raw`C:\Program Files\nodejs\node.exe`,
-    args: [
-      String.raw`C:\Users\Mike\AppData\Roaming\npm\node_modules\superbee\dist\superbee.mjs`,
-      "session-start",
-    ],
-    command: '"C:/Program Files/nodejs/node.exe" C:/Users/Mike/AppData/Roaming/npm/node_modules/superbee/dist/superbee.mjs session-start',
-  });
-});
-
 test("hook install refuses missing persistent authority before creating target files", async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-authority-"));
   try {
@@ -361,7 +339,7 @@ test("hook install migrates the exact legacy OpenCode filename and source to one
   const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-opencode-migrate-"));
   const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
   const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
-  const program = "/workspace/superbee/packages/cli/dist/superbee.mjs";
+  const program = "/workspace/superbee/packages/superbee/dist/superbee.mjs";
   try {
     await mkdir(path.dirname(oldPlugin), { recursive: true });
     await writeFile(oldPlugin, legacyOpenCodeSource("aslite"));
@@ -399,7 +377,7 @@ test("hook status/install/uninstall own the exact published Aslite pre.3 OpenCod
         const receipt = capture();
         await hook([action, "--json"], {
           base,
-          commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+          commandBase: "/workspace/superbee/packages/superbee/dist/superbee.mjs",
           stdout: receipt.stdout,
         });
         if (action === "status") {
@@ -409,7 +387,7 @@ test("hook status/install/uninstall own the exact published Aslite pre.3 OpenCod
           await assert.rejects(() => readFile(oldPlugin, "utf8"));
           assert.equal(
             await readFile(newPlugin, "utf8"),
-            buildOpenCodePluginSource("/workspace/superbee/packages/cli/dist/superbee.mjs"),
+            buildOpenCodePluginSource("/workspace/superbee/packages/superbee/dist/superbee.mjs"),
           );
         } else {
           await assert.rejects(() => readFile(oldPlugin, "utf8"));
@@ -441,7 +419,7 @@ test("edited published Aslite plugin parameters remain foreign and untouched", a
         const receipt = capture();
         await hook([action, "--json"], {
           base,
-          commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+          commandBase: "/workspace/superbee/packages/superbee/dist/superbee.mjs",
           stdout: receipt.stdout,
         });
         assert.equal(await readFile(oldPlugin, "utf8"), nearMatch);
@@ -478,7 +456,7 @@ test("OpenCode install refuses a canonical plugin that appears at publication", 
     await assert.rejects(
       () => hook(["install", "--json"], {
         base,
-        commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+        commandBase: "/workspace/superbee/packages/superbee/dist/superbee.mjs",
         stdout: () => {},
       }),
       /hook install failed/,
@@ -527,7 +505,7 @@ test("OpenCode install and uninstall preserve a replacement made at the ownershi
           await assert.rejects(
             () => hook([action, "--json"], {
               base,
-              commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+              commandBase: "/workspace/superbee/packages/superbee/dist/superbee.mjs",
               stdout: () => {},
             }),
             /hook install failed|changed after inspection/,
@@ -555,7 +533,7 @@ test("hook install preserves a foreign file at the legacy OpenCode filename", as
   const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
   const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
   const authored = "// user-owned legacy filename\nexport default 'mine';\n";
-  const program = "/workspace/superbee/packages/cli/dist/superbee.mjs";
+  const program = "/workspace/superbee/packages/superbee/dist/superbee.mjs";
   try {
     await mkdir(path.dirname(oldPlugin), { recursive: true });
     await writeFile(oldPlugin, authored);
@@ -583,7 +561,7 @@ test("a foreign canonical OpenCode target blocks migration without deleting the 
     await assert.rejects(
       () => hook(["install"], {
         base,
-        commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+        commandBase: "/workspace/superbee/packages/superbee/dist/superbee.mjs",
         stdout: () => {},
       }),
       CliError,
@@ -609,7 +587,7 @@ test("a canonical OpenCode symlink to the managed legacy plugin is refused witho
     await assert.rejects(
       () => hook(["install"], {
         base,
-        commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+        commandBase: "/workspace/superbee/packages/superbee/dist/superbee.mjs",
         stdout: () => {},
       }),
       CliError,
@@ -629,7 +607,7 @@ test("a legacy OpenCode symlink is foreign: canonical install succeeds without c
   const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
   const external = path.join(base, "managed-looking-external.js");
   const externalSource = legacyOpenCodeSource("aslite");
-  const program = "/workspace/superbee/packages/cli/dist/superbee.mjs";
+  const program = "/workspace/superbee/packages/superbee/dist/superbee.mjs";
   try {
     await mkdir(path.dirname(oldPlugin), { recursive: true });
     await writeFile(external, externalSource);

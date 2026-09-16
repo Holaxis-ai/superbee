@@ -1,3 +1,6 @@
+import { captureRuntimeCallback } from "../runtime-context.js";
+import { worktreeRootResolvesForOwner } from "../board-runtime.js";
+import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "../runtime-context.js";
 // The home surface's sharing-chip classifier (designs/home-surface; plans/home-surface-build
 // PR-B). Maps this bundle's board-channel evidence into ui-server's `SharingSummary` — the CLI
 // owns the mapping, ui-server owns the shape vocabulary, the SPA owns the words.
@@ -29,8 +32,7 @@ import {
   probeRepoTopLevel,
   resolveInTreeUpstream,
   runGit,
-  worktreeRootResolvesForOwner,
-} from "@superbee/board-git";
+  } from "@superbee/board-git";
 import { loadCatalog } from "../catalog.js";
 
 /** How long one classification is served before the local git evidence is re-read. */
@@ -56,7 +58,7 @@ function samePhysicalPath(left: string, right: string): boolean {
   }
   const a = path.resolve(realOr(left));
   const b = path.resolve(realOr(right));
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return currentHost().sameResolvedPath(a,b);
 }
 
 /**
@@ -173,14 +175,14 @@ export function createSharingLoader(bundleRoot: string, ttlMs: number = SHARING_
   const effectiveTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : SHARING_TTL_MS;
   let cached: SharingSummary | undefined;
   let cachedAt = 0;
-  return async () => {
+  return captureRuntimeCallback(async () => {
     const nowMs = Date.now();
     if (!cached || nowMs - cachedAt >= effectiveTtlMs) {
       cached = { ...classifySharing(bundleRoot), refresh_after_ms: effectiveTtlMs };
       cachedAt = nowMs;
     }
     return cached;
-  };
+  });
 }
 
 /** Registered-workspace rows for the home's collapsed block: labels + paths ONLY — deliberately NOT `listCatalogEntries` (its per-entry availability probes are the slow path home.ts also avoids). */
@@ -189,7 +191,7 @@ export function createWorkspacesLoader(
   home?: string,
 ): () => Promise<WorkspaceSummaryEntry[]> {
   const root = realOr(bundleRoot);
-  return async () => {
+  return captureRuntimeCallback(async () => {
     try {
       const catalog = await loadCatalog(home);
       return [...catalog.entries]
@@ -202,5 +204,5 @@ export function createWorkspacesLoader(
     } catch {
       return []; // best-effort block — a malformed catalog never breaks the home
     }
-  };
+  });
 }

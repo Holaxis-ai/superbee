@@ -15,6 +15,7 @@
 // evidence is a typed INDETERMINATE outcome — never "absent", never `in-tree`, never `local-only`.
 // Classifying uncertainty as in-tree could hide an existing shared board and create two competing
 // board locations once connectivity returns.
+import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
 import path from "node:path";
 
 import { BoardGitError, isBoardGitError } from "./errors.js";
@@ -82,6 +83,7 @@ export const INDETERMINATE_UNTRACKED_REASON =
   `conversion) should refuse and retry when ${BOARD_REMOTE} is reachable; local reads are unaffected`;
 
 export interface DetectBoardChannelOptions {
+  hostPolicy?: BoardHostPolicy;
   /**
    * Replace the remote-board probe (injected for deterministic tests, or by a caller that already
    * holds a fresher answer). Receives the repo top; defaults to {@link probeRemoteBoardState}.
@@ -220,6 +222,7 @@ export function dualBoardError(boardPath: string): BoardGitError {
  * runs today.
  */
 export function detectBoardChannel(dir: string, options: DetectBoardChannelOptions = {}): ChannelDetection {
+  const hostPolicy = captureBoardHostPolicy(options.hostPolicy);
   const top = repoTopLevel(dir);
   if (!top) return localOnlyChannel();
 
@@ -228,8 +231,8 @@ export function detectBoardChannel(dir: string, options: DetectBoardChannelOptio
   const boardPath = path.join(top, bundleDir);
 
   if (hasWorktreeSignature(boardPath)) {
-    if (worktreeRootResolvesForOwner(boardPath, top)) return branchChannel();
-    if (!worktreeRootResolves(boardPath) && ownerRegistersBoardWorktree(top, bundleDir)) return branchChannel();
+    if (worktreeRootResolvesForOwner(boardPath, top, hostPolicy)) return branchChannel();
+    if (!worktreeRootResolves(boardPath, hostPolicy) && ownerRegistersBoardWorktree(top, bundleDir)) return branchChannel();
     // Resolvable-but-foreign machinery (another repo's checkout parked here, a submodule), or an
     // unregistered dangling `.git` file: not this repo's board — fall through to the tracked/
     // untracked rows; the provisioning state machine owns the refusal guidance for the path.

@@ -122,6 +122,33 @@ canonical document, but external formatting, YAML key order, quoting, or whitesp
 a remote round trip even when document meaning does. The version header identifies server state; it
 must not be inferred by hashing the client's reconstructed export.
 
+`RemoteBackend.write()` captures document metadata through one client-side JSON encoder before
+sending the PUT. Plain records (including null-prototype records), dense arrays, null, strings,
+booleans, and finite numbers other than negative zero are supported. Valid ordinary Dates retain
+the existing ISO-string conversion. Shared references are expanded as JSON values; object identity
+and YAML aliases are not transported. Local YAML storage is not restricted by this client policy.
+
+Values that would be dropped or changed silently are refused with an `InvalidInputError` subtype
+and a field path: undefined, functions, symbols, BigInt, nonfinite numbers, negative zero, cycles,
+sparse arrays or extra enumerable array properties, enumerable symbol keys, custom instances,
+binary values, invalid or extended Dates, accessors, and custom serialization hooks. The encoder
+does not invoke user getters or `toJSON` hooks. Ordinary noncallable `toJSON` fields are data.
+Nesting beyond 512 containers is explicitly refused. No document PUT is sent on refusal.
+
+The identified-operation transport maps this local refusal to `refused` / `USAGE`, not an unknown
+delivery requiring retries. Capability discovery may already have issued a GET; the local refusal
+does not imply an outcome was recorded by the server.
+
+The server uses the same captured metadata rule for document GET, batch reads, full list
+projections, and snapshot document frames. Incompatible stored metadata fails an ordinary
+response with `500 RUNTIME` and a field path, not a client-input error or changed data. Compact
+lists check only their emitted metadata fields; an incompatible hidden extension does not
+prevent listing. Absent optional fields stay absent. A snapshot encountering incompatible
+metadata errors its stream without an end frame, including after earlier valid batches. Clients
+must reject completion; browser bootstrap retains its incomplete marker and does not reconcile
+deletions from that failed snapshot. Local YAML reads and writes remain unrestricted.
+This does not fix first-write Date version differences or server write-key ordering.
+
 Blobs are the raw-byte channel. Blob `PUT` and `GET` carry exact bytes as the HTTP body, with content
 type in `Content-Type` and identity in the version headers. Blob keys ending in `.md` are rejected so
 the blob channel cannot become an accidental bypass around document parsing and ID safety.
@@ -251,6 +278,21 @@ client whose response was lost can look the answer up instead of guessing.
   host without a store answers any request carrying `Idempotency-Key`, and the lookup route, with
   `400 USAGE` "request identity is not supported by this host".
 
+### Outcome-store adapter completion
+
+The server's `OperationClaim.record` and `release` callbacks may be synchronous or asynchronous.
+TypeScript consumers of this interface must await callback results, including when accessing
+`recordedAt` from the reference memory store's returned record.
+The router awaits recording before returning the identified result (including a content refusal),
+and awaits release before returning an application failure. A rejected recording produces a runtime
+failure, not the successful mutation response, and the router does not automatically release that
+possibly applied operation. The store owns reconciliation and settlement of waiting duplicates.
+Callback failures remain `500 RUNTIME` even if an adapter throws a document-typed error.
+
+Awaiting these callbacks is not a durable exactly-once protocol by itself. A persistent host must
+couple mutation evidence to its storage commit and reconcile that evidence before permitting a
+failed or interrupted claim to apply again. The reference memory store has no restart durability.
+
 ## Client behavior
 
 `RemoteBackend` maps the HTTP surface back to the `StorageBackend` seam:
@@ -273,6 +315,12 @@ client whose response was lost can look the answer up instead of guessing.
   whose rows do not digest to its header rejects it with `SNAPSHOT_DIGEST_MISMATCH`. Transient
   retry covers obtaining the response only; re-requesting a truncated snapshot is the consumer's
   decision.
+- The grammar those two methods admit is owned by `parseHeadsAnswer(payload)` and
+  `readSnapshotStream(body, { status })` in `@superbee/core/remote`, which also exports the
+  `SNAPSHOT_TRUNCATED` and `SNAPSHOT_DIGEST_MISMATCH` codes; the methods are thin callers over
+  them. A host that serves the same heads listing or NDJSON snapshot through routes of its own
+  validates the answers with these reference validators rather than a second parser, since the
+  admission they decide is what a working copy deletes locally.
 - `WriteOptions.requestId` and `DeleteOptions.requestId` travel as `Idempotency-Key`; a malformed
   one is an `InvalidInputError` before any request is sent. Transient retries of an identified
   write are true replays. `RemoteBackend.lookupOperation(requestId)` reads the outcome route and

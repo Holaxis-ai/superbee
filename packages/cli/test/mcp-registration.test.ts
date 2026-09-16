@@ -1,3 +1,4 @@
+import { withTestPolicy } from "./support/host-policy.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -92,57 +93,6 @@ test("Codex native install is exact, actor-aware, idempotent, and exact-owned on
   assert.equal(calls.length, count + 1, "idempotent replay performs only read-back inspection");
   assert.equal(mutateMcpRegistration("uninstall", target("codex"), {}, deps).changed, true);
   assert.equal(entry, undefined);
-});
-
-test("Codex Windows mutation reuses one resolved cmd shim for inspection, mutation, and read-back", () => {
-  const home = String.raw`C:\Users\Mike`;
-  const shim = String.raw`C:\Users\Mike\AppData\Roaming\npm\codex.cmd`;
-  const comspec = String.raw`C:\Windows\System32\cmd.exe`;
-  let entry: { command: string; args: string[] } | undefined;
-  let shimLookups = 0;
-  const calls: Array<{ file: string; args: readonly string[] }> = [];
-  const receipt = mutateMcpRegistration("install", target("codex"), {}, {
-    environment: {
-      home,
-      platform: "win32",
-      env: {
-        USERPROFILE: home,
-        PATH: String.raw`C:\Users\Mike\AppData\Roaming\npm;C:\Windows\System32`,
-        PATHEXT: ".CMD;.EXE",
-        ComSpec: comspec,
-      },
-    },
-    authority: () => stable,
-    resolveCommandPath: (candidate) => {
-      if (candidate.toLowerCase() === shim.toLowerCase()) {
-        shimLookups += 1;
-        return shim;
-      }
-      if (candidate.toLowerCase() === comspec.toLowerCase()) return comspec;
-      return undefined;
-    },
-    execFile: (file, args) => {
-      calls.push({ file, args: [...args] });
-      const native = [...args[3]!.slice(1, -1).matchAll(/"([^"]*)"/g)].map((match) => match[1]!);
-      native.shift();
-      if (native.join(" ") === "mcp list --json") {
-        return JSON.stringify(entry ? [codexRow(entry)] : []);
-      }
-      if (native[0] === "mcp" && native[1] === "add") {
-        const split = native.indexOf("--");
-        entry = { command: native[split + 1]!, args: [...native.slice(split + 2)] };
-        return "added";
-      }
-      throw new Error(`unexpected ${file} ${args.join(" ")}`);
-    },
-  });
-
-  assert.equal(receipt.changed, true);
-  assert.equal(receipt.after, "owned_current");
-  assert.equal(shimLookups, 1);
-  assert.ok(calls.length >= 4);
-  assert.ok(calls.every((call) => call.file === comspec));
-  assert.ok(calls.every((call) => call.args[3]?.startsWith(`""${shim}" `)));
 });
 
 test("Codex refuses a disabled exact-command entry instead of reporting it current", () => {
@@ -642,4 +592,41 @@ test("a same-name ownership change between plan and apply is refused before muta
     /changed during the operation/,
   );
   assert.equal(writes, 0);
+});
+
+test("Codex mutation reuses one resolved executable for inspection, mutation, and read-back", () => {
+  const home = "/users/mike";
+  const executable = "/opt/bin/codex";
+  let entry: { command: string; args: string[] } | undefined;
+  let resolutions = 0;
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const receipt = withTestPolicy({ host: { resolveCommand(name) { resolutions += 1; return { display: name, file: executable, shellWrapper: null }; } } }, () => mutateMcpRegistration("install", target("codex"), {}, {
+    environment: {
+      home,
+      platform: "darwin",
+      env: {
+        PATH: "/opt/bin",
+      },
+    },
+    authority: () => stable,
+    execFile: (file, args) => {
+      calls.push({ file, args: [...args] });
+      const native = [...args];
+      if (native.join(" ") === "mcp list --json") {
+        return JSON.stringify(entry ? [codexRow(entry)] : []);
+      }
+      if (native[0] === "mcp" && native[1] === "add") {
+        const split = native.indexOf("--");
+        entry = { command: native[split + 1]!, args: [...native.slice(split + 2)] };
+        return "added";
+      }
+      throw new Error(`unexpected ${file} ${args.join(" ")}`);
+    },
+  }));
+
+  assert.equal(receipt.changed, true);
+  assert.equal(receipt.after, "owned_current");
+  assert.equal(resolutions, 1);
+  assert.ok(calls.length >= 4);
+  assert.ok(calls.every((call) => call.file === executable));
 });

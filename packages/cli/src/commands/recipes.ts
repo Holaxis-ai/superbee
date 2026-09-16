@@ -1,3 +1,4 @@
+import { renderUsage } from "../output.js";
 // `superbee recipes` — list built-in recipes before or after a bundle exists, including
 // whether each is already applied when a bundle is available.
 //
@@ -162,7 +163,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
     CLI_LEAVES.recipes,
   );
   if (values.help) {
-    stdout(RECIPES_USAGE);
+    stdout(renderUsage(RECIPES_USAGE));
     return;
   }
 

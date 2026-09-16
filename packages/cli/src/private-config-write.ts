@@ -1,3 +1,4 @@
+import { currentPrivateStateHost } from "./runtime-context.js";
 import {
   chmodSync,
   linkSync,
@@ -39,16 +40,11 @@ function missing(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
-function windowsSharingViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error
-    && (error.code === "EPERM" || error.code === "EBUSY");
-}
-
 function waitSync(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
-/** Windows antivirus/indexing can briefly retain the replaced file after all product handles close. */
+/** Host-classified replacement interference is retried within the shared fixed deadline. */
 function renamePrivateConfigSync(source: string, destination: string, platform: string): void {
   const deadline = Date.now() + 500;
   while (true) {
@@ -56,7 +52,7 @@ function renamePrivateConfigSync(source: string, destination: string, platform: 
       renameSync(source, destination);
       return;
     } catch (error) {
-      if (platform !== "win32" || !windowsSharingViolation(error) || Date.now() >= deadline) throw error;
+      if (!currentPrivateStateHost().isTransientConfigReplaceError(error) || Date.now() >= deadline) throw error;
       waitSync(10);
     }
   }
@@ -149,7 +145,7 @@ export function atomicWriteFileSync(
   }
   mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
   let mode: number | undefined;
-  if (platform !== "win32") {
+  if (currentPrivateStateHost().enforcePrivateMode) {
     try {
       mode = statSync(destination).mode & 0o7777;
     } catch (error) {

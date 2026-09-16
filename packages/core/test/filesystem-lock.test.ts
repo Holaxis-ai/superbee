@@ -1,3 +1,4 @@
+import { captureFilesystemHostPolicy } from "../src/filesystem-host.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -1116,24 +1117,26 @@ test("lock-root creation and lock claims propagate non-contention filesystem fai
   }
 });
 
-test("Windows lock claims bound an unwitnessed sharing-error retry and propagate durable denial", async () => {
+const contentionPolicy = {
+  ...captureFilesystemHostPolicy(),
+  isDirectoryContentionError: (error: unknown) => (error as { code?: string })?.code === "TEST_CONTENTION",
+};
+
+test("host-classified lock claims bound an unwitnessed sharing-error retry and propagate durable denial", async () => {
   const harness = await isolatedLockPaths();
-  const platform = Object.getOwnPropertyDescriptor(process, "platform");
-  assert.ok(platform);
-  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   const originalMkdir = fs.mkdir;
   const originalLstat = fs.lstat;
   let restoreMkdir = () => {};
   let restoreLstat = () => {};
   try {
-    const transient = Object.assign(new Error("transient claim collision"), { code: "EPERM" });
+    const transient = Object.assign(new Error("transient claim collision"), { code: "TEST_CONTENTION" });
     let claimAttempts = 0;
     restoreMkdir = replaceFsMethod("mkdir", (...args) => {
       if (String(args[0]).endsWith(".lock") && claimAttempts++ === 0) return Promise.reject(transient);
       return Reflect.apply(originalMkdir, fs, args);
     });
     const release = await acquireFilesystemMutationLock(harness.target, {
-      lockRoot: harness.lockRoot,
+      lockRoot: harness.lockRoot, hostPolicy: contentionPolicy,
       waitMs: 100,
       pollMs: 0,
     });
@@ -1142,7 +1145,7 @@ test("Windows lock claims bound an unwitnessed sharing-error retry and propagate
     restoreMkdir();
     restoreMkdir = () => {};
 
-    const absentDenial = Object.assign(new Error("durable create denial on an absent path"), { code: "EPERM" });
+    const absentDenial = Object.assign(new Error("durable create denial on an absent path"), { code: "TEST_CONTENTION" });
     let absentDenialAttempts = 0;
     restoreMkdir = replaceFsMethod("mkdir", (...args) => {
       if (String(args[0]).endsWith(".lock")) {
@@ -1153,7 +1156,7 @@ test("Windows lock claims bound an unwitnessed sharing-error retry and propagate
     });
     await assert.rejects(
       () => acquireFilesystemMutationLock(harness.target, {
-        lockRoot: harness.lockRoot,
+        lockRoot: harness.lockRoot, hostPolicy: contentionPolicy,
         waitMs: 0,
         pollMs: 0,
       }),
@@ -1163,7 +1166,7 @@ test("Windows lock claims bound an unwitnessed sharing-error retry and propagate
     restoreMkdir();
     restoreMkdir = () => {};
 
-    const durable = Object.assign(new Error("claim path denied"), { code: "EPERM" });
+    const durable = Object.assign(new Error("claim path denied"), { code: "TEST_CONTENTION" });
     restoreMkdir = replaceFsMethod("mkdir", (...args) => {
       if (String(args[0]).endsWith(".lock")) return Promise.reject(durable);
       return Reflect.apply(originalMkdir, fs, args);
@@ -1173,23 +1176,19 @@ test("Windows lock claims bound an unwitnessed sharing-error retry and propagate
       return Reflect.apply(originalLstat, fs, args);
     });
     await assert.rejects(
-      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot }),
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, hostPolicy: contentionPolicy }),
       (error: unknown) => error === durable,
     );
   } finally {
     restoreLstat();
     restoreMkdir();
-    Object.defineProperty(process, "platform", platform);
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });
 
-test("Windows stale-lock quarantine retries transient sharing errors and leaves durable denial fail-closed", async (t) => {
-  const platform = Object.getOwnPropertyDescriptor(process, "platform");
-  assert.ok(platform);
-  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+test("host-classified stale-lock quarantine retries transient sharing errors and leaves durable denial fail-closed", async (t) => {
   const originalRename = fs.rename;
-  try {
+  {
     await t.test("transient", async () => {
       const harness = await isolatedLockPaths();
       const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
@@ -1201,12 +1200,12 @@ test("Windows stale-lock quarantine retries transient sharing errors and leaves 
           pid: 999_999,
           hostname: hostname(),
           created_at_ms: Date.now() - 60_000,
-          token: "windows-transient",
+          token: "host-transient",
           target: harness.target,
         }),
       );
       let renameAttempts = 0;
-      const sharingError = Object.assign(new Error("transient rename contention"), { code: "EPERM" });
+      const sharingError = Object.assign(new Error("transient rename contention"), { code: "TEST_CONTENTION" });
       const restore = replaceFsMethod("rename", (...args) => {
         if (path.resolve(String(args[0])) === path.resolve(lockPath) && renameAttempts++ === 0) {
           return Promise.reject(sharingError);
@@ -1216,7 +1215,7 @@ test("Windows stale-lock quarantine retries transient sharing errors and leaves 
       try {
         const release = await acquireFilesystemMutationLock(harness.target, {
           portableRoot: harness.portableRoot,
-          lockRoot: harness.lockRoot,
+          lockRoot: harness.lockRoot, hostPolicy: contentionPolicy,
           waitMs: 100,
           pollMs: 0,
         });
@@ -1239,11 +1238,11 @@ test("Windows stale-lock quarantine retries transient sharing errors and leaves 
           pid: 999_999,
           hostname: hostname(),
           created_at_ms: Date.now() - 60_000,
-          token: "windows-durable",
+          token: "host-durable",
           target: harness.target,
         }),
       );
-      const sharingError = Object.assign(new Error("durable rename denial"), { code: "EPERM" });
+      const sharingError = Object.assign(new Error("durable rename denial"), { code: "TEST_CONTENTION" });
       const restore = replaceFsMethod("rename", (...args) => {
         if (path.resolve(String(args[0])) === path.resolve(lockPath)) return Promise.reject(sharingError);
         return Reflect.apply(originalRename, fs, args);
@@ -1252,14 +1251,14 @@ test("Windows stale-lock quarantine retries transient sharing errors and leaves 
         await assert.rejects(
           () => acquireFilesystemMutationLock(harness.target, {
             portableRoot: harness.portableRoot,
-            lockRoot: harness.lockRoot,
+            lockRoot: harness.lockRoot, hostPolicy: contentionPolicy,
             waitMs: 0,
             pollMs: 0,
           }),
           (err: unknown) => {
             assert.ok(err instanceof FilesystemMutationLockError);
             assert.equal(err.stale, true);
-            assert.equal(err.owner?.token, "windows-durable");
+            assert.equal(err.owner?.token, "host-durable");
             return true;
           },
         );
@@ -1269,8 +1268,6 @@ test("Windows stale-lock quarantine retries transient sharing errors and leaves 
         await fs.rm(harness.root, { recursive: true, force: true });
       }
     });
-  } finally {
-    Object.defineProperty(process, "platform", platform);
   }
 });
 
@@ -1288,7 +1285,7 @@ test("owner-record failure preserves exclusive-create flags and rolls back the c
   });
   try {
     await assert.rejects(
-      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot }),
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, hostPolicy: contentionPolicy }),
       (err: unknown) => err === writeFailure,
     );
     assert.deepEqual(observedOptions, { encoding: "utf8", flag: "wx", mode: 0o600 });
@@ -1299,15 +1296,12 @@ test("owner-record failure preserves exclusive-create flags and rolls back the c
   }
 });
 
-test("owner-record Windows sharing failures never re-enter claim contention", async () => {
+test("owner-record host-classified sharing failures never re-enter claim contention", async () => {
   const harness = await isolatedLockPaths();
-  const platform = Object.getOwnPropertyDescriptor(process, "platform");
-  assert.ok(platform);
-  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   const originalWriteFile = fs.writeFile;
   const originalRm = fs.rm;
-  const writeFailure = Object.assign(new Error("owner write denied"), { code: "EPERM" });
-  const rollbackFailure = Object.assign(new Error("rollback denied"), { code: "EPERM" });
+  const writeFailure = Object.assign(new Error("owner write denied"), { code: "TEST_CONTENTION" });
+  const rollbackFailure = Object.assign(new Error("rollback denied"), { code: "TEST_CONTENTION" });
   let restoreWriteFile = () => {};
   let restoreRm = () => {};
   try {
@@ -1321,7 +1315,7 @@ test("owner-record Windows sharing failures never re-enter claim contention", as
     });
     await assert.rejects(
       () => acquireFilesystemMutationLock(harness.target, {
-        lockRoot: harness.lockRoot,
+        lockRoot: harness.lockRoot, hostPolicy: contentionPolicy,
         waitMs: 0,
         pollMs: 0,
       }),
@@ -1330,7 +1324,6 @@ test("owner-record Windows sharing failures never re-enter claim contention", as
   } finally {
     restoreRm();
     restoreWriteFile();
-    Object.defineProperty(process, "platform", platform);
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });

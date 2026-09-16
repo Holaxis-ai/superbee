@@ -187,6 +187,7 @@ test("command compatibility recognizes exact generated history and rejects near-
     ["/usr/local/bin/aslite session-start", "unmanaged"],
     ["/x/packages/cli/dist/agentstate-lite.mjs session-start", "legacy_identity"],
     ["/opt/node/bin/node /x/packages/cli/dist/agentstate-lite.mjs session-start", "legacy_identity"],
+    ["/opt/node/bin/node /x/packages/superbee/dist/superbee.mjs session-start", "current"],
     ["/opt/node/bin/node /x/packages/cli/dist/superbee.mjs session-start", "current"],
     ["node /tmp/agentstate-lite.mjs session-start", "unmanaged"],
     ["/tmp/bin/node /tmp/agentstate-lite.mjs session-start", "unmanaged"],
@@ -256,45 +257,6 @@ test("managed path ownership requires the writer's canonical absolute spelling",
   for (const { family, command } of NONCANONICAL_MANAGED_PATH_CASES) {
     assert.notEqual(tokenizeGeneratedHookCommand(command), undefined, `${family}: lexical precondition`);
     assert.equal(classifyHookCommand(command).state, "unmanaged", family);
-  }
-});
-
-test("Windows writer and classifier round-trip one absolute Node/package launch", () => {
-  const runtime = String.raw`C:\Program Files\nodejs\node.exe`;
-  const executable = String.raw`C:\Users\Mike\AppData\Roaming\npm\node_modules\superbee\dist\superbee.mjs`;
-  const command = [runtime, executable, "session-start"]
-    .map((token) => renderGeneratedHookToken(token, "win32"))
-    .join(" ");
-
-  assert.equal(
-    command,
-    '"C:/Program Files/nodejs/node.exe" C:/Users/Mike/AppData/Roaming/npm/node_modules/superbee/dist/superbee.mjs session-start',
-  );
-  assert.deepEqual(tokenizeGeneratedHookCommand(command, "win32"), [
-    "C:/Program Files/nodejs/node.exe",
-    "C:/Users/Mike/AppData/Roaming/npm/node_modules/superbee/dist/superbee.mjs",
-    "session-start",
-  ]);
-  assert.equal(classifyHookCommand(command, "win32").state, "current");
-});
-
-test("Windows hook grammar rejects expansion, controls, mixed envelopes, and noncanonical slashes", () => {
-  for (const token of [
-    String.raw`C:\Users\%USERNAME%\node.exe`,
-    String.raw`C:\Users\!name!\node.exe`,
-    String.raw`C:\Users\$(whoami)\node.exe`,
-    "C:\\Users\\name\\node.exe\nforeign",
-  ]) {
-    assert.throws(() => renderGeneratedHookToken(token, "win32"), /outside the generated-command grammar/);
-  }
-  for (const command of [
-    '"C:/Program Files/nodejs/"node.exe C:/x/node_modules/superbee/dist/superbee.mjs session-start',
-    '"C:/Program Files/nodejs/node.exe"  C:/x/node_modules/superbee/dist/superbee.mjs session-start',
-    String.raw`C:\nodejs\node.exe C:\npm\node_modules\superbee\dist\superbee.mjs session-start`,
-    '"C:/Program Files/nodejs/node.exe" C:/x/node_modules/superbee/dist/superbee.mjs session-start && echo foreign',
-  ]) {
-    assert.equal(tokenizeGeneratedHookCommand(command, "win32"), undefined, command);
-    assert.equal(classifyHookCommand(command, "win32").state, "unmanaged", command);
   }
 });
 

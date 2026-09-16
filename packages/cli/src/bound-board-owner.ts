@@ -1,3 +1,4 @@
+import { currentHost, currentDistribution, distributionPackageName, distributionBinName } from "./runtime-context.js";
 /**
  * The capability boundary for a project binding that points at a board worktree.
  *
@@ -68,7 +69,7 @@ function canonicalGitPath(from: string, raw: string): string | null {
 function samePhysicalPath(left: string, right: string): boolean {
   const a = path.resolve(left);
   const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return currentHost().sameResolvedPath(a,b);
 }
 
 /**

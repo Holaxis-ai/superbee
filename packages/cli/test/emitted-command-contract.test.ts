@@ -14,7 +14,7 @@ import path from "node:path";
 import { initBundle, writeDoc, CONVENTION_TYPE } from "@superbee/core";
 
 import { commandToken } from "../src/command-text.js";
-import { renderWindowsToken, renderPosixToken } from "../src/shell-quoting.js";
+import { renderPosixToken } from "../src/shell-quoting.js";
 import { cliInvocation } from "../src/invocation.js";
 import { newCommand } from "../src/commands/new.js";
 import { doc } from "../src/commands/doc.js";
@@ -54,12 +54,12 @@ const KNOWN_FIDELITY_DIVERGENCES: Record<string, string> = {
 // (a) RENDERS — pure, so it runs on every host for BOTH platforms.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-test("(a) RENDERS: every value yields a token or the documented placeholder, on both platforms", () => {
+test("(a) RENDERS: every value yields a token or the documented placeholder, on supported first-party hosts", () => {
   for (const { id, value, because } of CONTRACT_VALUES) {
-    for (const platform of ["linux", "win32"] as const) {
+    for (const platform of ["linux"] as const) {
       const rendered = onPlatform(platform, () => commandToken(value));
       assert.equal(typeof rendered, "string", `${id}/${platform} (${because})`);
-      const refused = platform === "win32" && renderWindowsToken(value) === undefined;
+      const refused = false;
       if (refused) {
         assert.ok(
           rendered.includes(PLACEHOLDER),

@@ -272,7 +272,7 @@ assert.deepEqual([...readBlob.bytes], [...bytes]);
         assert.ok(!/(^|\/)src(?:\/|$)/.test(specifier), `${file} imports source path ${specifier}`);
         if (specifier.startsWith("@superbee/")) {
           assert.ok(
-            ["@superbee/core", "@superbee/core/engine", "@superbee/core/storage"].includes(specifier),
+            ["@superbee/core", "@superbee/core/bundle-ops", "@superbee/core/engine", "@superbee/core/storage", "@superbee/core/document-codec"].includes(specifier),
             `${file} imports workspace package ${specifier}`,
           );
         }

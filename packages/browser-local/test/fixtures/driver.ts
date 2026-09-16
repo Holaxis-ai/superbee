@@ -15,6 +15,7 @@ import type { ExecutionMode, PlatformEdit, PlatformRuntime } from "@superbee/cor
 import { RemoteBackend } from "@superbee/core/remote";
 import { createRemoteOperationTransport } from "@superbee/core/remote-operations";
 import type { OperationState, OperationTransport } from "@superbee/core/uncertain-write";
+import type { BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { contentVersion, VersionConflict, versionOfBytes } from "@superbee/core/versioning";
 
 import {
@@ -23,6 +24,11 @@ import {
   commitLocal,
   isComplete,
   openLocalBundle,
+  inspectConflict,
+  resolveConflict,
+  conflictResolutionKey,
+  type ConflictReview,
+  type ConflictChoice,
   pull,
   pushWithRole,
   reclaimInFlight,
@@ -194,6 +200,40 @@ async function mountPlatform(mode: ExecutionMode, remoteBaseUrl: string, name: s
   return runtime;
 }
 
+async function mountBodyPlatform(origin: string, name: string): Promise<void> {
+  current?.close();
+  current = openLocalBundle(name, { indexedDB: faultyIndexedDb(indexedDB, faults), bodyDelivery: { scope: "synthetic-body", okfVersion: "0.2" } });
+  const local = current;
+  const backend = new RemoteBackend({ baseUrl: origin, bundle: REMOTE_BUNDLE, maxRetries: 0 });
+  const request = async (path: string, value: unknown) => {
+    const response = await fetch(`${origin}/fixture/body/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(value) });
+    if (!response.ok) throw new Error(`Fixture response ${response.status}`);
+    return response.json();
+  };
+  const bodyTransport: BodyDeliveryTransport = { submit: prepared => request("submit", prepared), lookup: prepared => request("lookup", prepared) };
+  if (!(await isComplete(local))) await bootstrap(backend, local);
+  const runtime = createBrowserLocalRuntime({ local, remote: backend, transport: createRemoteOperationTransport(backend), bodyTransport, actor: "process:local", now: () => "2026-09-15T00:30:00.000Z", write: { ...immediate, maxLookups: 1 } });
+  platform?.presentation.root.remove();
+  const presentation = mountPresentation(document.body, runtime);
+  platform = { mode: "browser-local", runtime, presentation };
+  const toolbar = document.createElement("section"); toolbar.dataset.role = "body-fixture";
+  const counts = document.createElement("p"); counts.dataset.role = "delivery-counts";
+  const refresh = async () => {
+    const status = await (await fetch(`${origin}/fixture/body/control`)).json();
+    counts.textContent = `submitted=${status.submitted} lookedUp=${status.lookedUp} applied=${status.applied} offline=${status.offline} unresolvedResponse=${status.droppedPending}`;
+  };
+  for (const [action, label] of [["offline", "Disconnect authority"], ["online", "Reconnect authority"], ["drop", "Drop next response"]]) {
+    const button = document.createElement("button"); button.textContent = label;
+    button.dataset.role = `fixture-${action}`;
+    button.onclick = () => { void request("control", { action }).then(refresh); };
+    toolbar.append(button);
+  }
+  toolbar.append(counts); document.body.prepend(toolbar);
+  document.addEventListener("click", () => { setTimeout(() => { void refresh(); }, 200); });
+  await refresh(); await presentation.refresh();
+  document.body.dataset.bodyReady = "true";
+}
+
 type PlatformVerb = "read" | "query" | "validate" | "commit" | "syncStatus" | "sync";
 
 const driver = {
@@ -312,6 +352,10 @@ const driver = {
   },
 
   // ── sync verbs ───────────────────────────────────────────────────────────────────────────
+
+  inspectConflict: (id: string) => attempt(() => inspectConflict(bundleOrThrow(), remoteOrThrow().backend, id)),
+  resolveConflict: (review: ConflictReview, choice: ConflictChoice) => attempt(() => resolveConflict(bundleOrThrow(), remoteOrThrow().backend, review, choice)),
+  conflictReceipt: (id: string) => attempt(() => bundleOrThrow().backend.readMeta(conflictResolutionKey(id))),
 
   /** Open the working copy under `name` (without seeding) and bind the authority at `remoteBaseUrl`. */
   attach: (remoteBaseUrl: string, name: string) =>
@@ -500,3 +544,9 @@ declare global {
 }
 
 window.superbeeLocal = driver;
+const bodyParams = new URLSearchParams(location.search);
+if (bodyParams.has("bodyFixture")) {
+  void mountBodyPlatform(bodyParams.get("bodyFixture")!, bodyParams.get("bodyStore") ?? "body-example").catch(error => {
+    const message = document.createElement("pre"); message.dataset.role = "startup-error"; message.textContent = String(error); document.body.append(message);
+  });
+}

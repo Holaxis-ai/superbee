@@ -19,7 +19,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { FilesystemBackend } from "../src/backend.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { IndexedDbBackend, IndexedDbSchemaError, INDEXEDDB_SCHEMA_VERSION, type IdbFactoryLike } from "../src/indexeddb-backend.js";
-import { IntentStateConflict, type NewIntentRecord } from "../src/journaled-backend.js";
+import { IntentStateConflict, type NewIntentRecord, type JournalGuard } from "../src/journaled-backend.js";
 import type { KindRegistry } from "../src/kinds.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import type { OkfDocument, StorageBackend, Version } from "../src/types.js";
@@ -436,6 +436,160 @@ test("close() while the first open is in flight leaks no connection: a later del
   }
 });
 
+/** A factory whose every `transaction()` throws whatever `next()` hands back. */
+function transactionRefusingFactory(inner: IDBFactory, next: () => unknown): IdbFactoryLike {
+  return {
+    open(name: string, version?: number) {
+      const request = inner.open(name, version);
+      return proxied(request, {
+        get result() {
+          const db = request.result;
+          return db
+            ? proxied(db, {
+                transaction() {
+                  throw next();
+                },
+              })
+            : db;
+        },
+      });
+    },
+  };
+}
+
+test("a host error that refuses a cause reaches the caller unchanged, not as a TypeError about the cause", async () => {
+  // The host owns this error and handed back a frozen one. Attaching a cause is a convenience;
+  // replacing InvalidStateError with `TypeError: Cannot add property cause` would lose the only
+  // information the caller had.
+  const frozen = Object.freeze(Object.assign(new Error("host refused the transaction"), { name: "InvalidStateError" }));
+  const backend = new IndexedDbBackend({
+    databaseName: "frozen-error",
+    indexedDB: transactionRefusingFactory(new IDBFactory(), () => frozen),
+  });
+  const failure = await backend.list().then(
+    () => null,
+    (error: unknown) => error,
+  );
+  assert.equal(failure, frozen, "the caller must receive the host's own error object");
+  assert.equal((failure as Error).name, "InvalidStateError");
+  assert.equal((failure as Error).message, "host refused the transaction");
+  backend.close();
+
+  // The same holds when `cause` is present but not assignable.
+  const getterOnly = new Error("cause is a getter");
+  Object.defineProperty(getterOnly, "cause", { get: () => undefined, configurable: false });
+  const second = new IndexedDbBackend({
+    databaseName: "getter-cause",
+    indexedDB: transactionRefusingFactory(new IDBFactory(), () => getterOnly),
+  });
+  assert.equal(
+    await second.list().then(
+      () => null,
+      (error: unknown) => error,
+    ),
+    getterOnly,
+  );
+  second.close();
+});
+
+test("one cached host error thrown for both attempts is never made its own cause", async () => {
+  // A host that reuses one error object would otherwise produce `failure.cause === failure`, a
+  // cycle every consumer walking the chain then has to defend against.
+  const shared = new Error("the same object both times");
+  const backend = new IndexedDbBackend({
+    databaseName: "shared-error",
+    indexedDB: transactionRefusingFactory(new IDBFactory(), () => shared),
+  });
+  const failure = (await backend.list().then(
+    () => null,
+    (error: unknown) => error,
+  )) as Error;
+  assert.equal(failure, shared);
+  assert.notEqual(failure.cause, failure, "an error must never be its own cause");
+  assert.equal(failure.cause, undefined);
+  backend.close();
+});
+
+test("when the reopen also fails, the retry's error surfaces and the first one is kept as its cause", async () => {
+  const inner = new IDBFactory();
+  // Every attempt to start a transaction throws, with a distinct error each time, so the retry
+  // fails too. A persistent non-close failure such as a bad store name behaves this way.
+  const thrown: Error[] = [];
+  const factory: IdbFactoryLike = {
+    open(name: string, version?: number) {
+      const request = inner.open(name, version);
+      return proxied(request, {
+        get result() {
+          const db = request.result;
+          return db
+            ? proxied(db, {
+                transaction() {
+                  const error = new Error(`transaction refused (attempt ${thrown.length + 1})`);
+                  error.name = "NotFoundError";
+                  thrown.push(error);
+                  throw error;
+                },
+              })
+            : db;
+        },
+      });
+    },
+  };
+
+  const backend = new IndexedDbBackend({ databaseName: "reopen-also-fails", indexedDB: factory });
+  const failure = await backend.list().then(
+    () => null,
+    (error: Error) => error,
+  );
+  assert.ok(failure, "the call must reject when both attempts fail");
+  // Exactly two attempts: one retry, not a loop.
+  assert.equal(thrown.length, 2);
+  // The caller acts on the retry's error, and the first is reachable rather than discarded.
+  assert.equal(failure.message, "transaction refused (attempt 2)");
+  assert.equal(failure.cause, thrown[0]);
+  backend.close();
+});
+
+test("close() in the same turn as an in-flight call on a warm instance reopens instead of surfacing the host's error", async () => {
+  const factory = new IDBFactory();
+  const backend = open(factory, "warm-close");
+  // Warm the instance so the open resolves without suspending and the handle is held.
+  const seedVersion = await backend.write("a/b", doc("a/b", "seed"));
+
+  // The call is issued first, then close() lands in the same synchronous turn, before the call's
+  // microtask reaches the point where it starts its transaction. `close()` documents that the
+  // next operation reopens lazily; the cold path already joins the next open under exactly this
+  // interleaving, and the warm path must not instead surface a raw InvalidStateError.
+  const inFlight = backend.list();
+  backend.close();
+  assert.deepEqual(await inFlight, ["a/b"]);
+
+  // The same holds for a write, which commits exactly once at the version it returned.
+  const pendingWrite = backend.write("c/d", doc("c/d", "written across a close"));
+  backend.close();
+  const version = await pendingWrite;
+  assert.deepEqual(await backend.list(), ["a/b", "c/d"]);
+  const readBack = await backend.read("c/d");
+  assert.equal(readBack.version, version);
+  assert.equal(readBack.doc.body, "written across a close\n");
+
+  // Conditional writes keep their meaning across the retry: the stale token is still refused, and
+  // the current one still wins. A retry that resolved against a re-read would lose this.
+  await assert.rejects(
+    (async () => {
+      const stale = backend.write("c/d", doc("c/d", "from a stale token"), { expectedVersion: seedVersion });
+      backend.close();
+      await stale;
+    })(),
+    VersionConflict,
+  );
+  const conditional = backend.write("c/d", doc("c/d", "from the current token"), { expectedVersion: version });
+  backend.close();
+  await conditional;
+  assert.equal((await backend.read("c/d")).doc.body, "from the current token\n");
+  backend.close();
+});
+
 test("a synchronous open() failure is not cached: the next call retries and succeeds once the condition clears", async () => {
   const inner = new IDBFactory();
   const denied = { value: true };
@@ -497,6 +651,57 @@ test("a decide callback that throws rejects the write with its own error and lea
 
 function newIntent(requestId: string, target: string, base: string | null): NewIntentRecord {
   return { requestId, kind: "document.write", target, base, baseContent: null, createdAt: "2026-09-10T00:00:00.000Z" };
+}
+
+for (const branch of ["deleted", "absent", "held", "resolved"] as const) {
+  test(`guarded ${branch} deletion rolls back document, history and metadata on abort and reopen`, async () => {
+    const inner = new IDBFactory(), armed = { value: false };
+    const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: abortAfterPutFactory(inner, armed) });
+    try {
+      const id = "guard/delete-abort";
+      await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("delete-abort", id, null), meta: [{ key: "base", value: "before" }] });
+      await backend.updateIntent("delete-abort", "pending", { state: branch === "resolved" ? "conflict" : branch === "held" ? "pending" : "acknowledged" });
+      if (branch === "absent") await backend.delete(id);
+      const before = await backend.readWithJournal(id, { meta: ["base", "receipt"] });
+      const guard: JournalGuard = { target: id, document: before.document ? { version: before.document.version, raw: before.raw! } : null, intents: before.intents,
+        meta: [{ key: "base", expected: { present: true, value: "before" } }, { key: "receipt", expected: { present: false } }] };
+      armed.value = true;
+      await assert.rejects(backend.deleteJournaled(id, {
+        guard, expectedVersion: before.document?.version ?? null, removeMeta: ["base"], meta: [{ key: "receipt", value: "after" }],
+        ...(branch === "held" ? { requireSettled: true, onHeld: { meta: [{ key: "receipt", value: "held" }] } } : {}),
+        ...(branch === "resolved" ? { resolveIntents: { expected: before.intents } } : {}),
+      }));
+      armed.value = false;
+      assert.deepEqual(await backend.readWithJournal(id, { meta: ["base", "receipt"] }), before);
+      backend.close();
+      assert.deepEqual(await backend.readWithJournal(id, { meta: ["base", "receipt"] }), before);
+    } finally { backend.close(); }
+  });
+}
+
+for (const action of ["write", "update", "meta"] as const) {
+  test(`guarded ${action} rolls back all records on an IndexedDB transaction abort`, async () => {
+    const inner = new IDBFactory();
+    const armed = { value: false };
+    const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: abortAfterPutFactory(inner, armed) });
+    try {
+      const id = "guard/abort";
+      await backend.writeJournaled(id, doc(id, "before"), { intent: newIntent("abort", id, null), meta: [{ key: "base", value: "before" }] });
+      const before = await backend.readWithJournal(id, { meta: ["base", "receipt"] });
+      const guard: JournalGuard = { target: id, document: { version: before.document!.version, raw: before.raw! }, intents: before.intents,
+        meta: [{ key: "base", expected: { present: true, value: "before" } }, { key: "receipt", expected: { present: false } }] };
+      armed.value = true;
+      await assert.rejects(action === "write"
+        ? backend.writeJournaled(id, doc(id, "after"), { guard, intent: newIntent("new", id, null), removeMeta: ["base"], meta: [{ key: "receipt", value: true }] })
+        : action === "update" ? backend.updateIntent("abort", "pending", { state: "acknowledged" }, { guard, document: doc(id, "after"), meta: [{ key: "receipt", value: true }] })
+        : backend.writeMeta("base", "after", { expected: { present: true, value: "before" } }));
+      armed.value = false;
+      assert.deepEqual(await backend.readWithJournal(id, { meta: ["base", "receipt"] }), before);
+      assert.equal(await backend.readMeta("intents:sequence"), 1);
+      backend.close();
+      assert.deepEqual(await backend.readWithJournal(id, { meta: ["base", "receipt"] }), before);
+    } finally { backend.close(); }
+  });
 }
 
 test("writeJournaled commits the document and its intent together: an aborted transaction leaves neither", async () => {

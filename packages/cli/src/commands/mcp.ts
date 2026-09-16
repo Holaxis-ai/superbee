@@ -1,3 +1,5 @@
+import { distributionPackageName, distributionBinName } from "../runtime-context.js";
+import { renderUsage } from "../output.js";
 // `superbee mcp [--dir <path>] [--actor <name>]` — run the local MCP Apps adapter over the private
 // workspace catalog or one fixed bundle. The command uses stdio as its transport, so stdout belongs exclusively to MCP
 // protocol frames after startup; diagnostics and human receipts must never be written there.
@@ -18,7 +20,7 @@ import { cliInvocation } from "../invocation.js";
 import { render, renderErrorEnvelope, resolveMode } from "../output.js";
 import { LocalViewAuthorizationStore } from "../ui/view-authorizations.js";
 import { cliVersion } from "../build-identity.js";
-import { STABLE_MCP_LAUNCH_GUIDANCE } from "../integration-guidance.js";
+import { stableMcpLaunchGuidance } from "../integration-guidance.js";
 import { createCatalogMcpWorkspaceResolver } from "../mcp-workspace-resolver.js";
 import {
   inspectMcpHosts,
@@ -66,7 +68,7 @@ Views use the same query, render-document, graph, subscription, and governed-act
 and the web UI. Every bundle-propose action requires explicit human confirmation and a current
 document version. The server accepts no remote targets or arbitrary filesystem paths.
 
-${STABLE_MCP_LAUNCH_GUIDANCE}
+${stableMcpLaunchGuidance(distributionPackageName(),distributionBinName())}
 `;
 
 export const MCP_STATUS_USAGE = `superbee mcp status — inspect user-level MCP registrations without changing them
@@ -199,7 +201,7 @@ async function mcpRegistration(
 ): Promise<void> {
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
   if (values.help) {
-    stdout(operation === "install" ? MCP_INSTALL_USAGE : MCP_UNINSTALL_USAGE);
+    stdout(renderUsage(operation === "install" ? MCP_INSTALL_USAGE : MCP_UNINSTALL_USAGE));
     return;
   }
   if (!values.host?.trim()) {
@@ -255,7 +257,7 @@ async function mcpStatus(argv: string[], deps: Partial<McpCliDeps>): Promise<voi
     CLI_LEAVES.mcpStatus,
   );
   if (values.help) {
-    stdout(MCP_STATUS_USAGE);
+    stdout(renderUsage(MCP_STATUS_USAGE));
     return;
   }
   let targets: readonly McpInstallTarget[] = MCP_INSTALL_TARGETS;
@@ -297,7 +299,7 @@ async function mcpInner(argv: string[], deps: Partial<McpCliDeps>): Promise<void
     CLI_LEAVES.mcp,
   );
   if (values.help) {
-    stdout(MCP_USAGE);
+    stdout(renderUsage(MCP_USAGE));
     return;
   }
   const actor = resolveActor(values.actor, {

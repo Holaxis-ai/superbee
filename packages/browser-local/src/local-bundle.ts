@@ -62,13 +62,22 @@
 
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
 import { stringifyDoc } from "@superbee/core/document-codec";
+import { performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
+import { parseIsoInstant } from "@superbee/core/verification";
+import { versionOfBytes } from "@superbee/core/versioning";
+import { JournalGuardConflict, JournalSnapshotConflict } from "@superbee/core/journaled-backend";
+import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
+  validateBodyResolutionReceipt, validateBodyRecord, BODY_MODE_KEY, BODY_RUNTIME_LIMITS, jsonBytes, BodyRuntimeError,
+  type BodyDeliveryOptions, type BodyRecord, type BodyMode, type BodyResolutionReceipt, type BodySnapshot } from "./body-journal.js";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
 import { IndexedDbBackend, type IdbFactoryLike } from "@superbee/core/indexeddb-backend";
 import {
   IntentHoldConflict,
   IntentStateConflict,
+  assertJournalSnapshot,
   type IntentRecord,
   type JournaledBackend,
+  type JournaledReadResult,
   type MetaRecord,
   type NewIntentRecord,
 } from "@superbee/core/journaled-backend";
@@ -89,8 +98,11 @@ import {
 } from "@superbee/core/uncertain-write";
 
 import { pushRoleName, withPushRole, type PushRoleOptions, type PushRoleResult } from "./push-role.js";
+import { captureBodyRefresh, seedBodyRoot, assertBodyRemoteEdition, type BodyRefreshPremises } from "./body-journal.js";
 
 export interface OpenLocalBundleOptions {
+  /** Explicit isolated body-delivery store. Custom adapters must be dedicated to this mode. */
+  bodyDelivery?: BodyDeliveryOptions;
   /** The IndexedDB factory to open the working copy with. Defaults to the page's `indexedDB`. */
   indexedDB?: IdbFactoryLike;
   /**
@@ -122,7 +134,10 @@ export interface LocalBundle {
  * is a label, not a path: the engine routes every operation through `bundle.backend`.
  */
 export function openLocalBundle(name: string, options: OpenLocalBundleOptions = {}): LocalBundle {
-  const backend = options.backend ?? new IndexedDbBackend({ databaseName: name, indexedDB: options.indexedDB });
+  const mode = options.bodyDelivery === undefined ? null : bodyMode(options.bodyDelivery);
+  if (mode && options.backend && options.bodyDelivery?.dedicated !== true) throw new BodyRuntimeError("A custom body backend must be explicitly dedicated.");
+  const backend = options.backend ?? new IndexedDbBackend({ databaseName: mode ? bodyDatabaseName(name, mode) : name, indexedDB: options.indexedDB });
+  if (mode) selectBodyMode(backend, mode);
   const bundle: Bundle = { root: `${options.backend ? "local" : "indexeddb"}://${name}`, backend };
   return { name, bundle, backend, close: () => backend.close?.() };
 }
@@ -142,6 +157,14 @@ function isLocalBundle(target: LocalTarget): target is LocalBundle {
 
 function backendOf(target: LocalTarget): JournaledBackend {
   return isLocalBundle(target) ? target.backend : target;
+}
+
+async function runtimeBackend(target: LocalTarget): Promise<JournaledBackend> {
+  const backend = backendOf(target), mode = await admitBodyMode(backend);
+  if (mode) {
+    for (const id of new Set((await backend.listIntents()).map(row => row.target))) await bodySnapshot(backend, id, mode);
+  }
+  return mode ? bodyBackend(backend, mode) : backend;
 }
 
 /** The engine-facing bundle for a target: the opened bundle's own, or a labelled one over a bare backend. */
@@ -365,6 +388,8 @@ async function reconcileDeletions(
   listed: ReadonlySet<ConceptId>,
   digest: string,
   accept?: DeletionRefusal,
+  premises?: BodyRefreshPremises,
+  beforeDelete?: () => Promise<void>,
 ): Promise<{ deleted: ConceptId[]; held: ConceptId[]; refused?: DeletionRefusal }> {
   const present = await backend.list();
   const candidates = present.filter((id) => !listed.has(id));
@@ -379,7 +404,9 @@ async function reconcileDeletions(
     // The premise is the version just listed; a document gone since is answered as absent.
     const expectedVersion = await localVersion(backend, id);
     try {
+      await beforeDelete?.();
       const result = await backend.deleteJournaled(id, {
+        ...(premises ? { guard: premises.guard(id) } : {}),
         ...(expectedVersion === null ? {} : { expectedVersion }),
         requireSettled: true,
         removeMeta: [baseKey(id)],
@@ -446,8 +473,9 @@ export interface BootstrapOptions extends FetchOptions {
 
 /**
  * Hydrate the working copy from the authority: every remote document is written locally with
- * the shared version recorded as its base, the root `index.md` is copied so the local edition
- * matches, and only after every write has committed does the marker say `complete`. The marker
+ * the shared version recorded as its base. Legacy mode copies the root `index.md`; body mode
+ * seeds only an absent local root and validates the remote edition without mirroring metadata.
+ * Only after every write has committed does the marker say `complete`. The marker
  * is written incomplete first, so an interruption at any point leaves a bundle that reports
  * itself incomplete rather than an apparently complete, partially hydrated one.
  *
@@ -471,7 +499,9 @@ export interface BootstrapOptions extends FetchOptions {
  */
 export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
   const concurrency = concurrencyOf(options);
-  const backend = backendOf(local);
+  const backend = await runtimeBackend(local);
+  const bodyMode = await admitBodyMode(backendOf(local));
+  const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
   const unsettled = await backend.listIntents(UNSETTLED_STATES);
   if (unsettled.length > 0) {
     throw new Error(`bootstrap refused: ${unsettled.length} unsettled intent(s) would be discarded; push or resolve them first.`);
@@ -481,18 +511,25 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   const startedAt = new Date().toISOString();
   await backend.writeMeta(BOOTSTRAP_KEY, { generation, startedAt, complete: false } satisfies BootstrapMarker);
 
-  const rootIndex = await remote.readReserved("", "index.md");
-  if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
+  if (bodyMode) {
+    await seedBodyRoot(backendOf(local), bodyMode);
+    await assertBodyRemoteEdition(remote, bodyMode);
+  } else {
+    const rootIndex = await remote.readReserved("", "index.md");
+    if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
+  }
 
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const findings: string[] = [];
   const held: ConceptId[] = [];
   let index = 0;
   /** One document as the authority served it, into the working copy, with the marker's bookkeeping. */
-  const hydrate = async (head: ReadResult, total: number): Promise<void> => {
+  const hydrate = async (head: ReadResult, total: number, premises?: BodyRefreshPremises): Promise<void> => {
+    if (bodyMode) await assertBodyRemoteEdition(remote, bodyMode);
     const id = head.doc.id;
     try {
       const { version } = await backend.writeJournaled(id, head.doc, {
+        ...(premises ? { guard: premises.guard(id) } : {}),
         requireSettled: true,
         meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
       });
@@ -516,22 +553,25 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   let refused: DeletionRefusal | undefined;
   const wire = await wireFor(remote, local, "snapshot", options);
   if (wire) {
+    const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode) : undefined;
     // One stream: concurrency does not apply. Each batch is written as soon as it has arrived,
     // so a cut stream leaves whole batches behind and the marker incomplete.
     const { header, docs } = await wire.snapshot();
+    await validateReadSide?.();
     const listed = new Set<ConceptId>();
     let batch: ReadResult[] = [];
     for await (const doc of docs) {
       listed.add(doc.id);
       batch.push({ doc: { id: doc.id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version });
       if (batch.length < batchSize) continue;
-      for (const head of batch) await hydrate(head, header.count);
+      for (const head of batch) await hydrate(head, header.count, premises);
       batch = [];
     }
-    for (const head of batch) await hydrate(head, header.count);
+    for (const head of batch) await hydrate(head, header.count, premises);
     // The loop ended normally, so the stream was whole and its rows digest to the header: the
     // listing may now say what the working copy should not hold.
-    const reconciled = await reconcileDeletions(backend, listed, header.digest);
+    await validateReadSide?.();
+    const reconciled = await reconcileDeletions(backend, listed, header.digest, undefined, premises, validateReadSide);
     deleted = reconciled.deleted;
     held.push(...reconciled.held);
     refused = reconciled.refused;
@@ -540,11 +580,13 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   } else {
     const ids = await remote.list();
     await forEachBatch(chunked(ids, batchSize), concurrency, async (batch) => {
-      for (const head of await remote.readMany(batch)) await hydrate(head, ids.length);
+      const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
+      for (const head of await remote.readMany(batch)) await hydrate(head, ids.length, premises);
     });
     documentCount = ids.length;
   }
 
+  await validateReadSide?.();
   const marker: BootstrapMarker = {
     generation,
     startedAt,
@@ -563,7 +605,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
 
 /** True only when the last bootstrap wrote its completion marker after every document committed. */
 export async function isComplete(local: LocalTarget): Promise<boolean> {
-  const marker = await backendOf(local).readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
+  const marker = await (await runtimeBackend(local)).readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
   return marker?.complete === true;
 }
 
@@ -682,6 +724,7 @@ function journalingBackend(backend: JournaledBackend, id: ConceptId, recorded: {
  */
 export async function commitLocal(local: LocalTarget, id: ConceptId, mutation: LocalMutation): Promise<CommitResult> {
   const backend = backendOf(local);
+  if (await admitBodyMode(backend)) throw new BodyRuntimeError("Use the explicit body commit for this working copy.");
   const recorded: { intent: IntentRecord | null } = { intent: null };
   const { mode, registry, strict, ...rest } = mutation;
   const result = await mutateDocument({
@@ -695,9 +738,392 @@ export async function commitLocal(local: LocalTarget, id: ConceptId, mutation: L
   return { ...result, intent: recorded.intent };
 }
 
+export interface BodyLocalMutation { body: string; expectedVersion?: Version; actor?: string; now?: () => string }
+/** Explicit body intent, authored by the existing engine and journaled in its document CAS. */
+export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutation: BodyLocalMutation): Promise<CommitResult> {
+  const allowed = ["body", "expectedVersion", "actor", "now"];
+  if (!mutation || ![Object.prototype, null].includes(Object.getPrototypeOf(mutation)) || Reflect.ownKeys(mutation).some(key => typeof key !== "string" || !allowed.includes(key)) || Object.values(Object.getOwnPropertyDescriptors(mutation)).some(row => !("value" in row) || !row.enumerable) || !isBoundedBody(mutation.body) || (mutation.actor !== undefined && typeof mutation.actor !== "string") || (mutation.now !== undefined && typeof mutation.now !== "function")) throw new BodyRuntimeError("Expected a bounded body-only update.");
+  const input = { ...mutation };
+  const backend = backendOf(local), mode = await admitBodyMode(backend);
+  if (!mode) throw new BodyRuntimeError("Body delivery mode was not selected.");
+  await assertBodyEdition(backend, mode);
+  if (!(await isComplete(local))) throw new BodyRuntimeError("Bootstrap must complete before local body commits.");
+  const initial = await bodySnapshot(backend, id, mode);
+  if (!initial.read.document) throw new BodyRuntimeError("Body delivery does not create documents.");
+  let recorded: IntentRecord | null = null;
+  const write = async (target: string, candidate: OkfDocument, options: WriteOptions = {}): Promise<Version> => {
+    if (target !== id) throw new BodyRuntimeError("Body commit changed target.");
+    const requestId = mintRequestId(), key = bodyRecordKey(requestId);
+    const doc = bodyDocument(stringifyDoc(candidate.frontmatter, candidate.body ?? ""), id, mode);
+    const raw = stringifyDoc(doc.frontmatter, doc.body ?? ""), version = versionOfBytes(raw);
+    for (let retry = 0; retry < COMPOSE_ATTEMPTS; retry++) {
+      const snap = await bodySnapshot(backend, id, mode, [key]);
+      const unsettled = snap.read.intents.filter(row => row.state !== "acknowledged"), latest = unsettled.at(-1);
+      const evidence = latest ? snap.records.get(latest.requestId)! : undefined;
+      const supersede = latest?.state === "pending" && latest.attempts === 0 && !evidence?.prepared && !evidence?.receipt ? latest : undefined;
+      const after = supersede ? supersede.after : latest?.requestId;
+      const shared = snap.read.meta.get(baseKey(id)) as SharedBase | undefined;
+      const base = latest ? (supersede ? latest.base : latest.local) : shared?.version;
+      if (!after && !base) throw new BodyRuntimeError("Body updates require a known authority premise.");
+      const createdAt = new Date().toISOString();
+      const intent: NewIntentRecord = { requestId, kind: "document.body.update", target: id, base: base ?? null, baseContent: latest ? (supersede ? latest.baseContent : latest.content) : shared?.content ?? null, createdAt, ...(after ? { after } : {}) };
+      const descriptor: BodyRecord = { schema: 1, requestId, target: id, scope: mode.scope, okfVersion: mode.okfVersion, body: input.body, initialVersion: after ? null : base! };
+      const meta = [{ key, value: descriptor }], removeMeta = supersede ? retiredDescriptorKeys([supersede]) : [];
+      const projected: IntentRecord = { ...intent, sequence: Number.MAX_SAFE_INTEGER, local: version, content: raw, updatedAt: createdAt, attempts: 0, state: "pending" };
+      projectBodyGuard(snap.guard, { document: { version, raw }, intents: [...snap.read.intents.filter(row => row.requestId !== supersede?.requestId), projected], meta, removeMeta });
+      try {
+        const result = await backend.writeJournaled(id, doc, { ...options, guard: snap.guard, intent, meta, removeMeta, ...(supersede ? { supersede: { requestId: supersede.requestId, expectedState: supersede.state, expectedAttempts: 0 } } : {}) });
+        recorded = result.intent;
+        return result.version;
+      } catch (error) { if (!(error instanceof JournalGuardConflict) || retry === COMPOSE_ATTEMPTS - 1) throw error; }
+    }
+    throw new JournalGuardConflict(id);
+  };
+  const persistence = new Proxy(backend, { get(inner, key) { if (key === "write") return write; const value = Reflect.get(inner, key, inner); return typeof value === "function" ? value.bind(inner) : value; } });
+  const result = await mutateDocument({ bundle: { ...bundleOf(local), backend: persistence }, id, mode: "patch", registry: EMPTY_REGISTRY, strict: false,
+    ...(input.expectedVersion === undefined ? {} : { expectedVersion: input.expectedVersion }), actor: input.actor, now: input.now,
+    buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: input.body }) });
+  return { ...result, intent: recorded };
+}
+
+/** A reviewable snapshot, not permission to overwrite a later local or shared version. */
+export interface ConflictReview {
+  id: ConceptId;
+  local: { version: Version; content: string };
+  base: SharedBase;
+  remote: SharedBase;
+  intents: IntentRecord[];
+}
+
+export type ConflictChoice =
+  | { kind: "keep-local" }
+  | { kind: "take-remote" }
+  | { kind: "revise"; body: string; frontmatter?: OkfDocument["frontmatter"] };
+
+/** Retained in the same transaction as the resolution, including all replaced local intents. */
+export interface ConflictResolutionReceipt {
+  id: string;
+  reviewed: ConflictReview;
+  choice: ConflictChoice["kind"];
+  resolvedAt: string;
+  replacementRequestId: string | null;
+}
+
+export interface ConflictResolutionResult {
+  /** The exact-mode review receipt, or in body mode the bounded {@link BodyResolutionReceipt}. */
+  receipt: ConflictResolutionReceipt | BodyResolutionReceipt;
+  intent: IntentRecord | null;
+  version: Version | null;
+}
+
+export class ConflictReviewStaleError extends Error {
+  constructor() {
+    super("The conflict changed since review. Inspect it again before choosing a resolution.");
+    this.name = "ConflictReviewStaleError";
+  }
+}
+
+/**
+ * Durable recovery receipt key; receipts are retained, not silently pruned with pending edits.
+ * Exact mode keeps the whole review; body mode a bounded record without content. Either way one
+ * row remains per resolution, so the store grows with resolutions.
+ */
+export function conflictResolutionKey(id: string): string { return `conflict-resolution:${id}`; }
+
+async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promise<{ base: SharedBase; doc: OkfDocument | null }> {
+  try {
+    const read = await remote.read(id);
+    return { base: { version: read.version, content: stringifyDoc(read.doc.frontmatter, read.doc.body ?? "") }, doc: read.doc };
+  } catch (error) {
+    if ((error as { code?: unknown })?.code === "ENOENT") return { base: { version: null, content: null }, doc: null };
+    throw error;
+  }
+}
+
+/** A refused head is resolvable only when the refusal was about the content; lost permission keeps the resume path. */
+function isContentRefusal(row: IntentRecord): boolean {
+  return row.state === "refused" && row.refusal !== undefined && !AUTHORIZATION_REFUSAL_CODES.has(row.refusal.code);
+}
+
+/**
+ * The resolvable chain in one journal snapshot: the complete unsettled journal, headed by a
+ * recorded conflict (or, with `admitRefused`, a content refusal), continued only by dependent
+ * edits, whose latest bytes are the working document. Body mode admits the refused head, since
+ * a refused body update cannot be superseded by a later edit; exact mode keeps its rule, where
+ * a later edit supersedes a refused request.
+ */
+function conflictChain(id: ConceptId, snapshot: JournaledReadResult, admitRefused: boolean) {
+  const intents = snapshot.intents.filter(row => row.state !== "acknowledged");
+  // Exact mode keeps the seam's earlier answer for a set with no conflict row, so its refusal
+  // of a refused head is the class it always was.
+  if (!admitRefused && !intents.some(row => row.state === "conflict")) throw new JournalSnapshotConflict(id);
+  assertJournalSnapshot(id, intents, snapshot.intents);
+  const head = intents[0];
+  if (!snapshot.document || snapshot.raw === null || !head || !(head.state === "conflict" || (admitRefused && isContentRefusal(head)))) {
+    throw new InvalidInputError(admitRefused
+      ? "Conflict recovery requires an existing local document and a first pending edit the authority answered with a conflict or a content refusal; lost permission is resumed, not resolved."
+      : "Conflict recovery requires an existing local document and a conflicted first pending edit.");
+  }
+  for (let index = 1; index < intents.length; index++) {
+    if (intents[index]!.after !== intents[index - 1]!.requestId || intents[index]!.base !== intents[index - 1]!.local) {
+      throw new InvalidInputError("Conflict recovery requires one dependent edit chain.");
+    }
+  }
+  const latest = intents[intents.length - 1]!;
+  if (latest.local !== snapshot.document.version || latest.content !== snapshot.raw) {
+    throw new InvalidInputError("The working document is not the latest journaled edit; preserve and reconcile it before resolving.");
+  }
+  return { snapshot, intents, document: snapshot.document };
+}
+
+async function conflictLocal(backend: JournaledBackend, id: ConceptId, admitRefused = false) {
+  return conflictChain(id, await backend.readWithJournal(id), admitRefused);
+}
+
+/** Fetch the shared head explicitly; authorization/network failure is never treated as deletion. */
+export async function inspectConflict(local: LocalTarget, remote: StorageBackend, id: ConceptId): Promise<ConflictReview> {
+  const backend = await runtimeBackend(local);
+  const mode = await admitBodyMode(backendOf(local));
+  if (mode) await bodySnapshot(backendOf(local), id, mode);
+  const { snapshot, intents, document } = await conflictLocal(backend, id, mode !== null);
+  const shared = await readConflictRemote(remote, id);
+  return {
+    id,
+    local: { version: document.version, content: snapshot.raw! },
+    base: { version: intents[0]!.base, content: intents[0]!.baseContent },
+    remote: shared.base,
+    intents,
+  };
+}
+
+/** The mutation options a resolution honours when it authors a fresh local edit. */
+export type ConflictResolutionOptions = Pick<LocalMutation, "actor" | "producer" | "now" | "registry" | "strict">;
+
+/**
+ * Resolve exactly the reviewed local chain against the reviewed shared head. A fresh remote
+ * read verifies the decision; a later remote edit is still protected by the replacement's CAS
+ * on push. Taking remote adopts that served snapshot, not a promise it can never change.
+ * No network write occurs here. Old content and identities remain in the recovery receipt.
+ * Body mode resolves through {@link resolveBodyConflict}: the same choices over a chain whose
+ * head is a recorded conflict or content refusal, with the retirement rules of that mode.
+ */
+export async function resolveConflict(
+  local: LocalTarget,
+  remote: StorageBackend,
+  reviewed: ConflictReview,
+  choice: ConflictChoice,
+  options: ConflictResolutionOptions = {},
+): Promise<ConflictResolutionResult> {
+  const review = structuredClone(reviewed);
+  const selected = structuredClone(choice);
+  if (!["keep-local", "take-remote", "revise"].includes(selected.kind)) throw new InvalidInputError("Unknown conflict resolution choice.");
+  const mode = await admitBodyMode(backendOf(local));
+  if (mode) return resolveBodyConflict(local, mode, remote, review, selected, options);
+  const backend = await runtimeBackend(local);
+  const current = await conflictLocal(backend, review.id);
+  assertJournalSnapshot(review.id, review.intents, current.intents);
+  if (current.document.version !== review.local.version || current.snapshot.raw !== review.local.content) throw new ConflictReviewStaleError();
+  const shared = await readConflictRemote(remote, review.id);
+  if (shared.base.version !== review.remote.version || shared.base.content !== review.remote.content) throw new ConflictReviewStaleError();
+  const resolvedAt = options.now?.() ?? new Date().toISOString();
+  const requestId = selected.kind === "take-remote" ? null : mintRequestId();
+  const receipt: ConflictResolutionReceipt = {
+    // The original conflict identity lets a caller recover the receipt after a lost local reply.
+    id: current.intents[0]!.requestId,
+    reviewed: { ...review, base: { version: current.intents[0]!.base, content: current.intents[0]!.baseContent }, intents: current.intents },
+    choice: selected.kind, resolvedAt, replacementRequestId: requestId,
+  };
+  const resolveIntents = { expected: current.intents };
+  const meta: MetaRecord[] = [
+    { key: conflictResolutionKey(receipt.id), value: receipt },
+    { key: baseKey(review.id), value: shared.base },
+  ];
+  const common = { expectedVersion: review.local.version, resolveIntents, meta, actor: options.actor };
+  if (selected.kind === "take-remote") {
+    if (!shared.doc) {
+      await backend.deleteJournaled(review.id, common);
+      return { receipt, version: null, intent: null };
+    }
+    const written = await backend.writeJournaled(review.id, shared.doc, common);
+    return { receipt, version: written.version, intent: null };
+  }
+  const intent: NewIntentRecord = {
+    requestId: requestId!, kind: "document.write", target: review.id,
+    base: shared.base.version, baseContent: shared.base.content, createdAt: resolvedAt,
+  };
+  let written: Awaited<ReturnType<JournaledBackend["writeJournaled"]>> | undefined;
+  const write = async (id: ConceptId, doc: OkfDocument): Promise<Version> => {
+    if (id !== review.id) throw new InvalidInputError("Conflict resolution cannot write another document.");
+    written = await backend.writeJournaled(id, doc, { ...common, intent });
+    return written.version;
+  };
+  const persistence = new Proxy(backend, { get(inner, key) {
+    if (key === "write") return write;
+    const value = Reflect.get(inner, key, inner);
+    return typeof value === "function" ? value.bind(inner) : value;
+  } });
+  const result = await mutateDocument({
+    ...options, bundle: { ...bundleOf(local), backend: persistence }, id: review.id,
+    mode: "patch", expectedVersion: review.local.version,
+    registry: options.registry ?? EMPTY_REGISTRY, strict: options.strict ?? false,
+    buildCandidate: existing => selected.kind === "keep-local"
+      ? { frontmatter: existing!.frontmatter, body: existing!.body }
+      : { frontmatter: selected.frontmatter ?? existing!.frontmatter, body: selected.body },
+  });
+  // A validated semantic no-op still resolves the rejected identity and records a fresh one.
+  if (!written) await write(review.id, result.doc);
+  return { receipt, version: written!.version, intent: written!.intent };
+}
+
+/**
+ * Body mode's resolution. The reviewed chain (its head a recorded conflict or content refusal,
+ * its successors never attempted) retires with the descriptors of its rows and a bounded
+ * receipt, in one guarded write that also adopts the served head (`take-remote`; a served
+ * absence deletes the working copy's document and its base row) or journals one fresh
+ * body update at the served head (`keep-local`, `revise`). Body mode cannot create a
+ * document, so the fresh update needs a served head. The complete state after the resolution,
+ * receipt and removals included, is projected through the capacity check before anything is
+ * written; a journal that moves under the guard is retried up to the compose limit, after
+ * which the review is reported stale. The head is never rewritten to reach the exact-mode
+ * rule: a refused head retires as refused, and the receipt records it so.
+ */
+async function resolveBodyConflict(
+  local: LocalTarget,
+  mode: BodyMode,
+  remote: StorageBackend,
+  review: ConflictReview,
+  selected: ConflictChoice,
+  options: ConflictResolutionOptions,
+): Promise<ConflictResolutionResult> {
+  const backend = backendOf(local);
+  // The input is checked before any read of the target's journal, as the body commit checks it before any write.
+  if (selected.kind === "revise") {
+    if (Object.hasOwn(selected, "frontmatter")) throw new BodyRuntimeError("Body conflict resolution revises the body only; the authority owns the metadata.");
+    if (!isBoundedBody(selected.body)) throw new BodyRuntimeError("Expected a bounded body-only revision.");
+  }
+  const isRecord = (value: unknown): boolean => typeof value === "object" && value !== null;
+  if (typeof review.id !== "string" || !isRecord(review.local) || !isRecord(review.remote) || !Array.isArray(review.intents) || review.intents.length === 0 ||
+      review.intents.some(row => !isRecord(row) || typeof row.requestId !== "string" || !Number.isSafeInteger(row.sequence))) throw new InvalidInputError("Conflict resolution requires the review its inspection returned.");
+  const id = review.id;
+  const reviewedHead = review.intents.reduce((lowest, row) => row.sequence < lowest.sequence ? row : lowest);
+  const receiptKey = conflictResolutionKey(reviewedHead.requestId);
+  const requestId = selected.kind === "take-remote" ? null : mintRequestId();
+  await assertBodyEdition(backend, mode);
+  /** The working copy's side of the review, read fresh: the reviewed chain, at the reviewed bytes. */
+  const verifyLocal = async (): Promise<{ snap: BodySnapshot; chain: IntentRecord[]; expectedVersion: Version }> => {
+    const snap = await bodySnapshot(backend, id, mode, requestId === null ? [receiptKey] : [receiptKey, bodyRecordKey(requestId)]);
+    const current = conflictChain(id, snap.read, true);
+    assertJournalSnapshot(id, review.intents, current.intents);
+    if (current.document.version !== review.local.version || snap.read.raw !== review.local.content) throw new ConflictReviewStaleError();
+    return { snap, chain: current.intents, expectedVersion: current.document.version };
+  };
+  // The local premise is checked before the authority is asked, as in exact mode: a review that
+  // no longer describes the working copy is refused without a network read.
+  await verifyLocal();
+  await assertBodyRemoteEdition(remote, mode);
+  const shared = await readConflictRemote(remote, id);
+  if (shared.base.version !== review.remote.version || shared.base.content !== review.remote.content) throw new ConflictReviewStaleError();
+  // The served content enters the working copy in its own serialization, as a pull records it.
+  const served = shared.doc ? bodyDocument(shared.base.content!, id, mode) : null;
+  const servedRaw = served ? stringifyDoc(served.frontmatter, served.body ?? "") : null;
+  const servedBase: SharedBase = { version: shared.base.version, content: servedRaw };
+  if (selected.kind !== "take-remote" && !served) throw new BodyRuntimeError("The authority holds no document for this id and body delivery cannot create one; take the served deletion or export the retained work.");
+  const resolvedAt = options.now?.() ?? new Date().toISOString();
+  // The clock stamps the fresh row's createdAt, which the delivery grammar reads on every later snapshot.
+  if (typeof resolvedAt !== "string" || parseIsoInstant(resolvedAt) === null) throw new BodyRuntimeError("The resolution clock must produce an ISO-8601 instant with an explicit UTC offset.");
+
+  /** One fresh local verification plus the receipt the resolution will keep, composed against that snapshot. */
+  const prepare = async (): Promise<{ snap: BodySnapshot; chain: IntentRecord[]; expectedVersion: Version; receipt: BodyResolutionReceipt }> => {
+    const { snap, chain, expectedVersion } = await verifyLocal();
+    const receipt = validateBodyResolutionReceipt({
+      schema: 1, mode: "document.body.update", id: chain[0]!.requestId, target: id, choice: selected.kind, resolvedAt,
+      replacementRequestId: requestId, served: { version: shared.base.version }, expectedLocalVersion: expectedVersion,
+      chain: chain.map(row => ({
+        requestId: row.requestId, sequence: row.sequence, state: row.state, attempts: row.attempts, base: row.base, local: row.local,
+        ...(row.acknowledgedVersion === undefined ? {} : { acknowledgedVersion: row.acknowledgedVersion }),
+        ...(row.refusal === undefined ? {} : { refusalCode: row.refusal.code }),
+        ...(row.remote === undefined ? {} : { remoteVersion: row.remote.version }),
+      })),
+    });
+    return { snap, chain, expectedVersion, receipt };
+  };
+  const remaining = (snap: BodySnapshot, chain: IntentRecord[]): IntentRecord[] => snap.read.intents.filter(row => !chain.some(retired => retired.requestId === row.requestId));
+  const retry = (error: unknown, attempt: number): void => {
+    if (!(error instanceof JournalGuardConflict)) throw error;
+    if (attempt === COMPOSE_ATTEMPTS - 1) throw new ConflictReviewStaleError();
+  };
+
+  if (selected.kind === "take-remote") {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { snap, chain, expectedVersion, receipt } = await prepare();
+        const receiptRow: MetaRecord = { key: receiptKey, value: receipt };
+        const retired = retiredDescriptorKeys(chain);
+        const common = { guard: snap.guard, expectedVersion, resolveIntents: { expected: chain } };
+        if (!served) {
+          // A served absence leaves no base row behind, as a pull's own deletion leaves none: the
+          // refresh premise for an id with neither document nor intents expects the row absent,
+          // and the receipt's `served.version` already records the absence.
+          const meta = [receiptRow], removeMeta = [...retired, baseKey(id)];
+          projectBodyGuard(snap.guard, { document: null, intents: remaining(snap, chain), meta, removeMeta });
+          await backend.deleteJournaled(id, { ...common, meta, removeMeta });
+          return { receipt, version: null, intent: null };
+        }
+        const meta = [receiptRow, baseRow(id, servedBase)], removeMeta = retired;
+        projectBodyGuard(snap.guard, { document: { version: versionOfBytes(servedRaw!), raw: servedRaw! }, intents: remaining(snap, chain), meta, removeMeta });
+        const written = await backend.writeJournaled(id, served, { ...common, meta, removeMeta, ...(options.actor === undefined ? {} : { actor: options.actor }) });
+        return { receipt, version: written.version, intent: null };
+      } catch (error) { retry(error, attempt); }
+    }
+  }
+
+  let written: { version: Version; intent: IntentRecord | null; receipt: BodyResolutionReceipt } | undefined;
+  const write = async (target: ConceptId, candidate: OkfDocument, writeOptions: WriteOptions = {}): Promise<Version> => {
+    if (target !== id) throw new BodyRuntimeError("Conflict resolution cannot write another document.");
+    const doc = bodyDocument(stringifyDoc(candidate.frontmatter, candidate.body ?? ""), id, mode);
+    const raw = stringifyDoc(doc.frontmatter, doc.body ?? ""), version = versionOfBytes(raw);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { snap, chain, expectedVersion, receipt } = await prepare();
+        // Keeping the local edit re-journals the retained edit's own body text; its bytes are the working document.
+        const body = selected.kind === "revise" ? selected.body : snap.records.get(chain[chain.length - 1]!.requestId)!.body;
+        const intent: NewIntentRecord = { requestId: requestId!, kind: "document.body.update", target: id, base: shared.base.version, baseContent: servedRaw, createdAt: resolvedAt };
+        const descriptor: BodyRecord = { schema: 1, requestId: requestId!, target: id, scope: mode.scope, okfVersion: mode.okfVersion, body, initialVersion: shared.base.version };
+        const meta: MetaRecord[] = [{ key: receiptKey, value: receipt }, baseRow(id, servedBase), { key: bodyRecordKey(requestId!), value: descriptor }];
+        const removeMeta = retiredDescriptorKeys(chain);
+        const projected: IntentRecord = { ...intent, sequence: Number.MAX_SAFE_INTEGER, local: version, content: raw, updatedAt: resolvedAt, attempts: 0, state: "pending" };
+        // The fresh row must pass the validator every later snapshot runs over it, before it is
+        // written: a resolution clock or body outside the delivery grammar is the caller's input.
+        try { validateBodyRecord(mode, projected, descriptor); }
+        catch (error) { throw error instanceof BodyRuntimeError ? error : new BodyRuntimeError(`The fresh body update is outside the delivery grammar: ${(error as Error).message}`); }
+        projectBodyGuard(snap.guard, { document: { version, raw }, intents: [...remaining(snap, chain), projected], meta, removeMeta });
+        const result = await backend.writeJournaled(id, doc, { ...writeOptions, guard: snap.guard, expectedVersion, resolveIntents: { expected: chain }, intent, meta, removeMeta });
+        written = { version: result.version, intent: result.intent, receipt };
+        return result.version;
+      } catch (error) { retry(error, attempt); }
+    }
+  };
+  const persistence = new Proxy(backend, { get(inner, key) {
+    if (key === "write") return write;
+    const value = Reflect.get(inner, key, inner);
+    return typeof value === "function" ? value.bind(inner) : value;
+  } });
+  const result = await mutateDocument({
+    ...options, bundle: { ...bundleOf(local), backend: persistence }, id,
+    mode: "patch", expectedVersion: review.local.version,
+    registry: options.registry ?? EMPTY_REGISTRY, strict: options.strict ?? false,
+    buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: selected.kind === "keep-local" ? existing!.body : (selected as { body: string }).body }),
+  });
+  // A validated semantic no-op still retires the chain and records a fresh identity.
+  if (!written) await write(id, result.doc, { expectedVersion: review.local.version, ...(options.actor === undefined ? {} : { actor: options.actor }) });
+  return { receipt: written!.receipt, version: written!.version, intent: written!.intent };
+}
+
 // ── push ───────────────────────────────────────────────────────────────────────────────────
 
 export interface PushOptions {
+  /** Explicit transport; never inferred from the exact-document transport. */
+  bodyTransport?: BodyDeliveryTransport;
   /** Used to fetch the shared head's content when an intent enters conflict. */
   remote?: StorageBackend;
   write?: UncertainWriteOptions;
@@ -738,6 +1164,7 @@ export async function settleIntent(
   options: PushOptions = {},
 ): Promise<IntentRecord> {
   const backend = backendOf(local);
+  if (await admitBodyMode(backend)) throw new BodyRuntimeError("Body outcomes require committed content evidence.");
   const current = await backend.readIntent(requestId);
   if (!current) throw new IntentStateConflict(requestId, "in_flight", null);
   // The primitive already settles a conflict at the intent's own version as committed; applying
@@ -775,6 +1202,80 @@ export async function settleIntent(
   }
 }
 
+async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, requestId: string, options: PushOptions): Promise<IntentRecord | null> {
+  await assertBodyEdition(backend, mode);
+  const original = await backend.readIntent(requestId);
+  if (!original || original.state !== "pending") return null;
+  const snap = await bodySnapshot(backend, original.target, mode);
+  const intent = snap.read.intents.find(row => row.requestId === requestId);
+  if (!intent || intent.state !== "pending") return null;
+  const record = snap.records.get(requestId)!;
+  let prepared = record.prepared;
+  if (!prepared) {
+    const input = { scope: mode.scope, requestId, target: intent.target, okfVersion: mode.okfVersion, operation: { kind: "document.body.update" as const, body: record.body }, local: intent.local, content: intent.content, createdAt: intent.createdAt };
+    if (intent.after) {
+      const priorIntent = snap.read.intents.find(row => row.requestId === intent.after), prior = snap.records.get(intent.after);
+      if (priorIntent?.state !== "acknowledged" || !prior?.prepared || !prior.receipt) return null;
+      prepared = prepareBodyDelivery(input, { prepared: prior.prepared, receipt: prior.receipt });
+    } else {
+      if (!record.initialVersion) throw new BodyRuntimeError("Body delivery has no authority premise.");
+      prepared = prepareBodyDelivery(input, { expectedVersion: record.initialVersion });
+    }
+  }
+  const attempts = intent.attempts + 1;
+  if (!Number.isSafeInteger(attempts)) throw new BodyRuntimeError("Delivery attempt counter exhausted.");
+  const key = bodyRecordKey(requestId), metadata = { ...record, prepared };
+  const claimed = { ...intent, state: "in_flight" as const, attempts };
+  projectBodyGuard(snap.guard, { intents: snap.read.intents.map(row => row.requestId === requestId ? claimed : row), meta: [{ key, value: metadata }] });
+  try { await backend.updateIntent(requestId, "pending", { state: "in_flight", attempts }, { guard: snap.guard, meta: [{ key, value: metadata }] }); }
+  catch (error) { if (error instanceof JournalGuardConflict || error instanceof IntentStateConflict) return null; throw error; }
+  const result = await performBodyDelivery(options.bodyTransport!, prepared, intent.attempts, options.write);
+  const durableAttempts = Math.max(attempts, result.attempts);
+  for (let retry = 0; retry < 3; retry++) {
+    const fresh = await bodySnapshot(backend, intent.target, mode);
+    const current = fresh.read.intents.find(row => row.requestId === requestId), evidence = fresh.records.get(requestId);
+    if (!current || current.state !== "in_flight" || !evidence?.prepared) return null;
+    assertSameBodyDelivery(prepared, evidence.prepared);
+    let patch: Parameters<JournaledBackend["updateIntent"]>[2] = { attempts: durableAttempts };
+    const meta: MetaRecord[] = [];
+    let document: OkfDocument | undefined;
+    switch (result.outcome.kind) {
+      case "committed": {
+        const shared = fresh.read.meta.get(baseKey(intent.target)) as SharedBase | undefined;
+        const proposal = reconcileBodyReceipt(prepared, result.outcome.receipt, { version: fresh.read.document?.version ?? null, intents: fresh.read.intents, shared: shared?.version && shared.content !== null ? { version: shared.version, content: shared.content } : null });
+        patch = { ...patch, state: "acknowledged", acknowledgedVersion: proposal.receipt.version };
+        meta.push({ key, value: { ...evidence, receipt: proposal.receipt } });
+        if (proposal.shared.action === "replace-shared-under-CAS") {
+          const canonical = bodyDocument(proposal.shared.content, intent.target, mode);
+          meta.push(baseRow(intent.target, { version: proposal.shared.version, content: stringifyDoc(canonical.frontmatter, canonical.body ?? "") }));
+        }
+        if (proposal.action === "replace-local-under-CAS") document = bodyDocument(proposal.receipt.content, intent.target, mode);
+        break;
+      }
+      case "conflict": {
+        let remote = await remoteHead(options.remote, intent.target, result.outcome.actual);
+        if (jsonBytes(remote) > 2 * 1024 * 1024) { remote = { version: result.outcome.actual, content: null }; patch.finding = "Remote content exceeds the retained evidence limit."; }
+        patch = { ...patch, state: "conflict", remote };
+        break;
+      }
+      case "refused": {
+        patch = { ...patch, state: "refused", refusal: { code: result.outcome.code, message: result.outcome.message } };
+        if (isAuthorizationRefusal(result.outcome)) {
+          const control = fresh.read.meta.get(BODY_MODE_KEY) as BodyMode & { controls: Record<string, unknown> };
+          meta.push({ key: BODY_MODE_KEY, value: { ...control, controls: { ...control.controls, sync: { paused: true, reason: `${result.outcome.code}: ${result.outcome.message}`, since: new Date().toISOString() } } } });
+        }
+        break;
+      }
+      case "unknown": patch = { ...patch, state: "pending", ...(result.diagnostic ? { finding: result.diagnostic } : {}) }; break;
+    }
+    const raw = document ? stringifyDoc(document.frontmatter, document.body ?? "") : undefined;
+    projectBodyGuard(fresh.guard, { intents: fresh.read.intents.map(row => row.requestId === requestId ? { ...row, ...patch } : row), meta, ...(raw === undefined ? {} : { document: { version: versionOfBytes(raw), raw } }) });
+    try { return await backend.updateIntent(requestId, "in_flight", patch, { guard: fresh.guard, meta, ...(document ? { document } : {}) }); }
+    catch (error) { if (!(error instanceof JournalGuardConflict) || retry === 2) throw error; }
+  }
+  return null;
+}
+
 /**
  * Deliver pending intents in local commit order through the uncertain-write primitive. Each
  * intent is claimed (`pending` to `in_flight`) by compare-and-swap, so two realms cannot both
@@ -788,7 +1289,9 @@ export async function settleIntent(
  * delivery is a submission and a repeated one starts with a lookup.
  */
 export async function push(local: LocalTarget, transport: OperationTransport, options: PushOptions = {}): Promise<PushReport> {
-  const backend = backendOf(local);
+  const mode = await admitBodyMode(backendOf(local));
+  const backend = await runtimeBackend(local);
+  if (mode && (!options.bodyTransport || typeof options.bodyTransport.submit !== "function" || typeof options.bodyTransport.lookup !== "function")) throw new BodyRuntimeError("An explicit body delivery transport is required.");
   const report: PushReport = { paused: false, settled: [], skipped: [] };
   const control = await backend.readMeta<SyncControl>(SYNC_KEY);
   if (control?.paused) {
@@ -796,6 +1299,13 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
     return report;
   }
   for (const intent of await backend.listIntents("pending")) {
+    if (mode) {
+      const settled = await pushBodyIntent(backendOf(local), mode, intent.requestId, options);
+      if (!settled) { report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" }); continue; }
+      report.settled.push({ requestId: settled.requestId, target: settled.target, state: settled.state });
+      if ((await backend.readMeta<SyncControl>(SYNC_KEY))?.paused) { report.paused = true; break; }
+      continue;
+    }
     if (intent.after !== undefined) {
       const predecessor = await backend.readIntent(intent.after);
       if (predecessor && predecessor.state !== "acknowledged") {
@@ -850,7 +1360,13 @@ export async function pushWithRole(
   options: PushOptions = {},
   role: PushRoleOptions = {},
 ): Promise<PushRoleResult<PushReport>> {
-  return withPushRole(pushRoleName(local.name), () => push(local.backend, transport, options), role);
+  return withPushRole(pushRoleName(local.name), async () => {
+    if (await admitBodyMode(local.backend)) {
+      if (!options.bodyTransport || typeof options.bodyTransport.submit !== "function" || typeof options.bodyTransport.lookup !== "function") throw new BodyRuntimeError("An explicit body delivery transport is required.");
+      await reclaimInFlight(local);
+    }
+    return push(local.backend, transport, options);
+  }, role);
 }
 
 // ── pull ───────────────────────────────────────────────────────────────────────────────────
@@ -927,14 +1443,18 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<string | unde
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
   const concurrency = concurrencyOf(options);
-  const backend = backendOf(local);
+  const backend = await runtimeBackend(local);
+  const bodyMode = await admitBodyMode(backendOf(local));
+  const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
   // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
   const known = await lastKnownDigest(backend);
   const startedAt = new Date().toISOString();
   await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false } satisfies PullMarker);
+  if (bodyMode) { await assertBodyEdition(backendOf(local), bodyMode); await assertBodyRemoteEdition(remote, bodyMode); }
   const report: PullReport = { refreshed: [], held: [], unchanged: [], deleted: [] };
   const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
   const complete = async (headsDigest: string | undefined, unchanged: boolean): Promise<PullReport> => {
+    await validateReadSide?.();
     await backend.writeMeta(PULL_KEY, {
       startedAt,
       completedAt: new Date().toISOString(),
@@ -947,8 +1467,10 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   };
 
   /** Apply one fetched head to the working copy under the same guards, whichever path fetched it. */
-  const apply = async (head: ReadResult): Promise<void> => {
+  const apply = async (head: ReadResult, premises?: BodyRefreshPremises): Promise<void> => {
+    if (bodyMode) await assertBodyRemoteEdition(remote, bodyMode);
     const id = head.doc.id;
+    await premises?.check(id);
     const base = await backend.readMeta<SharedBase>(baseKey(id));
     if (base?.version === head.version) {
       report.unchanged.push(id);
@@ -957,6 +1479,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     const expectedVersion = await localVersion(backend, id);
     try {
       await backend.writeJournaled(id, head.doc, {
+        ...(premises ? { guard: premises.guard(id) } : {}),
         expectedVersion,
         requireSettled: true,
         meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
@@ -974,7 +1497,8 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   };
   const fetchAndApply = (candidates: ConceptId[]): Promise<void> =>
     forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
-      for (const head of await remote.readMany(batch)) await apply(head);
+      const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
+      for (const head of await remote.readMany(batch)) await apply(head, premises);
     });
 
   const wire = await wireFor(remote, local, "heads", options);
@@ -988,7 +1512,10 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     return complete(undefined, false);
   }
 
+  const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode) : undefined;
   const answer = await wire.heads(known === undefined ? {} : { ifNoneMatch: known });
+  await validateReadSide?.();
+  await premises?.checkAll();
   if (answer === null) {
     report.unchanged = await backend.list();
     return complete(known, true);
@@ -1006,7 +1533,8 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     else candidates.push(head.id);
   }
   await fetchAndApply(candidates);
-  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions);
+  await validateReadSide?.();
+  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions, premises, validateReadSide);
   report.deleted = reconciled.deleted;
   report.held.push(...reconciled.held);
   if (reconciled.refused) {
@@ -1029,7 +1557,9 @@ export interface SyncStatus {
 
 /** Counts of intents by state plus the pause and bootstrap markers. */
 export async function syncStatus(local: LocalTarget): Promise<SyncStatus> {
-  const backend = backendOf(local);
+  const backend = await runtimeBackend(local);
+  const mode = await admitBodyMode(backendOf(local));
+  if (mode) for (const id of new Set((await backend.listIntents()).map(row => row.target))) await bodySnapshot(backendOf(local), id, mode);
   const counts: Record<OperationState, number> = { pending: 0, in_flight: 0, acknowledged: 0, conflict: 0, refused: 0, unknown: 0 };
   for (const row of await backend.listIntents()) counts[row.state] += 1;
   const control = await backend.readMeta<SyncControl>(SYNC_KEY);
@@ -1054,13 +1584,12 @@ export interface ResumeReport {
  * Lift a pause after permission has been restored; an explicit decision, never automatic. The
  * intents the revocation refused return to `pending` with their attempts preserved, so the next
  * push redelivers them without a new local edit. Only authorization refusals are requeued: the
- * authority never admitted those requests, so their identities carry no recorded outcome and a
- * redelivery under the same identity is a first delivery. Any other refusal was recorded under
- * the identity and would be answered the same way again; only a new local edit, which
- * supersedes it with a fresh identity, changes that.
+ * next delivery rechecks the same identity. Body delivery retains prior refusal evidence and
+ * looks up first: a recorded refusal remains refused, whereas a positive never-recorded answer
+ * can permit the identical submission. Resuming is scheduling, not an acceptance claim.
  */
 export async function resume(local: LocalTarget): Promise<ResumeReport> {
-  const backend = backendOf(local);
+  const backend = await runtimeBackend(local);
   await backend.writeMeta(SYNC_KEY, { paused: false } satisfies SyncControl);
   let requeued = 0;
   for (const row of await backend.listIntents("refused")) {
@@ -1087,7 +1616,7 @@ export async function resume(local: LocalTarget): Promise<ResumeReport> {
  * later local edit chains behind it rather than superseding its request identity.
  */
 export async function reclaimInFlight(local: LocalTarget): Promise<number> {
-  const backend = backendOf(local);
+  const backend = await runtimeBackend(local);
   let reclaimed = 0;
   for (const row of await backend.listIntents("in_flight")) {
     try {
