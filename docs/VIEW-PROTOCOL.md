@@ -78,12 +78,16 @@ declares exactly the limits it enforces (`BRIDGE_SERVICE_LIMITS`).
 A host that embeds the View as its page (no border, the host's own title bar) adds two optional
 fields to `host`. `frame` is `{ "title": "host", "height": "content", "maxHeight": <px> }`:
 the host has printed the View's name, so the View may hide its own masthead, and the host sizes
-the frame to the height the View reports through `frame.resize`, up to `maxHeight`. A View that
-never reports keeps the host's floor and owns its own scroll; a View reports a height or keeps the
-window, never both. `theme` is the host's own resolved design tokens, each a CSS value string
-(`scheme`, `ground`, `surface`, `text`, `muted`, `accent`, `border`, `focus`, `fontSans`,
-`fontDisplay`, `fontMono`, `radius`, `spacing`); a View may adopt them as `--sb-*` custom
-properties and looks native, or ignore them and keep its own brand. Both are absent on the OSS
+the frame to the height the View reports through `frame.resize`, between its floor and
+`maxHeight`. The floor is the host's own minimum, unspecified here but never less than the
+window the host leaves under its chrome; a host may also damp reports, ignoring one that repeats
+a growth pattern so a document whose height follows the frame cannot feed back. The echoed
+`height` is what the host applied; a View must not re-report from the echo. A View that never
+reports keeps the floor and owns its own scroll; a View reports a height or keeps the window,
+never both. `theme` is the host's own resolved design tokens: `scheme` is `"light"` or `"dark"`,
+and `ground`, `surface`, `text`, `muted`, `accent`, `border`, `focus`, `fontSans`,
+`fontDisplay`, `fontMono`, `radius` and `spacing` are CSS value strings; a View may adopt them as
+`--sb-*` custom properties and looks native, or ignore them and keep its own brand. Both are absent on the OSS
 shell and on Portal; a View that ignores them draws exactly as before.
 
 `bundle.root` is a filesystem path on the OSS web shell in `--dir` mode and `null` elsewhere;
@@ -259,7 +263,9 @@ is a name from the registry below (lowercase, dot or hyphen separated, at most 1
 when present, is a plain object; the whole request is at most 64 KiB. A host answers
 `{ capability, output }` when it has a handler for that capability and `FORBIDDEN` otherwise. A
 registered handler is always listed in `hello.host.capabilities`, so a View calls `host` only for a
-capability it saw in `hello`. Extensions require a bundle-data grant; a `none` View is refused.
+capability it saw in `hello`. Extensions require a bundle-data grant; a `none` View is refused,
+except for a capability whose registry row says it touches no bundle data, which a host may answer
+for any launch it admits.
 
 No host adds a View-facing request type outside this document. A host-specific feature is a
 `host` capability with its input and output shape recorded in the registry below.
@@ -312,7 +318,7 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `graph` | the `graph` request is answered, bounded by `limits.graphDocuments` and `limits.graphRelationships` | none (a request); declared by every OSS host |
 | `graph.model` | `graph` also returns `model` and `definitions` | reserved; no OSS host declares it until the model shape has an owner |
 | `record.open` | the host opens its own reader for one document | `host` input `{ documentId }`; output `{ opened: true }`; `NOT_FOUND` for a missing document |
-| `frame.resize` | the host sizes the View's frame to the reported document height, bounded by `host.frame.maxHeight` | `host` input `{ height }` (a finite CSS pixel count, at least 0); output `{ height }` as applied after the host's floor, ceiling and damping; `USAGE` for any other input. Answered at once; touches no bundle data and runs no operation, so a host lists it for a View with no operations too. Declared only with `host.frame` |
+| `frame.resize` | the host sizes the View's frame to the reported document height, bounded by `host.frame.maxHeight` | `host` input exactly `{ height }` (a finite CSS pixel count, at least 0; no other keys); output `{ height }` as applied after the host's floor, `maxHeight` and damping (see `host.frame`); `USAGE` for any other input. Answered at once; touches no bundle data, so a host may answer it for any launch it admits. Declared only with `host.frame` |
 
 A host without a query capability still answers `query`; it just honors less. A host without
 `edges`, `graph` or `render-document` answers those requests with `FORBIDDEN`.
