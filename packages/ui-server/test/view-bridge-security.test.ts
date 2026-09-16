@@ -194,3 +194,103 @@ test("active View admission accepts only bounded UTF-8 HTML", async () => {
     await server.close();
   }
 });
+
+test("the web host declares itself in hello, forwards the v1 read, and refuses writes and unknown requests with FORBIDDEN", async () => {
+  const bundle: Bundle = {
+    root: "mem://view-host-descriptor",
+    backend: new MemoryBackend(),
+  };
+  await writeDoc(bundle, {
+    id: "docs/one",
+    frontmatter: { type: "Doc", title: "One", timestamp: T },
+    body: "one",
+  });
+  await writeDoc(bundle, {
+    id: "views-registry/descriptor",
+    frontmatter: {
+      type: "View",
+      title: "Descriptor proof",
+      entry: "views/descriptor.html",
+      access: "bundle-read",
+      timestamp: T,
+    },
+    body: "",
+  });
+  await writeBlob(
+    bundle,
+    "views/descriptor.html",
+    new TextEncoder().encode("<!doctype html><p>descriptor</p>"),
+    "text/html; charset=utf-8",
+  );
+  const server = await bootUiServer({
+    mode: "dir",
+    bundle,
+    router: createRouter(bundle),
+    sessionSecret: SECRET,
+    renderDocument,
+    serveAsset: () => ({
+      status: 404,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+      body: new Uint8Array(),
+    }),
+  });
+  const post = async (path: string, body: unknown) => {
+    const response = await fetch(`http://${server.host}:${server.port}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    return await response.json() as Record<string, any>;
+  };
+  try {
+    const minted = await post("/__page/mint", { registryId: "views-registry/descriptor" });
+    await post("/__ui/views/authorize", { launchId: minted.launchId });
+    const bridge = (request: unknown) => post("/__ui/views/bridge", { launchId: minted.launchId, request });
+
+    const hello = await bridge({ bridge: "v0", type: "hello", id: "h" });
+    assert.equal(hello.reply.result.grant, "read");
+    assert.deepEqual(hello.reply.result.host, {
+      kind: "oss",
+      capabilities: [
+        "edges",
+        "graph",
+        "open-page",
+        "query.count",
+        "query.field-or",
+        "query.kind-projection",
+        "query.open",
+        "render-document",
+        "subscribe-deltas",
+      ],
+      limits: { query: 500, edges: 1000, graphDocuments: 1000, graphRelationships: 10_000, replyBytes: 2 * 1024 * 1024 },
+    });
+
+    const versioned = await bridge({ bridge: "v1", type: "read-versioned", id: "rv", docId: "docs/one" });
+    assert.equal(versioned.reply.type, "read-versioned:result");
+    assert.equal(versioned.reply.result.doc.body, "one");
+
+    const extension = await bridge({ bridge: "v0", type: "host", id: "x", capability: "record.open", input: { documentId: "docs/one" } });
+    assert.equal(extension.reply.error.code, "FORBIDDEN");
+    const graph = await bridge({ bridge: "v0", type: "graph", id: "g" });
+    assert.equal(graph.reply.type, "graph:result", "the web host answers the declared graph request");
+    assert.deepEqual(graph.reply.result.counts, { documents: 2, relationships: 0 });
+    const unknown = await bridge({ bridge: "v0", type: "graph.model", id: "gm" });
+    assert.deepEqual(unknown.reply, {
+      bridge: "v0",
+      id: "gm",
+      type: "error",
+      error: { code: "FORBIDDEN", message: "this host does not offer the requested bridge operation" },
+    });
+    const write = await bridge({
+      bridge: "v1",
+      type: "action.propose",
+      requestId: "w",
+      action: { kind: "document.set-field", docId: "docs/one", field: "title", value: "Two", expectedVersion: versioned.reply.result.version },
+    });
+    assert.equal(write.reply.error.code, "FORBIDDEN");
+    assert.equal(write.reply.id, "w");
+    assert.equal((await bundle.backend.read("docs/one")).doc.frontmatter.title, "One", "the refused write changed nothing");
+  } finally {
+    await server.close();
+  }
+});
