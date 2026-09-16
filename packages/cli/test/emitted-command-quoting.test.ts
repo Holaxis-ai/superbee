@@ -94,8 +94,8 @@ test("the rule catches each unsafe shape it was built for, and passes a correctl
     ["bundleValue as unknown as ct.CommandText", /casting to CommandText outside the quoting authority/],
     ["bundleValue as unknown as LocalAlias", /casting to CommandText outside the quoting authority/],
     ["commandToken(bundleValue)", /rendered token is wrapped in quotes again/],
-    // `shellArg` throws on Windows rather than degrading, so only the authority may call it.
-    ["shellArg(bundleValue)", /shellArg\(\) outside the quoting authority throws on Windows/],
+    // `shellArg` may throw when a host adapter refuses a value, so only the authority may call it.
+    ["shellArg(bundleValue)", /shellArg\(\) outside the quoting authority can throw/],
   ];
   for (const [expression, reason] of expected) {
     assert.match(caught.get(expression) ?? "", reason, `${expression} must be reported`);

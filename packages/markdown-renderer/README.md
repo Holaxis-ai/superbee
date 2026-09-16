@@ -22,7 +22,18 @@ normal browser navigation; ordinary clicks invoke `onNavigateDoc`. Every target
 read still needs the host's authorization check.
 
 Raw HTML is literal text. External links and images are inert; Mermaid remains
-a code block. Body, node and depth limits bound presentation; the host must show
+a code block. A host may opt in to real external links with `externalLinkHosts`,
+a list of bare host names. A link renders as an anchor only when its target
+parses with the WHATWG `URL` constructor to `https:` with no userinfo, no IP
+literal, the default port, and a host that is exactly one listed name after
+normalization; a subdomain, `http:`, a homoglyph host, or a scheme-less or
+unparsable target stays inert. The anchor carries the parsed URL's canonical
+serialization, never the raw Markdown string, with `rel="noopener noreferrer"`,
+`target="_blank"` and the `doc-link-external` class. Concept links resolve first;
+the allowlist sees only targets the resolver rejects. Both the interactive and
+static entrypoints accept the option, and `renderDocumentToStaticHtml` takes it
+as an optional second argument. Without the option, or with an empty list, every
+external link stays inert exactly as before. Body, node and depth limits bound presentation; the host must show
 the returned `bounded` state rather than imply the entire document was rendered.
 The inert profile has no active document navigation and does not call the route
 builder. Do not render arbitrary bundle-authored executable code in the host shell.

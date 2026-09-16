@@ -100,7 +100,7 @@ test("createRouterForBackend: doc write/read round-trip identical to createRoute
   assert.equal(readRes.status, 200);
   const body = (await json(readRes)) as { frontmatter: { title: string }; body: string };
   assert.equal(body.frontmatter.title, "Alpha");
-  assert.equal(body.body, "hello");
+  assert.equal(body.body, "hello\n");
 });
 
 test("createRouterForBackend: GET /v0/capabilities works without a Bundle at all", async () => {

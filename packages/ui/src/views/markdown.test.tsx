@@ -77,6 +77,32 @@ describe("markdown renderer", () => {
     for (const a of anchors) expect(a.getAttribute("href")).toMatch(/^\?view=doc&id=/);
   });
 
+  it("THE INVARIANT holds with an external allowlist on: the one external href is the canonical URL", async () => {
+    const body = `${SCHEME_VECTORS}\n\n[spec](https://EXAMPLE.com:443/spec#top) [sub](https://www.example.com/) [plain](http://example.com/)`;
+    const result = renderMarkdown(body, { fromId: "tasks/alpha", onNavigateDoc, externalLinkHosts: ["example.com"] });
+    await act(async () => {
+      root.render(<div className="doc-body">{result.element}</div>);
+    });
+    for (const { tag, name, value } of allAttributes()) {
+      const lowered = value.toLowerCase().replace(/\s/g, "");
+      expect(lowered, `${tag}[${name}]`).not.toContain("javascript:");
+      expect(lowered, `${tag}[${name}]`).not.toContain("vbscript:");
+      expect(lowered, `${tag}[${name}]`).not.toContain("data:");
+      if (tag === "a" && name === "href") {
+        expect(value).toMatch(/^(\?view=doc&id=|https:\/\/example\.com\/spec#top$)/);
+      }
+    }
+    const external = [...container.querySelectorAll("a.doc-link-external")];
+    expect(external).toHaveLength(1);
+    expect(external[0]!.getAttribute("href")).toBe("https://example.com/spec#top");
+    expect(external[0]!.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(external[0]!.getAttribute("target")).toBe("_blank");
+    // The subdomain and the http form stay inert text beside the admitted link.
+    const inertText = [...container.querySelectorAll(".doc-link-inert")].map((el) => el.textContent);
+    expect(inertText).toContain("sub");
+    expect(inertText).toContain("plain");
+  });
+
   const RAW_HTML_VECTORS = [
     '<script>alert(1)</script>',
     '<img src=x onerror=alert(1)>',
