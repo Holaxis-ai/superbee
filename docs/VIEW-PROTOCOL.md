@@ -472,10 +472,12 @@ first refresh, so handle it to surface startup failures.
 `examples/views/conformance/` holds a registry document (`views-registry/conformance`) and one
 self-contained entry (`views/conformance.html`) that embeds the client above and sends, in order,
 `hello`, `query`, `read`, `read-versioned`, `edges`, `graph`, `render-document`, `subscribe`,
-`host` (an undeclared capability, expecting `FORBIDDEN`), `action.propose` and `open-page` (a
-registry id that must not exist). It renders one table row per request type with the request name, a status
-(`answered`, `refused`, `sent`, `skipped` or `failed`) and a one-line summary, and exposes the same
-rows on `window.__conformance` for harnesses. The View names its revision in
+`host` (an undeclared capability, expecting `FORBIDDEN`), `action.propose`, `burst` (12 `read`
+requests in flight at once) and `open-page` (a registry id that must not exist). A host may cap
+in-flight requests, but it must queue or refuse the excess with an error reply, never drop it, so
+the `burst` row expects all 12 results. It renders one table row per request with the request
+name, a status (`answered`, `refused`, `sent`, `skipped` or `failed`) and a one-line summary, and
+exposes the same rows on `window.__conformance` for harnesses. The View names its revision in
 `<meta name="superbee-conformance-revision">`; a host that byte-copies it records that value with
 its result. `packages/view-runtime/test/conformance.test.mjs` runs the entry against the OSS
 service over a fixture bundle and asserts every row.
