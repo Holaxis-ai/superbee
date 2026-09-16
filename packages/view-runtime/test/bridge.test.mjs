@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  BRIDGE_HOST_CAPABILITIES,
+  BRIDGE_SERVICE_CAPABILITIES,
+  BRIDGE_SERVICE_LIMITS,
   BridgeService,
   GRAPH_MAX_DOCUMENTS,
   GRAPH_MAX_RELATIONSHIPS,
@@ -17,6 +20,12 @@ import {
   queryEdges,
   writeDoc,
 } from "@superbee/core";
+
+const TEST_HOST = {
+  kind: "oss",
+  capabilities: [...BRIDGE_SERVICE_CAPABILITIES, BRIDGE_HOST_CAPABILITIES.openPage],
+  limits: BRIDGE_SERVICE_LIMITS,
+};
 
 test("bridge parser admits only exact bounded requests", () => {
   assert.deepEqual(
@@ -214,7 +223,7 @@ test("BridgeService edge queries agree with core for exact boundary ids and rela
     },
     config: async () => ({ root: null, name: "Test", mode: "test" }),
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
-    allowActionProtocol: false,
+    host: TEST_HOST,
   });
   const filters = [
     { from: " reviews/leading" },
@@ -272,7 +281,7 @@ for (const row of [
       },
       config: async () => ({ root: null, name: "Test", mode: "test" }),
       renderDocument: ({ body }) => ({ html: body, bounded: false }),
-      allowActionProtocol: true,
+      host: TEST_HOST,
     });
     const outcome = await bridge.handle("launch", {
       bridge: "v0",
@@ -333,7 +342,7 @@ test("BridgeService never projects v0.2 lifecycle status as workflow progress", 
     },
     config: async () => ({ root: null, name: "Test", mode: "test" }),
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
-    allowActionProtocol: false,
+    host: TEST_HOST,
   });
   const outcome = await bridge.handle("launch", {
     bridge: "v0",
@@ -371,13 +380,15 @@ test("invalid v0 envelopes correlate only a bounded existing id and perform no l
     renderDocument: () => {
       throw new Error("invalid requests must not render bundle data");
     },
-    allowActionProtocol: false,
+    host: TEST_HOST,
   });
 
   const id128 = "i".repeat(128);
   const correlated = [
     { bridge: "v0", type: "edges", id: "extra", params: {}, extra: true },
-    { bridge: "v0", type: "unknown", id: "unknown" },
+    { bridge: "v0", type: "host", id: "host-extra", capability: "record.open", input: {}, extra: true },
+    { bridge: "v0", type: "host", id: "host-name", capability: "Record Open" },
+    { bridge: "v0", type: "host", id: "host-input", capability: "record.open", input: [] },
     { bridge: "v0", type: "edges", id: "thirty-three", params: { from: Array.from({ length: 33 }, (_, i) => `reviews/${i}`) } },
     { bridge: "v0", type: "edges", id: "selector-bytes", params: { to: `x${"y".repeat(1024)}` } },
     { bridge: "v0", type: "edges", id: id128, params: { from: [] } },
@@ -400,7 +411,6 @@ test("invalid v0 envelopes correlate only a bounded existing id and perform no l
     { bridge: "v0", type: "edges", params: {} },
     { bridge: "v0", type: "edges", id: 1, params: {} },
     { bridge: "v0", type: "edges", id: "i".repeat(129), params: {} },
-    { bridge: "v1", type: "unknown", id: "v1-invalid" },
     { bridge: "v2", type: "edges", id: "wrong-protocol", params: {} },
   ];
   for (const request of uncorrelated) {
@@ -412,7 +422,111 @@ test("invalid v0 envelopes correlate only a bounded existing id and perform no l
       error: { code: "USAGE", message: "invalid or unsupported bridge request" },
     });
   }
+
+  const unsupported = [
+    { bridge: "v0", type: "unknown", id: "unknown" },
+    { bridge: "v0", type: "graph.model", id: "graph-model" },
+    { bridge: "v1", type: "unknown", id: "v1-invalid" },
+    { bridge: "v1", type: "action.propose", requestId: "propose", action: {} },
+    { bridge: "v0", type: "delete", id: "i".repeat(129) },
+  ];
+  for (const request of unsupported) {
+    const outcome = await bridge.handle("launch", request);
+    const id = request.requestId ?? request.id;
+    assert.deepEqual(outcome.reply, {
+      bridge: request.bridge,
+      id: id.length <= 128 ? id : undefined,
+      type: "error",
+      error: { code: "FORBIDDEN", message: "this host does not offer the requested bridge operation" },
+    }, JSON.stringify(request));
+  }
   assert.equal(launchResolutions, 0);
+});
+
+test("hello declares the host descriptor and the reserved host request is refused unless a handler is registered", async () => {
+  const bundle = { root: "mem://bridge-host", backend: new MemoryBackend() };
+  await writeDoc(bundle, {
+    id: "docs/one",
+    frontmatter: { type: "Doc", title: "One", timestamp: "2026-08-02T00:00:00.000Z" },
+    body: "Body",
+  });
+  const launches = {
+    async resolve(launchId) {
+      return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
+    },
+    revoke() {},
+  };
+  const base = {
+    bundle,
+    launches,
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+  };
+  const plain = new BridgeService({ ...base, host: TEST_HOST });
+  const hello = await plain.handle("launch", { bridge: "v0", type: "hello", id: "h" });
+  assert.deepEqual(hello.reply.result.host, {
+    kind: "oss",
+    capabilities: [...TEST_HOST.capabilities].sort(),
+    limits: { query: 500, edges: 1000, graphDocuments: 0, graphRelationships: 0, replyBytes: 2 * 1024 * 1024 },
+  });
+  assert.equal(hello.reply.result.grant, "read");
+  for (const name of ["query.kind-projection", "query.field-or", "query.open", "query.count", "edges", "render-document"]) {
+    assert.ok(hello.reply.result.host.capabilities.includes(name), name);
+  }
+  assert.equal(hello.reply.result.host.capabilities.includes("subscribe-deltas"), false);
+
+  const refused = await plain.handle("launch", { bridge: "v0", type: "host", id: "x", capability: "record.open", input: { documentId: "docs/one" } });
+  assert.deepEqual(refused.reply, {
+    bridge: "v0",
+    id: "x",
+    type: "error",
+    error: { code: "FORBIDDEN", message: "this host does not offer the requested capability" },
+  });
+  const prototypeKey = await plain.handle("launch", { bridge: "v0", type: "host", id: "proto", capability: "constructor" });
+  assert.equal(prototypeKey.reply.error.code, "FORBIDDEN", "handler lookup never reads inherited object keys");
+
+  const seen = [];
+  const hostHandlers = {
+    "record.open": async (request) => {
+      seen.push(request);
+      if (request.input?.documentId !== "docs/one") return { ok: false, code: "NOT_FOUND", message: "no such document" };
+      return { ok: true, output: { opened: true } };
+    },
+  };
+  const extended = new BridgeService({ ...base, host: TEST_HOST, hostHandlers });
+  const advertised = await extended.handle("launch", { bridge: "v0", type: "hello", id: "h2" });
+  assert.ok(advertised.reply.result.host.capabilities.includes("record.open"), "a registered handler is always advertised");
+  const opened = await extended.handle("launch", { bridge: "v0", type: "host", id: "open", capability: "record.open", input: { documentId: "docs/one" } });
+  assert.deepEqual(opened.reply, {
+    bridge: "v0",
+    id: "open",
+    type: "host:result",
+    result: { capability: "record.open", output: { opened: true } },
+  });
+  assert.deepEqual(seen[0].launch, { launchId: "launch", capability: "bundle-read" });
+  const missing = await extended.handle("launch", { bridge: "v0", type: "host", id: "missing", capability: "record.open", input: { documentId: "docs/none" } });
+  assert.equal(missing.reply.error.code, "NOT_FOUND");
+  const noInput = await extended.handle("launch", { bridge: "v0", type: "host", id: "no-input", capability: "record.open" });
+  assert.equal(noInput.reply.error.code, "NOT_FOUND");
+  assert.equal(seen[2].input, undefined);
+
+  const oversized = await extended.handle("launch", {
+    bridge: "v0",
+    type: "host",
+    id: "big",
+    capability: "record.open",
+    input: { documentId: "x".repeat(64 * 1024) },
+  });
+  assert.equal(oversized.reply.error.code, "USAGE", "a host request above 64 KiB is malformed, not forwarded");
+
+  const noAccess = new BridgeService({
+    ...base,
+    launches: { async resolve(launchId) { return { launchId, capability: "none" }; }, revoke() {} },
+    host: TEST_HOST,
+    hostHandlers,
+  });
+  const denied = await noAccess.handle("launch", { bridge: "v0", type: "host", id: "none", capability: "record.open", input: { documentId: "docs/one" } });
+  assert.equal(denied.reply.error.code, "FORBIDDEN", "host extensions require a bundle-data grant");
 });
 
 test("bridge runtime failures preserve classification without exposing storage diagnostics", async () => {
@@ -433,7 +547,7 @@ test("bridge runtime failures preserve classification without exposing storage d
     },
     config: async () => ({ root: null, name: "Test", mode: "test" }),
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
-    allowActionProtocol: false,
+    host: TEST_HOST,
   });
 
   const outcome = await bridge.handle("launch", {
@@ -557,17 +671,30 @@ test("bridge polling retains a bounded change until acknowledgement and stays re
     launches,
     config: async () => ({ root: null, name: "Test", mode: "test" }),
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
-    allowActionProtocol: false,
+    host: TEST_HOST,
     enablePolling: true,
   });
 
-  const rejectedActionRead = await bridge.handle("launch", {
+  const versionedRead = await bridge.handle("launch", {
     bridge: "v1",
     type: "read-versioned",
     id: "action",
     docId: "tasks/one",
   });
-  assert.equal(rejectedActionRead.reply.error.code, "FORBIDDEN");
+  assert.equal(versionedRead.reply.type, "read-versioned:result", "a read-only host still answers the v1 read");
+  assert.equal(versionedRead.reply.result.doc.id, "tasks/one");
+  const proposal = await bridge.handle("launch", {
+    bridge: "v1",
+    type: "action.propose",
+    requestId: "propose",
+    action: { kind: "document.set-field", docId: "tasks/one", field: "status", value: "done", expectedVersion: versionedRead.reply.result.version },
+  });
+  assert.deepEqual(proposal.reply, {
+    bridge: "v1",
+    id: "propose",
+    type: "error",
+    error: { code: "FORBIDDEN", message: "this host does not offer the requested bridge operation" },
+  }, "a write reaching the read service is refused, never dropped");
 
   const subscribed = await bridge.handle("launch", {
     bridge: "v0",
@@ -634,6 +761,7 @@ test("render-document reads one canonical version, bounds it, and revalidates th
       if (revokeDuringRender) current = false;
       return { html: `<article>${document.body}</article>`, bounded: false };
     },
+    host: TEST_HOST,
   });
 
   const rendered = await bridge.handle("launch", {
@@ -679,7 +807,7 @@ function graphBridge(bundle, capability = "bundle-read") {
     },
     config: async () => ({ root: null, name: "Test", mode: "test" }),
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
-    allowActionProtocol: false,
+    host: TEST_HOST,
   });
 }
 
@@ -877,13 +1005,13 @@ test("graph replies above the 2 MiB reply limit answer TOO_LARGE through the sha
   });
 });
 
-test("a v0 View sending graph to a host without it receives the pre-existing USAGE error", async () => {
-  // A host built before this request parsed nothing for `graph` and fell through to the same
-  // unsupported-type branch every unknown v0 type takes, correlated by the bounded request id.
-  // Confirmed against the base build (origin/main 2c82296e); an unknown type in the exact graph
-  // envelope shape exercises that branch on the current service.
+test("a well-formed v0 type this host does not offer is refused with FORBIDDEN and resolves no launch", async () => {
+  // A host built before the host descriptor parsed nothing for `graph` and answered the USAGE
+  // error it gave every unknown v0 type (confirmed against origin/main 2c82296e). A host at this
+  // contract refuses a well-formed v0 envelope of a type it does not offer with FORBIDDEN, so a
+  // View feature-detects by `hello.host.capabilities` first and by the reply code second.
   let launchResolutions = 0;
-  const olderService = new BridgeService({
+  const service = new BridgeService({
     bundle: { root: "mem://bridge-graph-older-host", backend: new MemoryBackend() },
     launches: {
       async resolve() {
@@ -894,18 +1022,18 @@ test("a v0 View sending graph to a host without it receives the pre-existing USA
     },
     config: async () => ({ root: null, name: "Test", mode: "test" }),
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
-    allowActionProtocol: false,
+    host: TEST_HOST,
   });
   for (const request of [
     { bridge: "v0", type: "graph-unsupported", id: "older-1" },
     { bridge: "v0", type: "graph-unsupported", id: "older-2", includeBodies: true },
   ]) {
-    assert.deepEqual(await olderService.handle("launch", request), {
+    assert.deepEqual(await service.handle("launch", request), {
       reply: {
         bridge: "v0",
         id: request.id,
         type: "error",
-        error: { code: "USAGE", message: "invalid or unsupported bridge request" },
+        error: { code: "FORBIDDEN", message: "this host does not offer the requested bridge operation" },
       },
     });
   }

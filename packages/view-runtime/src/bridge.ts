@@ -33,6 +33,82 @@ export const GRAPH_MAX_RELATIONSHIPS = 10_000;
 const MAX_CHANGE_ROWS = 100;
 const MAX_CHANGE_BYTES = 256 * 1024;
 const MAX_SUBSCRIPTION_HEADS = 10_000;
+const MAX_HOST_CAPABILITY_BYTES = 128;
+const MAX_HOST_REQUEST_BYTES = 64 * 1024;
+const HOST_CAPABILITY_NAME = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
+
+/** Every bridge error code. docs/VIEW-PROTOCOL.md owns what each one means to a View author. */
+export const BRIDGE_ERROR_CODES = ["USAGE", "FORBIDDEN", "REVOKED", "TOO_LARGE", "RUNTIME", "NOT_FOUND"] as const;
+export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number];
+
+export type BridgeHostKind = "oss" | "portal" | "hosted";
+
+/** Host-declared ceilings. Zero means the host does not offer the request at all. */
+export interface BridgeHostLimits {
+  query: number;
+  edges: number;
+  graphDocuments: number;
+  graphRelationships: number;
+  replyBytes: number;
+}
+
+/** What a host tells a View in the `hello` reply so the View can feature-detect instead of guess. */
+export interface BridgeHostDescriptor {
+  kind: BridgeHostKind;
+  capabilities: readonly string[];
+  limits: BridgeHostLimits;
+}
+
+/** The limits this service enforces. A host that runs the service declares exactly these. */
+export const BRIDGE_SERVICE_LIMITS: BridgeHostLimits = Object.freeze({
+  query: MAX_QUERY_ROWS,
+  edges: MAX_EDGE_ROWS,
+  graphDocuments: 0,
+  graphRelationships: 0,
+  replyBytes: MAX_REPLY_BYTES,
+});
+
+/**
+ * Capability names a host may list in `hello.host.capabilities`. The registry of their meanings,
+ * inputs and outputs is docs/VIEW-PROTOCOL.md; a host never invents a name outside it.
+ */
+export const BRIDGE_HOST_CAPABILITIES = Object.freeze({
+  queryKindProjection: "query.kind-projection",
+  queryFieldOr: "query.field-or",
+  queryOpen: "query.open",
+  queryCount: "query.count",
+  edges: "edges",
+  renderDocument: "render-document",
+  openPage: "open-page",
+  subscribeDeltas: "subscribe-deltas",
+  graph: "graph",
+  graphModel: "graph.model",
+  recordOpen: "record.open",
+} as const);
+export type BridgeHostCapability = (typeof BRIDGE_HOST_CAPABILITIES)[keyof typeof BRIDGE_HOST_CAPABILITIES];
+
+/** The query and read capabilities this service implements on every host that runs it. */
+export const BRIDGE_SERVICE_CAPABILITIES: readonly BridgeHostCapability[] = Object.freeze([
+  BRIDGE_HOST_CAPABILITIES.queryKindProjection,
+  BRIDGE_HOST_CAPABILITIES.queryFieldOr,
+  BRIDGE_HOST_CAPABILITIES.queryOpen,
+  BRIDGE_HOST_CAPABILITIES.queryCount,
+  BRIDGE_HOST_CAPABILITIES.edges,
+  BRIDGE_HOST_CAPABILITIES.renderDocument,
+]);
+
+export interface BridgeHostExtensionRequest {
+  capability: string;
+  input: Record<string, unknown> | undefined;
+  launch: BridgeLaunch;
+}
+
+export type BridgeHostExtensionOutcome =
+  | { ok: true; output: unknown }
+  | { ok: false; code: BridgeErrorCode; message: string };
+
+/** One handler per declared host extension capability; a registered name is always advertised. */
+export type BridgeHostHandlers = Readonly<Record<string, (request: BridgeHostExtensionRequest) => Promise<BridgeHostExtensionOutcome>>>;
 
 export interface BridgeLaunch {
   launchId: string;
@@ -73,7 +149,7 @@ interface SubscriptionState {
 interface BaseRequest {
   bridge: typeof BRIDGE_PROTOCOL;
   id: string;
-  type: "hello" | "query" | "read" | "render-document" | "edges" | "graph" | "subscribe";
+  type: "hello" | "query" | "read" | "render-document" | "edges" | "graph" | "subscribe" | "host";
 }
 
 interface HelloRequest extends BaseRequest {
@@ -115,6 +191,12 @@ interface SubscribeRequest extends BaseRequest {
   type: "subscribe";
 }
 
+interface HostRequest extends BaseRequest {
+  type: "host";
+  capability: string;
+  input?: Record<string, unknown>;
+}
+
 interface OpenPageRequest {
   bridge: typeof BRIDGE_PROTOCOL;
   type: "open-page";
@@ -137,8 +219,11 @@ type ParsedBridgeRequest =
   | EdgesRequest
   | GraphRequest
   | SubscribeRequest
+  | HostRequest
   | OpenPageRequest
   | ReadVersionedRequest;
+
+const V0_REQUEST_TYPES = new Set(["hello", "query", "read", "render-document", "edges", "graph", "subscribe", "host", "open-page"]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -292,6 +377,46 @@ export function parseBridgeRequest(value: unknown): ParsedBridgeRequest | null {
     if (value.includeBodies !== undefined && typeof value.includeBodies !== "boolean") return null;
     return { bridge: BRIDGE_PROTOCOL, type: "graph", id, includeBodies: value.includeBodies === true };
   }
+  if (value.type === "host") {
+    const expected = value.input === undefined
+      ? ["bridge", "type", "id", "capability"]
+      : ["bridge", "type", "id", "capability", "input"];
+    if (!exactKeys(value, expected)) return null;
+    const capability = boundedString(value.capability, MAX_HOST_CAPABILITY_BYTES);
+    if (!capability || !HOST_CAPABILITY_NAME.test(capability)) return null;
+    if (value.input !== undefined && !isPlainRecord(value.input)) return null;
+    let bytes: number;
+    try {
+      bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+    } catch {
+      return null;
+    }
+    if (bytes > MAX_HOST_REQUEST_BYTES) return null;
+    return {
+      bridge: BRIDGE_PROTOCOL,
+      type: "host",
+      id,
+      capability,
+      ...(value.input === undefined ? {} : { input: value.input as Record<string, unknown> }),
+    };
+  }
+  return null;
+}
+
+/**
+ * A well-formed envelope whose type this service does not offer: a write, or a type outside the
+ * contract. Refused with FORBIDDEN so a View can tell "not offered here" from a malformed request.
+ */
+function unsupportedRequest(value: unknown): { bridge: string; id: string | undefined } | null {
+  if (!isPlainRecord(value) || typeof value.type !== "string") return null;
+  if (value.bridge === BRIDGE_PROTOCOL) {
+    return V0_REQUEST_TYPES.has(value.type) ? null : { bridge: BRIDGE_PROTOCOL, id: requestId(value.id) ?? undefined };
+  }
+  if (value.bridge === ACTION_BRIDGE_PROTOCOL) {
+    if (value.type === "read-versioned") return null;
+    const id = value.type === "action.propose" ? value.requestId : value.id;
+    return { bridge: ACTION_BRIDGE_PROTOCOL, id: requestId(id) ?? undefined };
+  }
   return null;
 }
 
@@ -322,7 +447,10 @@ export interface BridgeServiceOptions {
   launches: BridgeLaunchAuthority;
   config: () => Promise<BridgeConfig>;
   renderDocument: BridgeDocumentRenderer;
-  allowActionProtocol?: boolean;
+  /** Declared to every View in `hello`; the runtime that embeds the service owns kind and capabilities. */
+  host: BridgeHostDescriptor;
+  /** Host extension capabilities answered through the reserved `host` request. */
+  hostHandlers?: BridgeHostHandlers;
   enablePolling?: boolean;
   /** Retire the source launch before returning an open-page selection to a host-owned resolver. */
   consumeOpenPage?: boolean;
@@ -355,22 +483,23 @@ export class BridgeService {
   async handle(launchId: string, rawRequest: unknown): Promise<BridgeOutcome> {
     const request = parseBridgeRequest(rawRequest);
     if (!request) {
+      const unsupported = unsupportedRequest(rawRequest);
+      if (unsupported) {
+        return {
+          reply: fail(
+            unsupported.id,
+            unsupported.bridge,
+            "FORBIDDEN",
+            "this host does not offer the requested bridge operation",
+          ),
+        };
+      }
       return {
         reply: fail(
           invalidV0RequestId(rawRequest),
           BRIDGE_PROTOCOL,
           "USAGE",
           "invalid or unsupported bridge request",
-        ),
-      };
-    }
-    if (request.bridge === ACTION_BRIDGE_PROTOCOL && this.options.allowActionProtocol === false) {
-      return {
-        reply: fail(
-          request.id,
-          request.bridge,
-          "FORBIDDEN",
-          "this host admits only the read-only v0 View bridge",
         ),
       };
     }
@@ -565,6 +694,16 @@ export class BridgeService {
     };
   }
 
+  private hostDescriptor(): BridgeHostDescriptor {
+    const declared = new Set<string>(this.options.host.capabilities);
+    for (const name of Object.keys(this.options.hostHandlers ?? {})) declared.add(name);
+    return {
+      kind: this.options.host.kind,
+      capabilities: [...declared].sort(),
+      limits: { ...this.options.host.limits },
+    };
+  }
+
   private async execute(launch: BridgeLaunch, request: ParsedBridgeRequest): Promise<BridgeOutcome> {
     if (request.type === "open-page") {
       if (this.options.consumeOpenPage === true) {
@@ -589,8 +728,22 @@ export class BridgeService {
           mode: config.mode,
           protocol: BRIDGE_PROTOCOL,
           grant: launch.capability === "bundle-propose" ? "propose" : "read",
+          host: this.hostDescriptor(),
         }),
       };
+    }
+    if (request.type === "host") {
+      const handlers = this.options.hostHandlers ?? {};
+      if (!Object.hasOwn(handlers, request.capability)) {
+        return { reply: fail(request.id, request.bridge, "FORBIDDEN", "this host does not offer the requested capability") };
+      }
+      const outcome = await handlers[request.capability]!({
+        capability: request.capability,
+        input: request.input,
+        launch,
+      });
+      if (!outcome.ok) return { reply: fail(request.id, request.bridge, outcome.code, outcome.message) };
+      return { reply: ok(request.id, request.bridge, request.type, { capability: request.capability, output: outcome.output }) };
     }
     if (request.type === "query") {
       const rows = await queryHeads(this.options.bundle, {

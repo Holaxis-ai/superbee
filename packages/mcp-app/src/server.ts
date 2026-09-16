@@ -13,6 +13,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import {
+  BRIDGE_HOST_CAPABILITIES,
+  BRIDGE_SERVICE_CAPABILITIES,
+  BRIDGE_SERVICE_LIMITS,
   BridgeService,
   PageActionLaunchAuthority,
   PageBridgeLaunchAuthority,
@@ -603,7 +606,16 @@ function createMcpBundleRuntime(
       mode: "local-mcp",
     }),
     renderDocument: renderDocumentToStaticHtml,
-    allowActionProtocol: true,
+    // The MCP frame navigates on open-page and delivers polled deltas as change events.
+    host: {
+      kind: "oss",
+      capabilities: [
+        ...BRIDGE_SERVICE_CAPABILITIES,
+        BRIDGE_HOST_CAPABILITIES.openPage,
+        BRIDGE_HOST_CAPABILITIES.subscribeDeltas,
+      ],
+      limits: BRIDGE_SERVICE_LIMITS,
+    },
     enablePolling: true,
     consumeOpenPage: true,
   });
