@@ -43,7 +43,7 @@ async function isolatedLockPaths(): Promise<{
 }
 
 function replaceFsMethod(
-  name: "lstat" | "mkdir" | "rename" | "rm" | "writeFile",
+  name: "lstat" | "mkdir" | "readFile" | "rename" | "rm" | "writeFile",
   replacement: (...args: unknown[]) => unknown,
 ): () => void {
   const mutable = fs as unknown as Record<string, unknown>;
@@ -1600,35 +1600,68 @@ test("a lock directory that disappears during rename retries counts as released"
   }
 });
 
-test("a concurrently invoked release removes the lock once and never touches the next claim", async () => {
-  const { harness, release, lockPath } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 50 });
-  // The first invocation's rename is delayed by contention; the second one succeeds meanwhile, a
-  // competitor claims the freed key, and only then does the first invocation retry.
+test("a concurrently invoked release shares one in-flight removal and a later invocation refuses", async () => {
+  const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 50 });
   let attempts = 0;
-  let competitorRelease: (() => Promise<void>) | undefined;
-  const restore = interceptRename(lockPath, async (attempt) => {
+  const restoreRename = interceptRename(lockPath, async (attempt) => {
     attempts = attempt;
     if (attempt === 1) throw releaseContention;
   });
+  const originalReadFile = fs.readFile;
+  let ownerReads = 0;
+  const restoreReadFile = replaceFsMethod("readFile", (...args) => {
+    if (path.resolve(String(args[0])) === path.resolve(ownerFile)) ownerReads += 1;
+    return Reflect.apply(originalReadFile, fs, args);
+  });
+  const restore = () => {
+    restoreReadFile();
+    restoreRename();
+  };
   try {
+    // The first invocation's rename is delayed by contention; the second arrives meanwhile and
+    // must join it rather than race it with its own ownership check and rename.
     const first = release();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    await release();
-    competitorRelease = await acquireFilesystemMutationLock(harness.target, {
+    const second = release();
+    await Promise.all([first, second]);
+    assert.equal(attempts, 2, "one contended rename plus one retry; the joined invocation renamed nothing");
+    assert.equal(ownerReads, 2, "one verification plus one retry re-read; the joined invocation read nothing");
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+    // A competitor's claim made after the release is untouched by anything the closure does later.
+    const competitorRelease = await acquireFilesystemMutationLock(harness.target, {
       lockRoot: harness.lockRoot, hostPolicy: contentionPolicy, waitMs: 0, pollMs: 0,
     });
     const competitorRecord = await fs.readFile(path.join(lockPath, "owner.json"), "utf8");
-    await assert.rejects(first, (err: unknown) => err instanceof FilesystemMutationLockError && /refusing to release/.test(err.message));
-    // One contended rename from the first invocation, one successful rename from the second; the
-    // first invocation's retry refused before renaming anything.
+    await assert.rejects(release(), (err: unknown) => err instanceof FilesystemMutationLockError && /refusing to release/.test(err.message));
     assert.equal(attempts, 2);
-    assert.equal(await fs.readFile(path.join(lockPath, "owner.json"), "utf8"), competitorRecord, "the competitor's live claim is untouched");
+    assert.equal(await fs.readFile(path.join(lockPath, "owner.json"), "utf8"), competitorRecord);
     await competitorRelease();
-    competitorRelease = undefined;
     assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
   } finally {
     restore();
-    await competitorRelease?.().catch(() => {});
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a remnant that disappears during removal retries counts as released", async () => {
+  const { harness, release, lockPath } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 1 });
+  const originalRm = fs.rm;
+  let attempts = 0;
+  const restore = replaceFsMethod("rm", async (...args) => {
+    if (!String(args[0]).startsWith(`${lockPath}.released-`)) return Reflect.apply(originalRm, fs, args);
+    attempts += 1;
+    if (attempts === 1) {
+      await Reflect.apply(originalRm, fs, [args[0], { recursive: true, force: true }]);
+      throw releaseContention;
+    }
+    return Reflect.apply(originalRm, fs, args);
+  });
+  try {
+    await release();
+    assert.equal(attempts, 2);
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+  } finally {
+    restore();
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });

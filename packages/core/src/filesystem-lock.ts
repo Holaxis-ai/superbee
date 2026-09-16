@@ -417,10 +417,20 @@ async function claimLockPath(
       throw err;
     }
 
-    return async () => {
-      const current = await readOwner(lockPath);
-      if (current?.token !== owner.token) throw changedOwnerRefusal(lockPath, current);
-      await removeReleasedLock(lockPath, owner, waitMs, pollMs, policy);
+    // One release in flight per claim: a concurrent second invocation shares the first outcome
+    // instead of racing it, so two removers can never act on one claim. A later invocation
+    // re-verifies the record and refuses, as it always did.
+    let inFlight: Promise<void> | undefined;
+    return () => {
+      if (inFlight) return inFlight;
+      inFlight = (async () => {
+        const current = await readOwner(lockPath);
+        if (current?.token !== owner.token) throw changedOwnerRefusal(lockPath, current);
+        await removeReleasedLock(lockPath, owner, waitMs, pollMs, policy);
+      })();
+      return inFlight.finally(() => {
+        inFlight = undefined;
+      });
     };
   }
 }
@@ -458,10 +468,12 @@ function removalFailure(
  * that keep the destructive action fenced to this claim.
  *
  * Step one renames the directory to a token-derived sibling. Rename is atomic and moves exactly
- * the directory whose record was verified; the lock key is free the instant it succeeds. A
- * competitor's later claim lands on a fresh directory that nothing below can touch, so a delayed
- * or concurrently invoked release can never remove a live foreign lock. Step two removes the
- * renamed remnant, which only this claim can name.
+ * the directory whose record was verified; the lock key is free the instant it succeeds, and a
+ * competitor's later claim lands on a fresh directory that step two never names. Step two removes
+ * the renamed remnant, which only this claim can produce. What remains is the check-then-act gap
+ * between a record read and the next rename syscall, reachable only through an external actor
+ * that removes the verified directory and a completed competitor claim inside that gap: the same
+ * class the stale-lock quarantine rename accepts.
  *
  * A host may report a contention-shaped error while another claimer still holds a handle inside
  * the directory: Windows unlink through Node 20's libuv only marks a file delete-on-close, so a
