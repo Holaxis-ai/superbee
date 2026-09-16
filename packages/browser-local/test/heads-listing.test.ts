@@ -88,12 +88,9 @@ async function plainSession(adapter: Adapter) {
   const local = openLocalBundle(name, { backend });
   await bootstrap(fixture.remote, local);
   const runtime = createBrowserLocalRuntime({ local, remote: fixture.remote, transport: fixture.transport, actor: "process:listing", now: () => NOW, write: immediate });
-  /** Store exact bytes as a document's record, bypassing the serializer, so the record does not parse. */
+  /** Store exact bytes as a document's record, bypassing the serializer: bytes the seam would never write, parsing or not. */
   const plant = (id: string, raw: string): Promise<void> => {
-    if (backend instanceof MemoryJournaledBackend) {
-      backend.storeRaw(id, raw);
-      return Promise.resolve();
-    }
+    if (backend instanceof MemoryJournaledBackend) return backend.storeRaw(id, raw);
     return new Promise((resolve, reject) => {
       const request = factory.open(name, INDEXEDDB_SCHEMA_VERSION);
       request.onerror = () => reject(request.error);
@@ -145,7 +142,12 @@ for (const adapter of ADAPTERS) {
       await backend.writeJournaled("notes/absent-base", note("notes/absent-base", "Absent", "absent\n"), { meta: [{ key: baseKey("notes/absent-base"), value: { version: null, content: null } }] });
       await backend.writeJournaled("notes/delta", note("notes/delta", "Delta", "delta\n"), { meta: ({ version, raw }) => [{ key: baseKey("notes/delta"), value: { version, content: raw } }] });
       await backend.deleteJournaled("notes/delta", { removeMeta: [baseKey("notes/delta")] });
-      await assertAgreement(runtime, backend, "settled, differing token, unconfirmed and removed");
+      // Bytes the serializer never writes, an unquoted timestamp scalar, with a base naming
+      // them: the listing decodes them under the working copy's v0.2 root as the read does.
+      const stamped = "---\ntype: Note\ntitle: Stamp\nstatus: draft\ntags:\n  - proof\ntimestamp: 2026-07-01T12:05:00Z\n---\nstamped\n";
+      await s.plant("notes/stamp", stamped);
+      await backend.writeMeta(baseKey("notes/stamp"), { version: versionOfBytes(stamped), content: stamped });
+      await assertAgreement(runtime, backend, "settled, differing token, unconfirmed, removed and planted");
 
       const rows = await runtime.query();
       assert.deepEqual(Object.fromEntries(rows.map((row) => [row.id, row.provenance.state])), {
@@ -155,9 +157,11 @@ for (const adapter of ADAPTERS) {
         "notes/beta": "local-pending",
         "notes/chain": "local-pending",
         "notes/gamma": "shared-confirmed",
+        "notes/stamp": "shared-confirmed",
         "tasks/one": "local-pending",
         "tasks/two": "local-conflict",
       }, "unconfirmed and removed documents have no row");
+      assert.equal(rows.find((row) => row.id === "notes/stamp")!.frontmatter.timestamp, "2026-07-01T12:05:00Z", "the source scalar survives, as the v0.2 root requires");
       const gamma = rows.find((row) => row.id === "notes/gamma")!;
       assert.deepEqual(gamma.provenance, { state: "shared-confirmed", version: gamma.version, acknowledged: OTHER_TOKEN }, "the base's token is reported beside the working copy's");
       const conflicted = rows.find((row) => row.id === "tasks/two")!;
@@ -166,7 +170,7 @@ for (const adapter of ADAPTERS) {
       assert.equal(requestIdOf(chain.provenance), "req-aa-second", "the latest intent by sequence names the row, whatever order the request ids sort in");
       assert.equal(requestIdOf(chain.provenance), requestIdOf((await runtime.read("notes/chain")).provenance), "the row and the read name the same intent");
       assert.equal((await runtime.syncStatus()).unconfirmed, 2);
-      assert.deepEqual((await runtime.query({ prefix: "notes/" })).map((row) => row.id), ["notes/alpha", "notes/beta", "notes/chain", "notes/gamma"]);
+      assert.deepEqual((await runtime.query({ prefix: "notes/" })).map((row) => row.id), ["notes/alpha", "notes/beta", "notes/chain", "notes/gamma", "notes/stamp"]);
     } finally {
       s.close();
     }

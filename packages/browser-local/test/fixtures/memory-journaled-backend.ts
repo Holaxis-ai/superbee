@@ -13,6 +13,7 @@
  */
 
 import { parseMarkdown, stringifyDoc } from "@superbee/core/document-codec";
+import { readBundleOkfVersion } from "@superbee/core/engine";
 import {
   assertJournalGuard,
   assertJournalIntentChanges,
@@ -118,15 +119,23 @@ export class MemoryJournaledBackend implements JournaledBackend {
 
   /**
    * Plant exact bytes as a document's stored serialization, bypassing the seam's serializer:
-   * the contract kit's malformed-record row. Bytes that parse become the document; bytes that
-   * do not are kept with the parser's error, as an IndexedDB record holding them would be.
+   * the contract kit's malformed-record and edition rows. Bytes that parse become the
+   * document, decoded under the root index's edition as the IndexedDB adapter decodes a stored
+   * record; bytes that do not are kept with the parser's error, as a record holding them would
+   * be.
    */
-  storeRaw(id: ConceptId, raw: string): void {
+  async storeRaw(id: ConceptId, raw: string): Promise<void> {
     assertSafeConceptId(id);
+    let okfVersion: string | undefined;
+    try {
+      okfVersion = await readBundleOkfVersion(this);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+    }
     const previous = this.#documents.get(id);
     const row: DocumentRow = { doc: { id, frontmatter: {} as OkfDocument["frontmatter"], body: "" }, raw, version: versionOfBytes(raw), actor: previous?.actor ?? defaultActor(), timestamp: new Date().toISOString() };
     try {
-      const parsed = parseMarkdown(raw, pathFromConceptId(id));
+      const parsed = parseMarkdown(raw, pathFromConceptId(id), { okfVersion });
       row.doc = { id, frontmatter: parsed.frontmatter, body: parsed.body };
     } catch (error) {
       if (!(error instanceof MalformedDocumentError)) throw error;

@@ -1007,6 +1007,21 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
     });
   });
 
+  test(`${name} journal contract: readHeads decodes a record's frontmatter under the root index's edition, as a read does`, async () => {
+    await withFixture(create, async (backend, fixture) => {
+      // An unquoted timestamp scalar is where the editions differ: a v0.2 root keeps the source
+      // string, the legacy decoding turns it into a normalized instant. The fixture root is v0.2.
+      const id = "journal/heads-stamp";
+      await fixture.storeRaw(id, "---\ntype: JournalFixture\ntimestamp: 2026-07-01T12:05:00Z\n---\nbody\n");
+      const read = await backend.read(id);
+      assert.equal(read.doc.frontmatter.timestamp, "2026-07-01T12:05:00Z", "under a v0.2 root the read keeps the source scalar, so this row can tell the editions apart");
+      const [head] = await backend.readHeads();
+      assert.equal(head?.id, id);
+      assert.deepEqual(head?.frontmatter, read.doc.frontmatter, "the listing decodes under the same edition as the read");
+      assert.deepEqual((await backend.readHeads({ project: (row) => row.frontmatter?.timestamp }))[0], "2026-07-01T12:05:00Z");
+    });
+  });
+
   test(`${name} journal contract: listIntents orders by sequence and filters by one state or several; readIntent finds one record or nothing`, async () => {
     await withFixture(create, async (backend) => {
       const ids = ["journal/c", "journal/a", "journal/b"];
