@@ -72,6 +72,7 @@ import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { doc, type DocCliDeps } from "../src/commands/doc.js";
 import { link } from "../src/commands/link.js";
 import {
+  BODY_PREVIEW_LIMIT,
   BODY_PREVIEW_TRUNCATION_MARKER,
   BODY_PREVIEW_TRUNCATION_SIGNATURE,
   guardDroppedLinks,
@@ -3148,6 +3149,65 @@ test("mutateDoc seam: the body-replace guards fire for a caller that never calls
   assert.equal(dropped.doc.body, "No links here.\n");
   const truncated = await patch("docs/long", LONG_PAGE_BODY.slice(0, 1000), { acceptTruncatedBody: true });
   assert.equal(truncated.doc.body.length, 1000);
+});
+
+// ── The guards' "same body?" short-circuit ignored the body's STORAGE shape ─────────────────
+// A byte-storing adapter re-parses what it wrote, so its reads carry the serializer's trailing
+// newline. A body of exactly BODY_PREVIEW_LIMIT characters with no trailing newline is therefore
+// stored as BODY_PREVIEW_LIMIT + 1, so a caller who supplies that body WITHOUT the newline — the
+// `--body` argument below, or any tool that trimmed trailing whitespace — matched the stored
+// preview slice exactly and was refused for destroying one character they never wrote. Both guard
+// entry points now ask the engine's own owning primitive whether the two bodies are the same
+// document.
+//
+// `doc read --body-out` is deliberately NOT that caller, and this test does not claim it is: it
+// emits the parsed body with the newline, so its `--body-file` round trip already matched byte for
+// byte and never reached the guard.
+
+test("truncated-preview guard: resubmitting a BODY_PREVIEW_LIMIT-character body without its storage newline is a no-op, never a truncated preview", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const exact = `${"y".repeat(BODY_PREVIEW_LIMIT - 1)}.`; // exactly at the cut, no trailing newline
+    assert.equal(exact.length, BODY_PREVIEW_LIMIT);
+    await writeDoc({ root: dir }, { id: "docs/exact", frontmatter: { type: "Note", title: "Exact", timestamp: T }, body: exact });
+
+    // The storage newline is what makes this reachable at all: the stored body is one character
+    // longer than the caller's, which is the only reason the preview guard is consulted here.
+    assert.equal(await storedBody(dir, "docs/exact"), `${exact}\n`);
+
+    // Supplying the stored body WITHOUT its storage newline converges instead of being refused.
+    const resubmitted = await runDoc(["update", "docs/exact", "--body", exact, "--keep-timestamp", "--dir", dir]);
+    assert.equal(resubmitted.changed, false, "the two bodies serialize to the same document");
+    assert.equal(await storedBody(dir, "docs/exact"), `${exact}\n`, "the stored body is untouched");
+
+    // The guard is NOT blunted: a genuine preview of a genuinely longer body is still refused.
+    await writeDoc({ root: dir }, { id: "docs/long2", frontmatter: { type: "Note", title: "Long2", timestamp: T }, body: LONG_PAGE_BODY });
+    await assert.rejects(
+      () => runDoc(["update", "docs/long2", "--body", LONG_PAGE_BODY.slice(0, BODY_PREVIEW_LIMIT), "--dir", dir]),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.details?.reason, "stored_body_preview");
+        return true;
+      },
+    );
+    assert.equal(await storedBody(dir, "docs/long2"), LONG_PAGE_BODY, "the refusal wrote nothing");
+
+    // Nor is the link-drop guard: differing only by the storage newline is still not a replace,
+    // while a real replace that would drop a link is still refused.
+    await writeDoc({ root: dir }, { id: "docs/links", frontmatter: { type: "Note", title: "Links", timestamp: T }, body: "Intro.\n\n[x](x.md)" });
+    const unchanged = await runDoc(["update", "docs/links", "--body", "Intro.\n\n[x](x.md)", "--keep-timestamp", "--dir", dir]);
+    assert.equal(unchanged.changed, false, "differing only by the storage newline is not a body replace");
+    await assert.rejects(
+      () => runDoc(["update", "docs/links", "--body", "No links here.", "--dir", dir]),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.deepEqual(err.details?.dropped_links, [{ to: "docs/x", text: "x" }]);
+        return true;
+      },
+    );
+  } finally {
+    await cleanup();
+  }
 });
 
 test("truncated-preview guard: a document written deliberately with a preview stays appendable — link add and an edit that keeps the stored notice proceed, while a DIFFERENT notice is still refused", async () => {
