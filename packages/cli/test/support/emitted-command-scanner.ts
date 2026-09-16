@@ -42,8 +42,8 @@
 // KNOWN ESCAPES, enumerated rather than implied. Each was found by review or by the author; all are
 // accepted as out of scope for an AST-level check, because closing them properly needs dataflow:
 //
-//   0'. `shellArg` is banned outside the authority modules, because it THROWS rather than degrading
-//       on Windows. The ban resolves the callee by DECLARATION IDENTITY, and it is also
+//   0'. `shellArg` is banned outside the authority modules, because a host adapter may make it
+//       THROW rather than degrade. The ban resolves the callee by DECLARATION IDENTITY, and it is also
 //       CALL-SHAPE-SPECIFIC: it matches a direct call expression, so:
 //         • `shellArg.call(null, v)` / `.apply` evade the BAN (the callee is a property access).
 //           Both are still reported in practice, by the argument-position rule rather than by the
@@ -181,14 +181,12 @@ const AUTHORITY_PATHS = new Set(
 const TOKEN_ASSEMBLY_PATH = join(import.meta.dirname, "../../src/command-text.ts");
 
 /**
- * One canonical spelling for a path, so a comparison never depends on how the caller spelled it.
- * TypeScript hands back `C:/x/y.ts` while `node:path` builds `C:\\x\\y.ts`, and Windows treats the
- * two as the same file — so separators are folded and, on Windows only, case is too. Exported
+ * One canonical spelling for a path, so a comparison never depends on slash spelling. Exported
  * because the property is worth pinning directly rather than only through a scan.
  */
 export function canonicalPath(value: string): string {
   const resolved = resolve(value).split("\\").join("/");
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return resolved;
 }
 
 /** Paths this scanner REPORTS are always POSIX-shaped, so assertions are platform-independent. */
@@ -397,8 +395,7 @@ export function scanEmittedCommandQuoting(srcDir: string, tsconfigPath: string):
   for (const file of files) {
     const source = program.getSourceFile(file);
     if (!source) continue;
-    // POSIX-shaped: `relative` yields native separators, so a violation reported on Windows
-    // would otherwise be `nested\\command-text.ts` and no cross-platform assertion could match it.
+    // Keep reports POSIX-shaped so fixtures and diagnostics use one stable spelling.
     const relativePath = toPosixPath(relative(srcDir, file));
     // command-text.ts owns the primitives and is the one place raw values are legitimately handled.
     // Only the module that assembles tokens OUT OF raw values is skipped wholesale. The other
@@ -558,9 +555,9 @@ export function scanEmittedCommandQuoting(srcDir: string, tsconfigPath: string):
           snippet: node.getText(source).replace(/\s+/g, " ").slice(0, 160),
         });
       }
-      // `shellArg` THROWS on Windows for a value that has no inert rendering; only `commandToken`
-      // and `commandQuoted` absorb that. A direct call therefore turns a diagnostic into an
-      // unhandled stack trace on one platform, so it is banned outside the authority modules — use
+      // A host adapter may refuse values with no inert rendering; only `commandToken` and
+      // `commandQuoted` absorb that. A direct call would turn a diagnostic into an unhandled stack
+      // trace, so it is banned outside the authority modules — use
       // `commandQuoted` (always-quote) or `commandToken`. Resolved by DECLARATION IDENTITY, so an
       // alias or a same-named export elsewhere neither evades nor false-positives.
       if (
@@ -575,7 +572,7 @@ export function scanEmittedCommandQuoting(srcDir: string, tsconfigPath: string):
           start: node.getStart(source),
           end: node.getEnd(),
           expression: node.getText(source),
-          reason: "shellArg() outside the quoting authority throws on Windows — use commandQuoted() (always-quote) or commandToken()",
+          reason: "shellArg() outside the quoting authority can throw — use commandQuoted() (always-quote) or commandToken()",
           snippet: node.getText(source).replace(/\s+/g, " ").slice(0, 160),
         });
       }

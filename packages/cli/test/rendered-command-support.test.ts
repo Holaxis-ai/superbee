@@ -14,13 +14,10 @@ import {
   decodeSerializedScalar, escapeForRegExp, extractSerializedField, parseCommandLine,
 } from "./support/rendered-command.js";
 
-const COMMAND_WIN = 'superbee doc update tasks/x --progress_status "<todo|done>"';
 const COMMAND_POSIX = "superbee doc update tasks/x --progress_status '<todo|done>'";
 
-test("decode: a Windows-serialized scalar and a POSIX bare scalar both yield the command itself", () => {
-  // TOON/JSON quote-and-escape a scalar containing `"`; a POSIX token contains only `'`, so its
-  // scalar is emitted bare. Both must decode to the command, not to its envelope.
-  assert.equal(decodeSerializedScalar(JSON.stringify(COMMAND_WIN)), COMMAND_WIN);
+test("decode: serialized and bare scalars both yield the command itself", () => {
+  assert.equal(decodeSerializedScalar(JSON.stringify(COMMAND_POSIX)), COMMAND_POSIX);
   assert.equal(decodeSerializedScalar(COMMAND_POSIX), COMMAND_POSIX);
 });
 
@@ -29,10 +26,10 @@ test("decode: an escaped quote inside the value survives the round trip", () => 
   assert.equal(decodeSerializedScalar(JSON.stringify(value)), value);
 });
 
-test("extract: reads the field from a real envelope on either platform", () => {
-  const win = `error:\n  code: USAGE\n  help: ${JSON.stringify(COMMAND_WIN)}\n`;
+test("extract: reads the field from bare and serialized envelopes", () => {
+  const serialized = `error:\n  code: USAGE\n  help: ${JSON.stringify(COMMAND_POSIX)}\n`;
   const posix = `error:\n  code: USAGE\n  help: ${COMMAND_POSIX}\n`;
-  assert.equal(extractSerializedField(win, "help"), COMMAND_WIN);
+  assert.equal(extractSerializedField(serialized, "help"), COMMAND_POSIX);
   assert.equal(extractSerializedField(posix, "help"), COMMAND_POSIX);
 });
 
@@ -72,13 +69,10 @@ test("extract: a field-looking line inside another value is a documented limit, 
   assert.equal(extractSerializedField(output, "help"), 'DECOY"');
 });
 
-test("parseCommandLine: splits the way a shell does, for both quoting conventions", () => {
+test("parseCommandLine: splits supported POSIX shell quoting", () => {
   assert.deepEqual(parseCommandLine(COMMAND_POSIX),
     ["superbee", "doc", "update", "tasks/x", "--progress_status", "<todo|done>"]);
-  assert.deepEqual(parseCommandLine(COMMAND_WIN),
-    ["superbee", "doc", "update", "tasks/x", "--progress_status", "<todo|done>"]);
-  // An embedded quote in each convention, and an empty argument.
+  // An embedded apostrophe and an empty argument.
   assert.deepEqual(parseCommandLine(String.raw`a 'b'\''c' d`), ["a", "b'c", "d"]);
-  assert.deepEqual(parseCommandLine('a "b""c" d'), ["a", 'b"c', "d"]);
   assert.deepEqual(parseCommandLine("a '' b"), ["a", "", "b"]);
 });
