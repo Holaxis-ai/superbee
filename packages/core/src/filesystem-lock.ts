@@ -150,14 +150,58 @@ export function parseFilesystemMutationLockOwner(value: unknown): FilesystemMuta
   };
 }
 
-async function readOwner(lockPath: string): Promise<FilesystemMutationLockOwner | null> {
+/**
+ * What one attempt to read a lock's owner record established. `absent` and `unreadable` are
+ * different facts: the first says the record is not there or is not a usable record, the second
+ * says this process could not find out. Collapsing them makes a transient open failure look like
+ * an abandoned lock.
+ */
+type OwnerRecordState =
+  | { readonly state: "record"; readonly owner: FilesystemMutationLockOwner }
+  | { readonly state: "absent" }
+  | { readonly state: "unreadable"; readonly error: unknown };
+
+/** A missing path or malformed content is `absent`; every other read failure is `unreadable`. */
+async function readOwnerRecord(lockPath: string): Promise<OwnerRecordState> {
+  let raw: string;
   try {
-    return parseFilesystemMutationLockOwner(
-      JSON.parse(await fs.readFile(path.join(lockPath, OWNER_FILE), "utf8")),
-    );
-  } catch {
-    return null;
+    raw = await fs.readFile(path.join(lockPath, OWNER_FILE), "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? { state: "absent" } : { state: "unreadable", error: err };
   }
+  let owner: FilesystemMutationLockOwner | null = null;
+  try {
+    owner = parseFilesystemMutationLockOwner(JSON.parse(raw));
+  } catch {
+    owner = null;
+  }
+  return owner === null ? { state: "absent" } : { state: "record", owner };
+}
+
+/**
+ * Resolve the owner record to a definitive answer, polling out an indeterminate read inside the
+ * caller's remaining budget. `EMFILE`/`ENFILE` under concurrency, and the `EBUSY`/`EACCES`/`EPERM`
+ * open transients that Windows indexing and antivirus software produce, otherwise read as "no
+ * record" and let a caller conclude that a lock it still owns has changed hands. An unreadable
+ * record never authorizes the destructive step: the caller fails closed when the budget expires.
+ */
+async function resolveOwnerRecord(
+  lockPath: string,
+  started: number,
+  waitMs: number,
+  pollMs: number,
+): Promise<OwnerRecordState> {
+  while (true) {
+    const record = await readOwnerRecord(lockPath);
+    if (record.state !== "unreadable" || Date.now() - started >= waitMs) return record;
+    await delay(pollMs);
+  }
+}
+
+async function readOwner(lockPath: string): Promise<FilesystemMutationLockOwner | null> {
+  const record = await readOwnerRecord(lockPath);
+  return record.state === "record" ? record.owner : null;
 }
 
 function processExists(pid: number): boolean {
@@ -424,9 +468,15 @@ async function claimLockPath(
     return () => {
       if (inFlight) return inFlight;
       inFlight = (async () => {
-        const current = await readOwner(lockPath);
-        if (current?.token !== owner.token) throw changedOwnerRefusal(lockPath, current);
-        await removeReleasedLock(lockPath, owner, waitMs, pollMs, policy);
+        // One budget spans ownership resolution and removal, so the worst-case hold stays the
+        // mutation plus waitMs however the two steps divide it.
+        const started = Date.now();
+        const current = await resolveOwnerRecord(lockPath, started, waitMs, pollMs);
+        if (current.state === "unreadable") throw unreadableOwnerRefusal(lockPath, current.error);
+        if (current.state !== "record" || current.owner.token !== owner.token) {
+          throw changedOwnerRefusal(lockPath, current.state === "record" ? current.owner : null);
+        }
+        await removeReleasedLock(lockPath, owner, started, waitMs, pollMs, policy);
       })();
       return inFlight.finally(() => {
         inFlight = undefined;
@@ -443,6 +493,15 @@ function changedOwnerRefusal(lockPath: string, current: FilesystemMutationLockOw
 }
 
 /** Token-derived sibling name that only this claim can produce; a competitor can never claim it. */
+/** A record this process could never read is not a record that changed; say which one happened. */
+function unreadableOwnerRefusal(lockPath: string, error: unknown): FilesystemMutationLockError {
+  const message = error instanceof Error ? error.message : String(error);
+  return new FilesystemMutationLockError(
+    `refusing to release filesystem mutation lock '${lockPath}' because its owner record could not be read within the wait budget (${message}); the mutation may have completed, inspect the lock before retrying.`,
+    { lockPath, owner: null, stale: false, malformed: true },
+  );
+}
+
 function releasedLockRemnantPath(lockPath: string, owner: FilesystemMutationLockOwner): string {
   const tokenHash = createHash("sha256").update(owner.token).digest("hex");
   return `${lockPath}.released-${tokenHash}`;
@@ -478,23 +537,25 @@ function removalFailure(
  * A host may report a contention-shaped error while another claimer still holds a handle inside
  * the directory: Windows unlink through Node 20's libuv only marks a file delete-on-close, so a
  * competitor's poll of `owner.json` briefly blocks both the directory rename and the removal of
- * its unlinked record. Retry only what the host policy classifies as directory contention,
- * inside a fresh bounded budget of the claim's `waitMs`, polling every `pollMs`, so the worst-case
- * hold is the mutation plus `waitMs`. The default supported policy classifies nothing, so its
- * release stays single-shot. Before each rename retry the record is re-read: rename never removes
- * the record, so anything but this claim's own record means the directory changed hands and the
- * release refuses, unless the directory itself is gone. A directory or remnant gone between
- * attempts is the requested outcome.
+ * its unlinked record. Retry only what the host policy classifies as directory contention, inside
+ * the budget `started` at release entry and bounded by the claim's `waitMs`, polling every
+ * `pollMs`, so the worst-case hold is the mutation plus `waitMs`. The default supported policy
+ * classifies nothing, so its release stays single-shot. Before each rename retry the record is
+ * re-read: rename never removes the record, so anything but this claim's own record means the
+ * directory changed hands and the release refuses, unless the directory itself is gone. A record
+ * this process cannot read is neither, and is polled out rather than acted on. A directory gone
+ * between attempts is the requested outcome, and so is an absent remnant, whose token-derived
+ * name no competitor can produce.
  */
 async function removeReleasedLock(
   lockPath: string,
   owner: FilesystemMutationLockOwner,
+  started: number,
   waitMs: number,
   pollMs: number,
   policy: FilesystemHostPolicy,
 ): Promise<void> {
   const remnant = releasedLockRemnantPath(lockPath, owner);
-  const started = Date.now();
   let attempts = 0;
   while (true) {
     try {
@@ -508,12 +569,15 @@ async function removeReleasedLock(
       }
     }
     await delay(pollMs);
-    const current = await readOwner(lockPath);
-    if (current?.token === owner.token) continue;
+    // Only a definitive record authorizes another rename, so an indeterminate read delays this
+    // claim's own cleanup instead of ever pointing the rename at a directory it did not verify.
+    const current = await resolveOwnerRecord(lockPath, started, waitMs, pollMs);
+    if (current.state === "record" && current.owner.token === owner.token) continue;
+    if (current.state === "unreadable") throw unreadableOwnerRefusal(lockPath, current.error);
     // Rename never removes the record, so a record-less directory here is a competitor's claim in
     // progress, never this caller's leftover; only an absent directory means already released.
-    if (current === null && !(await pathExists(lockPath))) return;
-    throw changedOwnerRefusal(lockPath, current);
+    if (current.state === "absent" && !(await pathExists(lockPath))) return;
+    throw changedOwnerRefusal(lockPath, current.state === "record" ? current.owner : null);
   }
 
   attempts = 0;
@@ -523,7 +587,9 @@ async function removeReleasedLock(
       return;
     } catch (err) {
       attempts += 1;
-      if (attempts > 1 && (err as NodeJS.ErrnoException).code === "ENOENT") return;
+      // No competitor can produce this token-derived name, so an absent remnant on any attempt,
+      // the first included, means the release already reached its requested end state.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
       if (!policy.isDirectoryContentionError(err) || Date.now() - started >= waitMs) {
         throw removalFailure(
           remnant,

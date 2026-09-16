@@ -1685,3 +1685,179 @@ test("the supported default policy keeps release single-shot even for a sharing-
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });
+
+const unreadableRecord = Object.assign(new Error("owner record open denied by a scanner"), { code: "EBUSY" });
+
+/** Let `skip` reads of this lock's owner record through, fail the next `failures`, then resume. */
+function interceptOwnerRead(
+  ownerFile: string,
+  failures: number,
+  options: { skip?: number; error?: unknown } = {},
+): { restore: () => void; reads: () => number } {
+  const skip = options.skip ?? 0;
+  const error = options.error ?? unreadableRecord;
+  const originalReadFile = fs.readFile;
+  let reads = 0;
+  const restore = replaceFsMethod("readFile", (...args) => {
+    if (path.resolve(String(args[0])) !== path.resolve(ownerFile)) return Reflect.apply(originalReadFile, fs, args);
+    reads += 1;
+    return reads > skip && reads <= skip + failures
+      ? Promise.reject(error)
+      : Reflect.apply(originalReadFile, fs, args);
+  });
+  return { restore, reads: () => reads };
+}
+
+test("release polls out an unreadable owner record instead of abandoning a lock it still owns", async (t) => {
+  await t.test("during the initial ownership check", async () => {
+    const { harness, release, lockPath, ownerFile } = await heldLock({ waitMs: 2_000, pollMs: 1 });
+    const record = await fs.readFile(ownerFile, "utf8");
+    const reader = interceptOwnerRead(ownerFile, 3);
+    try {
+      await release();
+      assert.equal(reader.reads(), 4, "three indeterminate reads, then the definitive one");
+      assert.deepEqual(await lockRootEntries(harness.lockRoot), [], "the lock must actually be released");
+    } finally {
+      reader.restore();
+      await fs.rm(harness.root, { recursive: true, force: true });
+    }
+    assert.ok(record.length > 0);
+  });
+
+  await t.test("during a contended rename retry", async () => {
+    const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 1 });
+    const before = await fs.readFile(ownerFile, "utf8");
+    let renames = 0;
+    const restoreRename = interceptRename(lockPath, async (attempt) => {
+      renames = attempt;
+      if (attempt === 1) throw releaseContention;
+    });
+    // The retry's re-read is the one that fails: the record is intact and still ours throughout.
+    const reader = interceptOwnerRead(ownerFile, 2, { skip: 1 });
+    try {
+      await release();
+      assert.equal(renames, 2, "the retry must still happen once the record reads definitively");
+      assert.equal(reader.reads(), 4, "one initial check, two indeterminate retry reads, one definitive");
+      assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+    } finally {
+      reader.restore();
+      restoreRename();
+      await fs.rm(harness.root, { recursive: true, force: true });
+    }
+    assert.match(before, /"token"/);
+  });
+});
+
+test("a durably unreadable owner record refuses inside the budget and says so honestly", async () => {
+  const { harness, release, lockPath, ownerFile } = await heldLock({ waitMs: 40, pollMs: 1 });
+  const record = await fs.readFile(ownerFile, "utf8");
+  const reader = interceptOwnerRead(ownerFile, Number.MAX_SAFE_INTEGER);
+  try {
+    const started = Date.now();
+    await assert.rejects(
+      () => release(),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.equal(err.lockPath, lockPath);
+        assert.equal(err.malformed, true);
+        assert.equal(err.owner, null);
+        assert.match(err.message, /refusing to release/);
+        assert.match(err.message, /owner record could not be read within the wait budget/);
+        assert.match(err.message, /open denied by a scanner/);
+        return true;
+      },
+    );
+    assert.ok(Date.now() - started < 1_500, "an indeterminate read must not wait past the budget");
+    assert.ok(reader.reads() > 1, "it must have been polled, not concluded from one read");
+  } finally {
+    reader.restore();
+    // The lock and its record are retained intact: the state is unknown, not known-released.
+    assert.equal(await fs.readFile(ownerFile, "utf8"), record);
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("an unreadable record during a rename retry never renames a directory that changed hands", async () => {
+  const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 1 });
+  const foreign = JSON.parse(await fs.readFile(ownerFile, "utf8")) as Record<string, unknown>;
+  foreign.token = "foreign-live-replacement";
+  let renames = 0;
+  const restoreRename = interceptRename(lockPath, async (attempt) => {
+    renames = attempt;
+    // While this rename is delayed the directory is replaced by a competitor's live claim.
+    await fs.rm(lockPath, { recursive: true, force: true });
+    await fs.mkdir(lockPath, { mode: 0o700 });
+    await fs.writeFile(ownerFile, `${JSON.stringify(foreign)}\n`, "utf8");
+    throw releaseContention;
+  });
+  // The first re-reads are indeterminate; the competitor's record only becomes legible later.
+  const reader = interceptOwnerRead(ownerFile, 2, { skip: 1 });
+  try {
+    await assert.rejects(
+      () => release(),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.match(err.message, /refusing to release/);
+        assert.equal(err.owner?.token, "foreign-live-replacement");
+        return true;
+      },
+    );
+    assert.equal(renames, 1, "an indeterminate read must never authorize another rename");
+    assert.deepEqual(JSON.parse(await fs.readFile(ownerFile, "utf8")), foreign, "the competitor's claim survives");
+  } finally {
+    reader.restore();
+    restoreRename();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a malformed owner record still refuses at once rather than being polled", async () => {
+  const { harness, release, lockPath, ownerFile } = await heldLock({ waitMs: 2_000, pollMs: 1 });
+  const originalReadFile = fs.readFile;
+  let reads = 0;
+  const restore = replaceFsMethod("readFile", (...args) => {
+    if (path.resolve(String(args[0])) === path.resolve(ownerFile)) reads += 1;
+    return Reflect.apply(originalReadFile, fs, args);
+  });
+  await fs.writeFile(ownerFile, "{ not a record", "utf8");
+  try {
+    const started = Date.now();
+    await assert.rejects(
+      () => release(),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.match(err.message, /owner token changed/);
+        assert.equal(err.malformed, true);
+        return true;
+      },
+    );
+    assert.equal(reads, 1, "readable-but-malformed is a definitive answer, not an indeterminate one");
+    assert.ok(Date.now() - started < 1_000);
+    assert.equal(await pathExists(lockPath), true);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a remnant already gone on the first removal attempt counts as released", async () => {
+  const { harness, release, lockPath } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 1 });
+  const originalRm = fs.rm;
+  let attempts = 0;
+  const restore = replaceFsMethod("rm", async (...args) => {
+    if (!String(args[0]).startsWith(`${lockPath}.released-`)) return Reflect.apply(originalRm, fs, args);
+    attempts += 1;
+    // An external actor removed the token-fenced remnant before this first removal reached it.
+    await Reflect.apply(originalRm, fs, [args[0], { recursive: true, force: true }]);
+    return Reflect.apply(originalRm, fs, args);
+  });
+  try {
+    await release();
+    assert.equal(attempts, 1, "the requested end state was already reached on the first attempt");
+    assert.equal(await pathExists(lockPath), false);
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
