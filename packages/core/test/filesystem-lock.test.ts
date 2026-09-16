@@ -1862,12 +1862,36 @@ test("a remnant already gone on the first removal attempt counts as released", a
   }
 });
 
+/** Freeze time so budget arithmetic is exact and the real scheduler decides nothing. */
+function virtualClock(start = 1_000_000): { restore: () => void; advance: (ms: number) => void } {
+  const realNow = Date.now;
+  let now = start;
+  Date.now = () => now;
+  return {
+    restore: () => {
+      Date.now = realNow;
+    },
+    advance: (ms: number) => {
+      now += ms;
+    },
+  };
+}
+
 test("the release budget is not restarted per step: removal inherits what ownership resolution left", async () => {
-  // Two polls of pollMs exhaust waitMs before ownership resolves, so a shared budget leaves the
-  // rename exactly one attempt. A budget restarted at removal would grant a fresh full round of
-  // retries instead, which is the looser behavior this pins against.
-  const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 100, pollMs: 50 });
-  const reader = interceptOwnerRead(ownerFile, 2);
+  const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 100, pollMs: 1 });
+  // The lock is claimed on the real clock; only the release runs on the virtual one, so which
+  // branch this exercises is decided by the injected sequence and never by scheduler latency.
+  const clock = virtualClock();
+  const originalReadFile = fs.readFile;
+  let reads = 0;
+  const restoreRead = replaceFsMethod("readFile", (...args) => {
+    if (path.resolve(String(args[0])) !== path.resolve(ownerFile)) return Reflect.apply(originalReadFile, fs, args);
+    reads += 1;
+    if (reads === 1) return Promise.reject(unreadableRecord);
+    // Ownership resolves definitively, but only after the whole budget has been spent.
+    clock.advance(150);
+    return Reflect.apply(originalReadFile, fs, args);
+  });
   let renames = 0;
   const restoreRename = interceptRename(lockPath, async (attempt) => {
     renames = attempt;
@@ -1878,12 +1902,14 @@ test("the release budget is not restarted per step: removal inherits what owners
       () => release(),
       (err: unknown) => err instanceof FilesystemMutationLockError && /could not be removed/.test(err.message),
     );
-    assert.equal(reader.reads(), 3, "two indeterminate reads spend the budget, the third resolves");
+    // A budget restarted at removal would grant a fresh round: another resolve and another rename.
+    assert.equal(reads, 2, "one indeterminate read, then the definitive one");
     assert.equal(renames, 1, "the spent budget must leave the rename a single attempt");
     assert.equal(await pathExists(ownerFile), true, "a durable rename denial retains the lock and its record");
   } finally {
-    reader.restore();
+    restoreRead();
     restoreRename();
+    clock.restore();
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });
