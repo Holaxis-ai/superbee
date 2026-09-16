@@ -1,6 +1,6 @@
 {
   "name": "@superbee/markdown-renderer",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "Bounded Markdown rendering for Superbee human interfaces.",
   "license": "Apache-2.0",

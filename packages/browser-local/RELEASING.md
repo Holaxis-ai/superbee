@@ -11,7 +11,7 @@ is the durable process for every browser-local prerelease.
 | @superbee/core | 0.2.0-pre.5 | public / next |
 | @superbee/server | 0.2.0-pre.5 | public / next |
 | @superbee/browser-local | 0.1.0-pre.3 | public / next |
-| @superbee/markdown-renderer | 0.1.3 | existing restricted access / latest |
+| @superbee/markdown-renderer | 0.1.4 | existing restricted access / latest |
 
 This candidate carries the heads-only working-copy listing (`readHeads` on the
 journaled backend seam; the runtime's `query` and `status` read heads in one
@@ -23,10 +23,12 @@ server's legacy router resolves its backend through `backendFor`).
 Browser-local depends exactly on core pre.5. Registry core pre.4 lacks `readHeads`
 on the journaled backend seam that this package's runtime calls; do not patch around
 it or publish with a wildcard dependency. Server moves with core under the existing
-paired release policy. Renderer 0.1.3 only extends its core peer allowance to pre.5;
-it is included so consumers can align their root core without overriding peer
-checks, and a published renderer version is never reused for different bytes. Its
-access remains restricted: do not make other private packages public.
+paired release policy. Renderer 0.1.4 adds the opt-in `externalLinkHosts` option
+(PR 267): an `https://` link whose host is exactly on the caller's list renders as a
+real anchor with `rel="noopener noreferrer"` and `target="_blank"`; without the option
+the output is byte-identical to 0.1.3. Its peer allowance is unchanged. A published
+renderer version is never reused for different bytes. Its access remains restricted:
+do not make other private packages public.
 
 ## Before release
 
