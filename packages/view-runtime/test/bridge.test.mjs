@@ -770,10 +770,10 @@ test("render-document reads one canonical version, bounds it, and revalidates th
     id: "render",
     docId: "docs/one",
   });
-  assert.deepEqual(calls, [{ id: "docs/one", body: "# One\n\nBody" }]);
+  assert.deepEqual(calls, [{ id: "docs/one", body: "# One\n\nBody\n" }]);
   assert.deepEqual(rendered.reply.result.document.id, "docs/one");
   assert.match(rendered.reply.result.document.version, /^sha256:/);
-  assert.equal(rendered.reply.result.html, "<article># One\n\nBody</article>");
+  assert.equal(rendered.reply.result.html, "<article># One\n\nBody\n</article>");
   assert.equal(rendered.reply.result.bounded, false);
 
   const missing = await bridge.handle("launch", {
@@ -919,7 +919,9 @@ test("graph carries bodies only when includeBodies is true on a launch that may 
     assert.equal(withBodies.reply?.type, "graph:result", capability);
     assert.deepEqual(
       withBodies.reply.result.documents.map((row) => [row.id, row.body]),
-      [["notes/alpha", "# Alpha\n\nBody text."], ["notes/beta", ""]],
+      // Every backend reports the canonical serialized body, so an authored "" reads back as
+      // the serializer's "\n". The claim is unchanged: the empty-bodied doc is still a row.
+      [["notes/alpha", "# Alpha\n\nBody text.\n"], ["notes/beta", "\n"]],
       `${capability} receives every body, including the empty one`,
     );
     for (const row of withBodies.reply.result.documents) {

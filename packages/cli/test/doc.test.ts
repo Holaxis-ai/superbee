@@ -934,7 +934,7 @@ test("mutateDoc overwrite: the historical '--replace-links' shape (a candidate t
   assert.equal(buildCandidateCalls, 2);
   // Our own overwrite still landed — --replace-links means "I accept dropping MY OWN read's links",
   // not "skip CAS": the FINAL write is still the caller's full replace, exactly as before.
-  assert.equal(result.doc.body, "Blind overwrite, no links.");
+  assert.equal(result.doc.body, "Blind overwrite, no links.\n");
 });
 
 // ── Defect B (mutation-boundary consolidation): doc write's guards rode a single stale upfront peek ─
@@ -993,7 +993,7 @@ test("doc write F1 guard: re-evaluated on EVERY attempt — a competing writer f
     );
     // The competing writer's body was never blanked — our write refused before ever landing.
     const after = await readDoc(bundle, "a");
-    assert.equal(after.body, "Competing non-empty body.");
+    assert.equal(after.body, "Competing non-empty body.\n");
   } finally {
     await server.close();
   }
@@ -3148,7 +3148,7 @@ test("mutateDoc seam: the body-replace guards fire for a caller that never calls
   const dropped = await patch("docs/linked", "No links here.\n", { replaceLinks: true });
   assert.equal(dropped.doc.body, "No links here.\n");
   const truncated = await patch("docs/long", LONG_PAGE_BODY.slice(0, 1000), { acceptTruncatedBody: true });
-  assert.equal(truncated.doc.body.length, 1000);
+  assert.equal(truncated.doc.body, `${LONG_PAGE_BODY.slice(0, 1000)}\n`);
 });
 
 // ── The guards' "same body?" short-circuit ignored the body's STORAGE shape ─────────────────
