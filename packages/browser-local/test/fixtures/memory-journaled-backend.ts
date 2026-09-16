@@ -12,7 +12,7 @@
  * `instanceof`. Not a shipping store: it forgets everything when the process ends.
  */
 
-import { stringifyDoc } from "@superbee/core/document-codec";
+import { parseMarkdown, stringifyDoc } from "@superbee/core/document-codec";
 import {
   assertJournalGuard,
   assertJournalIntentChanges,
@@ -37,6 +37,8 @@ import {
   type JournaledBackend,
   type JournaledDeleteOptions,
   type JournaledDeleteResult,
+  type JournaledHead,
+  type JournaledHeadsOptions,
   type JournaledReadResult,
   type JournaledWriteOptions,
   type MetaRecord,
@@ -44,6 +46,8 @@ import {
 import { MemoryBackend } from "@superbee/core/memory-backend";
 import {
   assertSafeConceptId,
+  MalformedDocumentError,
+  pathFromConceptId,
   type BlobKey,
   type ConceptId,
   type DeleteOptions,
@@ -67,6 +71,8 @@ interface DocumentRow {
   version: Version;
   actor: string;
   timestamp: string;
+  /** Set by {@link MemoryJournaledBackend.storeRaw} when the planted bytes do not parse: single reads reject with it, the listing reports it. */
+  malformed?: MalformedDocumentError;
 }
 
 function notFound(id: ConceptId): Error & { code: string } {
@@ -106,7 +112,27 @@ export class MemoryJournaledBackend implements JournaledBackend {
     assertSafeConceptId(id);
     const row = this.#documents.get(id);
     if (!row) throw notFound(id);
+    if (row.malformed) throw row.malformed;
     return { doc: structuredClone(row.doc), version: row.version };
+  }
+
+  /**
+   * Plant exact bytes as a document's stored serialization, bypassing the seam's serializer:
+   * the contract kit's malformed-record row. Bytes that parse become the document; bytes that
+   * do not are kept with the parser's error, as an IndexedDB record holding them would be.
+   */
+  storeRaw(id: ConceptId, raw: string): void {
+    assertSafeConceptId(id);
+    const previous = this.#documents.get(id);
+    const row: DocumentRow = { doc: { id, frontmatter: {} as OkfDocument["frontmatter"], body: "" }, raw, version: versionOfBytes(raw), actor: previous?.actor ?? defaultActor(), timestamp: new Date().toISOString() };
+    try {
+      const parsed = parseMarkdown(raw, pathFromConceptId(id));
+      row.doc = { id, frontmatter: parsed.frontmatter, body: parsed.body };
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      row.malformed = error;
+    }
+    this.#documents.set(id, row);
   }
 
   async readMany(ids: ConceptId[]): Promise<ReadResult[]> {
@@ -133,10 +159,15 @@ export class MemoryJournaledBackend implements JournaledBackend {
     return this.#documents.has(id);
   }
 
-  async list(prefix?: string): Promise<ConceptId[]> {
+  /** Ids in this adapter's `list` order, synchronously, so a listing over them is one section with no await. */
+  #ids(prefix?: string): ConceptId[] {
     const ids = [...this.#documents.keys()].filter((id) => !prefix || id.startsWith(prefix));
     ids.sort((a, b) => a.localeCompare(b));
     return ids;
+  }
+
+  async list(prefix?: string): Promise<ConceptId[]> {
+    return this.#ids(prefix);
   }
 
   async versions(id: ConceptId): Promise<VersionInfo[]> {
@@ -273,7 +304,30 @@ export class MemoryJournaledBackend implements JournaledBackend {
       if (this.#meta.has(key)) meta.set(key, structuredClone(this.#meta.get(key)));
     }
     if (!row) return { document: null, raw: null, intents, meta };
+    if (row.malformed) throw row.malformed;
     return { document: { doc: structuredClone(row.doc), version: row.version }, raw: row.raw, intents, meta };
+  }
+
+  async readHeads<T = JournaledHead>(options: JournaledHeadsOptions<T> = {}): Promise<T[]> {
+    const keysOf = options.meta ?? (() => []);
+    const project = options.project ?? ((head: JournaledHead) => head as unknown as T);
+    // One synchronous pass over the maps: this adapter's one transaction, with no await inside.
+    const shared = new Map<string, unknown>();
+    for (const key of new Set(options.shared ?? [])) {
+      if (this.#meta.has(key)) shared.set(key, structuredClone(this.#meta.get(key)));
+    }
+    const out: T[] = [];
+    for (const id of this.#ids()) {
+      const row = this.#documents.get(id)!;
+      const intents = [...this.#intents.values()].filter((entry) => entry.target === id).sort(bySequence).map((entry) => structuredClone(entry));
+      const meta = new Map(shared);
+      for (const key of new Set(keysOf(id, intents))) {
+        if (!meta.has(key) && !(options.shared ?? []).includes(key) && this.#meta.has(key)) meta.set(key, structuredClone(this.#meta.get(key)));
+      }
+      const head = { id, version: row.version, updatedBy: row.actor, updatedAt: row.timestamp, raw: row.raw, intents, meta };
+      out.push(project(row.malformed ? { ...head, frontmatter: null, malformed: row.malformed } : { ...head, frontmatter: structuredClone(row.doc.frontmatter) }));
+    }
+    return out;
   }
 
   async listIntents(state?: OperationState | readonly OperationState[]): Promise<IntentRecord[]> {

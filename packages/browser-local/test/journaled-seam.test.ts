@@ -25,7 +25,10 @@ const immediate = { sleep: async () => {}, lookupDelayMs: 0 };
 
 registerJournaledBackendContract({
   name: "MemoryJournaledBackend",
-  create: () => ({ backend: new MemoryJournaledBackend(), cleanup: async () => undefined }),
+  create: () => {
+    const backend = new MemoryJournaledBackend();
+    return { backend, cleanup: async () => undefined, storeRaw: async (id, raw) => backend.storeRaw(id, raw) };
+  },
   seam: { IntentStateConflict, IntentHoldConflict, VersionConflict },
 });
 

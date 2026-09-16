@@ -57,6 +57,8 @@ import {
   type JournaledBackend,
   type JournaledDeleteOptions,
   type JournaledDeleteResult,
+  type JournaledHead,
+  type JournaledHeadsOptions,
   type JournaledReadResult,
   type JournaledWriteOptions,
   type MetaRecord,
@@ -69,6 +71,7 @@ import type {
   BlobKey,
   ConceptId,
   DeleteOptions,
+  Frontmatter,
   OkfDocument,
   ReadBlobResult,
   ReadResult,
@@ -83,7 +86,7 @@ import type {
 // Re-exports: the journal's record, option, and error names moved to the seam module
 // (`journaled-backend.ts`); they stay reachable here so existing importers keep working.
 export { IntentHoldConflict, IntentStateConflict } from "./journaled-backend.js";
-export type { IntentPatch, IntentRecord, JournaledDeleteOptions, JournaledDeleteResult, JournaledReadResult, JournaledWriteOptions, MetaRecord, NewIntentRecord } from "./journaled-backend.js";
+export type { IntentPatch, IntentRecord, JournaledDeleteOptions, JournaledDeleteResult, JournaledHead, JournaledHeadsOptions, JournaledReadResult, JournaledWriteOptions, MetaRecord, NewIntentRecord } from "./journaled-backend.js";
 
 // ── the slice of the IndexedDB API this adapter needs ──────────────────────────────────────
 // Core compiles against the ES library only (no DOM lib), so the adapter names the structural
@@ -104,6 +107,12 @@ export interface IdbOpenRequestLike extends IdbRequestLike<IdbDatabaseLike> {
   readonly transaction: IdbTransactionLike | null;
 }
 
+/** A value cursor over a store, in key order; `continue` re-fires the opening request's `onsuccess`, with `null` once the store is walked. */
+export interface IdbCursorLike {
+  readonly value: unknown;
+  continue(): void;
+}
+
 export interface IdbObjectStoreLike {
   get(key: string): IdbRequestLike;
   getAll(): IdbRequestLike<unknown[]>;
@@ -111,6 +120,7 @@ export interface IdbObjectStoreLike {
   count(key: string): IdbRequestLike<number>;
   put(value: unknown): IdbRequestLike;
   delete(key: string): IdbRequestLike;
+  openCursor(): IdbRequestLike<IdbCursorLike | null>;
 }
 
 export interface IdbTransactionLike {
@@ -237,6 +247,23 @@ function editionOf(index: ReservedRecord | undefined): string | undefined {
     if (error instanceof MalformedDocumentError) return undefined;
     throw error;
   }
+}
+
+/**
+ * One listing row from a stored record: the frontmatter is what `readWithJournal` parses for
+ * the record under `edition` (the split takes the body as a substring it never parses), or
+ * `null` with the parser's error when the leading block does not parse.
+ */
+function headOf(record: DocumentRecord, intents: IntentRecord[], meta: Map<string, unknown>, edition: string | undefined): JournaledHead {
+  const head = { id: record.id, version: record.version, updatedBy: record.updatedBy, updatedAt: record.updatedAt, raw: record.raw, intents, meta };
+  let frontmatter: Frontmatter;
+  try {
+    frontmatter = parseMarkdown(record.raw, pathFromConceptId(record.id), { okfVersion: edition }).frontmatter;
+  } catch (error) {
+    if (!(error instanceof MalformedDocumentError)) throw error;
+    return { ...head, frontmatter: null, malformed: error };
+  }
+  return { ...head, frontmatter };
 }
 
 /**
@@ -1002,6 +1029,125 @@ export class IndexedDbBackend implements JournaledBackend {
     if (!record) return { document: null, raw: null, intents: rows, meta };
     const { frontmatter, body } = parseMarkdown(record.raw, pathFromConceptId(id), { okfVersion: editionOf(index) });
     return { document: { doc: { id, frontmatter, body }, version: record.version }, raw: record.raw, intents: rows, meta };
+  }
+
+  /**
+   * Every document's head with its intents and the meta rows named for it, from ONE readonly
+   * transaction over documents, reserved, intents, and meta: {@link readWithJournal} over the
+   * whole store. The root index, the journal (grouped by target, since it has no index by
+   * target) and the `shared` keys are read once, then the documents are walked by cursor, each
+   * row's own keys read with it, so a caller's `project` sees one record at a time and the
+   * listing holds only what it keeps. The frontmatter is the one `readWithJournal` would parse
+   * for the record, under the edition the root index declared at this moment; the body is
+   * never parsed. Rows come back in `list` order.
+   */
+  async readHeads<T = JournaledHead>(options: JournaledHeadsOptions<T> = {}): Promise<T[]> {
+    const keysOf = options.meta ?? (() => []);
+    const sharedKeys = [...new Set(options.shared ?? [])];
+    const project = options.project ?? ((head: JournaledHead) => head as unknown as T);
+    const rows = await this.#transact<Array<{ id: ConceptId; row: T }>>(
+      [DOCUMENTS, RESERVED, INTENTS, META],
+      "readonly",
+      (tx, done, fail, guard) => {
+        const out: Array<{ id: ConceptId; row: T }> = [];
+        let edition: string | undefined;
+        const byTarget = new Map<ConceptId, IntentRecord[]>();
+        const shared = new Map<string, unknown>();
+        // Rows still being assembled, plus one for the cursor walk itself; the listing is done
+        // when the walk has ended and every row's meta reads have landed.
+        let outstanding = 1;
+        const finish = () => {
+          if (--outstanding === 0) done(out);
+        };
+        // A parse or projection failure aborts the transaction through `fail`; after it no
+        // request is placed and no request's own error is reported, so the caller's error is
+        // the rejection, not the aborted transaction's refusal of the requests still in flight.
+        let stopped = false;
+        const stop = (error: Error) => {
+          if (stopped) return;
+          stopped = true;
+          fail(error);
+        };
+        const metaStore = tx.objectStore(META);
+        const readMeta = (key: string, into: Map<string, unknown>, then: () => void) => {
+          const request = metaStore.get(key);
+          request.onerror = () => stop(requestError(request, `IndexedDB meta read failed for '${key}'`));
+          request.onsuccess = guard(() => {
+            const row = request.result as MetaRecord | undefined;
+            if (row !== undefined) into.set(key, row.value);
+            then();
+          });
+        };
+        const walk = () => {
+          const cursor = tx.objectStore(DOCUMENTS).openCursor();
+          cursor.onerror = () => stop(requestError(cursor, "IndexedDB document scan failed"));
+          cursor.onsuccess = guard(() => {
+            const current = cursor.result;
+            if (!current) {
+              finish();
+              return;
+            }
+            const record = current.value as DocumentRecord;
+            const intents = byTarget.get(record.id) ?? [];
+            const keys = [...new Set(keysOf(record.id, intents))].filter((key) => !shared.has(key) && !sharedKeys.includes(key));
+            const meta = new Map(shared);
+            let pending = keys.length;
+            outstanding += 1;
+            const complete = () => {
+              try {
+                out.push({ id: record.id, row: project(headOf(record, intents, meta, edition)) });
+              } catch (error) {
+                stop(asError(error));
+                return;
+              }
+              finish();
+            };
+            if (pending === 0) complete();
+            else {
+              for (const key of keys) {
+                readMeta(key, meta, () => {
+                  if (--pending === 0) complete();
+                });
+              }
+            }
+            if (!stopped) current.continue();
+          });
+        };
+        const readShared = () => {
+          let pending = sharedKeys.length;
+          if (pending === 0) {
+            walk();
+            return;
+          }
+          for (const key of sharedKeys) {
+            readMeta(key, shared, () => {
+              if (--pending === 0) walk();
+            });
+          }
+        };
+        // The index, the journal and the shared rows land before the walk starts, so every row
+        // is built under one edition and sees its whole journal, whatever order the host
+        // answers requests in.
+        const rootIndex = tx.objectStore(RESERVED).get(reservedKey("", "index.md"));
+        rootIndex.onerror = () => stop(requestError(rootIndex, "IndexedDB root index read failed"));
+        rootIndex.onsuccess = guard(() => {
+          edition = editionOf(rootIndex.result as ReservedRecord | undefined);
+          const scan = tx.objectStore(INTENTS).getAll();
+          scan.onerror = () => stop(requestError(scan, "IndexedDB journal scan failed"));
+          scan.onsuccess = guard(() => {
+            for (const row of scan.result as IntentRecord[]) {
+              const list = byTarget.get(row.target);
+              if (list) list.push(row);
+              else byTarget.set(row.target, [row]);
+            }
+            for (const list of byTarget.values()) list.sort((a, b) => a.sequence - b.sequence);
+            readShared();
+          });
+        });
+      },
+    );
+    rows.sort((a, b) => compareStorageKeys(a.id, b.id));
+    return rows.map((entry) => entry.row);
   }
 
   /** Intents in local commit order, optionally restricted to one or more states. */
