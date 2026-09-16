@@ -352,6 +352,44 @@ test("static View bridge reuses canonical read semantics and rejects mismatched 
     const hello = await bridge.handle({ bridge: "v0", type: "hello", id: "h" });
     assert.equal(hello.reply.type, "hello:result");
     assert.equal(hello.reply.result.mode, "snapshot");
+    assert.deepEqual(hello.reply.result.host, {
+      kind: "oss",
+      capabilities: [
+        "edges",
+        "graph",
+        "open-page",
+        "query.count",
+        "query.field-or",
+        "query.kind-projection",
+        "query.open",
+        "render-document",
+      ],
+      limits: { query: 500, edges: 1000, graphDocuments: 1000, graphRelationships: 10_000, replyBytes: 2 * 1024 * 1024 },
+    }, "a static snapshot never declares subscribe-deltas");
+    const versioned = await bridge.handle({ bridge: "v1", type: "read-versioned", id: "rv", docId: "notes/alpha" });
+    assert.equal(versioned.reply.type, "read-versioned:result", "the read-only host forwards the v1 read");
+    assert.equal(versioned.reply.result.doc.id, "notes/alpha");
+    assert.match(versioned.reply.result.version, /^sha256:/);
+    const proposal = await bridge.handle({
+      bridge: "v1",
+      type: "action.propose",
+      requestId: "p",
+      action: { kind: "document.set-field", docId: "notes/alpha", field: "title", value: "x", expectedVersion: versioned.reply.result.version },
+    });
+    assert.equal(proposal.reply.type, "error");
+    assert.equal(proposal.reply.id, "p");
+    assert.equal(proposal.reply.error.code, "FORBIDDEN", "a write on the static host is refused, never dropped");
+    const extension = await bridge.handle({ bridge: "v0", type: "host", id: "x", capability: "record.open", input: {} });
+    assert.equal(extension.reply.error.code, "FORBIDDEN");
+    const portal = createPublicationBridge({
+      protocol: PUBLICATION_BRIDGE_V0,
+      snapshot,
+      admittedView: { id: view.id, entry: view.entry, access: view.access, entryDigest: view.entryObject.digest },
+      host: { kind: "portal" },
+    });
+    const portalHello = await portal.handle({ bridge: "v0", type: "hello", id: "h2" });
+    assert.equal(portalHello.reply.result.host.kind, "portal");
+    assert.deepEqual(portalHello.reply.result.host.capabilities, hello.reply.result.host.capabilities);
     const query = await bridge.handle({ bridge: "v0", type: "query", id: "q", params: { prefix: "notes/" } });
     assert.equal(query.reply.type, "query:result");
     assert.equal(query.reply.result.count, 2);
@@ -362,12 +400,28 @@ test("static View bridge reuses canonical read semantics and rejects mismatched 
     assert.match(rendered.reply.result.html, /<h1[^>]*>Alpha<\/h1>/);
     const edges = await bridge.handle({ bridge: "v0", type: "edges", id: "e", params: {} });
     assert.deepEqual(edges.reply.result.edges, [{ from: "notes/alpha", to: "notes/beta", text: "Beta" }]);
+    const graph = await bridge.handle({ bridge: "v0", type: "graph", id: "g" });
+    assert.equal(graph.reply.type, "graph:result", "the static bridge inherits graph from the shared service");
+    assert.equal(graph.reply.result.okfVersion, "0.2");
+    assert.deepEqual(
+      graph.reply.result.documents.map((row) => row.id),
+      ["notes/alpha", "notes/beta", "views-registry/fixture"],
+    );
+    assert.equal(graph.reply.result.documents.some((row) => Object.hasOwn(row, "body")), false);
+    assert.deepEqual(graph.reply.result.relationships, [{ from: "notes/alpha", to: "notes/beta", text: "Beta" }]);
+    assert.deepEqual(graph.reply.result.counts, { documents: 3, relationships: 1 });
+    assert.equal(Object.hasOwn(graph.reply.result, "model"), false);
+    const graphBodies = await bridge.handle({ bridge: "v0", type: "graph", id: "gb", includeBodies: true });
+    assert.equal(graphBodies.reply.type, "graph:result");
+    const alpha = graphBodies.reply.result.documents.find((row) => row.id === "notes/alpha");
+    assert.equal(alpha.body, read.reply.result.body, "snapshot bodies match the read request byte for byte");
     const subscribed = await bridge.handle({ bridge: "v0", type: "subscribe", id: "s" });
     assert.equal(subscribed.subscribed, true);
     const open = await bridge.handle({ bridge: "v0", type: "open-page", pageId: "views-registry/fixture" });
     assert.equal(open.openViewId, "views-registry/fixture");
     const invalid = await bridge.handle({ bridge: "v0", type: "explode", id: "x" });
     assert.equal(invalid.reply.type, "error");
+    assert.equal(invalid.reply.error.code, "FORBIDDEN", "an unknown request type is refused, not dropped");
     await snapshot.close();
   } finally {
     await rm(root, { recursive: true, force: true });

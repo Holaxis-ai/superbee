@@ -9,7 +9,12 @@ export interface StaticRenderOptions {
   fromId: string;
   titleFor?: RenderOptions["titleFor"];
   limits?: RenderOptions["limits"];
+  /** Same allowlist rules as the interactive profile; absent keeps every external target inert. */
+  externalLinkHosts?: RenderOptions["externalLinkHosts"];
 }
+
+/** The subset of {@link StaticRenderOptions} the bridge-shaped document adapter accepts. */
+export type StaticDocumentRenderOptions = Pick<StaticRenderOptions, "externalLinkHosts">;
 
 export interface StaticRenderedMarkdown extends Omit<RenderedMarkdown, "element"> {
   html: string;
@@ -44,7 +49,11 @@ export function renderMarkdownToStaticHtml(
 /** Bridge-shaped adapter shared by every host that presents a canonical bundle document. */
 export function renderDocumentToStaticHtml(
   document: StaticRenderableDocument,
+  options: StaticDocumentRenderOptions = {},
 ): StaticRenderedDocument {
-  const rendered = renderMarkdownToStaticHtml(document.body, { fromId: document.id });
+  const rendered = renderMarkdownToStaticHtml(document.body, {
+    fromId: document.id,
+    externalLinkHosts: options.externalLinkHosts,
+  });
   return { html: rendered.html, bounded: rendered.bounded };
 }

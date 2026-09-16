@@ -868,6 +868,74 @@ function transactionRecordingFactory(inner: IDBFactory, log: Array<{ stores: str
   };
 }
 
+/**
+ * The transaction-recording factory plus a count of `get` requests placed against the meta
+ * store, so a listing's meta traffic is observed, not inferred.
+ */
+function metaGetCountingFactory(inner: IDBFactory, log: Array<{ stores: string[]; mode: string }>, counts: { metaGets: number }): IdbFactoryLike {
+  const wrapStore = (store: any, name: string) =>
+    proxied(store, {
+      get(key: string) {
+        if (name === "meta") counts.metaGets += 1;
+        return store.get(key);
+      },
+    });
+  const wrapTx = (tx: any) => proxied(tx, { objectStore: (name: string) => wrapStore(tx.objectStore(name), name) });
+  const wrapDb = (db: any) =>
+    proxied(db, {
+      transaction: (names: string | string[], mode?: string) => {
+        log.push({ stores: [...(typeof names === "string" ? [names] : names)].sort(), mode: mode ?? "readonly" });
+        return wrapTx(db.transaction(names, mode));
+      },
+    });
+  return {
+    open(name: string, version?: number) {
+      const request = inner.open(name, version);
+      return proxied(request, {
+        get result() {
+          return wrapDb(request.result);
+        },
+      });
+    },
+  };
+}
+
+test("readHeads is one readonly transaction over the four stores, reads a shared key once, and walks the documents by cursor rather than materializing them", async () => {
+  const log: Array<{ stores: string[]; mode: string }> = [];
+  const counts = { metaGets: 0 };
+  const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: metaGetCountingFactory(new IDBFactory(), log, counts) });
+  const ids = ["heads/a", "heads/b", "heads/c"];
+  try {
+    await backend.writeReserved("", "index.md", ROOT_INDEX);
+    for (const id of ids) await backend.writeJournaled(id, doc(id, `body of ${id}`), { meta: ({ version, raw }) => [{ key: `base:${id}`, value: { version, content: raw } }] });
+    await backend.writeMeta("mode", { shared: true });
+
+    log.length = 0;
+    counts.metaGets = 0;
+    const seen: string[] = [];
+    const heads = await backend.readHeads({
+      meta: (id) => [`base:${id}`, `base:${id}`, "mode"],
+      shared: ["mode", "mode"],
+      project: (head) => {
+        seen.push(head.id);
+        return { id: head.id, base: head.meta.get(`base:${head.id}`), mode: head.meta.get("mode"), type: head.frontmatter?.type };
+      },
+    });
+    assert.deepEqual(log, [{ stores: ["documents", "intents", "meta", "reserved"], mode: "readonly" }], "one readonly transaction over the four stores");
+    assert.equal(counts.metaGets, ids.length + 1, "one get per base row plus one for the shared key, however often either is named");
+    assert.deepEqual(seen, ids, "the projection saw each record once, in key order, as the cursor delivered it");
+    assert.deepEqual(heads.map((row) => [row.id, row.mode, row.type, typeof row.base]), ids.map((id) => [id, { shared: true }, "Adversarial", "object"]));
+
+    // An aborted transaction (a projection that throws part-way) rejects with the projection's
+    // error and leaves the store readable; the rows before the failure are not returned.
+    const failure = new Error("stop at b");
+    await assert.rejects(backend.readHeads({ project: (head) => { if (head.id === "heads/b") throw failure; return head.id; } }), (error: unknown) => error === failure);
+    assert.deepEqual((await backend.readHeads({ project: (head) => head.id })), ids);
+  } finally {
+    backend.close();
+  }
+});
+
 test("readWithJournal reads the document, its intents, and the named meta rows in one readonly transaction, consistent under a concurrent writeJournaled", async () => {
   const log: Array<{ stores: string[]; mode: string }> = [];
   const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: transactionRecordingFactory(new IDBFactory(), log) });

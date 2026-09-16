@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 
-import { BridgeService, type BridgeLaunchAuthority } from "@superbee/view-runtime/bridge";
+import {
+  BRIDGE_HOST_CAPABILITIES,
+  BRIDGE_SERVICE_CAPABILITIES,
+  BRIDGE_SERVICE_LIMITS,
+  BridgeService,
+  type BridgeHostKind,
+  type BridgeLaunchAuthority,
+} from "@superbee/view-runtime/bridge";
 
 import { PublicationError } from "./errors.js";
 import { PublicationSnapshotBackend } from "./snapshot-backend.js";
@@ -21,7 +28,17 @@ export interface CreatePublicationBridgeOptionsV1 {
   protocol: typeof PUBLICATION_BRIDGE_V0;
   snapshot: PublicationSnapshotHandleV1;
   admittedView: PublicationBridgeAdmissionV1;
+  /**
+   * The embedding host's identity for `hello.host`. Capabilities default to what this static
+   * bridge answers itself; a snapshot pushes no deltas, so `subscribe-deltas` is never declared.
+   */
+  host?: { kind?: BridgeHostKind; capabilities?: readonly string[] };
 }
+
+const STATIC_BRIDGE_CAPABILITIES: readonly string[] = Object.freeze([
+  ...BRIDGE_SERVICE_CAPABILITIES,
+  BRIDGE_HOST_CAPABILITIES.openPage,
+]);
 
 /** Create the canonical read-only View bridge over one immutable publication snapshot. */
 export function createPublicationBridge(options: CreatePublicationBridgeOptionsV1): PublicationBridgeV1 {
@@ -84,7 +101,11 @@ export function createPublicationBridge(options: CreatePublicationBridgeOptionsV
           if (!rendered || rendered.id !== id) throw new Error(`document '${id}' is not available`);
           return { html: rendered.html, bounded: rendered.bounded };
         },
-        allowActionProtocol: false,
+        host: {
+          kind: options.host?.kind ?? "oss",
+          capabilities: options.host?.capabilities ?? STATIC_BRIDGE_CAPABILITIES,
+          limits: BRIDGE_SERVICE_LIMITS,
+        },
         enablePolling: false,
         consumeOpenPage: false,
       });

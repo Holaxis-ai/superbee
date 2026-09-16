@@ -248,32 +248,60 @@ export async function captureBodyRefresh(backend: JournaledBackend, mode: BodyMo
     for (const id of guards.keys()) await check(id);
   } };
 }
+/** The meta keys body mode reads beside one target: the mode row, the target's shared base, one descriptor per intent, and the keys a verb adds. */
+export function bodyEvidenceKeys(target: string, intents: readonly IntentRecord[], extra: readonly string[] = []): string[] {
+  return [...new Set([BODY_MODE_KEY, `base:${target}`, ...intents.map(row => bodyRecordKey(row.requestId)), ...extra])];
+}
+
+/** One target's body evidence as one transaction read it: what {@link validateBodyEvidence} checks. */
+export interface BodyEvidence {
+  target: string;
+  document: { version: Version; raw: string } | null;
+  intents: IntentRecord[];
+  meta: Map<string, unknown>;
+  /** The keys read for the target ({@link bodyEvidenceKeys}); the guard names each of them. */
+  keys: readonly string[];
+}
+
+/**
+ * Check one target's evidence against the admitted mode and build its guard and validated
+ * descriptors: the mode row is still the admitted mode, the shared base is shaped, every
+ * intent's descriptor binds it and its chain, and the whole fits capacity. `bodySnapshot` runs
+ * it over one target's reads and the heads listing over every row of its one transaction, so a
+ * read and a listing refuse the same evidence.
+ */
+export function validateBodyEvidence(evidence: BodyEvidence, mode: BodyMode): { guard: JournalGuard; records: Map<string, BodyRecord> } {
+  const { target, intents, meta, keys } = evidence;
+  if (!meta.has(BODY_MODE_KEY) || JSON.stringify(storedMode(meta.get(BODY_MODE_KEY))) !== JSON.stringify(mode)) throw new BodyRuntimeError("Working copy mode changed.");
+  if (meta.has(`base:${target}`)) assertSharedBase(meta.get(`base:${target}`));
+  const records = new Map(intents.map(row => [row.requestId, validateBodyRecord(mode, row, meta.get(bodyRecordKey(row.requestId)))]));
+  for (const row of intents) {
+    const record = records.get(row.requestId)!;
+    if (row.after !== undefined) {
+      const predecessor = intents.find(prior => prior.requestId === row.after);
+      if (!predecessor || predecessor.sequence >= row.sequence || predecessor.local !== row.base || predecessor.content !== row.baseContent) throw new BodyRuntimeError("Body successor has invalid original history.");
+    }
+    if (row.after !== undefined && record.prepared) {
+      const predecessor = records.get(row.after);
+      if (!predecessor?.prepared || !predecessor.receipt) throw new BodyRuntimeError("Successor lacks predecessor evidence.");
+      const candidate = prepareBodyDelivery({ scope: mode.scope, requestId: row.requestId, target, okfVersion: mode.okfVersion, operation: record.prepared.operation, local: row.local, content: row.content, createdAt: row.createdAt }, { prepared: predecessor.prepared, receipt: predecessor.receipt });
+      assertSameBodyDelivery(record.prepared, candidate);
+    }
+  }
+  const guard: JournalGuard = { target, document: evidence.document, intents,
+    meta: keys.map(key => ({ key, expected: meta.has(key) ? { present: true, value: meta.get(key) } : { present: false } })) };
+  assertBodyCapacity(guard);
+  return { guard, records };
+}
+
 export async function bodySnapshot(backend: JournaledBackend, target: string, mode: BodyMode, extra: readonly string[] = []): Promise<BodySnapshot> {
   await assertBodyEdition(backend, mode);
   for (let attempt = 0; attempt < 3; attempt++) {
     const discovery = await backend.readWithJournal(target);
-    const keys = [...new Set([BODY_MODE_KEY, `base:${target}`, ...discovery.intents.map(row => bodyRecordKey(row.requestId)), ...extra])];
+    const keys = bodyEvidenceKeys(target, discovery.intents, extra);
     const read = await backend.readWithJournal(target, { meta: keys });
     if (read.intents.some(row => !keys.includes(bodyRecordKey(row.requestId)))) continue;
-    if (!read.meta.has(BODY_MODE_KEY) || JSON.stringify(storedMode(read.meta.get(BODY_MODE_KEY))) !== JSON.stringify(mode)) throw new BodyRuntimeError("Working copy mode changed.");
-    if (read.meta.has(`base:${target}`)) assertSharedBase(read.meta.get(`base:${target}`));
-    const records = new Map(read.intents.map(row => [row.requestId, validateBodyRecord(mode, row, read.meta.get(bodyRecordKey(row.requestId)))]));
-    for (const row of read.intents) {
-      const record = records.get(row.requestId)!;
-      if (row.after !== undefined) {
-        const predecessor = read.intents.find(prior => prior.requestId === row.after);
-        if (!predecessor || predecessor.sequence >= row.sequence || predecessor.local !== row.base || predecessor.content !== row.baseContent) throw new BodyRuntimeError("Body successor has invalid original history.");
-      }
-      if (row.after !== undefined && record.prepared) {
-        const predecessor = records.get(row.after);
-        if (!predecessor?.prepared || !predecessor.receipt) throw new BodyRuntimeError("Successor lacks predecessor evidence.");
-        const candidate = prepareBodyDelivery({ scope: mode.scope, requestId: row.requestId, target, okfVersion: mode.okfVersion, operation: record.prepared.operation, local: row.local, content: row.content, createdAt: row.createdAt }, { prepared: predecessor.prepared, receipt: predecessor.receipt });
-        assertSameBodyDelivery(record.prepared, candidate);
-      }
-    }
-    const guard: JournalGuard = { target, document: read.document ? { version: read.document.version, raw: read.raw! } : null, intents: read.intents,
-      meta: keys.map(key => ({ key, expected: read.meta.has(key) ? { present: true, value: read.meta.get(key) } : { present: false } })) };
-    assertBodyCapacity(guard);
+    const { guard, records } = validateBodyEvidence({ target, document: read.document ? { version: read.document.version, raw: read.raw! } : null, intents: read.intents, meta: read.meta, keys }, mode);
     return { read, guard, records };
   }
   throw new JournalGuardConflict(target);
