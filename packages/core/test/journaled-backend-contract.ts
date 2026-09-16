@@ -869,16 +869,20 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
   test(`${name} journal contract: readHeads lists every document with its version, frontmatter, bytes, journal and named meta rows, in list order, and nothing else`, async () => {
     await withFixture(create, async (backend) => {
       assert.deepEqual(await backend.readHeads(), [], "an empty store lists nothing");
-      const ids = { confirmed: "journal/heads-confirmed", pending: "journal/heads-pending", conflict: "journal/heads-conflict", refused: "journal/heads-refused", gone: "journal/heads-gone", removed: "journal/heads-removed" };
+      const ids = { confirmed: "journal/heads-confirmed", pending: "journal/heads-pending", conflict: "journal/heads-conflict", refused: "journal/heads-refused", chain: "journal/heads-chain", gone: "journal/heads-gone", removed: "journal/heads-removed" };
       const base = (id: string) => `base:${id}`;
       // A shared document with its base, three documents whose journals are in each unsettled
-      // shape, an intent whose target is gone, and a document written then removed.
+      // shape, a chain of two edits whose request ids sort against their sequence, an intent
+      // whose target is gone, and a document written then removed.
       const confirmed = await backend.writeJournaled(ids.confirmed, doc(ids.confirmed, "shared"), { meta: ({ version, raw }) => [{ key: base(ids.confirmed), value: { version, content: raw } }] });
       await backend.writeJournaled(ids.pending, doc(ids.pending, "pending edit"), { intent: newIntent("req-pending", ids.pending, null) });
       await backend.writeJournaled(ids.conflict, doc(ids.conflict, "conflicted edit"), { intent: newIntent("req-conflict", ids.conflict, STALE) });
       await backend.updateIntent("req-conflict", "pending", { state: "conflict", attempts: 1, remote: { version: confirmed.version, content: null } });
       await backend.writeJournaled(ids.refused, doc(ids.refused, "refused edit"), { intent: newIntent("req-refused", ids.refused, null) });
       await backend.updateIntent("req-refused", "pending", { state: "refused", attempts: 1, refusal: { code: "validation_failed", message: "refused by a rule" } });
+      const chained = await backend.writeJournaled(ids.chain, doc(ids.chain, "first edit"), { intent: newIntent("req-zz-first", ids.chain, null) });
+      await backend.updateIntent("req-zz-first", "pending", { state: "in_flight", attempts: 1 });
+      await backend.writeJournaled(ids.chain, doc(ids.chain, "second edit"), { expectedVersion: chained.version, intent: newIntent("req-aa-second", ids.chain, chained.version, "req-zz-first") });
       await backend.writeJournaled(ids.gone, doc(ids.gone, "gone"), { intent: newIntent("req-gone", ids.gone, null) });
       await backend.delete(ids.gone);
       await backend.writeJournaled(ids.removed, doc(ids.removed, "removed"));
@@ -911,6 +915,8 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
       assert.deepEqual(byId.get(ids.pending)!.intents.map((row) => [row.requestId, row.state, row.attempts]), [["req-pending", "pending", 0]]);
       assert.deepEqual(byId.get(ids.conflict)!.intents.map((row) => [row.requestId, row.state, row.remote?.version]), [["req-conflict", "conflict", confirmed.version]]);
       assert.deepEqual(byId.get(ids.refused)!.intents.map((row) => [row.requestId, row.state, row.refusal?.code]), [["req-refused", "refused", "validation_failed"]]);
+      // Commit order, not the key order of the journal: the second edit's request id sorts first.
+      assert.deepEqual(byId.get(ids.chain)!.intents.map((row) => [row.requestId, row.state, row.after ?? null]), [["req-zz-first", "in_flight", null], ["req-aa-second", "pending", "req-zz-first"]], "a row's intents are in local commit order whatever order their request ids sort in");
 
       // A projection keeps only what it returns, in the same order; one that throws rejects the
       // listing with its own error and leaves the store readable.

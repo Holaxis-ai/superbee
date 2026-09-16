@@ -13,7 +13,7 @@ import { IDBFactory } from "fake-indexeddb";
 
 import type { OkfDocument, QueryFilter } from "@superbee/core";
 import { IndexedDbBackend, INDEXEDDB_SCHEMA_VERSION, type IdbFactoryLike } from "@superbee/core/indexeddb-backend";
-import type { JournaledBackend } from "@superbee/core/journaled-backend";
+import type { JournaledBackend, NewIntentRecord } from "@superbee/core/journaled-backend";
 import { MemoryBackend } from "@superbee/core/memory-backend";
 import type { PlatformQueryRow, PlatformRuntime, Provenance } from "@superbee/core/platform";
 import { matchesFilter } from "@superbee/core/query-filter";
@@ -37,6 +37,11 @@ const FILTERS: QueryFilter[] = [{}, { type: "Note" }, { tags: ["proof"] }, { pre
 
 function note(id: string, title: string, body: string): OkfDocument {
   return { id, frontmatter: { type: "Note", title, status: "draft", tags: ["proof"] }, body };
+}
+
+/** An intent with a chosen request id, where a commit would mint one: the order of ids against sequences is then the test's to set. */
+function newIntent(requestId: string, target: string, base: string | null, after?: string): NewIntentRecord {
+  return { requestId, kind: "document.write", target, base, baseContent: null, createdAt: NOW, ...(after === undefined ? {} : { after }) };
 }
 
 function requestIdOf(provenance: Provenance): string {
@@ -123,6 +128,11 @@ for (const adapter of ADAPTERS) {
       await backend.updateIntent(requestIdOf(one.provenance), "pending", { state: "refused", attempts: 1, refusal: { code: "AUTH_REQUIRED", message: "refused" } });
       const convention = await runtime.commit("conventions/note", { body: "note local\n" });
       await backend.updateIntent(requestIdOf(convention.provenance), "pending", { state: "unknown", attempts: 1 });
+      // An in-flight edit with a pending edit chained behind it, no conflict, whose request ids
+      // sort against their sequence: the latest intent by sequence names the row.
+      const chained = await backend.writeJournaled("notes/chain", note("notes/chain", "Chain", "chain one\n"), { intent: newIntent("req-zz-first", "notes/chain", null) });
+      await backend.updateIntent("req-zz-first", "pending", { state: "in_flight", attempts: 1 });
+      await backend.writeJournaled("notes/chain", note("notes/chain", "Chain", "chain two\n"), { expectedVersion: chained.version, intent: newIntent("req-aa-second", "notes/chain", chained.version, "req-zz-first") });
       await assertAgreement(runtime, backend, "every unsettled state");
 
       // An acknowledged edit whose base names its bytes; a base whose token differs while its
@@ -143,6 +153,7 @@ for (const adapter of ADAPTERS) {
         "conventions/task": "shared-confirmed",
         "notes/alpha": "local-pending",
         "notes/beta": "local-pending",
+        "notes/chain": "local-pending",
         "notes/gamma": "shared-confirmed",
         "tasks/one": "local-pending",
         "tasks/two": "local-conflict",
@@ -151,8 +162,11 @@ for (const adapter of ADAPTERS) {
       assert.deepEqual(gamma.provenance, { state: "shared-confirmed", version: gamma.version, acknowledged: OTHER_TOKEN }, "the base's token is reported beside the working copy's");
       const conflicted = rows.find((row) => row.id === "tasks/two")!;
       assert.equal(conflicted.provenance.state === "local-conflict" && conflicted.provenance.requestId, requestIdOf(two.provenance), "the conflict intent names the row, not the edit chained behind it");
+      const chain = rows.find((row) => row.id === "notes/chain")!;
+      assert.equal(requestIdOf(chain.provenance), "req-aa-second", "the latest intent by sequence names the row, whatever order the request ids sort in");
+      assert.equal(requestIdOf(chain.provenance), requestIdOf((await runtime.read("notes/chain")).provenance), "the row and the read name the same intent");
       assert.equal((await runtime.syncStatus()).unconfirmed, 2);
-      assert.deepEqual((await runtime.query({ prefix: "notes/" })).map((row) => row.id), ["notes/alpha", "notes/beta", "notes/gamma"]);
+      assert.deepEqual((await runtime.query({ prefix: "notes/" })).map((row) => row.id), ["notes/alpha", "notes/beta", "notes/chain", "notes/gamma"]);
     } finally {
       s.close();
     }
