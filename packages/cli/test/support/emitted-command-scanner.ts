@@ -180,13 +180,9 @@ const AUTHORITY_PATHS = new Set(
 /** The one module that assembles tokens OUT OF raw values, so it cannot be scanned as a consumer. */
 const TOKEN_ASSEMBLY_PATH = join(import.meta.dirname, "../../src/command-text.ts");
 
-/**
- * One canonical spelling for a path, so a comparison never depends on slash spelling. Exported
- * because the property is worth pinning directly rather than only through a scan.
- */
+/** Resolve a path without changing case or treating foreign separators as native syntax. */
 export function canonicalPath(value: string): string {
-  const resolved = resolve(value).split("\\").join("/");
-  return resolved;
+  return resolve(value);
 }
 
 /** Paths this scanner REPORTS are always POSIX-shaped, so assertions are platform-independent. */

@@ -51,18 +51,15 @@ test("commandQuoted always quotes supported-host values", () => {
 
 test("POSIX renders every byte, so it never refuses", () => {
   for (const value of ["a$(b)", "a`b`", "a!b", "a'b", "a\u0007b", ""]) {
-    assert.equal(isRenderableToken(value, "linux"), true, value);
+    assert.equal(isRenderableToken(value), true, value);
     assert.equal(typeof renderPosixToken(value), "string");
   }
 });
 
 
-/** The scanner's authority identity is stable across slash spellings without folding POSIX case. */
-test("path identity folds separators but preserves case", async () => {
+/** The scanner's authority identity keeps distinct files and POSIX case distinct. */
+test("path identity preserves distinct files and POSIX case", async () => {
   const { canonicalPath, toPosixPath } = await import("./support/emitted-command-scanner.js");
-  const posix = "/repo/packages/cli/src/command-text.ts";
-  const windows = "\\repo\\packages\\cli\\src\\command-text.ts";
-  assert.equal(canonicalPath(posix), canonicalPath(windows.split("\\").join("/")));
   assert.equal(toPosixPath("nested\\command-text.ts"), "nested/command-text.ts");
   assert.equal(toPosixPath("nested/command-text.ts"), "nested/command-text.ts");
 
