@@ -100,12 +100,14 @@ What the two trees do: before, a query scanned the store once with every record 
 (the 35.2 MiB held) and then opened one snapshot transaction per row, and the count opened one
 per document; after, a query is the admission's two reads (the mode row and the journal) plus
 one listing transaction, and the status adds the journal status's own reads. The listing walks
-the documents by cursor and keeps one record at a time: a `getAll` over the same store, measured
-once on the after tree, listed in 75 ms but held 34.8 MiB, the whole store at once, so the
-cursor buys flat memory for about 35 ms at this size. In body mode the listing also checks each
-row's body evidence exactly as a single read does (the descriptors and the capacity assertion);
-over the in-memory adapter at this size that check is about 115 ms of CPU per listing, against
-5 ms for the plain-mode listing, and it comes on top of the store cost above.
+the documents by cursor and keeps one record at a time: a scratch variant of the listing over
+`getAll`, which is not in the tree, was measured once at the after tree's SHA and listed in
+75 ms but held 34.8 MiB, the whole store at once, so the cursor buys flat memory for about
+35 ms at this size. In body mode the listing also checks each row's body evidence exactly as a
+single read does (the descriptors and the capacity assertion); a one-off run outside
+`measure:listing`, over the in-memory adapter at this size, put that check at about 115 ms of
+CPU per listing against 5 ms for the plain-mode listing, and it comes on top of the store cost
+above.
 
 ## What the numbers do and do not say
 
