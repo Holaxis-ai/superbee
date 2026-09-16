@@ -14,11 +14,14 @@
  *     script, event-handler attributes, and `javascript:` navigation even under a hypothetical
  *     bypass of belts 1–2.
  *
- * THE INVARIANT (pinned red by markdown.test.tsx + static.test.mjs): a raw markdown href/src NEVER
- * reaches a DOM attribute. An interactive resolved link gets a route built from
- * `resolveConceptId`; the inert profile gets only that normalized id in `data-aslite-doc-id`.
- * Everything the resolver rejects (external URLs, `javascript:`/`data:`/any scheme, non-`.md`,
- * reserved files) renders as inert text. Images are inert in v1.
+ * THE INVARIANT (pinned red by markdown.test.tsx + static.test.mjs + external-links.test.mjs): a
+ * raw markdown href/src NEVER reaches a DOM attribute. An interactive resolved link gets a route
+ * built from `resolveConceptId`; the inert profile gets only that normalized id in
+ * `data-aslite-doc-id`. An allowlisted external link's href is the CANONICAL SERIALIZATION of a
+ * URL the host's `externalLinkHosts` allowlist admitted ({@link admitExternalLink}), never the raw
+ * string. Everything else the resolver rejects (external URLs off the allowlist or with no
+ * allowlist, `javascript:`/`data:`/any scheme, non-`.md`, reserved files) renders as inert text.
+ * Images are inert in v1.
  *
  * RESOURCE BOUNDS: body bytes capped ({@link MAX_BODY_CHARS}, with an honest truncation notice —
  * the AXI `read` truncation's human analog) and the walk bounded ({@link MAX_NODES} nodes,
@@ -61,6 +64,14 @@ export interface RenderOptions {
   hrefForDoc?: (id: string) => string;
   /** Interactive for the shell reader; inert for serialized fragments crossing into a View. */
   profile?: "interactive" | "inert";
+  /**
+   * Host names whose `https:` links may render as real anchors. Absent or empty keeps every
+   * external target inert. A listed name admits only an exact host match after WHATWG `URL`
+   * normalization (so case folds and a homoglyph form does not), never a subdomain, an IP
+   * literal, a non-default port, userinfo, or a scheme other than `https:`. See
+   * {@link admitExternalLink} for the full refusal set; both profiles honor the option.
+   */
+  externalLinkHosts?: readonly string[];
   /** Resolve a concept id to its title, for the inline "verb → title" edge rows (falls back to the id). */
   titleFor?: (conceptId: string) => string | undefined;
   /**
@@ -137,6 +148,54 @@ export function isBareLinkBlock(node: Node, fromId: string): boolean {
 /** A fenced block's language, admitted only in a strictly-shaped class name (never arbitrary). */
 function safeLanguageClass(lang: unknown): string | undefined {
   return typeof lang === "string" && /^[\w+-]{1,24}$/.test(lang) ? `doc-code-${lang}` : undefined;
+}
+
+/** WHATWG `URL` serializes every IPv4 form to dotted decimal and brackets every IPv6 host. */
+function isIpLiteralHost(hostname: string): boolean {
+  return hostname.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
+}
+
+/**
+ * Normalize one allowlist entry through the same parser the link goes through, so the comparison
+ * is between two `URL`-normalized host names. An entry that is not a bare host name (it carries a
+ * scheme, port, path, query, userinfo, or an IP literal) admits nothing: the allowlist can only
+ * name hosts, so a malformed entry fails closed instead of widening the match.
+ */
+function normalizeAllowedHost(entry: string): string | null {
+  if (typeof entry !== "string" || entry === "" || /[\s/?#@:\\]/.test(entry)) return null;
+  let url: URL;
+  try {
+    url = new URL(`https://${entry}/`);
+  } catch {
+    return null;
+  }
+  if (url.href !== `https://${url.hostname}/` || isIpLiteralHost(url.hostname)) return null;
+  return url.hostname;
+}
+
+/**
+ * THE ONLY PATH from a markdown link target to an external href. Returns the canonical `URL`
+ * serialization when the allowlist admits the target, else null (the caller renders inert text).
+ * Admission requires all of: the allowlist is non-empty; the raw string parses on its own (no base,
+ * so relative and scheme-less targets fail); the scheme is `https:`; no userinfo; no IP literal;
+ * the default port; and the normalized host is exactly one of the normalized entries. A subdomain
+ * of a listed host is a different host and is refused. The returned value is `url.href`, never
+ * the raw string, so the attribute always carries the parser's serialization.
+ */
+export function admitExternalLink(raw: string, hosts: readonly string[] | undefined): string | null {
+  if (!Array.isArray(hosts) || hosts.length === 0) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "") return null;
+  if (isIpLiteralHost(url.hostname)) return null;
+  for (const entry of hosts) {
+    if (normalizeAllowedHost(entry) === url.hostname) return url.href;
+  }
+  return null;
 }
 
 function documentHref(id: string, options: RenderOptions): string {
@@ -254,11 +313,22 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
     case "break":
       return <br key={index} />;
     case "link": {
-      // THE INVARIANT: the href below is BUILT from the resolver's output. `node.url` (raw
-      // markdown) is consulted only as resolver INPUT and never reaches an attribute.
-      const resolved = resolveConceptId(state.options.fromId, (node as { url?: string }).url ?? "");
+      // THE INVARIANT: every href below is BUILT from the resolver's output or from the allowlist's
+      // canonical serialization. `node.url` (raw markdown) is consulted only as their INPUT and
+      // never reaches an attribute. The resolver is asked first; the allowlist sees only targets
+      // it rejects, so a concept link can never be rerouted off the bundle.
+      const raw = (node as { url?: string }).url ?? "";
+      const resolved = resolveConceptId(state.options.fromId, raw);
       const children = renderChildren(node as Parent, state, depth);
       if (resolved === null) {
+        const external = admitExternalLink(raw, state.options.externalLinkHosts);
+        if (external !== null) {
+          return (
+            <a key={index} href={external} rel="noopener noreferrer" target="_blank" className="doc-link-external">
+              {children}
+            </a>
+          );
+        }
         return (
           <span
             key={index}
