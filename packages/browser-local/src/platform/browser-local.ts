@@ -39,12 +39,18 @@
  * working copy (every local write journals an intent): `read` rejects with
  * {@link UnconfirmedWorkingCopyError} rather than guess, `query` omits the row, and
  * `syncStatus` counts such documents as `unconfirmed`.
+ *
+ * `query` and that count read the working copy through the seam's heads listing: one
+ * transaction over every record with its journal and its base, parsing only leading
+ * frontmatter, each row's provenance derived exactly as a read derives it. A listing at the
+ * working-copy bound therefore costs one transaction and no body parse, and every row
+ * describes the same moment.
  */
 
-import type { ConceptId, QueryFilter, StorageBackend } from "@superbee/core";
-import { queryHeads } from "@superbee/core/bundle-ops";
+import type { ConceptId, Frontmatter, QueryFilter, StorageBackend, Version } from "@superbee/core";
 import { assertReadableConceptId } from "@superbee/core/engine";
 import type { IntentRecord, JournaledReadResult } from "@superbee/core/journaled-backend";
+import { matchesFilter } from "@superbee/core/query-filter";
 import { InvalidInputError } from "@superbee/core/storage";
 import {
   localConflict,
@@ -64,7 +70,7 @@ import {
 } from "@superbee/core/platform";
 import type { OperationTransport, UncertainWriteOptions } from "@superbee/core/uncertain-write";
 import type { BodyDeliveryTransport } from "@superbee/core/governed-body-write";
-import { admitBodyMode, bodySnapshot } from "../body-journal.js";
+import { admitBodyMode, assertBodyEdition, BODY_MODE_KEY, bodyEvidenceKeys, bodySnapshot, validateBodyEvidence } from "../body-journal.js";
 
 import { baseKey, commitLocal, commitBodyLocal, pull, pushWithRole, syncStatus as localSyncStatus, UNSETTLED_STATES, type LocalBundle, type SharedBase } from "../local-bundle.js";
 import type { LockManagerLike } from "../push-role.js";
@@ -136,21 +142,42 @@ function describeFailure(failure: unknown): string {
 }
 
 /**
- * The provenance of one snapshot, or `null` when the snapshot is unconfirmed (no unsettled
- * intent, and no base naming the bytes). `raw` are the stored bytes `version` names.
+ * What a provenance is derived from: the working copy's stored bytes (`raw`, the bytes
+ * `version` names) beside the journal and the base row read with them in one transaction,
+ * whether for one document or for every row of a listing.
  */
-function deriveProvenance(snapshot: JournaledReadResult & { document: NonNullable<JournaledReadResult["document"]>; raw: string }): Provenance | null {
-  const { version } = snapshot.document;
-  const unsettled = snapshot.intents.filter((row) => UNSETTLED.has(row.state));
+interface ProvenanceEvidence {
+  id: ConceptId;
+  version: Version;
+  raw: string;
+  intents: readonly IntentRecord[];
+  meta: ReadonlyMap<string, unknown>;
+}
+
+/**
+ * The provenance of one document, or `null` when it is unconfirmed (no unsettled intent, and
+ * no base naming the bytes).
+ */
+function deriveProvenance(evidence: ProvenanceEvidence): Provenance | null {
+  const { id, version, raw, intents, meta } = evidence;
+  const unsettled = intents.filter((row) => UNSETTLED.has(row.state));
   const conflict = unsettled.find((row) => row.state === "conflict");
   if (conflict) return localConflict(version, conflict.base, conflict.remote?.version ?? null, conflict.requestId);
   const latest: IntentRecord | undefined = unsettled[unsettled.length - 1];
   if (latest) return localPending(version, latest.base, latest.requestId);
-  const base = snapshot.meta.get(baseKey(snapshot.document.doc.id)) as SharedBase | undefined;
+  const base = meta.get(baseKey(id)) as SharedBase | undefined;
   if (base?.version !== null && base?.version !== undefined) {
-    if (base.version === version || base.content === snapshot.raw) return sharedConfirmed(version, base.version);
+    if (base.version === version || base.content === raw) return sharedConfirmed(version, base.version);
   }
   return null;
+}
+
+/** One row of the working copy's listing: what a query row carries, with `provenance` null for an unconfirmed document. */
+interface Head {
+  id: ConceptId;
+  version: Version;
+  frontmatter: Frontmatter;
+  provenance: Provenance | null;
 }
 
 export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): PlatformRuntime {
@@ -189,20 +216,35 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     assertReadableConceptId(id);
     const snapshot = await snapshotOf(id);
     if (!snapshot) throw notFound(id);
-    const provenance = deriveProvenance(snapshot);
+    const provenance = deriveProvenance({ id, version: snapshot.document.version, raw: snapshot.raw, intents: snapshot.intents, meta: snapshot.meta });
     if (!provenance) throw new UnconfirmedWorkingCopyError(id);
     return { doc: snapshot.document.doc, provenance };
   };
 
-  /** Documents the working copy holds that neither a base nor an intent accounts for. */
-  const countUnconfirmed = async (): Promise<number> => {
-    let count = 0;
-    for (const id of await backend.list()) {
-      const snapshot = await snapshotOf(id);
-      if (snapshot && deriveProvenance(snapshot) === null) count += 1;
-    }
-    return count;
+  /**
+   * Every document the working copy holds, from one transaction: the admission `read` makes,
+   * then the seam's listing with each row's journal and base, its provenance derived as a
+   * read derives it. In body mode a row carries the evidence `bodySnapshot` reads for one
+   * document and is checked the same way, so the listing refuses what a read refuses. A record
+   * whose leading block does not parse rejects the listing with the parser's error, as a read
+   * of it does. Rows come in the store's `list` order.
+   */
+  const heads = async (): Promise<Head[]> => {
+    const mode = await admitBodyMode(backend);
+    if (mode) await assertBodyEdition(backend, mode);
+    return backend.readHeads<Head>({
+      meta: mode ? (id, intents) => bodyEvidenceKeys(id, intents) : (id) => [baseKey(id)],
+      ...(mode ? { shared: [BODY_MODE_KEY] } : {}),
+      project: (head) => {
+        if (head.frontmatter === null) throw head.malformed;
+        if (mode) validateBodyEvidence({ target: head.id, document: { version: head.version, raw: head.raw }, intents: head.intents, meta: head.meta, keys: bodyEvidenceKeys(head.id, head.intents) }, mode);
+        return { id: head.id, version: head.version, frontmatter: head.frontmatter, provenance: deriveProvenance(head) };
+      },
+    });
   };
+
+  /** Documents the working copy holds that neither a base nor an intent accounts for. */
+  const countUnconfirmed = async (): Promise<number> => (await heads()).filter((head) => head.provenance === null).length;
 
   /**
    * The last sync as the contract reports it: this runtime's own outcome when it has synced,
@@ -239,18 +281,14 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     read: readWithProvenance,
 
     query: async (filter: QueryFilter = {}): Promise<PlatformQueryRow[]> => {
-      await admitBodyMode(backend);
-      const heads = await queryHeads(bundle, filter);
       const rows: PlatformQueryRow[] = [];
-      for (const head of heads) {
-        // The row is built from the snapshot, not the head, so its version, frontmatter, and
-        // provenance describe one moment; a document removed since the scan simply has no row.
-        const snapshot = await snapshotOf(head.id);
-        if (!snapshot) continue;
-        const provenance = deriveProvenance(snapshot);
-        if (!provenance) continue;
-        rows.push({ id: head.id, version: snapshot.document.version, frontmatter: snapshot.document.doc.frontmatter, provenance });
+      for (const head of await heads()) {
+        // An unconfirmed document has no row. The filter is the engine's one predicate and the
+        // order the engine's, so the rows are the ones a head scan over the store would select.
+        if (head.provenance === null || !matchesFilter(head, filter)) continue;
+        rows.push({ id: head.id, version: head.version, frontmatter: head.frontmatter, provenance: head.provenance });
       }
+      rows.sort((a, b) => a.id.localeCompare(b.id));
       return rows;
     },
 
