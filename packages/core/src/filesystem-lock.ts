@@ -492,8 +492,11 @@ function changedOwnerRefusal(lockPath: string, current: FilesystemMutationLockOw
   );
 }
 
-/** Token-derived sibling name that only this claim can produce; a competitor can never claim it. */
-/** A record this process could never read is not a record that changed; say which one happened. */
+/**
+ * A record this process could never read is not a record that changed; say which one happened.
+ * `malformed` stays true because the outcome for a consumer is the same one it already handled,
+ * no usable owner record, and the message carries the distinction the flag cannot.
+ */
 function unreadableOwnerRefusal(lockPath: string, error: unknown): FilesystemMutationLockError {
   const message = error instanceof Error ? error.message : String(error);
   return new FilesystemMutationLockError(
@@ -502,6 +505,7 @@ function unreadableOwnerRefusal(lockPath: string, error: unknown): FilesystemMut
   );
 }
 
+/** Token-derived sibling name that only this claim can produce; a competitor can never claim it. */
 function releasedLockRemnantPath(lockPath: string, owner: FilesystemMutationLockOwner): string {
   const tokenHash = createHash("sha256").update(owner.token).digest("hex");
   return `${lockPath}.released-${tokenHash}`;

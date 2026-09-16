@@ -1861,3 +1861,53 @@ test("a remnant already gone on the first removal attempt counts as released", a
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });
+
+test("the release budget is not restarted per step: removal inherits what ownership resolution left", async () => {
+  // Two polls of pollMs exhaust waitMs before ownership resolves, so a shared budget leaves the
+  // rename exactly one attempt. A budget restarted at removal would grant a fresh full round of
+  // retries instead, which is the looser behavior this pins against.
+  const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 100, pollMs: 50 });
+  const reader = interceptOwnerRead(ownerFile, 2);
+  let renames = 0;
+  const restoreRename = interceptRename(lockPath, async (attempt) => {
+    renames = attempt;
+    throw releaseContention;
+  });
+  try {
+    await assert.rejects(
+      () => release(),
+      (err: unknown) => err instanceof FilesystemMutationLockError && /could not be removed/.test(err.message),
+    );
+    assert.equal(reader.reads(), 3, "two indeterminate reads spend the budget, the third resolves");
+    assert.equal(renames, 1, "the spent budget must leave the rename a single attempt");
+    assert.equal(await pathExists(ownerFile), true, "a durable rename denial retains the lock and its record");
+  } finally {
+    reader.restore();
+    restoreRename();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("an ownership check that never resolves is bounded and never reaches the destructive step", async () => {
+  const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 120, pollMs: 1 });
+  const reader = interceptOwnerRead(ownerFile, Number.MAX_SAFE_INTEGER);
+  let renames = 0;
+  const restoreRename = interceptRename(lockPath, async (attempt) => {
+    renames = attempt;
+    throw releaseContention;
+  });
+  try {
+    const started = Date.now();
+    await assert.rejects(
+      () => release(),
+      (err: unknown) => err instanceof FilesystemMutationLockError && /could not be read within the wait budget/.test(err.message),
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 1_500, `the indeterminate poll must stay bounded, took ${elapsed}ms`);
+    assert.equal(renames, 0, "an unresolved ownership check must never rename anything");
+  } finally {
+    reader.restore();
+    restoreRename();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
