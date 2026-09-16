@@ -539,6 +539,10 @@ export class BridgeService {
           body: result.doc.body,
         }))
         : { version: head.version, frontmatter: head.frontmatter };
+      // A graph row must not carry a body that a plain read would refuse.
+      if (source.body !== undefined && Buffer.byteLength(source.body, "utf8") > MAX_DOCUMENT_BODY_BYTES) {
+        return { reply: fail(request.id, request.bridge, "TOO_LARGE", "a document body exceeded the 1 MiB View limit") };
+      }
       const kind = registry.kinds.get(String(source.frontmatter.type ?? ""));
       const frontmatter = kind
         ? projectLogicalKindFields(okfVersion, kind, source.frontmatter)

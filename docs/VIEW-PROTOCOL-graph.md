@@ -34,7 +34,7 @@ Reply (`type: "graph:result"`):
   the same logical Kind fields `query` and `read` apply. `body` is present only when the request
   set `includeBodies: true` and the launch capability permits reads (`bundle-read` and
   `bundle-propose` do). A row never carries a `body` key otherwise.
-- `relationships` is the whole derived edge list, the same rows `edges` with no filter returns,
+- `relationships` is the whole derived edge list, the same derivation and order as `edges` (which refuses above 1000 rows where `graph` answers up to 10000),
   in `from`, `to`, `text` order.
 - `counts` reports the array lengths.
 - `okfVersion` is the bundle's declared OKF edition, `0.1` when undeclared.

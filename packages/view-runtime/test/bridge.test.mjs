@@ -911,3 +911,20 @@ test("a v0 View sending graph to a host without it receives the pre-existing USA
   }
   assert.equal(launchResolutions, 0);
 });
+
+test("graph with bodies refuses a document body a plain read would refuse", async () => {
+  const bundle = { root: "mem://bridge-graph-big-body", backend: new MemoryBackend() };
+  await writeDoc(bundle, {
+    id: "docs/big",
+    frontmatter: { type: "Note", title: "Big" },
+    body: "# big\n\n" + "x".repeat(1024 * 1024 + 10),
+  });
+  const bridge = graphBridge(bundle, "bundle-read");
+  const read = await bridge.handle("launch", { bridge: "v0", id: "r", type: "read", docId: "docs/big" });
+  assert.equal(read.reply?.error?.code, "TOO_LARGE");
+  const graph = await bridge.handle("launch", { bridge: "v0", id: "g", type: "graph", includeBodies: true });
+  assert.equal(graph.reply?.error?.code, "TOO_LARGE");
+  assert.deepEqual(Object.keys(graph.reply).sort(), ["bridge", "error", "id", "type"]);
+  const heads = await bridge.handle("launch", { bridge: "v0", id: "h", type: "graph" });
+  assert.equal(heads.reply?.type, "graph:result", "heads alone stay answerable");
+});
