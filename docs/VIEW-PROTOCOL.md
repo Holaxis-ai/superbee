@@ -75,6 +75,17 @@ registry below; a View feature-detects here instead of guessing from `kind` or `
 host-declared ceilings; `0` means the host does not offer the request at all. The OSS service
 declares exactly the limits it enforces (`BRIDGE_SERVICE_LIMITS`).
 
+A host that embeds the View as its page (no border, the host's own title bar) adds two optional
+fields to `host`. `frame` is `{ "title": "host", "height": "content", "maxHeight": <px> }`:
+the host has printed the View's name, so the View may hide its own masthead, and the host sizes
+the frame to the height the View reports through `frame.resize`, up to `maxHeight`. A View that
+never reports keeps the host's floor and owns its own scroll; a View reports a height or keeps the
+window, never both. `theme` is the host's own resolved design tokens, each a CSS value string
+(`scheme`, `ground`, `surface`, `text`, `muted`, `accent`, `border`, `focus`, `fontSans`,
+`fontDisplay`, `fontMono`, `radius`, `spacing`); a View may adopt them as `--sb-*` custom
+properties and looks native, or ignore them and keep its own brand. Both are absent on the OSS
+shell and on Portal; a View that ignores them draws exactly as before.
+
 `bundle.root` is a filesystem path on the OSS web shell in `--dir` mode and `null` elsewhere;
 Portal and hosted hosts may put an opaque artifact or slot id there. `bundle.name` is the display
 name the shell shows, never an internal identifier. `mode` is host-specific (`dir`, `remote`,
@@ -301,6 +312,7 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `graph` | the `graph` request is answered, bounded by `limits.graphDocuments` and `limits.graphRelationships` | none (a request); declared by every OSS host |
 | `graph.model` | `graph` also returns `model` and `definitions` | reserved; no OSS host declares it until the model shape has an owner |
 | `record.open` | the host opens its own reader for one document | `host` input `{ documentId }`; output `{ opened: true }`; `NOT_FOUND` for a missing document |
+| `frame.resize` | the host sizes the View's frame to the reported document height, bounded by `host.frame.maxHeight` | `host` input `{ height }` (a finite CSS pixel count, at least 0); output `{ height }` as applied after the host's floor, ceiling and damping; `USAGE` for any other input. Answered at once; touches no bundle data and runs no operation, so a host lists it for a View with no operations too. Declared only with `host.frame` |
 
 A host without a query capability still answers `query`; it just honors less. A host without
 `edges`, `graph` or `render-document` answers those requests with `FORBIDDEN`.
