@@ -199,6 +199,28 @@ for (const adapter of ADAPTERS) {
     }
   });
 
+  test(`${adapter}: two records that do not parse name the first in list order, whichever the store walks first`, async () => {
+    const s = await plainSession(adapter);
+    try {
+      // "notes/Zed" precedes "notes/alpha" by code unit and follows it in list order, so an
+      // adapter that walks its store in key order meets Zed first; the document named must not
+      // depend on that.
+      for (const id of ["notes/Zed", "notes/alpha"]) await s.plant(id, "---\ntitle: [unclosed\n---\nbody\n");
+      assert.deepEqual((await s.backend.list()).filter((id) => id === "notes/Zed" || id === "notes/alpha"), ["notes/alpha", "notes/Zed"], "list order puts alpha first");
+      for (const verb of [() => s.runtime.query(), () => s.runtime.query({ type: "Task" }), () => s.runtime.syncStatus()]) {
+        await assert.rejects(verb, (error: unknown) => {
+          const err = error as { name?: unknown; context?: unknown };
+          assert.equal(err.name, "MalformedDocumentError");
+          assert.equal(err.context, "notes/alpha.md", "the first record in list order is the one named");
+          return true;
+        });
+      }
+      assert.equal((await s.runtime.read("notes/beta")).provenance.state, "shared-confirmed", "the other documents still read");
+    } finally {
+      s.close();
+    }
+  });
+
   test(`${adapter}: a record whose leading block does not parse refuses the listing and the count as it refuses a read, naming the document`, async () => {
     const s = await plainSession(adapter);
     try {

@@ -180,6 +180,16 @@ interface Head {
   provenance: Provenance | null;
 }
 
+/** A row a read of the document would refuse: a leading block that does not parse, or body evidence that does not check. */
+interface RefusedHead {
+  id: ConceptId;
+  refusal: Error;
+}
+
+function isRefused(row: Head | RefusedHead): row is RefusedHead {
+  return "refusal" in row;
+}
+
 export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): PlatformRuntime {
   const { local, remote, transport, actor, now } = options;
   if (transport === undefined && options.bodyTransport === undefined) {
@@ -225,22 +235,33 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
    * Every document the working copy holds, from one transaction: the admission `read` makes,
    * then the seam's listing with each row's journal and base, its provenance derived as a
    * read derives it. In body mode a row carries the evidence `bodySnapshot` reads for one
-   * document and is checked the same way, so the listing refuses what a read refuses. A record
-   * whose leading block does not parse rejects the listing with the parser's error, as a read
-   * of it does. Rows come in the store's `list` order.
+   * document and is checked the same way, so the listing refuses what a read refuses. A
+   * document a read would refuse (a leading block that does not parse, or evidence that does
+   * not check) is carried through the projection and the first in the returned order is thrown
+   * once the rows are back, so the document named is the first in `list` order over any
+   * adapter, whatever order it walks its store. Rows come in the store's `list` order.
    */
   const heads = async (): Promise<Head[]> => {
     const mode = await admitBodyMode(backend);
     if (mode) await assertBodyEdition(backend, mode);
-    return backend.readHeads<Head>({
+    const rows = await backend.readHeads<Head | RefusedHead>({
       meta: mode ? (id, intents) => bodyEvidenceKeys(id, intents) : (id) => [baseKey(id)],
       ...(mode ? { shared: [BODY_MODE_KEY] } : {}),
       project: (head) => {
-        if (head.frontmatter === null) throw head.malformed;
-        if (mode) validateBodyEvidence({ target: head.id, document: { version: head.version, raw: head.raw }, intents: head.intents, meta: head.meta, keys: bodyEvidenceKeys(head.id, head.intents) }, mode);
+        if (head.frontmatter === null) return { id: head.id, refusal: head.malformed };
+        if (mode) {
+          try {
+            validateBodyEvidence({ target: head.id, document: { version: head.version, raw: head.raw }, intents: head.intents, meta: head.meta, keys: bodyEvidenceKeys(head.id, head.intents) }, mode);
+          } catch (error) {
+            return { id: head.id, refusal: error instanceof Error ? error : new Error(String(error)) };
+          }
+        }
         return { id: head.id, version: head.version, frontmatter: head.frontmatter, provenance: deriveProvenance(head) };
       },
     });
+    const refused = rows.find(isRefused);
+    if (refused) throw refused.refusal;
+    return rows as Head[];
   };
 
   /** Documents the working copy holds that neither a base nor an intent accounts for. */
