@@ -36,7 +36,9 @@ export function normalizeV01DocumentForWrite(
   // `type` leads and `timestamp` trails, matching OKF sample documents and historical bytes.
   const { type: _type, timestamp: _timestamp, ...rest } = doc.frontmatter;
   const frontmatter: Frontmatter = { type: validatedType, ...rest, timestamp: normalizedTimestamp };
-  return { id: doc.id, frontmatter, body: doc.body ?? "" };
+  // The body is normalized for storage here so the returned doc IS the persisted doc —
+  // the same canonical shape every backend reports on a subsequent read.
+  return { id: doc.id, frontmatter, body: normalizeDocumentBodyForStorage(doc.body ?? "") };
 }
 
 /**
@@ -45,7 +47,7 @@ export function normalizeV01DocumentForWrite(
  */
 export function normalizeV02DocumentForWrite(doc: OkfDocument, validatedType: string): OkfDocument {
   const { type: _type, ...rest } = doc.frontmatter;
-  return { id: doc.id, frontmatter: { type: validatedType, ...rest }, body: doc.body ?? "" };
+  return { id: doc.id, frontmatter: { type: validatedType, ...rest }, body: normalizeDocumentBodyForStorage(doc.body ?? "") };
 }
 
 function withoutV02AutomaticMetadata(

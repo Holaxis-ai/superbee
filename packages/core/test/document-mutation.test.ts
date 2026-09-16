@@ -118,7 +118,7 @@ test("create-only is an expect-absent CAS and reports the winning head after a c
     VersionConflict,
   );
 
-  assert.equal((await readDocVersioned(bundle, "notes/a")).doc.body, "theirs");
+  assert.equal((await readDocVersioned(bundle, "notes/a")).doc.body, "theirs\n");
   assert.equal((await backend.versions("notes/a")).length, 1);
 });
 
@@ -141,8 +141,8 @@ test("ordinary patch re-reads, re-decides, and merges after a benign CAS race", 
     },
   });
 
-  assert.deepEqual(seen, ["base", "base|theirs"]);
-  assert.equal(result.doc.body, "base|theirs|mine");
+  assert.deepEqual(seen, ["base\n", "base|theirs\n"]);
+  assert.equal(result.doc.body, "base|theirs\n|mine\n");
   assert.equal(result.version, (await readDocVersioned(bundle, "notes/a")).version);
   assert.equal((await backend.versions("notes/a")).length, 3);
 });
@@ -1077,9 +1077,9 @@ test("overwrite re-reads after a CAS race and returns its final persisted receip
   });
 
   const head = await readDocVersioned(bundle, "notes/a");
-  assert.deepEqual(seen, ["base", "base|theirs"]);
+  assert.deepEqual(seen, ["base\n", "base|theirs\n"]);
   assert.equal(result.changed, true);
-  assert.equal(result.doc.body, "base|theirs|mine");
+  assert.equal(result.doc.body, "base|theirs\n|mine\n");
   assert.equal(result.version, head.version);
   assert.deepEqual(result.warnings, []);
   assert.equal((await backend.versions("notes/a"))[0]?.actor, "mike/codex");
@@ -1286,8 +1286,8 @@ test("onAbsent:create retries an expect-absent patch against a concurrent creato
     },
   });
 
-  assert.deepEqual(seen, [undefined, "theirs"]);
-  assert.equal(result.doc.body, "theirs|mine");
+  assert.deepEqual(seen, [undefined, "theirs\n"]);
+  assert.equal(result.doc.body, "theirs\n|mine\n");
   assert.equal(result.version, (await readDocVersioned(bundle, "notes/a")).version);
 });
 
@@ -1653,7 +1653,7 @@ test("pin: hard CAS with the CURRENT head version succeeds in one shot", async (
     buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "v2" }),
   });
   assert.equal(result.changed, true);
-  assert.equal(result.doc.body, "v2");
+  assert.equal(result.doc.body, "v2\n");
 });
 
 // kills: document-mutation.ts:97:7 ConditionalExpression #781

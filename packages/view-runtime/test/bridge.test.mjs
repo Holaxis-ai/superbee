@@ -639,10 +639,10 @@ test("render-document reads one canonical version, bounds it, and revalidates th
     id: "render",
     docId: "docs/one",
   });
-  assert.deepEqual(calls, [{ id: "docs/one", body: "# One\n\nBody" }]);
+  assert.deepEqual(calls, [{ id: "docs/one", body: "# One\n\nBody\n" }]);
   assert.deepEqual(rendered.reply.result.document.id, "docs/one");
   assert.match(rendered.reply.result.document.version, /^sha256:/);
-  assert.equal(rendered.reply.result.html, "<article># One\n\nBody</article>");
+  assert.equal(rendered.reply.result.html, "<article># One\n\nBody\n</article>");
   assert.equal(rendered.reply.result.bounded, false);
 
   const missing = await bridge.handle("launch", {

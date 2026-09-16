@@ -103,7 +103,7 @@ test("active View data is denied before exact-byte approval and revoked when tho
       launchId: minted.body.launchId,
       request: { bridge: "v0", type: "read", id: "r2", docId: "docs/secret" },
     });
-    assert.equal(read.body.reply.result.body, "sensitive bundle data");
+    assert.equal(read.body.reply.result.body, "sensitive bundle data\n");
 
     const rendered = await post("/__ui/views/bridge", {
       launchId: minted.body.launchId,
@@ -113,7 +113,7 @@ test("active View data is denied before exact-byte approval and revoked when tho
     assert.match(rendered.body.reply.result.document.version, /^sha256:/);
     assert.equal(
       rendered.body.reply.result.html,
-      '<article data-id="docs/secret">sensitive bundle data</article>',
+      '<article data-id="docs/secret">sensitive bundle data\n</article>',
     );
     assert.equal(rendered.body.reply.result.bounded, false);
 

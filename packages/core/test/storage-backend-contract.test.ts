@@ -14,6 +14,7 @@ import { IntentHoldConflict, IntentStateConflict } from "../src/journaled-backen
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
 import type { StorageBackend } from "../src/types.js";
+import { normalizeDocumentBodyForStorage } from "../src/frontmatter.js";
 import { contentVersion, VersionConflict } from "../src/versioning.js";
 import { registerJournaledBackendContract } from "./journaled-backend-contract.js";
 import {
@@ -93,7 +94,10 @@ test("MemoryBackend frontmatter read contract: metadata decoding does not reinte
     for (const read of [await backend.read(value.id), ...(await backend.readMany([value.id]))]) {
       assert.equal(read.version, version);
       assert.deepEqual(read.doc.frontmatter, {});
-      assert.equal(read.doc.body, body);
+      // The delimiter-leading body survives INTACT — only the serializer's trailing newline is
+      // added, the same canonical shape every adapter reports (see the base contract's
+      // serialized-body row). No part of it is re-read as metadata.
+      assert.equal(read.doc.body, normalizeDocumentBodyForStorage(body));
     }
   }
 });
