@@ -253,6 +253,7 @@ test("the web host declares itself in hello, forwards the v1 read, and refuses w
       kind: "oss",
       capabilities: [
         "edges",
+        "graph",
         "open-page",
         "query.count",
         "query.field-or",
@@ -261,7 +262,7 @@ test("the web host declares itself in hello, forwards the v1 read, and refuses w
         "render-document",
         "subscribe-deltas",
       ],
-      limits: { query: 500, edges: 1000, graphDocuments: 0, graphRelationships: 0, replyBytes: 2 * 1024 * 1024 },
+      limits: { query: 500, edges: 1000, graphDocuments: 1000, graphRelationships: 10_000, replyBytes: 2 * 1024 * 1024 },
     });
 
     const versioned = await bridge({ bridge: "v1", type: "read-versioned", id: "rv", docId: "docs/one" });
@@ -271,7 +272,7 @@ test("the web host declares itself in hello, forwards the v1 read, and refuses w
     const extension = await bridge({ bridge: "v0", type: "host", id: "x", capability: "record.open", input: { documentId: "docs/one" } });
     assert.equal(extension.reply.error.code, "FORBIDDEN");
     const graph = await bridge({ bridge: "v0", type: "graph", id: "g" });
-    assert.equal(graph.reply.type, "graph:result", "the web host answers the graph request through the shared service");
+    assert.equal(graph.reply.type, "graph:result", "the web host answers the declared graph request");
     assert.deepEqual(graph.reply.result.counts, { documents: 2, relationships: 0 });
     const unknown = await bridge({ bridge: "v0", type: "graph.model", id: "gm" });
     assert.deepEqual(unknown.reply, {

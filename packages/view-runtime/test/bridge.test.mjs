@@ -467,10 +467,10 @@ test("hello declares the host descriptor and the reserved host request is refuse
   assert.deepEqual(hello.reply.result.host, {
     kind: "oss",
     capabilities: [...TEST_HOST.capabilities].sort(),
-    limits: { query: 500, edges: 1000, graphDocuments: 0, graphRelationships: 0, replyBytes: 2 * 1024 * 1024 },
+    limits: { query: 500, edges: 1000, graphDocuments: 1000, graphRelationships: 10_000, replyBytes: 2 * 1024 * 1024 },
   });
   assert.equal(hello.reply.result.grant, "read");
-  for (const name of ["query.kind-projection", "query.field-or", "query.open", "query.count", "edges", "render-document"]) {
+  for (const name of ["query.kind-projection", "query.field-or", "query.open", "query.count", "edges", "graph", "render-document"]) {
     assert.ok(hello.reply.result.host.capabilities.includes(name), name);
   }
   assert.equal(hello.reply.result.host.capabilities.includes("subscribe-deltas"), false);
@@ -1005,18 +1005,19 @@ test("graph replies above the 2 MiB reply limit answer TOO_LARGE through the sha
   });
 });
 
-test("a well-formed v0 type this host does not offer is refused with FORBIDDEN and resolves no launch", async () => {
+test("a host at this contract declares graph, and a well-formed unknown v0 type is refused, not dropped", async () => {
   // A host built before the host descriptor parsed nothing for `graph` and answered the USAGE
   // error it gave every unknown v0 type (confirmed against origin/main 2c82296e). A host at this
-  // contract refuses a well-formed v0 envelope of a type it does not offer with FORBIDDEN, so a
-  // View feature-detects by `hello.host.capabilities` first and by the reply code second.
+  // contract lists `graph` in `hello.host.capabilities` and refuses a well-formed v0 envelope
+  // of a type it does not offer with FORBIDDEN, so a View feature-detects by the descriptor
+  // first and by the reply code second. Neither path resolves a launch.
   let launchResolutions = 0;
   const service = new BridgeService({
-    bundle: { root: "mem://bridge-graph-older-host", backend: new MemoryBackend() },
+    bundle: { root: "mem://bridge-graph-declared-host", backend: new MemoryBackend() },
     launches: {
-      async resolve() {
+      async resolve(launchId) {
         launchResolutions += 1;
-        throw new Error("unsupported requests must not resolve a launch");
+        return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
       },
       revoke() {},
     },
@@ -1024,6 +1025,14 @@ test("a well-formed v0 type this host does not offer is refused with FORBIDDEN a
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
     host: TEST_HOST,
   });
+  const hello = await service.handle("launch", { bridge: "v0", type: "hello", id: "hello" });
+  assert.equal(hello.reply?.type, "hello:result");
+  assert.ok(hello.reply.result.host.capabilities.includes(BRIDGE_HOST_CAPABILITIES.graph), "graph is declared");
+  assert.equal(hello.reply.result.host.capabilities.includes(BRIDGE_HOST_CAPABILITIES.graphModel), false, "no model owner yet");
+  assert.equal(hello.reply.result.host.limits.graphDocuments, GRAPH_MAX_DOCUMENTS);
+  assert.equal(hello.reply.result.host.limits.graphRelationships, GRAPH_MAX_RELATIONSHIPS);
+  const resolutionsAfterHello = launchResolutions;
+  assert.ok(resolutionsAfterHello > 0, "hello is data-bearing and resolves the launch");
   for (const request of [
     { bridge: "v0", type: "graph-unsupported", id: "older-1" },
     { bridge: "v0", type: "graph-unsupported", id: "older-2", includeBodies: true },
@@ -1037,7 +1046,7 @@ test("a well-formed v0 type this host does not offer is refused with FORBIDDEN a
       },
     });
   }
-  assert.equal(launchResolutions, 0);
+  assert.equal(launchResolutions, resolutionsAfterHello, "an unsupported type never resolves a launch");
 });
 
 test("graph with bodies refuses a document body a plain read would refuse", async () => {

@@ -48,14 +48,15 @@ client below wraps all of them.
 | `read-versioned` | `docId` | `{ doc, version }` |
 | `render-document` | `docId` | `{ document: { id, version }, html, bounded }` |
 | `edges` | `{ from?, to?, text? }` | `{ edges: [{ from, to, text }], count }` |
+| `graph` | `includeBodies?` | `{ okfVersion, documents, relationships, counts }` |
 | `subscribe` | none | `{ ok: true }`, then `change` events |
 | `host` | `capability, input?` | `{ capability, output }` or `FORBIDDEN` |
 | `open-page` | `views-registry/...` id | none; fire-and-forget shell navigation |
 
 `hello.result.grant` is `"read"` for `bundle-read` and `"propose"` for `bundle-propose`. Read
 `hello.result.host.capabilities` to learn what this host honors (for example `query.field-or`,
-`query.open`, `edges`, `subscribe-deltas`) instead of assuming; every host refuses what it does
-not offer with a `FORBIDDEN` error, never silently.
+`query.open`, `edges`, `graph`, `subscribe-deltas`) instead of assuming; every host refuses what it
+does not offer with a `FORBIDDEN` error, never silently.
 
 Use `render-document` for canonical Markdown presentation: the returned `html` is inert markup
 whose internal links carry `data-aslite-doc-id`. Style it inside the View and insert it unmodified;
@@ -197,6 +198,7 @@ A byte-for-byte copy of the reference client in `docs/VIEW-PROTOCOL.md`.
     readVersioned: function (docId) { return send("read-versioned", { docId: docId }, ACTION_PROTO); },
     renderDocument: function (docId) { return send("render-document", { docId: docId }); },
     edges: function (params) { return send("edges", { params: params }); },
+    graph: function (includeBodies) { return send("graph", includeBodies === undefined ? undefined : { includeBodies: includeBodies === true }); },
     host: function (capability, input) {
       return send("host", input === undefined ? { capability: capability } : { capability: capability, input: input });
     },

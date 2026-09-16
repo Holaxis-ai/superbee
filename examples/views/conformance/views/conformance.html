@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="superbee-conformance-revision" content="1">
+<meta name="superbee-conformance-revision" content="2">
 <title>View protocol conformance</title>
 <style>
   /* Superbee View theme, the same tokens the shipped example Views use. */
@@ -112,6 +112,7 @@
     readVersioned: function (docId) { return send("read-versioned", { docId: docId }, ACTION_PROTO); },
     renderDocument: function (docId) { return send("render-document", { docId: docId }); },
     edges: function (params) { return send("edges", { params: params }); },
+    graph: function (includeBodies) { return send("graph", includeBodies === undefined ? undefined : { includeBodies: includeBodies === true }); },
     host: function (capability, input) {
       return send("host", input === undefined ? { capability: capability } : { capability: capability, input: input });
     },
@@ -127,7 +128,7 @@
 // (a wrong shape, a wrong code, or no reply within the window). Other hosts byte-copy this
 // entry and record the revision from <meta name="superbee-conformance-revision">.
 (function conformance() {
-  var REVISION = "1";
+  var REVISION = "2";
   var REPLY_WINDOW_MS = 5000;
   var NAVIGATION_WINDOW_MS = 1500;
   var UNDECLARED_CAPABILITY = "conformance.undeclared";
@@ -229,6 +230,20 @@
       record("edges", e && e.edges ? "answered" : "failed", "from=" + (firstDoc || "*") + " count=" + (e && e.count));
     }, function (err) { refusal("edges", err); });
   }
+  function stepGraph() {
+    return within(Bridge.graph(), REPLY_WINDOW_MS).then(function (g) {
+      var ok = g && g.documents && g.relationships && g.counts && typeof g.okfVersion === "string";
+      var bodies = 0;
+      if (ok) for (var i = 0; i < g.documents.length; i++) if (Object.prototype.hasOwnProperty.call(g.documents[i], "body")) bodies += 1;
+      record("graph", ok && bodies === 0 ? "answered" : "failed", ok
+        ? "okfVersion=" + g.okfVersion + " documents=" + g.counts.documents + " relationships=" + g.counts.relationships +
+          " model=" + (Object.prototype.hasOwnProperty.call(g, "model") ? "present" : "absent") + " bodies=" + bodies
+        : "reply carries no documents, relationships or counts");
+    }, function (err) {
+      var expected = err && err.code === "FORBIDDEN" && !has(capabilities, "graph");
+      record("graph", err && err.code ? "refused" : "failed", describe(err) + (expected ? " (not declared, expected)" : ""));
+    });
+  }
   function stepRender() {
     if (!firstDoc) { record("render-document", "skipped", "no document to render"); return Promise.resolve(); }
     return within(Bridge.renderDocument(firstDoc), REPLY_WINDOW_MS).then(function (r) {
@@ -295,7 +310,7 @@
 
   // Order matters: open-page is last because some hosts retire the source launch on it.
   stepHello()
-    .then(stepQuery).then(stepRead).then(stepReadVersioned).then(stepEdges).then(stepRender)
+    .then(stepQuery).then(stepRead).then(stepReadVersioned).then(stepEdges).then(stepGraph).then(stepRender)
     .then(stepSubscribe).then(stepHost).then(stepPropose).then(stepOpenPage)
     .then(function () {
       setText("status", "complete: " + rows.length + " rows, " + changes + " change events during the run");

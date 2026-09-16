@@ -1687,6 +1687,7 @@ test("registered Roadmap View runs from unchanged source through the authorized 
         kind: "oss",
         capabilities: [
           "edges",
+          "graph",
           "open-page",
           "query.count",
           "query.field-or",
@@ -1695,7 +1696,7 @@ test("registered Roadmap View runs from unchanged source through the authorized 
           "render-document",
           "subscribe-deltas",
         ],
-        limits: { query: 500, edges: 1000, graphDocuments: 0, graphRelationships: 0, replyBytes: 2 * 1024 * 1024 },
+        limits: { query: 500, edges: 1000, graphDocuments: 1000, graphRelationships: 10_000, replyBytes: 2 * 1024 * 1024 },
       },
     },
   );

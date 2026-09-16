@@ -63,8 +63,8 @@ export interface BridgeHostDescriptor {
 export const BRIDGE_SERVICE_LIMITS: BridgeHostLimits = Object.freeze({
   query: MAX_QUERY_ROWS,
   edges: MAX_EDGE_ROWS,
-  graphDocuments: 0,
-  graphRelationships: 0,
+  graphDocuments: GRAPH_MAX_DOCUMENTS,
+  graphRelationships: GRAPH_MAX_RELATIONSHIPS,
   replyBytes: MAX_REPLY_BYTES,
 });
 
@@ -94,6 +94,7 @@ export const BRIDGE_SERVICE_CAPABILITIES: readonly BridgeHostCapability[] = Obje
   BRIDGE_HOST_CAPABILITIES.queryOpen,
   BRIDGE_HOST_CAPABILITIES.queryCount,
   BRIDGE_HOST_CAPABILITIES.edges,
+  BRIDGE_HOST_CAPABILITIES.graph,
   BRIDGE_HOST_CAPABILITIES.renderDocument,
 ]);
 

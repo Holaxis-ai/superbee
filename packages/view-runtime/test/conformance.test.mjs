@@ -27,6 +27,7 @@ const REQUEST_ORDER = [
   "read",
   "read-versioned",
   "edges",
+  "graph",
   "render-document",
   "subscribe",
   "host",
@@ -61,6 +62,7 @@ test("the protocol document, the bundle reference and the conformance View embed
   assert.equal(clientFromHtml(ENTRY), canonical, "conformance View drifted from docs/VIEW-PROTOCOL.md");
   assert.match(canonical, /readVersioned/);
   assert.match(canonical, /send\("host"/);
+  assert.match(canonical, /send\("graph"/);
 });
 
 test("the conformance registry document and entry are a valid View under the admission rules", () => {
@@ -73,7 +75,7 @@ test("the conformance registry document and entry are a valid View under the adm
   assert.equal(admitted.bytes.byteLength, bytes.byteLength);
   const html = bytes.toString("utf8");
   assert.doesNotMatch(html, /<script[^>]+src=|<link[^>]+href=|https?:\/\//, "the entry inlines everything");
-  assert.match(html, /<meta name="superbee-conformance-revision" content="1">/);
+  assert.match(html, /<meta name="superbee-conformance-revision" content="2">/);
 });
 
 /** The smallest DOM the fixture touches: elements with attributes, text and children. */
@@ -182,13 +184,13 @@ test("the conformance View exercises every request type against the OSS service 
   });
 
   const { rows, document, sent, revision } = await runFixture(service, "launch");
-  assert.equal(revision, "1");
+  assert.equal(revision, "2");
   assert.deepEqual(rows.map((row) => row.request), REQUEST_ORDER, "one row per request type, in protocol order");
   assert.deepEqual(sent.map((message) => message.type), REQUEST_ORDER, "one request per row, in the same order");
 
   const byRequest = Object.fromEntries(rows.map((row) => [row.request, row]));
   assert.equal(byRequest.hello.status, "answered");
-  assert.match(byRequest.hello.summary, /^kind=oss grant=read limits\.query=500 capabilities=edges,open-page,query\.count,query\.field-or,query\.kind-projection,query\.open,render-document,subscribe-deltas$/);
+  assert.match(byRequest.hello.summary, /^kind=oss grant=read limits\.query=500 capabilities=edges,graph,open-page,query\.count,query\.field-or,query\.kind-projection,query\.open,render-document,subscribe-deltas$/);
   assert.equal(byRequest.query.status, "answered");
   assert.equal(byRequest.query.summary, "rows=3 count=3");
   const firstDoc = sent.find((message) => message.type === "read").docId;
@@ -198,6 +200,9 @@ test("the conformance View exercises every request type against the OSS service 
   assert.match(byRequest["read-versioned"].summary, new RegExp(`^id=${firstDoc.replace(/[/.]/g, "\\$&")} version=sha256:[0-9a-f]{64}$`));
   assert.equal(byRequest.edges.status, "answered");
   assert.match(byRequest.edges.summary, /^from=\S+ count=\d+$/);
+  assert.equal(byRequest.graph.status, "answered");
+  assert.equal(byRequest.graph.summary, "okfVersion=0.1 documents=3 relationships=1 model=absent bodies=0");
+  assert.equal(sent.find((message) => message.type === "graph").includeBodies, undefined, "the fixture asks for heads only");
   assert.equal(byRequest["render-document"].status, "answered");
   assert.match(byRequest["render-document"].summary, /^version=sha256:[0-9a-f]{64} html=\d+ chars bounded=false$/);
   assert.equal(byRequest.subscribe.status, "answered");
@@ -217,7 +222,7 @@ test("the conformance View exercises every request type against the OSS service 
     assert.deepEqual([...tr.children.map((td) => td.textContent)], [rows[index].request, rows[index].status, rows[index].summary]);
   });
   assert.equal(document.getElementById("host").textContent, "host: oss (test)");
-  assert.match(document.getElementById("status").textContent, /^complete: 10 rows, 0 change events/);
+  assert.match(document.getElementById("status").textContent, /^complete: 11 rows, 0 change events/);
   assert.equal(
     sent.find((message) => message.type === "action.propose").action.expectedVersion,
     byRequest["read-versioned"].summary.split("version=")[1],
@@ -241,7 +246,7 @@ test("the conformance View reports refresh-only subscriptions and refused reads 
   });
   const { rows } = await runFixture(service, "launch");
   assert.deepEqual(rows.map((row) => row.request), REQUEST_ORDER);
-  for (const request of ["hello", "query", "edges", "subscribe", "host"]) {
+  for (const request of ["hello", "query", "edges", "graph", "subscribe", "host"]) {
     const row = rows.find((candidate) => candidate.request === request);
     assert.equal(row.status, "refused", request);
     assert.match(row.summary, /^FORBIDDEN: /, request);

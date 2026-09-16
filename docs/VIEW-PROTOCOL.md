@@ -45,6 +45,7 @@ messages from the exact current frame and validates every request before touchin
 | `read-versioned` | v1 | `{ docId }` | `{ doc: { id, frontmatter, body }, version }` |
 | `render-document` | v0 | `{ docId }` | `{ document: { id, version }, html, bounded }` |
 | `edges` | v0 | `{ params: { from?, to?, text? } }` | `{ edges: { from, to, text }[], count }` |
+| `graph` | v0 | `{ includeBodies? }` | `{ okfVersion, documents, relationships, counts }` |
 | `subscribe` | v0 | none | `{ ok: true }`, then `change` events |
 | `host` | v0 | `{ capability, input? }` | `{ capability, output }` |
 | `open-page` | v0 | `{ pageId }` (`id` optional) | none on success; an error reply when refused |
@@ -64,8 +65,8 @@ that performs no writes answers `"read"` regardless of the declaration.
 ```json
 {
   "kind": "oss",
-  "capabilities": ["edges", "open-page", "query.count", "query.field-or", "query.kind-projection", "query.open", "render-document", "subscribe-deltas"],
-  "limits": { "query": 500, "edges": 1000, "graphDocuments": 0, "graphRelationships": 0, "replyBytes": 2097152 }
+  "capabilities": ["edges", "graph", "open-page", "query.count", "query.field-or", "query.kind-projection", "query.open", "render-document", "subscribe-deltas"],
+  "limits": { "query": 500, "edges": 1000, "graphDocuments": 1000, "graphRelationships": 10000, "replyBytes": 2097152 }
 }
 ```
 
@@ -149,6 +150,81 @@ Backlinks are `edges({ to: docId })`; a container's contents are `edges({ from: 
 "contains" })`. A source linking to one target twice with different text yields two rows. More rows
 than `limits.edges` answers `TOO_LARGE`.
 
+### `graph`
+
+The whole-bundle projection for graph-shaped Views: every document head and every derived edge in
+one reply, bounded by the two graph limits.
+
+Request:
+
+```json
+{ "bridge": "v0", "id": "g1", "type": "graph", "includeBodies": true }
+```
+
+`includeBodies` is optional and must be a boolean when present. No other keys are admitted.
+
+Reply (`type: "graph:result"`):
+
+```json
+{
+  "okfVersion": "0.2",
+  "documents": [
+    { "id": "tasks/one", "version": "sha256:...", "frontmatter": { "type": "Task", "title": "One" }, "body": "..." }
+  ],
+  "relationships": [
+    { "from": "tasks/one", "to": "tasks/two", "text": "two" }
+  ],
+  "counts": { "documents": 1, "relationships": 1 }
+}
+```
+
+- `documents` is every concept document in the bundle, in id order. Each row carries `id`,
+  `version` (the same content-addressed token `read` returns) and `frontmatter` projected with
+  the same logical Kind fields `query` and `read` apply. `body` is present only when the request
+  set `includeBodies: true` and the launch capability permits reads (`bundle-read` and
+  `bundle-propose` do). A row never carries a `body` key otherwise. A row must not carry a body
+  that a plain `read` would refuse: one document body above 1 MiB answers `TOO_LARGE` for the
+  whole request, while the same graph without bodies stays answerable.
+- `relationships` is the whole derived edge list, the same derivation and order as `edges` (which
+  refuses above 1000 rows where `graph` answers up to 10000), in `from`, `to`, `text` order.
+- `counts` reports the array lengths.
+- `okfVersion` is the bundle's declared OKF edition, `0.1` when undeclared.
+
+The OSS bridge answers no `model` and no `definitions`. A host that owns a model shape declares
+the `graph.model` capability in `hello.host.capabilities` and adds those keys; a View must treat
+them as absent unless that capability is declared.
+
+Limits, declared as exported constants on `@superbee/view-runtime` and carried in
+`hello.host.limits` by every host that runs the service:
+
+| Constant | Value | `hello.host.limits` | Over the limit |
+| --- | --- | --- | --- |
+| `GRAPH_MAX_DOCUMENTS` | 1000 | `graphDocuments` | `TOO_LARGE` |
+| `GRAPH_MAX_RELATIONSHIPS` | 10000 | `graphRelationships` | `TOO_LARGE` |
+| `MAX_REPLY_BYTES` | 2 MiB | `replyBytes` | `TOO_LARGE` (the shared reply check every request passes through) |
+
+The document limit is checked before the edge scan runs. Exactly the limit is answered; one more
+is refused. The reply byte limit is what bounds `includeBodies` in practice: a head-only graph of
+a bundle can fit while the same graph with bodies is refused.
+
+Errors:
+
+- `USAGE`: the envelope is not exactly the shape above. A host built before this request (one
+  whose `hello` carries no `host` descriptor) answers `graph` with the same `USAGE` error and
+  correlated id it gave every unknown v0 type; a host at this contract that does not offer `graph`
+  leaves it out of `hello.host.capabilities` and answers `FORBIDDEN`. A View feature-detects
+  `graph` by the descriptor first and by either reply code second.
+- `FORBIDDEN`: the launch has no bundle-data access, the same gate every data-bearing request has,
+  or the host does not offer `graph`.
+- `TOO_LARGE`: one of the three limits above, or a document body above 1 MiB with `includeBodies`.
+- `RUNTIME`, `REVOKED`: as for every other request.
+
+Cost: `graph` performs one head scan for documents and one full-bundle scan inside `queryEdges`
+for relationships; with `includeBodies` it additionally reads each document so that a row's body
+and version come from one read. The host keeps no cache on a View's behalf. Portal's
+`createPublicationBridge` answers `graph` through the shared service with no publication-specific
+code.
+
 ### `subscribe` and `change`
 
 `subscribe` answers `{ ok: true }`. Afterwards the host may push
@@ -222,12 +298,12 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `render-document` | the `render-document` request is answered | none |
 | `open-page` | `open-page` navigates the shell | none |
 | `subscribe-deltas` | `change` events carry real deltas | none |
-| `graph` | a whole-bundle `graph` request is answered | reserved for the `graph` request (a sibling change); not offered by OSS yet |
-| `graph.model` | `graph` also returns the Kind model | reserved with `graph` |
+| `graph` | the `graph` request is answered, bounded by `limits.graphDocuments` and `limits.graphRelationships` | none (a request); declared by every OSS host |
+| `graph.model` | `graph` also returns `model` and `definitions` | reserved; no OSS host declares it until the model shape has an owner |
 | `record.open` | the host opens its own reader for one document | `host` input `{ documentId }`; output `{ opened: true }`; `NOT_FOUND` for a missing document |
 
 A host without a query capability still answers `query`; it just honors less. A host without
-`edges` or `render-document` answers those requests with `FORBIDDEN`.
+`edges`, `graph` or `render-document` answers those requests with `FORBIDDEN`.
 
 ## Conformance levels
 
@@ -244,6 +320,8 @@ what it observed so the declaration can be checked against behavior.
 | `query.count` | yes | yes | yes | its `hello` says |
 | `limits.query` | 500 | 500 | 500 | its `hello` says |
 | `edges` | yes | yes | yes | its `hello` says |
+| `graph` | yes, without `model` | yes, without `model` | yes, through the shared service | its `hello` says |
+| `graph.model` | no | no | no | its `hello` says |
 | `render-document` | yes | yes | yes, pre-rendered from the snapshot | its `hello` says |
 | `open-page` | yes | yes, consumes the source launch | yes when the embedding client navigates | its `hello` says |
 | `subscribe-deltas` | yes | yes | no; `subscribe` is acknowledged, nothing is pushed | its `hello` says |
@@ -260,7 +338,7 @@ author, host by host:
 | `USAGE` | the request is malformed: wrong keys, bounds or value shapes | before any bundle work; `id` echoed only when it was a bounded string | same | `invalid_input` from the parent |
 | `FORBIDDEN` | not offered here: no grant, an unknown launch, a write on a read-only host, a request type or capability the host does not offer | `access: none` data requests; unknown or expired launch; unsupported types | every write; unsupported types; undeclared extensions | `unsupported_operation`; anything outside the slot allowlist |
 | `REVOKED` | the View changed while the request ran; reload | entry bytes or registration changed mid-request | never (immutable snapshot) | `denied` from the parent (grant lost, binding changed) |
-| `TOO_LARGE` | the answer exceeded a declared limit; narrow the request | reply above `limits.replyBytes`, body above 1 MiB, edges above `limits.edges` | same | size errors from the parent |
+| `TOO_LARGE` | the answer exceeded a declared limit; narrow the request | reply above `limits.replyBytes`, body above 1 MiB, edges above `limits.edges`, a graph above `limits.graphDocuments` or `limits.graphRelationships` | same | size errors from the parent |
 | `RUNTIME` | the host failed; retry later or show "unavailable" | storage or renderer failure | same | `unavailable` from the parent |
 | `NOT_FOUND` | the named document or View target does not exist | `render-document`, `open-page` | same | `document_not_found`; `record.open` on a missing document |
 
@@ -288,6 +366,8 @@ Startup messages are optional: a View may stay quiet until human input and never
 | `docId` | 1024 bytes | fixed |
 | `query` rows | 500 | `limits.query` |
 | `edges` rows | 1000 | `limits.edges` |
+| `graph` documents | 1000 | `limits.graphDocuments` |
+| `graph` relationships | 10000 | `limits.graphRelationships` |
 | document body | 1 MiB | fixed |
 | any reply | 2 MiB | `limits.replyBytes` |
 | `host` request | 64 KiB | fixed |
@@ -370,6 +450,7 @@ example Views.
     readVersioned: function (docId) { return send("read-versioned", { docId: docId }, ACTION_PROTO); },
     renderDocument: function (docId) { return send("render-document", { docId: docId }); },
     edges: function (params) { return send("edges", { params: params }); },
+    graph: function (includeBodies) { return send("graph", includeBodies === undefined ? undefined : { includeBodies: includeBodies === true }); },
     host: function (capability, input) {
       return send("host", input === undefined ? { capability: capability } : { capability: capability, input: input });
     },
@@ -390,9 +471,9 @@ first refresh, so handle it to surface startup failures.
 
 `examples/views/conformance/` holds a registry document (`views-registry/conformance`) and one
 self-contained entry (`views/conformance.html`) that embeds the client above and sends, in order,
-`hello`, `query`, `read`, `read-versioned`, `edges`, `render-document`, `subscribe`, `host` (an
-undeclared capability, expecting `FORBIDDEN`), `action.propose` and `open-page` (a registry id that
-must not exist). It renders one table row per request type with the request name, a status
+`hello`, `query`, `read`, `read-versioned`, `edges`, `graph`, `render-document`, `subscribe`,
+`host` (an undeclared capability, expecting `FORBIDDEN`), `action.propose` and `open-page` (a
+registry id that must not exist). It renders one table row per request type with the request name, a status
 (`answered`, `refused`, `sent`, `skipped` or `failed`) and a one-line summary, and exposes the same
 rows on `window.__conformance` for harnesses. The View names its revision in
 `<meta name="superbee-conformance-revision">`; a host that byte-copies it records that value with
@@ -402,6 +483,6 @@ service over a fixture bundle and asserts every row.
 ## Versioning
 
 `bridge: "v0"` and `"v1"` name wire envelopes, not a semantic version. Additions in this document
-are compatible with every existing v0 View: new reply fields (`host`), new request types (`host`)
-and new error semantics for requests that were never valid before. A change that alters an
+are compatible with every existing v0 View: new reply fields (`host`), new request types (`graph`,
+`host`) and new error semantics for requests that were never valid before. A change that alters an
 existing reply or request shape needs a new envelope value and a change here first.

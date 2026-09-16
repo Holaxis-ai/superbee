@@ -356,6 +356,7 @@ test("static View bridge reuses canonical read semantics and rejects mismatched 
       kind: "oss",
       capabilities: [
         "edges",
+        "graph",
         "open-page",
         "query.count",
         "query.field-or",
@@ -363,7 +364,7 @@ test("static View bridge reuses canonical read semantics and rejects mismatched 
         "query.open",
         "render-document",
       ],
-      limits: { query: 500, edges: 1000, graphDocuments: 0, graphRelationships: 0, replyBytes: 2 * 1024 * 1024 },
+      limits: { query: 500, edges: 1000, graphDocuments: 1000, graphRelationships: 10_000, replyBytes: 2 * 1024 * 1024 },
     }, "a static snapshot never declares subscribe-deltas");
     const versioned = await bridge.handle({ bridge: "v1", type: "read-versioned", id: "rv", docId: "notes/alpha" });
     assert.equal(versioned.reply.type, "read-versioned:result", "the read-only host forwards the v1 read");
