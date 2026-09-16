@@ -38,7 +38,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
     "test:browser": "playwright install chromium && playwright test --config playwright.config.ts",
-    "measure:browser": "playwright install chromium && playwright test --config playwright.measure.config.ts"
+    "measure:browser": "playwright install chromium && playwright test --config playwright.measure.config.ts measure.browser.spec.ts",
+    "measure:listing": "playwright install chromium && playwright test --config playwright.measure.config.ts measure-listing.browser.spec.ts"
   },
   "dependencies": {
     "@superbee/core": "0.2.0-pre.4"
