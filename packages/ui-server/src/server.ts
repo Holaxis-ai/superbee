@@ -28,6 +28,9 @@ import type { UiAssetHandler } from "./assets.js";
 import { proxyToRemote } from "./proxy.js";
 import { pageCsp } from "./pages.js";
 import {
+  BRIDGE_HOST_CAPABILITIES,
+  BRIDGE_SERVICE_CAPABILITIES,
+  BRIDGE_SERVICE_LIMITS,
   BridgeService,
   PageActionLaunchAuthority,
   PageBridgeLaunchAuthority,
@@ -1028,6 +1031,17 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
       config: async () => {
         const config = await configData(options);
         return { root: config.root, name: config.name, mode: config.mode };
+      },
+      // The web shell navigates on open-page and fans the watcher's real deltas into subscribed
+      // Views, so both are declared in addition to the service's own read capabilities.
+      host: {
+        kind: "oss",
+        capabilities: [
+          ...BRIDGE_SERVICE_CAPABILITIES,
+          BRIDGE_HOST_CAPABILITIES.openPage,
+          BRIDGE_HOST_CAPABILITIES.subscribeDeltas,
+        ],
+        limits: BRIDGE_SERVICE_LIMITS,
       },
     }),
     actions:

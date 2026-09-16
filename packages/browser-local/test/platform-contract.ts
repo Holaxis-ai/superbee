@@ -24,7 +24,7 @@
 import assert from "node:assert/strict";
 
 import type { OkfDocument, StorageBackend, Version } from "@superbee/core";
-import type { ExecutionMode, PlatformDocument, PlatformRuntime, Provenance } from "@superbee/core/platform";
+import type { ExecutionMode, PlatformDocument, PlatformQueryRow, PlatformRuntime, Provenance } from "@superbee/core/platform";
 
 export const MODES: readonly ExecutionMode[] = ["request-driven", "browser-local"];
 
@@ -586,10 +586,14 @@ export function platformContractRows(): ContractRow[] {
  * id. A document the runtime no longer holds is absent only if the row deleted it at the
  * authority (the session records those ids), and then has no unsettled intent, since a held
  * document is never removed; any other absence is a document the runtime lost. Nothing in the
- * working copy is unconfirmed.
+ * working copy is unconfirmed. The listing agrees with the reads: `query` with no filter is
+ * exactly one row per readable document, in id order, carrying the read's version,
+ * frontmatter and provenance.
  */
 export async function assertProvenanceInvariant(session: ContractSession): Promise<void> {
   const expectedAbsent = new Set(session.expectedAbsent());
+  const listed = await session.runtime.query();
+  const readable: PlatformQueryRow[] = [];
   for (const id of SYNTHETIC_IDS) {
     let document: PlatformDocument;
     try {
@@ -600,6 +604,7 @@ export async function assertProvenanceInvariant(session: ContractSession): Promi
       assert.deepEqual(await session.unsettled(id), [], `${session.mode} '${id}': absent with an unsettled intent`);
       continue;
     }
+    readable.push({ id, version: document.provenance.version, frontmatter: document.doc.frontmatter, provenance: document.provenance });
     const { provenance } = document;
     const unsettled = await session.unsettled(id);
     const conflicted = unsettled.some((row) => row.state === "conflict");
@@ -611,6 +616,7 @@ export async function assertProvenanceInvariant(session: ContractSession): Promi
       assert.ok(unsettled.some((row) => row.requestId === provenance.requestId), `${session.mode} '${id}': ${provenance.state} names an intent the journal does not hold`);
     }
   }
+  assert.deepEqual(listed, readable, `${session.mode}: the listing and the reads describe different working copies`);
   assert.equal((await session.runtime.syncStatus()).unconfirmed, 0, `${session.mode}: unconfirmed documents in the working copy`);
 }
 
