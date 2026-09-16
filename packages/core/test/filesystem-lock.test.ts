@@ -1,4 +1,4 @@
-import { captureFilesystemHostPolicy } from "../src/filesystem-host.js";
+import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "../src/filesystem-host.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -43,7 +43,7 @@ async function isolatedLockPaths(): Promise<{
 }
 
 function replaceFsMethod(
-  name: "lstat" | "mkdir" | "rename" | "rm" | "writeFile",
+  name: "lstat" | "mkdir" | "readFile" | "rename" | "rm" | "writeFile",
   replacement: (...args: unknown[]) => unknown,
 ): () => void {
   const mutable = fs as unknown as Record<string, unknown>;
@@ -1336,8 +1336,9 @@ test("release reports removal failures with complete typed details", async () =>
     assert.ok(lockName);
     const lockPath = path.join(harness.lockRoot, lockName);
     const originalRm = fs.rm;
+    // Release renames the verified directory to a token-derived remnant first, then removes that.
     const restore = replaceFsMethod("rm", (...args) => {
-      if (path.resolve(String(args[0])) === path.resolve(lockPath)) return Promise.reject(new Error("busy"));
+      if (String(args[0]).startsWith(`${lockPath}.released-`)) return Promise.reject(new Error("busy"));
       return Reflect.apply(originalRm, fs, args);
     });
     try {
@@ -1345,15 +1346,17 @@ test("release reports removal failures with complete typed details", async () =>
         () => release(),
         (err: unknown) => {
           assert.ok(err instanceof FilesystemMutationLockError);
-          assert.equal(err.lockPath, lockPath);
+          assert.ok(err.lockPath.startsWith(`${lockPath}.released-`));
           assert.equal(err.owner?.pid, process.pid);
           assert.equal(err.stale, false);
           assert.equal(err.malformed, false);
-          assert.match(err.message, /mutation completed but filesystem lock/);
+          assert.match(err.message, /mutation completed but filesystem lock .* was released yet its remnant/);
           assert.match(err.message, /busy/);
           return true;
         },
       );
+      // The lock key itself is free: the remnant, not the lock, is what leaked.
+      assert.equal(await fs.lstat(lockPath).then(() => true, () => false), false);
     } finally {
       restore();
       await fs.rm(harness.root, { recursive: true, force: true });
@@ -1398,6 +1401,285 @@ test("canonical-target probing propagates errors and skips redundant scans for e
     const release = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot });
     assert.equal(targetProbes, 1);
     await release();
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+const releaseContention = Object.assign(new Error("owner record still open by a polling claimer"), { code: "TEST_CONTENTION" });
+
+async function heldLock(options: { hostPolicy?: FilesystemHostPolicy; waitMs: number; pollMs: number }) {
+  const harness = await isolatedLockPaths();
+  const release = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, ...options });
+  const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+  assert.ok(await pathExists(lockPath));
+  return { harness, release, lockPath, ownerFile: path.join(lockPath, "owner.json") };
+}
+
+async function pathExists(candidate: string): Promise<boolean> {
+  return fs.lstat(candidate).then(() => true, () => false);
+}
+
+async function lockRootEntries(lockRoot: string): Promise<string[]> {
+  return (await fs.readdir(lockRoot)).sort();
+}
+
+function interceptRename(lockPath: string, onLockRename: (attempt: number, args: unknown[]) => Promise<unknown>): () => void {
+  const originalRename = fs.rename;
+  let attempt = 0;
+  return replaceFsMethod("rename", (...args) => {
+    if (path.resolve(String(args[0])) !== path.resolve(lockPath)) return Reflect.apply(originalRename, fs, args);
+    attempt += 1;
+    return onLockRename(attempt, args).then(() => Reflect.apply(originalRename, fs, args));
+  });
+}
+
+test("host-classified release retries a contended rename within the bounded budget and then frees the lock root", async () => {
+  const { harness, release, lockPath } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 1 });
+  let attempts = 0;
+  const restore = interceptRename(lockPath, async (attempt) => {
+    attempts = attempt;
+    if (attempt <= 2) throw releaseContention;
+  });
+  try {
+    await release();
+    assert.equal(attempts, 3);
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), [], "no lock and no remnant may remain");
+    const releaseAgain = await acquireFilesystemMutationLock(harness.target, {
+      lockRoot: harness.lockRoot, hostPolicy: contentionPolicy, waitMs: 0, pollMs: 0,
+    });
+    await releaseAgain();
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("host-classified release retries a contended remnant removal and reports a durable remnant denial", async () => {
+  const { harness, release, lockPath } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 1 });
+  const originalRm = fs.rm;
+  let attempts = 0;
+  let restore = replaceFsMethod("rm", (...args) => {
+    if (!String(args[0]).startsWith(`${lockPath}.released-`)) return Reflect.apply(originalRm, fs, args);
+    attempts += 1;
+    if (attempts <= 2) return Promise.reject(releaseContention);
+    return Reflect.apply(originalRm, fs, args);
+  });
+  try {
+    await release();
+    assert.equal(attempts, 3);
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+  } finally {
+    restore();
+  }
+
+  const second = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, hostPolicy: contentionPolicy, waitMs: 40, pollMs: 1 });
+  attempts = 0;
+  restore = replaceFsMethod("rm", (...args) => {
+    if (!String(args[0]).startsWith(`${lockPath}.released-`)) return Reflect.apply(originalRm, fs, args);
+    attempts += 1;
+    return Promise.reject(releaseContention);
+  });
+  try {
+    await assert.rejects(
+      () => second(),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.match(err.message, /was released yet its remnant .* could not be removed after \d+ bounded attempts/);
+        assert.ok(err.lockPath.startsWith(`${lockPath}.released-`));
+        return true;
+      },
+    );
+    assert.ok(attempts >= 2);
+    // The lock key is free even though the remnant leaked, so the next claim is not wedged.
+    assert.equal(await pathExists(lockPath), false);
+    const entries = await lockRootEntries(harness.lockRoot);
+    assert.equal(entries.length, 1);
+    assert.ok(entries[0]!.startsWith(`${path.basename(lockPath)}.released-`));
+    const third = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, hostPolicy: contentionPolicy, waitMs: 0, pollMs: 0 });
+    restore();
+    restore = () => {};
+    await third();
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("host-classified release keeps a durable rename denial bounded, typed, and fail-closed", async () => {
+  const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 40, pollMs: 1 });
+  const record = await fs.readFile(ownerFile, "utf8");
+  let attempts = 0;
+  const restore = interceptRename(lockPath, async (attempt) => {
+    attempts = attempt;
+    throw releaseContention;
+  });
+  try {
+    const started = Date.now();
+    await assert.rejects(
+      () => release(),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.equal(err.lockPath, lockPath);
+        assert.equal(err.owner?.pid, process.pid);
+        assert.equal(err.stale, false);
+        assert.equal(err.malformed, false);
+        assert.match(err.message, /mutation completed but filesystem lock .* could not be removed after \d+ bounded attempts/);
+        assert.match(err.message, /still open by a polling claimer/);
+        return true;
+      },
+    );
+    assert.ok(attempts >= 2, `expected bounded retries, saw ${attempts}`);
+    assert.ok(Date.now() - started < 1_500, "a durable denial must not wait past the bounded budget");
+    // The lock and its record are retained intact for inspection, never force-deleted.
+    assert.equal(await fs.readFile(ownerFile, "utf8"), record);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("release refuses when the directory changed hands or lost its record during rename retries", async (t) => {
+  for (const shape of ["foreign-record", "record-less-claim"] as const) {
+    await t.test(shape, async () => {
+      const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 1 });
+      const foreign = JSON.parse(await fs.readFile(ownerFile, "utf8")) as Record<string, unknown>;
+      foreign.token = "foreign-live-replacement";
+      let attempts = 0;
+      const restore = interceptRename(lockPath, async (attempt) => {
+        attempts = attempt;
+        // Another actor removed this directory and a competitor claimed the key while this
+        // rename was delayed; the competitor may not have written its record yet.
+        await fs.rm(lockPath, { recursive: true, force: true });
+        await fs.mkdir(lockPath, { mode: 0o700 });
+        if (shape === "foreign-record") await fs.writeFile(ownerFile, `${JSON.stringify(foreign)}\n`, "utf8");
+        throw releaseContention;
+      });
+      try {
+        await assert.rejects(
+          () => release(),
+          (err: unknown) => {
+            assert.ok(err instanceof FilesystemMutationLockError);
+            assert.match(err.message, /refusing to release/);
+            assert.equal(err.malformed, shape === "record-less-claim");
+            if (shape === "foreign-record") assert.equal(err.owner?.token, "foreign-live-replacement");
+            return true;
+          },
+        );
+        assert.equal(attempts, 1);
+        assert.equal(await pathExists(lockPath), true, "the competitor's claim directory must survive");
+        if (shape === "foreign-record") assert.deepEqual(JSON.parse(await fs.readFile(ownerFile, "utf8")), foreign);
+        else assert.deepEqual(await fs.readdir(lockPath), []);
+      } finally {
+        restore();
+        await fs.rm(harness.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("a lock directory that disappears during rename retries counts as released", async () => {
+  const { harness, release, lockPath } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 1 });
+  let attempts = 0;
+  const restore = interceptRename(lockPath, async (attempt) => {
+    attempts = attempt;
+    if (attempt === 1) {
+      await fs.rm(lockPath, { recursive: true, force: true });
+      throw releaseContention;
+    }
+  });
+  try {
+    await release();
+    // The re-read before the retry already proves the directory is gone; no second rename runs.
+    assert.equal(attempts, 1);
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a concurrently invoked release shares one in-flight removal and a later invocation refuses", async () => {
+  const { harness, release, lockPath, ownerFile } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 50 });
+  let attempts = 0;
+  const restoreRename = interceptRename(lockPath, async (attempt) => {
+    attempts = attempt;
+    if (attempt === 1) throw releaseContention;
+  });
+  const originalReadFile = fs.readFile;
+  let ownerReads = 0;
+  const restoreReadFile = replaceFsMethod("readFile", (...args) => {
+    if (path.resolve(String(args[0])) === path.resolve(ownerFile)) ownerReads += 1;
+    return Reflect.apply(originalReadFile, fs, args);
+  });
+  const restore = () => {
+    restoreReadFile();
+    restoreRename();
+  };
+  try {
+    // The first invocation's rename is delayed by contention; the second arrives meanwhile and
+    // must join it rather than race it with its own ownership check and rename.
+    const first = release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const second = release();
+    await Promise.all([first, second]);
+    assert.equal(attempts, 2, "one contended rename plus one retry; the joined invocation renamed nothing");
+    assert.equal(ownerReads, 2, "one verification plus one retry re-read; the joined invocation read nothing");
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+    // A competitor's claim made after the release is untouched by anything the closure does later.
+    const competitorRelease = await acquireFilesystemMutationLock(harness.target, {
+      lockRoot: harness.lockRoot, hostPolicy: contentionPolicy, waitMs: 0, pollMs: 0,
+    });
+    const competitorRecord = await fs.readFile(path.join(lockPath, "owner.json"), "utf8");
+    await assert.rejects(release(), (err: unknown) => err instanceof FilesystemMutationLockError && /refusing to release/.test(err.message));
+    assert.equal(attempts, 2);
+    assert.equal(await fs.readFile(path.join(lockPath, "owner.json"), "utf8"), competitorRecord);
+    await competitorRelease();
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a remnant that disappears during removal retries counts as released", async () => {
+  const { harness, release, lockPath } = await heldLock({ hostPolicy: contentionPolicy, waitMs: 2_000, pollMs: 1 });
+  const originalRm = fs.rm;
+  let attempts = 0;
+  const restore = replaceFsMethod("rm", async (...args) => {
+    if (!String(args[0]).startsWith(`${lockPath}.released-`)) return Reflect.apply(originalRm, fs, args);
+    attempts += 1;
+    if (attempts === 1) {
+      await Reflect.apply(originalRm, fs, [args[0], { recursive: true, force: true }]);
+      throw releaseContention;
+    }
+    return Reflect.apply(originalRm, fs, args);
+  });
+  try {
+    await release();
+    assert.equal(attempts, 2);
+    assert.deepEqual(await lockRootEntries(harness.lockRoot), []);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("the supported default policy keeps release single-shot even for a sharing-shaped error", async () => {
+  const { harness, release, lockPath, ownerFile } = await heldLock({ waitMs: 2_000, pollMs: 1 });
+  let attempts = 0;
+  const restore = interceptRename(lockPath, async (attempt) => {
+    attempts = attempt;
+    throw Object.assign(new Error("resource busy"), { code: "EBUSY" });
+  });
+  try {
+    await assert.rejects(
+      () => release(),
+      (err: unknown) => err instanceof FilesystemMutationLockError && /could not be removed \(resource busy\)/.test(err.message),
+    );
+    assert.equal(attempts, 1);
+    assert.equal(await pathExists(ownerFile), true);
   } finally {
     restore();
     await fs.rm(harness.root, { recursive: true, force: true });

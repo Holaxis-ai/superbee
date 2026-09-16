@@ -417,24 +417,124 @@ async function claimLockPath(
       throw err;
     }
 
-    return async () => {
-      const current = await readOwner(lockPath);
-      if (current?.token !== owner.token) {
-        throw new FilesystemMutationLockError(
-          `refusing to release filesystem mutation lock '${lockPath}' because its owner token changed; the mutation may have completed, inspect the lock before retrying.`,
-          { lockPath, owner: current, stale: false, malformed: current === null },
-        );
-      }
-      try {
-        await fs.rm(lockPath, { recursive: true, force: false });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new FilesystemMutationLockError(
-          `mutation completed but filesystem lock '${lockPath}' could not be removed (${message}); inspect the lock before retrying.`,
-          { lockPath, owner: current, stale: false, malformed: false },
-        );
-      }
+    // One release in flight per claim: a concurrent second invocation shares the first outcome
+    // instead of racing it, so two removers can never act on one claim. A later invocation
+    // re-verifies the record and refuses, as it always did.
+    let inFlight: Promise<void> | undefined;
+    return () => {
+      if (inFlight) return inFlight;
+      inFlight = (async () => {
+        const current = await readOwner(lockPath);
+        if (current?.token !== owner.token) throw changedOwnerRefusal(lockPath, current);
+        await removeReleasedLock(lockPath, owner, waitMs, pollMs, policy);
+      })();
+      return inFlight.finally(() => {
+        inFlight = undefined;
+      });
     };
+  }
+}
+
+function changedOwnerRefusal(lockPath: string, current: FilesystemMutationLockOwner | null): FilesystemMutationLockError {
+  return new FilesystemMutationLockError(
+    `refusing to release filesystem mutation lock '${lockPath}' because its owner token changed; the mutation may have completed, inspect the lock before retrying.`,
+    { lockPath, owner: current, stale: false, malformed: current === null },
+  );
+}
+
+/** Token-derived sibling name that only this claim can produce; a competitor can never claim it. */
+function releasedLockRemnantPath(lockPath: string, owner: FilesystemMutationLockOwner): string {
+  const tokenHash = createHash("sha256").update(owner.token).digest("hex");
+  return `${lockPath}.released-${tokenHash}`;
+}
+
+function removalFailure(
+  inspectPath: string,
+  owner: FilesystemMutationLockOwner,
+  err: unknown,
+  attempts: number,
+  detail: string,
+): FilesystemMutationLockError {
+  const message = err instanceof Error ? err.message : String(err);
+  const suffix = attempts > 1 ? ` after ${attempts} bounded attempts` : "";
+  return new FilesystemMutationLockError(
+    `mutation completed but ${detail}${suffix} (${message}); inspect the lock before retrying.`,
+    { lockPath: inspectPath, owner, stale: false, malformed: false },
+  );
+}
+
+/**
+ * Release a lock directory whose owner record was just verified as this caller's, in two steps
+ * that keep the destructive action fenced to this claim.
+ *
+ * Step one renames the directory to a token-derived sibling. Rename is atomic and moves exactly
+ * the directory whose record was verified; the lock key is free the instant it succeeds, and a
+ * competitor's later claim lands on a fresh directory that step two never names. Step two removes
+ * the renamed remnant, which only this claim can produce. What remains is the check-then-act gap
+ * between a record read and the next rename syscall, reachable only through an external actor
+ * that removes the verified directory and a completed competitor claim inside that gap: the same
+ * class the stale-lock quarantine rename accepts.
+ *
+ * A host may report a contention-shaped error while another claimer still holds a handle inside
+ * the directory: Windows unlink through Node 20's libuv only marks a file delete-on-close, so a
+ * competitor's poll of `owner.json` briefly blocks both the directory rename and the removal of
+ * its unlinked record. Retry only what the host policy classifies as directory contention,
+ * inside a fresh bounded budget of the claim's `waitMs`, polling every `pollMs`, so the worst-case
+ * hold is the mutation plus `waitMs`. The default supported policy classifies nothing, so its
+ * release stays single-shot. Before each rename retry the record is re-read: rename never removes
+ * the record, so anything but this claim's own record means the directory changed hands and the
+ * release refuses, unless the directory itself is gone. A directory or remnant gone between
+ * attempts is the requested outcome.
+ */
+async function removeReleasedLock(
+  lockPath: string,
+  owner: FilesystemMutationLockOwner,
+  waitMs: number,
+  pollMs: number,
+  policy: FilesystemHostPolicy,
+): Promise<void> {
+  const remnant = releasedLockRemnantPath(lockPath, owner);
+  const started = Date.now();
+  let attempts = 0;
+  while (true) {
+    try {
+      await fs.rename(lockPath, remnant);
+      break;
+    } catch (err) {
+      attempts += 1;
+      if (attempts > 1 && (err as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (!policy.isDirectoryContentionError(err) || Date.now() - started >= waitMs) {
+        throw removalFailure(lockPath, owner, err, attempts, `filesystem lock '${lockPath}' could not be removed`);
+      }
+    }
+    await delay(pollMs);
+    const current = await readOwner(lockPath);
+    if (current?.token === owner.token) continue;
+    // Rename never removes the record, so a record-less directory here is a competitor's claim in
+    // progress, never this caller's leftover; only an absent directory means already released.
+    if (current === null && !(await pathExists(lockPath))) return;
+    throw changedOwnerRefusal(lockPath, current);
+  }
+
+  attempts = 0;
+  while (true) {
+    try {
+      await fs.rm(remnant, { recursive: true, force: false });
+      return;
+    } catch (err) {
+      attempts += 1;
+      if (attempts > 1 && (err as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (!policy.isDirectoryContentionError(err) || Date.now() - started >= waitMs) {
+        throw removalFailure(
+          remnant,
+          owner,
+          err,
+          attempts,
+          `filesystem lock '${lockPath}' was released yet its remnant '${remnant}' could not be removed`,
+        );
+      }
+    }
+    await delay(pollMs);
   }
 }
 
