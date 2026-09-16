@@ -48,8 +48,9 @@
  *   null and the parser's error, never a dropped row and never a failed listing. A caller that
  *   keeps less than the row (a version and a provenance, say) passes `project`, which maps
  *   each row as it is read so the listing over a large store never holds every document's
- *   bytes at once; keys every row needs go in `shared`, read once. Rows come back in the order
- *   `list` orders ids.
+ *   stored bytes at once; the journal is read whole before the walk, so intents and the
+ *   content they carry are held for its duration, as a single read holds them. Keys every row
+ *   needs go in `shared`, read once. Rows come back in the order `list` orders ids.
  * - {@link JournaledBackend.updateIntent} is a compare-and-swap on the intent's `state`: the
  *   patch applies only while the record is in `expectedState`, together with any meta rows, in
  *   one transaction. A different state or a missing record rejects with
@@ -471,8 +472,9 @@ export interface JournaledHeadsOptions<T> {
   shared?: readonly string[];
   /**
    * Maps each head as it is read; only the projection is kept, so a listing over a large store
-   * holds one document's bytes at a time. Omitted, the heads themselves are returned. A
-   * projection that throws rejects the whole listing with its error.
+   * holds one document's stored bytes at a time (the journal, read whole, is held throughout).
+   * Omitted, the heads themselves are returned. A projection that throws rejects the whole
+   * listing with its error.
    */
   project?: (head: JournaledHead) => T;
 }

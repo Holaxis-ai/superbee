@@ -1037,7 +1037,8 @@ export class IndexedDbBackend implements JournaledBackend {
    * whole store. The root index, the journal (grouped by target, since it has no index by
    * target) and the `shared` keys are read once, then the documents are walked by cursor, each
    * row's own keys read with it, so a caller's `project` sees one record at a time and the
-   * listing holds only what it keeps. The frontmatter is the one `readWithJournal` would parse
+   * listing holds only what it keeps plus the journal it read up front, intents' content
+   * included. The frontmatter is the one `readWithJournal` would parse
    * for the record, under the edition the root index declared at this moment; the body is
    * never parsed. Rows come back in `list` order.
    */
