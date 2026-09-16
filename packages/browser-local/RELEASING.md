@@ -8,23 +8,25 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.4 | public / next |
-| @superbee/server | 0.2.0-pre.4 | public / next |
-| @superbee/browser-local | 0.1.0-pre.2 | public / next |
-| @superbee/markdown-renderer | 0.1.2 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.5 | public / next |
+| @superbee/server | 0.2.0-pre.5 | public / next |
+| @superbee/browser-local | 0.1.0-pre.3 | public / next |
+| @superbee/markdown-renderer | 0.1.3 | existing restricted access / latest |
 
-This candidate carries structural host read adapters, prepared body delivery with
-receipt reconciliation, atomic journal snapshot guards, durable body delivery in the
-browser-local working copy, exported heads and snapshot wire parsers, and retirement
-of refused and conflicted body chains.
+This candidate carries the heads-only working-copy listing (`readHeads` on the
+journaled backend seam; the runtime's `query` and `status` read heads in one
+transaction without parsing bodies), the warm IndexedDB instance reopening instead
+of surfacing a closed-handle error, and the filesystem host policy as an explicit
+runtime (`createFilesystemRuntime` and the `@superbee/core/filesystem` entry; the
+server's legacy router resolves its backend through `backendFor`).
 
-Browser-local depends exactly on core pre.4. Registry core pre.3 lacks the
-`governed-body-write` entry and the journal guard APIs this package imports; do not
-patch around it or publish with a wildcard dependency. Server moves with core under
-the existing paired release policy. Renderer 0.1.2 only extends its core peer allowance
-to pre.4; it is included so consumers can align their root core without overriding
-peer checks, and a published renderer version is never reused for different bytes.
-Its access remains restricted: do not make other private packages public.
+Browser-local depends exactly on core pre.5. Registry core pre.4 lacks `readHeads`
+on the journaled backend seam that this package's runtime calls; do not patch around
+it or publish with a wildcard dependency. Server moves with core under the existing
+paired release policy. Renderer 0.1.3 only extends its core peer allowance to pre.5;
+it is included so consumers can align their root core without overriding peer
+checks, and a published renderer version is never reused for different bytes. Its
+access remains restricted: do not make other private packages public.
 
 ## Before release
 

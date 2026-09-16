@@ -16,6 +16,7 @@ import type { OperationTransport } from "@superbee/core/uncertain-write";
 
 import { bootstrap, openLocalBundle, pull, pushWithRole, type LocalBundle } from "../../src/local-bundle.ts";
 import { createBrowserLocalRuntime, createRequestDrivenRuntime } from "../../src/platform/index.ts";
+import { countingIndexedDb, type TransactionCounts } from "./counting-factory.ts";
 import { mountPresentation, type Presentation } from "./presentation.ts";
 
 const REMOTE_BUNDLE = "default";
@@ -53,6 +54,8 @@ interface Session {
   remote: RemoteBackend;
   local: LocalBundle | null;
   transport: OperationTransport | null;
+  /** The working copy's IndexedDB transactions since it was opened; `null` in request-driven mode. */
+  counts: TransactionCounts | null;
 }
 
 let session: Session | null = null;
@@ -149,6 +152,80 @@ export interface ClickReply {
   badge: string;
 }
 
+/** The runtime verbs whose store cost `cost` measures: the unfiltered listing, one filtered query, and the status. */
+export type CostOperation = "listing" | "byType" | "status";
+
+export interface CostOptions {
+  filter?: QueryFilter;
+  /**
+   * Force a collection on every sampler tick, so the sampled peak is the heap the verb held
+   * rather than the garbage it had not yet been collected. The collections slow the verb, so a
+   * sample taken this way measures memory, not time.
+   */
+  collectWhileSampling?: boolean;
+}
+
+export interface CostSample {
+  /** Wall time of the verb, call to return. */
+  ms: number;
+  /** IndexedDB transactions the verb opened; `null` in request-driven mode, which has no store. */
+  transactions: number | null;
+  /** Rows the listing or query returned, or the status's unconfirmed count. */
+  rows: number;
+  /** `performance.memory.usedJSHeapSize` after a collection, before the verb; `null` where the browser does not report it. */
+  heapBeforeBytes: number | null;
+  /**
+   * The highest heap reading sampled while the verb ran, minus `heapBeforeBytes`. Without
+   * `collectWhileSampling` it counts garbage not yet collected as well as what the verb held;
+   * with it, each tick collected first, so it is what the verb held at its peak.
+   */
+  heapPeakDeltaBytes: number | null;
+  /** The heap after the verb and a collection, minus `heapBeforeBytes`: what the verb left behind. */
+  heapAfterDeltaBytes: number | null;
+  /** Whether `gc()` was available, so the before and after readings are collected baselines. */
+  collected: boolean;
+  /** Whether the sampler collected on every tick (see `CostOptions.collectWhileSampling`). */
+  collectedWhileSampling: boolean;
+}
+
+export interface CostReply {
+  samples: CostSample[];
+}
+
+function heapBytes(): number | null {
+  const memory = (performance as { memory?: { usedJSHeapSize?: number } }).memory;
+  return typeof memory?.usedJSHeapSize === "number" ? memory.usedJSHeapSize : null;
+}
+
+/** Force a collection when Chromium exposes `gc()` (the measurement config launches it that way). */
+function collectGarbage(): boolean {
+  const gc = (globalThis as { gc?: () => void }).gc;
+  if (typeof gc !== "function") return false;
+  gc();
+  return true;
+}
+
+/**
+ * Sample the heap every millisecond until `stop`, keeping the highest reading, collecting
+ * first on each tick when asked. The sampled verb awaits IndexedDB between its store events,
+ * so the sampler runs between them; the reading is a lower bound on the peak, at the sampler's
+ * resolution.
+ */
+function sampleHeap(collect: boolean): { stop(): number | null } {
+  let peak = heapBytes();
+  const timer = peak === null ? null : setInterval(() => {
+    if (collect) collectGarbage();
+    const now = heapBytes();
+    if (now !== null && peak !== null && now > peak) peak = now;
+  }, 1);
+  return {
+    stop() {
+      if (timer !== null) clearInterval(timer);
+      return peak;
+    },
+  };
+}
+
 async function firstScreen(runtime: PlatformRuntime): Promise<number> {
   const rows = await runtime.query();
   for (const row of rows.slice(0, FIRST_SCREEN)) await runtime.read(row.id);
@@ -180,6 +257,7 @@ const driver = {
       let coldOpenMs: number;
       let documents: number;
       let firstScreenAfterBootstrapMs: number | null = null;
+      let counts: TransactionCounts | null = null;
       const tasks = longTasks();
       if (mode === "request-driven") {
         const started = performance.now();
@@ -187,7 +265,8 @@ const driver = {
         documents = await firstScreen(runtime);
         coldOpenMs = performance.now() - started;
       } else {
-        local = openLocalBundle(name);
+        counts = { transactions: 0 };
+        local = openLocalBundle(name, { indexedDB: countingIndexedDb(indexedDB, counts) });
         transport = createRemoteOperationTransport(remote);
         const started = performance.now();
         const marker = await bootstrap(remote, local);
@@ -199,8 +278,46 @@ const driver = {
         firstScreenAfterBootstrapMs = performance.now() - screenStarted;
       }
       const longTasksDuringColdOpen = await tasks.stop();
-      session = { mode, runtime, presentation: null, remote, local, transport };
+      session = { mode, runtime, presentation: null, remote, local, transport, counts };
       return { mode, coldOpenMs, documents, longTasksDuringColdOpen, firstScreenAfterBootstrapMs };
+    }),
+
+  /**
+   * The store cost of one runtime verb, `rounds` times: wall time, transactions opened, and the
+   * heap at the verb's peak and after it, each from a collected baseline when `gc()` is
+   * exposed. `options.filter` applies to the `byType` operation; `options.collectWhileSampling`
+   * turns the peak into the heap held (see {@link CostOptions}).
+   */
+  cost: (operation: CostOperation, rounds: number, options: CostOptions = {}) =>
+    attempt<CostReply>(async () => {
+      const { runtime, counts } = sessionOrThrow();
+      const samples: CostSample[] = [];
+      const collectWhileSampling = options.collectWhileSampling === true && typeof (globalThis as { gc?: unknown }).gc === "function";
+      for (let round = 0; round < rounds; round += 1) {
+        const collected = collectGarbage();
+        const heapBeforeBytes = heapBytes();
+        const transactionsBefore = counts?.transactions ?? 0;
+        const sampler = sampleHeap(collectWhileSampling);
+        const started = performance.now();
+        let rows: number;
+        if (operation === "status") rows = (await runtime.syncStatus()).unconfirmed;
+        else rows = (await runtime.query(operation === "listing" ? {} : options.filter ?? {})).length;
+        const ms = performance.now() - started;
+        const peak = sampler.stop();
+        collectGarbage();
+        const heapAfterBytes = heapBytes();
+        samples.push({
+          ms,
+          transactions: counts === null ? null : counts.transactions - transactionsBefore,
+          rows,
+          heapBeforeBytes,
+          heapPeakDeltaBytes: peak !== null && heapBeforeBytes !== null ? peak - heapBeforeBytes : null,
+          heapAfterDeltaBytes: heapAfterBytes !== null && heapBeforeBytes !== null ? heapAfterBytes - heapBeforeBytes : null,
+          collected,
+          collectedWhileSampling: collectWhileSampling,
+        });
+      }
+      return { samples };
     }),
 
   /** Mount the presentation over the open runtime and time its first refresh. */

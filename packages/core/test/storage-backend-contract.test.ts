@@ -9,12 +9,12 @@ import { createRouter } from "@superbee/server";
 import { IDBFactory } from "fake-indexeddb";
 
 import { FilesystemBackend } from "../src/backend.js";
-import { IndexedDbBackend } from "../src/indexeddb-backend.js";
+import { IndexedDbBackend, INDEXEDDB_SCHEMA_VERSION } from "../src/indexeddb-backend.js";
 import { IntentHoldConflict, IntentStateConflict } from "../src/journaled-backend.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
 import type { StorageBackend } from "../src/types.js";
-import { contentVersion, VersionConflict } from "../src/versioning.js";
+import { contentVersion, VersionConflict, versionOfBytes } from "../src/versioning.js";
 import { registerJournaledBackendContract } from "./journaled-backend-contract.js";
 import {
   registerClaimPreconditionContract,
@@ -255,8 +255,29 @@ registerStorageBackendIdentityContract({
 registerJournaledBackendContract({
   name: "IndexedDbBackend",
   create: () => {
-    const backend = new IndexedDbBackend({ databaseName: "journal-contract", indexedDB: new IDBFactory() });
-    return { backend, cleanup: async () => backend.close() };
+    const factory = new IDBFactory();
+    const backend = new IndexedDbBackend({ databaseName: "journal-contract", indexedDB: factory });
+    // The kit's malformed-record row plants bytes the adapter's own serializer would never
+    // write: a record put straight into the documents store, in the adapter's record shape.
+    const storeRaw = (id: string, raw: string): Promise<void> =>
+      new Promise((resolve, reject) => {
+        const request = factory.open("journal-contract", INDEXEDDB_SCHEMA_VERSION);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction("documents", "readwrite");
+          tx.objectStore("documents").put({ id, raw, version: versionOfBytes(raw), updatedBy: "process:kit", updatedAt: "2026-09-10T00:00:00.000Z" });
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => {
+            db.close();
+            reject(tx.error);
+          };
+        };
+      });
+    return { backend, cleanup: async () => backend.close(), storeRaw };
   },
   seam: { IntentStateConflict, IntentHoldConflict, VersionConflict },
 });
