@@ -7,6 +7,7 @@ import {
   readBundleOkfVersion,
   readDocVersioned,
   type Bundle,
+  type Frontmatter,
   type HeadResult,
   type KindConvention,
   type QuerySelectionParams,
@@ -23,7 +24,12 @@ const MAX_SELECTOR_VALUES = 32;
 const MAX_QUERY_ROWS = 500;
 const MAX_EDGE_ROWS = 1_000;
 const MAX_DOCUMENT_BODY_BYTES = 1024 * 1024;
-const MAX_REPLY_BYTES = 2 * 1024 * 1024;
+/** Every bridge reply, `graph` included, is refused with `TOO_LARGE` above this serialized size. */
+export const MAX_REPLY_BYTES = 2 * 1024 * 1024;
+/** A `graph` reply carries at most this many documents; a larger bundle answers `TOO_LARGE`. */
+export const GRAPH_MAX_DOCUMENTS = 1_000;
+/** A `graph` reply carries at most this many relationships; a larger bundle answers `TOO_LARGE`. */
+export const GRAPH_MAX_RELATIONSHIPS = 10_000;
 const MAX_CHANGE_ROWS = 100;
 const MAX_CHANGE_BYTES = 256 * 1024;
 const MAX_SUBSCRIPTION_HEADS = 10_000;
@@ -67,7 +73,7 @@ interface SubscriptionState {
 interface BaseRequest {
   bridge: typeof BRIDGE_PROTOCOL;
   id: string;
-  type: "hello" | "query" | "read" | "render-document" | "edges" | "subscribe";
+  type: "hello" | "query" | "read" | "render-document" | "edges" | "graph" | "subscribe";
 }
 
 interface HelloRequest extends BaseRequest {
@@ -100,6 +106,11 @@ interface EdgesRequest extends BaseRequest {
   params: EdgeParams;
 }
 
+interface GraphRequest extends BaseRequest {
+  type: "graph";
+  includeBodies: boolean;
+}
+
 interface SubscribeRequest extends BaseRequest {
   type: "subscribe";
 }
@@ -124,6 +135,7 @@ type ParsedBridgeRequest =
   | ReadRequest
   | RenderDocumentRequest
   | EdgesRequest
+  | GraphRequest
   | SubscribeRequest
   | OpenPageRequest
   | ReadVersionedRequest;
@@ -271,6 +283,14 @@ export function parseBridgeRequest(value: unknown): ParsedBridgeRequest | null {
     if (!exactKeys(value, ["bridge", "type", "id", "params"])) return null;
     const params = normalizeEdgeParams(value.params);
     return params ? { bridge: BRIDGE_PROTOCOL, type: "edges", id, params } : null;
+  }
+  if (value.type === "graph") {
+    const expected = value.includeBodies === undefined
+      ? ["bridge", "type", "id"]
+      : ["bridge", "type", "id", "includeBodies"];
+    if (!exactKeys(value, expected)) return null;
+    if (value.includeBodies !== undefined && typeof value.includeBodies !== "boolean") return null;
+    return { bridge: BRIDGE_PROTOCOL, type: "graph", id, includeBodies: value.includeBodies === true };
   }
   return null;
 }
@@ -480,6 +500,67 @@ export class BridgeService {
     );
   }
 
+  /**
+   * Whole-bundle projection for graph-shaped Views. The documents come from one head scan and
+   * the relationships from `queryEdges`, which is a second full-bundle scan; the two scans are
+   * accepted because the reply is bounded by the exported graph limits and the host never
+   * caches bundle state on a View's behalf. No `model` or `definitions` are answered here: the
+   * owner of that shape is undecided, and a host that has one declares the `graph.model`
+   * capability before adding them.
+   */
+  private async graph(launch: BridgeLaunch, request: GraphRequest): Promise<BridgeOutcome> {
+    const heads = await queryHeads(this.options.bundle, {});
+    if (heads.length > GRAPH_MAX_DOCUMENTS) {
+      return {
+        reply: fail(request.id, request.bridge, "TOO_LARGE", `the graph exceeded ${GRAPH_MAX_DOCUMENTS} documents`),
+      };
+    }
+    const [registry, declaredOkfVersion, edges] = await Promise.all([
+      loadKinds(this.options.bundle),
+      readBundleOkfVersion(this.options.bundle),
+      queryEdges(this.options.bundle, {}),
+    ]);
+    if (edges.length > GRAPH_MAX_RELATIONSHIPS) {
+      return {
+        reply: fail(request.id, request.bridge, "TOO_LARGE", `the graph exceeded ${GRAPH_MAX_RELATIONSHIPS} relationships`),
+      };
+    }
+    const okfVersion = declaredOkfVersion ?? "0.1";
+    const includeBodies = request.includeBodies &&
+      (launch.capability === "bundle-read" || launch.capability === "bundle-propose");
+    const documents: { id: string; version: string; frontmatter: Frontmatter; body?: string }[] = [];
+    for (const head of heads) {
+      // Bodies are read per document so that a document's body and version stay one read; the
+      // head scan is only the bounded identity list.
+      const source: { version: string; frontmatter: Frontmatter; body?: string } = includeBodies
+        ? await readDocVersioned(this.options.bundle, head.id).then((result) => ({
+          version: result.version,
+          frontmatter: result.doc.frontmatter,
+          body: result.doc.body,
+        }))
+        : { version: head.version, frontmatter: head.frontmatter };
+      const kind = registry.kinds.get(String(source.frontmatter.type ?? ""));
+      const frontmatter = kind
+        ? projectLogicalKindFields(okfVersion, kind, source.frontmatter)
+        : source.frontmatter;
+      documents.push({
+        id: head.id,
+        version: source.version,
+        frontmatter,
+        ...(source.body === undefined ? {} : { body: source.body }),
+      });
+    }
+    const relationships = edges.map(({ from, to, text }) => ({ from, to, text }));
+    return {
+      reply: ok(request.id, request.bridge, request.type, {
+        okfVersion,
+        documents,
+        relationships,
+        counts: { documents: documents.length, relationships: relationships.length },
+      }),
+    };
+  }
+
   private async execute(launch: BridgeLaunch, request: ParsedBridgeRequest): Promise<BridgeOutcome> {
     if (request.type === "open-page") {
       if (this.options.consumeOpenPage === true) {
@@ -590,6 +671,9 @@ export class BridgeService {
       }
       const projected = edges.map(({ from, to, text }) => ({ from, to, text }));
       return { reply: ok(request.id, request.bridge, request.type, { edges: projected, count: projected.length }) };
+    }
+    if (request.type === "graph") {
+      return this.graph(launch, request);
     }
     if (this.options.enablePolling) {
       this.subscriptions.set(launch.launchId, {

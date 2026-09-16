@@ -362,6 +362,21 @@ test("static View bridge reuses canonical read semantics and rejects mismatched 
     assert.match(rendered.reply.result.html, /<h1[^>]*>Alpha<\/h1>/);
     const edges = await bridge.handle({ bridge: "v0", type: "edges", id: "e", params: {} });
     assert.deepEqual(edges.reply.result.edges, [{ from: "notes/alpha", to: "notes/beta", text: "Beta" }]);
+    const graph = await bridge.handle({ bridge: "v0", type: "graph", id: "g" });
+    assert.equal(graph.reply.type, "graph:result", "the static bridge inherits graph from the shared service");
+    assert.equal(graph.reply.result.okfVersion, "0.2");
+    assert.deepEqual(
+      graph.reply.result.documents.map((row) => row.id),
+      ["notes/alpha", "notes/beta", "views-registry/fixture"],
+    );
+    assert.equal(graph.reply.result.documents.some((row) => Object.hasOwn(row, "body")), false);
+    assert.deepEqual(graph.reply.result.relationships, [{ from: "notes/alpha", to: "notes/beta", text: "Beta" }]);
+    assert.deepEqual(graph.reply.result.counts, { documents: 3, relationships: 1 });
+    assert.equal(Object.hasOwn(graph.reply.result, "model"), false);
+    const graphBodies = await bridge.handle({ bridge: "v0", type: "graph", id: "gb", includeBodies: true });
+    assert.equal(graphBodies.reply.type, "graph:result");
+    const alpha = graphBodies.reply.result.documents.find((row) => row.id === "notes/alpha");
+    assert.equal(alpha.body, read.reply.result.body, "snapshot bodies match the read request byte for byte");
     const subscribed = await bridge.handle({ bridge: "v0", type: "subscribe", id: "s" });
     assert.equal(subscribed.subscribed, true);
     const open = await bridge.handle({ bridge: "v0", type: "open-page", pageId: "views-registry/fixture" });

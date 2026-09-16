@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   BridgeService,
+  GRAPH_MAX_DOCUMENTS,
+  GRAPH_MAX_RELATIONSHIPS,
+  MAX_REPLY_BYTES,
   PageBridgeLaunchAuthority,
   PageLaunchRegistry,
   parseBridgeRequest,
@@ -663,4 +666,248 @@ test("render-document reads one canonical version, bounds it, and revalidates th
   });
   assert.equal(revoked.reply.error.code, "REVOKED");
   assert.doesNotMatch(JSON.stringify(revoked.reply), /<article>/);
+});
+
+function graphBridge(bundle, capability = "bundle-read") {
+  return new BridgeService({
+    bundle,
+    launches: {
+      async resolve(launchId) {
+        return launchId === "launch" ? { launchId, capability } : null;
+      },
+      revoke() {},
+    },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    allowActionProtocol: false,
+  });
+}
+
+test("graph parser admits only the exact envelope with an optional boolean includeBodies", () => {
+  assert.deepEqual(
+    parseBridgeRequest({ bridge: "v0", type: "graph", id: "g" }),
+    { bridge: "v0", type: "graph", id: "g", includeBodies: false },
+  );
+  assert.deepEqual(
+    parseBridgeRequest({ bridge: "v0", type: "graph", id: "g", includeBodies: true }),
+    { bridge: "v0", type: "graph", id: "g", includeBodies: true },
+  );
+  assert.deepEqual(
+    parseBridgeRequest({ bridge: "v0", type: "graph", id: "g", includeBodies: false }),
+    { bridge: "v0", type: "graph", id: "g", includeBodies: false },
+  );
+  for (const raw of [
+    { bridge: "v0", type: "graph", id: "g", includeBodies: "true" },
+    { bridge: "v0", type: "graph", id: "g", includeBodies: 1 },
+    { bridge: "v0", type: "graph", id: "g", includeBodies: null },
+    { bridge: "v0", type: "graph", id: "g", params: {} },
+    { bridge: "v0", type: "graph", id: "g", model: true },
+    { bridge: "v0", type: "graph" },
+    { bridge: "v1", type: "graph", id: "g" },
+  ]) {
+    assert.equal(parseBridgeRequest(raw), null, JSON.stringify(raw));
+  }
+});
+
+test("graph answers the whole bundle with projected heads, relationships and counts, and no model", async () => {
+  const bundle = { root: "mem://bridge-graph-shape", backend: new MemoryBackend() };
+  await bundle.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  await writeDoc(bundle, {
+    id: "conventions/task",
+    frontmatter: {
+      type: "Convention",
+      governs: "Task",
+      fields: {
+        required: ["title", "superbee_progress_status"],
+        optional: [],
+        values: { superbee_progress_status: ["todo", "done"] },
+      },
+    },
+    body: "",
+  });
+  await writeDoc(bundle, {
+    id: "tasks/one",
+    frontmatter: { type: "Task", title: "One", superbee_progress_status: "todo" },
+    body: "Blocked by [two](/tasks/two.md) and [the note](/notes/alpha.md).",
+  });
+  await writeDoc(bundle, {
+    id: "tasks/two",
+    frontmatter: { type: "Task", title: "Two", superbee_progress_status: "done" },
+    body: "",
+  });
+  await writeDoc(bundle, {
+    id: "notes/alpha",
+    frontmatter: { type: "Note", title: "Alpha" },
+    body: "See [one](/tasks/one.md).",
+  });
+  const bridge = graphBridge(bundle);
+  const outcome = await bridge.handle("launch", { bridge: "v0", type: "graph", id: "g" });
+  assert.equal(outcome.reply?.type, "graph:result");
+  const result = outcome.reply.result;
+  assert.deepEqual(Object.keys(result).sort(), ["counts", "documents", "okfVersion", "relationships"]);
+  assert.equal(result.okfVersion, "0.2");
+  assert.equal(Object.hasOwn(result, "model"), false, "OSS answers graph without a model");
+  assert.equal(Object.hasOwn(result, "definitions"), false, "OSS answers graph without definitions");
+
+  assert.deepEqual(
+    result.documents.map((row) => row.id),
+    ["conventions/task", "notes/alpha", "tasks/one", "tasks/two"],
+    "documents are the complete bundle in id order",
+  );
+  for (const row of result.documents) {
+    assert.deepEqual(Object.keys(row).sort(), ["frontmatter", "id", "version"], row.id);
+    assert.match(row.version, /^sha256:/);
+  }
+  const one = result.documents.find((row) => row.id === "tasks/one");
+  assert.equal(one.frontmatter.progress_status, "todo", "graph documents receive the same logical projection as query");
+  assert.equal(one.frontmatter.superbee_progress_status, "todo", "raw coordinate remains visible");
+
+  const expectedEdges = (await queryEdges(bundle, {})).map(({ from, to, text }) => ({ from, to, text }));
+  assert.deepEqual(result.relationships, expectedEdges);
+  assert.deepEqual(result.relationships, [
+    { from: "notes/alpha", to: "tasks/one", text: "one" },
+    { from: "tasks/one", to: "notes/alpha", text: "the note" },
+    { from: "tasks/one", to: "tasks/two", text: "two" },
+  ]);
+  assert.deepEqual(result.counts, { documents: 4, relationships: 3 });
+});
+
+test("graph carries bodies only when includeBodies is true on a launch that may read", async () => {
+  const bundle = { root: "mem://bridge-graph-bodies", backend: new MemoryBackend() };
+  await writeDoc(bundle, {
+    id: "notes/alpha",
+    frontmatter: { type: "Note", title: "Alpha" },
+    body: "# Alpha\n\nBody text.",
+  });
+  await writeDoc(bundle, {
+    id: "notes/beta",
+    frontmatter: { type: "Note", title: "Beta" },
+    body: "",
+  });
+
+  for (const capability of ["bundle-read", "bundle-propose"]) {
+    const bridge = graphBridge(bundle, capability);
+    const withBodies = await bridge.handle("launch", { bridge: "v0", type: "graph", id: "b", includeBodies: true });
+    assert.equal(withBodies.reply?.type, "graph:result", capability);
+    assert.deepEqual(
+      withBodies.reply.result.documents.map((row) => [row.id, row.body]),
+      [["notes/alpha", "# Alpha\n\nBody text."], ["notes/beta", ""]],
+      `${capability} receives every body, including the empty one`,
+    );
+    for (const row of withBodies.reply.result.documents) {
+      assert.match(row.version, /^sha256:/);
+    }
+    for (const request of [
+      { bridge: "v0", type: "graph", id: "no-flag" },
+      { bridge: "v0", type: "graph", id: "false-flag", includeBodies: false },
+    ]) {
+      const heads = await bridge.handle("launch", request);
+      assert.equal(heads.reply?.type, "graph:result", request.id);
+      for (const row of heads.reply.result.documents) {
+        assert.equal(Object.hasOwn(row, "body"), false, `${request.id} never carries a body key`);
+      }
+    }
+  }
+
+  const noAccess = graphBridge(bundle, "none");
+  for (const includeBodies of [true, false]) {
+    const refused = await noAccess.handle("launch", { bridge: "v0", type: "graph", id: "denied", includeBodies });
+    assert.equal(refused.reply?.error?.code, "FORBIDDEN", "graph is data-bearing and needs a read-capable launch");
+    assert.doesNotMatch(JSON.stringify(refused.reply), /Body text/);
+  }
+});
+
+test("graph refuses bundles over the declared document and relationship limits with TOO_LARGE", async () => {
+  assert.equal(GRAPH_MAX_DOCUMENTS, 1000);
+  assert.equal(GRAPH_MAX_RELATIONSHIPS, 10_000);
+  assert.equal(MAX_REPLY_BYTES, 2 * 1024 * 1024);
+
+  const documents = { root: "mem://bridge-graph-too-many-documents", backend: new MemoryBackend() };
+  for (let index = 0; index < GRAPH_MAX_DOCUMENTS; index += 1) {
+    await writeDoc(documents, {
+      id: `notes/${String(index).padStart(4, "0")}`,
+      frontmatter: { type: "Note", title: `Note ${index}` },
+      body: "",
+    });
+  }
+  const atLimit = await graphBridge(documents).handle("launch", { bridge: "v0", type: "graph", id: "at-limit" });
+  assert.equal(atLimit.reply?.type, "graph:result");
+  assert.equal(atLimit.reply.result.counts.documents, GRAPH_MAX_DOCUMENTS, "exactly the limit is answered");
+  await writeDoc(documents, { id: "notes/overflow", frontmatter: { type: "Note", title: "Overflow" }, body: "" });
+  const overDocuments = await graphBridge(documents).handle("launch", { bridge: "v0", type: "graph", id: "over" });
+  assert.deepEqual(overDocuments.reply, {
+    bridge: "v0",
+    id: "over",
+    type: "error",
+    error: { code: "TOO_LARGE", message: `the graph exceeded ${GRAPH_MAX_DOCUMENTS} documents` },
+  });
+
+  const relationships = { root: "mem://bridge-graph-too-many-relationships", backend: new MemoryBackend() };
+  const links = Array.from({ length: GRAPH_MAX_RELATIONSHIPS + 1 }, (_, index) => `[t${index}](/targets/${index}.md)`);
+  await writeDoc(relationships, {
+    id: "notes/hub",
+    frontmatter: { type: "Note", title: "Hub" },
+    body: links.join("\n"),
+  });
+  const overRelationships = await graphBridge(relationships).handle("launch", { bridge: "v0", type: "graph", id: "edges" });
+  assert.deepEqual(overRelationships.reply, {
+    bridge: "v0",
+    id: "edges",
+    type: "error",
+    error: { code: "TOO_LARGE", message: `the graph exceeded ${GRAPH_MAX_RELATIONSHIPS} relationships` },
+  });
+});
+
+test("graph replies above the 2 MiB reply limit answer TOO_LARGE through the shared reply check", async () => {
+  const bundle = { root: "mem://bridge-graph-reply-bytes", backend: new MemoryBackend() };
+  const body = "x".repeat(800 * 1024);
+  for (const id of ["notes/one", "notes/two", "notes/three"]) {
+    await writeDoc(bundle, { id, frontmatter: { type: "Note", title: id }, body });
+  }
+  const bridge = graphBridge(bundle);
+  const heads = await bridge.handle("launch", { bridge: "v0", type: "graph", id: "heads" });
+  assert.equal(heads.reply?.type, "graph:result", "the head-only graph stays under the reply limit");
+  assert.equal(heads.reply.result.counts.documents, 3);
+  const bodies = await bridge.handle("launch", { bridge: "v0", type: "graph", id: "bodies", includeBodies: true });
+  assert.deepEqual(bodies.reply, {
+    bridge: "v0",
+    id: "bodies",
+    type: "error",
+    error: { code: "TOO_LARGE", message: "the bridge reply exceeded the 2 MiB safety limit" },
+  });
+});
+
+test("a v0 View sending graph to a host without it receives the pre-existing USAGE error", async () => {
+  // A host built before this request parsed nothing for `graph` and fell through to the same
+  // unsupported-type branch every unknown v0 type takes, correlated by the bounded request id.
+  // Confirmed against the base build (origin/main 2c82296e); an unknown type in the exact graph
+  // envelope shape exercises that branch on the current service.
+  let launchResolutions = 0;
+  const olderService = new BridgeService({
+    bundle: { root: "mem://bridge-graph-older-host", backend: new MemoryBackend() },
+    launches: {
+      async resolve() {
+        launchResolutions += 1;
+        throw new Error("unsupported requests must not resolve a launch");
+      },
+      revoke() {},
+    },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    allowActionProtocol: false,
+  });
+  for (const request of [
+    { bridge: "v0", type: "graph-unsupported", id: "older-1" },
+    { bridge: "v0", type: "graph-unsupported", id: "older-2", includeBodies: true },
+  ]) {
+    assert.deepEqual(await olderService.handle("launch", request), {
+      reply: {
+        bridge: "v0",
+        id: request.id,
+        type: "error",
+        error: { code: "USAGE", message: "invalid or unsupported bridge request" },
+      },
+    });
+  }
+  assert.equal(launchResolutions, 0);
 });
