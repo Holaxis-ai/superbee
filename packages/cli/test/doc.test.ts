@@ -3152,14 +3152,19 @@ test("mutateDoc seam: the body-replace guards fire for a caller that never calls
 });
 
 // ── The guards' "same body?" short-circuit ignored the body's STORAGE shape ─────────────────
-// A backend stores the SERIALIZED body, which carries a trailing newline the caller need not have
-// supplied. A body of exactly BODY_PREVIEW_LIMIT characters with no trailing newline is therefore
-// stored as BODY_PREVIEW_LIMIT + 1, so resubmitting it VERBATIM — precisely what
-// `doc read --body-out` then `doc update --body-file` round-trips — matched the stored preview
-// slice and was refused for destroying one character the caller never wrote. Both guard entry
-// points now ask the engine's own owning primitive whether the two bodies are the same document.
+// A byte-storing adapter re-parses what it wrote, so its reads carry the serializer's trailing
+// newline. A body of exactly BODY_PREVIEW_LIMIT characters with no trailing newline is therefore
+// stored as BODY_PREVIEW_LIMIT + 1, so a caller who supplies that body WITHOUT the newline — the
+// `--body` argument below, or any tool that trimmed trailing whitespace — matched the stored
+// preview slice exactly and was refused for destroying one character they never wrote. Both guard
+// entry points now ask the engine's own owning primitive whether the two bodies are the same
+// document.
+//
+// `doc read --body-out` is deliberately NOT that caller, and this test does not claim it is: it
+// emits the parsed body with the newline, so its `--body-file` round trip already matched byte for
+// byte and never reached the guard.
 
-test("truncated-preview guard: an exact round-trip of a BODY_PREVIEW_LIMIT-character body is a no-op, never a truncated preview", async () => {
+test("truncated-preview guard: resubmitting a BODY_PREVIEW_LIMIT-character body without its storage newline is a no-op, never a truncated preview", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     const exact = `${"y".repeat(BODY_PREVIEW_LIMIT - 1)}.`; // exactly at the cut, no trailing newline
@@ -3170,9 +3175,9 @@ test("truncated-preview guard: an exact round-trip of a BODY_PREVIEW_LIMIT-chara
     // longer than the caller's, which is the only reason the preview guard is consulted here.
     assert.equal(await storedBody(dir, "docs/exact"), `${exact}\n`);
 
-    // The round trip converges instead of being refused, and writes nothing.
-    const roundTrip = await runDoc(["update", "docs/exact", "--body", exact, "--keep-timestamp", "--dir", dir]);
-    assert.equal(roundTrip.changed, false, "the two bodies serialize to the same document");
+    // Supplying the stored body WITHOUT its storage newline converges instead of being refused.
+    const resubmitted = await runDoc(["update", "docs/exact", "--body", exact, "--keep-timestamp", "--dir", dir]);
+    assert.equal(resubmitted.changed, false, "the two bodies serialize to the same document");
     assert.equal(await storedBody(dir, "docs/exact"), `${exact}\n`, "the stored body is untouched");
 
     // The guard is NOT blunted: a genuine preview of a genuinely longer body is still refused.

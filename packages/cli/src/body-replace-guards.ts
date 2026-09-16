@@ -164,12 +164,16 @@ function firstForeignNotice(storedBody: string, nextBody: string): string | unde
  * Whether replacing a stored body with `nextBody` would produce the same document.
  *
  * Both guards below exist to refuse a replace that DESTROYS stored content, so they must agree
- * with the engine on what "the same body" means. Every backend stores the serialized body, which
- * carries a trailing newline the caller need not have supplied, so a candidate and a stored body
- * that differ only by it serialize identically and nothing can be lost. Comparing the raw strings
- * refused exactly that no-op round-trip: a body of precisely BODY_PREVIEW_LIMIT characters with no
- * trailing newline stores as one character more, so resubmitting it verbatim looked like the
- * truncated preview and was rejected for destroying a character the caller never wrote.
+ * with the engine on what "the same body" means. A byte-storing adapter re-parses what it wrote,
+ * so its reads carry the serializer's trailing newline whether or not the caller supplied one; a
+ * candidate and a stored body that differ only by that newline serialize identically, so nothing
+ * can be lost by writing either. Comparing the raw strings refused exactly that no-op: a body of
+ * precisely BODY_PREVIEW_LIMIT characters with no trailing newline is stored one character longer,
+ * so a caller who supplies it WITHOUT the newline -- a `--body` argument holding the original
+ * string, or a tool that trimmed trailing whitespace -- matched the stored preview slice exactly
+ * and was refused for destroying a character they never wrote. (`doc read --body-out` is not that
+ * caller: it emits the parsed body, newline included, so its `--body-file` round trip already
+ * matched byte for byte.)
  *
  * This routes through the SAME owning primitive the engine's own no-op test uses
  * (`isNoopMutation` in core's `document-mutation.ts`), so the two cannot drift apart again.
