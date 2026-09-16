@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="superbee-conformance-revision" content="2">
+<meta name="superbee-conformance-revision" content="3">
 <title>View protocol conformance</title>
 <style>
   /* Superbee View theme, the same tokens the shipped example Views use. */
@@ -122,13 +122,15 @@
   };
 })();
 
-// Conformance run. One row per request type, in the order docs/VIEW-PROTOCOL.md lists them.
+// Conformance run. One row per request type, in the order docs/VIEW-PROTOCOL.md lists them, plus
+// one burst row that keeps 12 reads in flight at once: a host may cap concurrency but must queue
+// or refuse the excess with an error reply, never drop it, so the row expects every result.
 // Statuses: answered (a result reply), refused (an error reply, code named in the summary),
 // sent (no reply expected and none arrived), skipped (a precondition was missing), failed
 // (a wrong shape, a wrong code, or no reply within the window). Other hosts byte-copy this
 // entry and record the revision from <meta name="superbee-conformance-revision">.
 (function conformance() {
-  var REVISION = "2";
+  var REVISION = "3";
   var REPLY_WINDOW_MS = 5000;
   var NAVIGATION_WINDOW_MS = 1500;
   var UNDECLARED_CAPABILITY = "conformance.undeclared";
@@ -297,6 +299,15 @@
       record("action.propose", refused ? "refused" : "answered", "status=" + status + (m.result && m.result.message ? ": " + m.result.message : ""));
     });
   }
+  function stepBurst() {
+    if (!firstDoc) { record("burst", "skipped", "no document to read"); return Promise.resolve(); }
+    var reads = [];
+    for (var i = 0; i < 12; i++) reads.push(Bridge.read(firstDoc));
+    return within(Promise.all(reads), REPLY_WINDOW_MS).then(function (rs) {
+      var matched = rs.filter(function (r) { return r && r.id === firstDoc; }).length;
+      record("burst", rs.length === 12 && matched === 12 ? "answered" : "failed", rs.length + " results, " + matched + " of " + firstDoc);
+    }, function (err) { refusal("burst", err); });
+  }
   function stepOpenPage() {
     var id = "conformance-open";
     return rawExchange({ bridge: "v0", type: "open-page", id: id, pageId: MISSING_TARGET }, function (m) {
@@ -311,7 +322,7 @@
   // Order matters: open-page is last because some hosts retire the source launch on it.
   stepHello()
     .then(stepQuery).then(stepRead).then(stepReadVersioned).then(stepEdges).then(stepGraph).then(stepRender)
-    .then(stepSubscribe).then(stepHost).then(stepPropose).then(stepOpenPage)
+    .then(stepSubscribe).then(stepHost).then(stepPropose).then(stepBurst).then(stepOpenPage)
     .then(function () {
       setText("status", "complete: " + rows.length + " rows, " + changes + " change events during the run");
       finished(rows);
