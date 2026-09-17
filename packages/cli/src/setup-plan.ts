@@ -10,6 +10,7 @@ import type {
 } from "./install-authority.js";
 import type { InstallScope } from "./install-scope.js";
 import type { HookCompatibility } from "./hook-compatibility.js";
+import type { HookLaunchAvailability } from "./hook-launch-availability.js";
 import type { SkillCompatibilityState, SkillState } from "./skill-compatibility.js";
 import type { UserStateMigrationInspection } from "./user-state-migration.js";
 
@@ -62,6 +63,7 @@ export interface SetupHookHostState {
   readonly installed: boolean;
   readonly compatibility: HookCompatibility;
   readonly installSafe?: boolean;
+  readonly launchAvailability?: HookLaunchAvailability;
 }
 
 export interface SetupWorkspaceState {
@@ -458,6 +460,15 @@ function hookCapability(input: SetupPlanInput): SetupCapability {
           command: "superbee hook status --scope project",
         };
       }
+    }
+    if (input.hook.launchAvailability?.state === "unavailable") {
+      return {
+        id: "hook",
+        requirement: "recommended",
+        state: "needs_action",
+        reason: `the managed SessionStart hook cannot launch: ${input.hook.launchAvailability.reason}`,
+        command: `superbee hook install --scope ${input.scope}`,
+      };
     }
     return {
       id: "hook",

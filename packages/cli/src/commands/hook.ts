@@ -74,6 +74,7 @@ import {
 } from "../install-authority.js";
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 import { readRegularFileTextNoFollowSync } from "../nofollow-read.js";
+import { inspectHookLaunchAvailability, type HookLaunchAvailability } from "../hook-launch-availability.js";
 import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
 
 export const HOOK_USAGE = `superbee hook — manage the SessionStart board-aware hook
@@ -315,6 +316,7 @@ export interface HookStatus {
   compatibility: HookCompatibility;
   /** Read-only install preflight result; omitted by the pure compatibility classifier. */
   installSafe?: boolean;
+  launchAvailability?: HookLaunchAvailability;
 }
 
 /** Pure status scan over the same exact classifier used by install and uninstall. */
@@ -715,6 +717,8 @@ function buildLegacySdkOpenCodePluginSource(command: string, timeoutSeconds: num
 interface OpenCodeHookStatus {
   installed: boolean;
   compatibility: HookCompatibility;
+  command?: string;
+  launchAvailability?: HookLaunchAvailability;
 }
 
 function generatedConstant(source: string, name: string): unknown {
@@ -762,9 +766,14 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
   const source = read.text;
   const comparableSource = normalizedGeneratedSource(source);
   if (expectedSource !== undefined && comparableSource === normalizedGeneratedSource(expectedSource)) {
+    const program = generatedConstant(source, "command");
+    const args = generatedConstant(source, "commandArgs");
     return {
       installed: true,
       compatibility: { state: "current", reason: "plugin exactly matches this installation's generator" },
+      ...(typeof program === "string" && Array.isArray(args) && args.every((arg) => typeof arg === "string")
+        ? { command: [program, ...args].map((token) => renderGeneratedHookToken(token)).join(" ") }
+        : {}),
     };
   }
 
@@ -779,13 +788,13 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
     Number.isInteger(timeoutMs) &&
     comparableSource === buildOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
   ) {
-    const compatibility = classifyHookCommand(
-      [command, ...(args as string[])].map((token) => renderGeneratedHookToken(token)).join(" "),
-    );
+    const launchCommand = [command, ...(args as string[])].map((token) => renderGeneratedHookToken(token)).join(" ");
+    const compatibility = classifyHookCommand(launchCommand);
     if (!isOwnedHookCompatibility(compatibility)) return { installed: false, compatibility };
     if (timeoutMs !== HOOK_TIMEOUT_SECONDS * 1000) {
       return {
         installed: true,
+        command: launchCommand,
         compatibility: {
           state: "stale",
           reason: "recognized generated plugin has a non-current timeout",
@@ -793,7 +802,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
         },
       };
     }
-    return { installed: true, compatibility };
+    return { installed: true, compatibility, command: launchCommand };
   }
 
   if (
@@ -1037,11 +1046,12 @@ export function inspectHookStatus(
   }
   const inspectSettingsTarget = (path: string): HookStatus => {
     const status = readHookCompatibilityStatus(readSettings(path));
+    const launchAvailability = inspectHookLaunchAvailability(status.command);
     const preflight = readSettingsForInstall(path);
     if (!preflight.ok) {
-      return { ...status, installSafe: false };
+      return { ...status, installSafe: false, launchAvailability };
     }
-    return { ...status, installSafe: true };
+    return { ...status, installSafe: true, launchAvailability };
   };
   const claude = inspectSettingsTarget(targets.claudeSettings);
   const codex = inspectSettingsTarget(targets.codexHooks);
@@ -1051,6 +1061,7 @@ export function inspectHookStatus(
       ? buildOpenCodePluginSource(expectedLaunch.program, expectedLaunch.args)
       : undefined,
   );
+  opencode.launchAvailability = inspectHookLaunchAvailability(opencode.command);
   return {
     targets,
     hosts: { claude_code: claude, codex, opencode },
@@ -1138,18 +1149,21 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
             hosts: {
               claude_code: {
                 path: collapseHomeDirectory(inspection.targets.claudeSettings),
-                state: claude.compatibility.state,
+                state: claude.launchAvailability?.state === "unavailable" ? "unavailable" : claude.compatibility.state,
                 compatibility: claude.compatibility,
+                launchAvailability: claude.launchAvailability,
               },
               codex: {
                 path: collapseHomeDirectory(inspection.targets.codexHooks),
-                state: codex.compatibility.state,
+                state: codex.launchAvailability?.state === "unavailable" ? "unavailable" : codex.compatibility.state,
                 compatibility: codex.compatibility,
+                launchAvailability: codex.launchAvailability,
               },
               opencode: {
                 path: collapseHomeDirectory(inspection.targets.opencodePlugin),
-                state: opencode.compatibility.state,
+                state: opencode.launchAvailability?.state === "unavailable" ? "unavailable" : opencode.compatibility.state,
                 compatibility: opencode.compatibility,
+                launchAvailability: opencode.launchAvailability,
               },
             },
             targets: {
