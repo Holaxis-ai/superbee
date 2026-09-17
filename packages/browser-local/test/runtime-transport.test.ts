@@ -34,7 +34,7 @@ for (const adapter of ["memory", "indexeddb"] as const) {
       assert.equal(status.lastSync?.ok, true);
       assert.equal((await runtime.read("notes/example")).provenance.state, "shared-confirmed");
       assert.equal(authority.counts.applied, 1);
-      assert.equal((await authority.backend.read("notes/example")).doc.body, "Edited without an exact-document transport");
+      assert.equal((await authority.backend.read("notes/example")).doc.body, "Edited without an exact-document transport\n");
     } finally { local.close(); }
   });
 }
@@ -57,7 +57,7 @@ test("a working copy outside body mode built without the exact-document transpor
     assert.equal(intents[0]!.state, "pending", "nothing was claimed");
     assert.equal(intents[0]!.attempts, 0, "nothing was attempted");
     assert.deepEqual(authority.counts, { submitted: 0, lookedUp: 0, applied: 0 }, "nothing reached the authority");
-    assert.equal((await authority.backend.read("notes/example")).doc.body, "Original body");
+    assert.equal((await authority.backend.read("notes/example")).doc.body, "Original body\n");
     const status = await runtime.syncStatus();
     assert.equal(status.pending, 1);
     assert.equal(status.lastSync?.ok, false);
