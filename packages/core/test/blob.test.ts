@@ -283,7 +283,7 @@ test("FilesystemBackend: readBlob reports a file-shaped path segment as 'absent'
     // exactly like ENOENT and EISDIR.
     await writeBlob(bundle, "artifacts/x.bin", enc("a file, not a dir"));
     assert.equal(await readBlob(bundle, "artifacts/x.bin/nested.bin"), null);
-    if (process.platform === "win32" || process.getuid?.() === 0) {
+    if (process.getuid?.() === 0) {
       // Skip, not a diagnostic: as root the permission-failure half of this row cannot run, and a
       // pass would report coverage the run did not have. A skip counts in the runner's summary.
       t.skip("this host cannot provoke EACCES through POSIX mode bits; permission-failure row not exercised");

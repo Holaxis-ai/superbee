@@ -19,7 +19,7 @@
  */
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,11 +51,7 @@ async function tempDir(prefix: string): Promise<string> {
  */
 async function makeBinOnPath(): Promise<{ binDir: string; env: NodeJS.ProcessEnv }> {
   const binDir = await tempDir("superbee-kind-complete-bin-");
-  if (process.platform === "win32") {
-    await writeFile(path.join(binDir, "superbee.cmd"), `@echo off\r\n"${process.execPath}" "${cliBin}" %*\r\n`);
-  } else {
-    await symlink(cliBin, path.join(binDir, "superbee"));
-  }
+  await symlink(cliBin, path.join(binDir, "superbee"));
   const env = { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` };
   return { binDir, env };
 }
@@ -65,7 +61,7 @@ function run(
   args: string[],
   opts: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; stderr: string } {
-  // Preserve argv exactly on Windows; the PATH shim remains present so emitted follow-ups still
+  // Preserve argv exactly; the PATH symlink remains present so emitted follow-ups still
   // resolve to and exercise the bare `superbee` command.
   const result = spawnSync(process.execPath, [cliBin, ...args], {
     cwd: opts.cwd,
@@ -96,8 +92,8 @@ function fillPlaceholders(command: string): string {
  * note: `output.ts`'s `formatError` never sees per-invocation flags).
  */
 function extractHelpLine(toonStdout: string): string | undefined {
-  // Decode the presentation envelope first: on Windows the rendered token contains `"`, so TOON
-  // quotes and escapes the whole scalar and a raw regex returns the ENVELOPE, not the command.
+  // Decode the presentation envelope first so quoting and escapes belong to the command,
+  // not to the serialized scalar that carries it.
   return extractSerializedField(toonStdout, "help");
 }
 

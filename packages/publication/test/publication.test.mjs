@@ -4,7 +4,6 @@ import { chmod, mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from 
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 
 import { FilesystemBackend } from "@superbee/core";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -46,20 +45,6 @@ async function fixture() {
     "utf8",
   );
   return { root, viewDigest: hash(viewBytes) };
-}
-
-async function renameSubstitutionFixture(from, to) {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      await rename(from, to);
-      return;
-    } catch (error) {
-      const code = error?.code;
-      const transient = process.platform === "win32" && ["EACCES", "EBUSY", "EPERM"].includes(code);
-      if (!transient || attempt === 40) throw error;
-      await delay(25);
-    }
-  }
 }
 
 test("capture is deterministic and preserves exact objects and canonical projections", async () => {
@@ -171,8 +156,8 @@ test("capture rejects atomic substitution of the authorized source root", async 
   let swapped = false;
   FilesystemBackend.prototype.list = async function (...args) {
     if (!swapped) {
-      await renameSubstitutionFixture(root, authorized);
-      await renameSubstitutionFixture(substitute, root);
+      await rename(root, authorized);
+      await rename(substitute, root);
       swapped = true;
     }
     return original.apply(this, args);
@@ -205,8 +190,8 @@ test("permission-shaped inventory failures are reclassified only after proven ro
       if (!injected) {
         injected = true;
         if (replacement) {
-          await renameSubstitutionFixture(root, authorized);
-          await renameSubstitutionFixture(replacement.root, root);
+          await rename(root, authorized);
+          await rename(replacement.root, root);
         }
         const error = new Error(`simulated permission failure for ${row.name}`);
         error.code = "EPERM";
@@ -233,9 +218,7 @@ test("permission-shaped inventory failures are reclassified only after proven ro
   }
 });
 
-test("an unchanged authorized root that becomes inaccessible remains an IO_ERROR", {
-  skip: process.platform === "win32" ? "POSIX directory modes are required for this probe" : false,
-}, async () => {
+test("an unchanged authorized root that becomes inaccessible remains an IO_ERROR", async () => {
   const { root: fixtureRoot } = await fixture();
   const container = `${fixtureRoot}-permission-gate`;
   const root = path.join(container, "bundle");
@@ -271,9 +254,7 @@ test("an unchanged authorized root that becomes inaccessible remains an IO_ERROR
   }
 });
 
-test("entry-level symlink substitution remains SOURCE_CHANGED when realpath would fail", {
-  skip: process.platform === "win32" ? "this probe requires unprivileged symlink creation" : false,
-}, async () => {
+test("entry-level symlink substitution remains SOURCE_CHANGED when realpath would fail", async () => {
   const { root } = await fixture();
   const authorized = `${root}-authorized`;
   const original = FilesystemBackend.prototype.list;

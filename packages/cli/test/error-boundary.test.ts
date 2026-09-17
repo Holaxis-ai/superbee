@@ -213,7 +213,7 @@ test("probe: an unreadable promote SOURCE (EISDIR/EACCES) is RUNTIME (exit 1); o
       () => promote([subdir, "--doc-key", "artifacts/x.txt", "--dir", dir, "--json"], {}),
       (err: unknown) => err instanceof CliError && err.code === "RUNTIME" && err.exitCode === 1,
     );
-    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    if (process.getuid?.() !== 0) {
       // EACCES: the source exists but is unreadable.
       const blocked = path.join(dir, "blocked.txt");
       await writeFile(blocked, "x");
@@ -239,7 +239,7 @@ test("probe: an unreadable promote SOURCE (EISDIR/EACCES) is RUNTIME (exit 1); o
 });
 
 test("probe: a local EACCES on the doc-write path is RUNTIME (exit 1), not USAGE", async (t) => {
-  if (process.platform === "win32" || process.getuid?.() === 0) {
+  if (process.getuid?.() === 0) {
     t.skip("permission-bit probe needs a non-root POSIX environment");
     return;
   }

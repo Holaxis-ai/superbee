@@ -29,8 +29,6 @@ import {
 const RECORD_FILE_NAME = "catalog.json";
 const RECORD_BYTES = '{"version":1,"entries":[]}\n';
 const MAX_RECORD_BYTES = 64 * 1024;
-const POSIX_MODE_AUTHORITY = process.platform !== "win32";
-const directoryLinkType: "dir" | "junction" = process.platform === "win32" ? "junction" : "dir";
 
 type Inspection = "absent" | "ready" | "conflict";
 /**
@@ -141,7 +139,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
       await withMarker(real);
       await withRecord(real);
       await mkdir(join(canonicalUserStateDir(home), ".."), { recursive: true });
-      await symlink(real, canonicalUserStateDir(home), directoryLinkType);
+      await symlink(real, canonicalUserStateDir(home), "dir");
     },
     record: true,
     directory: false,
@@ -165,7 +163,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     inspect: "conflict",
     hardening: "n/a",
     inspectSync: "conflict",
-    readAbsent: process.platform === "win32" ? "absent" : "denied",
+    readAbsent: "denied",
     write: "denied",
   },
   {
@@ -198,7 +196,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     directory: true,
     // The REQUIRED cells: this root is ours and repairable, so the three authorities must agree.
     inspect: "ready",
-    hardening: POSIX_MODE_AUTHORITY ? "loose" : "hardened",
+    hardening: "loose",
     inspectSync: "ready",
     readExisting: "ok",
     readAbsent: "absent",
@@ -216,7 +214,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     // The REQUIRED cells: either repair the marker mode (as the directory mode is repaired) or
     // refuse with a remedy that names the actual fix.
     inspect: "ready",
-    hardening: POSIX_MODE_AUTHORITY ? "loose" : "hardened",
+    hardening: "loose",
     inspectSync: "ready",
     readExisting: "ok",
     readAbsent: "absent",
@@ -237,7 +235,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: true,
     directory: true,
     inspect: "ready",
-    hardening: POSIX_MODE_AUTHORITY ? "loose" : "hardened",
+    hardening: "loose",
     inspectSync: "ready",
     readExisting: "ok",
     readAbsent: "absent",
@@ -407,10 +405,8 @@ test("a WRITE hardens every root it adopts, so `loose` is drift rather than a st
   }
   assert.equal(
     observations.some((candidate) => candidate.hardening === "loose"),
-    POSIX_MODE_AUTHORITY,
-    POSIX_MODE_AUTHORITY
-      ? "the table would be vacuous without a drifted class"
-      : "Windows must not fabricate permission drift from synthetic mode bits",
+    true,
+    "the table would be vacuous without a drifted class",
   );
 });
 
