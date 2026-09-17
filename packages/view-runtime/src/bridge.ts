@@ -7,6 +7,7 @@ import {
   readBundleOkfVersion,
   readDocVersioned,
   type Bundle,
+  type Frontmatter,
   type HeadResult,
   type KindConvention,
   type QuerySelectionParams,
@@ -23,10 +24,123 @@ const MAX_SELECTOR_VALUES = 32;
 const MAX_QUERY_ROWS = 500;
 const MAX_EDGE_ROWS = 1_000;
 const MAX_DOCUMENT_BODY_BYTES = 1024 * 1024;
-const MAX_REPLY_BYTES = 2 * 1024 * 1024;
+/** Every bridge reply, `graph` included, is refused with `TOO_LARGE` above this serialized size. */
+export const MAX_REPLY_BYTES = 2 * 1024 * 1024;
+/** A `graph` reply carries at most this many documents; a larger bundle answers `TOO_LARGE`. */
+export const GRAPH_MAX_DOCUMENTS = 1_000;
+/** A `graph` reply carries at most this many relationships; a larger bundle answers `TOO_LARGE`. */
+export const GRAPH_MAX_RELATIONSHIPS = 10_000;
 const MAX_CHANGE_ROWS = 100;
 const MAX_CHANGE_BYTES = 256 * 1024;
 const MAX_SUBSCRIPTION_HEADS = 10_000;
+const MAX_HOST_CAPABILITY_BYTES = 128;
+const MAX_HOST_REQUEST_BYTES = 64 * 1024;
+const HOST_CAPABILITY_NAME = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
+
+/** Every bridge error code. docs/VIEW-PROTOCOL.md owns what each one means to a View author. */
+export const BRIDGE_ERROR_CODES = ["USAGE", "FORBIDDEN", "REVOKED", "TOO_LARGE", "RUNTIME", "NOT_FOUND"] as const;
+export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number];
+
+export type BridgeHostKind = "oss" | "portal" | "hosted";
+
+/** Host-declared ceilings. Zero means the host does not offer the request at all. */
+export interface BridgeHostLimits {
+  query: number;
+  edges: number;
+  graphDocuments: number;
+  graphRelationships: number;
+  replyBytes: number;
+}
+
+/** How a host that embeds the View as its page presents it. `title: "host"` means the host has
+ * printed the View's name, so the View may hide its own masthead; `height: "content"` means the
+ * host sizes the frame to the height the View reports through `frame.resize`, up to `maxHeight`
+ * CSS pixels. A View that never reports keeps the host's floor and owns its own scroll; a View
+ * reports a height or keeps the window, never both. */
+export interface BridgeHostFrame {
+  title: "host";
+  height: "content";
+  maxHeight: number;
+}
+/** The host's own resolved design tokens, each a CSS value string the View may adopt as `--sb-*`
+ * custom properties. Never user input: a host reads them from its own stylesheet. */
+export interface BridgeHostTheme {
+  scheme: "light" | "dark";
+  ground: string;
+  surface: string;
+  text: string;
+  muted: string;
+  accent: string;
+  border: string;
+  focus: string;
+  fontSans: string;
+  fontDisplay: string;
+  fontMono: string;
+  radius: string;
+  spacing: string;
+}
+/** What a host tells a View in the `hello` reply so the View can feature-detect instead of guess.
+ * `frame` and `theme` are present only on a host that embeds the View as its page. */
+export interface BridgeHostDescriptor {
+  kind: BridgeHostKind;
+  capabilities: readonly string[];
+  limits: BridgeHostLimits;
+  frame?: BridgeHostFrame;
+  theme?: BridgeHostTheme;
+}
+
+/** The limits this service enforces. A host that runs the service declares exactly these. */
+export const BRIDGE_SERVICE_LIMITS: BridgeHostLimits = Object.freeze({
+  query: MAX_QUERY_ROWS,
+  edges: MAX_EDGE_ROWS,
+  graphDocuments: GRAPH_MAX_DOCUMENTS,
+  graphRelationships: GRAPH_MAX_RELATIONSHIPS,
+  replyBytes: MAX_REPLY_BYTES,
+});
+
+/**
+ * Capability names a host may list in `hello.host.capabilities`. The registry of their meanings,
+ * inputs and outputs is docs/VIEW-PROTOCOL.md; a host never invents a name outside it.
+ */
+export const BRIDGE_HOST_CAPABILITIES = Object.freeze({
+  queryKindProjection: "query.kind-projection",
+  queryFieldOr: "query.field-or",
+  queryOpen: "query.open",
+  queryCount: "query.count",
+  edges: "edges",
+  renderDocument: "render-document",
+  openPage: "open-page",
+  subscribeDeltas: "subscribe-deltas",
+  graph: "graph",
+  graphModel: "graph.model",
+  recordOpen: "record.open",
+  frameResize: "frame.resize",
+} as const);
+export type BridgeHostCapability = (typeof BRIDGE_HOST_CAPABILITIES)[keyof typeof BRIDGE_HOST_CAPABILITIES];
+
+/** The query and read capabilities this service implements on every host that runs it. */
+export const BRIDGE_SERVICE_CAPABILITIES: readonly BridgeHostCapability[] = Object.freeze([
+  BRIDGE_HOST_CAPABILITIES.queryKindProjection,
+  BRIDGE_HOST_CAPABILITIES.queryFieldOr,
+  BRIDGE_HOST_CAPABILITIES.queryOpen,
+  BRIDGE_HOST_CAPABILITIES.queryCount,
+  BRIDGE_HOST_CAPABILITIES.edges,
+  BRIDGE_HOST_CAPABILITIES.graph,
+  BRIDGE_HOST_CAPABILITIES.renderDocument,
+]);
+
+export interface BridgeHostExtensionRequest {
+  capability: string;
+  input: Record<string, unknown> | undefined;
+  launch: BridgeLaunch;
+}
+
+export type BridgeHostExtensionOutcome =
+  | { ok: true; output: unknown }
+  | { ok: false; code: BridgeErrorCode; message: string };
+
+/** One handler per declared host extension capability; a registered name is always advertised. */
+export type BridgeHostHandlers = Readonly<Record<string, (request: BridgeHostExtensionRequest) => Promise<BridgeHostExtensionOutcome>>>;
 
 export interface BridgeLaunch {
   launchId: string;
@@ -67,7 +181,7 @@ interface SubscriptionState {
 interface BaseRequest {
   bridge: typeof BRIDGE_PROTOCOL;
   id: string;
-  type: "hello" | "query" | "read" | "render-document" | "edges" | "subscribe";
+  type: "hello" | "query" | "read" | "render-document" | "edges" | "graph" | "subscribe" | "host";
 }
 
 interface HelloRequest extends BaseRequest {
@@ -100,8 +214,19 @@ interface EdgesRequest extends BaseRequest {
   params: EdgeParams;
 }
 
+interface GraphRequest extends BaseRequest {
+  type: "graph";
+  includeBodies: boolean;
+}
+
 interface SubscribeRequest extends BaseRequest {
   type: "subscribe";
+}
+
+interface HostRequest extends BaseRequest {
+  type: "host";
+  capability: string;
+  input?: Record<string, unknown>;
 }
 
 interface OpenPageRequest {
@@ -124,9 +249,13 @@ type ParsedBridgeRequest =
   | ReadRequest
   | RenderDocumentRequest
   | EdgesRequest
+  | GraphRequest
   | SubscribeRequest
+  | HostRequest
   | OpenPageRequest
   | ReadVersionedRequest;
+
+const V0_REQUEST_TYPES = new Set(["hello", "query", "read", "render-document", "edges", "graph", "subscribe", "host", "open-page"]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -272,6 +401,54 @@ export function parseBridgeRequest(value: unknown): ParsedBridgeRequest | null {
     const params = normalizeEdgeParams(value.params);
     return params ? { bridge: BRIDGE_PROTOCOL, type: "edges", id, params } : null;
   }
+  if (value.type === "graph") {
+    const expected = value.includeBodies === undefined
+      ? ["bridge", "type", "id"]
+      : ["bridge", "type", "id", "includeBodies"];
+    if (!exactKeys(value, expected)) return null;
+    if (value.includeBodies !== undefined && typeof value.includeBodies !== "boolean") return null;
+    return { bridge: BRIDGE_PROTOCOL, type: "graph", id, includeBodies: value.includeBodies === true };
+  }
+  if (value.type === "host") {
+    const expected = value.input === undefined
+      ? ["bridge", "type", "id", "capability"]
+      : ["bridge", "type", "id", "capability", "input"];
+    if (!exactKeys(value, expected)) return null;
+    const capability = boundedString(value.capability, MAX_HOST_CAPABILITY_BYTES);
+    if (!capability || !HOST_CAPABILITY_NAME.test(capability)) return null;
+    if (value.input !== undefined && !isPlainRecord(value.input)) return null;
+    let bytes: number;
+    try {
+      bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+    } catch {
+      return null;
+    }
+    if (bytes > MAX_HOST_REQUEST_BYTES) return null;
+    return {
+      bridge: BRIDGE_PROTOCOL,
+      type: "host",
+      id,
+      capability,
+      ...(value.input === undefined ? {} : { input: value.input as Record<string, unknown> }),
+    };
+  }
+  return null;
+}
+
+/**
+ * A well-formed envelope whose type this service does not offer: a write, or a type outside the
+ * contract. Refused with FORBIDDEN so a View can tell "not offered here" from a malformed request.
+ */
+function unsupportedRequest(value: unknown): { bridge: string; id: string | undefined } | null {
+  if (!isPlainRecord(value) || typeof value.type !== "string") return null;
+  if (value.bridge === BRIDGE_PROTOCOL) {
+    return V0_REQUEST_TYPES.has(value.type) ? null : { bridge: BRIDGE_PROTOCOL, id: requestId(value.id) ?? undefined };
+  }
+  if (value.bridge === ACTION_BRIDGE_PROTOCOL) {
+    if (value.type === "read-versioned") return null;
+    const id = value.type === "action.propose" ? value.requestId : value.id;
+    return { bridge: ACTION_BRIDGE_PROTOCOL, id: requestId(id) ?? undefined };
+  }
   return null;
 }
 
@@ -302,7 +479,10 @@ export interface BridgeServiceOptions {
   launches: BridgeLaunchAuthority;
   config: () => Promise<BridgeConfig>;
   renderDocument: BridgeDocumentRenderer;
-  allowActionProtocol?: boolean;
+  /** Declared to every View in `hello`; the runtime that embeds the service owns kind and capabilities. */
+  host: BridgeHostDescriptor;
+  /** Host extension capabilities answered through the reserved `host` request. */
+  hostHandlers?: BridgeHostHandlers;
   enablePolling?: boolean;
   /** Retire the source launch before returning an open-page selection to a host-owned resolver. */
   consumeOpenPage?: boolean;
@@ -335,22 +515,23 @@ export class BridgeService {
   async handle(launchId: string, rawRequest: unknown): Promise<BridgeOutcome> {
     const request = parseBridgeRequest(rawRequest);
     if (!request) {
+      const unsupported = unsupportedRequest(rawRequest);
+      if (unsupported) {
+        return {
+          reply: fail(
+            unsupported.id,
+            unsupported.bridge,
+            "FORBIDDEN",
+            "this host does not offer the requested bridge operation",
+          ),
+        };
+      }
       return {
         reply: fail(
           invalidV0RequestId(rawRequest),
           BRIDGE_PROTOCOL,
           "USAGE",
           "invalid or unsupported bridge request",
-        ),
-      };
-    }
-    if (request.bridge === ACTION_BRIDGE_PROTOCOL && this.options.allowActionProtocol === false) {
-      return {
-        reply: fail(
-          request.id,
-          request.bridge,
-          "FORBIDDEN",
-          "this host admits only the read-only v0 View bridge",
         ),
       };
     }
@@ -480,6 +661,83 @@ export class BridgeService {
     );
   }
 
+  /**
+   * Whole-bundle projection for graph-shaped Views. The documents come from one head scan and
+   * the relationships from `queryEdges`, which is a second full-bundle scan; the two scans are
+   * accepted because the reply is bounded by the exported graph limits and the host never
+   * caches bundle state on a View's behalf. No `model` or `definitions` are answered here: the
+   * owner of that shape is undecided, and a host that has one declares the `graph.model`
+   * capability before adding them.
+   */
+  private async graph(launch: BridgeLaunch, request: GraphRequest): Promise<BridgeOutcome> {
+    const heads = await queryHeads(this.options.bundle, {});
+    if (heads.length > GRAPH_MAX_DOCUMENTS) {
+      return {
+        reply: fail(request.id, request.bridge, "TOO_LARGE", `the graph exceeded ${GRAPH_MAX_DOCUMENTS} documents`),
+      };
+    }
+    const [registry, declaredOkfVersion, edges] = await Promise.all([
+      loadKinds(this.options.bundle),
+      readBundleOkfVersion(this.options.bundle),
+      queryEdges(this.options.bundle, {}),
+    ]);
+    if (edges.length > GRAPH_MAX_RELATIONSHIPS) {
+      return {
+        reply: fail(request.id, request.bridge, "TOO_LARGE", `the graph exceeded ${GRAPH_MAX_RELATIONSHIPS} relationships`),
+      };
+    }
+    const okfVersion = declaredOkfVersion ?? "0.1";
+    const includeBodies = request.includeBodies &&
+      (launch.capability === "bundle-read" || launch.capability === "bundle-propose");
+    const documents: { id: string; version: string; frontmatter: Frontmatter; body?: string }[] = [];
+    for (const head of heads) {
+      // Bodies are read per document so that a document's body and version stay one read; the
+      // head scan is only the bounded identity list.
+      const source: { version: string; frontmatter: Frontmatter; body?: string } = includeBodies
+        ? await readDocVersioned(this.options.bundle, head.id).then((result) => ({
+          version: result.version,
+          frontmatter: result.doc.frontmatter,
+          body: result.doc.body,
+        }))
+        : { version: head.version, frontmatter: head.frontmatter };
+      // A graph row must not carry a body that a plain read would refuse.
+      if (source.body !== undefined && Buffer.byteLength(source.body, "utf8") > MAX_DOCUMENT_BODY_BYTES) {
+        return { reply: fail(request.id, request.bridge, "TOO_LARGE", "a document body exceeded the 1 MiB View limit") };
+      }
+      const kind = registry.kinds.get(String(source.frontmatter.type ?? ""));
+      const frontmatter = kind
+        ? projectLogicalKindFields(okfVersion, kind, source.frontmatter)
+        : source.frontmatter;
+      documents.push({
+        id: head.id,
+        version: source.version,
+        frontmatter,
+        ...(source.body === undefined ? {} : { body: source.body }),
+      });
+    }
+    const relationships = edges.map(({ from, to, text }) => ({ from, to, text }));
+    return {
+      reply: ok(request.id, request.bridge, request.type, {
+        okfVersion,
+        documents,
+        relationships,
+        counts: { documents: documents.length, relationships: relationships.length },
+      }),
+    };
+  }
+
+  private hostDescriptor(): BridgeHostDescriptor {
+    const declared = new Set<string>(this.options.host.capabilities);
+    for (const name of Object.keys(this.options.hostHandlers ?? {})) declared.add(name);
+    return {
+      kind: this.options.host.kind,
+      capabilities: [...declared].sort(),
+      limits: { ...this.options.host.limits },
+      ...(this.options.host.frame ? { frame: { ...this.options.host.frame } } : {}),
+      ...(this.options.host.theme ? { theme: { ...this.options.host.theme } } : {}),
+    };
+  }
+
   private async execute(launch: BridgeLaunch, request: ParsedBridgeRequest): Promise<BridgeOutcome> {
     if (request.type === "open-page") {
       if (this.options.consumeOpenPage === true) {
@@ -504,8 +762,22 @@ export class BridgeService {
           mode: config.mode,
           protocol: BRIDGE_PROTOCOL,
           grant: launch.capability === "bundle-propose" ? "propose" : "read",
+          host: this.hostDescriptor(),
         }),
       };
+    }
+    if (request.type === "host") {
+      const handlers = this.options.hostHandlers ?? {};
+      if (!Object.hasOwn(handlers, request.capability)) {
+        return { reply: fail(request.id, request.bridge, "FORBIDDEN", "this host does not offer the requested capability") };
+      }
+      const outcome = await handlers[request.capability]!({
+        capability: request.capability,
+        input: request.input,
+        launch,
+      });
+      if (!outcome.ok) return { reply: fail(request.id, request.bridge, outcome.code, outcome.message) };
+      return { reply: ok(request.id, request.bridge, request.type, { capability: request.capability, output: outcome.output }) };
     }
     if (request.type === "query") {
       const rows = await queryHeads(this.options.bundle, {
@@ -590,6 +862,9 @@ export class BridgeService {
       }
       const projected = edges.map(({ from, to, text }) => ({ from, to, text }));
       return { reply: ok(request.id, request.bridge, request.type, { edges: projected, count: projected.length }) };
+    }
+    if (request.type === "graph") {
+      return this.graph(launch, request);
     }
     if (this.options.enablePolling) {
       this.subscriptions.set(launch.launchId, {

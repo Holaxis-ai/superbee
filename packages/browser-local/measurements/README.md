@@ -24,7 +24,7 @@ JSON.
 | Cold open | `bootstrap`: root index, wire capabilities, one streamed snapshot written in batches of 25 as it arrives, one journaled IndexedDB write per document, from an empty working copy. Three requests at every size. | Wire capabilities, the list in pages of 50 rows, and the first 20 documents read one by one: 24, 42, and 122 requests at the three sizes (the bundle carries three convention documents beyond its size). |
 | Presentation mount | Mounting the proof presentation over the open runtime and its first refresh (one `query` for the list, the selection's `read`, the status line), timed and counted apart from the cold open. | The same; its query and read are requests to the authority, listed as the mount's own traffic. |
 | Warm read | 50 reads of seeded ids drawn without replacement (every bundle size has at least 50 documents) through the runtime's `read`, from IndexedDB. Median and p95. | The same 50 reads, each one request to the authority. |
-| Warm query | 10 queries by type and 10 by tag through `query`: the IndexedDB adapter has no query push-down, so each query reads and parses the whole bundle, then opens one transaction per matching row to build the row from its snapshot. | The same 20 queries; the filter is pushed to the router, which returns thin frontmatter rows for the matches only, 50 per page. |
+| Warm query | 10 queries by type and 10 by tag through `query`: the working copy's heads listing, one readonly transaction over every record with its journal and shared base, parsing only leading frontmatter, filtered in the page. | The same 20 queries; the filter is pushed to the router, which returns thin frontmatter rows for the matches only, 50 per page. |
 | Local commit | 20 commits through `commit` with no premise: the document write and its intent in one IndexedDB transaction. | The same 20 commits: a read then a PUT at the authority. |
 | Reconciliation | Push of the 20 pending intents under the push role, then pull by one conditional heads request: the 20 acknowledged documents already match their heads, so the 200 is diffed against the working copy and no document is read. Wall time and request count. | Not applicable: nothing is pending. |
 | Footprint | `navigator.storage.estimate()` in the same fresh context before the cold open and at three points after it (after bootstrap, after the presentation mount, at the end of the repetition), each as a delta from the fresh context, plus Chromium's `usageDetails.indexedDB` when reported. The cell reports the min and max across every sample. | Not applicable: no working copy. |
@@ -61,7 +61,53 @@ Environment knobs: `SUPERBEE_MEASURE_OUT` (report path), `SUPERBEE_MEASURE_SIZES
 value, or one per size). The plan actually run is recorded in the report.
 
 `test:browser` runs only `measure-smoke.browser.spec.ts`: one repetition of the smallest cell in
-each mode, asserting that every metric is present and finite. The full plan never runs in CI.
+each mode, and one round of the listing measurement below at the same size, asserting that every
+metric is present and finite. Neither full plan runs in CI.
+
+## The listing and the status count
+
+`npm run measure:listing -w @superbee/browser-local` runs `test/measure-listing.browser.spec.ts`:
+the runtime's `query` with no filter, `query` by one type, and `syncStatus`, whose unconfirmed
+count considers every document, over a browser-local working copy of 1,000 documents with bodies
+of 20 to 50 KB (the working-copy bound at a realistic document size), in a fresh Chromium context
+per repetition, five rounds of each verb and three repetitions by default. Each verb is timed in
+the page; its IndexedDB transactions are counted by a wrapper around the page's `indexedDB`;
+`performance.memory.usedJSHeapSize` is sampled every millisecond while it runs, from a collected
+baseline, and each of the listing and the status runs once more under a sampler that collects on
+every tick, so that peak is the heap the verb held rather than garbage not yet collected (those
+rounds measure memory only). The measurement config launches Chromium with `gc()` exposed and
+precise memory readings. The report goes to `listing.json` here (or `SUPERBEE_MEASURE_LISTING_OUT`)
+and renders through the same table script. Knobs: `SUPERBEE_MEASURE_LISTING_SIZE`, `_BODY_MIN`,
+`_BODY_MAX`, `_ROUNDS`, `_REPETITIONS`.
+
+### Recorded results at the bound
+
+Both trees: 1,003 documents (1,000 plus the three conventions) with 36.2 MB of body text, five
+rounds, three repetitions, Chromium 149, Node 26, Apple M4 Max, developer laptop with other load
+not controlled. Every time is the median across repetitions of the repetition's own median;
+transactions are the median count; heap held is the peak under the collecting sampler.
+
+| tree | verb | median ms | transactions | heap held at peak |
+| --- | --- | --- | --- | --- |
+| before, `76128d80` (one snapshot per document) | query, no filter | 467 | 3,013 | 35.2 MiB |
+| | query by type | 190 | 1,006 | not sampled |
+| | syncStatus | 427 | 3,018 | 0.1 MiB |
+| after, `6620b9c2` (one heads listing) | query, no filter | 110 | 3 | 0.1 MiB |
+| | query by type | 108 | 3 | not sampled |
+| | syncStatus | 108 | 11 | 0.1 MiB |
+
+What the two trees do: before, a query scanned the store once with every record materialized
+(the 35.2 MiB held) and then opened one snapshot transaction per row, and the count opened one
+per document; after, a query is the admission's two reads (the mode row and the journal) plus
+one listing transaction, and the status adds the journal status's own reads. The listing walks
+the documents by cursor and keeps one record at a time: a scratch variant of the listing over
+`getAll`, which is not in the tree, was measured once at the after tree's SHA and listed in
+75 ms but held 34.8 MiB, the whole store at once, so the cursor buys flat memory for about
+35 ms at this size. In body mode the listing also checks each row's body evidence exactly as a
+single read does (the descriptors and the capacity assertion); a one-off run outside
+`measure:listing`, over the in-memory adapter at this size, put that check at about 115 ms of
+CPU per listing against 5 ms for the plain-mode listing, and it comes on top of the store cost
+above.
 
 ## What the numbers do and do not say
 
@@ -78,10 +124,10 @@ each mode, asserting that every metric is present and finite. The full plan neve
   why the report gives the min and max across every sample instead. The working copy stores
   each document twice, as its record and as its shared base content, so the uncompressed
   logical content is about 2.1 times the body bytes. On-disk footprint is not measured.
-- Browser-local and request-driven queries are different amounts of work. The IndexedDB adapter
-  has no query push-down, so a browser-local query reads and parses the whole bundle and then
-  opens one transaction per matching row; request-driven pushes the filter to the router and
-  parses thin frontmatter rows for the matches only.
+- Browser-local and request-driven queries are different amounts of work. A browser-local query
+  lists every document of the working copy from one transaction (leading frontmatter, journal
+  and shared base, never a body) and filters in the page; request-driven pushes the filter to
+  the router and parses thin frontmatter rows for the matches only.
 - Simulated latency is a fixed delay at the fixture. It proves how each mode's behaviour and
   request overhead scale with round-trip cost. It says nothing about the latency of any deployed
   server, and a smaller number under simulated latency is not a claim about a deployed one.

@@ -40,6 +40,17 @@
  *   targeting it, and the named meta rows, read in one readonly transaction, so a write in
  *   another realm between separate reads can never show a caller a document of one moment
  *   beside a journal of another. Intents come back in local commit order (by `sequence`).
+ * - {@link JournaledBackend.readHeads} is that snapshot over every document at once: each
+ *   record's head (id, version, writer, time), its leading frontmatter parsed as `read` parses
+ *   it, its exact bytes, every intent targeting it, and the meta rows the caller names for it,
+ *   all from ONE readonly transaction, so every row describes the same moment. Bodies are
+ *   never parsed. A record whose leading block does not parse is a row with `frontmatter`
+ *   null and the parser's error, never a dropped row and never a failed listing. A caller that
+ *   keeps less than the row (a version and a provenance, say) passes `project`, which maps
+ *   each row as it is read so the listing over a large store never holds every document's
+ *   stored bytes at once; the journal is read whole before the walk, so intents and the
+ *   content they carry are held for its duration, as a single read holds them. Keys every row
+ *   needs go in `shared`, read once. Rows come back in the order `list` orders ids.
  * - {@link JournaledBackend.updateIntent} is a compare-and-swap on the intent's `state`: the
  *   patch applies only while the record is in `expectedState`, together with any meta rows, in
  *   one transaction. A different state or a missing record rejects with
@@ -55,8 +66,9 @@
  * description of that one class.
  */
 
+import type { MalformedDocumentError } from "./frontmatter-contract.js";
 import type { OperationIntent, OperationState } from "./uncertain-write.js";
-import type { ConceptId, DeleteOptions, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "./types.js";
+import type { ConceptId, DeleteOptions, Frontmatter, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "./types.js";
 import { assertSafeConceptId } from "./paths.js";
 
 /** Presence is independent of value: a stored undefined is not an absent row. */
@@ -429,6 +441,44 @@ export interface JournaledReadResult {
   meta: Map<string, unknown>;
 }
 
+/**
+ * One document's head with everything the journal holds about it, as {@link JournaledBackend.readHeads}
+ * reads it: the stored record's identity and version, its leading frontmatter, its exact
+ * bytes, its intents, and the meta rows the caller named for it. Nothing of the body is parsed.
+ * The frontmatter is what `read` parses for the record under the bundle's edition; when the
+ * leading block does not parse it is `null` and `malformed` carries the parser's error.
+ */
+export type JournaledHead = {
+  id: ConceptId;
+  /** The version of the stored bytes, the token `read` reports for the document. */
+  version: Version;
+  /** The actor recorded for the stored revision. */
+  updatedBy: string;
+  /** When the stored revision was written, as an ISO instant. */
+  updatedAt: string;
+  /** The exact stored serialization, the bytes `version` names. */
+  raw: string;
+  /** Every intent targeting the id, in local commit order, whatever its state. */
+  intents: IntentRecord[];
+  /** The meta rows `meta` named for this id, by key; a key with no row is absent from the map. */
+  meta: Map<string, unknown>;
+} & ({ frontmatter: Frontmatter; malformed?: undefined } | { frontmatter: null; malformed: MalformedDocumentError });
+
+/** Options for {@link JournaledBackend.readHeads}. */
+export interface JournaledHeadsOptions<T> {
+  /** The meta keys to read for one document, given its id and its intents; none by default. Read per row and released with it. */
+  meta?: (id: ConceptId, intents: readonly IntentRecord[]) => readonly string[];
+  /** Meta keys read once for the whole listing, in the same transaction, and present in every row's `meta`; a key named here is not read again when `meta` names it for a row. */
+  shared?: readonly string[];
+  /**
+   * Maps each head as it is read; only the projection is kept, so a listing over a large store
+   * holds one document's stored bytes at a time (the journal, read whole, is held throughout).
+   * Omitted, the heads themselves are returned. A projection that throws rejects the whole
+   * listing with its error.
+   */
+  project?: (head: JournaledHead) => T;
+}
+
 /** Fields a caller may change when settling or reclaiming an intent. */
 export type IntentPatch = Partial<Omit<IntentRecord, "requestId" | "sequence" | "createdAt" | "kind" | "target">>;
 
@@ -474,6 +524,15 @@ export interface JournaledBackend extends StorageBackend {
    * mismatch is a genuine working-copy defect.
    */
   readWithJournal(id: ConceptId, options?: { meta?: readonly string[] }): Promise<JournaledReadResult>;
+
+  /**
+   * Every document's head, its leading frontmatter, its bytes, its intents, and the meta rows
+   * `meta` names for it, from ONE readonly transaction, in the order `list` orders ids. A
+   * caller that lists or counts the working copy reads here so every row describes the same
+   * moment and no body is parsed; `project` keeps the listing's memory at one document at a
+   * time. A record whose leading block does not parse is reported, not dropped.
+   */
+  readHeads<T = JournaledHead>(options?: JournaledHeadsOptions<T>): Promise<T[]>;
 
   /** Intents in local commit order, optionally restricted to one or more states. */
   listIntents(state?: OperationState | readonly OperationState[]): Promise<IntentRecord[]>;

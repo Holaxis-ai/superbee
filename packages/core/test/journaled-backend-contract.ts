@@ -11,7 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { IntentHoldConflict, IntentStateConflict, JournaledBackend, JournaledReadResult, NewIntentRecord, JournalGuard, IntentPatch, JournaledDeleteOptions } from "../src/journaled-backend.js";
+import type { IntentHoldConflict, IntentStateConflict, JournaledBackend, JournaledHead, JournaledReadResult, NewIntentRecord, JournalGuard, IntentPatch, JournaledDeleteOptions } from "../src/journaled-backend.js";
 import type { OkfDocument, Version } from "../src/types.js";
 import type { OperationState } from "../src/uncertain-write.js";
 import type { VersionConflict } from "../src/versioning.js";
@@ -19,6 +19,12 @@ import type { VersionConflict } from "../src/versioning.js";
 export interface JournaledBackendFixture {
   backend: JournaledBackend;
   cleanup(): Promise<void>;
+  /**
+   * Plant exact bytes as `id`'s stored serialization, bypassing the seam's serializer, which
+   * never writes a leading block that does not parse. The malformed-record row reads what the
+   * adapter does with such a record; every other row goes through the seam.
+   */
+  storeRaw(id: string, raw: string): Promise<void>;
 }
 
 /** The seam's error classes as the fixture's module graph resolves them. */
@@ -47,11 +53,11 @@ function newIntent(requestId: string, target: string, base: Version | null, afte
   return { requestId, kind: "document.write", target, base, baseContent: null, createdAt: TIMESTAMP, ...(after === undefined ? {} : { after }) };
 }
 
-async function withFixture(create: JournaledBackendContractOptions["create"], run: (backend: JournaledBackend) => Promise<void>): Promise<void> {
+async function withFixture(create: JournaledBackendContractOptions["create"], run: (backend: JournaledBackend, fixture: JournaledBackendFixture) => Promise<void>): Promise<void> {
   const fixture = await create();
   try {
     await fixture.backend.writeReserved("", "index.md", ROOT_INDEX);
-    await run(fixture.backend);
+    await run(fixture.backend, fixture);
   } finally {
     await fixture.cleanup();
   }
@@ -857,6 +863,162 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
       assert.deepEqual(full.intents.map((row) => [row.requestId, row.state, row.after ?? null]), [["req-snapshot", "acknowledged", null], ["req-later", "pending", "req-snapshot"]]);
       assert.equal(full.raw, third.raw);
       assert.deepEqual(full.meta, new Map(), "no keys asked, no rows");
+    });
+  });
+
+  test(`${name} journal contract: readHeads lists every document with its version, frontmatter, bytes, journal and named meta rows, in list order, and nothing else`, async () => {
+    await withFixture(create, async (backend) => {
+      assert.deepEqual(await backend.readHeads(), [], "an empty store lists nothing");
+      const ids = { confirmed: "journal/heads-confirmed", pending: "journal/heads-pending", conflict: "journal/heads-conflict", refused: "journal/heads-refused", chain: "journal/heads-chain", gone: "journal/heads-gone", removed: "journal/heads-removed" };
+      const base = (id: string) => `base:${id}`;
+      // A shared document with its base, three documents whose journals are in each unsettled
+      // shape, a chain of two edits whose request ids sort against their sequence, an intent
+      // whose target is gone, and a document written then removed.
+      const confirmed = await backend.writeJournaled(ids.confirmed, doc(ids.confirmed, "shared"), { meta: ({ version, raw }) => [{ key: base(ids.confirmed), value: { version, content: raw } }] });
+      await backend.writeJournaled(ids.pending, doc(ids.pending, "pending edit"), { intent: newIntent("req-pending", ids.pending, null) });
+      await backend.writeJournaled(ids.conflict, doc(ids.conflict, "conflicted edit"), { intent: newIntent("req-conflict", ids.conflict, STALE) });
+      await backend.updateIntent("req-conflict", "pending", { state: "conflict", attempts: 1, remote: { version: confirmed.version, content: null } });
+      await backend.writeJournaled(ids.refused, doc(ids.refused, "refused edit"), { intent: newIntent("req-refused", ids.refused, null) });
+      await backend.updateIntent("req-refused", "pending", { state: "refused", attempts: 1, refusal: { code: "validation_failed", message: "refused by a rule" } });
+      const chained = await backend.writeJournaled(ids.chain, doc(ids.chain, "first edit"), { intent: newIntent("req-zz-first", ids.chain, null) });
+      await backend.updateIntent("req-zz-first", "pending", { state: "in_flight", attempts: 1 });
+      await backend.writeJournaled(ids.chain, doc(ids.chain, "second edit"), { expectedVersion: chained.version, intent: newIntent("req-aa-second", ids.chain, chained.version, "req-zz-first") });
+      await backend.writeJournaled(ids.gone, doc(ids.gone, "gone"), { intent: newIntent("req-gone", ids.gone, null) });
+      await backend.delete(ids.gone);
+      await backend.writeJournaled(ids.removed, doc(ids.removed, "removed"));
+      await backend.delete(ids.removed);
+      await backend.writeMeta("shared:key", { every: "row" });
+
+      const heads = await backend.readHeads({ meta: (id, intents) => [base(id), ...intents.map((row) => `descriptor:${row.requestId}`), "shared:key", "absent:key"], shared: ["shared:key", "absent:shared"] });
+      assert.deepEqual(heads.map((head) => head.id), await backend.list(), "one row per stored document, in list order");
+      assert.ok(!heads.some((head) => head.id === ids.gone || head.id === ids.removed), "a removed document has no row, whether or not its journal remains");
+      assert.deepEqual((await backend.listIntents()).filter((row) => row.target === ids.gone).map((row) => row.requestId), ["req-gone"], "the removed target's journal is untouched");
+      for (const head of heads) {
+        const read = await backend.read(head.id);
+        const snapshot = await backend.readWithJournal(head.id, { meta: [base(head.id)] });
+        assert.equal(head.version, read.version, `${head.id}: the version read reports`);
+        assert.deepEqual(head.frontmatter, read.doc.frontmatter, `${head.id}: the frontmatter read parses`);
+        assert.equal(head.malformed, undefined);
+        assert.equal(head.raw, snapshot.raw, `${head.id}: the exact stored bytes`);
+        assert.deepEqual(head.intents, snapshot.intents, `${head.id}: every intent, in commit order`);
+        assert.equal(typeof head.updatedBy, "string");
+        assert.ok(head.updatedBy.length > 0, `${head.id}: the recorded writer`);
+        assert.ok(Number.isFinite(Date.parse(head.updatedAt)), `${head.id}: the recorded time is an instant`);
+        assert.deepEqual(head.meta.get("shared:key"), { every: "row" }, `${head.id}: a shared key rides with every row, whether or not the row names it too`);
+        assert.equal(head.meta.has("absent:key"), false, `${head.id}: an absent key has no entry`);
+        assert.equal(head.meta.has("absent:shared"), false, `${head.id}: an absent shared key has no entry`);
+        assert.deepEqual(head.meta.has(base(head.id)) ? head.meta.get(base(head.id)) : undefined, snapshot.meta.get(base(head.id)), `${head.id}: the base row as readWithJournal reads it`);
+      }
+      const byId = new Map(heads.map((head) => [head.id, head]));
+      assert.deepEqual(byId.get(ids.confirmed)!.intents, []);
+      assert.deepEqual(byId.get(ids.confirmed)!.meta.get(base(ids.confirmed)), { version: confirmed.version, content: confirmed.raw });
+      assert.deepEqual(byId.get(ids.pending)!.intents.map((row) => [row.requestId, row.state, row.attempts]), [["req-pending", "pending", 0]]);
+      assert.deepEqual(byId.get(ids.conflict)!.intents.map((row) => [row.requestId, row.state, row.remote?.version]), [["req-conflict", "conflict", confirmed.version]]);
+      assert.deepEqual(byId.get(ids.refused)!.intents.map((row) => [row.requestId, row.state, row.refusal?.code]), [["req-refused", "refused", "validation_failed"]]);
+      // Commit order, not the key order of the journal: the second edit's request id sorts first.
+      assert.deepEqual(byId.get(ids.chain)!.intents.map((row) => [row.requestId, row.state, row.after ?? null]), [["req-zz-first", "in_flight", null], ["req-aa-second", "pending", "req-zz-first"]], "a row's intents are in local commit order whatever order their request ids sort in");
+
+      // A projection keeps only what it returns, in the same order; one that throws rejects the
+      // listing with its own error and leaves the store readable.
+      assert.deepEqual(await backend.readHeads({ project: (head) => `${head.id}@${head.version}` }), heads.map((head) => `${head.id}@${head.version}`));
+      const failure = new Error("projection refused");
+      await assert.rejects(backend.readHeads({ project: (head) => { if (head.id === ids.pending) throw failure; return head.id; } }), (error: unknown) => error === failure);
+      assert.deepEqual((await backend.readHeads()).map((head) => head.id), heads.map((head) => head.id));
+      // Rows are the caller's copies: mutating one changes nothing in the store.
+      const copy = (await backend.readHeads())[0]!;
+      (copy.frontmatter as Record<string, unknown>).type = "Mutated";
+      copy.intents.length = 0;
+      assert.equal((await backend.read(copy.id)).doc.frontmatter.type, "JournalFixture");
+      assert.deepEqual((await backend.readHeads())[0]!.intents, byId.get(copy.id)!.intents);
+    });
+  });
+
+  test(`${name} journal contract: readHeads is one snapshot of every row, consistent under a concurrent journaled write`, async () => {
+    await withFixture(create, async (backend) => {
+      const id = "journal/heads-moment";
+      const other = "journal/heads-other";
+      const base = `base:${id}`;
+      const first = await backend.writeJournaled(id, doc(id, "v1"), { expectedVersion: null, meta: [{ key: base, value: { version: "shared-1", content: null } }] });
+      await backend.writeJournaled(other, doc(other, "other"), { expectedVersion: null });
+      const rowOf = (heads: JournaledHead[]): JournaledHead => heads.find((head) => head.id === id)!;
+      const consistent = (heads: JournaledHead[], after: { version: Version } | null): "before" | "after" => {
+        assert.deepEqual(heads.map((head) => head.id), [id, other], "every row, whichever moment");
+        const row = rowOf(heads);
+        if (after && row.version === after.version) {
+          assert.equal(row.intents.length, 1, "after the write, the intent is in the row");
+          assert.equal(row.intents[0]!.local, after.version);
+          assert.deepEqual(row.meta.get(base), { version: "shared-2", content: null });
+          assert.equal(row.frontmatter!.title, "moved");
+          return "after";
+        }
+        assert.equal(row.version, first.version);
+        assert.deepEqual(row.intents, [], "before the write, no intent");
+        assert.deepEqual(row.meta.get(base), { version: "shared-1", content: null });
+        assert.equal(row.frontmatter!.title, undefined);
+        return "before";
+      };
+      const listing = () => backend.readHeads({ meta: (target) => [`base:${target}`] });
+      const readFirst = listing();
+      const write = backend.writeJournaled(id, { ...doc(id, "v2"), frontmatter: { ...doc(id, "v2").frontmatter, title: "moved" } }, {
+        expectedVersion: first.version,
+        intent: newIntent("req-moment", id, "shared-1"),
+        meta: [{ key: base, value: { version: "shared-2", content: null } }],
+      });
+      const readSecond = listing();
+      const [early, written, late] = await Promise.all([readFirst, write, readSecond]);
+      const moments = [consistent(early, written), consistent(late, written)];
+      assert.ok(!(moments[0] === "after" && moments[1] === "before"), "a listing started after the write cannot predate one started before it");
+      assert.equal(consistent(await listing(), written), "after");
+    });
+  });
+
+  test(`${name} journal contract: readHeads reports a record whose leading block does not parse, beside the rows that do; a single read of it rejects`, async () => {
+    await withFixture(create, async (backend, fixture) => {
+      const good = "journal/heads-good";
+      const bad = "journal/heads-bad";
+      const planted = "---\ntitle: [unclosed\n---\nbody\n";
+      await backend.writeJournaled(good, doc(good, "good"), { intent: newIntent("req-good", good, null) });
+      await backend.writeJournaled(bad, doc(bad, "before planting"), { intent: newIntent("req-bad", bad, null), meta: [{ key: `base:${bad}`, value: { version: null, content: null } }] });
+      await fixture.storeRaw(bad, planted);
+
+      const heads = await backend.readHeads({ meta: (id) => [`base:${id}`] });
+      assert.deepEqual(heads.map((head) => head.id), [bad, good].sort((a, b) => a.localeCompare(b)));
+      const row = heads.find((head) => head.id === bad)!;
+      assert.equal(row.frontmatter, null, "the block did not parse");
+      assert.equal(row.malformed?.name, "MalformedDocumentError");
+      assert.equal(row.malformed?.context, `${bad}.md`, "the error names the document");
+      assert.equal(row.raw, planted, "the bytes are reported as stored");
+      assert.equal(row.version, (await backend.versions(bad))[0]!.version, "the version names the stored bytes");
+      assert.deepEqual(row.intents.map((entry) => entry.requestId), ["req-bad"], "the journal still rides with the row");
+      assert.deepEqual(row.meta.get(`base:${bad}`), { version: null, content: null });
+      const fine = heads.find((head) => head.id === good)!;
+      assert.equal(fine.malformed, undefined);
+      assert.deepEqual(fine.frontmatter, (await backend.read(good)).doc.frontmatter, "the other rows are unaffected");
+      await assert.rejects(backend.readWithJournal(bad), { name: "MalformedDocumentError" });
+      await assert.rejects(backend.read(bad), { name: "MalformedDocumentError" });
+
+      // A projection decides what a malformed row means to the caller; the seam only reports it.
+      assert.deepEqual(await backend.readHeads({ project: (head) => [head.id, head.frontmatter === null] }), [[bad, true], [good, false]].sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+      // Replacing the record through the seam repairs the row.
+      await backend.write(bad, doc(bad, "repaired"));
+      const repaired = (await backend.readHeads()).find((head) => head.id === bad)!;
+      assert.equal(repaired.malformed, undefined);
+      assert.deepEqual(repaired.frontmatter, (await backend.read(bad)).doc.frontmatter);
+    });
+  });
+
+  test(`${name} journal contract: readHeads decodes a record's frontmatter under the root index's edition, as a read does`, async () => {
+    await withFixture(create, async (backend, fixture) => {
+      // An unquoted timestamp scalar is where the editions differ: a v0.2 root keeps the source
+      // string, the legacy decoding turns it into a normalized instant. The fixture root is v0.2.
+      const id = "journal/heads-stamp";
+      await fixture.storeRaw(id, "---\ntype: JournalFixture\ntimestamp: 2026-07-01T12:05:00Z\n---\nbody\n");
+      const read = await backend.read(id);
+      assert.equal(read.doc.frontmatter.timestamp, "2026-07-01T12:05:00Z", "under a v0.2 root the read keeps the source scalar, so this row can tell the editions apart");
+      const [head] = await backend.readHeads();
+      assert.equal(head?.id, id);
+      assert.deepEqual(head?.frontmatter, read.doc.frontmatter, "the listing decodes under the same edition as the read");
+      assert.deepEqual((await backend.readHeads({ project: (row) => row.frontmatter?.timestamp }))[0], "2026-07-01T12:05:00Z");
     });
   });
 

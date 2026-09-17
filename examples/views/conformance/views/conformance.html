@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="superbee-conformance-revision" content="3">
+<title>View protocol conformance</title>
+<style>
+  /* Superbee View theme, the same tokens the shipped example Views use. */
+  :root {
+    --bg:#F3F7FA; --card:#FFFFFF; --alt:#E9EFF4; --rule:#DADEE2;
+    --ink:#0F1A24; --slate:#4A5D6E; --ghost:#9AAAB8;
+    --structure:#0073B0; --signal:#956300; --danger:#B00020;
+    --sans:"DM Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono:"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0B1926; --card:#0F2A3F; --alt:#12314A; --rule:#26323D;
+      --ink:#F8F6F2; --slate:#B7C4D1; --ghost:#7E8FA0;
+      --structure:#3CAEF9; --signal:#E09707; --danger:#F2707A;
+    }
+  }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--ink); font:14px/1.5 var(--sans); padding:20px 24px 60px; }
+  h1 { font-size:20px; font-weight:600; margin-bottom:4px; }
+  .meta { color:var(--slate); font-family:var(--mono); font-size:12px; margin-bottom:16px; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--rule); }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--rule); vertical-align:top; }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--slate); background:var(--alt); }
+  td.request, td.status { font-family:var(--mono); font-size:12.5px; white-space:nowrap; }
+  td.summary { font-family:var(--mono); font-size:12px; color:var(--slate); word-break:break-word; }
+  tr[data-status="answered"] td.status, tr[data-status="sent"] td.status { color:var(--structure); }
+  tr[data-status="refused"] td.status, tr[data-status="skipped"] td.status { color:var(--signal); }
+  tr[data-status="failed"] td.status { color:var(--danger); }
+  #status { margin-top:12px; font-family:var(--mono); font-size:12px; color:var(--slate); }
+</style>
+</head>
+<body>
+<h1>View protocol conformance</h1>
+<p class="meta">revision <span id="revision"></span> <span id="host">host: waiting for hello</span></p>
+<table>
+  <thead><tr><th>request</th><th>status</th><th>summary</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<p id="status">running</p>
+<script>
+(function () {
+  var PROTO = "v0", ACTION_PROTO = "v1", seq = 0, pending = {}, subs = [];
+  function send(type, extra, proto) {
+    return new Promise(function (resolve, reject) {
+      var id = String(++seq);
+      pending[id] = { resolve: resolve, reject: reject };
+      var msg = { bridge: proto || PROTO, id: id, type: type };
+      if (extra) for (var k in extra) msg[k] = extra[k];
+      parent.postMessage(msg, "*"); // parent origin is opaque to us; the shell validates by source
+    });
+  }
+  // A shell action, deliberately separate from send(): the source frame may unload immediately,
+  // so openPage is void/fire-and-forget and must not be awaited.
+  function openPage(pageId) {
+    parent.postMessage({ bridge: PROTO, type: "open-page", pageId: pageId }, "*");
+  }
+  function watch(refresh) {
+    if (typeof refresh !== "function") return Promise.reject(new TypeError("Bridge.watch requires a refresh function"));
+    var active = true, ready = false, running = false, queued = [];
+    function schedule(initial) {
+      running = true;
+      var batch = queued.splice(0);
+      return Promise.resolve().then(function () { return refresh(batch); }).then(function (value) {
+        running = false;
+        if (queued.length) void schedule(false);
+        return value;
+      }, function (err) {
+        running = false;
+        if (queued.length) void schedule(false);
+        if (initial) throw err;
+        console.error("Bridge.watch refresh failed", err);
+      });
+    }
+    function onChange(event) {
+      if (!active) return;
+      queued.push(event);
+      if (ready && !running) void schedule(false);
+    }
+    return window.Bridge.subscribe(onChange).then(function () {
+      ready = true;
+      return schedule(true);
+    }, function (err) {
+      active = false;
+      throw err;
+    });
+  }
+  window.addEventListener("message", function (e) {
+    if (e.source !== window.parent) return; // only trust the shell
+    var m = e.data;
+    if (!m || (m.bridge !== PROTO && m.bridge !== ACTION_PROTO)) return;
+    if (m.type === "change") { subs.forEach(function (cb) { cb(m.event); }); return; }
+    var p = pending[m.id];
+    if (!p) return;
+    delete pending[m.id];
+    if (m.type === "error") {
+      var err = new Error((m.error && m.error.message) || "bridge error");
+      err.code = m.error && m.error.code; // one of USAGE, FORBIDDEN, REVOKED, TOO_LARGE, RUNTIME, NOT_FOUND
+      p.reject(err);
+    } else p.resolve(m.result);
+  });
+  window.Bridge = {
+    hello: function () { return send("hello"); },
+    query: function (params) { return send("query", { params: params }); },
+    read: function (docId) { return send("read", { docId: docId }); },
+    readVersioned: function (docId) { return send("read-versioned", { docId: docId }, ACTION_PROTO); },
+    renderDocument: function (docId) { return send("render-document", { docId: docId }); },
+    edges: function (params) { return send("edges", { params: params }); },
+    graph: function (includeBodies) { return send("graph", includeBodies === undefined ? undefined : { includeBodies: includeBodies === true }); },
+    host: function (capability, input) {
+      return send("host", input === undefined ? { capability: capability } : { capability: capability, input: input });
+    },
+    openPage: openPage,
+    subscribe: function (cb) { subs.push(cb); return send("subscribe"); },
+    watch: watch
+  };
+})();
+
+// Conformance run. One row per request type, in the order docs/VIEW-PROTOCOL.md lists them, plus
+// one burst row that keeps 12 reads in flight at once: a host may cap concurrency but must queue
+// or refuse the excess with an error reply, never drop it, so the row expects every result.
+// Statuses: answered (a result reply), refused (an error reply, code named in the summary),
+// sent (no reply expected and none arrived), skipped (a precondition was missing), failed
+// (a wrong shape, a wrong code, or no reply within the window). Other hosts byte-copy this
+// entry and record the revision from <meta name="superbee-conformance-revision">.
+(function conformance() {
+  var REVISION = "3";
+  var REPLY_WINDOW_MS = 5000;
+  var NAVIGATION_WINDOW_MS = 1500;
+  var UNDECLARED_CAPABILITY = "conformance.undeclared";
+  var MISSING_TARGET = "views-registry/conformance-missing-target";
+  var rows = [];
+  var finished;
+  var done = new Promise(function (resolve) { finished = resolve; });
+  window.__conformance = { revision: REVISION, rows: rows, done: done };
+  document.getElementById("revision").textContent = REVISION;
+
+  function setText(id, text) { document.getElementById(id).textContent = text; }
+  function record(request, status, summary) {
+    rows.push({ request: request, status: status, summary: summary });
+    var tr = document.createElement("tr");
+    tr.setAttribute("data-request", request);
+    tr.setAttribute("data-status", status);
+    var cells = [["request", request], ["status", status], ["summary", summary]];
+    for (var i = 0; i < cells.length; i++) {
+      var td = document.createElement("td");
+      td.setAttribute("class", cells[i][0]);
+      td.textContent = cells[i][1];
+      tr.appendChild(td);
+    }
+    document.getElementById("rows").appendChild(tr);
+  }
+  function within(promise, ms) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { reject(new Error("no reply within " + ms + " ms")); }, ms);
+      promise.then(function (value) { clearTimeout(timer); resolve(value); }, function (err) { clearTimeout(timer); reject(err); });
+    });
+  }
+  function describe(err) { return (err && err.code ? err.code + ": " : "") + ((err && err.message) || String(err)); }
+  function refusal(request, err) {
+    record(request, err && err.code ? "refused" : "failed", describe(err));
+  }
+  // A one-shot raw exchange for the two requests the client does not correlate itself.
+  function rawExchange(message, matches, ms) {
+    return new Promise(function (resolve) {
+      var timer = setTimeout(function () { window.removeEventListener("message", listener); resolve(null); }, ms);
+      function listener(e) {
+        if (e.source !== window.parent) return;
+        var m = e.data;
+        if (!m || !matches(m)) return;
+        clearTimeout(timer);
+        window.removeEventListener("message", listener);
+        resolve(m);
+      }
+      window.addEventListener("message", listener);
+      parent.postMessage(message, "*");
+    });
+  }
+  function has(list, name) {
+    for (var i = 0; i < list.length; i++) if (list[i] === name) return true;
+    return false;
+  }
+
+  var capabilities = [];
+  var firstDoc = null;
+  var version = null;
+  var changes = 0;
+
+  function stepHello() {
+    return within(Bridge.hello(), REPLY_WINDOW_MS).then(function (h) {
+      var host = h && h.host;
+      if (!host || typeof host.kind !== "string" || !host.capabilities || !host.limits) {
+        record("hello", "failed", "reply carries no host descriptor");
+        return;
+      }
+      capabilities = host.capabilities;
+      setText("host", "host: " + host.kind + " (" + h.mode + ")");
+      record("hello", "answered", "kind=" + host.kind + " grant=" + h.grant + " limits.query=" + host.limits.query +
+        " capabilities=" + capabilities.join(","));
+    }, function (err) { refusal("hello", err); });
+  }
+  function stepQuery() {
+    return within(Bridge.query({ limit: 5 }), REPLY_WINDOW_MS).then(function (q) {
+      if (!q || !q.rows) { record("query", "failed", "reply carries no rows"); return; }
+      firstDoc = q.rows.length ? q.rows[0].id : null;
+      record("query", "answered", "rows=" + q.rows.length + " count=" + q.count);
+    }, function (err) { refusal("query", err); });
+  }
+  function stepRead() {
+    if (!firstDoc) { record("read", "skipped", "no document to read"); return Promise.resolve(); }
+    return within(Bridge.read(firstDoc), REPLY_WINDOW_MS).then(function (d) {
+      record("read", d && d.id === firstDoc ? "answered" : "failed", "id=" + (d && d.id) + " body=" + ((d && d.body) || "").length + " chars");
+    }, function (err) { refusal("read", err); });
+  }
+  function stepReadVersioned() {
+    if (!firstDoc) { record("read-versioned", "skipped", "no document to read"); return Promise.resolve(); }
+    return within(Bridge.readVersioned(firstDoc), REPLY_WINDOW_MS).then(function (r) {
+      version = r && r.version;
+      var ok = r && r.doc && r.doc.id === firstDoc && typeof version === "string";
+      record("read-versioned", ok ? "answered" : "failed", "id=" + (r && r.doc && r.doc.id) + " version=" + version);
+    }, function (err) { refusal("read-versioned", err); });
+  }
+  function stepEdges() {
+    var params = firstDoc ? { from: firstDoc } : {};
+    return within(Bridge.edges(params), REPLY_WINDOW_MS).then(function (e) {
+      record("edges", e && e.edges ? "answered" : "failed", "from=" + (firstDoc || "*") + " count=" + (e && e.count));
+    }, function (err) { refusal("edges", err); });
+  }
+  function stepGraph() {
+    return within(Bridge.graph(), REPLY_WINDOW_MS).then(function (g) {
+      var ok = g && g.documents && g.relationships && g.counts && typeof g.okfVersion === "string";
+      var bodies = 0;
+      if (ok) for (var i = 0; i < g.documents.length; i++) if (Object.prototype.hasOwnProperty.call(g.documents[i], "body")) bodies += 1;
+      record("graph", ok && bodies === 0 ? "answered" : "failed", ok
+        ? "okfVersion=" + g.okfVersion + " documents=" + g.counts.documents + " relationships=" + g.counts.relationships +
+          " model=" + (Object.prototype.hasOwnProperty.call(g, "model") ? "present" : "absent") + " bodies=" + bodies
+        : "reply carries no documents, relationships or counts");
+    }, function (err) {
+      var expected = err && err.code === "FORBIDDEN" && !has(capabilities, "graph");
+      record("graph", err && err.code ? "refused" : "failed", describe(err) + (expected ? " (not declared, expected)" : ""));
+    });
+  }
+  function stepRender() {
+    if (!firstDoc) { record("render-document", "skipped", "no document to render"); return Promise.resolve(); }
+    return within(Bridge.renderDocument(firstDoc), REPLY_WINDOW_MS).then(function (r) {
+      var ok = r && r.document && r.document.id === firstDoc && typeof r.html === "string";
+      record("render-document", ok ? "answered" : "failed", "version=" + (r && r.document && r.document.version) +
+        " html=" + ((r && r.html) || "").length + " chars bounded=" + (r && r.bounded));
+    }, function (err) { refusal("render-document", err); });
+  }
+  function stepSubscribe() {
+    return within(Bridge.subscribe(function () { changes += 1; }), REPLY_WINDOW_MS).then(function (s) {
+      record("subscribe", s && s.ok === true ? "answered" : "failed",
+        "acknowledged; deltas=" + (has(capabilities, "subscribe-deltas") ? "declared" : "refresh-only"));
+    }, function (err) { refusal("subscribe", err); });
+  }
+  function stepHost() {
+    if (has(capabilities, UNDECLARED_CAPABILITY)) {
+      record("host", "failed", UNDECLARED_CAPABILITY + " must never be declared");
+      return Promise.resolve();
+    }
+    return within(Bridge.host(UNDECLARED_CAPABILITY, {}), REPLY_WINDOW_MS).then(function () {
+      record("host", "failed", "an undeclared capability was answered");
+    }, function (err) {
+      var expected = err && err.code === "FORBIDDEN";
+      record("host", expected ? "refused" : "failed", describe(err) + (expected ? " for undeclared capability (expected)" : ""));
+    });
+  }
+  function stepPropose() {
+    var requestId = "conformance-propose";
+    var message = {
+      bridge: "v1",
+      type: "action.propose",
+      requestId: requestId,
+      action: {
+        kind: "document.set-field",
+        docId: firstDoc || "docs/conformance-missing",
+        field: "conformance_probe",
+        value: "probe",
+        expectedVersion: version || "sha256:unknown"
+      }
+    };
+    return rawExchange(message, function (m) {
+      return m.bridge === "v1" && ((m.type === "action.result" && m.requestId === requestId) || (m.type === "error" && m.id === requestId));
+    }, REPLY_WINDOW_MS).then(function (m) {
+      if (!m) { record("action.propose", "failed", "no reply within " + REPLY_WINDOW_MS + " ms"); return; }
+      if (m.type === "error") {
+        record("action.propose", "refused", (m.error && m.error.code) + ": " + (m.error && m.error.message));
+        return;
+      }
+      var status = m.result && m.result.status;
+      var refused = status === "rejected" || status === "revoked" || status === "failed" || status === "expired";
+      record("action.propose", refused ? "refused" : "answered", "status=" + status + (m.result && m.result.message ? ": " + m.result.message : ""));
+    });
+  }
+  function stepBurst() {
+    if (!firstDoc) { record("burst", "skipped", "no document to read"); return Promise.resolve(); }
+    var reads = [];
+    for (var i = 0; i < 12; i++) reads.push(Bridge.read(firstDoc));
+    return within(Promise.all(reads), REPLY_WINDOW_MS).then(function (rs) {
+      var matched = rs.filter(function (r) { return r && r.id === firstDoc; }).length;
+      record("burst", rs.length === 12 && matched === 12 ? "answered" : "failed", rs.length + " results, " + matched + " of " + firstDoc);
+    }, function (err) { refusal("burst", err); });
+  }
+  function stepOpenPage() {
+    var id = "conformance-open";
+    return rawExchange({ bridge: "v0", type: "open-page", id: id, pageId: MISSING_TARGET }, function (m) {
+      return m.bridge === "v0" && m.id === id;
+    }, NAVIGATION_WINDOW_MS).then(function (m) {
+      if (!m) { record("open-page", "sent", "no reply within " + NAVIGATION_WINDOW_MS + " ms (fire-and-forget)"); return; }
+      if (m.type === "error") { record("open-page", "refused", (m.error && m.error.code) + " for " + MISSING_TARGET); return; }
+      record("open-page", "failed", "unexpected reply type " + m.type);
+    });
+  }
+
+  // Order matters: open-page is last because some hosts retire the source launch on it.
+  stepHello()
+    .then(stepQuery).then(stepRead).then(stepReadVersioned).then(stepEdges).then(stepGraph).then(stepRender)
+    .then(stepSubscribe).then(stepHost).then(stepPropose).then(stepBurst).then(stepOpenPage)
+    .then(function () {
+      setText("status", "complete: " + rows.length + " rows, " + changes + " change events during the run");
+      finished(rows);
+    }, function (err) {
+      setText("status", "aborted: " + describe(err));
+      finished(rows);
+    });
+})();
+</script>
+</body>
+</html>

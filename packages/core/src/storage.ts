@@ -43,6 +43,8 @@ export type {
   JournaledBackend,
   JournaledDeleteOptions,
   JournaledDeleteResult,
+  JournaledHead,
+  JournaledHeadsOptions,
   JournaledReadResult,
   JournaledWriteOptions,
   MetaRecord,

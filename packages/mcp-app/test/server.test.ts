@@ -1683,6 +1683,21 @@ test("registered Roadmap View runs from unchanged source through the authorized 
       mode: "local-mcp",
       protocol: "v0",
       grant: "read",
+      host: {
+        kind: "oss",
+        capabilities: [
+          "edges",
+          "graph",
+          "open-page",
+          "query.count",
+          "query.field-or",
+          "query.kind-projection",
+          "query.open",
+          "render-document",
+          "subscribe-deltas",
+        ],
+        limits: { query: 500, edges: 1000, graphDocuments: 1000, graphRelationships: 10_000, replyBytes: 2 * 1024 * 1024 },
+      },
     },
   );
 
@@ -1720,7 +1735,7 @@ test("registered Roadmap View runs from unchanged source through the authorized 
         outcome: { reply: { result: { body: string } } };
       }
     ).outcome.reply.result.body,
-    "# Goal\n\nFirst task.",
+    "# Goal\n\nFirst task.\n",
   );
 
   const rendered = await client.callTool({

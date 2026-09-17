@@ -78,8 +78,15 @@ function sentence(random: () => number): string {
   return `${words.join(" ")}.`;
 }
 
-/** Target body size in bytes: 40% short, 40% medium, 20% long, as a mixed bundle would carry. */
-function targetBytes(random: () => number): number {
+/** A uniform body size range in bytes, for a bundle whose documents are all large. */
+export interface SyntheticBodyRange {
+  minBytes: number;
+  maxBytes: number;
+}
+
+/** Target body size in bytes: 40% short, 40% medium, 20% long, as a mixed bundle would carry, or uniform within `range`. */
+function targetBytes(random: () => number, range?: SyntheticBodyRange): number {
+  if (range) return range.minBytes + Math.floor(random() * (range.maxBytes - range.minBytes));
   const roll = random();
   if (roll < 0.4) return 300 + Math.floor(random() * 300);
   if (roll < 0.8) return 1024 + Math.floor(random() * 1024);
@@ -118,8 +125,10 @@ function conventionDocuments(): OkfDocument[] {
 /**
  * The bundle of `size` documents plus its three conventions. Bodies are prose with zero to
  * three relative links to other documents of the same bundle, so link parsing has real edges.
+ * With `bodyRange` every body is drawn uniformly from that range instead of the mixed sizes;
+ * without it the bytes are exactly what they always were for `(size, seed)`.
  */
-export function generateSyntheticBundle(size: number, seed = 1): OkfDocument[] {
+export function generateSyntheticBundle(size: number, seed = 1, bodyRange?: SyntheticBodyRange): OkfDocument[] {
   const random = seededRandom(seed);
   const refs = syntheticDocumentRefs(size);
   const docs: OkfDocument[] = conventionDocuments();
@@ -134,7 +143,7 @@ export function generateSyntheticBundle(size: number, seed = 1): OkfDocument[] {
       if (target.id === ref.id) continue;
       links.push(`[${target.title}](../${target.id}.md)`);
     }
-    const target = targetBytes(random);
+    const target = targetBytes(random, bodyRange);
     const paragraphs: string[] = [];
     let bytes = 0;
     while (bytes < target) {

@@ -1,15 +1,17 @@
 /**
- * The measurement harness's smoke row in the ordinary Chromium proof: one repetition of the
- * smallest cell (100 documents, no simulated latency) in each mode, and the assertion that the
- * report carries every summary metric as a finite number where the mode applies. The full run
- * (`measure.browser.spec.ts`) is not part of `test:browser`; this row keeps its code from
- * rotting without paying for the full plan in CI.
+ * The measurement harnesses' smoke rows in the ordinary Chromium proof: one repetition of the
+ * smallest cell (100 documents, no simulated latency) in each mode of the main measurement, one
+ * round of the listing measurement at the same size, and the assertion that each report carries
+ * every summary metric as a finite number where it applies. The full runs
+ * (`measure.browser.spec.ts`, `measure-listing.browser.spec.ts`) are not part of `test:browser`;
+ * these rows keep their code from rotting without paying for the full plans in CI.
  */
 
 import { readFileSync } from "node:fs";
 
 import { expect, test } from "@playwright/test";
 
+import { LISTING_SCHEMA, runListingMeasurement, type ListingReport } from "./fixtures/measure-listing.ts";
 import { ALWAYS_FINITE_KEYS, BROWSER_LOCAL_ONLY_KEYS, CONDITIONS, MEASURE_SCHEMA, OPTIONAL_KEYS, picksFor, runMeasurement, writeReport, type MeasurementReport } from "./fixtures/measure.ts";
 
 test("the measurement harness reports every metric for the smallest cell in both modes", async ({ browser }) => {
@@ -70,5 +72,34 @@ test("the measurement harness reports every metric for the smallest cell in both
       expect(rep!.warmRead.requests).toBe(50);
       expect(rep!.responsiveness.badge).toBe("shared");
     }
+  }
+});
+
+test("the listing measurement reports the listing, one filtered query and the status for the smallest cell", async ({ browser }) => {
+  test.setTimeout(180_000);
+  const report = await runListingMeasurement(browser, { size: 100, rounds: 1, repetitions: 1 });
+  const written = writeReport(report, test.info().outputPath("measure-listing-smoke.json"));
+  const parsed = JSON.parse(readFileSync(written, "utf8")) as ListingReport;
+
+  expect(parsed.schema).toBe(LISTING_SCHEMA);
+  expect(parsed.environment.chromium).toBe(browser.version());
+  expect(parsed.repetitions).toHaveLength(1);
+  const [rep] = parsed.repetitions;
+  expect(rep!.page.crossOriginIsolated).toBe(true);
+  expect(rep!.coldOpen.documents).toBeGreaterThanOrEqual(100);
+  expect(rep!.bodyBytes).toBeGreaterThan(0);
+  for (const key of ["listing", "byType", "status"] as const) {
+    expect(rep![key].samples, key).toHaveLength(1);
+    expect(Number.isFinite(parsed.summary[key].medianMs), `${key}: medianMs is finite`).toBe(true);
+    expect(Number.isFinite(parsed.summary[key].transactions), `${key}: transactions are counted over the working copy`).toBe(true);
+  }
+  // 100 documents plus the three conventions; a third of the documents carry the first kind; nothing is unconfirmed.
+  expect(parsed.summary.listing.rows).toBe(103);
+  expect(parsed.summary.byType.rows).toBe(34);
+  expect(parsed.summary.status.rows).toBe(0);
+  // The held rounds ran; their peak is a number only where gc() is exposed, which the proof config does not do.
+  for (const key of ["listing", "status"] as const) {
+    expect(rep!.held[key].sample.rows, `${key}: held round`).toBe(parsed.summary[key].rows);
+    expect(rep!.held[key].heldPeakBytes === null || Number.isFinite(rep!.held[key].heldPeakBytes), `${key}: held peak is finite or null`).toBe(true);
   }
 });

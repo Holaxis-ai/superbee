@@ -100,7 +100,7 @@ test("unsupported default filesystem calls refuse before creating target parents
   await assert.rejects(fs.stat(path.join(dir, "explicit-locks")), { code: "ENOENT" });
   const memory = new MemoryBackend();
   await memory.write("x", { id: "x", frontmatter: { type: "Note" }, body: "memory" });
-  assert.equal((await memory.read("x")).doc.body, "memory");
+  assert.equal((await memory.read("x")).doc.body, "memory\n");
   await createFilesystemRuntime(policy(dir, "explicit")).initBundle(path.join(dir, "explicit"));
 });
 
@@ -116,7 +116,13 @@ test("production replacement classification is captured and cannot leak between 
   await a.write("x", { id: "x", frontmatter: { type: "Note" }, body: "old" });
   selected.isReplacementConflict = () => false;
   let renames = 0;
-  t.mock.method(fs, "rename", async () => { renames++; throw conflict; });
+  const rename = fs.rename;
+  // Only document replacement inside the bundle conflicts; runtime lock release also renames.
+  t.mock.method(fs, "rename", async (from: string, to: string) => {
+    if (!String(to).startsWith(root)) return rename(from, to);
+    renames++;
+    throw conflict;
+  });
   const doc = { id: "x", frontmatter: { type: "Note" }, body: "new" };
   await assert.rejects(a.write("x", doc), ConcurrentReplacementError);
   await assert.rejects(b.write("x", doc), (error) => error === conflict);
@@ -132,7 +138,7 @@ test("a fresh unsupported-host process can import core and use memory without se
     const { MemoryBackend } = await import("@superbee/core");
     const store = new MemoryBackend();
     await store.write("x", { id: "x", frontmatter: { type: "Note" }, body: "memory" });
-    if ((await store.read("x")).doc.body !== "memory") throw new Error("memory roundtrip");
+    if ((await store.read("x")).doc.body !== "memory\\n") throw new Error("memory roundtrip");
   `;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);

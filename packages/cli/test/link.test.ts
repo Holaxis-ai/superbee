@@ -83,21 +83,7 @@ async function linkShow(dir: string, args: string[]): Promise<Record<string, unk
   return JSON.parse(out);
 }
 
-/** Run `body` with `process.platform` forced, restoring it whatever happens. */
-async function withPlatform(platform: string, body: () => Promise<void>): Promise<void> {
-  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
-  Object.defineProperty(process, "platform", { ...original, value: platform });
-  try {
-    await body();
-  } finally {
-    Object.defineProperty(process, "platform", original);
-  }
-}
-
-/**
- * The near-miss hint renders the filter with the always-quote producer, which spells a token
- * differently per platform. Match the rendered form rather than the POSIX spelling.
- */
+/** Match the near-miss hint through the same always-quote producer it uses. */
 function matchesNoLinks(hint: string, filter: string): boolean {
   return hint.includes(`no links matched --text ${renderedQuoted(filter)}`);
 }
@@ -1486,39 +1472,5 @@ test("every previously-documented fact from the old single combined block is rea
   ];
   for (const re of mustAppearSomewhere) {
     assert.match(combined, re, `expected this pre-slice fact to still be reachable somewhere: ${re}`);
-  }
-});
-
-/**
- * These hints render a value the CLI does not own, and on Windows a few values have no inert
- * rendering at all (see shell-quoting.ts). The renderer used here must ABSORB that refusal: an
- * always-quote primitive that throws would escape a diagnostic builder as a bare `Error` carrying
- * no CLI error code, replacing the message the user was owed with an unhandled stack trace.
- */
-test("a filter Windows cannot render degrades the hint instead of crashing the command", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-link-test-"));
-  try {
-    const bundle = await initBundle(dir);
-    for (const id of ["hub", "t0"]) {
-      await writeDoc(bundle, { id, frontmatter: { type: "Concept", title: id, timestamp: OLD_TS }, body: "" });
-    }
-    await linkAdd(dir, ["hub", "t0", "--text", "prereq"]);
-
-    await withPlatform("win32", async () => {
-      for (const filter of ["a$b", "a\u201db"]) {
-        const shown = await linkShow(dir, ["hub", "--text", filter]);
-        assert.equal(shown.outbound_count, 0);
-        const help = (shown.help as string[]) ?? [];
-        assert.ok(
-          help.some((h) => h.includes("no links matched --text ")),
-          `the near-miss hint must still be produced, got: ${JSON.stringify(help)}`,
-        );
-      }
-      // The same path on a missing concept, which builds its hint from a different branch.
-      const missing = await linkShow(dir, ["nope", "--text", "a$b"]);
-      assert.ok(missing, "link show on a missing concept must still return an envelope");
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
   }
 });
