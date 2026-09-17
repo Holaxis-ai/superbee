@@ -49,11 +49,10 @@
 // quotes, which reproduces the same bytes without the collision. The quoting checker rejects a
 // rendered token that is wrapped in quotes again.
 //
-// WINDOWS. Rendering there is a different strategy, not a variant of this one, and it lives in
-// shell-quoting.ts: cmd.exe and PowerShell disagree about which quoting even exists, so a few
-// values (`$`, a backtick, `!`) have no inert rendering in both and are refused. `commandToken`
-// degrades those to a QUOTED `<value-omitted-unquotable>` placeholder rather than propagating the
-// refusal, because the diagnostic carrying the hint is often a failing command's only output.
+// HOST ADAPTERS. An adapter may refuse a value that it cannot render inertly. `commandToken`
+// degrades that refusal to a QUOTED `<value-omitted-unquotable>` placeholder rather than
+// propagating it, because the diagnostic carrying the hint is often a failing command's only
+// output.
 //
 // NOT IN SCOPE: argument injection. Shell quoting makes a value ONE token; it does not stop a value
 // that looks like `--dir` from being parsed as a flag by the command it is pasted into. That is a
@@ -81,22 +80,21 @@ export type CommandText = string & { readonly [commandTextBrand]: true };
 export type CommandPrefix = CommandText & { readonly [commandPrefixBrand]: true };
 
 /**
- * Characters that survive verbatim in every shell we emit for. Deliberately NARROWER than
- * `isSafeUnquotedHookToken`: `%` is excluded because it is cmd.exe's variable-expansion delimiter,
- * and `~` because a bare leading `~` is expanded by the shell rather than passed through.
+ * Characters that survive verbatim under every registered host adapter. Deliberately narrower than
+ * `isSafeUnquotedHookToken`: `%` is not inert for every adapter, and a bare leading `~` is expanded
+ * by POSIX shells rather than passed through.
  */
 const INERT_TOKEN = /^[A-Za-z0-9_@+=:,./-]+$/;
 
 /**
- * Emitted in place of a value the host shell cannot represent inertly at all — on Windows, one
- * carrying `$`, a backtick, `!` or a control character (see shell-quoting.ts). It reads as a
- * placeholder because that is exactly what it is: the reader must substitute the value themselves.
+ * Emitted when the selected host adapter cannot represent a value inertly. It reads as a placeholder
+ * because that is exactly what it is: the reader must substitute the value themselves.
  * Rendering the value anyway, or letting the refusal propagate and abort a diagnostic that is often
  * the ONLY output a failing command produces, are both worse than saying so.
  *
  * It is QUOTED like any other token. Unquoted it would still carry `<` and `>`, which are
- * redirection operators in both `sh` and cmd.exe — so the degraded hint would break the surrounding
- * command's parse and, under cmd.exe, create a junk file named after the next flag.
+ * redirection operators in supported shells, so the degraded hint would break the surrounding
+ * command's parse.
  */
 const UNRENDERABLE = "<value-omitted-unquotable>";
 
@@ -144,8 +142,8 @@ export function joinCommandTokens(tokens: readonly CommandText[], separator = " 
  * inert value would read wrong and adding the sentence's own quotes around a rendered token would
  * double them.
  *
- * Use this rather than `shellArg` in any message-building path. `shellArg` THROWS for a value
- * Windows cannot render, and in a diagnostic builder that throw escapes as a bare `Error` with no
+ * Use this rather than `shellArg` in any message-building path. A host adapter may reject a value;
+ * in a diagnostic builder that throw escapes as a bare `Error` with no
  * CLI error code — an unhandled stack trace in place of the message the user was owed.
  */
 export function commandQuoted(value: string): CommandText {

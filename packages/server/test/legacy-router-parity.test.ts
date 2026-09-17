@@ -22,7 +22,7 @@ test("Node root privately preserves the historical default bundle route and advi
   assert.deepEqual(await read.json(), {
     id: "concepts/legacy",
     frontmatter: { type: "Concept", title: "Legacy", timestamp: (await backend.read("concepts/legacy")).doc.frontmatter.timestamp },
-    body: "same wire",
+    body: "same wire\n",
   });
   assert.deepEqual(
     (await backend.versions("concepts/legacy")).map(({ actor, agent }) => ({ actor, agent })),

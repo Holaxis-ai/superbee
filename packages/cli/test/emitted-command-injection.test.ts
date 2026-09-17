@@ -22,8 +22,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,17 +34,7 @@ import { newCommand } from "../src/commands/new.js";
 import { doc } from "../src/commands/doc.js";
 import { resolveProjectBinding } from "../src/bundle.js";
 import { cliInvocation } from "../src/invocation.js";
-import { commandToken } from "../src/command-text.js";
 import { CliError } from "../src/errors.js";
-
-/**
- * This probe drives `/bin/sh` directly. On Windows it would not merely be inapplicable, it would be
- * MISLEADING: `spawnSync("/bin/sh")` fails, so stderr is empty and the validity assertion passes
- * vacuously while the argv assertion fails for the wrong reason. `windows-support-probe.yml` runs
- * the per-workspace suites, so leaving it unguarded would report a Windows regression that is not
- * one. Windows rendering is covered by `command-text.test.ts`, which parameterises the platform.
- */
-const posixOnly = { skip: process.platform === "win32" ? "POSIX shell probe; see command-text.test.ts" : false };
 
 const T = "2026-07-01T00:00:00.000Z";
 const BODY = "# Summary\n\nx\n";
@@ -127,7 +117,7 @@ async function executeEmitted(command: string): Promise<EmittedRun> {
 function fillPlaceholders(command: string): string {
   // Scan with the QUOTING STATE, not a one-byte lookbehind: inside `'tasks/<task>'` the byte before
   // `<` is `/`, so a lookbehind would rewrite a rendered VALUE — silently neutralising a payload of
-  // that shape, and masking the omitted-value placeholder if a Windows case is ever added here.
+  // that shape and masking the quoted-value behavior this helper is meant to preserve.
   let out = "";
   let quote: string | undefined;
   for (let i = 0; i < command.length; i += 1) {
@@ -192,7 +182,7 @@ async function runJson(
   return JSON.parse(out) as Record<string, unknown>;
 }
 
-test("the injection probe itself detects an unquoted and a double-quoted interpolation", posixOnly, async () => {
+test("the injection probe itself detects an unquoted and a double-quoted interpolation", async () => {
   const bare = await tempDir("superbee-control-bare-");
   const quoted = await tempDir("superbee-control-dq-");
   try {
@@ -212,7 +202,7 @@ test("the injection probe itself detects an unquoted and a double-quoted interpo
   }
 });
 
-test("a completing `doc update` command renders a hostile field name and enum value as single arguments", posixOnly, async () => {
+test("a completing `doc update` command renders a hostile field name and enum value as single arguments", async () => {
   const dir = await tempDir("superbee-inject-kind-");
   try {
     const bundle = { root: dir };
@@ -250,7 +240,7 @@ test("a completing `doc update` command renders a hostile field name and enum va
   }
 });
 
-test("`new` success-path link hints render a hostile kind name, id prefix and link type as single arguments", posixOnly, async () => {
+test("`new` success-path link hints render a hostile kind name, id prefix and link type as single arguments", async () => {
   const dir = await tempDir("superbee-inject-links-");
   try {
     const bundle = { root: dir };
@@ -283,7 +273,7 @@ test("`new` success-path link hints render a hostile kind name, id prefix and li
   }
 });
 
-test("`new`'s ALREADY_EXISTS remedy renders a hostile kind name as a single argument", posixOnly, async () => {
+test("`new`'s ALREADY_EXISTS remedy renders a hostile kind name as a single argument", async () => {
   const dir = await tempDir("superbee-inject-exists-");
   try {
     const bundle = { root: dir };
@@ -316,7 +306,7 @@ test("`new`'s ALREADY_EXISTS remedy renders a hostile kind name as a single argu
   }
 });
 
-test("a repo-authored project binding renders its URL as a single argument in the emitted --remote help", posixOnly, async () => {
+test("a repo-authored project binding renders its URL as a single argument in the emitted --remote help", async () => {
   const dir = await tempDir("superbee-inject-binding-");
   try {
     // `.agentstate.json` is committed by whoever wrote the repository, not typed by the operator.
@@ -332,277 +322,4 @@ test("a repo-authored project binding renders its URL as a single argument in th
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
-
-// ---------------------------------------------------------------------------------------------
-// PowerShell inertness.
-//
-// The Windows refusal class in shell-quoting.ts rests on a claim about a DIFFERENT tokenizer than
-// any test above exercises: PowerShell's `CharTraits.IsDoubleQuote` accepts typographic quotes, and
-// `ScanStringLiteral` closes a double-quoted string at the first character satisfying it without
-// requiring the closing character to match the opening one. Running the CLI's own suite on a
-// Windows runner does not check that — it exercises the RENDERER and would go green whether or not
-// the claim holds. Only executing an emitted command through PowerShell settles it.
-//
-// So the verification is a test rather than a note. It runs wherever `pwsh` (or Windows PowerShell)
-// exists, and SKIPS with a stated reason where it does not, so a reader can always tell "verified
-// here" from "not run here" — never a vacuous pass, which is the failure mode this file already
-// had to be fixed for once.
-function findPowerShell(): string | undefined {
-  for (const candidate of ["pwsh", "powershell"]) {
-    try {
-      execFileSync(candidate, ["-NoProfile", "-Command", "exit 0"], { stdio: "ignore", timeout: 30_000 });
-      return candidate;
-    } catch {
-      // not installed, or not this name on this host
-    }
-  }
-  return undefined;
-}
-
-const POWERSHELL = findPowerShell();
-const powershellOnly = {
-  skip: POWERSHELL
-    ? false
-    : "no pwsh/powershell on this host — the PowerShell tokenizer claim behind the Windows refusal class is NOT verified here",
-};
-
-/** A marker written by a PowerShell cmdlet, so it needs no PATH lookup and no external binary. */
-const PWSH_MARKER = "MARKER_POWERSHELL";
-const PWSH_BREAKOUT = `Set-Content -LiteralPath ${PWSH_MARKER} -Value x`;
-
-interface PowerShellRun {
-  argv: string[];
-  markerCreated: boolean;
-  stderr: string;
-}
-
-/**
- * Execute one emitted command under PowerShell with the CLI prefix replaced by an argv-dumping
- * script, mirroring {@link executeEmitted}. `$args` is written verbatim, so a value that arrived as
- * ONE argument is visible as one line.
- */
-async function executeUnderPowerShell(command: string): Promise<PowerShellRun> {
-  const home = await tempDir("superbee-pwsh-");
-  try {
-    const script = path.join(home, "dump.ps1");
-    const argvOut = path.join(home, "argv.txt");
-    const cwd = path.join(home, "run");
-    const { mkdir } = await import("node:fs/promises");
-    await mkdir(cwd);
-    await writeFile(script, `Set-Content -LiteralPath '${argvOut}' -Value $args\n`, "utf8");
-
-    const prefix = cliInvocation();
-    assert.ok(command.startsWith(prefix), `emitted command should start with the CLI prefix: ${command}`);
-    const rewritten = `& '${script}' ${command.slice(prefix.length)}`;
-
-    const result = spawnSync(POWERSHELL!, ["-NoProfile", "-NonInteractive", "-Command", rewritten], {
-      cwd,
-      encoding: "utf8",
-      timeout: 60_000,
-    });
-    const argv = existsSync(argvOut)
-      ? readFileSync(argvOut, "utf8").split(/\r?\n/).filter((line) => line !== "")
-      : [];
-    return { argv, markerCreated: existsSync(path.join(cwd, PWSH_MARKER)), stderr: result.stderr ?? "" };
-  } finally {
-    await rm(home, { recursive: true, force: true });
-  }
-}
-
-/** Render `value` the way a Windows host would, whatever host is actually running the test. */
-function renderAsWindows(value: string): string {
-  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
-  Object.defineProperty(process, "platform", { ...original, value: "win32" });
-  try {
-    return `${cliInvocation()} doc write x --type ${commandToken(value)}`;
-  } finally {
-    Object.defineProperty(process, "platform", original);
-  }
-}
-
-/**
- * The premise, tested rather than asserted. If PowerShell does NOT close a double-quoted string at
- * U+201D, this fails — and that failure means the refusal class in shell-quoting.ts is broader than
- * it needs to be, NOT that anything is exposed. Read a red here as "revisit the breadth", never as
- * "vulnerable".
- */
-test("PowerShell closes a double-quoted string at a typographic quote (the premise for refusing them)", powershellOnly, async () => {
-  // Deliberately NOT rendered: this is the shape the refusal class exists to prevent ever emitting.
-  const unrefused = `${cliInvocation()} doc write x --type "a”; ${PWSH_BREAKOUT}; “b"`;
-  const run = await executeUnderPowerShell(unrefused);
-  assert.equal(
-    run.markerCreated,
-    true,
-    "PowerShell did not treat U+201D as closing the string. The premise behind refusing the "
-      + "smart-quote family in shell-quoting.ts does not hold on this host — the refusal is then "
-      + "merely over-broad, not wrong.\n"
-      // argv separates the two ways this can go red. A TOKENIZER finding still runs the script, so
-      // argv is populated; a BROKEN HARNESS (a host where PowerShell never really executed) leaves
-      // it empty. Without this, an unresponsive host sends a maintainer to read tokenizer source.
-      + `argv=${JSON.stringify(run.argv)} — if this is EMPTY, PowerShell did not run at all and this `
-      + "is a harness problem, not a finding about the tokenizer.\n"
-      + `stderr=${run.stderr}`,
-  );
-});
-
-/**
- * The property that matters: whatever the renderer emits must be inert under PowerShell. Covers a
- * typographic quote, a plain U+0022, and a value that IS rendered rather than refused — so this
- * documents the actual behavior whichever way the U+0022 refuse-vs-escape question is settled.
- */
-test("a command emitted through the Windows renderer is inert under PowerShell", powershellOnly, async () => {
-  const cases: [string, string][] = [
-    ["typographic quote", `a”; ${PWSH_BREAKOUT}; “b`],
-    ["plain double quote", `a"; ${PWSH_BREAKOUT}; "b`],
-    ["subexpression", `a$(${PWSH_BREAKOUT})b`],
-    ["ordinary multi-word value", "Context Note"],
-  ];
-  for (const [label, value] of cases) {
-    const command = renderAsWindows(value);
-    const run = await executeUnderPowerShell(command);
-    assert.equal(run.markerCreated, false, `${label}: emitted command EXECUTED injected input:\n${command}`);
-    // Targeted rather than "stderr is empty": a PARSE error is the vacuous-pass risk, and demanding
-    // silence would make this brittle against any host-specific notice. The argv assertion below is
-    // the real guard — a command PowerShell failed to parse delivers no arguments at all.
-    assert.ok(
-      !/ParserError|Unexpected token|Missing|TerminatorExpected/i.test(run.stderr),
-      `${label}: emitted command is not valid PowerShell:\n${command}\n${run.stderr}`,
-    );
-    // Whatever survived rendering must arrive as ONE argument. A refused value arrives as the
-    // placeholder; a rendered one arrives verbatim. Both are single arguments, and asserting that
-    // rather than a fixed string keeps this honest if the refusal set is later narrowed.
-    const delivered = run.argv[run.argv.length - 1];
-    assert.ok(
-      delivered === value || delivered === "<value-omitted-unquotable>",
-      `${label}: expected the value or the placeholder as ONE argument, got ${JSON.stringify(run.argv)}`,
-    );
-  }
-});
-
-// ---------------------------------------------------------------------------------------------
-// cmd.exe inertness.
-//
-// The Windows renderer emits `"…"`, and cmd.exe expands a matched `%NAME%` pair INSIDE double
-// quotes. Refusing `%` is what keeps a rendered token inert there — but that is a claim about
-// cmd.exe, and nothing above tests cmd.exe. Running the suite on a Windows runner exercises the
-// RENDERER and would stay green whether or not the claim holds, exactly as it would have for the
-// PowerShell claim. So the verification is a probe, gated on a real cmd.exe and skipping visibly
-// where there is none.
-const COMSPEC = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : undefined;
-const cmdOnly = {
-  skip: COMSPEC
-    ? false
-    : "no cmd.exe on this host — the percent-expansion claim behind the Windows refusal of `%` is NOT verified here",
-};
-
-/** A value planted in the environment; if cmd.exe expands, it appears in the child's argv. */
-const SECRET_VAR = "SUPERBEE_PROBE_SECRET";
-const SECRET_VALUE = "PROBE_SECRET_LEAKED";
-
-interface CmdRun {
-  argv: string[];
-  stderr: string;
-}
-
-/**
- * Set up the cmd.exe harness ONCE and hand back a runner. The dumper and its temp tree are built
- * per TEST rather than per case: Windows spawns are the expensive part and the lane that runs these
- * has a wall-clock budget, so there is no reason to rebuild the scaffolding four times.
- */
-async function withCmdHarness(
-  body: (run: (command: string) => CmdRun) => Promise<void>,
-): Promise<void> {
-  const home = await tempDir("superbee-cmd-");
-  try {
-    const dump = path.join(home, "dump.cjs");
-    const cwd = path.join(home, "run");
-    const { mkdir } = await import("node:fs/promises");
-    await mkdir(cwd);
-
-    let call = 0;
-    const run = (command: string): CmdRun => {
-      const argvOut = path.join(home, `argv-${(call += 1)}.txt`);
-      writeFileSync(
-        dump,
-        `require("node:fs").writeFileSync(process.env.SUPERBEE_ARGV_OUT, process.argv.slice(2).join("\\n"));\n`,
-        "utf8",
-      );
-      const prefix = cliInvocation();
-      assert.ok(command.startsWith(prefix), `emitted command should start with the CLI prefix: ${command}`);
-      const rewritten = `"${process.execPath}" "${dump}" ${command.slice(prefix.length)}`;
-
-      // Two cmd.exe rules have to be satisfied for the dumper to launch at all, and getting either
-      // wrong looks like "the premise is false" rather than "the harness is broken":
-      //
-      //  1. Under `/s`, cmd strips the FIRST and LAST quote of the command line (`cmd /?`, rule 2).
-      //     Ours both begins with a quoted node path and ends with a quoted argument, so without an
-      //     extra outer pair the stripping lands inside the real command and nothing runs. This is
-      //     not hypothetical: it is exactly how the first version of this probe failed on a real
-      //     Windows runner, reporting `argv=[]` and "is not recognized as an internal or external
-      //     command".
-      //  2. Node would otherwise apply Windows argument escaping (`\"`), which cmd does not
-      //     understand, so the command line is passed verbatim instead.
-      const result = spawnSync(COMSPEC!, ["/d", "/s", "/c", `"${rewritten}"`], {
-        cwd,
-        encoding: "utf8",
-        env: { ...process.env, [SECRET_VAR]: SECRET_VALUE, SUPERBEE_ARGV_OUT: argvOut },
-        windowsVerbatimArguments: true,
-        timeout: 60_000,
-      });
-      const argv = existsSync(argvOut)
-        ? readFileSync(argvOut, "utf8").split("\n").filter((line) => line !== "")
-        : [];
-      return { argv, stderr: result.stderr ?? "" };
-    };
-    await body(run);
-  } finally {
-    await rm(home, { recursive: true, force: true });
-  }
-}
-
-/**
- * The premise, tested rather than asserted: cmd.exe DOES expand `%NAME%` inside double quotes. If
- * this fails, refusing `%` is merely over-broad rather than wrong — read a red here as "revisit the
- * breadth", never as "vulnerable". An EMPTY argv means cmd.exe never ran the dumper at all, which
- * is a harness problem and not a finding.
- */
-test("cmd.exe expands %NAME% inside double quotes (the premise for refusing the percent sign)", cmdOnly, async () => {
-  await withCmdHarness(async (run) => {
-  const observed = run(`${cliInvocation()} doc write x --type "%${SECRET_VAR}%"`);
-  assert.ok(
-    observed.argv.some((argument) => argument.includes(SECRET_VALUE)),
-    "cmd.exe did not expand %NAME% inside double quotes. The premise behind refusing `%` in "
-      + "shell-quoting.ts does not hold on this host — the refusal is then merely over-broad, not "
-      + `wrong.\nargv=${JSON.stringify(observed.argv)} — if this is EMPTY, cmd.exe did not run the `
-      + `dumper at all and this is a harness problem, not a finding.\nstderr=${observed.stderr}`,
-  );
-  });
-});
-
-/** The property that matters: nothing the renderer emits can be expanded by cmd.exe. */
-test("a command emitted through the Windows renderer performs no expansion under cmd.exe", cmdOnly, async () => {
-  const cases: [string, string][] = [
-    ["environment reference", `%${SECRET_VAR}%`],
-    ["percent-encoded URL", "http://example.com/a%20b"],
-    ["ordinary multi-word value", "Context Note"],
-    ["apostrophe", "Owner's Guide"],
-  ];
-  await withCmdHarness(async (run) => {
-    for (const [label, value] of cases) {
-      const command = renderAsWindows(value);
-      const observed = run(command);
-      assert.ok(
-        !observed.argv.some((argument) => argument.includes(SECRET_VALUE)),
-        `${label}: cmd.exe EXPANDED an environment value into the emitted command:\n${command}\n`
-          + `argv=${JSON.stringify(observed.argv)}`,
-      );
-      // Exactly one argument, whether the value survived rendering or was withheld.
-      const delivered = observed.argv[observed.argv.length - 1];
-      assert.ok(
-        delivered === value || delivered === "<value-omitted-unquotable>",
-        `${label}: expected the value or the placeholder as ONE argument, got ${JSON.stringify(observed.argv)}`,
-      );
-    }
-  });
 });
