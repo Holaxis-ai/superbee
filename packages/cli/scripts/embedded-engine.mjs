@@ -34,12 +34,20 @@ export function captureSourceState() {
 
 /** Rows come from the bundler's own inputs, so a newly embedded workspace cannot be omitted. */
 export function embeddedEngineRecord({ metafile, source, changedPaths, git = runGit, manifestOf = readManifest }) {
-  const dirs = new Set();
+  const inputsByDir = new Map();
   for (const input of Object.keys(metafile.inputs)) {
     const parts = relative(repoRoot, resolve(cliRoot, input)).split(sep);
-    if (parts[0] === "packages" && parts.length > 2 && !parts.includes("node_modules") && parts[1] !== "cli") dirs.add(parts[1]);
+    if (parts[0] === "packages" && parts.length > 2 && !parts.includes("node_modules") && parts[1] !== "cli") inputsByDir.set(parts[1], [...(inputsByDir.get(parts[1]) ?? []), parts.join("/")]);
   }
-  const packages = [...dirs].sort().map(dir => {
+  // Untracked and ignored inputs (generated modules) are embedded yet invisible to both the
+  // status guard and the tag diff, so a package with any such input has no reportable comparison.
+  const allTracked = dir => {
+    const listed = git(["ls-files", "-z", "--", `packages/${dir}`]);
+    if (listed?.status !== 0) return false;
+    const tracked = new Set(listed.stdout.split("\0"));
+    return inputsByDir.get(dir).every(path => tracked.has(path));
+  };
+  const packages = [...inputsByDir.keys()].sort().map(dir => {
     const { name, version } = manifestOf(dir);
     if (typeof name !== "string" || !name.startsWith("@superbee/") || typeof version !== "string") {
       throw new Error(`packages/${dir} contributes bundle inputs but is not a versioned @superbee workspace`);
@@ -49,7 +57,7 @@ export function embeddedEngineRecord({ metafile, source, changedPaths, git = run
     // The comparison reads HEAD while the bundler read the working tree, so it is reported only
     // when this package had no uncommitted or untracked change.
     const clean = changedPaths !== null && !changedPaths.some(path => path.startsWith(`packages/${dir}/`));
-    if (release_tag !== null && clean && git(["rev-parse", "--verify", "--quiet", `refs/tags/${release_tag}^{commit}`])?.status === 0) {
+    if (release_tag !== null && clean && allTracked(dir) && git(["rev-parse", "--verify", "--quiet", `refs/tags/${release_tag}^{commit}`])?.status === 0) {
       const diff = git(["diff", "--quiet", `refs/tags/${release_tag}`, "HEAD", "--", `packages/${dir}`]);
       if (diff?.status === 0 || diff?.status === 1) source_identical_to_release_tag = diff.status === 0;
     }

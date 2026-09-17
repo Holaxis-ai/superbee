@@ -71,8 +71,9 @@ const engine = createRequire(import.meta.url)('@superbee/cli/embedded-engine.jso
   `source_identical_to_release_tag`.
 - `source_identical_to_release_tag` is `true` or `false` when the build compared the embedded
   package directory at the built commit with that release tag. It is `null` when no comparison
-  was made: the package has no release tag convention, the tag or git was unavailable, or the
-  package directory had uncommitted changes.
+  was made: the package has no release tag convention, the tag or git was unavailable, the
+  package directory had uncommitted changes, or an embedded input under it was untracked or
+  ignored by git (a generated module, for example).
 - `source` is the built `commit` and whether the working tree was `dirty`; either is `null`
   when unknown.
 
