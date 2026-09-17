@@ -69,6 +69,7 @@ import { defaultSyncStore } from "../cursor.js";
 import { pullBoardAndRecord } from "../autopull.js";
 import { defaultSummarizeBundle, discoverSummarizeBundle, home, type BoardPullOutcome } from "./home.js";
 import { cliInvocation } from "../invocation.js";
+import { commandFragment, commandLiteral, commandQuoted } from "../command-text.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
@@ -191,9 +192,9 @@ export async function sessionStartPull(
 
     // CHANNEL DETECTION (board-git PR C), computed fresh at THIS pull's own resolution point.
     // Routing mirrors sync's: only a positively detected `in-tree` channel leaves today's flow —
-    // `branch` continues into the provisioning path below unchanged; `local-only` and the
-    // fail-closed `indeterminate` outcome return undefined exactly where provisioning's
-    // no_repo/no_board outcomes did; a tracked-folder refusal arm (pre-share-window/dual-board)
+    // `branch` continues into provisioning; `local-only` needs no board orientation, while
+    // indeterminate discovery must survive into the render instead of suggesting creation.
+    // A tracked-folder refusal arm (pre-share-window/dual-board)
     // thrown here lands in the same calm-render catch provisioning's own throw did.
     let detection: ChannelDetection;
     try {
@@ -203,8 +204,16 @@ export async function sessionStartPull(
     } catch {
       return undefined;
     }
-    if (detection.kind === "indeterminate") return undefined;
-    if (detection.channel.mode === "local-only") return undefined;
+    if (detection.kind === "indeterminate") {
+      const target = dir === undefined ? commandLiteral("") : commandFragment` --dir ${commandQuoted(dir)}`;
+      return {
+        offline: true,
+        discoveryUnknown: `${detection.reason}; restore repository access or connectivity, then retry \`${cliInvocation()} session-start${target}\` before creating a bundle`,
+      };
+    }
+    if (detection.channel.mode === "local-only") {
+      return repoTopLevel(startDir) ? { offline: false, discoveryAbsent: true } : undefined;
+    }
     if (detection.channel.mode === "in-tree") {
       const top = repoTopLevel(startDir);
       if (!top) return undefined;

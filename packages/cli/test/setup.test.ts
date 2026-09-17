@@ -44,6 +44,7 @@ function deps(write: (text: string) => void): SetupDeps {
       reason: "current", docs_url: target.docs_url,
     })),
     resolveBundle: async () => ({ root: "/Users/private/project/.superbee", canonicalRoot: "/Users/private/project/.superbee", selectedBy: "discovery" }),
+    inspectBoard: async () => ({ kind: "channel", channel: { mode: "local-only" } }),
     listCatalog: async () => [{
       id: "bnd_00000000000000000000000000000000", label: "project",
       locator: { kind: "local-path" as const, path: "/Users/private/project/.superbee" }, available: true,
@@ -73,6 +74,22 @@ function deps(write: (text: string) => void): SetupDeps {
     }),
   };
 }
+
+test("setup inspects a missing project's shared board before proposing bundle creation", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.resolveBundle = async () => { throw new CliError("NOT_FOUND", "fixture missing bundle"); };
+  injected.listCatalog = async () => [];
+  injected.inspectBoard = async (dir) => {
+    assert.equal(dir, "/Users/private/project");
+    return { kind: "channel", channel: { mode: "branch", branch: "board", remote: "origin" } };
+  };
+  await setup(["--host", "claude-code", "--scope", "project", "--json"], injected);
+  const plan = JSON.parse(output).setup;
+  assert.deepEqual(plan.next.command, ["superbee", "sync", "--pull-only"]);
+  assert.equal(plan.next.mutates, true);
+  assert.doesNotMatch(output, /init --create-only/);
+});
 
 test("hostless setup supplies an agent protocol and host-specific argv actions", async () => {
   let output = "";

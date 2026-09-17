@@ -1,4 +1,5 @@
 import { distributionBinName } from "./runtime-context.js";
+import type { ChannelDetection } from "@superbee/board-git";
 // Pure AXI setup planning. Host/file inspection lives at the command boundary; this module owns
 // only the bounded capability matrix, deterministic ordering, and one-next-command projection.
 
@@ -66,6 +67,7 @@ export interface SetupHookHostState {
 }
 
 export interface SetupWorkspaceState {
+  readonly board?: ChannelDetection;
   readonly bundle: "selected" | "absent" | "unreadable";
   readonly catalog: "ready" | "empty" | "unreadable";
   readonly selected_registered: boolean;
@@ -158,7 +160,7 @@ function mutatesCapability(capability: SetupCapability): boolean {
   if (capability.id === "skill" || capability.id === "mcp" || capability.id === "hook") {
     return command.includes(" install ");
   }
-  if (capability.id === "bundle") return command.startsWith("superbee init ");
+  if (capability.id === "bundle") return command.startsWith("superbee init ") || command.startsWith("superbee sync ");
   if (capability.id === "catalog") return command.startsWith("superbee catalog add ");
   if (capability.id === "state") {
     return command.startsWith("superbee setup migrate-state")
@@ -180,6 +182,9 @@ function approvalFor(capability: SetupCapability, mutates: boolean): SetupApprov
     return { required: false, reason: null };
   }
   if (capability.id === "bundle") {
+    if (command.startsWith("superbee sync ")) {
+      return { required: true, reason: "This may materialize and pull the existing board checkout." };
+    }
     return { required: true, reason: "This creates durable project knowledge-bundle files." };
   }
   if (capability.id === "state") {
@@ -201,6 +206,7 @@ function actionDescription(capability: SetupCapability): string {
   if (command.startsWith("superbee setup quarantine-state")) return "Preserve unrecognized private state by moving it aside before setup continues.";
   if (command.startsWith("npm install ")) return "Install Superbee into the user's global npm prefix.";
   if (command.startsWith("superbee init ")) return "Create the requested project-local Superbee bundle.";
+  if (command.startsWith("superbee sync --pull-only")) return "Resolve and pull the existing board checkout without committing or pushing local changes.";
   return capability.reason;
 }
 
@@ -502,6 +508,27 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
       state: "blocked",
       reason: "local bundle selection is unreadable or conflicting",
       command: "superbee bundle locate",
+    };
+  }
+  if (input.workspace.board?.kind === "indeterminate") {
+    return {
+      id: "bundle", requirement: "recommended", state: "blocked",
+      reason: `${input.workspace.board.reason}; restore repository access or connectivity, then rerun setup before creating a bundle`,
+      command: `superbee setup --host ${input.host} --scope ${input.scope}`,
+    };
+  }
+  if (input.workspace.board?.kind === "channel" && input.workspace.board.channel.mode === "branch") {
+    return {
+      id: "bundle", requirement: "recommended", state: "needs_action",
+      reason: "this project already has a board branch; resolve its existing checkout before creating a bundle",
+      command: "superbee sync --pull-only",
+    };
+  }
+  if (input.workspace.board?.kind === "channel" && input.workspace.board.channel.mode === "in-tree") {
+    return {
+      id: "bundle", requirement: "recommended", state: "blocked",
+      reason: "this project already tracks its bundle on the current branch; restore the missing tracked checkout before rerunning setup",
+      command: `superbee setup --host ${input.host} --scope ${input.scope}`,
     };
   }
   if (input.workspace.catalog === "ready") {
