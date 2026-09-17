@@ -434,6 +434,8 @@ export async function defaultLoadWorkspaces(home?: string, signal?: AbortSignal)
  * "did THIS run reach the remote" signal only the process that just pulled can give).
  */
 export interface BoardPullOutcome {
+  /** Discovery could not establish whether a shared board exists; never suggest creating one. */
+  discoveryUnknown?: string;
   /**
    * True when this run could NOT confirm the board's currency: the fetch failed (offline, auth,
    * a held lock), the pull lost its time box, or the pull step threw. Renders the pinned
@@ -598,6 +600,7 @@ export function buildBoardBlock(
   pull: BoardPullOutcome | undefined,
   inv: CommandPrefix,
 ): { block?: string | Record<string, unknown>; firstContact?: string } {
+  if (pull?.discoveryUnknown) return { firstContact: pull.discoveryUnknown };
   if (!status) return {};
   if (status.state === "unprovisioned") return { firstContact: boardFirstContactLine(inv) };
   // The window line rides the firstContact slot: same above-the-fold placement, same init-hint
