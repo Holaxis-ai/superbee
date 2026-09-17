@@ -116,7 +116,13 @@ test("production replacement classification is captured and cannot leak between 
   await a.write("x", { id: "x", frontmatter: { type: "Note" }, body: "old" });
   selected.isReplacementConflict = () => false;
   let renames = 0;
-  t.mock.method(fs, "rename", async () => { renames++; throw conflict; });
+  const rename = fs.rename;
+  // Only document replacement inside the bundle conflicts; runtime lock release also renames.
+  t.mock.method(fs, "rename", async (from: string, to: string) => {
+    if (!String(to).startsWith(root)) return rename(from, to);
+    renames++;
+    throw conflict;
+  });
   const doc = { id: "x", frontmatter: { type: "Note" }, body: "new" };
   await assert.rejects(a.write("x", doc), ConcurrentReplacementError);
   await assert.rejects(b.write("x", doc), (error) => error === conflict);
