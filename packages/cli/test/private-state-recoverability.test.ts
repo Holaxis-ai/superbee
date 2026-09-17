@@ -65,7 +65,6 @@ interface RecoverabilityRow {
   /** Interrogate the refusal BEFORE its remedy runs — proportionality is a claim about the emitted
    * command, so it has to be checked where the command is emitted. */
   readonly inspectRefusal?: (output: string, fixture: Fixture) => void;
-  readonly skip?: string;
 }
 
 /** The durable records a canonical root can be the ONLY copy of (specification R7). */
@@ -115,7 +114,6 @@ interface Fixture extends BoundaryFixture {
 const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
   {
     label: "R1 — the bundle would ENCLOSE a guarded root",
-    skip: process.platform === "win32" ? "POSIX project-creation recovery chain; Windows containment has dedicated coverage" : undefined,
     trigger: (f) => ({ argv: ["init", "--dir", f.home, "--json"], commandLine: `superbee init --dir '${f.home}' --json` }),
     expectStatus: 5,
     help: /mkdir -p ~\/projects\/<name> && cd ~\/projects\/<name> && superbee init --create-only --dir \.superbee/,
@@ -134,7 +132,6 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
   },
   {
     label: "R2 — the bundle IS a guarded root",
-    skip: process.platform === "win32" ? "POSIX private-root recovery prose; Windows containment has dedicated coverage" : undefined,
     trigger: (f) => ({
       argv: ["init", "--dir", f.stateRoot, "--json"],
       commandLine: `superbee init --dir '${f.stateRoot}' --json`,
@@ -154,7 +151,6 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
   },
   {
     label: "R3 — a caller-supplied destination inside a guarded root",
-    skip: process.platform === "win32" ? "POSIX private-root display and recovery grammar; Windows policy has dedicated coverage" : undefined,
     trigger: (f) => ({
       argv: ["doc", "read", "notes/a", "--out", path.join(f.stateRoot, "x.md"), "--dir", ".superbee", "--json"],
       commandLine: `superbee doc read notes/a --out '${path.join(f.stateRoot, "x.md")}' --dir .superbee --json`,
@@ -175,7 +171,6 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
   },
   {
     label: "R4 — an unrecognized canonical root, quarantined by RENAME",
-    skip: process.platform === "win32" ? "POSIX ownership-mode recovery; Windows user-local containment has dedicated coverage" : undefined,
     arrange: (f) => {
       // Strip the ownership marker: this is the half-created / foreign class, not a healthy root.
       rmSync(path.join(f.stateRoot, "state.json"), { force: true });
@@ -213,7 +208,6 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
   },
   {
     label: "R5 — the hostless `setup` a refusal points at reports the private-state row",
-    skip: process.platform === "win32" ? "POSIX ownership-mode recovery; Windows user-local containment has dedicated coverage" : undefined,
     arrange: (f) => {
       rmSync(path.join(f.stateRoot, "state.json"), { force: true });
     },
@@ -232,7 +226,6 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     // The 0755 DIRECTORY mode with a valid 0600 marker: a root this product recognizes and repairs
     // on its next write. Its exit node must therefore be the repair, not the foreign-root remedy.
     label: "R6 — remedy proportionality for a root the product itself repairs",
-    skip: process.platform === "win32" ? "POSIX chmod recovery is not a Windows ACL contract" : undefined,
     arrange: (f) => {
       withDurableRecords(f);
       chmodSync(f.stateRoot, 0o755);
@@ -263,7 +256,6 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     // root holds the ONLY copy of the catalog, credentials, and View approvals and nothing
     // re-imports a quarantined canonical root.
     label: "R7 — quarantine must not be the remedy for a root holding the only copy",
-    skip: process.platform === "win32" ? "POSIX chmod recovery is not a Windows ACL contract" : undefined,
     arrange: (f) => {
       withDurableRecords(f);
       chmodSync(path.join(f.stateRoot, "state.json"), 0o644);
@@ -290,7 +282,6 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     // The migration SOURCE side of the same property: `~/.agentstate -> ~/dotfiles/agentstate` is
     // an ordinary dotfile layout, and reporting it as absent abandoned everything it held.
     label: "R8 — a migration source that exists but is not a real directory",
-    skip: process.platform === "win32" ? "POSIX legacy-root display and symlink recovery; Windows migration has dedicated coverage" : undefined,
     arrange: (f) => {
       rmSync(f.stateRoot, { recursive: true, force: true });
       const real = path.join(f.home, "dotfiles", "agentstate");
@@ -389,7 +380,7 @@ function triggerEnv(f: Fixture): NodeJS.ProcessEnv {
 
 test("recoverability: every refusal names an exit node, and the exit node is EXECUTED", async (t) => {
   for (const row of RECOVERABILITY_ROWS) {
-    await t.test(row.label, row.skip === undefined ? {} : { skip: row.skip }, async () => {
+    await t.test(row.label, async () => {
       const f = await fixture();
       try {
         row.arrange?.(f);

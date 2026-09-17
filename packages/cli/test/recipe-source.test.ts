@@ -299,7 +299,7 @@ test("resolveRecipe: an in-root symlink to a directory is refused as a non-regul
 
 test(
   "resolveRecipe: an unreadable file says so instead of blaming a symlink",
-  { skip: process.platform === "win32" || process.getuid?.() === 0 ? "needs POSIX permissions as a non-root user" : false },
+  { skip: process.getuid?.() === 0 ? "needs POSIX permissions as a non-root user" : false },
   async () => {
     const dir = await tempDir();
     try {

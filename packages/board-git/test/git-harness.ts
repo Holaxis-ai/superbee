@@ -41,8 +41,8 @@ const SCRUBBED_GIT_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] as cons
 /** Baseline hermetic env applied to every git invocation (per-call overrides win). */
 const GIT_ENV_DEFAULTS: Readonly<Record<string, string>> = {
   // Neutralize host config so ~/.gitconfig can't leak identity/hooks/signing into a fixture.
-  GIT_CONFIG_SYSTEM: process.platform === "win32" ? "NUL" : "/dev/null",
-  GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   // No prompts, no interactive auth — matches the U1 spawn wrapper's invariants.
   GIT_TERMINAL_PROMPT: "0",
@@ -129,7 +129,7 @@ export async function withNoGitIdentity<T>(fn: () => Promise<T> | T): Promise<T>
   const keys = [...NO_IDENTITY_ENV_VARS, "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"] as const;
   const saved = new Map<string, string | undefined>(keys.map((k) => [k, process.env[k]]));
   for (const k of NO_IDENTITY_ENV_VARS) delete process.env[k];
-  process.env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
+  process.env.GIT_CONFIG_GLOBAL = "/dev/null";
   process.env.GIT_CONFIG_SYSTEM = noIdentitySystemConfigPath();
   // An ambient GIT_CONFIG_NOSYSTEM=1 makes git skip the system config file entirely — silently
   // defeating the forced useConfigOnly above and letting the OS-account guess back in on a dev
@@ -172,13 +172,13 @@ export interface TopologyOptions {
   provision?: boolean;
 }
 
-/** Windows can retain short-lived Git/process handles after a fixture exits. Bound cleanup only. */
+/** Bound cleanup retries for short-lived Git/process handles after a fixture exits. */
 function cleanupTopology(dir: string): Promise<void> {
   return rm(dir, {
     recursive: true,
     force: true,
-    maxRetries: process.platform === "win32" ? 20 : 5,
-    retryDelay: process.platform === "win32" ? 150 : 100,
+    maxRetries: 5,
+    retryDelay: 100,
   });
 }
 

@@ -113,14 +113,7 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
     "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
 })}\n`;
 
-// The baseline is written in the POSIX spelling; rewrite it into the RUNNING platform's spelling.
-// This used to be a hand-written `win32 ? bare : quoted` branch, which described the renderer's old
-// Windows behaviour and silently stopped matching when that changed — the same drift that a
-// second copy of the quoting rules always produces. `renderedQuoted` is the shipped producer, so on
-// POSIX this substitution is a no-op and on Windows it tracks the renderer automatically.
-// Both baselines pin SERIALIZED bytes, and a Windows-rendered token contains `"`, which TOON and
-// JSON both escape. Substituting the raw token would compare against bytes the serializer never
-// emits, so the replacement is escaped the same way the serializer escapes it.
+// Derive the quoted token from the shipped renderer and escape it for the serialized baselines.
 const GETTING_STARTED_DIR = escapeForSerializedString(`--dir ${renderedQuoted(".superbee")}`);
 const PLATFORM_HOME_BASELINE_TOON = HOME_BASELINE_TOON.replaceAll("--dir '.superbee'", GETTING_STARTED_DIR);
 const PLATFORM_HOME_BASELINE_JSON = HOME_BASELINE_JSON.replaceAll("--dir '.superbee'", GETTING_STARTED_DIR);
@@ -391,10 +384,10 @@ test("handle-based cache inspection distinguishes safe invalid state from unsafe
 test("cache safety is bounded, nonblocking, and uses platform-native containment", () => {
   const variants: Array<[string, (home: string, cache: string) => void, "unsafe" | "refreshable"]> = [
     ["oversized", (_home, cache) => writeFileSync(cache, "x".repeat(UPDATE_CACHE_MAX_BYTES + 1), { mode: 0o600 }), "unsafe"],
-    ["loose file", (_home, cache) => writeFileSync(cache, "{}", { mode: 0o644 }), process.platform === "win32" ? "refreshable" : "unsafe"],
+    ["loose file", (_home, cache) => writeFileSync(cache, "{}", { mode: 0o644 }), "unsafe"],
     ["directory", (_home, cache) => mkdirSync(cache, { mode: 0o600 }), "unsafe"],
   ];
-  if (process.platform !== "win32") variants.push(["fifo", (_home, cache) => execFileSync("mkfifo", [cache]), "unsafe"]);
+  variants.push(["fifo", (_home, cache) => execFileSync("mkfifo", [cache]), "unsafe"]);
   for (const [label, plant, expected] of variants) {
     const home = tempHome();
     try {
@@ -418,9 +411,9 @@ test("cache safety is bounded, nonblocking, and uses platform-native containment
     ensureUserStateRootSync(looseHome);
     chmodSync(credentialsDir(looseHome), 0o755);
     assert.deepEqual(inspectUpdateCache({ home: looseHome, runningVersion: RUNNING, now: NOW }), {
-      state: process.platform === "win32" ? "refreshable" : "unsafe",
+      state: "unsafe",
     });
-    if (process.platform !== "win32") assert.equal(lstatSync(credentialsDir(looseHome)).mode & 0o777, 0o755);
+    assert.equal(lstatSync(credentialsDir(looseHome)).mode & 0o777, 0o755);
   } finally {
     rmSync(looseHome, { recursive: true, force: true });
   }
@@ -460,10 +453,8 @@ test("hard-link claim, continuous stale conversion, cooldown cleanup, and token-
     const first = claimUpdateLease({ home, now: new Date(CHECKED_AT), token: tokenA });
     assert.equal(first.state, "claimed");
     assert.deepEqual(parseUpdateLeaseText(readFileSync(updateLeasePath(home), "utf8")), activeLease(tokenA));
-    if (process.platform !== "win32") {
-      assert.equal(lstatSync(updateLeasePath(home)).mode & 0o777, 0o600);
-      assert.equal(lstatSync(path.dirname(updateLeasePath(home))).mode & 0o777, 0o700);
-    }
+    assert.equal(lstatSync(updateLeasePath(home)).mode & 0o777, 0o600);
+    assert.equal(lstatSync(path.dirname(updateLeasePath(home))).mode & 0o777, 0o700);
 
     assert.deepEqual(
       claimUpdateLease({ home, now: new Date("2026-08-05T12:00:29.999Z"), token: tokenB }),
@@ -925,7 +916,7 @@ test("built JSON and suppressed default routes perform zero update-state work", 
           CI: undefined,
         },
         encoding: "utf8",
-        timeout: process.platform === "win32" ? 10_000 : 3_000,
+        timeout: 3_000,
       });
       assert.equal(result.status, 0, `${argv.join(" ")} stderr=${result.stderr}`);
       assert.equal(result.stderr, "");

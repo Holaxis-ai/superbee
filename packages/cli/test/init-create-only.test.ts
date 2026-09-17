@@ -319,10 +319,6 @@ test("create-only binding discovery matches ordinary discovery for symlinked bin
 });
 
 test("create-only rejects binding symlinks to FIFOs promptly for both supported names", async (t) => {
-  if (process.platform === "win32") {
-    t.skip("mkfifo is unavailable on Windows");
-    return;
-  }
   const base = await tempDir();
   try {
     const fifo = path.join(base, "binding-source");
@@ -735,7 +731,7 @@ test("two real concurrent create-only processes: exactly one winner, loser exits
 });
 
 test("permission failure surfaces as a structured error, not a crash or partial write", async (t) => {
-  if (process.platform === "win32" || process.getuid?.() === 0) {
+  if (process.getuid?.() === 0) {
     t.skip("POSIX permission-bit refusal requires a non-root POSIX environment");
     return;
   }

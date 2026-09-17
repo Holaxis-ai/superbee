@@ -253,12 +253,9 @@ test("verbs whose first write is not the document mutation refuse BEFORE any wri
 /**
  * The emitted repairs must WORK when pasted, not merely read well. These probes execute the
  * exact spans in a POSIX shell from the failing environment and check what the next command sees.
- * Native Windows has no /bin/sh (and the hint is documented as a POSIX-shell hint), so the probes
- * are skipped there while the string assertions above stay portable.
  */
 test(
   "POSIX: every emitted env repair executes verbatim and leaves a usable environment",
-  { skip: process.platform === "win32" && "the export/unset hint is a POSIX-shell repair; no /bin/sh on native Windows" },
   () => {
     const run = (span: string, env: NodeJS.ProcessEnv) =>
       spawnSync("/bin/sh", ["-c", `${span}; printf '%s|%s' "$SUPERBEE_ACTOR" "\${AGENTSTATE_LITE_ACTOR-UNSET}"`], {
