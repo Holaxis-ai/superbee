@@ -1,6 +1,6 @@
 # @superbee/cli
 
-Unpublished reusable Superbee command implementation. The package bundles its dependencies into one
+Reusable Superbee command implementation. The package bundles its dependencies into one
 ESM library with a closed declaration surface. It does not install a binary or execute arguments
 when imported. The `superbee` distribution owns the executable, installed skill resources, private
 worker routing, and release identity.
@@ -25,8 +25,62 @@ recognition remain Superbee policy. Commands that install skills expect `SKILL.m
 at the supplied executable's package root (the parent of its `dist/` directory).
 
 Build from the repository root. The root build schedules prerequisites, this package, and the
-executable before source and distribution tests run. The manifest's `private: true` prevents accidental npm publication; source visibility is unchanged. This
-package is not enrolled in a publication or release workflow.
+executable before source and distribution tests run. This package is not yet enrolled in a release
+workflow; `npm publish` is refused here.
+
+## Supported surface
+
+The supported API is what the package exports:
+
+- `configureSourceIdentity`, `registerExecutableEntry` and `main`;
+- the identity readers `cliVersion`, `isBareVersionFlag`, `buildIdentityEnvelope`,
+  `staticBuildIdentity` and `currentExecutableRealPath`;
+- `createCliRuntime`, `createPosixCliRuntime` and `HostCommandError`;
+- the adapter contract types exported beside them (`CliRuntimeOptions`, `CliDistribution`,
+  `HostCommands`, `PrivateStateHost`, `FilesystemHostPolicy`, `BoardHostPolicy` and the types
+  they reference);
+- the `@superbee/cli/resources` subpath;
+- the `@superbee/cli/embedded-engine.json` data file.
+
+`runManagedUiWorker` and `runUpdateRefreshWorker` are exported for first-party distributions
+only. They implement private worker protocols whose arguments and behavior may change in any
+release; other hosts must not call them.
+
+Everything that is not exported is unsupported, including files under `dist/` reached by path.
+Before 1.0 any release may change the supported surface. Pin an exact version and read the
+release notes before moving it.
+
+The package has no runtime dependencies. Third-party dependencies are bundled at the versions the
+repository lockfile resolved when the artifact was built, not at the ranges `@superbee/core` or
+any other Superbee package declares.
+
+## Embedded engine record
+
+The bundle embeds the workspace source of Superbee's engine packages rather than their published
+npm packages. `@superbee/cli/embedded-engine.json` records what one artifact embeds and can be
+read without importing the library:
+
+```js
+import { createRequire } from 'node:module';
+const engine = createRequire(import.meta.url)('@superbee/cli/embedded-engine.json');
+```
+
+- `packages` has one row per embedded `@superbee/*` workspace, derived from the bundler's inputs:
+  `name`, the workspace manifest `version`, `release_tag` (`libraries/v<version>` for
+  `@superbee/core` and `@superbee/server`, otherwise `null`), and
+  `source_identical_to_release_tag`.
+- `source_identical_to_release_tag` is `true` or `false` when the build compared the embedded
+  package directory at the built commit with that release tag. It is `null` when no comparison
+  was made: the package has no release tag convention, the tag or git was unavailable, or the
+  package directory had uncommitted changes.
+- `source` is the built `commit` and whether the working tree was `dirty`; either is `null`
+  when unknown.
+
+A version number alone does not establish that the embedded Core is the published Core of that
+version: workspace source can move ahead of a release without a version change. Report the
+declared version and the measured comparison separately, and treat `false` and `null` as
+"not shown to be the published package". Even `true` compares source trees, not the compiled
+bytes on the registry.
 
 ## Explicit host runtimes
 

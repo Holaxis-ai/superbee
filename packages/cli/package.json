@@ -1,16 +1,24 @@
 {
   "name": "@superbee/cli",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0-pre.1",
   "type": "module",
   "description": "Reusable process-oriented Superbee command runtime.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Holaxis-ai/superbee.git",
+    "directory": "packages/cli"
+  },
   "engines": {
     "node": ">=20"
   },
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -19,14 +27,16 @@
     "./resources": {
       "types": "./dist/resources.d.ts",
       "default": "./dist/resources.mjs"
-    }
+    },
+    "./embedded-engine.json": "./dist/embedded-engine.json"
   },
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "test": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
     "test:host-class": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts ./test/command-text.test.ts",
-    "mutation": "node scripts/run-test-command.mjs npm-exec stryker run"
+    "mutation": "node scripts/run-test-command.mjs npm-exec stryker run",
+    "prepublishOnly": "node -e \"console.error('@superbee/cli is not yet enrolled in a release workflow; do not run npm publish here'); process.exit(1)\""
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

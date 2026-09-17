@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { workspaceAliases, runtimeBanner } from "./scripts/bundle-options.mjs";
 import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
+import { captureSourceState, embeddedEngineRecord } from "./scripts/embedded-engine.mjs";
 const root = dirname(fileURLToPath(import.meta.url));
+// Source facts describe the tree the bundler reads, so capture them before this build writes.
+const sourceState = captureSourceState();
 await rm(resolve(root, "dist"), { recursive: true, force: true });
 await prepareCliBundleInputs();
 const runtimeBuild = await build({ metafile:true, absWorkingDir: root, entryPoints: [resolve(root, "src/index.ts")], outfile: resolve(root, "dist/index.mjs"), bundle: true, platform: "node", format: "esm", target: "node20", alias: workspaceAliases, banner: runtimeBanner,
@@ -27,6 +30,8 @@ for (const name of ["index", "public-types", "runtime-types", "host-command-erro
   if (result.diagnostics?.length) throw new Error(ts.formatDiagnosticsWithColorAndContext(result.diagnostics, { getCanonicalFileName: p => p, getCurrentDirectory: () => root, getNewLine: () => "\n" }));
   await writeFile(resolve(root, `dist/${name}.d.ts`), result.outputText);
 }
+
+await writeFile(resolve(root, "dist/embedded-engine.json"), JSON.stringify(embeddedEngineRecord({ metafile: runtimeBuild.metafile, ...sourceState }), null, 2) + "\n");
 
 await mkdir(resolve(root,'../../out'),{recursive:true});
 await writeFile(resolve(root,'../../out/cli-runtime-metafile.json'),JSON.stringify(runtimeBuild.metafile,null,2)+'\n');

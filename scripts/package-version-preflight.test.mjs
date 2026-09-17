@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { checkPackageVersions, peerAdmits } from './package-version-policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const files = ['packages/core/package.json', 'packages/server/package.json', 'packages/markdown-renderer/package.json', 'package-lock.json'];
+const files = ['packages/core/package.json', 'packages/server/package.json', 'packages/markdown-renderer/package.json', 'packages/cli/package.json', 'package-lock.json'];
 function fixture(t, mutate = () => {}) {
   const directory = mkdtempSync(path.join(tmpdir(), 'superbee-version-preflight-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -25,10 +25,10 @@ test('source preflight succeeds without dependencies, build outputs or network',
   assert.deepEqual(checkPackageVersions(fixture(t)), []);
 });
 
-test('a coherent future pair and independent renderer version need no validator edits', t => {
+test('a coherent future pair and independent renderer and cli versions need no validator edits', t => {
   const directory = fixture(t, d => {
-    for (const name of ['core', 'server', 'markdown-renderer']) {
-      d[`packages/${name}/package.json`].version = name === 'markdown-renderer' ? '3.1.0' : '9.0.0-pre.3';
+    for (const name of ['core', 'server', 'markdown-renderer', 'cli']) {
+      d[`packages/${name}/package.json`].version = { 'markdown-renderer': '3.1.0', cli: '4.0.0-pre.2' }[name] ?? '9.0.0-pre.3';
       d['package-lock.json'].packages[`packages/${name}`].version = d[`packages/${name}/package.json`].version;
     }
     d['packages/server/package.json'].dependencies['@superbee/core'] = d['packages/core/package.json'].version;
@@ -58,6 +58,13 @@ for (const [label, mutate, expected] of [
   ['missing link', d => { delete d['package-lock.json'].packages['node_modules/@superbee/core']; }, /node_modules\/@superbee\/core.link: found missing/],
   ['stale link', d => { d['package-lock.json'].packages['node_modules/@superbee/core'].resolved = 'packages/server'; }, /core.resolved:.*from packages\/core\/package.json/],
   ['non-link', d => { d['package-lock.json'].packages['node_modules/@superbee/core'].link = false; }, /core.link: found false/],
+  ['private cli', d => { d['packages/cli/package.json'].private = true; }, /cli\/package.json private: expected publishable/],
+  ['cli publish access drift', d => { d['packages/cli/package.json'].publishConfig.access = 'restricted'; }, /cli\/package.json publishConfig.access:.*expected "public"/],
+  ['cli missing publish policy', d => { delete d['packages/cli/package.json'].publishConfig; }, /cli\/package.json publishConfig.registry: found missing/],
+  ['cli malformed version', d => { d['packages/cli/package.json'].version = '0.1.0-pre.01'; }, /cli\/package.json version: expected/],
+  ['cli stale lock version', d => { d['package-lock.json'].packages['packages/cli'].version = '0.0.0'; }, /packages\/cli.version:.*from packages\/cli\/package.json/],
+  ['cli stale lock development dependency', d => { d['package-lock.json'].packages['packages/cli'].devDependencies.esbuild = '*'; }, /packages\/cli.devDependencies:.*from packages\/cli\/package.json/],
+  ['cli missing link', d => { delete d['package-lock.json'].packages['node_modules/@superbee/cli']; }, /node_modules\/@superbee\/cli.link: found missing/],
 ]) test(label, t => assert.match(checkPackageVersions(fixture(t, mutate)).join('\n'), expected));
 
 test('direct runner refuses unexpected arguments', () => {

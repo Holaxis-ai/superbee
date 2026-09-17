@@ -6,8 +6,55 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { init, parse } from "es-module-lexer";
+import { versionPattern } from "./package-version-policy.mjs";
+import { embeddedEngineRecord } from "../packages/cli/scripts/embedded-engine.mjs";
 const exec = promisify(execFile);
 const root = path.resolve(import.meta.dirname, "..");
+const readJson = async file => JSON.parse(await readFile(file, "utf8"));
+
+// The record is checked against the bundler's own input list, not against the build script's
+// derivation of it. `manifestOf` maps a packages/ directory name to its workspace manifest.
+function embeddedEngineErrors(record, metafile, manifestOf) {
+  const errors = [];
+  const contributors = new Map();
+  for (const input of Object.keys(metafile.inputs ?? {})) {
+    const parts = path.relative(root, path.resolve(root, "packages/cli", input)).split(path.sep);
+    if (parts[0] === "..") errors.push(`input ${input}: resolves outside the repository`);
+    const scoped = parts.indexOf("@superbee");
+    if (scoped > 0 && parts[scoped - 1] === "node_modules") errors.push(`input ${input}: @superbee/${parts[scoped + 1]} resolves to an installed package, not workspace source`);
+    if (parts[0] !== "packages" || parts.includes("node_modules") || parts[1] === "cli") continue;
+    const manifest = manifestOf(parts[1]);
+    if (!manifest?.name?.startsWith("@superbee/")) errors.push(`input ${input}: packages/${parts[1]} is not an @superbee workspace`);
+    else if (parts[2] !== "src") errors.push(`input ${input}: ${manifest.name} resolves outside workspace source`);
+    else contributors.set(manifest.name, manifest.version);
+  }
+  if (record?.schema !== "superbee.cli-embedded-engine.v1") errors.push(`schema: found ${JSON.stringify(record?.schema)}`);
+  if (/match/i.test(JSON.stringify(record))) errors.push("record asserts a match; it may only report measurements");
+  const rows = Array.isArray(record?.packages) ? record.packages : [];
+  if (!Array.isArray(record?.packages)) errors.push("packages: expected an array");
+  const recorded = rows.map(row => row?.name);
+  for (const name of contributors.keys()) if (!recorded.includes(name)) errors.push(`packages: bundle contributor ${name} is missing from the record`);
+  for (const [index, row] of rows.entries()) {
+    const at = `packages[${index}]`;
+    if (Object.keys(row ?? {}).sort().join() !== "name,release_tag,source_identical_to_release_tag,version") { errors.push(`${at}: unexpected fields`); continue; }
+    if (recorded.indexOf(row.name) !== index) errors.push(`${at}: duplicate ${row.name}`);
+    if (!contributors.has(row.name)) { errors.push(`${at}: ${row.name} contributes no bundle input`); continue; }
+    if (row.version !== contributors.get(row.name)) errors.push(`${at}: version ${row.version} is not the workspace manifest version`);
+    const tag = ["@superbee/core", "@superbee/server"].includes(row.name) ? `libraries/v${row.version}` : null;
+    if (row.release_tag !== tag) errors.push(`${at}: release_tag ${JSON.stringify(row.release_tag)}; expected ${JSON.stringify(tag)}`);
+    if (![true, false, null].includes(row.source_identical_to_release_tag) || (tag === null && row.source_identical_to_release_tag !== null)) errors.push(`${at}: source_identical_to_release_tag is not a measurement against ${JSON.stringify(tag)}`);
+  }
+  // Development trees are dirty and may lack git, so source is checked for shape only.
+  const source = record?.source;
+  if (Object.keys(source ?? {}).sort().join() !== "commit,dirty" || !(source.commit === null || /^[a-f0-9]{40}$/.test(source.commit)) || !(source.dirty === null || typeof source.dirty === "boolean")) errors.push("source: expected {commit: 40-hex|null, dirty: boolean|null}");
+  if (Object.keys(record ?? {}).sort().join() !== "packages,schema,source") errors.push("record: unexpected top-level fields");
+  return errors;
+}
+const workspaceManifests = async () => {
+  const manifests = new Map();
+  for (const directory of await readdir(path.join(root, "packages"))) manifests.set(directory, await readJson(path.join(root, "packages", directory, "package.json")).catch(() => undefined));
+  return directory => manifests.get(directory);
+};
 
 test("workspace directories and lock links follow package identities", async () => {
   const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
@@ -38,8 +85,16 @@ test("packed reusable CLI is closed, inert on import, and binds commands to its 
     assert.equal((await lstat(library)).isSymbolicLink(), false);
     assert.deepEqual(await readdir(path.join(scratch, "node_modules/@superbee")), ["cli"]);
     const pkg = JSON.parse(await readFile(path.join(library, "package.json"), "utf8"));
-    assert.equal(pkg.private, true); assert.equal(pkg.version, "0.0.0"); assert.equal(pkg.bin, undefined);
+    const workspace = await readJson(path.join(root, "packages/cli/package.json"));
+    assert.equal(pkg.private, undefined); assert.equal(pkg.version, workspace.version); assert.match(pkg.version, versionPattern); assert.equal(pkg.bin, undefined);
+    assert.deepEqual(pkg.publishConfig, { access: "public", registry: "https://registry.npmjs.org/" });
     for (const key of ["dependencies", "peerDependencies", "optionalDependencies"]) assert.equal(pkg[key], undefined);
+    assert.ok(receipt.files.some(({ path: file }) => file === "dist/embedded-engine.json"));
+    // The record is data, read through its export without loading the library.
+    await writeFile(path.join(scratch, "engine.cjs"), "process.stdout.write(JSON.stringify(require('@superbee/cli/embedded-engine.json')));\n");
+    const record = JSON.parse((await run([path.join(scratch, "engine.cjs")])).stdout);
+    assert.deepEqual(record, await readJson(path.join(library, "dist/embedded-engine.json")));
+    assert.deepEqual(embeddedEngineErrors(record, await readJson(path.join(root, "out/cli-runtime-metafile.json")), await workspaceManifests()), []);
     await init;
     const [imports] = parse(await readFile(path.join(library, "dist/index.mjs"), "utf8"));
     for (const imported of imports.filter(item => item.d !== -2)) assert.ok(imported.n?.startsWith("node:"), `unclosed import ${imported.n}`);
@@ -130,4 +185,52 @@ assert.equal(registryCalls, 0, 'ambient globals must not enable update checks');
     // superbee's private-state identity must not drift to the library package coordinate.
     assert.equal((await readdir(home)).some(name => name.includes("cli") || name === "@superbee"), false);
   } finally { await rm(scratch, { recursive: true, force: true }); }
+});
+
+test("embedded engine check rejects an incomplete record and non-source engine inputs", async () => {
+  const manifestOf = await workspaceManifests();
+  const metafile = await readJson(path.join(root, "out/cli-runtime-metafile.json"));
+  const record = await readJson(path.join(root, "packages/cli/dist/embedded-engine.json"));
+  assert.deepEqual(embeddedEngineErrors(record, metafile, manifestOf), []);
+  const rerouted = target => ({ inputs: Object.fromEntries(Object.entries(metafile.inputs).map(([input, value]) => [input === "../core/src/index.ts" ? target : input, value])) });
+  assert.ok("../core/src/index.ts" in metafile.inputs);
+  for (const [label, candidate, inputs, expected] of [
+    ["missing contributor", { ...record, packages: record.packages.filter(row => row.name !== "@superbee/server") }, metafile, /^packages: bundle contributor @superbee\/server is missing from the record$/],
+    ["installed core", record, rerouted("../../node_modules/@superbee/core/dist/index.js"), /^input \S+: @superbee\/core resolves to an installed package, not workspace source$/],
+    ["built core", record, rerouted("../core/dist/index.js"), /^input \S+: @superbee\/core resolves outside workspace source$/],
+    ["core outside the repository", record, rerouted("../../../elsewhere/core/src/index.ts"), /^input \S+: resolves outside the repository$/],
+    ["uncontributing row", { ...record, packages: [...record.packages, { name: "@superbee/publication", version: "0.0.0", release_tag: null, source_identical_to_release_tag: null }] }, metafile, /^packages\[\d+\]: @superbee\/publication contributes no bundle input$/],
+    ["equality claim", { ...record, packages: record.packages.map(row => row.name === "@superbee/core" ? { ...row, source_identical_to_release_tag: "matches" } : row) }, metafile, /^record asserts a match/],
+    ["untagged measurement", { ...record, packages: record.packages.map(row => row.name === "@superbee/board-git" ? { ...row, source_identical_to_release_tag: true } : row) }, metafile, /^packages\[\d+\]: source_identical_to_release_tag is not a measurement against null$/],
+    ["malformed source", { ...record, source: { commit: "HEAD", dirty: false } }, metafile, /^source: expected/],
+  ]) {
+    const errors = embeddedEngineErrors(candidate, inputs, manifestOf);
+    assert.ok(errors.some(error => expected.test(error)), `${label}: ${JSON.stringify(errors)}`);
+  }
+});
+
+test("release-tag comparison is reported only for a clean package tree with a reachable tag", () => {
+  const metafile = { inputs: { "src/index.ts": {}, "../core/src/index.ts": {}, "../server/src/index.ts": {}, "../board-git/src/index.ts": {}, "../../node_modules/pako/index.js": {}, "../core/node_modules/nested/index.js": {} } };
+  const manifestOf = directory => ({ name: `@superbee/${directory}`, version: "1.2.3-pre.4" });
+  const source = { commit: "a".repeat(40), dirty: false };
+  const measure = (changedPaths, git) => {
+    const calls = [];
+    const record = embeddedEngineRecord({ metafile, source, changedPaths, manifestOf, git: args => { calls.push(args); return git(args); } });
+    assert.deepEqual(record.packages.map(row => [row.name, row.release_tag]), [["@superbee/board-git", null], ["@superbee/core", "libraries/v1.2.3-pre.4"], ["@superbee/server", "libraries/v1.2.3-pre.4"]]);
+    assert.equal(record.source, source);
+    return { calls, states: Object.fromEntries(record.packages.map(row => [row.name.slice(10), row.source_identical_to_release_tag])) };
+  };
+  const tagged = differs => args => ({ status: args[0] === "diff" && args.at(-1) === differs ? 1 : 0, stdout: "" });
+  const identical = measure([], tagged(""));
+  assert.deepEqual(identical.states, { "board-git": null, core: true, server: true });
+  assert.deepEqual(identical.calls.filter(args => args[0] === "diff"), ["core", "server"].map(directory => ["diff", "--quiet", "refs/tags/libraries/v1.2.3-pre.4", "HEAD", "--", `packages/${directory}`]));
+  assert.deepEqual(measure([], tagged("packages/core")).states, { "board-git": null, core: false, server: true });
+  // HEAD equal to the tag proves nothing about edits the bundler read from the working tree.
+  assert.deepEqual(measure(["packages/core/src/index.ts", "packages/cli/build.mjs"], tagged("")).states, { "board-git": null, core: null, server: true });
+  assert.deepEqual(measure(["packages/old.ts", "packages/server/new.ts"], tagged("")).states, { "board-git": null, core: true, server: null });
+  assert.deepEqual(measure(null, tagged("")).states, { "board-git": null, core: null, server: null });
+  assert.deepEqual(measure([], args => ({ status: args[0] === "rev-parse" ? 1 : 0, stdout: "" })).states, { "board-git": null, core: null, server: null });
+  assert.deepEqual(measure([], () => null).states, { "board-git": null, core: null, server: null });
+  assert.deepEqual(measure([], args => ({ status: args[0] === "diff" ? 128 : 0, stdout: "" })).states, { "board-git": null, core: null, server: null });
+  assert.throws(() => embeddedEngineRecord({ metafile, source, changedPaths: [], git: tagged(""), manifestOf: () => ({ name: "superbee", version: "1.0.0" }) }), /not a versioned @superbee workspace/);
 });
