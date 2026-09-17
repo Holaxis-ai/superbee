@@ -79,6 +79,7 @@ import path from "node:path";
 import {
   BOARD_BRANCH,
   BOARD_REF,
+  BOARD_REMOTE,
   bundleDirNameForProject,
   committedBundleAtHead,
   countUncommitted,
@@ -434,6 +435,10 @@ export async function defaultLoadWorkspaces(home?: string, signal?: AbortSignal)
  * "did THIS run reach the remote" signal only the process that just pulled can give).
  */
 export interface BoardPullOutcome {
+  /** Discovery could not establish whether a shared board exists; never suggest creating one. */
+  discoveryUnknown?: string;
+  /** A successful channel check found no shared branch; suppress a local-only unverified hint. */
+  discoveryAbsent?: boolean;
   /**
    * True when this run could NOT confirm the board's currency: the fetch failed (offline, auth,
    * a held lock), the pull lost its time box, or the pull step threw. Renders the pinned
@@ -461,6 +466,8 @@ export interface BoardPullOutcome {
 
 /** What the fs+local-git board probe found for the render (see {@link defaultLoadBoardStatus}). */
 export type BoardStatus =
+  /** An origin is configured, but no local board evidence can establish whether it shares one. */
+  | { state: "unverified" }
   /** A board exists for this repo (local `board` branch or `origin/board`) but is NOT checked out. */
   | { state: "unprovisioned" }
   /**
@@ -597,8 +604,17 @@ export function buildBoardBlock(
   status: BoardStatus | null,
   pull: BoardPullOutcome | undefined,
   inv: CommandPrefix,
+  dir?: string,
 ): { block?: string | Record<string, unknown>; firstContact?: string } {
+  if (pull?.discoveryUnknown && (!status || status.state === "unverified" || status.state === "unprovisioned")) {
+    return { firstContact: pull.discoveryUnknown };
+  }
   if (!status) return {};
+  if (status.state === "unverified") {
+    if (pull?.discoveryAbsent) return {};
+    const target = dir === undefined ? commandLiteral("") : commandFragment` --dir ${commandQuoted(dir)}`;
+    return { firstContact: `shared board existence is unverified — run \`${inv} session-start${target}\` before creating a bundle` };
+  }
   if (status.state === "unprovisioned") return { firstContact: boardFirstContactLine(inv) };
   // The window line rides the firstContact slot: same above-the-fold placement, same init-hint
   // suppression — but the copy is the sync refusal's own truth, not a "run sync" that would refuse.
@@ -625,6 +641,7 @@ export function buildBoardBlock(
   const notes: string[] = [];
   if (inTree && (status.behind ?? 0) > 0) notes.push(inTreePullHintLine(status.behind!));
   if (pull?.offline) notes.push(BOARD_OFFLINE_NOTE);
+  if (pull?.discoveryUnknown) notes.push(pull.discoveryUnknown);
   if (pull?.notes) notes.push(...pull.notes);
   if (status.cache?.note) notes.push(status.cache.note);
   if (notes.length > 0) rec.note = notes.join("; ");
@@ -653,7 +670,8 @@ export function buildBoardBlock(
  * `board` branch), NEVER marker-only: under per-clone state keying a brand-new clone has no
  * marker until its first pull (sync-cache-per-clone rider), and the marker's key derivation needs
  * the same git calls anyway, so the ref probe is strictly stronger AND equally offline. Every
- * failure mode (no git binary, not a repo, unreadable state file) degrades to `null` — no board
+ * An origin without local board evidence is unverified, not greenfield. Every failure mode
+ * (no git binary, not a repo, unreadable state file) degrades to `null` — no board
  * block, never a failed session.
  */
 export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocalRoute): Promise<BoardStatus | null> {
@@ -729,7 +747,7 @@ export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocal
           behind: sha === null ? null : inTreeBehindCount(top, sha, bundleDir),
         };
       }
-      return null;
+      return runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0 ? { state: "unverified" } : null;
     }
     const boardPath = provisionedBoardPath;
     const key = resolveBundleKey(boardPath);
@@ -1144,7 +1162,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
       const status = deps.loadBoardStatus
         ? await deps.loadBoardStatus(dir)
         : await defaultLoadBoardStatus(dir, localRoute);
-      board = buildBoardBlock(status, deps.boardPull, invocation());
+      board = buildBoardBlock(status, deps.boardPull, invocation(), dir);
     } catch {
       board = undefined;
     }

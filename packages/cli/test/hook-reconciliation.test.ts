@@ -333,7 +333,7 @@ test("hook install migrates the exact legacy OpenCode filename and source to one
   const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-opencode-migrate-"));
   const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
   const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
-  const program = "/workspace/superbee/packages/superbee/dist/superbee.mjs";
+  const program = path.join(base, "packages", "superbee", "dist", "superbee.mjs");
   try {
     await mkdir(path.dirname(oldPlugin), { recursive: true });
     await writeFile(oldPlugin, legacyOpenCodeSource("aslite"));
@@ -344,7 +344,9 @@ test("hook install migrates the exact legacy OpenCode filename and source to one
     assert.equal(await readFile(newPlugin, "utf8"), buildOpenCodePluginSource(program));
     const statusCapture = capture();
     await hook(["status", "--json"], { base, commandBase: program, stdout: statusCapture.stdout });
-    assert.equal(JSON.parse(statusCapture.out()).hook.hosts.opencode.state, "current");
+    const observed = JSON.parse(statusCapture.out()).hook.hosts.opencode;
+    assert.equal(observed.compatibility.state, "current");
+    assert.equal(observed.state, "unavailable", "recognizing the generated source does not make its missing launcher available");
   } finally {
     await rm(base, { recursive: true, force: true });
   }
