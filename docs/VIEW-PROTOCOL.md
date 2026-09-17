@@ -75,6 +75,21 @@ registry below; a View feature-detects here instead of guessing from `kind` or `
 host-declared ceilings; `0` means the host does not offer the request at all. The OSS service
 declares exactly the limits it enforces (`BRIDGE_SERVICE_LIMITS`).
 
+A host that embeds the View as its page (no border, the host's own title bar) adds two optional
+fields to `host`. `frame` is `{ "title": "host", "height": "content", "maxHeight": <px> }`:
+the host has printed the View's name, so the View may hide its own masthead, and the host sizes
+the frame to the height the View reports through `frame.resize`, between its floor and
+`maxHeight`. The floor is the host's own minimum, unspecified here but never less than the
+window the host leaves under its chrome; a host may also damp reports, ignoring one that repeats
+a growth pattern so a document whose height follows the frame cannot feed back. The echoed
+`height` is what the host applied; a View must not re-report from the echo. A View that never
+reports keeps the floor and owns its own scroll; a View reports a height or keeps the window,
+never both. `theme` is the host's own resolved design tokens: `scheme` is `"light"` or `"dark"`,
+and `ground`, `surface`, `text`, `muted`, `accent`, `border`, `focus`, `fontSans`,
+`fontDisplay`, `fontMono`, `radius` and `spacing` are CSS value strings; a View may adopt them as
+`--sb-*` custom properties and looks native, or ignore them and keep its own brand. Both are absent on the OSS
+shell and on Portal; a View that ignores them draws exactly as before.
+
 `bundle.root` is a filesystem path on the OSS web shell in `--dir` mode and `null` elsewhere;
 Portal and hosted hosts may put an opaque artifact or slot id there. `bundle.name` is the display
 name the shell shows, never an internal identifier. `mode` is host-specific (`dir`, `remote`,
@@ -248,7 +263,9 @@ is a name from the registry below (lowercase, dot or hyphen separated, at most 1
 when present, is a plain object; the whole request is at most 64 KiB. A host answers
 `{ capability, output }` when it has a handler for that capability and `FORBIDDEN` otherwise. A
 registered handler is always listed in `hello.host.capabilities`, so a View calls `host` only for a
-capability it saw in `hello`. Extensions require a bundle-data grant; a `none` View is refused.
+capability it saw in `hello`. Extensions require a bundle-data grant; a `none` View is refused,
+except for a capability whose registry row says it touches no bundle data, which a host may answer
+for any launch it admits.
 
 No host adds a View-facing request type outside this document. A host-specific feature is a
 `host` capability with its input and output shape recorded in the registry below.
@@ -301,6 +318,7 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `graph` | the `graph` request is answered, bounded by `limits.graphDocuments` and `limits.graphRelationships` | none (a request); declared by every OSS host |
 | `graph.model` | `graph` also returns `model` and `definitions` | reserved; no OSS host declares it until the model shape has an owner |
 | `record.open` | the host opens its own reader for one document | `host` input `{ documentId }`; output `{ opened: true }`; `NOT_FOUND` for a missing document |
+| `frame.resize` | the host sizes the View's frame to the reported document height, bounded by `host.frame.maxHeight` | `host` input exactly `{ height }` (a finite CSS pixel count, at least 0; no other keys); output `{ height }` as applied after the host's floor, `maxHeight` and damping (see `host.frame`); `USAGE` for any other input. Answered at once; touches no bundle data, so a host may answer it for any launch it admits. Declared only with `host.frame` |
 
 A host without a query capability still answers `query`; it just honors less. A host without
 `edges`, `graph` or `render-document` answers those requests with `FORBIDDEN`.
@@ -472,10 +490,12 @@ first refresh, so handle it to surface startup failures.
 `examples/views/conformance/` holds a registry document (`views-registry/conformance`) and one
 self-contained entry (`views/conformance.html`) that embeds the client above and sends, in order,
 `hello`, `query`, `read`, `read-versioned`, `edges`, `graph`, `render-document`, `subscribe`,
-`host` (an undeclared capability, expecting `FORBIDDEN`), `action.propose` and `open-page` (a
-registry id that must not exist). It renders one table row per request type with the request name, a status
-(`answered`, `refused`, `sent`, `skipped` or `failed`) and a one-line summary, and exposes the same
-rows on `window.__conformance` for harnesses. The View names its revision in
+`host` (an undeclared capability, expecting `FORBIDDEN`), `action.propose`, `burst` (12 `read`
+requests in flight at once) and `open-page` (a registry id that must not exist). A host may cap
+in-flight requests, but it must queue or refuse the excess with an error reply, never drop it, so
+the `burst` row expects all 12 results. It renders one table row per request with the request
+name, a status (`answered`, `refused`, `sent`, `skipped` or `failed`) and a one-line summary, and
+exposes the same rows on `window.__conformance` for harnesses. The View names its revision in
 `<meta name="superbee-conformance-revision">`; a host that byte-copies it records that value with
 its result. `packages/view-runtime/test/conformance.test.mjs` runs the entry against the OSS
 service over a fixture bundle and asserts every row.

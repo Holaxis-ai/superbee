@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -770,10 +771,10 @@ test("render-document reads one canonical version, bounds it, and revalidates th
     id: "render",
     docId: "docs/one",
   });
-  assert.deepEqual(calls, [{ id: "docs/one", body: "# One\n\nBody" }]);
+  assert.deepEqual(calls, [{ id: "docs/one", body: "# One\n\nBody\n" }]);
   assert.deepEqual(rendered.reply.result.document.id, "docs/one");
   assert.match(rendered.reply.result.document.version, /^sha256:/);
-  assert.equal(rendered.reply.result.html, "<article># One\n\nBody</article>");
+  assert.equal(rendered.reply.result.html, "<article># One\n\nBody\n</article>");
   assert.equal(rendered.reply.result.bounded, false);
 
   const missing = await bridge.handle("launch", {
@@ -919,7 +920,9 @@ test("graph carries bodies only when includeBodies is true on a launch that may 
     assert.equal(withBodies.reply?.type, "graph:result", capability);
     assert.deepEqual(
       withBodies.reply.result.documents.map((row) => [row.id, row.body]),
-      [["notes/alpha", "# Alpha\n\nBody text."], ["notes/beta", ""]],
+      // Every backend reports the canonical serialized body, so an authored "" reads back as
+      // the serializer's "\n". The claim is unchanged: the empty-bodied doc is still a row.
+      [["notes/alpha", "# Alpha\n\nBody text.\n"], ["notes/beta", "\n"]],
       `${capability} receives every body, including the empty one`,
     );
     for (const row of withBodies.reply.result.documents) {
@@ -1064,4 +1067,57 @@ test("graph with bodies refuses a document body a plain read would refuse", asyn
   assert.deepEqual(Object.keys(graph.reply).sort(), ["bridge", "error", "id", "type"]);
   const heads = await bridge.handle("launch", { bridge: "v0", id: "h", type: "graph" });
   assert.equal(heads.reply?.type, "graph:result", "heads alone stay answerable");
+});
+
+test("frame.resize is a registered host capability, and a host that embeds the View passes frame and theme through hello", async () => {
+  assert.equal(BRIDGE_HOST_CAPABILITIES.frameResize, "frame.resize");
+  const registry = readFileSync(new URL("../../../docs/VIEW-PROTOCOL.md", import.meta.url), "utf8");
+  assert.ok(/^\| `frame\.resize` \|/m.test(registry), "the protocol registry carries the frame.resize row");
+  assert.ok(registry.includes("`frame` is `{ \"title\": \"host\", \"height\": \"content\", \"maxHeight\": <px> }`"));
+  const frame = { title: "host", height: "content", maxHeight: 16000 };
+  const theme = {
+    scheme: "light",
+    ground: "#fff",
+    surface: "#fff",
+    text: "#111",
+    muted: "#666",
+    accent: "#06c",
+    border: "#ddd",
+    focus: "#06c",
+    fontSans: "sans-serif",
+    fontDisplay: "sans-serif",
+    fontMono: "monospace",
+    radius: "2px",
+    spacing: "8px",
+  };
+  const service = new BridgeService({
+    bundle: { root: "mem://bridge-frame-theme", backend: new MemoryBackend() },
+    launches: {
+      async resolve(launchId) {
+        return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
+      },
+      revoke() {},
+    },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    host: { ...TEST_HOST, frame, theme },
+  });
+  const hello = await service.handle("launch", { bridge: "v0", type: "hello", id: "hello" });
+  assert.deepEqual(hello.reply.result.host.frame, frame);
+  assert.deepEqual(hello.reply.result.host.theme, theme);
+  const plain = new BridgeService({
+    bundle: { root: "mem://bridge-no-frame", backend: new MemoryBackend() },
+    launches: {
+      async resolve(launchId) {
+        return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
+      },
+      revoke() {},
+    },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    host: TEST_HOST,
+  });
+  const bare = await plain.handle("launch", { bridge: "v0", type: "hello", id: "hello" });
+  assert.equal("frame" in bare.reply.result.host, false, "the OSS shell declares no frame");
+  assert.equal("theme" in bare.reply.result.host, false, "the OSS shell declares no theme");
 });

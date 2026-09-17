@@ -32,8 +32,12 @@ const REQUEST_ORDER = [
   "subscribe",
   "host",
   "action.propose",
+  "burst",
   "open-page",
 ];
+const BURST_READS = 12;
+/** The wire order: the burst row is BURST_READS `read` requests fired at once. */
+const SENT_ORDER = REQUEST_ORDER.flatMap((request) => (request === "burst" ? Array(BURST_READS).fill("read") : [request]));
 
 function clientFromMarkdown(file) {
   const text = readFileSync(file, "utf8");
@@ -75,7 +79,7 @@ test("the conformance registry document and entry are a valid View under the adm
   assert.equal(admitted.bytes.byteLength, bytes.byteLength);
   const html = bytes.toString("utf8");
   assert.doesNotMatch(html, /<script[^>]+src=|<link[^>]+href=|https?:\/\//, "the entry inlines everything");
-  assert.match(html, /<meta name="superbee-conformance-revision" content="2">/);
+  assert.match(html, /<meta name="superbee-conformance-revision" content="3">/);
 });
 
 /** The smallest DOM the fixture touches: elements with attributes, text and children. */
@@ -184,9 +188,9 @@ test("the conformance View exercises every request type against the OSS service 
   });
 
   const { rows, document, sent, revision } = await runFixture(service, "launch");
-  assert.equal(revision, "2");
+  assert.equal(revision, "3");
   assert.deepEqual(rows.map((row) => row.request), REQUEST_ORDER, "one row per request type, in protocol order");
-  assert.deepEqual(sent.map((message) => message.type), REQUEST_ORDER, "one request per row, in the same order");
+  assert.deepEqual(sent.map((message) => message.type), SENT_ORDER, "one request per row, in the same order, and a burst of reads");
 
   const byRequest = Object.fromEntries(rows.map((row) => [row.request, row]));
   assert.equal(byRequest.hello.status, "answered");
@@ -211,6 +215,12 @@ test("the conformance View exercises every request type against the OSS service 
   assert.match(byRequest.host.summary, /^FORBIDDEN: .* for undeclared capability \(expected\)$/);
   assert.equal(byRequest["action.propose"].status, "refused");
   assert.match(byRequest["action.propose"].summary, /^FORBIDDEN: /);
+  assert.equal(byRequest.burst.status, "answered");
+  assert.equal(byRequest.burst.summary, `${BURST_READS} results, ${BURST_READS} of ${firstDoc}`, "the OSS host caps nothing and answers every read");
+  const burstReads = sent.filter((message) => message.type === "read").slice(1);
+  assert.equal(burstReads.length, BURST_READS);
+  assert.equal(new Set(burstReads.map((message) => message.id)).size, BURST_READS, "every burst read carries its own id");
+  assert.ok(burstReads.every((message) => message.docId === firstDoc));
   assert.equal(byRequest["open-page"].status, "refused");
   assert.equal(byRequest["open-page"].summary, "NOT_FOUND for views-registry/conformance-missing-target");
 
@@ -222,7 +232,7 @@ test("the conformance View exercises every request type against the OSS service 
     assert.deepEqual([...tr.children.map((td) => td.textContent)], [rows[index].request, rows[index].status, rows[index].summary]);
   });
   assert.equal(document.getElementById("host").textContent, "host: oss (test)");
-  assert.match(document.getElementById("status").textContent, /^complete: 11 rows, 0 change events/);
+  assert.match(document.getElementById("status").textContent, /^complete: 12 rows, 0 change events/);
   assert.equal(
     sent.find((message) => message.type === "action.propose").action.expectedVersion,
     byRequest["read-versioned"].summary.split("version=")[1],
@@ -251,7 +261,7 @@ test("the conformance View reports refresh-only subscriptions and refused reads 
     assert.equal(row.status, "refused", request);
     assert.match(row.summary, /^FORBIDDEN: /, request);
   }
-  for (const request of ["read", "read-versioned", "render-document"]) {
+  for (const request of ["read", "read-versioned", "render-document", "burst"]) {
     assert.equal(rows.find((candidate) => candidate.request === request).status, "skipped", request);
   }
   assert.equal(rows.find((row) => row.request === "action.propose").status, "refused");

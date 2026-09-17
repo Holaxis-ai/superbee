@@ -258,7 +258,7 @@ test("v0.1 write policy deterministically owns timestamp fallback, key ordering,
       timestamp: expectedTimestamp,
     });
     assert.equal(normalized.frontmatter.x_producer, nested, "unknown nested metadata stays byte-shape preserving");
-    assert.equal(normalized.body, "");
+    assert.equal(normalized.body, "\n");
     assert.equal(input.body, undefined, "normalization must not mutate the input body");
     assert.equal(input.frontmatter.timestamp, timestamp, "normalization must not mutate input frontmatter");
   }
@@ -422,7 +422,7 @@ test("writeDocVersioned normalizes ordering, timestamp, and absent body without 
     extra: false,
     timestamp: "  preserved  ",
   });
-  assert.equal(written.doc.body, "");
+  assert.equal(written.doc.body, "\n");
   assert.equal(input.body, undefined);
 
   for (const [id, timestamp] of [["blank", " "], ["number", 0], ["null", null]] as const) {
