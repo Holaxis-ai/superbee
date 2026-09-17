@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile, appendFile, readdir, lstat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,9 +12,10 @@ const exec = promisify(execFile);
 const root = path.resolve(import.meta.dirname, "..");
 const readJson = async file => JSON.parse(await readFile(file, "utf8"));
 
-// The record is checked against the bundler's own input list, not against the build script's
-// derivation of it. `manifestOf` maps a packages/ directory name to its workspace manifest.
-function embeddedEngineErrors(record, metafile, manifestOf, isTracked) {
+// The record is checked against the bundler's own input list and the tree's own git facts, not
+// against the build script's derivation of them. `manifestOf` maps a packages/ directory name to
+// its workspace manifest; `compare(directory, tag)` is the tree's tri-state measurement.
+function embeddedEngineErrors(record, metafile, manifestOf, isTracked, compare) {
   const errors = [];
   const contributors = new Map();
   const untracked = new Map();
@@ -28,7 +29,7 @@ function embeddedEngineErrors(record, metafile, manifestOf, isTracked) {
     if (!manifest?.name?.startsWith("@superbee/")) errors.push(`input ${input}: packages/${parts[1]} is not an @superbee workspace`);
     else if (parts[2] !== "src") errors.push(`input ${input}: ${manifest.name} resolves outside workspace source`);
     else {
-      contributors.set(manifest.name, manifest.version);
+      contributors.set(manifest.name, { version: manifest.version, directory: parts[1] });
       if (!isTracked(parts.join("/"))) untracked.set(manifest.name, [...(untracked.get(manifest.name) ?? []), input]);
     }
   }
@@ -43,11 +44,13 @@ function embeddedEngineErrors(record, metafile, manifestOf, isTracked) {
     if (Object.keys(row ?? {}).sort().join() !== "name,release_tag,source_identical_to_release_tag,version") { errors.push(`${at}: unexpected fields`); continue; }
     if (recorded.indexOf(row.name) !== index) errors.push(`${at}: duplicate ${row.name}`);
     if (!contributors.has(row.name)) { errors.push(`${at}: ${row.name} contributes no bundle input`); continue; }
-    if (row.version !== contributors.get(row.name)) errors.push(`${at}: version ${row.version} is not the workspace manifest version`);
+    const { version, directory } = contributors.get(row.name);
+    if (row.version !== version) errors.push(`${at}: version ${row.version} is not the workspace manifest version`);
     const tag = ["@superbee/core", "@superbee/server"].includes(row.name) ? `libraries/v${row.version}` : null;
     if (row.release_tag !== tag) errors.push(`${at}: release_tag ${JSON.stringify(row.release_tag)}; expected ${JSON.stringify(tag)}`);
     if (![true, false, null].includes(row.source_identical_to_release_tag) || (tag === null && row.source_identical_to_release_tag !== null)) errors.push(`${at}: source_identical_to_release_tag is not a measurement against ${JSON.stringify(tag)}`);
     else if (row.source_identical_to_release_tag !== null && untracked.has(row.name)) errors.push(`${at}: source_identical_to_release_tag compares ${JSON.stringify(tag)} but ${untracked.get(row.name).join(", ")} is not tracked by git`);
+    else if (tag !== null && row.source_identical_to_release_tag !== compare(directory, tag)) errors.push(`${at}: source_identical_to_release_tag is ${row.source_identical_to_release_tag} but the tree measures ${compare(directory, tag)}`);
   }
   // Development trees are dirty and may lack git, so source is checked for shape only.
   const source = record?.source;
@@ -55,6 +58,15 @@ function embeddedEngineErrors(record, metafile, manifestOf, isTracked) {
   if (Object.keys(record ?? {}).sort().join() !== "packages,schema,source") errors.push("record: unexpected top-level fields");
   return errors;
 }
+// The tree's own measurement: null unless the tag is reachable and the package directory is clean.
+const treeComparison = (directory, tag) => {
+  const git = args => spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  if (git(["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]).status !== 0) return null;
+  const status = git(["status", "--porcelain", "--untracked-files=all", "--", `packages/${directory}`]);
+  if (status.status !== 0 || status.stdout !== "") return null;
+  const diff = git(["diff", "--quiet", `refs/tags/${tag}`, "HEAD", "--", `packages/${directory}`]);
+  return diff.status === 0 ? true : diff.status === 1 ? false : null;
+};
 const trackedPaths = async () => {
   const listed = await exec("git", ["ls-files", "-z", "--", "packages"], { cwd: root, maxBuffer: 64 * 1024 * 1024 });
   const tracked = new Set(listed.stdout.split("\0"));
@@ -104,7 +116,7 @@ test("packed reusable CLI is closed, inert on import, and binds commands to its 
     await writeFile(path.join(scratch, "engine.cjs"), "process.stdout.write(JSON.stringify(require('@superbee/cli/embedded-engine.json')));\n");
     const record = JSON.parse((await run([path.join(scratch, "engine.cjs")])).stdout);
     assert.deepEqual(record, await readJson(path.join(library, "dist/embedded-engine.json")));
-    assert.deepEqual(embeddedEngineErrors(record, await readJson(path.join(root, "out/cli-runtime-metafile.json")), await workspaceManifests(), await trackedPaths()), []);
+    assert.deepEqual(embeddedEngineErrors(record, await readJson(path.join(root, "out/cli-runtime-metafile.json")), await workspaceManifests(), await trackedPaths(), treeComparison), []);
     await init;
     const [imports] = parse(await readFile(path.join(library, "dist/index.mjs"), "utf8"));
     for (const imported of imports.filter(item => item.d !== -2)) assert.ok(imported.n?.startsWith("node:"), `unclosed import ${imported.n}`);
@@ -202,9 +214,12 @@ test("embedded engine check rejects an incomplete record and non-source engine i
   const isTracked = await trackedPaths();
   const metafile = await readJson(path.join(root, "out/cli-runtime-metafile.json"));
   const record = await readJson(path.join(root, "packages/cli/dist/embedded-engine.json"));
-  assert.deepEqual(embeddedEngineErrors(record, metafile, manifestOf, isTracked), []);
+  assert.deepEqual(embeddedEngineErrors(record, metafile, manifestOf, isTracked, treeComparison), []);
+  const withCore = value => ({ ...record, packages: record.packages.map(row => row.name === "@superbee/core" ? { ...row, source_identical_to_release_tag: value } : row) });
   // A build without the release tag legitimately records null, so the probe supplies its own comparison.
-  const compared = { ...record, packages: record.packages.map(row => row.name === "@superbee/core" ? { ...row, source_identical_to_release_tag: false } : row) };
+  const compared = withCore(false);
+  const measured = treeComparison("core", record.packages.find(row => row.name === "@superbee/core").release_tag);
+  assert.ok([true, false, null].includes(measured));
   const rerouted = target => ({ inputs: Object.fromEntries(Object.entries(metafile.inputs).map(([input, value]) => [input === "../core/src/index.ts" ? target : input, value])) });
   assert.ok("../core/src/index.ts" in metafile.inputs);
   for (const [label, candidate, inputs, expected] of [
@@ -216,9 +231,10 @@ test("embedded engine check rejects an incomplete record and non-source engine i
     ["equality claim", { ...record, packages: record.packages.map(row => row.name === "@superbee/core" ? { ...row, source_identical_to_release_tag: "matches" } : row) }, metafile, /^record asserts a match/],
     ["untagged measurement", { ...record, packages: record.packages.map(row => row.name === "@superbee/board-git" ? { ...row, source_identical_to_release_tag: true } : row) }, metafile, /^packages\[\d+\]: source_identical_to_release_tag is not a measurement against null$/],
     ["malformed source", { ...record, source: { commit: "HEAD", dirty: false } }, metafile, /^source: expected/],
+    ...[true, false, null].filter(value => value !== measured).map(value => [`fabricated ${value} comparison`, withCore(value), metafile, new RegExp(`^packages\\[\\d+\\]: source_identical_to_release_tag is ${value} but the tree measures ${measured}$`)]),
     ["comparison over an untracked input", compared, { inputs: { ...metafile.inputs, "../core/src/generated/assets.ts": {} } }, /^packages\[\d+\]: source_identical_to_release_tag compares "libraries\/v[^"]+" but \.\.\/core\/src\/generated\/assets\.ts is not tracked by git$/],
   ]) {
-    const errors = embeddedEngineErrors(candidate, inputs, manifestOf, isTracked);
+    const errors = embeddedEngineErrors(candidate, inputs, manifestOf, isTracked, treeComparison);
     assert.ok(errors.some(error => expected.test(error)), `${label}: ${JSON.stringify(errors)}`);
   }
 });
