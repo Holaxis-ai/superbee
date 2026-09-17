@@ -38,7 +38,7 @@
     "@superbee/publication": "*",
     "@superbee/server": "*",
     "@superbee/ui-server": "*",
-    "@toon-format/toon": "2.3.0",
+    "@toon-format/toon": "2.3.1",
     "@types/node": "^22.0.0",
     "axi-sdk-js": "0.1.8",
     "esbuild": "0.25.12",

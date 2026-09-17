@@ -20,55 +20,20 @@ import { newCommand } from "../src/commands/new.js";
 import { doc } from "../src/commands/doc.js";
 import { CliError } from "../src/errors.js";
 import {
-  CONTRACT_VALUES, PLACEHOLDER, makeHarness, onPlatform, shells,
-  type Shell,
+  CONTRACT_VALUES, makeHarness, shells,
 } from "./support/command-contract.js";
 
 const SHELLS = shells();
 
-/**
- * Cells where DELIVERED-VERBATIM does not hold, named and reasoned rather than silently excluded.
- * Each entry is asserted: the divergence must still occur, and must differ only in the documented
- * way. Delete an entry when it stops being true — do not let it become a baseline.
- */
-const KNOWN_FIDELITY_DIVERGENCES: Record<string, string> = {
-  "pwsh/trailing-backslash":
-    "A trailing backslash run is DOUBLED so the CRT argument parser does not read it as escaping "
-    + "the closing quote — required for cmd.exe, which then delivers the value correctly. PowerShell "
-    + "does not apply that rule, so it delivers the doubled run literally and the value arrives with "
-    + "one extra backslash. INERT either way: one argument, nothing expanded, nothing executed. "
-    + "ACCEPTED rather than fixed, because the alternative is refusing `C:\\dir\\` — an utterly "
-    + "ordinary Windows path — the way `%` is refused, and unlike `%` there is no security property "
-    + "at stake. Scope of the fidelity loss, which is narrower than it looks but NOT nil: for PATHS "
-    + "it is absorbed (`path.win32.resolve` normalises `C:\\a\\\\` to `C:\\a`), but for a value "
-    + "used as a KEY or stored as TEXT it is not — a kind named `Task\\` would not match its "
-    + "registry entry, and a link text would be stored with the extra character. Those values are "
-    + "exotic; paths are not; and a rendering that breaks every quoted Windows path would be worse. "
-    + "LIMIT OF THIS TOLERANCE: the follow-up assertion collapses ANY trailing backslash run to one "
-    + "before comparing, so it pins that the divergence is confined to the trailing run — it would "
-    + "NOT notice the run changing MAGNITUDE (two extra backslashes instead of one). Everything "
-    + "else about the value is still compared exactly, and the inert assertions are unaffected.",
-};
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// (a) RENDERS — pure, so it runs on every host for BOTH platforms.
+// (a) RENDERS — pure coverage for the supported first-party POSIX renderer.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-test("(a) RENDERS: every value yields a token or the documented placeholder, on supported first-party hosts", () => {
+test("(a) RENDERS: every value yields a token on supported first-party hosts", () => {
   for (const { id, value, because } of CONTRACT_VALUES) {
-    for (const platform of ["linux"] as const) {
-      const rendered = onPlatform(platform, () => commandToken(value));
-      assert.equal(typeof rendered, "string", `${id}/${platform} (${because})`);
-      const refused = false;
-      if (refused) {
-        assert.ok(
-          rendered.includes(PLACEHOLDER),
-          `${id}/${platform}: an unrenderable value must degrade to the placeholder, got ${rendered}`,
-        );
-      } else {
-        assert.ok(rendered.length > 0, `${id}/${platform}: a renderable value must produce a token`);
-      }
-    }
+    const rendered = commandToken(value);
+    assert.equal(typeof rendered, "string", `${id} (${because})`);
+    assert.ok(rendered.length > 0, `${id}: a renderable value must produce a token`);
   }
 });
 
@@ -79,16 +44,14 @@ test("(a) RENDERS: POSIX is total — it never refuses a value", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// (b) PARSES and (c) DELIVERS — require a real shell. Rendering is for the HOST platform, because
-// that is the only pairing that occurs in production: a reader pastes into a shell on their own
-// machine. A win32-rendered token executed by /bin/sh is a mismatch that never happens, and
-// asserting it would test a scenario we do not ship.
+// (b) PARSES and (c) DELIVERS — require the supported POSIX shell contract. A reader pastes the
+// emitted command into the shell selected by the first-party host adapter.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-for (const shell of SHELLS.filter((candidate) => candidate.native)) {
+for (const shell of SHELLS.filter((candidate) => candidate.id === "sh")) {
   const gate = { skip: shell.available ? false : `${shell.unavailableReason} — the contract is NOT verified for this shell here` };
 
-  test(`(b+c) ${shell.id}: every rendered value PARSES, is DELIVERED inertly, and is verbatim except where documented`, gate, () => {
+  test(`(b+c) ${shell.id}: every rendered value PARSES and is DELIVERED inertly and verbatim`, gate, () => {
     const harness = makeHarness();
     try {
       for (const { id, value, because } of CONTRACT_VALUES) {
@@ -111,36 +74,18 @@ for (const shell of SHELLS.filter((candidate) => candidate.native)) {
           `${shell.id}/${id}: expected ONE argument, got ${JSON.stringify(run.argv)}`,
         );
         const delivered = run.argv![0]!;
-        const withheld = delivered === PLACEHOLDER;
         assert.ok(
           !delivered.includes("EXPANDED"),
           `${shell.id}/${id}: the shell EXPANDED something: ${JSON.stringify(delivered)}`,
         );
 
-        // (c2) DELIVERED-VERBATIM — a FIDELITY property: the bytes that arrive are the bytes we
-        // rendered. Held everywhere except the documented cells below.
-        const divergence = KNOWN_FIDELITY_DIVERGENCES[`${shell.id}/${id}`];
-        if (divergence === undefined) {
-          assert.ok(
-            delivered === value || withheld,
-            `${shell.id}/${id}: value not delivered verbatim (${because})\n`
-              + `  expected=${JSON.stringify(value)}\n  actual=${JSON.stringify(delivered)}\n  token=${rendered}`,
-          );
-        } else {
-          // An accepted divergence is asserted, not exempted. It must still DIFFER (or the entry is
-          // stale and should be deleted) and must differ ONLY in the documented way, so a different
-          // corruption in the same cell still fails.
-          assert.notEqual(
-            delivered, value,
-            `${shell.id}/${id}: this divergence no longer occurs — delete its entry rather than `
-              + `leaving an exemption that hides a future regression.\n  ${divergence}`,
-          );
-          assert.equal(
-            delivered.replace(/\\+$/, "\\"), value.replace(/\\+$/, "\\"),
-            `${shell.id}/${id}: differs BEYOND the documented divergence\n  ${divergence}\n`
-              + `  expected=${JSON.stringify(value)}\n  actual=${JSON.stringify(delivered)}`,
-          );
-        }
+        // (c2) DELIVERED-VERBATIM — the bytes that arrive are the bytes we rendered.
+        assert.equal(
+          delivered,
+          value,
+          `${shell.id}/${id}: value not delivered verbatim (${because})\n`
+            + `  expected=${JSON.stringify(value)}\n  actual=${JSON.stringify(delivered)}\n  token=${rendered}`,
+        );
       }
     } finally {
       harness.cleanup();
@@ -203,7 +148,7 @@ async function realEmittedCommands(): Promise<{ label: string; command: string }
   }
 }
 
-for (const shell of SHELLS.filter((candidate) => candidate.native)) {
+for (const shell of SHELLS.filter((candidate) => candidate.id === "sh")) {
   const gate = { skip: shell.available ? false : `${shell.unavailableReason} — real-receipt executability is NOT verified for this shell here` };
 
   test(`(b) ${shell.id}: commands taken from REAL receipts parse and deliver hostile values inertly`, gate, async () => {
@@ -233,68 +178,10 @@ for (const shell of SHELLS.filter((candidate) => candidate.native)) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// (b) on the INVOCATION PATH a real consumer uses.
-//
-// Agents are the primary consumer of the help channel, and an agent on Windows shells out. cmd's
-// rule 2 (`cmd /?`) strips the leading quote and the LAST quote of a command line WHEN THE FIRST
-// CHARACTER IS A QUOTE — so whether an emitted command survives `cmd /s /c` depends on how it
-// begins, not on the quoted values inside it. That distinction decides whether we owe users a
-// caveat, so it is pinned here rather than reasoned about.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-const cmdShell = SHELLS.find((candidate) => candidate.id === "cmd")!;
-const cmdGate = { skip: cmdShell.available ? false : `${cmdShell.unavailableReason} — the cmd invocation path is NOT verified here` };
-
-test("(b) cmd: an emitted command whose first token is UNQUOTED survives `cmd /s /c` with no added wrapper", cmdGate, async () => {
-  const commands = await realEmittedCommands();
-  const harness = makeHarness();
-  try {
-    for (const { label, command } of commands) {
-      const prefix = cliInvocation();
-      // `node "<dump>" …` begins with `n`, exactly as `superbee …` does — the shape every emitted
-      // command built from cliInvocation() has. NO outer wrapper is added.
-      const line = `node "${harness.dump}" ${command.slice(prefix.length).trim()}`;
-      const run = cmdShell.runRaw!(line, harness.argvOut);
-      assert.notEqual(
-        run.argv, undefined,
-        `${label}: a real emitted command must survive an UNWRAPPED cmd /s /c
-  line=${line}
-  stderr=${run.stderr}`,
-      );
-    }
-  } finally {
-    harness.cleanup();
-  }
-});
-
-test("(b) cmd: the boundary — a command whose first token IS quoted needs the wrapper cmd requires", cmdGate, () => {
-  const harness = makeHarness();
-  try {
-    const quotedFirst = `"${process.execPath}" "${harness.dump}" --type "a b"`;
-    const unwrapped = cmdShell.runRaw!(quotedFirst, harness.argvOut);
-    // This is a property of cmd.exe, not a defect in what we emit: rule 2 mangles it. Only
-    // `exactCliInvocation()` produces this shape, and every realistic caller — Node's `exec` and
-    // `spawn({shell:true})`, which add the outer pair themselves, or `spawn(file, argv)`, which
-    // uses no shell — is unaffected. Pinned so nobody "fixes" the renderer to drop the quoting a
-    // path containing spaces genuinely needs.
-    assert.equal(
-      unwrapped.argv, undefined,
-      `expected rule 2 to mangle a quote-initial line; if this now PARSES, cmd's behaviour changed `
-        + `and the note in this test should be revisited. argv=${JSON.stringify(unwrapped.argv)}`,
-    );
-    const wrapped = cmdShell.runRaw!(`"${quotedFirst}"`, harness.argvOut);
-    assert.notEqual(wrapped.argv, undefined, "with the outer pair cmd requires, the same line runs");
-  } finally {
-    harness.cleanup();
-  }
-});
-
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 // NON-NATIVE PAIRING — the limit of the contract, asserted rather than assumed.
 //
-// The renderer chooses quoting by PLATFORM, but the thing that parses an emitted command is the
-// SHELL, and a platform's shells do not agree. On POSIX the renderer emits `'…'`, escaping an
+// The first-party renderer emits POSIX quoting, but the thing that parses an emitted command is the
+// user's SHELL, and shells available on a supported host do not all agree. It emits `'…'`, escaping an
 // embedded quote as `'\''`; sh understands that, PowerShell does not — it escapes a quote by
 // DOUBLING it and treats `\` literally. PowerShell runs on POSIX hosts, so "the user's shell is
 // pwsh on Linux or macOS" is a real configuration the renderer does not currently target.
@@ -304,11 +191,11 @@ test("(b) cmd: the boundary — a command whose first token IS quoted needs the 
 // not. Narrowing the matrix without this cell would hide a real gap behind a green suite.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-const posixRendered = SHELLS.find((candidate) => candidate.id === "pwsh" && !candidate.native);
+const posixRendered = SHELLS.find((candidate) => candidate.id === "pwsh");
 const nonNativeGate = {
   skip: posixRendered?.available
     ? false
-    : "POSIX-rendered/pwsh pairing not exercised here (no pwsh, or this host is Windows)",
+    : "POSIX-rendered/pwsh pairing not exercised here (no pwsh or powershell)",
 };
 
 test("(scope) POSIX-rendered tokens are inert under pwsh EXCEPT where the value contains a quote", nonNativeGate, () => {

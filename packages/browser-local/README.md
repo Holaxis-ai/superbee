@@ -1,10 +1,10 @@
 # @superbee/browser-local
 
 Shared browser-local working-copy and editor-recovery primitives for Superbee hosts.
-This prerelease requires exactly `@superbee/core@0.2.0-pre.4`. Published core pre.3
-lacks the `governed-body-write` entry and the journal guard APIs used by this
-package; a workspace build is not proof that the older registry artifact is
-compatible.
+This prerelease requires exactly `@superbee/core@0.2.0-pre.5`. Published core pre.4
+lacks the `readHeads` listing on the journaled backend seam that this package's
+runtime reads for `query` and `status`; a workspace build is not proof that the
+older registry artifact is compatible.
 
 The root entry exports working-copy bootstrap, local mutation, synchronization,
 conflict recovery and platform runtimes. These use the shared core engine and
