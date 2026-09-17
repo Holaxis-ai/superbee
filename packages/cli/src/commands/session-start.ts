@@ -69,7 +69,7 @@ import { defaultSyncStore } from "../cursor.js";
 import { pullBoardAndRecord } from "../autopull.js";
 import { defaultSummarizeBundle, discoverSummarizeBundle, home, type BoardPullOutcome } from "./home.js";
 import { cliInvocation } from "../invocation.js";
-import { commandToken } from "../command-text.js";
+import { commandFragment, commandLiteral, commandQuoted } from "../command-text.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
@@ -205,13 +205,15 @@ export async function sessionStartPull(
       return undefined;
     }
     if (detection.kind === "indeterminate") {
-      const target = dir === undefined ? "" : ` --dir ${commandToken(dir)}`;
+      const target = dir === undefined ? commandLiteral("") : commandFragment` --dir ${commandQuoted(dir)}`;
       return {
         offline: true,
         discoveryUnknown: `${detection.reason}; restore repository access or connectivity, then retry \`${cliInvocation()} session-start${target}\` before creating a bundle`,
       };
     }
-    if (detection.channel.mode === "local-only") return undefined;
+    if (detection.channel.mode === "local-only") {
+      return repoTopLevel(startDir) ? { offline: false, discoveryAbsent: true } : undefined;
+    }
     if (detection.channel.mode === "in-tree") {
       const top = repoTopLevel(startDir);
       if (!top) return undefined;

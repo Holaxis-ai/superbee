@@ -181,7 +181,7 @@ function approvalFor(capability: SetupCapability, mutates: boolean): SetupApprov
   }
   if (capability.id === "bundle") {
     if (command.startsWith("superbee sync ")) {
-      return { required: true, reason: "This materializes and pulls the existing shared board checkout." };
+      return { required: true, reason: "This may materialize and pull the existing board checkout." };
     }
     return { required: true, reason: "This creates durable project knowledge-bundle files." };
   }
@@ -204,7 +204,7 @@ function actionDescription(capability: SetupCapability): string {
   if (command.startsWith("superbee setup quarantine-state")) return "Preserve unrecognized private state by moving it aside before setup continues.";
   if (command.startsWith("npm install ")) return "Install Superbee into the user's global npm prefix.";
   if (command.startsWith("superbee init ")) return "Create the requested project-local Superbee bundle.";
-  if (command.startsWith("superbee sync --pull-only")) return "Join the existing shared board without committing or pushing local changes.";
+  if (command.startsWith("superbee sync --pull-only")) return "Resolve and pull the existing board checkout without committing or pushing local changes.";
   return capability.reason;
 }
 
@@ -509,8 +509,15 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
   if (input.workspace.board?.kind === "channel" && input.workspace.board.channel.mode === "branch") {
     return {
       id: "bundle", requirement: "recommended", state: "needs_action",
-      reason: "this project already has a shared board; its local checkout is not yet selected",
+      reason: "this project already has a board branch; resolve its existing checkout before creating a bundle",
       command: "superbee sync --pull-only",
+    };
+  }
+  if (input.workspace.board?.kind === "channel" && input.workspace.board.channel.mode === "in-tree") {
+    return {
+      id: "bundle", requirement: "recommended", state: "blocked",
+      reason: "this project already tracks its bundle on the current branch; restore the missing tracked checkout before rerunning setup",
+      command: `superbee setup --host ${input.host} --scope ${input.scope}`,
     };
   }
   if (input.workspace.catalog === "ready") {

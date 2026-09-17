@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { makeTwoCloneTopology, git } from "../../board-git/test/git-harness.js";
 import { inspectSetupBoard } from "../src/commands/setup.js";
 import { buildSetupPlan, type SetupPlanInput } from "../src/setup-plan.js";
-import { buildBoardBlock, buildHomeView, defaultLoadBoardStatus } from "../src/commands/home.js";
+import { buildBoardBlock, buildHomeView, defaultLoadBoardStatus, home } from "../src/commands/home.js";
 import { sessionStart, sessionStartPull } from "../src/commands/session-start.js";
 import { testInvocation } from "./support/command-prefix.js";
 
@@ -75,7 +75,7 @@ test("discovery guidance agreement: known, cached offline, unknown, greenfield, 
     assert.ok(outcome?.discoveryUnknown);
     assert.match(outcome.discoveryUnknown, /session-start --dir/);
     const status = await defaultLoadBoardStatus(topo.b.root);
-    assert.equal(status, null);
+    assert.deepEqual(status, { state: "unverified" });
     let rendered = false;
     await sessionStart(["--dir", topo.b.root, "--json"], {
       pull: async () => outcome,
@@ -90,6 +90,75 @@ test("discovery guidance agreement: known, cached offline, unknown, greenfield, 
     });
     assert.equal(rendered, true, "unknown discovery remains fail-soft and renders orientation");
     assert.equal(existsSync(topo.b.board), false, "unknown discovery creates no bundle");
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("standalone home preserves unverified origin without network and greenfield remains distinct", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    git(topo.a.root, ["update-ref", "-d", "refs/remotes/origin/board"]);
+    git(topo.a.root, ["remote", "set-url", "origin", path.join(topo.dir, "missing.git")]);
+    const greenfield = path.join(topo.dir, "greenfield");
+    await mkdir(greenfield);
+    git(greenfield, ["init", "-b", "main"]);
+    for (const row of [
+      { dir: topo.a.root, unverified: true },
+      { dir: greenfield, unverified: false },
+      { dir: topo.dir, unverified: false },
+    ]) {
+      let output = "";
+      await home(["--dir", row.dir, "--json"], {
+        stdout: (s) => { output += s; }, invocation: () => INV,
+        summarizeBundle: async () => null,
+        loadBoardStatus: defaultLoadBoardStatus,
+        autoPull: async () => undefined, loadWorkspaces: async () => [],
+        hookNeedsUpdate: () => false, skillRefreshScopes: () => [],
+      });
+      const view = JSON.parse(output);
+      if (row.unverified) {
+        assert.match(view.board, /existence is unverified/);
+        assert.match(view.board, /session-start --dir/);
+        assert.equal(view.getting_started, undefined);
+      } else {
+        assert.equal(view.board, undefined);
+        assert.match(view.getting_started, /init --create-only/);
+      }
+    }
+    // A successful check of a reachable empty origin permits greenfield guidance even though
+    // the network-free home probe itself cannot establish remote absence.
+    const emptyOrigin = path.join(topo.dir, "empty.git");
+    git(topo.dir, ["init", "--bare", emptyOrigin]);
+    git(greenfield, ["remote", "add", "origin", emptyOrigin]);
+    const checked = await sessionStartPull(greenfield);
+    assert.equal(checked?.discoveryAbsent, true);
+    assert.deepEqual(buildBoardBlock(await defaultLoadBoardStatus(greenfield), checked, INV), {});
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("setup repairs a known tracked bundle missing from the working tree instead of proposing init", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    git(topo.a.root, ["remote", "remove", "origin"]);
+    await mkdir(topo.a.board);
+    await writeFile(path.join(topo.a.board, "index.md"), '---\nokf_version: "0.1"\n---\n');
+    git(topo.a.root, ["add", "-f", ".superbee/index.md"]);
+    git(topo.a.root, ["commit", "-m", "Track fixture bundle"]);
+    await rm(topo.a.board, { recursive: true });
+    const board = await inspectSetupBoard(topo.a.root);
+    assert.deepEqual(board, { kind: "channel", channel: { mode: "in-tree" } });
+    for (const catalog of ["empty", "ready"] as const) {
+      const plan = buildSetupPlan({ ...READY, workspace: { ...READY.workspace, board, catalog } });
+      assert.equal(plan.status, "blocked");
+      assert.equal(plan.next?.action, "inspect");
+      assert.equal(plan.next?.mutates, false);
+      assert.match(plan.next!.description, /restore the missing tracked checkout/);
+      assert.equal(plan.next?.command?.[1], "setup");
+    }
+    assert.equal(existsSync(topo.a.board), false);
   } finally {
     await topo.cleanup();
   }
