@@ -14,7 +14,7 @@
  * The preview EMITTER ({@link attachBodyPreview}) lives here too, next to the signature that
  * recognizes its notice, so the two cannot drift apart silently.
  */
-import { parseLinks, type Bundle, type Link, type OkfDocument } from "@superbee/core";
+import { normalizeDocumentBodyForStorage, parseLinks, type Bundle, type Link, type OkfDocument } from "@superbee/core";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { commandToken } from "./command-text.js";
@@ -161,6 +161,28 @@ function firstForeignNotice(storedBody: string, nextBody: string): string | unde
 }
 
 /**
+ * Whether replacing a stored body with `nextBody` would produce the same document.
+ *
+ * Both guards below exist to refuse a replace that DESTROYS stored content, so they must agree
+ * with the engine on what "the same body" means. A byte-storing adapter re-parses what it wrote,
+ * so its reads carry the serializer's trailing newline whether or not the caller supplied one; a
+ * candidate and a stored body that differ only by that newline serialize identically, so nothing
+ * can be lost by writing either. Comparing the raw strings refused exactly that no-op: a body of
+ * precisely BODY_PREVIEW_LIMIT characters with no trailing newline is stored one character longer,
+ * so a caller who supplies it WITHOUT the newline -- a `--body` argument holding the original
+ * string, or a tool that trimmed trailing whitespace -- matched the stored preview slice exactly
+ * and was refused for destroying a character they never wrote. (`doc read --body-out` is not that
+ * caller: it emits the parsed body, newline included, so its `--body-file` round trip already
+ * matched byte for byte.)
+ *
+ * This routes through the SAME owning primitive the engine's own no-op test uses
+ * (`isNoopMutation` in core's `document-mutation.ts`), so the two cannot drift apart again.
+ */
+function isSameStoredBody(nextBody: string, existingBody: string): boolean {
+  return normalizeDocumentBodyForStorage(nextBody) === normalizeDocumentBodyForStorage(existingBody);
+}
+
+/**
  * Truncated-preview guard (P1, data loss): a `doc read` detail render deliberately shows only the
  * first {@link BODY_PREVIEW_LIMIT} characters of a large body, and a caller that feeds that preview
  * straight back into a full-body replace DESTROYS everything past the cut with exit 0 and no trace.
@@ -217,7 +239,7 @@ export function guardTruncatedBodyPreview(
   acceptTruncatedBody: boolean,
 ): void {
   if (acceptTruncatedBody) return;
-  if (nextBody === existing.body) return;
+  if (isSameStoredBody(nextBody, existing.body)) return;
 
   const inv = cliInvocation();
   const help = `${inv} doc read ${commandToken(existing.id)} --body-out <path-outside-bundle>`;
@@ -413,7 +435,7 @@ export function guardBodyReplace(
   nextBody: string,
   posture: BodyReplacePosture | undefined,
 ): void {
-  if (nextBody === existing.body) return;
+  if (isSameStoredBody(nextBody, existing.body)) return;
   guardTruncatedBodyPreview(existing, nextBody, Boolean(posture?.acceptTruncatedBody));
   guardDroppedLinks(bundle, existing, nextBody, Boolean(posture?.replaceLinks));
 }

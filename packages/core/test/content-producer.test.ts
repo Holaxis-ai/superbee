@@ -37,7 +37,7 @@ for (const action of fieldActions) {
     assert.equal(preview.changed, true);
     assert.equal(committed.changed, true);
     assert.deepEqual(committed.doc.frontmatter, preview.candidate.frontmatter);
-    assert.equal(committed.doc.body, "untouched body");
+    assert.equal(committed.doc.body, "untouched body\n");
     assert.deepEqual(committed.doc.frontmatter.generated, { by: attribution.producer, at: NEXT });
     assert.equal(committed.doc.frontmatter.superbee_updated_by, attribution.actor);
     assert.equal((await backend.versions(common.id)).find(row => row.version === committed.version)?.actor, attribution.actor);

@@ -27,7 +27,7 @@
 
 import { resolveContentType } from "./content-type.js";
 import { readBundleOkfVersion } from "./engine.js";
-import { MalformedDocumentError, parseFrontmatter, stringifyFrontmatter, stringifyWithSerializedFrontmatter } from "./frontmatter.js";
+import { MalformedDocumentError, normalizeDocumentBodyForStorage, parseFrontmatter, stringifyFrontmatter, stringifyWithSerializedFrontmatter } from "./frontmatter.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys } from "./paths.js";
 import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
@@ -131,7 +131,11 @@ export class MemoryBackend implements StorageBackend {
     // The seam's `id` argument owns identity. Filesystem and wire adapters reconstruct/attach
     // that route id on reads because document bytes do not serialize `doc.id`; mirror them here
     // instead of retaining a mismatched caller-supplied `doc.id` in the in-memory snapshot.
-    const storedDoc = { ...doc, id };
+    // The body is likewise stored in its SERIALIZED shape: byte-storing adapters re-parse what
+    // they wrote, so their reads always carry the serializer's trailing-newline form. Mirroring
+    // that normalization keeps a read-built mutation's candidate identical on every adapter, as
+    // `frontmatterSource` does for metadata.
+    const storedDoc = { ...doc, id, body: normalizeDocumentBodyForStorage(doc.body ?? "") };
     const frontmatterSource = stringifyFrontmatter(storedDoc.frontmatter);
     const version = versionOfBytes(stringifyWithSerializedFrontmatter(frontmatterSource, storedDoc.body));
     // Idempotent: re-writing byte-identical content is a no-op that does not grow the

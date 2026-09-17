@@ -91,7 +91,7 @@ export function foreignLiteralIsNotTheAuthority(bundleValue: string): string {
   return `a tidied value: ${foreignLiteral(bundleValue)}`;
 }
 
-/** `shellArg` throws on Windows instead of degrading; only the authority may call it directly. */
+/** A host adapter may make `shellArg` throw; only the authority may call it directly. */
 export function directShellArg(bundleValue: string): string {
   return `${cliInvocation()} doc write x --type ${shellArg(bundleValue)}`;
 }

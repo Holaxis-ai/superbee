@@ -52,11 +52,41 @@ export interface BridgeHostLimits {
   replyBytes: number;
 }
 
-/** What a host tells a View in the `hello` reply so the View can feature-detect instead of guess. */
+/** How a host that embeds the View as its page presents it. `title: "host"` means the host has
+ * printed the View's name, so the View may hide its own masthead; `height: "content"` means the
+ * host sizes the frame to the height the View reports through `frame.resize`, up to `maxHeight`
+ * CSS pixels. A View that never reports keeps the host's floor and owns its own scroll; a View
+ * reports a height or keeps the window, never both. */
+export interface BridgeHostFrame {
+  title: "host";
+  height: "content";
+  maxHeight: number;
+}
+/** The host's own resolved design tokens, each a CSS value string the View may adopt as `--sb-*`
+ * custom properties. Never user input: a host reads them from its own stylesheet. */
+export interface BridgeHostTheme {
+  scheme: "light" | "dark";
+  ground: string;
+  surface: string;
+  text: string;
+  muted: string;
+  accent: string;
+  border: string;
+  focus: string;
+  fontSans: string;
+  fontDisplay: string;
+  fontMono: string;
+  radius: string;
+  spacing: string;
+}
+/** What a host tells a View in the `hello` reply so the View can feature-detect instead of guess.
+ * `frame` and `theme` are present only on a host that embeds the View as its page. */
 export interface BridgeHostDescriptor {
   kind: BridgeHostKind;
   capabilities: readonly string[];
   limits: BridgeHostLimits;
+  frame?: BridgeHostFrame;
+  theme?: BridgeHostTheme;
 }
 
 /** The limits this service enforces. A host that runs the service declares exactly these. */
@@ -84,6 +114,7 @@ export const BRIDGE_HOST_CAPABILITIES = Object.freeze({
   graph: "graph",
   graphModel: "graph.model",
   recordOpen: "record.open",
+  frameResize: "frame.resize",
 } as const);
 export type BridgeHostCapability = (typeof BRIDGE_HOST_CAPABILITIES)[keyof typeof BRIDGE_HOST_CAPABILITIES];
 
@@ -702,6 +733,8 @@ export class BridgeService {
       kind: this.options.host.kind,
       capabilities: [...declared].sort(),
       limits: { ...this.options.host.limits },
+      ...(this.options.host.frame ? { frame: { ...this.options.host.frame } } : {}),
+      ...(this.options.host.theme ? { theme: { ...this.options.host.theme } } : {}),
     };
   }
 
