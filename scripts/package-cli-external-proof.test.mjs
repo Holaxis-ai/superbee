@@ -203,8 +203,8 @@ test("embedded engine check rejects an incomplete record and non-source engine i
   const metafile = await readJson(path.join(root, "out/cli-runtime-metafile.json"));
   const record = await readJson(path.join(root, "packages/cli/dist/embedded-engine.json"));
   assert.deepEqual(embeddedEngineErrors(record, metafile, manifestOf, isTracked), []);
-  const compared = record.packages.find(row => row.name === "@superbee/core");
-  assert.notEqual(compared.source_identical_to_release_tag, null, "the built tree must have compared core so the probe is live");
+  // A build without the release tag legitimately records null, so the probe supplies its own comparison.
+  const compared = { ...record, packages: record.packages.map(row => row.name === "@superbee/core" ? { ...row, source_identical_to_release_tag: false } : row) };
   const rerouted = target => ({ inputs: Object.fromEntries(Object.entries(metafile.inputs).map(([input, value]) => [input === "../core/src/index.ts" ? target : input, value])) });
   assert.ok("../core/src/index.ts" in metafile.inputs);
   for (const [label, candidate, inputs, expected] of [
@@ -216,7 +216,7 @@ test("embedded engine check rejects an incomplete record and non-source engine i
     ["equality claim", { ...record, packages: record.packages.map(row => row.name === "@superbee/core" ? { ...row, source_identical_to_release_tag: "matches" } : row) }, metafile, /^record asserts a match/],
     ["untagged measurement", { ...record, packages: record.packages.map(row => row.name === "@superbee/board-git" ? { ...row, source_identical_to_release_tag: true } : row) }, metafile, /^packages\[\d+\]: source_identical_to_release_tag is not a measurement against null$/],
     ["malformed source", { ...record, source: { commit: "HEAD", dirty: false } }, metafile, /^source: expected/],
-    ["comparison over an untracked input", record, { inputs: { ...metafile.inputs, "../core/src/generated/assets.ts": {} } }, /^packages\[\d+\]: source_identical_to_release_tag compares "libraries\/v[^"]+" but \.\.\/core\/src\/generated\/assets\.ts is not tracked by git$/],
+    ["comparison over an untracked input", compared, { inputs: { ...metafile.inputs, "../core/src/generated/assets.ts": {} } }, /^packages\[\d+\]: source_identical_to_release_tag compares "libraries\/v[^"]+" but \.\.\/core\/src\/generated\/assets\.ts is not tracked by git$/],
   ]) {
     const errors = embeddedEngineErrors(candidate, inputs, manifestOf, isTracked);
     assert.ok(errors.some(error => expected.test(error)), `${label}: ${JSON.stringify(errors)}`);
