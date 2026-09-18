@@ -1,6 +1,6 @@
 # @superbee/cli
 
-Unpublished reusable Superbee command implementation. The package bundles its dependencies into one
+Reusable Superbee command implementation. The package bundles its dependencies into one
 ESM library with a closed declaration surface. It does not install a binary or execute arguments
 when imported. The `superbee` distribution owns the executable, installed skill resources, private
 worker routing, and release identity.
@@ -25,8 +25,74 @@ recognition remain Superbee policy. Commands that install skills expect `SKILL.m
 at the supplied executable's package root (the parent of its `dist/` directory).
 
 Build from the repository root. The root build schedules prerequisites, this package, and the
-executable before source and distribution tests run. The manifest's `private: true` prevents accidental npm publication; source visibility is unchanged. This
-package is not enrolled in a publication or release workflow.
+executable before source and distribution tests run. Releases use `cli/v<version>` and
+`release-cli-library.yml`; direct workspace `npm publish` is refused. The first `0.1.0-pre.1`
+requires human bootstrap on `next`. Later releases use OIDC staging and human npm approval.
+The read-only `release-cli-library-finalize.yml` verifies the registry bytes; it creates no GitHub
+Release. See [the contribution guide](../../CONTRIBUTING.md) for release prerequisites.
+
+## Supported surface
+
+The supported API is what the package exports:
+
+- `configureSourceIdentity`, `registerExecutableEntry` and `main`;
+- the identity readers `cliVersion`, `isBareVersionFlag`, `buildIdentityEnvelope`,
+  `staticBuildIdentity` and `currentExecutableRealPath`;
+- `createCliRuntime`, `createPosixCliRuntime` and `HostCommandError`;
+- the adapter contract types exported beside them (`CliRuntimeOptions`, `CliDistribution`,
+  `HostCommands`, `PrivateStateHost`, `FilesystemHostPolicy`, `BoardHostPolicy` and the types
+  they reference);
+- the `@superbee/cli/resources` subpath;
+- the `@superbee/cli/embedded-engine.json` data file.
+
+`runManagedUiWorker` and `runUpdateRefreshWorker` are exported for first-party distributions
+only. They implement private worker protocols whose arguments and behavior may change in any
+release; other hosts must not call them.
+
+Everything that is not exported is unsupported, including files under `dist/` reached by path.
+Before 1.0 any release may change the supported surface. Pin an exact version and read the
+release notes before moving it.
+
+The package has no runtime dependencies. Third-party dependencies are bundled at the versions the
+repository lockfile resolved when the artifact was built, not at the ranges `@superbee/core` or
+any other Superbee package declares.
+
+## Embedded engine record
+
+The bundle embeds the workspace source of Superbee's engine packages rather than their published
+npm packages. `@superbee/cli/embedded-engine.json` records what one artifact embeds and can be
+read without importing the library:
+
+```js
+import { createRequire } from 'node:module';
+const engine = createRequire(import.meta.url)('@superbee/cli/embedded-engine.json');
+```
+
+- `schema` is `superbee.cli-embedded-engine.v2`.
+- `packages` has one row per embedded `@superbee/*` workspace, derived from the bundler's inputs
+  and from the files the asset generation stages embed (the compiled `@superbee/ui` application
+  and the MCP resources): `name`, the workspace manifest `version`, and `release_tag`
+  (`libraries/v<version>` for `@superbee/core` and `@superbee/server`, otherwise `null`), which
+  names the release that a consumer or release gate would compare the recorded commit against.
+- `source` is the built `commit` and whether the working tree was `dirty`; either is `null`
+  when unknown.
+
+The record states what is embedded and from which commit. It does not claim, and cannot
+establish, that the embedded Core or Server equals a published release: a version number alone
+does not say so, because workspace source can move ahead of a release without a version change,
+and a working-tree measurement inside the tarball would only describe the machine that built it.
+The release workflow requires a pristine checkout at the recorded commit, equal to current main
+and the tagged GitHub SHA, with successful CI. It compares the entire committed `packages/core`
+and `packages/server` directories to their named `libraries/v<version>` tags, including manifests
+and documentation. Differences or missing tags block release; release updated libraries first.
+This is committed source-tree equality, not binary equality with separately compiled npm libraries
+or equality of resolved third-party dependencies.
+
+The workflow builds and packs once, proves that retained tarball's consumer behavior and embedded
+inventory, then binds its exact bytes to a GitHub build attestation. The finalizer checks registry
+bytes against the dedicated signer workflow, `refs/tags/cli/v<version>` and the packed
+`source.commit`. A record alone is not that proof; treat a build without this verified attestation
+as unreleased.
 
 ## Explicit host runtimes
 

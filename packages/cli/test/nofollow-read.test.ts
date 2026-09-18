@@ -37,7 +37,7 @@ test("a regular file reads its exact bytes, as text and as bytes", () => {
   }
 });
 
-test("a symlink AT the leaf is refused — the target's bytes never reach the caller", { skip: process.platform === "win32" ? "O_NOFOLLOW is POSIX-only" : false }, () => {
+test("a symlink AT the leaf is refused — the target's bytes never reach the caller", () => {
   const dir = workspace();
   try {
     const secret = path.join(dir, "secret.txt");
@@ -51,7 +51,7 @@ test("a symlink AT the leaf is refused — the target's bytes never reach the ca
   }
 });
 
-test("an ancestor symlink stays honored — the guard is leaf-only", { skip: process.platform === "win32" ? "O_NOFOLLOW is POSIX-only" : false }, () => {
+test("an ancestor symlink stays honored — the guard is leaf-only", () => {
   const dir = workspace();
   try {
     const real = path.join(dir, "real-home");
@@ -68,7 +68,7 @@ test("an ancestor symlink stays honored — the guard is leaf-only", { skip: pro
   }
 });
 
-test("a FIFO at the leaf is refused without blocking on a writer that never comes", { skip: process.platform === "win32" ? "mkfifo is POSIX-only" : false }, () => {
+test("a FIFO at the leaf is refused without blocking on a writer that never comes", () => {
   const dir = workspace();
   try {
     const fifo = path.join(dir, "manifest.json");

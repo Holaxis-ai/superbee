@@ -44,15 +44,24 @@ async function copyDeclarationTree(source, destination) {
   }
 }
 
-async function buildPublicationTypes() {
-  const repoRoot = r("../..");
-  const tsc = r("../../node_modules/typescript/bin/tsc");
-  for (const workspace of ["core", "markdown-renderer", "view-runtime", "publication"]) {
-    await execFileAsync(process.execPath, [tsc, "--project", r(`../${workspace}/tsconfig.json`)], {
-      cwd: repoRoot,
-      maxBuffer: 20 * 1024 * 1024,
-    });
+export const DISTRIBUTION_TYPE_WORKSPACES = Object.freeze([
+  "core", "markdown-renderer", "view-runtime", "publication", "bundle-descriptor",
+]);
+
+async function compileDeclarations(workspace) {
+  await execFileAsync(process.execPath, [r("../../node_modules/typescript/bin/tsc"), "--project", r(`../${workspace}/tsconfig.json`)], {
+    cwd: r("../.."),
+    maxBuffer: 20 * 1024 * 1024,
+  });
+}
+
+export async function prepareDistributionTypes(compiledWorkspaces = [], compile = compileDeclarations) {
+  for (const workspace of DISTRIBUTION_TYPE_WORKSPACES) {
+    if (!compiledWorkspaces.includes(workspace)) await compile(workspace);
   }
+}
+
+async function buildPublicationTypes() {
   await copyDeclarationTree(r("../publication/dist"), r("dist/publication"));
   await mkdir(r("dist/publication/schema"), { recursive: true });
   await cp(
@@ -62,12 +71,6 @@ async function buildPublicationTypes() {
 }
 
 async function buildBundleDescriptorTypes() {
-  const repoRoot = r("../..");
-  const tsc = r("../../node_modules/typescript/bin/tsc");
-  await execFileAsync(process.execPath, [tsc, "--project", r("../bundle-descriptor/tsconfig.json")], {
-    cwd: repoRoot,
-    maxBuffer: 20 * 1024 * 1024,
-  });
   await copyDeclarationTree(r("../bundle-descriptor/dist"), r("dist/bundle-descriptor"));
   await mkdir(r("dist/bundle-descriptor/schema"), { recursive: true });
   await cp(
@@ -79,12 +82,13 @@ async function buildBundleDescriptorTypes() {
 /**
  * The ONE dev/npm build entrypoint used by `npm run build`, `verify-npm-package.mjs`, and the
  * release workflow. It cleans dist, regenerates the
- * embedded inputs, bundles, and marks the bin executable — exactly once per call.
+ * embedded inputs, bundles, and marks the bin executable. The root coordinator can supply fresh
+ * prepared inputs and completed declaration projects from this same invocation.
  *
  * `source` and `packageIdentity` are OPTIONAL injections for tests; when omitted, build-bundle
  * derives the source facts itself (the ordinary dev, verify, and release path).
  */
-export async function buildCli(artifactChannel, { source, packageIdentity, updatePolicy } = {}) {
+export async function buildCli(artifactChannel, { source, packageIdentity, updatePolicy, preparedInputs, compiledWorkspaces = [] } = {}) {
   if (artifactChannel !== "local-dev" && artifactChannel !== "npm-package") {
     throw new Error("usage: buildCli(local-dev|npm-package)");
   }
@@ -93,7 +97,7 @@ export async function buildCli(artifactChannel, { source, packageIdentity, updat
   // FIRST: generate every embedded input (the local UI assets and fixed MCP App shell) through the
   // same preparation helper used by release verification. The esbuild
   // bundle below imports those generated modules transitively, so none may be missing or stale.
-  await prepareCliBundleInputs();
+  if (preparedInputs === undefined) await prepareCliBundleInputs({ compiledWorkspaces });
   await buildCliBundle(outfile, {
     artifactChannel,
     functionalVersionFloor: FUNCTIONAL_VERSION_FLOOR,
@@ -101,6 +105,7 @@ export async function buildCli(artifactChannel, { source, packageIdentity, updat
     ...(source === undefined ? {} : { source }),
     ...(packageIdentity === undefined ? {} : { packageIdentity }),
   });
+  await prepareDistributionTypes(compiledWorkspaces);
   await Promise.all([
     buildPublicationBundle(publicationOutfile),
     buildPublicationBundle(publicationBridgeOutfile, "bridge"),

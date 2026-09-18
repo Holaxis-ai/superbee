@@ -4,7 +4,9 @@ import { renderUsage } from "../output.js";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { parseSelectorOrUsage } from "../args.js";
-import { resolveLocalBundleTarget, samePhysicalPath, type LocalBundleTarget } from "../bundle.js";
+import { ownConventionalBoardRoot, resolveLocalBundleTarget, resolveProjectBinding, samePhysicalPath, type LocalBundleTarget } from "../bundle.js";
+import { detectBoardChannel } from "../board-runtime.js";
+import type { ChannelDetection } from "@superbee/board-git";
 import { listCatalogEntries, type CatalogEntryView } from "../catalog.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { CliError } from "../errors.js";
@@ -94,6 +96,7 @@ export interface SetupDeps {
   inspectHook: (scope: InstallScope) => HookStatusInspection;
   inspectMcp: (targets: readonly McpInstallTarget[]) => readonly McpHostStatus[];
   resolveBundle: (startDir: string) => Promise<LocalBundleTarget>;
+  inspectBoard: (startDir: string) => Promise<ChannelDetection>;
   listCatalog: (home: string) => Promise<CatalogEntryView[]>;
   inspectState: (home: string) => Promise<UserStateMigrationInspection>;
   migrateState: (home: string) => Promise<UserStateMigrationReceipt>;
@@ -157,6 +160,14 @@ function planForHost(
   });
 }
 
+export async function inspectSetupBoard(startDir: string): Promise<ChannelDetection> {
+  const binding = await resolveProjectBinding(startDir);
+  // Only the existing binding authority may route discovery back to this checkout.
+  const boardRoot = binding ? await ownConventionalBoardRoot(binding) : startDir;
+  if (!boardRoot) throw new CliError("NOT_FOUND", "the project binding is unresolved");
+  return detectBoardChannel(boardRoot, { budget: { fetchTimeoutMs: 2000, connectTimeoutSeconds: 2 } });
+}
+
 async function inspectWorkspace(deps: SetupDeps): Promise<SetupWorkspaceState> {
   let selected: LocalBundleTarget | undefined;
   let bundle: SetupWorkspaceState["bundle"] = "absent";
@@ -166,17 +177,27 @@ async function inspectWorkspace(deps: SetupDeps): Promise<SetupWorkspaceState> {
   } catch (error) {
     bundle = error instanceof CliError && error.code === "NOT_FOUND" ? "absent" : "unreadable";
   }
+  let board: ChannelDetection | undefined;
+  if (bundle === "absent") {
+    try {
+      board = await deps.inspectBoard(deps.cwd());
+    } catch {
+      // A binding or discovery conflict is not evidence for creating a replacement bundle.
+      bundle = "unreadable";
+    }
+  }
   try {
     const entries = await deps.listCatalog(deps.home());
     const available = entries.filter((entry) => entry.available);
     return {
       bundle,
+      ...(board ? { board } : {}),
       catalog: available.length > 0 ? "ready" : "empty",
       selected_registered: selected !== undefined
         && available.some((entry) => samePhysicalPath(entry.locator.path, selected!.canonicalRoot)),
     };
   } catch {
-    return { bundle, catalog: "unreadable", selected_registered: false };
+    return { bundle, ...(board ? { board } : {}), catalog: "unreadable", selected_registered: false };
   }
 }
 
@@ -311,6 +332,7 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     inspectHook: injected.inspectHook ?? ((selectedScope) => inspectHookStatus(selectedScope)),
     inspectMcp: injected.inspectMcp ?? ((targets) => inspectMcpHosts(targets)),
     resolveBundle: injected.resolveBundle ?? ((startDir) => resolveLocalBundleTarget(undefined, startDir)),
+    inspectBoard: injected.inspectBoard ?? inspectSetupBoard,
     listCatalog: injected.listCatalog ?? listCatalogEntries,
     inspectState: injected.inspectState ?? inspectUserStateMigration,
     migrateState: injected.migrateState ?? migrateUserState,

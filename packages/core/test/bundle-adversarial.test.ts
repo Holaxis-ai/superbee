@@ -489,7 +489,6 @@ test("filesystem listing rejects a markdown directory that cannot be a canonical
 
 test(
   "filesystem listing rejects a literal backslash filename instead of reinterpreting its identity",
-  { skip: process.platform === "win32" },
   async () => {
     const root = await mkdtemp(path.join(tmpdir(), "okf-noncanonical-backslash-"));
     try {

@@ -101,11 +101,7 @@ function preferredBinDir(): Promise<string> {
   preferredBinDirPromise ??= (async () => {
     if (!existsSync(cliBin)) execFileSync("npm", ["run", "build"], { cwd: cliPackageRoot, stdio: "inherit" });
     const dir = await mkdtemp(path.join(tmpdir(), "superbee-preferred-bin-"));
-    if (process.platform === "win32") {
-      await writeFile(path.join(dir, "superbee.cmd"), `@echo off\r\n"${process.execPath}" "${cliBin}" %*\r\n`);
-    } else {
-      await symlink(cliBin, path.join(dir, "superbee"));
-    }
+    await symlink(cliBin, path.join(dir, "superbee"));
     return dir;
   })();
   return preferredBinDirPromise;
@@ -134,7 +130,7 @@ function assertPathIndependentLocalLaunch(command: string): string[] {
   const tokens = tokenizeGeneratedHookCommand(command);
   assert.ok(tokens, `expected generated hook command: ${command}`);
   assert.equal(tokens.length, 3);
-  assert.equal(path.basename(tokens[0]!).toLowerCase(), process.platform === "win32" ? "node.exe" : "node");
+  assert.equal(path.basename(tokens[0]!).toLowerCase(), "node");
   assert.equal(realpathSync(tokens[1]!), realpathSync(cliBin));
   assert.equal(tokens[2], "session-start");
   assert.equal(path.isAbsolute(tokens[0]!), true);
@@ -604,7 +600,7 @@ test("time-box fall-through: a REAL hanging remote is killed inside the budget a
     const out = await runSessionStart(homeB, ["--dir", topo.b.root], { budgetMs });
     const elapsed = Date.now() - t0;
 
-    const renderBoundMs = process.platform === "win32" ? 8_000 : 5_000;
+    const renderBoundMs = 5_000;
     assert.ok(elapsed < renderBoundMs, `render must appear within the bounded host allowance (took ${elapsed}ms)`);
     assert.match(out, /board sync offline — showing last known state/);
     assert.match(out, /\.superbee/); // the full home render fell through
@@ -697,7 +693,7 @@ test("fall-through belt: an injected pull that NEVER resolves still renders home
       budgetMs: 200,
       pull: () => new Promise(() => {}),
     });
-    assert.ok(Date.now() - t0 < (process.platform === "win32" ? 6_000 : 3_000));
+    assert.ok(Date.now() - t0 < 3_000);
     assert.match(out, /\.superbee/);
     assert.match(out, /commands:/);
   } finally {
@@ -874,13 +870,9 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
     assert.equal(realpathSync(pluginArgs![0]!), realpathSync(launchTokens[1]!));
     assert.deepEqual(pluginArgs!.slice(1), launchTokens.slice(2));
 
-    const powershell = path.join(
-      process.env.SystemRoot ?? "C:\\Windows",
-      "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
-    );
     const minimalPathRun = spawnSync(
-      process.platform === "win32" ? powershell : "/bin/sh",
-      process.platform === "win32" ? ["-NoProfile", "-NonInteractive", "-Command", entry.command] : ["-c", entry.command],
+      "/bin/sh",
+      ["-c", entry.command],
       {
       cwd: base,
       env: {
@@ -888,7 +880,7 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
         USERPROFILE: base,
         LOCALAPPDATA: path.join(base, "AppData", "Local"),
         APPDATA: path.join(base, "AppData", "Roaming"),
-        PATH: process.platform === "win32" ? process.env.SystemRoot ?? "C:\\Windows" : "/usr/bin:/bin",
+        PATH: "/usr/bin:/bin",
         AGENTSTATE_LITE_NO_AUTOPULL: "1",
       },
       encoding: "utf8",
@@ -909,10 +901,7 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
     assert.match(capUn.out(), /installed: false/);
     assert.equal(hookNeedsUpdate([base]), false);
   } finally {
-    // Windows can retain a transient loader/Defender handle after the spawned
-    // hook process exits. The fixture is uniquely owned by this test, so let
-    // fs.rm retry that documented EBUSY cleanup window instead of turning a
-    // successful hook contract into a platform-only teardown failure.
+    // Bound teardown retries for the uniquely owned child-process fixture.
     await rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
@@ -1216,7 +1205,7 @@ test("writer and recognizer round-trip the complete printable alphabet and repre
   }
 });
 
-test("built uninstall preserves noncanonical lexical envelopes byte-for-byte for Claude and Codex", { skip: process.platform === "win32" ? "POSIX lexical-envelope matrix has a dedicated Windows grammar suite" : undefined }, async () => {
+test("built uninstall preserves noncanonical lexical envelopes byte-for-byte for Claude and Codex", async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-lexical-foreign-"));
   const settings = JSON.stringify(
     {
@@ -1257,7 +1246,7 @@ test("built uninstall preserves noncanonical lexical envelopes byte-for-byte for
   }
 });
 
-test("built uninstall recognizes every canonical lexical envelope", { skip: process.platform === "win32" ? "POSIX lexical-envelope matrix has a dedicated Windows grammar suite" : undefined }, async () => {
+test("built uninstall recognizes every canonical lexical envelope", async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-lexical-owned-"));
   const canonicalCommands = [
     "aslite session-start",
@@ -1300,7 +1289,7 @@ test("built uninstall recognizes every canonical lexical envelope", { skip: proc
   }
 });
 
-test("built uninstall preserves the complete shell-expansion taxonomy byte-for-byte", { skip: process.platform === "win32" ? "POSIX shell-expansion matrix has a dedicated Windows grammar suite" : undefined }, async () => {
+test("built uninstall preserves the complete shell-expansion taxonomy byte-for-byte", async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-shell-foreign-"));
   const settings = JSON.stringify(
     {
@@ -1337,7 +1326,7 @@ test("built uninstall preserves the complete shell-expansion taxonomy byte-for-b
   }
 });
 
-test("built install and uninstall preserve mismatched npm Node/package pairs across all hosts", { skip: process.platform === "win32" ? "POSIX npm-path matrix has a dedicated Windows grammar suite" : undefined }, async () => {
+test("built install and uninstall preserve mismatched npm Node/package pairs across all hosts", async () => {
   const control = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-control-"));
   const installBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-install-"));
   const uninstallBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-uninstall-"));
@@ -1427,7 +1416,7 @@ test("built install and uninstall preserve mismatched npm Node/package pairs acr
   }
 });
 
-test("built lifecycle preserves noncanonical managed-path near-matches across all hosts", { skip: process.platform === "win32" ? "POSIX managed-path matrix has a dedicated Windows grammar suite" : undefined }, async () => {
+test("built lifecycle preserves noncanonical managed-path near-matches across all hosts", async () => {
   const control = await mkdtemp(path.join(tmpdir(), "aslite-hook-path-control-"));
   const installBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-path-install-"));
   const uninstallBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-path-uninstall-"));
@@ -1532,13 +1521,9 @@ test("hookNeedsUpdate: PATH-bound and pre-session-start hooks are flagged; a sta
     assert.equal(hookNeedsUpdate([base]), true);
     await write("aslite"); // pre-session-start shape under the new bin name
     assert.equal(hookNeedsUpdate([base]), true);
-    await write(process.platform === "win32"
-      ? "C:/opt/aslite/bin/node.exe C:/opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start"
-      : "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start");
+    await write("/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start");
     assert.equal(hookNeedsUpdate([base]), true);
-    await write(process.platform === "win32"
-      ? "C:/opt/superbee/bin/node.exe C:/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start"
-      : "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start");
+    await write("/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start");
     assert.equal(hookNeedsUpdate([base]), false);
   } finally {
     await rm(base, { recursive: true, force: true });
@@ -1742,16 +1727,14 @@ test("hook install preserves a 0600 settings.json mode while rewriting a legacy 
     await hook(["install"], { base, commandBase: "aslite", stdout: () => {} });
     const rewritten = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.ok(rewritten.hooks.SessionStart[0].hooks[0].command.endsWith(" session-start"));
-    if (process.platform !== "win32") {
-      assert.equal((await stat(settingsPath)).mode & 0o777, 0o600, "install must not widen a private settings file");
-    }
+    assert.equal((await stat(settingsPath)).mode & 0o777, 0o600, "install must not widen a private settings file");
   } finally {
     await rm(base, { recursive: true, force: true });
   }
 });
 
 test("readSettingsForInstall: an unreadable file is refused as 'unreadable', not 'unparseable JSON'", async (t) => {
-  if (process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0)) {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
     t.skip("POSIX permission-bit refusal requires a non-root POSIX environment");
     return;
   }
@@ -1802,9 +1785,7 @@ test("hook install writes THROUGH a symlinked settings.json: the link survives, 
     const updated = JSON.parse(await readFile(real, "utf8"));
     assertPathIndependentLocalLaunch(updated.hooks.SessionStart[0].hooks[0].command);
     assert.equal(updated.theme, "dark", "unrelated keys in the dotfile target survive");
-    if (process.platform !== "win32") {
-      assert.equal((await stat(real)).mode & 0o777, 0o600, "the target's mode is preserved");
-    }
+    assert.equal((await stat(real)).mode & 0o777, 0o600, "the target's mode is preserved");
     assert.deepEqual(await readdir(dotfiles), ["claude-settings.json"], "no temp residue beside the target");
   } finally {
     await rm(base, { recursive: true, force: true });

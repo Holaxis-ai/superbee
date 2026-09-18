@@ -86,6 +86,11 @@ CI on the pushed SHA is the authoritative gate. During implementation, run the s
 owns the affected behavior. `npm run check` is the fullest local stand-in only when CI is
 unavailable; the pre-commit smoke is not the full gate.
 
+The runtime lane builds each TypeScript project before running `typecheck:after-build`. That
+command retains checks for bundled/Vite packages and any additional or newly introduced check;
+only an identical `tsc --noEmit` check is satisfied by the preceding compilation. Standalone
+`npm run typecheck` remains available without relying on a preceding root build.
+
 Two validations exist, and each needs exactly one run. PR validation (`pull_request`) proves the
 proposed change against its base before merge. Release-source validation is the newest recorded
 `CI required lanes` verdict on the exact tagged commit — ordinarily the `push` run on the merged
@@ -182,8 +187,9 @@ shape.
 
 Run `npm run check:package-versions` before installing or building after a runtime-library
 version edit. This dependency-free source check validates the synchronized core/server pair,
-their exact dependency, and core/server/markdown-renderer workspace lock metadata and links.
+their exact dependency, and core/server/markdown-renderer/cli workspace lock metadata and links.
 It also checks their existing publish access and registry policy without publishing anything.
+The cli version is independent: no rule ties it to the core/server version.
 Manifests own versions and dependency declarations; the lockfile is their checked projection.
 The renderer's core peer policy permits `||` alternatives of exact versions and stable
 `^major.minor.patch` ranges; prereleases require an exact alternative. Other range syntax or
@@ -213,6 +219,32 @@ supplied artifacts. The dedicated
 `libraries/v<version>` workflow is the only automated release path for that pair.
 Its finalizer reads npm anonymously, proving the pair is publicly downloadable; no library
 release job receives a long-lived npm credential.
+
+`npm run verify:cli-library` consumes the retained `out/superbee-cli.tgz` and the workspace build
+that produced it. It reads the runtime metafile, workspace manifests and source inventory, UI build
+outputs, and CLI runtime output; in-memory esbuild probes derive MCP asset evidence. It never
+rebuilds or repacks the CLI. All archive consumers use a private exact-byte copy, and the proof
+checks that the retained original still equals those bytes before returning.
+The shared installed-consumer proof covers the facade, declarations, inert imports, resources,
+executable identity and offline create/write/read behavior. It reads the packed runtime and v2
+embedded record, requires clean source equal to HEAD and `GITHUB_SHA`, and compares each whole
+committed Core/Server directory to its named `libraries/v<version>` tag. This is source-tree
+parity, not binary or third-party dependency parity. Missing tags or changed library directories
+block a release until updated libraries have been released.
+
+The independent `cli/v<version>` path in `release-cli-library.yml` builds the root once, packs once,
+and retains those bytes through digest checks, attestation and OIDC staging. Only the build job
+checks out or executes repository code. First version `0.1.0-pre.1` needs human bootstrap on `next`;
+later versions stage on `next` for prereleases or `latest` for stable versions. Humans approve npm
+stages interactively. The read-only `release-cli-library-finalize.yml` verifies anonymous registry
+metadata and tarball bytes against the signer workflow, exact CLI tag and packed source commit;
+it does not create a GitHub Release. `prepublishOnly` is an ergonomics tripwire.
+
+Before first live use, rehearse with a disposable package and have a maintainer configure and verify
+an immutable `cli/v*` tag ruleset, the release environment's `cli/v*` allow-list, and the package's
+OIDC trusted publisher for `release-cli-library.yml`. Verify npm requires 2FA and disallows tokens,
+and complete the new-package bootstrap. Existing `v*` and `libraries/v*` controls do not cover this
+namespace automatically. Local tests cannot establish these provider settings or authorize release.
 
 ## OKF compatibility
 

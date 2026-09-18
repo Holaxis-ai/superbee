@@ -4,8 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const names = ['core', 'server', 'markdown-renderer'];
-const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$(?![\s\S])/;
+// cli is versioned independently: it embeds workspace source, so no rule ties it to core's version.
+const names = ['core', 'server', 'markdown-renderer', 'cli'];
+export const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$(?![\s\S])/;
 
 // This is the renderer's intentionally bounded policy, not a general semver engine:
 // stable caret alternatives and exact versions; prereleases require an exact opt-in.

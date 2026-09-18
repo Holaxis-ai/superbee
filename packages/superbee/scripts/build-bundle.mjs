@@ -1,9 +1,9 @@
 import { workspaceAliases } from "../../cli/scripts/bundle-options.mjs";
+import { currentSourceFacts } from "../../cli/scripts/source-facts.mjs";
 // Shared esbuild config for the self-contained npm CLI bundle. build.mjs selects the local-dev or
 // npm-package flavor and writes packages/superbee/dist.
 import { build } from "esbuild";
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { isStrictSemver } from "../../../scripts/strict-semver.mjs";
@@ -28,26 +28,9 @@ if (
 ) {
   throw new Error("packages/superbee/package.json must contain a valid npm package name and non-empty version");
 }
-const repoRoot = resolve(pkgRoot, "../..");
 export const BUILD_ARTIFACT_CHANNELS = ["npm-package", "local-dev"];
 
-function gitFact(args, fallback) {
-  try {
-    return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
-  } catch {
-    return fallback;
-  }
-}
-
-/** Build-time source evidence. Unknown is represented explicitly, never invented. */
-export function currentSourceFacts() {
-  const commit = gitFact(["rev-parse", "HEAD"], "");
-  const status = gitFact(["status", "--porcelain=v1", "--untracked-files=all"], null);
-  return {
-    commit: commit || null,
-    dirty: status === null ? null : status.length > 0,
-  };
-}
+export { currentSourceFacts };
 
 /**
  * Bundle src/index.ts (+ the workspace source packages + every npm dep) into ONE self-contained

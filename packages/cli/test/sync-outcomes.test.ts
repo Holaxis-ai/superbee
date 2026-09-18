@@ -73,16 +73,8 @@ const DIRTY_ROWS: StatusRow[] = [
 ];
 
 /**
- * The fixtures pin the POSIX spelling. Exactly ONE line renders its cleanup-branch value through
- * the quoting authority (`line.marker.interrupted-offer.note`), and the authority spells a token
- * differently per platform — so only that line's POSIX spelling is rewritten before comparing.
- *
- * Scoped to the one key on purpose. A blanket "normalise quotes" would also rewrite the lines that
- * quote the same branch name as plain ENGLISH — `line.marker.prepared.note` and
- * `establish.cleanup-branch-exists` — and those must keep their literal quotes. Rewriting them
- * would assert the wrong bytes and hide the drift these fixtures exist to catch. (Confirmed by
- * running this file under a forced win32 platform: the blanket form failed on exactly those lines.)
- * On POSIX every case is a no-op, so the pin still compares byte-for-byte there.
+ * Only the interrupted-offer line renders the cleanup branch through the quoting authority.
+ * Keep the other fixtures literal: they quote the branch as prose, not as a shell token.
  */
 const RENDERS_CLEANUP_BRANCH = "line.marker.interrupted-offer.note";
 
@@ -256,12 +248,6 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
       const built = builders[`${f.key}#${f.variant}`]!();
       if (f.kind === "envelope") {
         assert.notEqual(typeof built, "string", `${f.key}#${f.variant}: expected a CliError`);
-        if (process.platform === "win32" && f.key.startsWith("provision.")) {
-          const rendered = renderErrorEnvelope(toEnvelope(built as CliError));
-          assert.match(rendered, /Rename-Item -LiteralPath/, `${f.key}#${f.variant}: Windows move-aside remedy`);
-          assert.match(rendered, /\.superbee\.bak/, `${f.key}#${f.variant}: backup destination`);
-          continue;
-        }
         assert.equal(
           renderErrorEnvelope(toEnvelope(built as CliError)),
           f.bytes,

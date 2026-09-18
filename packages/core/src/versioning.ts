@@ -4,10 +4,15 @@
  * These make the seam's "hardest case" (content-addressed versions, compare-and-swap
  * writes, actor attribution) implementable uniformly across adapters:
  *   - {@link contentVersion} defines the opaque {@link Version} token as a SHA-256 over
- *     the canonically serialized document, so identical content yields the same token
- *     REGARDLESS of backend. The filesystem adapter hashes the on-disk bytes; the
- *     in-memory adapter hashes the same serialization — an engine-written document
- *     therefore carries the same version token in either store.
+ *     the canonically serialized document. A version token is a property of a backend,
+ *     not of the content: the filesystem adapter hashes the on-disk bytes exactly as
+ *     written, so a hand-authored file keeps its bytes and its token; the in-memory and
+ *     wire adapters hash a re-serialization, which folds long strings, expands flow
+ *     sequences and normalizes timestamps, so content Superbee did not author may carry a
+ *     different token there. An engine-written document carries the same token in either
+ *     store, because the engine wrote the canonical bytes. Bytes are the promise that
+ *     travels between backends (decision of 2026-09-17, "bytes win"); no promise rests on
+ *     cross-backend token equality.
  *   - {@link blobVersion} is the SAME idea for opaque blob bytes, but hashes the raw
  *     `Uint8Array` directly with no string/UTF-8 step — a doc-shaped hash would corrupt
  *     binary content, so blobs get their own primitive rather than reusing `contentVersion`

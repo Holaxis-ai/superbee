@@ -41,6 +41,8 @@ async function buildResource(resource) {
       minify: true,
       write: false,
       logLevel: "silent",
+      metafile: true,
+      absWorkingDir: packageRoot,
     }),
   ]);
   const javascript = result.outputFiles?.[0]?.text;
@@ -65,13 +67,18 @@ async function buildResource(resource) {
   process.stdout.write(
     `built MCP App ${resource.label} (${Buffer.byteLength(html, "utf8")} bytes)\n`,
   );
-  return html;
+  return { html, inputs: Object.keys(result.metafile.inputs).map(input => resolve(packageRoot, input)) };
+}
+
+/** Every resource's HTML plus the absolute paths of the modules bundled into them. */
+export async function buildMcpViewResources() {
+  const built = [];
+  for (const resource of resources) built.push(await buildResource(resource));
+  return { html: built[0].html, inputs: [...new Set(built.flatMap(resource => resource.inputs))] };
 }
 
 export async function buildMcpViewHtml() {
-  const built = [];
-  for (const resource of resources) built.push(await buildResource(resource));
-  return built[0];
+  return (await buildMcpViewResources()).html;
 }
 
 function parseBuildViewArgs(argv) {
