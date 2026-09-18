@@ -78,9 +78,10 @@ The record states what is embedded and from which commit. It does not claim, and
 establish, that the embedded Core or Server equals a published release: a version number alone
 does not say so, because workspace source can move ahead of a release without a version change,
 and a working-tree measurement inside the tarball would only describe the machine that built it.
-Equality with a published release is established by the release workflow, which builds from a
-pristine checkout of the recorded commit and binds the result to its build attestation. Treat a
-record whose `source.commit` has no such attestation as an unreleased build.
+Equality with a published release is planned as an attested check in the release workflow that
+will enroll this package: it will build from a pristine checkout of the recorded commit and bind
+the result to its build attestation. No current workflow establishes it. Until then, treat every
+record without a release attestation for its `source.commit` as an unreleased build.
 
 ## Explicit host runtimes
 

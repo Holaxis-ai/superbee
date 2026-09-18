@@ -282,6 +282,6 @@ test("record rows name every embedded workspace and its release tag; source fact
   ] });
   assert.throws(() => embeddedEngineRecord({ inputs, source, manifestOf: () => ({ name: "superbee", version: "1.0.0" }) }), /not a versioned @superbee workspace/);
   // Unknown is represented explicitly: with no git on PATH the facts are null, never invented.
-  const facts = execFileSync(process.execPath, ["--input-type=module", "-e", "import { currentSourceFacts } from './packages/cli/scripts/source-facts.mjs'; process.stdout.write(JSON.stringify(currentSourceFacts()));"], { cwd: root, encoding: "utf8", env: { ...process.env, PATH: path.dirname(process.execPath) } });
+  const facts = execFileSync(process.execPath, ["--input-type=module", "-e", "import { currentSourceFacts } from './packages/cli/scripts/source-facts.mjs'; process.stdout.write(JSON.stringify(currentSourceFacts()));"], { cwd: root, encoding: "utf8", env: { ...process.env, PATH: "" } });
   assert.deepEqual(JSON.parse(facts), { commit: null, dirty: null });
 });
