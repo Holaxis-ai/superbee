@@ -112,7 +112,7 @@ function buildUiDist() {
   }
 }
 
-/** Build the ui SPA fresh, embed its dist/ as deterministic gzip, write the generated module, and enforce the size budget. Returns `{ count, totalGzipBytes }`. */
+/** Build the ui SPA fresh, embed its dist/ as deterministic gzip, write the generated module, and enforce the size budget. Returns `{ count, totalGzipBytes, inputs }`, where `inputs` are the embedded files' absolute paths. */
 export function embedUiAssets() {
   buildUiDist();
 
@@ -159,5 +159,5 @@ export const UI_ASSETS_GZIP_BYTES = ${totalGzipBytes};
 `;
   writeFileSync(generatedFile, source);
   console.log(`embedded ${entries.length} ui asset(s), ${totalGzipBytes} bytes gzipped (budget ${UI_ASSET_BUDGET_BYTES})`);
-  return { count: entries.length, totalGzipBytes };
+  return { count: entries.length, totalGzipBytes, inputs: files };
 }

@@ -31,10 +31,8 @@ test("atomicWriteFileSync creates and replaces through same-directory rename wit
   try {
     atomicWriteFileSync(target, "first\n");
     assert.equal(await readFile(target, "utf8"), "first\n");
-    if (process.platform !== "win32") {
-      assert.equal((await stat(target)).mode & 0o777, 0o600);
-      assert.equal((await stat(path.dirname(target))).mode & 0o777, 0o700);
-    }
+    assert.equal((await stat(target)).mode & 0o777, 0o600);
+    assert.equal((await stat(path.dirname(target))).mode & 0o777, 0o700);
     atomicWriteFileSync(target, "second\n");
     assert.equal(await readFile(target, "utf8"), "second\n");
     assert.deepEqual(await readdir(path.dirname(target)), ["settings.json"]);
@@ -147,9 +145,7 @@ test("atomicWriteFileSync refuses absent-file creation after its parent is retar
   }
 });
 
-test("atomicWriteFileSync preserves the mode of an existing private file", {
-  skip: process.platform === "win32" ? "Windows private configuration uses inherited ACLs" : false,
-}, async () => {
+test("atomicWriteFileSync preserves the mode of an existing private file", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-mode-"));
   const target = path.join(dir, "settings.json");
   try {

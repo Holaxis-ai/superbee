@@ -1178,7 +1178,6 @@ test("skill usage errors: missing/unknown subcommand and bad scope are USAGE, no
 
 test(
   "a FIFO where an owned asset belongs converges to the shipped file instead of blocking the install",
-  { skip: process.platform === "win32" ? "mkfifo is POSIX-only" : false },
   async () => {
     const { base, executable } = scratch();
     const cwd = path.join(base, "project");

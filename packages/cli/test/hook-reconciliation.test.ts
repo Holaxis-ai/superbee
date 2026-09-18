@@ -210,15 +210,9 @@ test("status reports duplicate generated entries as stale", () => {
 });
 
 test("npm hook install collapses an exact historical marketplace plus npm hook to one npm hook", () => {
-  const marketplace = process.platform === "win32"
-    ? "C:/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start"
-    : "/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start";
-  const legacyNpm = process.platform === "win32"
-    ? "C:/opt/aslite/bin/node.exe C:/opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start"
-    : "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start";
-  const canonicalNpm = process.platform === "win32"
-    ? "C:/opt/superbee/bin/node.exe C:/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start"
-    : "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start";
+  const marketplace = "/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start";
+  const legacyNpm = "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start";
+  const canonicalNpm = "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start";
   const settings = {
     hooks: {
       SessionStart: [
@@ -339,7 +333,7 @@ test("hook install migrates the exact legacy OpenCode filename and source to one
   const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-opencode-migrate-"));
   const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
   const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
-  const program = "/workspace/superbee/packages/superbee/dist/superbee.mjs";
+  const program = path.join(base, "packages", "superbee", "dist", "superbee.mjs");
   try {
     await mkdir(path.dirname(oldPlugin), { recursive: true });
     await writeFile(oldPlugin, legacyOpenCodeSource("aslite"));
@@ -350,7 +344,9 @@ test("hook install migrates the exact legacy OpenCode filename and source to one
     assert.equal(await readFile(newPlugin, "utf8"), buildOpenCodePluginSource(program));
     const statusCapture = capture();
     await hook(["status", "--json"], { base, commandBase: program, stdout: statusCapture.stdout });
-    assert.equal(JSON.parse(statusCapture.out()).hook.hosts.opencode.state, "current");
+    const observed = JSON.parse(statusCapture.out()).hook.hosts.opencode;
+    assert.equal(observed.compatibility.state, "current");
+    assert.equal(observed.state, "unavailable", "recognizing the generated source does not make its missing launcher available");
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -363,7 +359,7 @@ test("hook status/install/uninstall own the exact published Aslite pre.3 OpenCod
     fixture.replace('const command = "aslite";', 'const command = "agentstate-lite";'),
     fixture.replace(
       'const command = "aslite";',
-      `const command = ${JSON.stringify(process.platform === "win32" ? "C:/opt/npm/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs" : "/opt/npm/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs")};`,
+      `const command = ${JSON.stringify("/opt/npm/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs")};`,
     ),
   ];
   for (const [sourceIndex, source] of sources.entries()) {

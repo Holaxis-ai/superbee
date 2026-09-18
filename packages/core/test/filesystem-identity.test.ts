@@ -1138,9 +1138,7 @@ test("AC-5 row 3: every C and F entry of the checked-in Unicode CaseFolding tabl
   assert.deepEqual(failures, []);
 });
 
-test("AC-5: fold digest over the checked-in spelling list is pinned", {
-  skip: process.platform === "win32" ? "the historical digest pins POSIX absolute-root spelling" : false,
-}, async () => {
+test("AC-5: fold digest over the checked-in spelling list is pinned", async () => {
   assert.equal(DIGEST_SPELLINGS.length, 50);
   const digest = createHash("sha256");
   for (const [root, rel] of DIGEST_SPELLINGS) digest.update(`${await identityKey(root, rel)}\n`);
@@ -1150,7 +1148,6 @@ test("AC-5: fold digest over the checked-in spelling list is pinned", {
   }
   assert.equal(digest.digest("hex"), "7307f1939479537efaac08c000c1e3552d855434e29bb93ba1ee493c086d5f4e");
 });
-
 
 test("host-classified open contention reruns the witnessed walk and retains the observation restart bound", async () => {
   const transient = new Error("synthetic open contention");

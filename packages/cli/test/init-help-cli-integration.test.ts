@@ -9,7 +9,7 @@ import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,11 +30,7 @@ async function tempDir(prefix: string): Promise<string> {
 
 async function makeBinOnPath(): Promise<{ binDir: string; env: NodeJS.ProcessEnv }> {
   const binDir = await tempDir("superbee-init-help-bin-");
-  if (process.platform === "win32") {
-    await writeFile(path.join(binDir, "superbee.cmd"), `@echo off\r\n"${process.execPath}" "${cliBin}" %*\r\n`);
-  } else {
-    await symlink(cliBin, path.join(binDir, "superbee"));
-  }
+  await symlink(cliBin, path.join(binDir, "superbee"));
   return {
     binDir,
     env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` },
@@ -45,9 +41,8 @@ function run(
   args: string[],
   opts: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; stderr: string } {
-  // Invoke the JS entry directly while keeping the managed shim on PATH. The child still proves
-  // cliInvocation() resolves the bare `superbee` name, without asking cmd.exe to re-quote an argv
-  // array (Node's shell+args bridge is lossy for spaces and empty values on Windows).
+  // Invoke the JS entry directly to preserve argv while keeping the managed symlink on PATH.
+  // The child still proves cliInvocation() resolves the bare `superbee` name.
   const result = spawnSync(process.execPath, [cliBin, ...args], {
     cwd: opts.cwd,
     env: opts.env,
@@ -61,13 +56,9 @@ function runEmitted(
   command: string,
   opts: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; stderr: string } {
-  const powershell = path.join(
-    process.env.SystemRoot ?? "C:\\Windows",
-    "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
-  );
   const result = spawnSync(
-    process.platform === "win32" ? powershell : "sh",
-    process.platform === "win32" ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command],
+    "sh",
+    ["-c", command],
     {
     cwd: opts.cwd,
     env: opts.env,
