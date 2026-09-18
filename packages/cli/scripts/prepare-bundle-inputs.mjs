@@ -3,8 +3,8 @@
 import { buildMcpViewResources } from "../../mcp-app/scripts/build-view.mjs";
 import { embedUiAssets } from "./embed-ui-assets.mjs";
 
-export async function prepareCliBundleInputs() {
-  const ui = embedUiAssets();
+export async function prepareCliBundleInputs({ compiledWorkspaces = [] } = {}) {
+  const ui = embedUiAssets({ compiledWorkspaces });
   const mcp = await buildMcpViewResources();
   return { inputs: [...ui.inputs, ...mcp.inputs] };
 }
