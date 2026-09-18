@@ -73,6 +73,11 @@ Kind schema vocabulary (the product-facing projection; raw document reads remain
                                  sections output and also emits required_headings with the exact
                                  level-1 Markdown syntax (for example '# Requested decision')
   freshness_horizon    string   '<n>(m|h|d)', e.g. 24h, 30d, 15m
+  order                number   optional: the kind's place in the bundle's reading order (for
+                                 example 10, 20, 30). Kinds declaring one list first, ascending,
+                                 ties by convention id; kinds without one follow by id. When no
+                                 kind declares an order, this listing sorts by governs as before.
+                                 A convention field only: it never appears on instances
 A misshaped or misplaced key here is a non-fatal registry warning (visible in 'kinds'/'status'
 output), never a silent no-op. See 'superbee doc read conventions/context-note' on any
 --init'd bundle for a full worked example with a values: enum and sections:.
@@ -97,6 +102,7 @@ function toRow(kind: KindConvention, okfVersion: string | undefined): Record<str
     required: kind.fields.required,
     optional: kind.fields.optional,
   };
+  if (kind.order !== undefined) row.order = kind.order;
   if (kind.description) row.description = kind.description;
   if (Object.keys(kind.fields.descriptions).length > 0) row.descriptions = kind.fields.descriptions;
   if (Object.keys(kind.fields.values).length > 0) row.values = kind.fields.values;
@@ -152,9 +158,14 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
     loadKinds(bundle),
     readBundleOkfVersion(bundle),
   ]);
-  const rows = [...registry.kinds.values()]
-    .sort((a, b) => a.governs.localeCompare(b.governs))
-    .map((kind) => toRow(kind, okfVersion));
+  // Registry insertion order is the bundle's reading order once any convention declares `order`.
+  // With none declared the registry iterates by id, and this listing keeps its historical sort by
+  // `governs` so an order-free bundle renders exactly as before.
+  const declared = [...registry.kinds.values()];
+  const ordered = declared.some((kind) => kind.order !== undefined)
+    ? declared
+    : declared.sort((a, b) => a.governs.localeCompare(b.governs));
+  const rows = ordered.map((kind) => toRow(kind, okfVersion));
 
   const out: Record<string, unknown> = { count: rows.length, kinds: rows };
   if (registry.warnings.length > 0) out.warnings = registry.warnings;

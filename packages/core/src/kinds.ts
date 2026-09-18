@@ -118,6 +118,14 @@ export interface KindConvention {
    */
   browseCollapsed?: boolean;
   /**
+   * The kind's place in the bundle's reading order, when the convention declares one (`order: 20`).
+   * A finite number; integers in practice. Kinds that declare an order come first, ascending, ties
+   * by convention id; kinds without one follow by id. The registry's `Map` insertion order is that
+   * reading order, so every consumer that iterates the registry sees it without a second sort.
+   * Display and listing only: no engine behavior, and never a field on instances.
+   */
+  order?: number;
+  /**
    * The bundle-declared claim vocabulary, when this kind declares one. Absent for every kind that
    * does not — a bundle with no `claim:` declaration behaves exactly as it did before the key
    * existed.
@@ -127,7 +135,11 @@ export interface KindConvention {
 
 /** The result of {@link loadKinds}: the built registry plus any non-fatal warnings collected along the way. */
 export interface KindRegistry {
-  /** `governs -> KindConvention`. On a duplicate `governs`, the first-by-id declaration wins. */
+  /**
+   * `governs -> KindConvention`. On a duplicate `governs`, the first-by-id declaration wins.
+   * Insertion order is the bundle's reading order (see {@link compareReadingOrder}): declared
+   * `order` ascending with ties by id, then the undeclared by id.
+   */
   kinds: Map<string, KindConvention>;
   /** Malformed/duplicate/unparseable conventions are SKIPPED, never thrown — collected here instead. */
   warnings: ValidationWarning[];
@@ -143,7 +155,10 @@ export function buildKindRegistry(
   initialWarnings: readonly ValidationWarning[] = [],
   options: { okfVersion?: string } = {},
 ): KindRegistry {
-  const kinds = new Map<string, KindConvention>();
+  // Duplicate resolution walks conventions by id so a declared `order` can never steal a
+  // `governs` from the first-by-id declaration; the accepted set is then laid into the Map in
+  // reading order.
+  const accepted = new Map<string, KindConvention>();
   const warnings = [...initialWarnings];
 
   for (const doc of [...docs].sort((a, b) => a.id.localeCompare(b.id))) {
@@ -167,10 +182,10 @@ export function buildKindRegistry(
         severity: "warning",
       });
     }
-    if (kinds.has(kind.governs)) {
+    if (accepted.has(kind.governs)) {
       warnings.push({
         code: "KIND_DUPLICATE_GOVERNS",
-        message: `duplicate kind convention for '${kind.governs}': '${doc.id}' ignored, keeping the first-declared '${kinds.get(kind.governs)!.id}'.`,
+        message: `duplicate kind convention for '${kind.governs}': '${doc.id}' ignored, keeping the first-declared '${accepted.get(kind.governs)!.id}'.`,
         field: kind.governs,
         severity: "warning",
       });
@@ -184,10 +199,24 @@ export function buildKindRegistry(
         severity: "warning",
       });
     }
-    kinds.set(kind.governs, kind);
+    accepted.set(kind.governs, kind);
   }
 
+  const kinds = new Map<string, KindConvention>();
+  for (const kind of [...accepted.values()].sort(compareReadingOrder)) kinds.set(kind.governs, kind);
   return { kinds, warnings };
+}
+
+/**
+ * The bundle's reading order over kinds: conventions with a declared `order` first, ascending,
+ * ties by id; then conventions without one, by id. A bundle that declares no `order` anywhere
+ * therefore iterates by id exactly as it did before the field existed.
+ */
+export function compareReadingOrder(a: KindConvention, b: KindConvention): number {
+  if (a.order !== undefined && b.order !== undefined && a.order !== b.order) return a.order - b.order;
+  if (a.order !== undefined && b.order === undefined) return -1;
+  if (a.order === undefined && b.order !== undefined) return 1;
+  return a.id.localeCompare(b.id);
 }
 
 /** Stable product-level name for a Kind's workflow progress field. */
@@ -942,6 +971,21 @@ export function parseConventionDoc(
       : undefined;
   // Strict boolean `true` only — an absent, false, or non-boolean value means "expanded" (the default).
   const browseCollapsed = fm.browse_collapsed === true ? true : undefined;
+  // `order:` is a finite number or nothing. Anything else warns and the kind registers without an
+  // order (it sorts with the undeclared), never a skipped convention.
+  let order: number | undefined;
+  if (fm.order !== undefined) {
+    if (typeof fm.order === "number" && Number.isFinite(fm.order)) {
+      order = fm.order;
+    } else {
+      warnings.push({
+        code: "KIND_CONVENTION_BAD_SHAPE",
+        message: `kind convention '${doc.id}' has a non-numeric 'order' (${describeShape(fm.order)}; expected a finite number such as 10); ignoring it.`,
+        field: "order",
+        severity: "warning",
+      });
+    }
+  }
 
   const kind: KindConvention = {
     id: doc.id,
@@ -957,6 +1001,7 @@ export function parseConventionDoc(
   if (sections && sections.length > 0) kind.sections = sections;
   if (freshnessHorizon !== undefined) kind.freshnessHorizon = freshnessHorizon;
   if (browseCollapsed !== undefined) kind.browseCollapsed = browseCollapsed;
+  if (order !== undefined) kind.order = order;
   if (claim !== undefined) kind.claim = claim;
   return {
     ok: true,
@@ -1200,6 +1245,7 @@ export function kindConventionDoc(kind: KindConvention, prose: string, timestamp
   if (kind.sections && kind.sections.length > 0) frontmatter.sections = kind.sections;
   if (kind.freshnessHorizon !== undefined) frontmatter.freshness_horizon = kind.freshnessHorizon;
   if (kind.browseCollapsed) frontmatter.browse_collapsed = true;
+  if (typeof kind.order === "number" && Number.isFinite(kind.order)) frontmatter.order = kind.order;
 
   return { id: kind.id, frontmatter, body: prose };
 }

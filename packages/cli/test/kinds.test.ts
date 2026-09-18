@@ -1497,3 +1497,85 @@ test("advisory lifecycle collision is discoverable before instances and migrated
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+/** Write a minimal convention doc, optionally carrying a reading-order `order`. */
+async function writeOrderedConvention(dir: string, id: string, governs: string, order?: unknown): Promise<void> {
+  const frontmatter: Record<string, unknown> = {
+    type: CONVENTION_TYPE,
+    governs,
+    fields: { required: ["title"] },
+    timestamp: T,
+  };
+  if (order !== undefined) frontmatter.order = order;
+  await writeDoc({ root: dir }, { id: `conventions/${id}`, frontmatter: frontmatter as never, body: "" });
+}
+
+test("kinds: with no order declared anywhere, rows sort by governs exactly as before and carry no order column", async () => {
+  const { dir, cleanup } = await makeSeededBundle();
+  try {
+    // Ids and governs values disagree on order here: 'a-term' governs 'Term', 'z-apple' governs 'Apple'.
+    await writeOrderedConvention(dir, "a-term", "Term");
+    await writeOrderedConvention(dir, "z-apple", "Apple");
+    const result = await runJson(kinds, ["--dir", dir]);
+    const rows = result.kinds as Array<Record<string, unknown>>;
+    assert.deepEqual(rows.map((r) => r.governs), ["Apple", "Context Note", "Term"]);
+    assert.ok(rows.every((r) => !("order" in r)), "no row carries an order column");
+    assert.equal("warnings" in result, false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("kinds: once any convention declares order, rows list in the bundle's reading order with the order column", async () => {
+  const { dir, cleanup } = await makeSeededBundle();
+  try {
+    await writeOrderedConvention(dir, "capability", "Capability", 30);
+    await writeOrderedConvention(dir, "program", "Program", 10);
+    await writeOrderedConvention(dir, "need", "Need", 20);
+    await writeOrderedConvention(dir, "aside", "Aside");
+    const result = await runJson(kinds, ["--dir", dir]);
+    const rows = result.kinds as Array<Record<string, unknown>>;
+    // Ordered first, ascending; the unordered follow by convention id (aside, context-note).
+    assert.deepEqual(
+      rows.map((r) => r.governs),
+      ["Program", "Need", "Capability", "Aside", "Context Note"],
+    );
+    assert.deepEqual(
+      rows.map((r) => r.order),
+      [10, 20, 30, undefined, undefined],
+    );
+    assert.ok(!("order" in rows[3]!) && !("order" in rows[4]!), "unordered rows carry no order key");
+    assert.equal("warnings" in result, false);
+
+    // The TOON rendering shows the column too.
+    let toon = "";
+    await kinds(["--dir", dir], { stdout: (s) => (toon += s) });
+    assert.match(toon, /order: 10/);
+    assert.ok(toon.indexOf("Program") < toon.indexOf("Need") && toon.indexOf("Need") < toon.indexOf("Capability"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("kinds: a non-numeric order surfaces as a registry warning and the kind lists without one", async () => {
+  const { dir, cleanup } = await makeSeededBundle();
+  try {
+    await writeOrderedConvention(dir, "odd", "Odd", "first");
+    await writeOrderedConvention(dir, "real", "Real", 1);
+    const result = await runJson(kinds, ["--dir", dir]);
+    const rows = result.kinds as Array<Record<string, unknown>>;
+    assert.deepEqual(rows.map((r) => r.governs), ["Real", "Context Note", "Odd"]);
+    assert.ok(!("order" in rows[2]!));
+    const warnings = result.warnings as Array<Record<string, unknown>>;
+    assert.ok(warnings.some((w) => w.code === "KIND_CONVENTION_BAD_SHAPE" && w.field === "order"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("kinds --help documents the order field", () => {
+  let out = "";
+  return kinds(["--help"], { stdout: (s) => (out += s) }).then(() => {
+    assert.match(out, /^\s+order\s+number\s+optional/m);
+  });
+});

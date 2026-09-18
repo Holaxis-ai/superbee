@@ -126,7 +126,9 @@ export const CONTEXT_NOTE_SEED_BODY_LOGICAL =
   "- `sections` — list of expected level-1 (`# Heading`) body-section names. Declare only the " +
   "headings EVERY instance must carry (this Context Note kind declares just `Summary`, the one " +
   "section `new \"Context Note\"` scaffolds and every instance carries).\n" +
-  "- `freshness_horizon` — a Superbee Kind extension using `<n>(m|h|d)`, e.g. `24h`, `30d`, `15m`.\n\n" +
+  "- `freshness_horizon` — a Superbee Kind extension using `<n>(m|h|d)`, e.g. `24h`, `30d`, `15m`.\n" +
+  "- `order` (optional): a number placing this kind in the bundle's reading order (e.g. `10`, " +
+  "`20`). Kinds declaring one list first, ascending; the rest follow by id. Never an instance field.\n\n" +
   "Worked example (a `Roadmap Item` kind, with an enum-restricted field and expected sections):\n\n" +
   "```yaml\n" +
   "---\n" +
