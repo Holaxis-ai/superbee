@@ -245,7 +245,7 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and platform lane
   assert.deepEqual(manifest.lanes.runtime.nodes, manifest.runtime_nodes);
   assert.equal(
     pkg.scripts[manifest.lanes.runtime.script],
-    "npm run build && npm run typecheck --workspaces --if-present --ignore-scripts && npm test --workspaces --if-present --ignore-scripts",
+    "npm run build && npm run typecheck:after-build && npm test --workspaces --if-present --ignore-scripts",
   );
   assert.equal(cliPkg.scripts.pretest, "node build.mjs local-dev", "ordinary npm test must keep its build prerequisite");
   assert.doesNotMatch(cliPkg.scripts.test, /build\.mjs/, "the CI runtime lane must be able to skip the pretest rebuild");

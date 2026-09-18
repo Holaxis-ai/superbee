@@ -84,37 +84,39 @@ export function npmInvocation(args, env = process.env) {
   return { command: process.execPath, args: [npmCli, ...args] };
 }
 
-/** Sibling workspaces whose `dist/` the packages/ui PRODUCTION build resolves through package
- * exports (`@superbee/core/kinds`, `@superbee/view-runtime/action-bridge`), IN build
- * order — core first, because view-runtime's own tsc consumes core's dist types. npm does NOT
- * build a workspace's deps on a single-workspace build, so on a fresh checkout (the CI
- * a fresh single-workspace `npm ci` state) these dists don't exist and Vite's build fails to resolve
- * the imports. markdown-renderer is covered by packages/ui's own `prebuild` and stays out of this
- * list. */
+/** Dist prerequisites resolved by the UI production build, in dependency order. */
 export const UI_DIST_PREREQUISITE_WORKSPACES = [
   "@superbee/core",
   "@superbee/view-runtime",
+  "@superbee/markdown-renderer",
 ];
 
-/** Rebuild `packages/ui`'s dist/ fresh via its own workspace script, building the sibling dists it
- * resolves FIRST (see UI_DIST_PREREQUISITE_WORKSPACES). Callers that go through root
- * `npm run build` get this ordering for free. Keeping this step self-sufficient also makes direct
- * package builds correct.
- * Throws (uncaught, `execFileSync`'s default) — and so fails this whole build immediately — on any
- * build error, e.g. a TypeScript or Vite failure. */
-function buildUiDist() {
-  for (const workspace of [...UI_DIST_PREREQUISITE_WORKSPACES, "@superbee/ui"]) {
-    const invocation = npmInvocation(["run", "build", `--workspace=${workspace}`]);
-    execFileSync(invocation.command, invocation.args, {
-      cwd: repoRoot,
-      stdio: "inherit",
-    });
+// Only the caller's completed work in this invocation can suppress dependency builds. The UI
+// itself is always rebuilt; --ignore-scripts avoids its redundant renderer prebuild hook.
+export function uiBuildInvocations(compiledWorkspaces = []) {
+  if (compiledWorkspaces.length === 0) {
+    // Standalone builds retain ordinary lifecycle hooks, including UI's renderer prerequisite.
+    return ["@superbee/core", "@superbee/view-runtime", "@superbee/ui"]
+      .map(workspace => ["run", "build", `--workspace=${workspace}`]);
+  }
+  return [
+    ...UI_DIST_PREREQUISITE_WORKSPACES
+      .filter(workspace => !compiledWorkspaces.includes(workspace.slice("@superbee/".length)))
+      .map(workspace => ["run", "build", `--workspace=${workspace}`, "--ignore-scripts"]),
+    ["run", "build", "--workspace=@superbee/ui", "--ignore-scripts"],
+  ];
+}
+
+function buildUiDist(compiledWorkspaces) {
+  for (const args of uiBuildInvocations(compiledWorkspaces)) {
+    const invocation = npmInvocation(args);
+    execFileSync(invocation.command, invocation.args, { cwd: repoRoot, stdio: "inherit" });
   }
 }
 
 /** Build the ui SPA fresh, embed its dist/ as deterministic gzip, write the generated module, and enforce the size budget. Returns `{ count, totalGzipBytes, inputs }`, where `inputs` are the embedded files' absolute paths. */
-export function embedUiAssets() {
-  buildUiDist();
+export function embedUiAssets({ compiledWorkspaces = [] } = {}) {
+  buildUiDist(compiledWorkspaces);
 
   const files = walk(uiDist);
   let totalGzipBytes = 0;
