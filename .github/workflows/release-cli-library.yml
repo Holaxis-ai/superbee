@@ -1,0 +1,234 @@
+name: Release CLI library (build once, stage retained bytes)
+
+# Only build runs repository code. Attest and stage consume the same retained tarball.
+# The registry finalizer verifies its attestation against the CLI tag and packed source commit.
+on:
+  push:
+    tags: ["cli/v*"]
+
+permissions: {}
+
+concurrency:
+  group: cli-library-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build and prove the CLI library once
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      dist_tag: ${{ steps.meta.outputs.dist_tag }}
+      bootstrap: ${{ steps.meta.outputs.bootstrap }}
+      tgz: ${{ steps.pack.outputs.tgz }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Resolve the CLI version from the tag
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" \
+            || { echo "::error::cannot resolve current main"; exit 1; }
+          test "$GITHUB_SHA" = "$MAIN_SHA" \
+            || { echo "::error::CLI library releases must be tagged from current main ($MAIN_SHA), not older commit $GITHUB_SHA"; exit 1; }
+          git fetch --force --no-tags origin '+refs/tags/cli/v*:refs/tags/cli/v*' \
+            || { echo "::error::cannot fetch the protected library release tag history"; exit 1; }
+          git fetch --force --no-tags origin '+refs/tags/libraries/v*:refs/tags/libraries/v*' \
+            || { echo "::error::cannot fetch library parity tags"; exit 1; }
+          STATUS="$(git status --porcelain --untracked-files=all)" || exit 1
+          test -z "$STATUS" || { echo "::error::release source must be clean"; exit 1; }
+          V="$(node -p 'require("./packages/cli/package.json").version')"
+          node --input-type=module -e 'import { versionPattern } from "./scripts/package-version-policy.mjs"; if (!versionPattern.test(process.argv[1])) process.exit(1);' -- "$V"
+          test "cli/v$V" = "$GITHUB_REF_NAME" || { echo "::error::tag $GITHUB_REF_NAME does not match library version $V"; exit 1; }
+          T="$(node --input-type=module -e '
+            import { parseStrictSemver } from "./scripts/strict-semver.mjs";
+            const parsed = parseStrictSemver(process.argv[1]);
+            if (!parsed) { console.error(`::error::invalid library version ${process.argv[1]}`); process.exit(1); }
+            process.stdout.write(parsed.prerelease === null ? "latest" : "next");
+          ' -- "$V")"
+          MERGED_TAGS="$(git tag --merged "$GITHUB_SHA" --list 'cli/v*')" \
+            || { echo "::error::cannot resolve prior reachable library release tags"; exit 1; }
+          PRIOR_TAGS=()
+          while IFS= read -r PRIOR_TAG; do
+            [ -z "$PRIOR_TAG" ] || PRIOR_TAGS+=("$PRIOR_TAG")
+          done <<< "$MERGED_TAGS"
+          node --input-type=module -e '
+            import { compareStrictSemver, parseStrictSemver } from "./scripts/strict-semver.mjs";
+            const [current, ...tags] = process.argv.slice(1);
+            const parsedCurrent = parseStrictSemver(current);
+            const fail = (message) => { console.error(`::error::${message}`); process.exit(1); };
+            if (!parsedCurrent) fail(`invalid library version ${current}`);
+            const channel = (parsed) => parsed.prerelease === null ? "latest" : "next";
+            for (const tag of tags) {
+              if (tag === `cli/v${current}`) continue;
+              const prior = tag.slice("cli/v".length);
+              const parsedPrior = parseStrictSemver(prior);
+              if (!parsedPrior) fail(`protected release tag ${tag} has an invalid version`);
+              if (channel(parsedPrior) !== channel(parsedCurrent)) continue;
+              const comparison = compareStrictSemver(current, prior);
+              if (comparison === undefined || comparison <= 0) {
+                fail(`${current} would not advance ${channel(parsedCurrent)} beyond reachable ${tag}`);
+              }
+            }
+          ' -- "$V" "${PRIOR_TAGS[@]}"
+          if [ "$V" = "0.1.0-pre.1" ]; then BOOTSTRAP=true; else BOOTSTRAP=false; fi
+          {
+            echo "version=$V"
+            echo "dist_tag=$T"
+            echo "bootstrap=$BOOTSTRAP"
+          } >> "$GITHUB_OUTPUT"
+      - name: Require the CI verdict already recorded on this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: main
+        run: |
+          set -euo pipefail
+          # Release-source validation consumes the newest CI verdict already recorded on this exact
+          # commit — ordinarily the push-to-main run; a rerun or manual dispatch of the same
+          # workflow counts equally — and never reruns CI. The newest repository-workflow check run
+          # named after the canonical required context decides. A pending or not-yet-visible verdict
+          # is polled briefly (a full CI run takes ~6 minutes); a failed, missing, or unqueryable
+          # verdict refuses fail-closed: never stage bytes whose source CI cannot vouch for.
+          for attempt in $(seq 1 16); do
+            VERDICT="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20required%20lanes&filter=latest&per_page=100" \
+              --jq '([.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last) as $r
+                | if $r == null then "missing"
+                  elif $r.status != "completed" then "pending"
+                  elif $r.conclusion == "success" then "success"
+                  else "concluded:" + ($r.conclusion // "unknown") end')" \
+              || { echo "::error::cannot query check runs for $GITHUB_SHA; refusing to build without the CI verdict"; exit 1; }
+            case "$VERDICT" in
+              success) break ;;
+              missing|pending) echo "CI required lanes not settled on $GITHUB_SHA yet (attempt $attempt: $VERDICT)"; if [ "$attempt" -lt 16 ]; then sleep 30; fi ;;
+              *) echo "::error::CI required lanes on $GITHUB_SHA is '$VERDICT'; fix CI on $SOURCE_REF before tagging"; exit 1 ;;
+            esac
+          done
+          test "$VERDICT" = "success" || { echo "::error::no successful 'CI required lanes' verdict appeared on $GITHUB_SHA (last state: $VERDICT); wait for or dispatch CI on $SOURCE_REF, then re-push the tag"; exit 1; }
+      - name: Build the complete workspace once
+        run: npm run build
+      - name: Pack once and prove the literal tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          npm pack -w @superbee/cli --ignore-scripts --json --pack-destination out > out/cli-pack.json
+          test "$(node -p 'require("./out/cli-pack.json").length')" = "1"
+          PACKED="$(node -p 'require("./out/cli-pack.json")[0].filename')"
+          mv -- "out/$PACKED" out/superbee-cli.tgz
+          npm run verify:cli-library
+          {
+            echo "tgz=superbee-cli.tgz"
+            echo "sha256=$(sha256sum out/superbee-cli.tgz | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-library-${{ steps.meta.outputs.version }}
+          path: out/superbee-cli.tgz
+          if-no-files-found: error
+          retention-days: 90
+
+  attest:
+    name: attest the exact CLI library
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-library-${{ needs.build.outputs.version }}
+          path: out
+      - name: Re-hash the retained artifact
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "out/${{ needs.build.outputs.tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.sha256 }}"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/${{ needs.build.outputs.tgz }}
+      - name: Print the one-time bootstrap gate
+        if: needs.build.outputs.bootstrap == 'true'
+        env:
+          V: ${{ needs.build.outputs.version }}
+          TGZ: ${{ needs.build.outputs.tgz }}
+          SHA: ${{ needs.build.outputs.sha256 }}
+        run: |
+          {
+            echo "## Human bootstrap required for @superbee/cli"
+            echo "npm staging cannot create a new package. Download this run's retained artifact and verify its digest before interactive human 2FA publication."
+            echo "- $TGZ: \`$SHA\`"
+            echo '```sh'
+            echo "npm publish \"./$TGZ\" --access public --tag next --ignore-scripts --registry https://registry.npmjs.org/"
+            echo "gh workflow run release-cli-library-finalize.yml -f version=$V"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  stage:
+    name: stage CLI library on npm (OIDC)
+    if: needs.build.outputs.bootstrap != 'true'
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      stage_id: ${{ steps.stage.outputs.stage_id }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-library-${{ needs.build.outputs.version }}
+          path: out
+      - name: Re-hash the CLI bytes about to be staged
+        run: |
+          test "$(sha256sum "out/${{ needs.build.outputs.tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.sha256 }}"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.14.0
+          registry-url: "https://registry.npmjs.org"
+      - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund --registry https://registry.npmjs.org/
+      - name: Stage the exact CLI tarball
+        id: stage
+        env:
+          TGZ: ${{ needs.build.outputs.tgz }}
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --registry https://registry.npmjs.org/ --ignore-scripts --json --loglevel verbose > stage.json
+          STAGE_ID="$(node -e '
+            const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
+            const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
+            const id = find(value); if (!id) process.exit(1); process.stdout.write(id);
+          ')"
+          echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Print the human npm gate
+        env:
+          V: ${{ needs.build.outputs.version }}
+          STAGE_ID: ${{ steps.stage.outputs.stage_id }}
+        run: |
+          {
+            echo "## @superbee/cli is staged for human approval"
+            echo '```sh'
+            echo "npm stage approve $STAGE_ID --registry https://registry.npmjs.org/"
+            echo "gh workflow run release-cli-library-finalize.yml -f version=$V"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

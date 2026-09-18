@@ -183,6 +183,12 @@ package; later versions stage core and server separately. These package `prepubl
 are ergonomics tripwires, not boundaries; npm's require-2FA/disallow-tokens setting is the
 boundary.
 
+The reusable `@superbee/cli` uses `cli/v<version>`, `release-cli-library.yml` and the read-only
+`release-cli-library-finalize.yml`. Its first `0.1.0-pre.1` needs human bootstrap on `next`;
+later releases stage for human approval. Whole committed Core/Server directories must equal their
+library tags. The finalizer binds registry bytes to workflow, tag and packed commit without a
+GitHub Release. CONTRIBUTING.md owns prerequisites and the required disposable-package rehearsal.
+
 Agents may prepare a version-bump PR and, when explicitly asked, push the `v<version>` tag that
 starts a release. Agents never run `npm publish`, `npm stage approve`, `npm dist-tag`, or any
 other authenticated npm mutation unless specifically authorized by Mike, Brian, or another human
