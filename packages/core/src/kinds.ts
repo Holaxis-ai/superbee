@@ -212,7 +212,10 @@ export function buildKindRegistry(
  * ties by id; then conventions without one, by id. A bundle that declares no `order` anywhere
  * therefore iterates by id exactly as it did before the field existed.
  */
-export function compareReadingOrder(a: KindConvention, b: KindConvention): number {
+export function compareReadingOrder(
+  a: Pick<KindConvention, "id" | "order">,
+  b: Pick<KindConvention, "id" | "order">,
+): number {
   if (a.order !== undefined && b.order !== undefined && a.order !== b.order) return a.order - b.order;
   if (a.order !== undefined && b.order === undefined) return -1;
   if (a.order === undefined && b.order !== undefined) return 1;
@@ -980,7 +983,7 @@ export function parseConventionDoc(
     } else {
       warnings.push({
         code: "KIND_CONVENTION_BAD_SHAPE",
-        message: `kind convention '${doc.id}' has a non-numeric 'order' (${describeShape(fm.order)}; expected a finite number such as 10); ignoring it.`,
+        message: `kind convention '${doc.id}' has an invalid 'order' (${describeShape(fm.order)}; expected a finite number such as 10); ignoring it.`,
         field: "order",
         severity: "warning",
       });
