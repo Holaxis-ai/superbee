@@ -86,6 +86,11 @@ CI on the pushed SHA is the authoritative gate. During implementation, run the s
 owns the affected behavior. `npm run check` is the fullest local stand-in only when CI is
 unavailable; the pre-commit smoke is not the full gate.
 
+The runtime lane builds each TypeScript project before running `typecheck:after-build`. That
+command retains checks for bundled/Vite packages and any additional or newly introduced check;
+only an identical `tsc --noEmit` check is satisfied by the preceding compilation. Standalone
+`npm run typecheck` remains available without relying on a preceding root build.
+
 Two validations exist, and each needs exactly one run. PR validation (`pull_request`) proves the
 proposed change against its base before merge. Release-source validation is the newest recorded
 `CI required lanes` verdict on the exact tagged commit — ordinarily the `push` run on the merged

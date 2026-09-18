@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
-import test from "node:test";
+import test, { before } from "node:test";
 
 import { canonicalPath, scanEmittedCommandQuoting, toPosixPath } from "./support/emitted-command-scanner.js";
 
 const SRC = join(import.meta.dirname, "../src");
 const PROBES = join(import.meta.dirname, "fixtures/quoting-probes");
 const TSCONFIG = join(import.meta.dirname, "../tsconfig.json");
+
+// Both assertions inspect the same immutable source tree in this test process.
+let productionScan: ReturnType<typeof scanEmittedCommandQuoting>;
+before(() => { productionScan = scanEmittedCommandQuoting(SRC, TSCONFIG); });
 
 /**
  * Files under `src` the scanner legitimately does not walk. Every entry must name WHY, so that
@@ -31,7 +35,7 @@ function typeScriptFiles(dir: string): string[] {
 }
 
 test("every value interpolated into an emitted command passes through the quoting authority", () => {
-  const { violations } = scanEmittedCommandQuoting(SRC, TSCONFIG);
+  const { violations } = productionScan;
   const report = violations
     .map((v) => `${v.file}:${v.line}  ${v.expression}\n    ${v.reason}\n    ${v.snippet}`)
     .join("\n");
@@ -56,7 +60,7 @@ test("every value interpolated into an emitted command passes through the quotin
  * exactly what stopped being scanned.
  */
 test("the scanner still walks every source file it is supposed to walk", () => {
-  const { scanned } = scanEmittedCommandQuoting(SRC, TSCONFIG);
+  const { scanned } = productionScan;
   const expected = typeScriptFiles(SRC).filter((file) => !(file in UNSCANNABLE));
 
   const stoppedBeingScanned = expected.filter((file) => !scanned.includes(file));
