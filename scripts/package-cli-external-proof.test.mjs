@@ -49,8 +49,11 @@ function embeddedEngineErrors(record, metafile, manifestOf, isTracked, compare) 
     const tag = ["@superbee/core", "@superbee/server"].includes(row.name) ? `libraries/v${row.version}` : null;
     if (row.release_tag !== tag) errors.push(`${at}: release_tag ${JSON.stringify(row.release_tag)}; expected ${JSON.stringify(tag)}`);
     if (![true, false, null].includes(row.source_identical_to_release_tag) || (tag === null && row.source_identical_to_release_tag !== null)) errors.push(`${at}: source_identical_to_release_tag is not a measurement against ${JSON.stringify(tag)}`);
-    else if (row.source_identical_to_release_tag !== null && untracked.has(row.name)) errors.push(`${at}: source_identical_to_release_tag compares ${JSON.stringify(tag)} but ${untracked.get(row.name).join(", ")} is not tracked by git`);
-    else if (tag !== null && row.source_identical_to_release_tag !== compare(directory, tag)) errors.push(`${at}: source_identical_to_release_tag is ${row.source_identical_to_release_tag} but the tree measures ${compare(directory, tag)}`);
+    else if (tag !== null) {
+      // One expectation per row: an untracked embedded input makes the tree unmeasurable.
+      const expected = untracked.has(row.name) ? null : compare(directory, tag);
+      if (row.source_identical_to_release_tag !== expected) errors.push(`${at}: source_identical_to_release_tag is ${row.source_identical_to_release_tag} but the tree measures ${expected}${untracked.has(row.name) ? `; ${untracked.get(row.name).join(", ")} is not tracked by git` : ""}`);
+    }
   }
   // Development trees are dirty and may lack git, so source is checked for shape only.
   const source = record?.source;
@@ -218,7 +221,9 @@ test("embedded engine check rejects an incomplete record and non-source engine i
   const withCore = value => ({ ...record, packages: record.packages.map(row => row.name === "@superbee/core" ? { ...row, source_identical_to_release_tag: value } : row) });
   // A build without the release tag legitimately records null, so the probe supplies its own comparison.
   const compared = withCore(false);
-  const measured = treeComparison("core", record.packages.find(row => row.name === "@superbee/core").release_tag);
+  // The probe's own expectation for core: null when any embedded core input is untracked.
+  const coreInputs = Object.keys(metafile.inputs).map(input => path.relative(root, path.resolve(root, "packages/cli", input)).split(path.sep).join("/")).filter(input => input.startsWith("packages/core/src/"));
+  const measured = coreInputs.every(isTracked) ? treeComparison("core", record.packages.find(row => row.name === "@superbee/core").release_tag) : null;
   assert.ok([true, false, null].includes(measured));
   const rerouted = target => ({ inputs: Object.fromEntries(Object.entries(metafile.inputs).map(([input, value]) => [input === "../core/src/index.ts" ? target : input, value])) });
   assert.ok("../core/src/index.ts" in metafile.inputs);
@@ -231,8 +236,8 @@ test("embedded engine check rejects an incomplete record and non-source engine i
     ["equality claim", { ...record, packages: record.packages.map(row => row.name === "@superbee/core" ? { ...row, source_identical_to_release_tag: "matches" } : row) }, metafile, /^record asserts a match/],
     ["untagged measurement", { ...record, packages: record.packages.map(row => row.name === "@superbee/board-git" ? { ...row, source_identical_to_release_tag: true } : row) }, metafile, /^packages\[\d+\]: source_identical_to_release_tag is not a measurement against null$/],
     ["malformed source", { ...record, source: { commit: "HEAD", dirty: false } }, metafile, /^source: expected/],
-    ...[true, false, null].filter(value => value !== measured).map(value => [`fabricated ${value} comparison`, withCore(value), metafile, new RegExp(`^packages\\[\\d+\\]: source_identical_to_release_tag is ${value} but the tree measures ${measured}$`)]),
-    ["comparison over an untracked input", compared, { inputs: { ...metafile.inputs, "../core/src/generated/assets.ts": {} } }, /^packages\[\d+\]: source_identical_to_release_tag compares "libraries\/v[^"]+" but \.\.\/core\/src\/generated\/assets\.ts is not tracked by git$/],
+    ...[true, false, null].filter(value => value !== measured).map(value => [`fabricated ${value} comparison`, withCore(value), metafile, new RegExp(`^packages\\[\\d+\\]: source_identical_to_release_tag is ${value} but the tree measures ${measured}(; .* is not tracked by git)?$`)]),
+    ["comparison over an untracked input", compared, { inputs: { ...metafile.inputs, "../core/src/generated/assets.ts": {} } }, /^packages\[\d+\]: source_identical_to_release_tag is false but the tree measures null; (.*, )?\.\.\/core\/src\/generated\/assets\.ts is not tracked by git$/],
   ]) {
     const errors = embeddedEngineErrors(candidate, inputs, manifestOf, isTracked, treeComparison);
     assert.ok(errors.some(error => expected.test(error)), `${label}: ${JSON.stringify(errors)}`);
