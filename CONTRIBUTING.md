@@ -220,7 +220,11 @@ supplied artifacts. The dedicated
 Its finalizer reads npm anonymously, proving the pair is publicly downloadable; no library
 release job receives a long-lived npm credential.
 
-`npm run verify:cli-library` consumes only `out/superbee-cli.tgz`: it never rebuilds or repacks.
+`npm run verify:cli-library` consumes the retained `out/superbee-cli.tgz` and the workspace build
+that produced it. It reads the runtime metafile, workspace manifests and source inventory, UI build
+outputs, and CLI runtime output; in-memory esbuild probes derive MCP asset evidence. It never
+rebuilds or repacks the CLI. All archive consumers use a private exact-byte copy, and the proof
+checks that the retained original still equals those bytes before returning.
 The shared installed-consumer proof covers the facade, declarations, inert imports, resources,
 executable identity and offline create/write/read behavior. It reads the packed runtime and v2
 embedded record, requires clean source equal to HEAD and `GITHUB_SHA`, and compares each whole

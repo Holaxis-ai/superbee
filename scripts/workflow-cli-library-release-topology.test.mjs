@@ -190,7 +190,9 @@ test('release topology isolates payload execution from credentials and retains e
   assert.match(build,/if \[ "\$V" = "0\.1\.0-pre\.1" \]; then BOOTSTRAP=true/);
   assert.doesNotMatch(finalize,/actions\/checkout|registry-url:|npm publish|npm stage|npm dist-tag|id-token|contents: write/);
   assert.match(finalize,/contents: read/);
-  assert.doesNotMatch(verifier,/\[.pack.|npm run build/);
+  assert.doesNotMatch(verifier,/\[.pack.|npm run build|process\.argv/);
+  assert.equal(JSON.parse(read('package.json')).scripts['verify:cli-library'], 'node scripts/verify-cli-library-entry.mjs');
+  assert.equal(read('scripts/verify-cli-library-entry.mjs'), "import { verifyCliLibrary } from './verify-cli-library.mjs';\n\nprocess.stdout.write(`${JSON.stringify(await verifyCliLibrary(), null, 2)}\\n`);\n");
   const proof=read('scripts/cli-library-proof.mjs');
   assert.doesNotMatch(proof,/\[npm, "(?:pack|run)"/);
   assert.match(proof,/embeddedInventory\(path.join\(library, "dist\/index.mjs"\)\)/);

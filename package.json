@@ -31,7 +31,7 @@
     "mutation:cli": "npm run mutation -w @superbee/cli",
     "mutation:board-git": "npm run mutation -w @superbee/board-git",
     "mutation:survivors": "node scripts/mutation-survivors.mjs",
-    "verify:cli-library": "node scripts/verify-cli-library.mjs",
+    "verify:cli-library": "node scripts/verify-cli-library-entry.mjs",
     "typecheck:after-build": "node scripts/typecheck-after-build.mjs"
   },
   "dependencies": {

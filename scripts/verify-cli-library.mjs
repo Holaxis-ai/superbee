@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { versionPattern } from './package-version-policy.mjs';
 import { proveCliTarball } from './cli-library-proof.mjs';
 
@@ -37,5 +36,3 @@ export async function verifyCliLibrary() {
   const tarball = path.join(root, 'out/superbee-cli.tgz');
   return proveCliTarball(tarball, { checkSource: (record, manifestOf) => verifyReleaseSource(record, { root, githubSha: process.env.GITHUB_SHA, manifestOf }) });
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href)
-  process.stdout.write(`${JSON.stringify(await verifyCliLibrary(), null, 2)}\n`);
