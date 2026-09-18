@@ -1,0 +1,114 @@
+name: CLI library finalize (read-only registry proof)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact @superbee/cli version already approved on npm"
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: cli-library-release
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: verify registry artifact and source-bound attestation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.14.0
+      - name: Validate the version and prove the registry channel
+        env:
+          V: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          T="$(node --input-type=module <<'NODE'
+          // Agreement with package-version-policy.mjs is tested without loading repository code.
+          const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$(?![\s\S])/;
+          const match = versionPattern.exec(process.env.V);
+          if (!match) throw new Error('pass a bare package-policy version');
+          process.stdout.write(match[4] ? 'next' : 'latest');
+          NODE
+          )"
+          for attempt in 1 2 3 4 5 6; do
+            VERSION="$(npm view "@superbee/cli@$V" version --registry https://registry.npmjs.org/ 2>/dev/null || true)"
+            TAG="$(npm view @superbee/cli "dist-tags.$T" --registry https://registry.npmjs.org/ 2>/dev/null || true)"
+            [ "$VERSION" = "$V" ] && [ "$TAG" = "$V" ] && break
+            echo "registry not settled yet (attempt $attempt)"; sleep 10
+          done
+          test "$VERSION" = "$V" || { echo "::error::npm does not serve @superbee/cli@$V"; exit 1; }
+          test "$TAG" = "$V" || { echo "::error::@superbee/cli $T points at $TAG, expected $V"; exit 1; }
+          echo "DIST_TAG=$T" >> "$GITHUB_ENV"
+      - name: Download and inspect the exact published bytes
+        env:
+          V: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          npm pack "@superbee/cli@$V" --ignore-scripts --registry https://registry.npmjs.org/ --json --pack-destination out > out/cli-pack.json
+          PACKED="$(node -e '
+            const rows = JSON.parse(require("fs").readFileSync("out/cli-pack.json", "utf8"));
+            if (rows.length !== 1 || !/^[A-Za-z0-9._-]+\.tgz$/.test(rows[0].filename)) process.exit(1);
+            process.stdout.write(rows[0].filename);
+          ')"
+          mv -- "out/$PACKED" out/superbee-cli.tgz
+          tar -xOf out/superbee-cli.tgz package/package.json > out/package.json
+          tar -xOf out/superbee-cli.tgz package/dist/embedded-engine.json > out/embedded-engine.json
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('out/package.json', 'utf8'));
+          const record = JSON.parse(readFileSync('out/embedded-engine.json', 'utf8'));
+          assert.equal(pkg.name, '@superbee/cli');
+          assert.equal(pkg.version, process.env.V);
+          assert.equal(pkg.private, undefined);
+          assert.equal(pkg.bin, undefined);
+          assert.deepEqual(pkg.publishConfig, { access: 'public', registry: 'https://registry.npmjs.org/' });
+          for (const key of ['dependencies', 'optionalDependencies', 'peerDependencies']) assert.equal(pkg[key], undefined);
+          assert.deepEqual(Object.keys(record).sort(), ['packages', 'schema', 'source']);
+          assert.equal(record.schema, 'superbee.cli-embedded-engine.v2');
+          assert.deepEqual(Object.keys(record.source).sort(), ['commit', 'dirty']);
+          assert.equal(typeof record.source.commit, 'string');
+          assert.equal(record.source.commit.length, 40);
+          assert.match(record.source.commit, /^[a-f0-9]{40}$/);
+          assert.equal(record.source.dirty, false);
+          assert.ok(Array.isArray(record.packages));
+          const names = new Set();
+          for (const row of record.packages) {
+            assert.deepEqual(Object.keys(row).sort(), ['name', 'release_tag', 'version']);
+            assert.match(row.name, /^@superbee\/[a-z0-9-]+$/);
+            assert.equal(names.has(row.name), false); names.add(row.name);
+            assert.equal(typeof row.version, 'string');
+            assert.match(row.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$(?![\s\S])/);
+            assert.equal(row.release_tag, ['@superbee/core', '@superbee/server'].includes(row.name) ? `libraries/v${row.version}` : null);
+          }
+          assert.ok(names.has('@superbee/core') && names.has('@superbee/server'));
+          appendFileSync(process.env.GITHUB_ENV, `SOURCE_COMMIT=${record.source.commit}\n`);
+          NODE
+      - name: Verify the source-bound build attestation
+        env:
+          V: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify out/superbee-cli.tgz -R "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-cli-library.yml" \
+            --source-ref "refs/tags/cli/v$V" \
+            --source-digest "$SOURCE_COMMIT"
+      - name: Record the completed read-only verification
+        env:
+          V: ${{ inputs.version }}
+        run: |
+          {
+            echo "## @superbee/cli@$V verified"
+            echo "- SHA-256: \`$(sha256sum out/superbee-cli.tgz | cut -d' ' -f1)\`"
+            echo "- dist-tag: \`$DIST_TAG\`"
+            echo "- source: \`refs/tags/cli/v$V\` at \`$SOURCE_COMMIT\`"
+          } >> "$GITHUB_STEP_SUMMARY"

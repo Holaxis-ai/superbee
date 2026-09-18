@@ -25,8 +25,11 @@ recognition remain Superbee policy. Commands that install skills expect `SKILL.m
 at the supplied executable's package root (the parent of its `dist/` directory).
 
 Build from the repository root. The root build schedules prerequisites, this package, and the
-executable before source and distribution tests run. This package is not yet enrolled in a release
-workflow; `npm publish` is refused here.
+executable before source and distribution tests run. Releases use `cli/v<version>` and
+`release-cli-library.yml`; direct workspace `npm publish` is refused. The first `0.1.0-pre.1`
+requires human bootstrap on `next`. Later releases use OIDC staging and human npm approval.
+The read-only `release-cli-library-finalize.yml` verifies the registry bytes; it creates no GitHub
+Release. See [the contribution guide](../../CONTRIBUTING.md) for release prerequisites.
 
 ## Supported surface
 
@@ -78,10 +81,18 @@ The record states what is embedded and from which commit. It does not claim, and
 establish, that the embedded Core or Server equals a published release: a version number alone
 does not say so, because workspace source can move ahead of a release without a version change,
 and a working-tree measurement inside the tarball would only describe the machine that built it.
-Equality with a published release is planned as an attested check in the release workflow that
-will enroll this package: it will build from a pristine checkout of the recorded commit and bind
-the result to its build attestation. No current workflow establishes it. Until then, treat every
-record without a release attestation for its `source.commit` as an unreleased build.
+The release workflow requires a pristine checkout at the recorded commit, equal to current main
+and the tagged GitHub SHA, with successful CI. It compares the entire committed `packages/core`
+and `packages/server` directories to their named `libraries/v<version>` tags, including manifests
+and documentation. Differences or missing tags block release; release updated libraries first.
+This is committed source-tree equality, not binary equality with separately compiled npm libraries
+or equality of resolved third-party dependencies.
+
+The workflow builds and packs once, proves that retained tarball's consumer behavior and embedded
+inventory, then binds its exact bytes to a GitHub build attestation. The finalizer checks registry
+bytes against the dedicated signer workflow, `refs/tags/cli/v<version>` and the packed
+`source.commit`. A record alone is not that proof; treat a build without this verified attestation
+as unreleased.
 
 ## Explicit host runtimes
 
