@@ -8,25 +8,23 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.5 | public / next |
-| @superbee/server | 0.2.0-pre.5 | public / next |
-| @superbee/browser-local | 0.1.0-pre.3 | public / next |
-| @superbee/markdown-renderer | 0.1.4 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.6 | public / next |
+| @superbee/server | 0.2.0-pre.6 | public / next |
+| @superbee/browser-local | 0.1.0-pre.4 | public / next |
+| @superbee/markdown-renderer | 0.1.5 | existing restricted access / latest |
 
-This candidate carries the heads-only working-copy listing (`readHeads` on the
-journaled backend seam; the runtime's `query` and `status` read heads in one
-transaction without parsing bodies), the warm IndexedDB instance reopening instead
-of surfacing a closed-handle error, and the filesystem host policy as an explicit
-runtime (`createFilesystemRuntime` and the `@superbee/core/filesystem` entry; the
-server's legacy router resolves its backend through `backendFor`).
+This candidate carries core's serialized-body read contract (every backend read and
+every constructed or stored document returns the body in its storage-normalized
+shape), one shared SHA-256 implementation for byte versions in Node and browser
+runtimes, and the filesystem lock release fenced behind an atomic rename with a
+bounded retry budget and one in-flight release per claim. Server source is unchanged
+apart from tests.
 
-Browser-local depends exactly on core pre.5. Registry core pre.4 lacks `readHeads`
-on the journaled backend seam that this package's runtime calls; do not patch around
-it or publish with a wildcard dependency. Server moves with core under the existing
-paired release policy. Renderer 0.1.4 adds the opt-in `externalLinkHosts` option
-(PR 267): an `https://` link whose host is exactly on the caller's list renders as a
-real anchor with `rel="noopener noreferrer"` and `target="_blank"`; without the option
-the output is byte-identical to 0.1.3. Its peer allowance is unchanged. A published
+Browser-local depends exactly on core pre.6 and moves with it under the paired
+exact-pin policy; do not patch around a mismatch or publish with a wildcard
+dependency. Server moves with core under the existing paired release policy.
+Renderer 0.1.5 only extends its core peer allowance to pre.6; it is included so
+consumers can align their root core without overriding peer checks, and a published
 renderer version is never reused for different bytes. Its access remains restricted:
 do not make other private packages public.
 
