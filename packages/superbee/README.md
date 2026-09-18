@@ -57,6 +57,19 @@ npm install -g superbee@next
 Windows adapters and the `superbee-windows` executable live in a separate repository. That
 experimental distribution is unpublished and is not included in `superbee`.
 
+### Upgrading an existing Windows installation
+
+The first release containing the Windows extraction removes native Windows support from this
+package. Its npm `os` metadata permits only `darwin` and `linux`, so a Windows upgrade to an affected
+version is rejected with `EBADPLATFORM`. This applies to existing prerelease users too. Forcing the
+installation does not restore support: the executable refuses commands on unsupported hosts
+before running them (the bare `--version` flag can still identify the installed build).
+
+No published, supported Windows replacement is available. An older installed version is not
+converted or removed by this source change, and existing bundle files are not migrated by it.
+Review the affected release's notes before changing an existing Windows installation. macOS/Linux
+users can continue using the normal installation and setup flow.
+
 Run `superbee version --check` to compare your install with the current stable release.
 
 ## First run: let your agent finish setup

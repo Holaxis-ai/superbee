@@ -12,7 +12,7 @@ const argv=process.argv.slice(2);
 if(isBareVersionFlag(argv[0])) {
  process.stdout.write(`${cliVersion()}\n`);
 } else if(process.platform!=='darwin'&&process.platform!=='linux') {
- process.stdout.write("error:\n  code: RUNTIME\n  message: This Superbee distribution supports macOS and Linux. Use a Windows distribution on Windows.\n");
+ process.stdout.write("error:\n  code: RUNTIME\n  message: This Superbee distribution supports macOS and Linux. Native Windows is not supported by this package.\n");
  process.exitCode=1;
 } else {
  const executablePath=fileURLToPath(import.meta.url);
