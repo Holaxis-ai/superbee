@@ -65,25 +65,22 @@ import { createRequire } from 'node:module';
 const engine = createRequire(import.meta.url)('@superbee/cli/embedded-engine.json');
 ```
 
+- `schema` is `superbee.cli-embedded-engine.v2`.
 - `packages` has one row per embedded `@superbee/*` workspace, derived from the bundler's inputs
   and from the files the asset generation stages embed (the compiled `@superbee/ui` application
-  and the MCP resources): `name`, the workspace manifest `version`, `release_tag`
-  (`libraries/v<version>` for `@superbee/core` and `@superbee/server`, otherwise `null`), and
-  `source_identical_to_release_tag`.
-- `source_identical_to_release_tag` is `true` or `false` when every embedded input of the
-  package was byte-identical to its committed file at the built commit and the build compared the
-  package directory at that commit with the release tag. It is `null` when no comparison was
-  made: the package has no release tag convention, the tag or git was unavailable, or an embedded
-  input differed from its committed file or had none (uncommitted edits, including edits hidden
-  from `git status` by index flags, and untracked or ignored generated modules).
+  and the MCP resources): `name`, the workspace manifest `version`, and `release_tag`
+  (`libraries/v<version>` for `@superbee/core` and `@superbee/server`, otherwise `null`), which
+  names the release that a consumer or release gate would compare the recorded commit against.
 - `source` is the built `commit` and whether the working tree was `dirty`; either is `null`
   when unknown.
 
-A version number alone does not establish that the embedded Core is the published Core of that
-version: workspace source can move ahead of a release without a version change. Report the
-declared version and the measured comparison separately, and treat `false` and `null` as
-"not shown to be the published package". Even `true` compares source trees, not the compiled
-bytes on the registry.
+The record states what is embedded and from which commit. It does not claim, and cannot
+establish, that the embedded Core or Server equals a published release: a version number alone
+does not say so, because workspace source can move ahead of a release without a version change,
+and a working-tree measurement inside the tarball would only describe the machine that built it.
+Equality with a published release is established by the release workflow, which builds from a
+pristine checkout of the recorded commit and binds the result to its build attestation. Treat a
+record whose `source.commit` has no such attestation as an unreleased build.
 
 ## Explicit host runtimes
 
