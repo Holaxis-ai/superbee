@@ -39,8 +39,9 @@ export function embeddedEngineRecord({ inputs, source, git = runGit, manifestOf 
   // The tag diff reads committed trees, while the bundler read working-tree bytes. Index flags,
   // uncommitted edits and untracked generated modules all hide from `git status`, so the embedded
   // bytes themselves are compared blob by blob with HEAD before any tag comparison is reported.
+  // The manifest names the row's version and tag, so it is compared with its inputs.
   const embeddedBytesCommitted = dir => {
-    const paths = inputsByDir.get(dir);
+    const paths = [...new Set([...inputsByDir.get(dir), `packages/${dir}/package.json`])];
     const head = git(["ls-tree", "-r", "-z", "HEAD", "--", `packages/${dir}`]);
     const worktree = git(["hash-object", "--stdin-paths"], paths.join("\n") + "\n");
     if (head?.status !== 0 || worktree?.status !== 0) return false;

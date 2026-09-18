@@ -64,8 +64,8 @@ function embeddedEngineErrors(record, { runtime, assets }, manifestOf, tree) {
     if (![true, false, null].includes(row.source_identical_to_release_tag) || (tag === null && row.source_identical_to_release_tag !== null)) errors.push(`${at}: source_identical_to_release_tag is not a measurement against ${JSON.stringify(tag)}`);
     else if (tag !== null) {
       // One expectation per row: the tree's own byte-level measurement, or null without git.
-      const expected = tree === null ? null : tree.compare(directory, inputs, tag);
-      if (row.source_identical_to_release_tag !== expected) errors.push(`${at}: source_identical_to_release_tag is ${row.source_identical_to_release_tag} but the tree measures ${expected}`);
+      const [expected, detail] = tree === null ? [null] : tree.compare(directory, inputs, tag);
+      if (row.source_identical_to_release_tag !== expected) errors.push(`${at}: source_identical_to_release_tag is ${row.source_identical_to_release_tag} but the tree measures ${expected}${detail ? ` (${detail})` : ""}`);
     }
   }
   const source = record?.source;
@@ -78,24 +78,30 @@ function embeddedEngineErrors(record, { runtime, assets }, manifestOf, tree) {
   if (Object.keys(record ?? {}).sort().join() !== "packages,schema,source") errors.push("record: unexpected top-level fields");
   return errors;
 }
-// This tree's git facts, measured per file: an embedded input compares with its HEAD blob, so
-// index flags and uncommitted or untracked files cannot hide behind `git status`.
+// This tree's git facts, measured per file: an embedded input and the workspace manifest compare
+// with their HEAD blobs, so index flags and uncommitted or untracked files cannot hide behind
+// `git status`. `compare` returns [value, detail] and is memoized because probes repeat it.
 const treeFacts = () => {
   const git = (args, input) => spawnSync("git", args, { cwd: root, encoding: "utf8", input });
   const head = git(["rev-parse", "HEAD"]);
   if (head.status !== 0) return null;
   const status = git(["status", "--porcelain", "--untracked-files=all"]);
+  const measured = new Map();
   return {
     head: { commit: head.stdout.trim(), dirty: status.status === 0 ? status.stdout !== "" : null },
     compare(directory, inputs, tag) {
-      if (git(["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]).status !== 0) return null;
-      for (const input of inputs) {
-        const committed = git(["rev-parse", "--verify", "--quiet", `HEAD:${input}`]);
-        const embedded = git(["hash-object", "--", input]);
-        if (committed.status !== 0 || embedded.status !== 0 || committed.stdout !== embedded.stdout) return null;
-      }
-      const diff = git(["diff", "--quiet", `refs/tags/${tag}`, "HEAD", "--", `packages/${directory}`]);
-      return diff.status === 0 ? true : diff.status === 1 ? false : null;
+      const key = JSON.stringify([directory, tag, inputs]);
+      if (!measured.has(key)) measured.set(key, (() => {
+        for (const input of new Set([...inputs, `packages/${directory}/package.json`])) {
+          const committed = git(["rev-parse", "--verify", "--quiet", `HEAD:${input}`]);
+          const embedded = git(["hash-object", "--", input]);
+          if (committed.status !== 0 || embedded.status !== 0 || committed.stdout !== embedded.stdout) return [null, `${input} differs from HEAD`];
+        }
+        if (git(["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]).status !== 0) return [null, "release tag unreachable"];
+        const diff = git(["diff", "--quiet", `refs/tags/${tag}`, "HEAD", "--", `packages/${directory}`]);
+        return [diff.status === 0 ? true : diff.status === 1 ? false : null];
+      })());
+      return measured.get(key);
     },
   };
 };
@@ -280,7 +286,7 @@ test("embedded engine check rejects an incomplete record, non-source engine inpu
   assert.ok("../core/src/index.ts" in inventory.runtime.inputs);
   const coreTag = record.packages.find(row => row.name === "@superbee/core").release_tag;
   const coreInputs = [...Object.keys(inventory.runtime.inputs).map(input => path.relative(root, path.resolve(root, "packages/cli", input)).split(path.sep).join("/")), ...inventory.assets].filter(input => input.startsWith("packages/core/"));
-  const measured = tree === null ? null : tree.compare("core", coreInputs, coreTag);
+  const [measured] = tree === null ? [null] : tree.compare("core", coreInputs, coreTag);
   assert.ok([true, false, null].includes(measured));
   for (const [label, candidate, inputs, expected] of [
     ["missing contributor", { ...record, packages: record.packages.filter(row => row.name !== "@superbee/server") }, inventory, /^packages: bundle contributor @superbee\/server is missing from the record$/],
@@ -295,9 +301,9 @@ test("embedded engine check rejects an incomplete record, non-source engine inpu
     ["malformed source", { ...record, source: { commit: "HEAD", dirty: false } }, inventory, /^source: expected/],
     ["foreign commit", { ...record, source: { ...record.source, commit: "0".repeat(40) } }, inventory, /^source: .* does not describe this tree \(stale or fabricated build\)/],
     ["flipped dirty flag", { ...record, source: { ...record.source, dirty: record.source.dirty === null ? true : !record.source.dirty } }, inventory, /^source: .* does not describe this tree \(stale or fabricated build\)/],
-    ...[true, false, null].filter(value => value !== measured).map(value => [`fabricated ${value} comparison`, withCore(value), inventory, new RegExp(`^packages\\[\\d+\\]: source_identical_to_release_tag is ${value} but the tree measures ${measured}$`)]),
+    ...[true, false, null].filter(value => value !== measured).map(value => [`fabricated ${value} comparison`, withCore(value), inventory, new RegExp(`^packages\\[\\d+\\]: source_identical_to_release_tag is ${value} but the tree measures ${measured}( \\(.*\\))?$`)]),
     // A generated module under core is embedded but has no HEAD blob, so the tree measures null.
-    ["comparison over an untracked input", withCore(false), withInput("../core/src/generated/assets.ts"), /^packages\[\d+\]: source_identical_to_release_tag is false but the tree measures null$/],
+    ["comparison over an untracked input", withCore(false), withInput("../core/src/generated/assets.ts"), /^packages\[\d+\]: source_identical_to_release_tag is false but the tree measures null \(packages\/core\/src\/generated\/assets\.ts differs from HEAD\)$/],
   ]) {
     const errors = embeddedEngineErrors(candidate, inputs, manifestOf, tree);
     assert.ok(errors.some(error => expected.test(error)), `${label}: ${JSON.stringify(errors)}`);
@@ -306,6 +312,7 @@ test("embedded engine check rejects an incomplete record, non-source engine inpu
 
 test("release-tag comparison is reported only when every embedded input is byte-identical to HEAD and the tag is reachable", async t => {
   const inputs = ["packages/cli/src/index.ts", "packages/core/src/index.ts", "packages/core/src/engine.ts", "packages/server/src/index.ts", "packages/board-git/src/index.ts", "node_modules/pako/index.js", "packages/core/node_modules/nested/index.js"];
+  const committed = [...inputs, "packages/core/package.json", "packages/server/package.json"];
   const manifestOf = directory => ({ name: `@superbee/${directory}`, version: "1.2.3-pre.4" });
   const source = { commit: "a".repeat(40), dirty: false };
   const measure = (git, embedded = inputs) => {
@@ -321,7 +328,7 @@ test("release-tag comparison is reported only when every embedded input is byte-
   const fake = ({ differs = "", worktree = {}, missing = [], failing = {} } = {}) => (args, input) => {
     if (args[0] in failing) return failing[args[0]];
     if (args[0] === "rev-parse") return { status: 0, stdout: "" };
-    if (args[0] === "ls-tree") return { status: 0, stdout: inputs.filter(path => path.startsWith(`${args.at(-1)}/`) && !missing.includes(path)).map(path => `100644 blob ${path}\t${path}\0`).join("") };
+    if (args[0] === "ls-tree") return { status: 0, stdout: committed.filter(path => path.startsWith(`${args.at(-1)}/`) && !missing.includes(path)).map(path => `100644 blob ${path}\t${path}\0`).join("") };
     if (args[0] === "hash-object") return { status: 0, stdout: input.split("\n").filter(Boolean).map(path => `${worktree[path] ?? path}\n`).join("") };
     if (args[0] === "diff") return { status: args.at(-1) === differs ? 1 : 0, stdout: "" };
     throw new Error(`unexpected git ${args.join(" ")}`);
@@ -332,6 +339,8 @@ test("release-tag comparison is reported only when every embedded input is byte-
   assert.deepEqual(measure(fake({ differs: "packages/core" })).states, { "board-git": null, core: false, server: true });
   // The tag and HEAD agree, but the bundler read edited bytes (index flags hide this from status).
   assert.deepEqual(measure(fake({ worktree: { "packages/core/src/engine.ts": "edited" } })).states, { "board-git": null, core: null, server: true });
+  // The manifest names the row's version and tag; an uncommitted manifest edit is a mismatch too.
+  assert.deepEqual(measure(fake({ worktree: { "packages/server/package.json": "bumped" } })).states, { "board-git": null, core: true, server: null });
   assert.deepEqual(measure(fake({ missing: ["packages/server/src/index.ts"] })).states, { "board-git": null, core: true, server: null });
   for (const [label, failing, reached] of [
     ["no git", { "rev-parse": null }, ["rev-parse", "rev-parse"]],
@@ -351,7 +360,7 @@ test("release-tag comparison is reported only when every embedded input is byte-
   const repo = await mkdtemp(path.join(tmpdir(), "superbee-embedded-engine-"));
   t.after(() => rm(repo, { recursive: true, force: true }));
   const git = (args, input) => { const result = spawnSync("git", args, { cwd: repo, encoding: "utf8", input, env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid" } }); return result.error ? null : { status: result.status, stdout: result.stdout }; };
-  for (const directory of ["core", "server"]) { await mkdir(path.join(repo, "packages", directory, "src"), { recursive: true }); await writeFile(path.join(repo, "packages", directory, "src/index.ts"), `export const ${directory} = 1;\n`); }
+  for (const directory of ["core", "server"]) { await mkdir(path.join(repo, "packages", directory, "src"), { recursive: true }); await writeFile(path.join(repo, "packages", directory, "src/index.ts"), `export const ${directory} = 1;\n`); await writeFile(path.join(repo, "packages", directory, "package.json"), '{"version":"1.2.3-pre.4"}\n'); }
   assert.equal(git(["init", "-q"]).status, 0); assert.equal(git(["add", "."]).status, 0); assert.equal(git(["commit", "-q", "-m", "release"]).status, 0); assert.equal(git(["tag", "libraries/v1.2.3-pre.4"]).status, 0);
   const real = ["packages/core/src/index.ts", "packages/server/src/index.ts"];
   assert.deepEqual(measure(git, real).states, { core: true, server: true });
