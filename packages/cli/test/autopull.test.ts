@@ -500,18 +500,12 @@ async function installGitSpawnShim(): Promise<{
   reset: () => Promise<void>;
   restore: () => Promise<void>;
 }> {
-  const realGit = process.platform === "win32"
-    ? execFileSync("where.exe", ["git"], { encoding: "utf8" }).split(/\r?\n/)[0]!.trim()
-    : execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
   const shimDir = await mkdtemp(path.join(tmpdir(), "aslite-git-spawn-shim-"));
   const logPath = path.join(shimDir, "spawns.log");
-  const shim = path.join(shimDir, process.platform === "win32" ? "git.cmd" : "git");
-  if (process.platform === "win32") {
-    await writeFile(shim, `@echo off\r\necho %*>>"${logPath}"\r\n"${realGit}" %*\r\n`);
-  } else {
-    await writeFile(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logPath}"\nexec "${realGit}" "$@"\n`);
-    chmodSync(shim, 0o755);
-  }
+  const shim = path.join(shimDir, "git");
+  await writeFile(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logPath}"\nexec "${realGit}" "$@"\n`);
+  chmodSync(shim, 0o755);
   const prevPath = process.env.PATH;
   process.env.PATH = `${shimDir}${path.delimiter}${prevPath ?? ""}`;
   return {
@@ -530,11 +524,7 @@ async function installGitSpawnShim(): Promise<{
   };
 }
 
-test("detection cost: 0 spawns on non-board paths; exactly ONE (remote get-url) on a provisioned board with a fresh cache", {
-  skip: process.platform === "win32"
-    ? "Node's shell-free executable lookup bypasses a PATH git.cmd shim; behavior is covered by the native board-channel suite"
-    : undefined,
-}, async () => {
+test("detection cost: 0 spawns on non-board paths; exactly ONE (remote get-url) on a provisioned board with a fresh cache", async () => {
   const topoProvisioned = await makeTwoCloneTopology();
   const topoBare = await makeTwoCloneTopology({ provision: false });
   const plain = await mkdtemp(path.join(tmpdir(), "aslite-autopull-cost-"));

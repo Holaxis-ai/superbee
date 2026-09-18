@@ -54,10 +54,6 @@ function status(
 
 test(
   "hardening rejects a hard-linked file without changing the external target mode",
-  {
-    skip:
-      process.platform === "win32" ? "POSIX descriptor hardening only" : false,
-  },
   async () => {
     const home = await mkdtemp(join(tmpdir(), "superbee-harden-hardlink-"));
     const foreign = join(home, "foreign.txt");
@@ -77,10 +73,6 @@ test(
 
 test(
   "hardening detects a hard link added after scanning before chmod reaches its inode",
-  {
-    skip:
-      process.platform === "win32" ? "POSIX descriptor hardening only" : false,
-  },
   async () => {
     const home = await mkdtemp(
       join(tmpdir(), "superbee-harden-hardlink-race-"),
@@ -107,10 +99,6 @@ test(
 
 test(
   "hardening refuses a scanned file replaced by a symlink and does not chmod its target",
-  {
-    skip:
-      process.platform === "win32" ? "POSIX descriptor hardening only" : false,
-  },
   async () => {
     const home = await mkdtemp(join(tmpdir(), "superbee-harden-race-"));
     const foreign = join(home, "foreign.txt");
@@ -139,10 +127,6 @@ test(
 
 test(
   "hardening refuses an ancestor replaced by a symlink and does not chmod the moved tree",
-  {
-    skip:
-      process.platform === "win32" ? "POSIX descriptor hardening only" : false,
-  },
   async () => {
     const home = await mkdtemp(
       join(tmpdir(), "superbee-harden-ancestor-race-"),

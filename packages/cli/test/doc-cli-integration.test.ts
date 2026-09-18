@@ -148,11 +148,7 @@ test("built CLI: a REAL non-empty stdin pipe (Node child_process 'pipe' stdio) s
   }
 });
 
-test("built CLI: a REAL shell pipe (printf 'x' | agentstate-lite …, a genuine POSIX FIFO) still works as an explicit body source", async (t) => {
-  if (process.platform === "win32") {
-    t.skip("POSIX FIFO grammar has no /bin/sh equivalent on the native Windows runner");
-    return;
-  }
+test("built CLI: a REAL shell pipe (printf 'x' | agentstate-lite …, a genuine POSIX FIFO) still works as an explicit body source", async () => {
   const dir = await tempDir();
   try {
     await initBundle(dir);

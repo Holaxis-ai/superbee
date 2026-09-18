@@ -145,11 +145,9 @@ test("filesystem mutation lock uses private external runtime state and removes i
 
     assert.equal(path.dirname(lockPath), filesystemMutationLockRoot());
     assert.ok(path.relative(root, lockPath).startsWith(".."), "runtime lock must be outside the bundle");
-    if (process.platform !== "win32") {
-      assert.equal((await fs.stat(filesystemMutationLockRoot())).mode & 0o777, 0o700);
-      assert.equal((await fs.stat(lockPath)).mode & 0o777, 0o700);
-      assert.equal((await fs.stat(path.join(lockPath, "owner.json"))).mode & 0o777, 0o600);
-    }
+    assert.equal((await fs.stat(filesystemMutationLockRoot())).mode & 0o777, 0o700);
+    assert.equal((await fs.stat(lockPath)).mode & 0o777, 0o700);
+    assert.equal((await fs.stat(path.join(lockPath, "owner.json"))).mode & 0o777, 0o600);
     const owner = JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as {
       pid: number;
       hostname: string;
@@ -628,7 +626,7 @@ test("two independent processes with different POSIX TMPDIR values share one CAS
         root,
         initialVersion,
         "writer-a",
-        process.platform === "win32" ? undefined : childTmpA,
+        childTmpA,
       ),
     );
     children.push(
@@ -636,7 +634,7 @@ test("two independent processes with different POSIX TMPDIR values share one CAS
         root,
         initialVersion,
         "writer-b",
-        process.platform === "win32" ? undefined : childTmpB,
+        childTmpB,
       ),
     );
 
@@ -717,7 +715,7 @@ test("pure-key identity lock refuses a key that is not a sha256 digest", async (
 // kills: filesystem-lock.ts:93:47 BooleanLiteral #984
 // kills: filesystem-lock.ts:93:65 BooleanLiteral #985
 test("pin: lock root is the exact system-sticky per-uid namespace, home fallback and impossible-root refusal included", async (t) => {
-  if (process.platform === "win32" || process.getuid === undefined) {
+  if (process.getuid === undefined) {
     t.skip("POSIX-only path contract");
     return;
   }
@@ -801,11 +799,7 @@ test("pin: release refuses a changed or malformed owner token and never removes 
 
 // kills: filesystem-lock.ts:145:17 BlockStatement #1062
 // kills: filesystem-lock.ts:146:12 ConditionalExpression #1064
-test("pin: a live-but-unsignalable owner (PID 1, EPERM) is diagnosed HELD, never stale", async (t) => {
-  if (process.platform === "win32") {
-    t.skip("PID 1 EPERM semantics are POSIX");
-    return;
-  }
+test("pin: a live-but-unsignalable owner (PID 1, EPERM) is diagnosed HELD, never stale", async () => {
   const root = await tempDir();
   try {
     const target = path.join(root, "doc.md");
@@ -914,9 +908,7 @@ test("an explicit lock root isolates runtime state while preserving the portable
     const entries = await fs.readdir(harness.lockRoot);
     assert.equal(entries.length, 1);
     assert.match(entries[0]!, /^[a-f0-9]{64}\.lock$/);
-    if (process.platform !== "win32") {
-      assert.equal((await fs.stat(harness.lockRoot)).mode & 0o777, 0o700);
-    }
+    assert.equal((await fs.stat(harness.lockRoot)).mode & 0o777, 0o700);
     await release();
     assert.deepEqual(await fs.readdir(harness.lockRoot), []);
 
@@ -982,11 +974,7 @@ test("private lock-root policy rejects each unsafe fact independently", () => {
 test("an injected lock root exercises file, symlink, and mode refusals without shared state", async (t) => {
   const cases = ["file", "symlink", "mode"] as const;
   for (const kind of cases) {
-    await t.test(kind, async (t) => {
-      if (kind === "mode" && process.platform === "win32") {
-        t.skip("POSIX mode contract");
-        return;
-      }
+    await t.test(kind, async () => {
       const harness = await isolatedLockPaths();
       try {
         if (kind === "file") await fs.writeFile(harness.lockRoot, "not a directory");

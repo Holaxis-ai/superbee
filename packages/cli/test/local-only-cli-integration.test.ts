@@ -102,8 +102,8 @@ test("built CLI: a reached URL binding errors actionably, while a local binding 
   const cwd = await mkdtemp(path.join(tmpdir(), "aslite-local-only-binding-"));
   try {
     const remoteValues = ["http://binding.example", "x://remote.example/bundle"];
-    // On Windows C:// is a drive-root spelling, not an unsupported URI scheme.
-    if (process.platform !== "win32") remoteValues.push("C://remote.example/bundle");
+    // Drive-shaped input is still an unsupported URI scheme on supported hosts.
+    remoteValues.push("C://remote.example/bundle");
     for (const value of remoteValues) {
       await writeFile(path.join(cwd, ".agentstate.json"), JSON.stringify({ bundle: value }));
       const remoteBinding = await run(["list", "--json"], cwd, null);
@@ -122,11 +122,7 @@ test("built CLI: a reached URL binding errors actionably, while a local binding 
   }
 });
 
-test("built CLI: a FIFO project binding is rejected promptly instead of blocking discovery", async (t) => {
-  if (process.platform === "win32") {
-    t.skip("native Windows has no FIFO filesystem entry");
-    return;
-  }
+test("built CLI: a FIFO project binding is rejected promptly instead of blocking discovery", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "aslite-local-only-binding-fifo-"));
   const binding = path.join(cwd, ".agentstate.json");
   try {

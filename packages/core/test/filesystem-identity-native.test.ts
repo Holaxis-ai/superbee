@@ -709,9 +709,7 @@ test("I6 (native): a directory replaced under its own spelling after the first v
   }
 });
 
-test("I6 (native, cond): a directory replaced between the read and the post-walk restarts even when the leaf inode survives", {
-  skip: process.platform === "win32" ? "Win32 cannot rename a directory while its leaf handle is open; the scripted contract covers this interleaving" : false,
-}, async () => {
+test("I6 (native, cond): a directory replaced between the read and the post-walk restarts even when the leaf inode survives", async () => {
   const parent = await tempRoot("i6-postread-swap");
   const root = path.join(parent, "bundle");
   const concepts = path.join(root, "concepts");

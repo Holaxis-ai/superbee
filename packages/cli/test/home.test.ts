@@ -454,11 +454,7 @@ test("default workspace loader sorts labels but does not probe or expose ids and
   }
 });
 
-test("built home rejects a FIFO catalog and exits after its fail-soft receipt", async (t) => {
-  if (process.platform === "win32") {
-    t.skip("native Windows has no FIFO filesystem entry; unsafe-entry policy is covered by platform-neutral units");
-    return;
-  }
+test("built home rejects a FIFO catalog and exits after its fail-soft receipt", async () => {
   const root = await realpath(await tempDir());
   const homeDir = path.join(root, "home");
   const stateDir = canonicalUserStateDir(homeDir);

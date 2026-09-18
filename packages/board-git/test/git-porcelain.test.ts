@@ -84,8 +84,8 @@ import {
 
 // ── hermetic ambient env (the porcelain inherits process.env; pin identity + neutralize host
 //    config so `stageAndCommit`'s commits work on any machine, gitconfig or not) ──────────────
-process.env.GIT_CONFIG_SYSTEM = process.platform === "win32" ? "NUL" : "/dev/null";
-process.env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
+process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_AUTHOR_NAME = "Porcelain Suite";
 process.env.GIT_AUTHOR_EMAIL = "porcelain@example.invalid";
@@ -954,9 +954,7 @@ test("provision: a repo with NO board branch anywhere → no_board", async () =>
   }
 });
 
-test("provision: a timed-out remote check degrades to unknown within the supplied budget", {
-  skip: process.platform === "win32" ? "fixture uses Git's POSIX-only ext::sleep helper" : false,
-}, async () => {
+test("provision: a timed-out remote check degrades to unknown within the supplied budget", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-board-timeout-"));
   try {
     git(dir, ["init", "-b", "main", "."]);
@@ -1066,9 +1064,7 @@ test("stageAndCommit: non-ASCII doc id crosses the receipt's doc rows and commit
 //    literal quoted-and-escaped string instead of the real path. `-z` framing sidesteps quoting
 //    entirely: raw bytes, one NUL per field.
 
-test("stageAndCommit: -z name-status framing survives a literal TAB byte inside a doc path", {
-  skip: process.platform === "win32" ? "Win32 filenames cannot contain control bytes" : false,
-}, async () => {
+test("stageAndCommit: -z name-status framing survives a literal TAB byte inside a doc path", async () => {
   const topo = await makeTwoCloneTopology();
   try {
     const tabbedId = "tasks/ta\tb";

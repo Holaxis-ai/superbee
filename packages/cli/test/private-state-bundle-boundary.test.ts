@@ -66,8 +66,6 @@ function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEn
   });
 }
 
-const directoryLinkType: "dir" | "junction" = process.platform === "win32" ? "junction" : "dir";
-
 function git(cwd: string, args: string[]): ReturnType<typeof spawnSync> {
   const result = run("git", args, cwd);
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -204,7 +202,7 @@ test("truth table — a symlinked ancestor cannot alias across the boundary", ()
     mkdirSync(path.dirname(state), { recursive: true });
 
     // The state root IS the bundle, reached under a different name.
-    symlinkSync(bundle, state, directoryLinkType);
+    symlinkSync(bundle, state, "dir");
     assert.equal(relateToPrivateState(bundle, state), "identical");
     assert.equal(relateToPrivateState(path.join(bundle, "sub"), state), "bundle-inside-state");
     assert.equal(relateToPrivateState(path.dirname(bundle), state), "bundle-contains-state");
@@ -214,7 +212,7 @@ test("truth table — a symlinked ancestor cannot alias across the boundary", ()
     // cannot quietly become a bundle later.
     const future = path.join(root, "future-project", ".superbee");
     mkdirSync(path.dirname(future), { recursive: true });
-    symlinkSync(future, state, directoryLinkType);
+    symlinkSync(future, state, "dir");
     assert.equal(relateToPrivateState(future, state), "identical");
     assert.equal(existsSync(future), false);
   } finally {
@@ -250,7 +248,7 @@ test("truth table — relative and non-normalized spellings resolve to the same 
 // The practical denied-state contract is deliberately narrower than a capability sandbox. An
 // unrelated explicit bundle must not depend on reading every historical private-state root, while
 // a target that is itself hidden by the host still refuses because its relation is unresolved.
-const HOST_DENIAL_UNAVAILABLE = process.platform === "win32" || process.getuid?.() === 0;
+const HOST_DENIAL_UNAVAILABLE = process.getuid?.() === 0;
 
 function withDeniedDirectory<T>(directory: string, body: () => T): T {
   chmodSync(directory, 0o000);
@@ -324,9 +322,7 @@ test("every guarded root is enforced unconditionally, canonical first and dedupl
     const roots = guardedStateRoots(home);
     assert.deepEqual(
       roots,
-      process.platform === "win32"
-        ? [canonicalUserStateDir(home), ...supersededUserStateDirs(home), legacyUserStateDir(home)]
-        : [canonicalUserStateDir(home), legacyUserStateDir(home), ...supersededUserStateDirs(home)],
+      [canonicalUserStateDir(home), legacyUserStateDir(home), ...supersededUserStateDirs(home)],
       "canonical first, then every root that is still a migration source",
     );
     assert.equal(new Set(roots).size, roots.length, "the set is deduplicated");
@@ -357,8 +353,7 @@ test("a refusal that breaks a working configuration carries a move-out exit node
       () => assertBundleOutsidePrivateState(home, home),
       (error: unknown) => {
         const help = (error as { details?: unknown; help?: string }).help ?? "";
-        if (process.platform === "win32") assert.match(help, /choose a project directory outside private state/);
-        else assert.match(help, /mkdir -p/, "the user has to be told how to move the bundle out");
+        assert.match(help, /mkdir -p/, "the user has to be told how to move the bundle out");
         assert.match(help, /init --create-only --dir \.superbee/);
         return true;
       },
@@ -419,7 +414,7 @@ test("a different spelling of an EXISTING state root is refused (the shipped cas
 
     // Deterministic on every volume: a second NAME that resolves to the existing root is refused.
     const alias = path.join(root, "alias");
-    symlinkSync(stateRoot, alias, directoryLinkType);
+    symlinkSync(stateRoot, alias, "dir");
     assert.equal(relateToPrivateState(alias, stateRoot), "identical");
     const aliased = run(process.execPath, [CLI, "init", "--dir", alias, "--json"], root, isolatedUserEnv(home));
     assert.equal(aliased.status, 5, aliased.stderr || aliased.stdout);
@@ -464,7 +459,7 @@ test("sync publication refuses a physical alias of private state", () => {
     git(project, ["commit", "--allow-empty", "-m", "initialize project"]);
 
     mkdirSync(path.dirname(canonicalUserStateDir(home)), { recursive: true });
-    symlinkSync(path.join(project, ".superbee"), canonicalUserStateDir(home), directoryLinkType);
+    symlinkSync(path.join(project, ".superbee"), canonicalUserStateDir(home), "dir");
     const result = run(process.execPath, [CLI, "sync", "--establish", "--json"], project, isolatedUserEnv(home));
     assert.equal(result.status, 5, result.stderr || result.stdout);
     assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
@@ -771,9 +766,7 @@ test("every byte-channel crossing point refuses a private-state path", async (t)
 
     // No refused destination left residue, and no refused source positional reached the bundle.
     assert.equal(readFileSync(path.join(fixture.stateRoot, USER_STATE_MARKER_FILE_NAME), "utf8"), USER_STATE_MARKER_BYTES);
-    if (process.platform !== "win32") {
-      assert.equal(statSync(path.join(fixture.stateRoot, USER_STATE_MARKER_FILE_NAME)).mode & 0o777, 0o600);
-    }
+    assert.equal(statSync(path.join(fixture.stateRoot, USER_STATE_MARKER_FILE_NAME)).mode & 0o777, 0o600);
     assert.equal(existsSync(path.join(fixture.stateRoot, "deep")), false, "a refused --out created a parent directory");
     for (const entry of readdirSync(fixture.stateRoot)) {
       assert.doesNotMatch(entry, /\.md$/, `a refused --out destination created ${entry}`);
@@ -1181,7 +1174,7 @@ test("the state root carries a total .gitignore, added opportunistically to olde
     const stateRoot = await ensureUserStateRoot(home);
     const ignore = path.join(stateRoot, ".gitignore");
     assert.equal(readFileSync(ignore, "utf8"), "*\n");
-    if (process.platform !== "win32") assert.equal(statSync(ignore).mode & 0o777, 0o600);
+    assert.equal(statSync(ignore).mode & 0o777, 0o600);
 
     // A root created by an earlier version has no .gitignore; the next ensure republishes it,
     // strictly after the ownership assertion (so a foreign root never receives product bytes).
