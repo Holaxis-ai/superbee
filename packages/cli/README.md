@@ -65,15 +65,17 @@ import { createRequire } from 'node:module';
 const engine = createRequire(import.meta.url)('@superbee/cli/embedded-engine.json');
 ```
 
-- `packages` has one row per embedded `@superbee/*` workspace, derived from the bundler's inputs:
-  `name`, the workspace manifest `version`, `release_tag` (`libraries/v<version>` for
-  `@superbee/core` and `@superbee/server`, otherwise `null`), and
+- `packages` has one row per embedded `@superbee/*` workspace, derived from the bundler's inputs
+  and from the files the asset generation stages embed (the compiled `@superbee/ui` application
+  and the MCP resources): `name`, the workspace manifest `version`, `release_tag`
+  (`libraries/v<version>` for `@superbee/core` and `@superbee/server`, otherwise `null`), and
   `source_identical_to_release_tag`.
-- `source_identical_to_release_tag` is `true` or `false` when the build compared the embedded
-  package directory at the built commit with that release tag. It is `null` when no comparison
-  was made: the package has no release tag convention, the tag or git was unavailable, the
-  package directory had uncommitted changes, or an embedded input under it was untracked or
-  ignored by git (a generated module, for example).
+- `source_identical_to_release_tag` is `true` or `false` when every embedded input of the
+  package was byte-identical to its committed file at the built commit and the build compared the
+  package directory at that commit with the release tag. It is `null` when no comparison was
+  made: the package has no release tag convention, the tag or git was unavailable, or an embedded
+  input differed from its committed file or had none (uncommitted edits, including edits hidden
+  from `git status` by index flags, and untracked or ignored generated modules).
 - `source` is the built `commit` and whether the working tree was `dirty`; either is `null`
   when unknown.
 

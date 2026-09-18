@@ -5,12 +5,13 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { workspaceAliases, runtimeBanner } from "./scripts/bundle-options.mjs";
 import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
-import { captureSourceState, embeddedEngineRecord } from "./scripts/embedded-engine.mjs";
+import { currentSourceFacts } from "./scripts/source-facts.mjs";
+import { embeddedEngineRecord, embeddedInputs } from "./scripts/embedded-engine.mjs";
 const root = dirname(fileURLToPath(import.meta.url));
 // Source facts describe the tree the bundler reads, so capture them before this build writes.
-const sourceState = captureSourceState();
+const source = currentSourceFacts();
 await rm(resolve(root, "dist"), { recursive: true, force: true });
-await prepareCliBundleInputs();
+const assets = await prepareCliBundleInputs();
 const runtimeBuild = await build({ metafile:true, absWorkingDir: root, entryPoints: [resolve(root, "src/index.ts")], outfile: resolve(root, "dist/index.mjs"), bundle: true, platform: "node", format: "esm", target: "node20", alias: workspaceAliases, banner: runtimeBanner,
   // A reusable library has no baked distribution policy or identity. Fold their absence into the
   // artifact so a host's same-named globals cannot override its explicit source identity.
@@ -31,7 +32,7 @@ for (const name of ["index", "public-types", "runtime-types", "host-command-erro
   await writeFile(resolve(root, `dist/${name}.d.ts`), result.outputText);
 }
 
-await writeFile(resolve(root, "dist/embedded-engine.json"), JSON.stringify(embeddedEngineRecord({ metafile: runtimeBuild.metafile, ...sourceState }), null, 2) + "\n");
+await writeFile(resolve(root, "dist/embedded-engine.json"), JSON.stringify(embeddedEngineRecord({ inputs: embeddedInputs(runtimeBuild.metafile, assets.inputs), source }), null, 2) + "\n");
 
 await mkdir(resolve(root,'../../out'),{recursive:true});
 await writeFile(resolve(root,'../../out/cli-runtime-metafile.json'),JSON.stringify(runtimeBuild.metafile,null,2)+'\n');
