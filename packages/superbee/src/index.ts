@@ -12,7 +12,7 @@ const argv=process.argv.slice(2);
 if(isBareVersionFlag(argv[0])) {
  process.stdout.write(`${cliVersion()}\n`);
 } else if(process.platform!=='darwin'&&process.platform!=='linux') {
- process.stdout.write("error:\n  code: RUNTIME\n  message: This Superbee distribution supports macOS and Linux. Native Windows is not supported by this package.\n");
+ process.stdout.write("error:\n  code: RUNTIME\n  message: This Superbee distribution supports macOS and Linux. On Windows use WSL2, or the experimental build at https://github.com/Holaxis-ai/superbee-windows-cli\n");
  process.exitCode=1;
 } else {
  const executablePath=fileURLToPath(import.meta.url);

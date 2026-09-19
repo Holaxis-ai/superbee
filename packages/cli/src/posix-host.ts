@@ -15,7 +15,7 @@ export function assertSupportedCliHost(
 ): void {
   if (platform !== "darwin" && platform !== "linux")
     throw new Error(
-      "This Superbee distribution supports macOS and Linux; use a Windows distribution on Windows.",
+      "This Superbee distribution supports macOS and Linux. On Windows use WSL2, or the experimental build at https://github.com/Holaxis-ai/superbee-windows-cli",
     );
 }
 function renderGeneratedHookToken(value: string): string {

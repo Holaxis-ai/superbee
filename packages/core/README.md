@@ -27,9 +27,10 @@ The package has no npm `os` restriction: storage contracts and non-filesystem ba
 available independently of the default filesystem policy. Choose a backend and imports appropriate
 to your runtime; installing the library alone does not establish native filesystem support.
 
-There is currently no published first-party Windows adapter to install. Windows adapter development
-is separate and experimental. Supplying a policy is an integration contract for an adapter owner,
-not a promise that arbitrary policies make Windows supported.
+There is no Windows adapter on npm to install. The experimental first-party adapters are built
+from source in a separate repository, https://github.com/Holaxis-ai/superbee-windows-cli.
+Supplying a policy is an integration contract for an adapter owner, not a promise that arbitrary
+policies make Windows supported.
 
 ## Keep the backend returned by initBundle
 
