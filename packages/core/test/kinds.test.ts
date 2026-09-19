@@ -18,7 +18,7 @@ import path from "node:path";
 import { createRouter } from "@superbee/server";
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
-import { initBundle, query, writeDoc } from "../src/bundle.js";
+import { initBundle, query, readDoc, writeDoc } from "../src/bundle.js";
 import { FilesystemBackend } from "../src/backend.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
@@ -1767,5 +1767,128 @@ test("kindConventionDoc: a 'claim' declaration round-trips through write/loadKin
       stateField: "stage",
       fields: ["owner", "stage"],
     });
+  });
+});
+
+// `order` places a kind in the bundle's reading order. The registry's Map insertion order carries
+// it; a bundle that declares none anywhere iterates by id exactly as before the field existed.
+function orderedConventionDoc(id: string, governs: string, order?: unknown): OkfDocument {
+  const frontmatter: Frontmatter = { type: CONVENTION_TYPE, governs, fields: { required: ["title"] }, timestamp: T };
+  if (order !== undefined) frontmatter.order = order;
+  return { id: `conventions/${id}`, frontmatter, body: "" };
+}
+
+function registryIds(docs: OkfDocument[]): string[] {
+  return [...buildKindRegistry(docs).kinds.values()].map((kind) => kind.id);
+}
+
+test("order: a no-order bundle keeps registry iteration by convention id, no order on any kind, no warnings", () => {
+  const registry = buildKindRegistry([
+    orderedConventionDoc("task", "Task"),
+    orderedConventionDoc("context-note", "Context Note"),
+    orderedConventionDoc("roadmap-item", "Roadmap Item"),
+  ]);
+  assert.deepEqual(
+    [...registry.kinds.values()].map((kind) => kind.id),
+    ["conventions/context-note", "conventions/roadmap-item", "conventions/task"],
+  );
+  assert.ok([...registry.kinds.values()].every((kind) => !("order" in kind)));
+  assert.deepEqual(registry.warnings, []);
+});
+
+test("order: every convention ordered lists ascending by order regardless of id", () => {
+  assert.deepEqual(
+    registryIds([
+      orderedConventionDoc("a-capability", "Capability", 30),
+      orderedConventionDoc("b-need", "Need", 20),
+      orderedConventionDoc("c-program", "Program", 10),
+    ]),
+    ["conventions/c-program", "conventions/b-need", "conventions/a-capability"],
+  );
+});
+
+test("order: mixed bundle lists the ordered first, then the unordered by id", () => {
+  assert.deepEqual(
+    registryIds([
+      orderedConventionDoc("aaa-loose", "Loose"),
+      orderedConventionDoc("zzz-first", "First", 1),
+      orderedConventionDoc("mmm-loose", "Loose Two"),
+      orderedConventionDoc("nnn-second", "Second", 2.5),
+    ]),
+    ["conventions/zzz-first", "conventions/nnn-second", "conventions/aaa-loose", "conventions/mmm-loose"],
+  );
+});
+
+test("order: ties break by convention id", () => {
+  assert.deepEqual(
+    registryIds([
+      orderedConventionDoc("beta", "Beta", 5),
+      orderedConventionDoc("alpha", "Alpha", 5),
+      orderedConventionDoc("gamma", "Gamma", 5),
+    ]),
+    ["conventions/alpha", "conventions/beta", "conventions/gamma"],
+  );
+});
+
+test("order: a non-numeric order warns at the field and the kind registers without one", () => {
+  for (const bad of ["20", "first", true, [1], { n: 1 }, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const registry = buildKindRegistry([
+      orderedConventionDoc("loose", "Loose"),
+      orderedConventionDoc("odd", "Odd", bad),
+      orderedConventionDoc("real", "Real", 3),
+    ]);
+    const odd = registry.kinds.get("Odd");
+    assert.ok(odd, `kind kept for ${JSON.stringify(bad)}`);
+    assert.equal("order" in odd!, false);
+    assert.ok(
+      registry.warnings.some(
+        (w) => w.code === "KIND_CONVENTION_BAD_SHAPE" && w.field === "order" && /conventions\/odd/.test(w.message),
+      ),
+      `warning for ${JSON.stringify(bad)}`,
+    );
+    assert.deepEqual(
+      [...registry.kinds.values()].map((kind) => kind.id),
+      ["conventions/real", "conventions/loose", "conventions/odd"],
+    );
+  }
+});
+
+test("order: never affects duplicate-governs resolution (first by id still wins)", () => {
+  const registry = buildKindRegistry([
+    orderedConventionDoc("b-dup", "Dup", 1),
+    orderedConventionDoc("a-dup", "Dup"),
+  ]);
+  assert.equal(registry.kinds.get("Dup")!.id, "conventions/a-dup");
+  assert.ok(registry.warnings.some((w) => w.code === "KIND_DUPLICATE_GOVERNS"));
+});
+
+test("order: is a convention field only and never validates or appears on instances", () => {
+  const registry = buildKindRegistry([orderedConventionDoc("ordered", "Ordered", 7)]);
+  const kind = registry.kinds.get("Ordered")!;
+  const instance: OkfDocument = {
+    id: "ordered/one",
+    frontmatter: { type: "Ordered", title: "One", timestamp: T },
+    body: "",
+  };
+  assert.deepEqual(validateAgainstKind(instance, kind), []);
+  assert.equal(kind.fields.required.includes("order"), false);
+  assert.equal(kind.fields.optional.includes("order"), false);
+});
+
+test("kindConventionDoc: an order declaration round-trips through write/loadKinds; absent stays absent", async () => {
+  await withMemBundle(async (bundle) => {
+    await writeDoc(bundle, kindConventionDoc({ ...NOTE_KIND_FIXTURE, order: 20 }, "prose.", T));
+    await writeDoc(
+      bundle,
+      kindConventionDoc({ ...NOTE_KIND_FIXTURE, id: "conventions/plain", governs: "Plain", title: "Plain" }, "prose.", T),
+    );
+    const registry = await loadKinds(bundle);
+    assert.equal(registry.kinds.get("Context Note")!.order, 20);
+    assert.equal("order" in registry.kinds.get("Plain")!, false);
+    assert.equal(registry.warnings.length, 0);
+    assert.deepEqual([...registry.kinds.keys()], ["Context Note", "Plain"]);
+    const stored = await readDoc(bundle, "conventions/plain");
+    assert.ok(stored);
+    assert.equal("order" in stored!.frontmatter, false);
   });
 });

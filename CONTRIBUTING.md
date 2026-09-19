@@ -282,6 +282,11 @@ Across both editions:
   mapping as a one-element list and derive one trust tier (unverified, machine-confirmed,
   human-reviewed) through core's `trustTier`; `status`, `list --fields trust`, `home`, and the UI
   header all use that one derivation.
+- A Kind convention may declare an optional `order` (a finite number). It survives round trips
+  through the convention serializer and orders Kinds in registry iteration and listings: declared
+  orders first, ascending, ties by convention id, then the undeclared by id. A bundle declaring no
+  `order` iterates and lists exactly as before. A non-numeric `order` is a registry warning and the
+  convention keeps no order. It is a convention field only, never a reserved instance field.
 - Generated internal links use relative bundle-relative Markdown hrefs. External URLs pass through;
   concept IDs remain canonical and bundle-relative.
 - YAML timestamp scalars retain their source strings in v0.2, including the legacy `timestamp`

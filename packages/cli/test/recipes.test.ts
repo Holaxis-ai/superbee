@@ -212,6 +212,26 @@ test("v0.2 recipe re-add reports NO source drift — installed definitions never
   }
 });
 
+test("a reading-order placement on an installed convention is the bundle's: no drift, and a re-add keeps it", async () => {
+  // `order` is authored on the bundle's copy of a seeded Kind; the recipe declares none, so it is
+  // neither source drift nor something a re-add or an evolution may remove.
+  const dir = await tempDir();
+  try {
+    await initBundle(dir);
+    await runJson(recipe, ["add", "context-notes", "--dir", dir]);
+    const file = path.join(dir, "conventions", "context-note.md");
+    const installed = await readFile(file, "utf8");
+    await writeFile(file, installed.replace(/^governs:/m, "order: 20\ngoverns:"));
+    const again = await runJson(recipe, ["add", "context-notes", "--dir", dir]);
+    assert.equal(again.changed, false);
+    assert.deepEqual(again.warnings ?? [], [], "a placement is not source drift");
+    assert.equal(((again.counts as Record<string, number>).source_differs ?? 0), 0);
+    assert.match(await readFile(file, "utf8"), /^order: 20$/m, "the placement survives the re-add");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("recipe add context-notes: idempotent — second add is changed:false, on-disk bytes unchanged", async () => {
   const dir = await tempDir();
   try {
@@ -1123,6 +1143,45 @@ test("recipe add <path>: a version bump with changed convention content reports 
     const widget = (await loadKinds({ root: bundleDir })).kinds.get("Widget");
     assert.ok(widget);
     assert.deepEqual(widget.fields.optional, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("recipe evolve: an installed convention the bundle ordered evolves ready and keeps its placement", async () => {
+  const root = await tempDir();
+  const bundleDir = path.join(root, "bundle");
+  const recipeDir = path.join(root, "recipe");
+  const conventionPath = path.join(recipeDir, "conventions", "widget.md");
+  const manifest = (version: string) =>
+    `---\ntype: Recipe\nid: widget-workflow\ntitle: Widget workflow\nversion: "${version}"\nsummary: Widget definitions.\n---\n`;
+  const convention = (withColour: boolean) =>
+    "---\ntype: Convention\ntitle: Widget\ngoverns: Widget\npath: widgets/\nfields:\n" +
+    "  required: [title]\n" +
+    (withColour ? "  optional: [colour]\n" : "  optional: []\n") +
+    "---\n# Widget\n";
+  try {
+    await initBundle(bundleDir);
+    await mkdir(path.dirname(conventionPath), { recursive: true });
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("1"), "utf8");
+    await writeFile(conventionPath, convention(false), "utf8");
+    await runJson(recipe, ["add", recipeDir, "--dir", bundleDir]);
+    const installedPath = path.join(bundleDir, "conventions", "widget.md");
+    const installed = await readFile(installedPath, "utf8");
+    await writeFile(installedPath, installed.replace(/^governs:/m, "order: 3\ngoverns:"), "utf8");
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("2"), "utf8");
+    await writeFile(conventionPath, convention(true), "utf8");
+    const plan = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
+    assert.equal(plan.ready, true, JSON.stringify(plan.blockers ?? plan));
+    const definitions = plan.definitions as Array<Record<string, unknown>>;
+    assert.deepEqual(definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
+    const applied = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir, "--apply", String(plan.plan_token)]);
+    assert.equal(applied.changed, true);
+    const after = await readFile(installedPath, "utf8");
+    assert.match(after, /^order: 3$/m, "the placement survives the evolution");
+    assert.match(after, /colour/, "the recipe's change landed");
+    const widget = (await loadKinds({ root: bundleDir })).kinds.get("Widget");
+    assert.equal(widget?.order, 3);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
