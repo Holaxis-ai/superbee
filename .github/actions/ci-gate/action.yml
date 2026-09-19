@@ -1,0 +1,19 @@
+name: Required CI gate
+description: Fail closed unless every declared CI job has an allowed result
+inputs:
+  needs-json:
+    description: Complete toJSON(needs) result map
+    required: true
+  policy-json:
+    description: Nonempty JSON array of {job, required} rows
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Evaluate required CI results
+      shell: bash
+      env:
+        CI_GATE_ACTION_PATH: ${{ github.action_path }}
+        CI_GATE_NEEDS_JSON: ${{ inputs.needs-json }}
+        CI_GATE_POLICY_JSON: ${{ inputs.policy-json }}
+      run: node "$CI_GATE_ACTION_PATH/evaluate.mjs"

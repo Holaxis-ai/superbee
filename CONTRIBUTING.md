@@ -100,8 +100,18 @@ so its run starts the pre-merge verdict; dispatch `CI tests` on a branch only wh
 promptly, and never
 treat a branch dispatch as a serial prerequisite for opening or progressing the PR — a dispatch and
 a PR run on the same SHA are the same coverage paid twice. One run can satisfy both validations
-only when the merged SHA equals the validated SHA (fast-forward or a merge queue; the current
-merge-queue posture is recorded in `scripts/ci-lanes.json`).
+only when the merged SHA equals the validated SHA. Merge-group CI evaluates GitHub's candidate
+integration SHA; do not substitute its verdict for a different final merge/tag SHA. CI and CodeQL
+support `merge_group: checks_requested`, with the same unconditional lanes and required status
+names as PR runs. Queue runs do not cancel each other through PR cancellation rules.
+`scripts/ci-lanes.json` records queue capability only. Live activation is verified by the read-only
+`infrastructure/github-ci` preflight and recorded in the project bundle; that directory's runbook
+owns the settings rollout after these workflows and current-main status evidence exist.
+
+The canonical and both legacy engine gates call `.github/actions/ci-gate` from the candidate
+checkout. Its complete explicit policy must agree with every required lane. Consumer repositories
+pin the same action to a reviewed full SHA and retain their own lane/scope wiring tests. The scripts
+lane runs the shared evaluator suite, Terraform preflight tests and mocked Terraform config tests.
 
 The finite product-validation lane projection below is checked against `scripts/ci-lanes.json`, root
 package scripts, and `.github/workflows/ci-tests.yml`. Change the executable topology first, then
@@ -119,8 +129,8 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 | smoke-node-20 | workflow only | `smoke-node-20` | 20 |
 <!-- contributing-ci-lanes:end -->
 
-CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, a weekly
-schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
+CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, merge-group candidates,
+a weekly schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
 `.github/codeql/codeql-config.yml`; both surfaces are pinned by `scripts/ci-lanes.json` and
 `scripts/workflow-codeql-topology.test.mjs`. Every action in the CodeQL workflow is pinned to a
 full commit SHA because the analysis jobs upload security results and also run unattended.
@@ -128,7 +138,7 @@ full commit SHA because the analysis jobs upload security results and also run u
 <!-- contributing-codeql-analysis:start -->
 | Analysis | Source scope | Build mode | Query coverage | Threat model |
 | --- | --- | --- | --- | --- |
-| JavaScript/TypeScript | `packages`, `scripts`; excludes dependencies, `dist`, tests, e2e, fixtures | `none` | default + `security-extended` | remote + local (beta) |
+| JavaScript/TypeScript | `packages`, `scripts`, `.github/actions/ci-gate`, `infrastructure/github-ci`; excludes dependencies, `dist`, tests, e2e, fixtures | `none` | default + `security-extended` | remote + local (beta) |
 | GitHub Actions | `.github/workflows` | `none` | default + `security-extended` | CodeQL Actions defaults |
 <!-- contributing-codeql-analysis:end -->
 

@@ -295,6 +295,8 @@ test("a missing core build gives local scripts callers an actionable message", a
     for (const name of ["ci-lanes.test.mjs", "ci-aggregate.mjs", "ci-lanes.json", "is-main-module.mjs"]) {
       await copyFile(path.join(root, "scripts", name), path.join(scratch, "scripts", name));
     }
+    await mkdir(path.join(scratch, ".github/actions/ci-gate"), { recursive: true });
+    await copyFile(path.join(root, ".github/actions/ci-gate/evaluate.mjs"), path.join(scratch, ".github/actions/ci-gate/evaluate.mjs"));
     const result = spawnSync(process.execPath, [path.join(scratch, "scripts", "ci-lanes.test.mjs")], { encoding: "utf8" });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Run npm run build before npm run test:scripts/);

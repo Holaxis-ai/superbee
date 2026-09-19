@@ -8,6 +8,8 @@ on:
   schedule:
     - cron: "23 7 * * 1"
   workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
 
 # Each analysis job receives only the upload permissions CodeQL needs. The aggregate has none.
 permissions: {}

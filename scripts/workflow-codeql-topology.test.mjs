@@ -60,7 +60,7 @@ function yamlDocument(text, subject) {
 function validateSecurityManifest(candidate = manifest.security_analysis) {
   assert.equal(candidate.workflow, ".github/workflows/codeql.yml");
   assert.equal(candidate.config, ".github/codeql/codeql-config.yml");
-  assert.deepEqual(candidate.triggers, ["pull_request", "push", "schedule", "workflow_dispatch"]);
+  assert.deepEqual(candidate.triggers, ["pull_request", "push", "schedule", "workflow_dispatch", "merge_group"]);
   assert.equal(candidate.schedule, "23 7 * * 1");
   assert.deepEqual(candidate.concurrency, {
     group: "codeql-${{ github.event_name }}-${{ github.ref }}",
@@ -79,7 +79,7 @@ function validateSecurityManifest(candidate = manifest.security_analysis) {
   assert.equal(candidate.checkout_persist_credentials, false);
   assert.equal(candidate.query_suite, "security-extended");
   assert.equal(candidate.threat_model, "local");
-  assert.deepEqual(candidate.paths, ["packages", "scripts"]);
+  assert.deepEqual(candidate.paths, ["packages", "scripts", ".github/actions/ci-gate", "infrastructure/github-ci"]);
   assert.deepEqual(candidate.paths_ignore, [
     "**/node_modules/**",
     "**/dist/**",
@@ -153,6 +153,7 @@ function expectedWorkflow(candidate) {
       push: { branches: ["main"] },
       schedule: [{ cron: candidate.schedule }],
       workflow_dispatch: null,
+      merge_group: { types: ["checks_requested"] },
     },
     permissions: {},
     concurrency: {
@@ -214,6 +215,7 @@ function validateCodeqlTopology(workflowText = workflow, configText = config, ca
     expectedConfig(candidate),
     "CodeQL analysis policy must match the manifest exactly",
   );
+  assert.ok(candidate.representative_includes.includes(".github/actions/ci-gate/evaluate.mjs"), "the shared evaluator must have a source inclusion probe");
   for (const file of candidate.representative_includes) {
     assert.equal(configIncludesFile(file, candidate), true, `${file} must remain in CodeQL scope`);
   }
@@ -243,6 +245,8 @@ test("CodeQL topology mutations cannot weaken sources, queries, permissions, sco
       `      - run: echo unsafe\n      - uses: ${manifest.security_analysis.action_pins.checkout}`,
     ),
     workflow.replace("queries: security-extended", "queries: default"),
+    workflow.replace("  merge_group:\n    types: [checks_requested]\n", ""),
+    workflow.replace("types: [checks_requested]", "types: [destroyed]"),
     workflow.replace("build-mode: none", "build-mode: manual"),
     workflow.replace("  schedule:\n    - cron: \"23 7 * * 1\"\n", ""),
     workflow.replace("  workflow_dispatch:\n", "  pull_request_target:\n"),
@@ -275,7 +279,7 @@ test("contributor guidance distinguishes analysis completion from merge enforcem
   assert.deepEqual(projectionRows(contributing, "codeql-analysis"), [
     [
       "JavaScript/TypeScript",
-      "packages, scripts; excludes dependencies, dist, tests, e2e, fixtures",
+      "packages, scripts, .github/actions/ci-gate, infrastructure/github-ci; excludes dependencies, dist, tests, e2e, fixtures",
       "none",
       "default + security-extended",
       "remote + local (beta)",

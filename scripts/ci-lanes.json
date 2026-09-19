@@ -9,9 +9,8 @@
   "singleton_node": 26,
   "host_expectation_variable": "SUPERBEE_TEST_EXPECT_ALIASING_HOST",
   "merge_queue": {
-    "enabled": false,
-    "evidence": "No merge-queue workflow or repository-settings evidence exists at this revision",
-    "enablement_requirement": "Set enabled true and add the merge_group trigger before enabling merge queue"
+    "supported": true,
+    "activation_authority": "Live GitHub settings verified by infrastructure/github-ci preflight and recorded in the project bundle; workflow capability does not imply queue activation"
   },
   "security_analysis": {
     "workflow": ".github/workflows/codeql.yml",
@@ -20,7 +19,8 @@
       "pull_request",
       "push",
       "schedule",
-      "workflow_dispatch"
+      "workflow_dispatch",
+      "merge_group"
     ],
     "schedule": "23 7 * * 1",
     "concurrency": {
@@ -42,7 +42,9 @@
     "threat_model": "local",
     "paths": [
       "packages",
-      "scripts"
+      "scripts",
+      ".github/actions/ci-gate",
+      "infrastructure/github-ci"
     ],
     "paths_ignore": [
       "**/node_modules/**",
@@ -58,7 +60,9 @@
       "packages/cli/src/args.ts",
       "packages/core/src/publication-filesystem.ts",
       "packages/publication/src/generated/publication-snapshot-v1.ts",
-      "scripts/verify-npm-package.mjs"
+      "scripts/verify-npm-package.mjs",
+      ".github/actions/ci-gate/evaluate.mjs",
+      "infrastructure/github-ci/preflight.mjs"
     ],
     "representative_excludes": [
       "packages/board-git/test/git-porcelain.test.ts",

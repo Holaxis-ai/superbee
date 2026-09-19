@@ -1,0 +1,9 @@
+# Copy outside the repository and replace these nonsecret operator coordinates.
+# Supply state credentials through AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY and
+# the provider credential through GITHUB_TOKEN. Never put credentials here.
+bucket       = "REPLACE_WITH_APPROVED_PRIVATE_STATE_BUCKET"
+key          = "superbee/github-ci/terraform.tfstate"
+region       = "auto"
+use_lockfile = true
+# For an approved S3-compatible backend, configure its endpoint and compatibility
+# flags here only after proving locking and recovery with this Terraform version.
