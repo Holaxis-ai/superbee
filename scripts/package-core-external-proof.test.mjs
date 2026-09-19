@@ -62,6 +62,7 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     const [receipt] = JSON.parse(packed.stdout);
     const paths = receipt.files.map((file) => file.path).sort();
     assert.ok(paths.includes("package.json"));
+    assert.ok(paths.includes("README.md"), "core consumers receive filesystem migration guidance");
     assert.ok(paths.includes("dist/index.js"));
     assert.ok(paths.includes("dist/index.d.ts"));
     assert.ok(paths.includes("dist/engine.js"));
@@ -78,7 +79,7 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/filesystem.d.ts"));
     assert.ok(paths.includes("dist/view-admission.js"));
     assert.ok(paths.includes("dist/view-admission.d.ts"));
-    assert.ok(paths.every((file) => file === "package.json" || file.startsWith("dist/")));
+    assert.ok(paths.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
 
     await writeFile(
       path.join(scratch, "package.json"),
@@ -499,7 +500,7 @@ export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBacke
     assert.ok(installedManifest.exports["./filesystem"]);
     assert.ok(installedManifest.exports["./view-admission"]);
     const installedFiles = await filesUnder(installed);
-    assert.ok(installedFiles.every((file) => file === "package.json" || file.startsWith("dist/")));
+    assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;
     for (const file of installedFiles.filter((name) => /\.(?:js|d\.ts)$/.test(name))) {

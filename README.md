@@ -226,8 +226,12 @@ bundles remain supported without rewriting their declared edition.
 
 - **Everything is pre-1.0.** The npm package is a prerelease and breaking changes are likely.
 - **Native Windows support is separate.** The `superbee` executable supports macOS and Linux.
-  Windows adapters and the `superbee-windows` executable are developed in a separate repository;
-  they are not included in this package. The Windows distribution is experimental and unpublished.
+  Most Windows users should run Superbee in WSL2. Windows adapters and the `superbee-windows`
+  executable are developed in a separate repository, https://github.com/Holaxis-ai/superbee-windows-cli,
+  which is open source with build-from-source instructions; it is experimental, unsupported, and
+  not published to npm.
+  See the [CLI upgrade guidance](packages/superbee/README.md#upgrading-an-existing-windows-installation)
+  and [core filesystem migration](packages/core/README.md#filesystem-platform-migration) before upgrading.
 - **Recipes as composition** is a thesis under test, not a result. The repository includes
   small first-party definitions-only packages, including a Kind-plus-View reference, but package
   dependencies, upgrades, migrations, and marketplace discovery remain future work. "Cookbooks"

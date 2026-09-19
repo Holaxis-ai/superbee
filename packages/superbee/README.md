@@ -54,8 +54,24 @@ Stable releases publish on npm's `latest` tag and prereleases on `next`. To try 
 npm install -g superbee@next
 ```
 
-Windows adapters and the `superbee-windows` executable live in a separate repository. That
-experimental distribution is unpublished and is not included in `superbee`.
+Windows adapters and the `superbee-windows` executable live in a separate repository and are
+not included in `superbee`. Most Windows users should run Superbee in WSL2, where npm sees a
+Linux platform and the normal installation applies. An experimental, unsupported native Windows
+build is available as open source, with build-from-source instructions: https://github.com/Holaxis-ai/superbee-windows-cli
+
+### Upgrading an existing Windows installation
+
+The first release containing the Windows extraction removes native Windows support from this
+package. Its npm `os` metadata permits only `darwin` and `linux`, so a Windows upgrade to an affected
+version is rejected with `EBADPLATFORM`. This applies to existing prerelease users too. Forcing the
+installation does not restore support: the executable refuses commands on unsupported hosts
+before running them (the bare `--version` flag can still identify the installed build).
+
+There is no supported Windows replacement on npm. The alternatives are WSL2 or the experimental
+build from source at https://github.com/Holaxis-ai/superbee-windows-cli; neither carries a
+first-party support promise for native Windows. An older installed version is not converted or
+removed by this source change, and existing bundle files are not migrated by it. Review the affected release's notes before changing an existing
+Windows installation. macOS/Linux users can continue using the normal installation and setup flow.
 
 Run `superbee version --check` to compare your install with the current stable release.
 
