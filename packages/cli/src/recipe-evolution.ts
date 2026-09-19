@@ -121,6 +121,13 @@ function comparableRecipeDoc(doc: OkfDocument, okfVersion: string): OkfDocument 
 }
 
 const PRESERVED_ROOT_METADATA = new Set(["timestamp", "actor", "generated", "verified", "superbee_updated_by"]);
+/**
+ * Bundle-local placement: a reading-order `order` an author put on an installed convention is the
+ * bundle's, not the recipe's. Evolution keeps it when the recipe declares none, so ordering the
+ * seeded Kinds never blocks a recipe upgrade; a recipe that declares its own order merges as any
+ * other key.
+ */
+const BUNDLE_LOCAL_PLACEMENT = new Set(["order"]);
 
 interface AdditiveMergeResult {
   candidate: OkfDocument;
@@ -219,6 +226,7 @@ function additiveConventionCandidate(
     // Evolution never imports recipe-authored provenance, verification, or mutation attribution.
     // These coordinates come exclusively from the installed document and the shared write policy.
     if (PRESERVED_ROOT_METADATA.has(key)) continue;
+    if (BUNDLE_LOCAL_PLACEMENT.has(key) && desiredFrontmatter[key] === undefined) continue;
     setOwn(candidateFrontmatter, key, merge(
       currentFrontmatter[key],
       desiredFrontmatter[key],
