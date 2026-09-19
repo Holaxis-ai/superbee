@@ -312,6 +312,7 @@ export {
   kindConventionDoc,
   parseConventionDoc,
   buildKindRegistry,
+  compareReadingOrder,
   splitSections,
   isTerminal,
 } from "./kinds.js";

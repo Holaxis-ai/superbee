@@ -85,6 +85,8 @@ const DECLARES: Record<DeclarationKey, (kind: KindConvention) => boolean> = {
   // Core parses only a strict `true` here; a declared `false` never reaches this predicate, so the
   // `!== undefined` form is the whole check rather than a distinction between true and false.
   browseCollapsed: (kind) => kind.browseCollapsed !== undefined,
+  // A reading-order placement is authored on purpose; a draft must never overwrite it.
+  order: (kind) => kind.order !== undefined,
   claim: (kind) => kind.claim !== undefined,
 };
 

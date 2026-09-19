@@ -843,6 +843,9 @@ async function assertPortableTargetsCompatible(
 export function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, okfVersion: string): boolean {
   const { timestamp: _existingTimestamp, ...existingFrontmatter } = existing.frontmatter;
   const { timestamp: _desiredTimestamp, ...desiredFrontmatter } = desired.frontmatter;
+  // A reading-order placement the bundle added to an installed convention is not drift: the
+  // recipe declares none, and evolution keeps it (BUNDLE_LOCAL_PLACEMENT in recipe-evolution).
+  if (desiredFrontmatter.order === undefined) delete existingFrontmatter.order;
   if (okfVersion === "0.2") {
     for (const frontmatter of [existingFrontmatter, desiredFrontmatter]) {
       const generated = plainRecord(frontmatter.generated);
