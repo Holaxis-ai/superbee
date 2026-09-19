@@ -168,18 +168,6 @@ jobs:
       - name: Check package version sources before installation
         run: npm run check:package-versions
       - run: npm ci
-      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e
-        with:
-          terraform_version: 1.16.1
-          terraform_wrapper: false
-      - name: Check Terraform formatting
-        run: terraform -chdir=infrastructure/github-ci fmt -check
-      - name: Initialize Terraform without a backend
-        run: terraform -chdir=infrastructure/github-ci init -backend=false -input=false
-      - name: Validate Terraform configuration
-        run: terraform -chdir=infrastructure/github-ci validate
-      - name: Test Terraform with mocked providers
-        run: terraform -chdir=infrastructure/github-ci test
       - run: npm run ci:scripts
 
   smoke-node-20:

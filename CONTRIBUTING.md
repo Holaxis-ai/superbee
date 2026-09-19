@@ -105,13 +105,15 @@ integration SHA; do not substitute its verdict for a different final merge/tag S
 support `merge_group: checks_requested`, with the same unconditional lanes and required status
 names as PR runs. Queue runs do not cancel each other through PR cancellation rules.
 `scripts/ci-lanes.json` records queue capability only. Live activation is verified by the read-only
-`infrastructure/github-ci` preflight and recorded in the project bundle; that directory's runbook
+`infrastructure/github-ci` preflight and recorded in the project bundle. The private
+[holaxis-infrastructure runbook](https://github.com/Holaxis-ai/holaxis-infrastructure/tree/main/github/superbee)
 owns the settings rollout after these workflows and current-main status evidence exist.
 
 The canonical and both legacy engine gates call `.github/actions/ci-gate` from the candidate
 checkout. Its complete explicit policy must agree with every required lane. Consumer repositories
 pin the same action to a reviewed full SHA and retain their own lane/scope wiring tests. The scripts
-lane runs the shared evaluator suite, Terraform preflight tests and mocked Terraform config tests.
+lane runs the shared evaluator suite and engine readiness tests. Terraform validation and
+mocked-provider tests run in the private infrastructure repository.
 
 The finite product-validation lane projection below is checked against `scripts/ci-lanes.json`, root
 package scripts, and `.github/workflows/ci-tests.yml`. Change the executable topology first, then

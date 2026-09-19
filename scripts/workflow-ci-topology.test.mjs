@@ -419,7 +419,6 @@ function validateCiTopology(
   assert.equal(candidate.merge_queue.supported, true, "workflow capability must support merge groups");
   assert.equal(Object.hasOwn(candidate.merge_queue, "enabled"), false, "live activation is not committed capability");
   assert.equal(typeof candidate.merge_queue.activation_authority, "string");
-  assertTerraformChecks(parsed.jobs.scripts);
   return jobs;
 }
 
@@ -558,22 +557,6 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
   assert.throws(() => validateCiTopology(workflow, incomplete), /required_jobs must equal the automatically run lane set/);
 });
 
-function assertTerraformChecks(job) {
-  const setup = job.steps.filter((step) => step.uses?.startsWith("hashicorp/"));
-  assert.deepEqual(setup, [{
-    uses: "hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e",
-    with: { terraform_version: "1.16.1", terraform_wrapper: false },
-  }], "Terraform setup must pin the reviewed action and runtime");
-  const terraform = job.steps.filter((step) => step.run?.startsWith("terraform "));
-  assert.deepEqual(terraform, [
-    { name: "Check Terraform formatting", run: "terraform -chdir=infrastructure/github-ci fmt -check" },
-    { name: "Initialize Terraform without a backend", run: "terraform -chdir=infrastructure/github-ci init -backend=false -input=false" },
-    { name: "Validate Terraform configuration", run: "terraform -chdir=infrastructure/github-ci validate" },
-    { name: "Test Terraform with mocked providers", run: "terraform -chdir=infrastructure/github-ci test" },
-  ], "Terraform checks must run unconditionally and fail closed");
-  assert.ok(job.steps.indexOf(setup[0]) < job.steps.indexOf(terraform[0]));
-}
-
 test("queue triggers, candidate checkout and main evidence cannot drift", () => {
   for (const changed of [
     workflow.replace("  merge_group:\n    types: [checks_requested]\n", ""),
@@ -599,7 +582,7 @@ function validateQueueCheckout(text) {
   }
 }
 
-test("aggregate policy and Terraform checks cannot silently weaken", () => {
+test("aggregate policy cannot silently weaken", () => {
   const job = extractJobs(workflow).required;
   for (const changed of [
     job.replace('"required":true', '"required":false'),
@@ -608,12 +591,6 @@ test("aggregate policy and Terraform checks cannot silently weaken", () => {
     job.replace('uses: ./.github/actions/ci-gate', 'if: false\n        uses: ./.github/actions/ci-gate'),
     job.replace('uses: ./.github/actions/ci-gate', 'continue-on-error: true\n        uses: ./.github/actions/ci-gate'),
   ]) assert.throws(() => assertAggregator(changed, "mutated"));
-  for (const changed of [
-    workflow.replace('terraform -chdir=infrastructure/github-ci test', 'true'),
-    workflow.replace('terraform -chdir=infrastructure/github-ci validate', 'terraform -chdir=infrastructure/github-ci validate || true'),
-    workflow.replace('terraform_wrapper: false', 'terraform_wrapper: true'),
-    workflow.replace('terraform_version: 1.16.1', 'terraform_version: latest'),
-  ]) assert.throws(() => validateCiTopology(changed));
   for (const file of [".github/actions/ci-gate/evaluate.test.mjs", "infrastructure/github-ci/preflight.test.mjs"]) {
     assert.ok(rootPackage.scripts["test:scripts"].split(" ").includes(file), `${file} must run in CI`);
   }

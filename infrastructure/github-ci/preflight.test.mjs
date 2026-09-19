@@ -83,7 +83,7 @@ for (const [name, mutate] of Object.entries({
   "missing integration SHA": (s) => { delete s.mergedPullRequests[0].merge_commit_sha; },
   "integration removed from main": (s) => { s.mergedPullRequests[0].mergeComparison = "diverged"; },
   "unrelated receipt": (s) => { s.mergedPullRequests = [null]; },
-  "source changed after merge": (s) => { s.matchingFiles["infrastructure/github-ci/main.tf"] = false; },
+  "source changed after merge": (s) => { s.matchingFiles[".github/codeql/codeql-config.yml"] = false; },
 })) {
   test(`refuses rewritten provenance: ${name}`, () => {
     const snapshot = squashFixture(); mutate(snapshot);

@@ -18,8 +18,6 @@ export const SOURCE_FILES = [
   ".github/codeql/codeql-config.yml",
   "scripts/ci-aggregate.mjs",
   "scripts/ci-lanes.json",
-  "infrastructure/github-ci/main.tf",
-  "infrastructure/github-ci/.terraform.lock.hcl",
   "infrastructure/github-ci/preflight.mjs",
 ];
 export const RELEASE_TAGS = ["refs/tags/v*", "refs/tags/libraries/v*", "refs/tags/cli/v*"];
