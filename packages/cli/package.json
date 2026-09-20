@@ -36,6 +36,8 @@
     "test": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
     "test:host-class": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts ./test/command-text.test.ts",
     "mutation": "node scripts/run-test-command.mjs npm-exec stryker run",
+    "surface": "node scripts/command-surface.mjs",
+    "surface:check": "node scripts/command-surface.mjs --check",
     "prepublishOnly": "node -e \"console.error('Direct publish is disabled. Use release-cli-library.yml (cli/v<version>) and human npm approval; see CONTRIBUTING.md.'); process.exit(1)\""
   },
   "devDependencies": {
