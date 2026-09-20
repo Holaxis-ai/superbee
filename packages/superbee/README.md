@@ -118,6 +118,13 @@ If you installed the earlier `@holaxis/aslite` package or its marketplace plugin
 run `npm uninstall -g @holaxis/aslite`. Existing `.agentstate-lite/` bundles and
 `.agentstate.json` bindings keep working with no migration.
 
+## Why "Superbee"
+
+Bees build comb one cell at a time. The comb holds what the colony gathers, and its shape shows
+the next bee where to build and what belongs where. Superbee works the same way: people and
+agents record what they learn in a structure that fits their domain, and that structure guides
+whoever works next. Each session builds on the last instead of starting over.
+
 ## Learn more
 
 The [repository](https://github.com/Holaxis-ai/superbee) holds the source, the
