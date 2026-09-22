@@ -1,0 +1,375 @@
+{
+  "version": 1,
+  "actor": "human:reviewer",
+  "timestamp": "2026-09-22T12:00:00.000Z",
+  "document": {
+    "id": "notes/one",
+    "frontmatter": {
+      "type": "Note",
+      "title": "Before"
+    },
+    "body": "# Draft\nBefore.\n\n[related](two.md)\n"
+  },
+  "kind": {
+    "id": "conventions/note",
+    "frontmatter": {
+      "type": "Convention",
+      "governs": "Note",
+      "fields": {
+        "required": [
+          "title"
+        ],
+        "optional": [
+          "progress_status",
+          "actor",
+          "timestamp"
+        ]
+      }
+    },
+    "body": ""
+  },
+  "cases": [
+    {
+      "name": "atomic-logical-progress",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": true,
+      "expectedFields": {
+        "title": "After",
+        "progress_status": "ready"
+      }
+    },
+    {
+      "name": "scalar-title",
+      "action": {
+        "kind": "document.set-field",
+        "docId": "notes/one",
+        "field": "title",
+        "expectedVersion": "sha256:sample",
+        "value": "After"
+      },
+      "accept": true,
+      "expectedFields": {
+        "title": "After"
+      }
+    },
+    {
+      "name": "body",
+      "action": {
+        "kind": "document.set-body",
+        "docId": "notes/one",
+        "field": "body",
+        "expectedVersion": "sha256:sample",
+        "value": "# Draft\nAfter.\n\n[related](two.md)\n"
+      },
+      "accept": true
+    },
+    {
+      "name": "undeclared",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "unknown": "value"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false
+    },
+    {
+      "name": "managed",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "actor": "other"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false
+    },
+    {
+      "name": "managed-scalar",
+      "action": {
+        "kind": "document.set-field",
+        "docId": "notes/one",
+        "field": "timestamp",
+        "expectedVersion": "sha256:sample",
+        "value": "2026-09-22T00:00:00Z"
+      },
+      "accept": false
+    },
+    {
+      "name": "missing-kind",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "omitKind": true
+    },
+    {
+      "name": "non-scalar",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "existingFields": {
+        "title": [
+          "Before"
+        ]
+      }
+    },
+    {
+      "name": "lost-link",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After"
+          },
+          "body": "Lost link."
+        }
+      },
+      "accept": false
+    },
+    {
+      "name": "alias-collision",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "progress_status": "ready",
+            "superbee_progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "editions": [
+        "0.2"
+      ]
+    },
+    {
+      "name": "unsupported-edition",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "editions": [
+        "0.3"
+      ]
+    },
+    {
+      "name": "body-size-limit",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "expand": {
+        "target": "action.value.body",
+        "text": "\ud83d\ude00",
+        "count": 16385
+      },
+      "parseAccept": false
+    },
+    {
+      "name": "old-body-size-limit",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "expand": {
+        "target": "document.body",
+        "text": "x",
+        "count": 65537
+      }
+    },
+    {
+      "name": "scalar-size-limit",
+      "action": {
+        "kind": "document.set-field",
+        "docId": "notes/one",
+        "field": "title",
+        "expectedVersion": "sha256:sample",
+        "value": ""
+      },
+      "accept": false,
+      "expand": {
+        "target": "action.value",
+        "text": "x",
+        "count": 4097
+      },
+      "parseAccept": false
+    },
+    {
+      "name": "empty-update",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {},
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "parseAccept": false
+    },
+    {
+      "name": "too-many-fields",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "f0": "value",
+            "f1": "value",
+            "f2": "value",
+            "f3": "value",
+            "f4": "value",
+            "f5": "value",
+            "f6": "value",
+            "f7": "value",
+            "f8": "value"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "parseAccept": false
+    },
+    {
+      "name": "foreign-authority",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        },
+        "actor": "other"
+      },
+      "accept": false,
+      "parseAccept": false
+    },
+    {
+      "name": "traversal",
+      "action": {
+        "kind": "document.update",
+        "docId": "../other",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "parseAccept": false
+    },
+    {
+      "name": "invalid-version",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": false,
+      "parseAccept": false
+    }
+  ]
+}
