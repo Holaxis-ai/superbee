@@ -6,6 +6,7 @@ import {
   blobVersion,
   loadKinds,
   mutateDocument,
+  parseLinksFromDoc,
   prepareDocumentFieldAction,
   prepareDocumentMutationCandidate,
   readBundleOkfVersion,
@@ -39,8 +40,12 @@ import {
   type SaveTransientViewResult,
 } from "./transient-save.js";
 import {
+  parseDocumentAction,
+  MAX_ACTION_BODY_BYTES,
   parseDocumentSetFieldAction,
   type ActionScalar,
+  type DocumentAction,
+  type DocumentSetBodyAction,
   type DocumentSetFieldAction,
 } from "./action-bridge.js";
 
@@ -48,9 +53,13 @@ export {
   actionError,
   actionReply,
   parseActionBridgeMessage,
+  parseDocumentAction,
+  MAX_ACTION_BODY_BYTES,
   parseDocumentSetFieldAction,
   type ActionBridgeMessage,
   type ActionScalar,
+  type DocumentAction,
+  type DocumentSetBodyAction,
   type DocumentSetFieldAction,
 } from "./action-bridge.js";
 
@@ -681,7 +690,7 @@ export type ActionTerminalStatus = "committed" | "unchanged" | "cancelled" | "co
 
 export interface ActionTerminalResult {
   status: ActionTerminalStatus;
-  action: "document.set-field";
+  action: DocumentAction["kind"];
   docId?: string;
   field?: string;
   storageField?: string;
@@ -708,7 +717,7 @@ interface PendingApproval {
   token: string;
   expiresAt: number;
   launchId: string;
-  action: DocumentSetFieldAction;
+  action: DocumentAction;
   storageField: string;
   okfVersion: string | undefined;
   timestamp: string;
@@ -751,21 +760,21 @@ export class TrustedActionService {
   }
 
   async prepare(launchId: string, rawAction: unknown): Promise<ActionPrepareResult> {
-    const rejected = (message: string): ActionTerminalResult => ({ status: "rejected", action: "document.set-field", message });
+    let action: DocumentAction;
+    try {
+      action = parseDocumentAction(rawAction);
+    } catch {
+      return { status: "rejected", action: "document.set-field", message: "the action request is invalid" };
+    }
+    const rejected = (message: string): ActionTerminalResult => ({ status: "rejected", action: action.kind, message });
     const actor = this.actor?.trim();
     if (!actor) return rejected("set an action actor for this View host before proposing writes");
     const launch = await this.launches.resolve(launchId);
     if (!launch || launch.capability !== "bundle-propose") {
       if (launch) this.launches.revoke(launch.launchId);
-      return { status: "revoked", action: "document.set-field", message: "the source View is no longer the exact launched content" };
+      return { status: "revoked", action: action.kind, message: "the source View is no longer the exact launched content" };
     }
 
-    let action: DocumentSetFieldAction;
-    try {
-      action = parseDocumentSetFieldAction(rawAction);
-    } catch {
-      return rejected("the action request is invalid");
-    }
     if (["type", "timestamp", "actor"].includes(action.field)) return rejected(`field '${action.field}' is shell-managed and cannot be proposed`);
     if (
       launch.documentVersions &&
@@ -780,12 +789,12 @@ export class TrustedActionService {
       target = await readDocVersioned(this.bundle, action.docId);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return rejected(`document '${action.docId}' does not exist`);
-      return { status: "failed", action: "document.set-field", message: "the target document could not be read" };
+      return { status: "failed", action: action.kind, message: "the target document could not be read" };
     }
     if (target.version !== action.expectedVersion) {
       return {
         status: "conflict",
-        action: "document.set-field",
+        action: action.kind,
         docId: action.docId,
         field: action.field,
         expectedVersion: action.expectedVersion,
@@ -801,16 +810,24 @@ export class TrustedActionService {
         readBundleOkfVersion(this.bundle),
       ]);
     } catch {
-      return { status: "failed", action: "document.set-field", message: "the governing Kind could not be read" };
+      return { status: "failed", action: action.kind, message: "the governing Kind could not be read" };
     }
     const targetType = String(target.doc.frontmatter.type ?? "");
     const kind = registry.kinds.get(targetType);
     if (!kind) return rejected(`document '${action.docId}' is not governed by a declared Kind`);
-    const fieldCoordinate = resolveKindFieldCoordinate(okfVersion, kind, action.field);
+    const bodyAction = action.kind === "document.set-body";
+    const fieldCoordinate = bodyAction ? { storageField: "body" } : resolveKindFieldCoordinate(okfVersion, kind, action.field);
     if (!fieldCoordinate) {
       return rejected(`field '${action.field}' is not declared by the '${kind.governs}' Kind`);
     }
-    const beforeRaw = target.doc.frontmatter[fieldCoordinate.storageField];
+    if (bodyAction && new TextEncoder().encode(target.doc.body).byteLength > MAX_ACTION_BODY_BYTES)
+      return rejected("the existing body exceeds the 64 KiB confirmation limit");
+    if (bodyAction) {
+      const proposed = new Set(parseLinksFromDoc({ ...target.doc, body: action.value as string }).map(link => JSON.stringify([link.to, link.text])));
+      if (parseLinksFromDoc(target.doc).some(link => !proposed.has(JSON.stringify([link.to, link.text]))))
+        return rejected("body proposals must preserve existing cross-links; use the canonical link tools to change relationships");
+    }
+    const beforeRaw = bodyAction ? target.doc.body : target.doc.frontmatter[fieldCoordinate.storageField];
     let before: ActionScalar | null;
     if (beforeRaw === undefined || beforeRaw === null) {
       before = null;
@@ -826,10 +843,10 @@ export class TrustedActionService {
         return rejected(`unsupported bundle OKF edition '${okfVersion}'`);
       }
       const context = { registry, okfVersion: okfVersion ?? "0.1", now: () => timestamp } as const;
-      const fieldAction = prepareDocumentFieldAction(target.doc, {
-        action: "set", field: action.field, value: action.value,
-      }, context);
-      prepared = prepareDocumentMutationCandidate(target.doc, fieldAction.candidate, {
+      const candidate = bodyAction
+        ? { frontmatter: target.doc.frontmatter, body: action.value as string }
+        : prepareDocumentFieldAction(target.doc, { action: "set", field: action.field, value: action.value }, context).candidate;
+      prepared = prepareDocumentMutationCandidate(target.doc, candidate, {
         ...context, id: action.docId, strict: true, actor, persistActor: true,
       });
     } catch (error) {
@@ -838,7 +855,7 @@ export class TrustedActionService {
     if (!prepared.changed) {
       return {
         status: "unchanged",
-        action: "document.set-field",
+        action: action.kind,
         docId: action.docId,
         field: action.field,
         ...(fieldCoordinate.storageField !== action.field
@@ -860,7 +877,7 @@ export class TrustedActionService {
     try {
       kindVersion = (await readDocVersioned(this.bundle, kind.id)).version;
     } catch {
-      return { status: "failed", action: "document.set-field", message: "the governing Kind version could not be read" };
+      return { status: "failed", action: action.kind, message: "the governing Kind version could not be read" };
     }
 
     this.sweepExpired();
@@ -900,7 +917,7 @@ export class TrustedActionService {
           ? { storageField: fieldCoordinate.storageField }
           : {}),
         before,
-        after: action.value,
+        after: bodyAction ? prepared.candidate.body : action.value,
         actor,
         timestamp,
       },
@@ -910,17 +927,17 @@ export class TrustedActionService {
   cancel(token: string, launchId?: string): ActionTerminalResult {
     const pending = this.consume(token, launchId);
     return pending
-      ? { status: "cancelled", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, changed: false, confirmed: false }
+      ? { status: "cancelled", action: pending.action.kind, docId: pending.action.docId, field: pending.action.field, changed: false, confirmed: false }
       : { status: "expired", action: "document.set-field", message: "the approval is unknown or expired" };
   }
 
   async commit(token: string, launchId?: string): Promise<ActionTerminalResult> {
     const pending = this.consume(token, launchId);
     if (!pending) return { status: "expired", action: "document.set-field", message: "the approval is unknown or expired" };
-    if (this.now() > pending.expiresAt) return { status: "expired", action: "document.set-field", docId: pending.action.docId, field: pending.action.field };
+    if (this.now() > pending.expiresAt) return { status: "expired", action: pending.action.kind, docId: pending.action.docId, field: pending.action.field };
     const launch = await this.resolvePendingLaunch(pending);
     if (!launch) {
-      return { status: "revoked", action: "document.set-field", docId: pending.action.docId, field: pending.action.field };
+      return { status: "revoked", action: pending.action.kind, docId: pending.action.docId, field: pending.action.field };
     }
 
     try {
@@ -928,7 +945,7 @@ export class TrustedActionService {
       if (target.version !== pending.action.expectedVersion) {
         return {
           status: "conflict",
-          action: "document.set-field",
+          action: pending.action.kind,
           docId: pending.action.docId,
           field: pending.action.field,
           expectedVersion: pending.action.expectedVersion,
@@ -940,17 +957,17 @@ export class TrustedActionService {
         readBundleOkfVersion(this.bundle),
       ]);
       if (okfVersion !== pending.okfVersion) {
-        return { status: "revoked", action: "document.set-field", message: "the bundle OKF edition changed" };
+        return { status: "revoked", action: pending.action.kind, message: "the bundle OKF edition changed" };
       }
       const kind = registry.kinds.get(pending.targetType);
-      if (!kind || kind.id !== pending.kindId) return { status: "revoked", action: "document.set-field", message: "the governing Kind changed" };
-      const fieldCoordinate = resolveKindFieldCoordinate(okfVersion, kind, pending.action.field);
+      if (!kind || kind.id !== pending.kindId) return { status: "revoked", action: pending.action.kind, message: "the governing Kind changed" };
+      const fieldCoordinate = pending.action.kind === "document.set-body" ? { storageField: "body" } : resolveKindFieldCoordinate(okfVersion, kind, pending.action.field);
       if (!fieldCoordinate || fieldCoordinate.storageField !== pending.storageField) {
-        return { status: "revoked", action: "document.set-field", message: "the governing Kind field mapping changed" };
+        return { status: "revoked", action: pending.action.kind, message: "the governing Kind field mapping changed" };
       }
       const currentKindVersion = (await readDocVersioned(this.bundle, kind.id)).version;
       if (currentKindVersion !== pending.kindVersion || kindDigest(kind) !== pending.kindDigest) {
-        return { status: "revoked", action: "document.set-field", message: "the governing Kind changed" };
+        return { status: "revoked", action: pending.action.kind, message: "the governing Kind changed" };
       }
 
       // Re-check after every target/Kind read and immediately before the write. The View and
@@ -958,7 +975,7 @@ export class TrustedActionService {
       // CAS below remains the final write guard while this closes the reachable asynchronous gap.
       const finalLaunch = await this.resolvePendingLaunch(pending);
       if (!finalLaunch) {
-        return { status: "revoked", action: "document.set-field", docId: pending.action.docId, field: pending.action.field };
+        return { status: "revoked", action: pending.action.kind, docId: pending.action.docId, field: pending.action.field };
       }
       const result = await mutateDocument({
         bundle: this.bundle,
@@ -974,6 +991,7 @@ export class TrustedActionService {
           if (context.okfVersion !== (pending.okfVersion ?? "0.1")) {
             throw new ActionBundleEditionChanged("the bundle OKF edition changed");
           }
+          if (pending.action.kind === "document.set-body") return { kind: "assign", assignments: {}, body: pending.action.value };
           return {
             kind: "field-action",
             action: { action: "set", field: pending.action.field, value: pending.action.value },
@@ -982,7 +1000,7 @@ export class TrustedActionService {
       });
       return {
         status: "committed",
-        action: "document.set-field",
+        action: pending.action.kind,
         docId: pending.action.docId,
         field: pending.action.field,
         ...(pending.storageField !== pending.action.field
@@ -1003,7 +1021,7 @@ export class TrustedActionService {
       if (error instanceof VersionConflict) {
         return {
           status: "conflict",
-          action: "document.set-field",
+          action: pending.action.kind,
           docId: pending.action.docId,
           field: pending.action.field,
           expectedVersion: error.expected ?? pending.action.expectedVersion,
@@ -1011,15 +1029,15 @@ export class TrustedActionService {
         };
       }
       if (error instanceof DocumentNotFoundError) {
-        return { status: "conflict", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, expectedVersion: pending.action.expectedVersion, actualVersion: null };
+        return { status: "conflict", action: pending.action.kind, docId: pending.action.docId, field: pending.action.field, expectedVersion: pending.action.expectedVersion, actualVersion: null };
       }
       if (error instanceof KindConformanceError) {
-        return { status: "rejected", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: "the document no longer conforms to its governing Kind" };
+        return { status: "rejected", action: pending.action.kind, docId: pending.action.docId, field: pending.action.field, message: "the document no longer conforms to its governing Kind" };
       }
       if (error instanceof ActionBundleEditionChanged) {
-        return { status: "revoked", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: "the bundle OKF edition changed" };
+        return { status: "revoked", action: pending.action.kind, docId: pending.action.docId, field: pending.action.field, message: "the bundle OKF edition changed" };
       }
-      return { status: "failed", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: "the trusted action could not be committed" };
+      return { status: "failed", action: pending.action.kind, docId: pending.action.docId, field: pending.action.field, message: "the trusted action could not be committed" };
     }
   }
 
