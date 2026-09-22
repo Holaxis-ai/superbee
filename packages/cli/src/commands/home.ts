@@ -217,6 +217,11 @@ export interface ConflictedBundle {
 export interface HomeBindingNote {
   file: string;
   target: string;
+  /**
+   * The shared resolver's recovery for an absent binding target (the NOT_FOUND `help`), so home
+   * gives the same next step as every other command instead of composing its own.
+   */
+  recovery?: string;
 }
 
 /** The deliberately small user-scoped catalog projection shown during agent orientation. */
@@ -949,13 +954,16 @@ export function buildHomeView(
     // second-bundle footgun.
     if (binding) {
       // A reached binding is always local. Its target may have disappeared, but it remains the
-      // committed selection: never suggest an unscoped init that would mint a divergent cwd bundle,
-      // and do not advertise recipes until the broken binding is repaired (recipes fails closed).
-      const target = commandFragment` --dir ${commandQuoted(binding.target)}`;
+      // committed selection. An absent target renders the resolver's own recovery (sync when the
+      // checkout already shares a board, so home never mints a divergent bundle); a target that
+      // exists but holds no bundle keeps the scoped init. Never suggest an unscoped init, and do
+      // not advertise recipes until the binding resolves (recipes fails closed).
+      const recovery =
+        binding.recovery ??
+        `${deps.invocation()} init --recipe none${commandFragment` --dir ${commandQuoted(binding.target)}`}`;
       view.getting_started =
         `project binding ${binding.file} -> ${binding.target} did not resolve to a bundle — ` +
-        `run \`${deps.invocation()} init --recipe none${target}\` to recreate that bound bundle, ` +
-        `or fix/remove the binding before browsing recipes`;
+        `recipes stay withheld until the binding resolves; recover with: ${recovery}`;
     } else {
       const createTarget = path.join(deps.targetDir ?? ".", CONVENTIONAL_BUNDLE_DIR_NAME);
       const target = commandFragment` --dir ${commandQuoted(createTarget)}`;
@@ -1061,10 +1069,12 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
           summaryDir = localRoute.target.root;
         } catch (err) {
           if (!(err instanceof CliError) || err.code !== "NOT_FOUND") throw err;
-          // A missing ordinary target remains a recoverable binding: preserve its exact path so
-          // home can offer the scoped init command rather than an unsafe cwd fallback.
+          // A missing target remains the committed selection: keep its exact path (never a cwd
+          // fallback) and the resolver's recovery, which is `sync` when the checkout already shares
+          // a board and a scoped init only for a genuinely new local target.
           localRoutingFailure = true;
           summaryDir = found.target;
+          if (err.help) binding = { ...binding, recovery: err.help };
         }
       }
     } catch (err) {

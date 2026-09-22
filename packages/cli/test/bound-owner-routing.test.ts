@@ -50,6 +50,28 @@ async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
   return withIsolatedUserEnv(home, run);
 }
 
+/** The NOT_FOUND recovery the shared resolver gives read commands for the checkout's binding. */
+async function absentBindingHelp(root: string): Promise<string> {
+  let help: string | undefined;
+  await assert.rejects(
+    () => inDir(root, () => list(["--json"], { stdout: () => {} })),
+    (err: unknown) => {
+      const cliErr = err as { code?: string; help?: string };
+      assert.equal(cliErr.code, "NOT_FOUND");
+      help = cliErr.help;
+      return true;
+    },
+  );
+  assert.ok(help, "the resolver attaches a recovery to an absent binding target");
+  return help;
+}
+
+/** Home's rendered orientation without the static command manual, which always lists `init`. */
+function orientation(view: Record<string, unknown>): string {
+  const { commands: _commands, commands_help: _help, kinds: _kinds, remote_env: _env, superbee: _id, ...rest } = view;
+  return JSON.stringify(rest);
+}
+
 test("bound-owner route table classifies real Git and ordinary binding topologies without basename authority", async () => {
   const topo = await makeTwoCloneTopology();
   const committed = await makeCommittedFolderTopology();
@@ -617,10 +639,14 @@ test("Home closes summary, autopull, and board-status gates for a missing bindin
     assert.equal(summaryCalled, false, "missing binding target closes summary before cwd discovery");
     assert.equal(autopullCalled, false, "missing binding target closes Home autopull");
     assert.equal(boardStatusCalled, false, "missing binding target closes Home board status");
-    const rendered = JSON.parse(output) as { getting_started?: string };
+    const rendered = JSON.parse(output) as { getting_started?: string } & Record<string, unknown>;
     assert.match(rendered.getting_started ?? "", /project binding/);
     assert.match(rendered.getting_started ?? "", /missing-bound-bundle/);
-    assert.match(rendered.getting_started ?? "", /init --recipe none/);
+    // An arbitrary missing directory is a genuinely new local-only target, not the checkout's
+    // board path: Home renders the resolver's own recovery, the init scoped to exactly that path.
+    const expected = await absentBindingHelp(topo.a.root);
+    assert.ok((rendered.getting_started ?? "").endsWith(`recover with: ${expected}`), rendered.getting_started);
+    assert.match(expected, /init --create-only --dir .*missing-bound-bundle$/);
     const after = await withHome(homeDir, async () => ({
       head: boardHead(topo.a),
       refs: git(topo.a.root, ["show-ref"]),
@@ -630,6 +656,101 @@ test("Home closes summary, autopull, and board-status gates for a missing bindin
       state: await readSyncState(publicKey),
     }));
     assert.deepEqual(after, before, "missing binding Home leaves the public board and state untouched");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+for (const boardRef of ["cached origin/board", "origin remote without a cached board ref"] as const) {
+  test(`Home in a fresh bound clone (${boardRef}) recommends sync and keeps the missing-target gates closed`, async () => {
+    const topo = await makeTwoCloneTopology({ provision: false });
+    const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-fresh-home-"));
+    try {
+      await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+      if (boardRef === "origin remote without a cached board ref") {
+        git(topo.a.root, ["update-ref", "-d", "refs/remotes/origin/board"]);
+        assert.equal(gitTry(topo.a.root, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/board"]).status, 1);
+      } else {
+        git(topo.a.root, ["rev-parse", "--verify", "refs/remotes/origin/board"]);
+      }
+      const expected = await absentBindingHelp(topo.a.root);
+      assert.match(expected, /\bsync$/, "fixture: the resolver's recovery for this state is sync");
+      const refsBefore = git(topo.a.root, ["show-ref"]);
+
+      let summaryCalled = false;
+      let autopullCalled = false;
+      let boardStatusCalled = false;
+      let output = "";
+      await withHome(homeDir, () => inDir(topo.a.root, () => home(["--json"], {
+        stdout: (line) => (output += line),
+        summarizeBundle: async () => {
+          summaryCalled = true;
+          return null;
+        },
+        autoPull: async () => {
+          autopullCalled = true;
+          return "no-board";
+        },
+        loadBoardStatus: async () => {
+          boardStatusCalled = true;
+          return null;
+        },
+        loadWorkspaces: async () => [],
+      })));
+      assert.equal(summaryCalled, false, "no bundle summary and no cwd fallback through an absent binding target");
+      assert.equal(autopullCalled, false, "no autopull through an unproven binding");
+      assert.equal(boardStatusCalled, false, "no Git board probe through an unproven binding");
+      const rendered = JSON.parse(output) as { getting_started?: string; bundle?: unknown } & Record<string, unknown>;
+      assert.equal(rendered.bundle, undefined);
+      const gettingStarted = rendered.getting_started ?? "";
+      assert.ok(gettingStarted.includes(topo.a.board), "names the bound target");
+      assert.ok(gettingStarted.endsWith(`recover with: ${expected}`), gettingStarted);
+      assert.doesNotMatch(orientation(rendered), /\binit\b/);
+      assert.equal(existsSync(topo.a.board), false, "Home never provisions");
+      assert.equal(git(topo.a.root, ["show-ref"]), refsBefore, "Home never fetches");
+    } finally {
+      await topo.cleanup();
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("Home in a fresh clone bound to the legacy board name recommends rebinding to the canonical path, then sync", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-legacy-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".agentstate-lite" }));
+    const expected = await absentBindingHelp(topo.a.root);
+    assert.match(expected, /set "bundle" in .*\.superbee\.json.* to "\.superbee", then run .*\bsync$/);
+    let output = "";
+    await withHome(homeDir, () => inDir(topo.a.root, () => home(["--json"], {
+      stdout: (line) => (output += line),
+      loadWorkspaces: async () => [],
+    })));
+    const rendered = JSON.parse(output) as { getting_started?: string } & Record<string, unknown>;
+    assert.ok((rendered.getting_started ?? "").endsWith(`recover with: ${expected}`), rendered.getting_started);
+    assert.doesNotMatch(orientation(rendered), /\binit\b/);
+    assert.equal(existsSync(path.join(topo.a.root, ".agentstate-lite")), false, "Home never creates the legacy target");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("session-start in a fresh bound clone renders sync recovery and never init advice", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-fresh-session-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    const expected = await absentBindingHelp(topo.a.root);
+    let output = "";
+    await withHome(homeDir, () => inDir(topo.a.root, () => sessionStart(["--json", "--no-update-check"], {
+      stdout: (line) => (output += line),
+    })));
+    const rendered = JSON.parse(output) as { getting_started?: string } & Record<string, unknown>;
+    assert.ok((rendered.getting_started ?? "").endsWith(`recover with: ${expected}`), rendered.getting_started);
+    assert.doesNotMatch(orientation(rendered), /\binit\b/);
   } finally {
     await topo.cleanup();
     await rm(homeDir, { recursive: true, force: true });
