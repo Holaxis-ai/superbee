@@ -12,6 +12,7 @@ export interface ViewActionPreparationContext {
   registry: KindRegistry;
   okfVersion: string | undefined;
   actor: string;
+  producer?: string;
   timestamp: string;
 }
 
@@ -77,7 +78,7 @@ export function prepareViewDocumentAction(doc: OkfDocument, rawAction: unknown, 
     for (const [field, value] of updates)
       candidate = prepareDocumentFieldAction({ ...doc, ...candidate }, { action: "set", field, value }, context).candidate;
     prepared = prepareDocumentMutationCandidate(doc, candidate, {
-      ...context, id: action.docId, strict: true, actor, persistActor: true,
+      ...context, id: action.docId, strict: true, actor, producer: options.producer, persistActor: true,
     });
   }
   const storageFields = Object.fromEntries(updates.map(([field]) => [field, resolveKindFieldCoordinate(okfVersion, kind, field)!.storageField]));

@@ -21,7 +21,7 @@ export async function runViewActionConformance(vector, edition, fixture, api) {
   }
   const parsed = parseActionBridgeMessage({ bridge: "v1", type: "action.propose", requestId: "sample", action });
   assert.equal(parsed?.ok, vector.parseAccept ?? true, "grammar verdict");
-  const context = { registry: await loadKinds(bundle), okfVersion: edition, actor: fixture.actor, timestamp: fixture.timestamp };
+  const context = { registry: await loadKinds(bundle), okfVersion: edition, actor: vector.actor ?? fixture.actor, producer: vector.producer, timestamp: fixture.timestamp };
   const prepare = () => prepareViewDocumentAction(document, action, context);
   if (!vector.accept) {
     assert.throws(prepare);
@@ -38,7 +38,8 @@ export async function runViewActionConformance(vector, edition, fixture, api) {
   }
   const body = action.kind === "document.set-body" ? action.value : action.kind === "document.update" ? action.value.body : document.body;
   assert.equal(prepared.candidate.body, body);
-  assert.equal(prepared.candidate.frontmatter[edition === "0.1" ? "actor" : "superbee_updated_by"], fixture.actor);
+  assert.equal(prepared.candidate.frontmatter[edition === "0.1" ? "actor" : "superbee_updated_by"], context.actor);
+  if (vector.producer && edition === "0.2") assert.equal(prepared.candidate.frontmatter.generated.by, vector.producer);
   if (action.kind === "document.update") {
     assert.deepEqual(JSON.parse(prepared.after), action.value);
     assert.deepEqual(JSON.parse(prepared.before).body, document.body);

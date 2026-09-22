@@ -370,6 +370,32 @@
       },
       "accept": false,
       "parseAccept": false
+    },
+    {
+      "name": "hosted-principal-with-producer",
+      "action": {
+        "kind": "document.update",
+        "docId": "notes/one",
+        "field": "document",
+        "expectedVersion": "sha256:sample",
+        "value": {
+          "fields": {
+            "title": "After",
+            "progress_status": "ready"
+          },
+          "body": "# Draft\nAfter.\n\n[related](two.md)\n"
+        }
+      },
+      "accept": true,
+      "expectedFields": {
+        "title": "After",
+        "progress_status": "ready"
+      },
+      "actor": "person:test",
+      "producer": "process:superbee-hosted",
+      "editions": [
+        "0.2"
+      ]
     }
   ]
 }
