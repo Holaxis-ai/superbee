@@ -816,7 +816,7 @@ test("same-level old/new binding conflict remains non-fatal in home and withhold
   }
 });
 
-test("A1.12b disappeared project-binding target: recovery init preserves the bound target and recipe browsing is withheld", async () => {
+test("A1.12b disappeared project-binding target outside Git: scoped init recovery preserves the bound target and recipe browsing is withheld", async () => {
   const root = await tempDir();
   try {
     const physicalRoot = await realpath(root);
@@ -832,14 +832,16 @@ test("A1.12b disappeared project-binding target: recovery init preserves the bou
       await home(["--json"], { stdout: (s) => (out += s) });
       const view = JSON.parse(out) as Record<string, unknown>;
       const gettingStarted = view.getting_started as string;
+      // Outside a Git checkout no board can exist, so the resolver's recovery is the scoped init.
       assert.ok(
-        gettingStarted.includes(
-          `${DEFAULT_INVOKE} init --recipe none --dir ${shellArg(missingBundle)}`,
+        gettingStarted.endsWith(
+          `recover with: ${DEFAULT_INVOKE} init --create-only --dir ${shellArg(missingBundle)}`,
         ),
+        gettingStarted,
       );
-      assert.ok(gettingStarted.includes("fix/remove the binding before browsing recipes"));
+      assert.ok(gettingStarted.includes("recipes stay withheld until the binding resolves"));
       assert.ok(!gettingStarted.includes(`${DEFAULT_INVOKE} recipes`));
-      assert.ok(!gettingStarted.includes("init --recipe none`"), "must not emit an unscoped init");
+      assert.ok(!/init --create-only(?! --dir)/.test(gettingStarted), "must not emit an unscoped init");
     } finally {
       process.chdir(origCwd);
     }
