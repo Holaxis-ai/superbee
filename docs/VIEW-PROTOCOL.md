@@ -528,3 +528,18 @@ Only the body is assigned; core owns normal metadata changes. Existing concept c
 must remain present with their relation text; relationship changes use canonical link tools.
 No partial body, automatic merge or retry is implied. A cancellation is not a save;
 a missing or failed receipt requires inspection before a new proposal.
+
+### Atomic local document updates
+
+A local OSS host may additionally advertise `document.update`. It accepts the exact action
+shape `{kind:"document.update", docId, field:"document", value:{fields,body}, expectedVersion}`.
+`fields` contains one to eight distinct declared scalar fields, each within the existing
+scalar action bounds; aliases resolving to the same storage key are refused. Shell-managed
+and collection fields remain unavailable. `body` has the same 64 KiB UTF-8 limit and
+cross-link preservation rule as `document.set-body`.
+
+The trusted confirmation shows all requested fields and the full body before/after as
+literal JSON text. Field mapping uses canonical core operations. Kind validation and one
+expected-version mutation govern the entire update: cancellation, invalid input, conflict
+or revocation cannot leave only some fields committed. Existing View, Kind, edition, TTL,
+one-use token and actor checks apply. MCP remains scalar-only. This is not hosted support.

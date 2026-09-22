@@ -69,3 +69,53 @@ test("body shape, UTF-8 limit, and cross-link preservation fail closed", async (
   assert.deepEqual(await readDocVersioned(f.bundle, "notes/one"), f.target);
   assert.equal(parseActionBridgeMessage({ bridge: "v1", type: "action.propose", requestId: "one", action: { ...f.action, value: '"'.repeat(64000) } }).ok, true);
 });
+
+for (const scenario of ['commit', 'cancel', 'conflict', 'kind', 'revoked', 'invalid']) test(`atomic document update: ${scenario}`, async () => {
+  const f = await fixture();
+  const action = { kind: 'document.update', docId: f.action.docId, field: 'document', expectedVersion: f.target.version,
+    value: { fields: { status: 'stable', title: 'Approved sample' }, body: f.action.value } };
+  if (scenario === 'invalid') {
+    action.value.fields.undeclared = 'no';
+    assert.equal((await f.service.prepare('launch', action)).status, 'rejected');
+    assert.deepEqual(await readDocVersioned(f.bundle, action.docId), f.target);
+    return;
+  }
+  const p = await f.service.prepare('launch', action);
+  assert.equal(p.status, 'prepared', JSON.stringify(p));
+  assert.deepEqual(JSON.parse(p.confirmation.before), { fields: { status: 'review', title: 'Sample' }, body: f.target.doc.body });
+  assert.deepEqual(JSON.parse(p.confirmation.after), action.value);
+  // Proposal parsing must own its values, not retain mutable caller objects.
+  action.value.fields.status = 'tampered';
+  let expected = f.target;
+  if (scenario === 'conflict') {
+    await writeDoc(f.bundle, { ...f.target.doc, body: f.target.doc.body + 'Concurrent writer.' });
+    expected = await readDocVersioned(f.bundle, action.docId);
+  }
+  if (scenario === 'kind') {
+    const k = await readDocVersioned(f.bundle, 'conventions/note');
+    await writeDoc(f.bundle, { ...k.doc, body: 'Changed Kind.' });
+  }
+  if (scenario === 'revoked') f.revoke();
+  const result = scenario === 'cancel' ? f.service.cancel(p.approvalToken, 'launch') : await f.service.commit(p.approvalToken, 'launch');
+  assert.equal(result.status, { commit: 'committed', cancel: 'cancelled', conflict: 'conflict', kind: 'revoked', revoked: 'revoked' }[scenario]);
+  const actual = await readDocVersioned(f.bundle, action.docId);
+  if (scenario === 'commit') {
+    assert.equal(actual.version, result.version);
+    assert.equal(actual.doc.frontmatter.status, 'stable');
+    assert.equal(actual.doc.frontmatter.title, 'Approved sample');
+    assert.equal(actual.doc.body, f.action.value);
+    assert.deepEqual(actual.doc.frontmatter.extension, f.target.doc.frontmatter.extension);
+  } else assert.deepEqual(actual, expected);
+  assert.equal((await f.service.commit(p.approvalToken, 'launch')).status, 'expired');
+});
+
+test('atomic update shape rejects unbounded, managed, collection and ambiguous fields', async () => {
+  const f = await fixture();
+  const action = { kind: 'document.update', docId: f.action.docId, field: 'document', expectedVersion: f.target.version,
+    value: { fields: { status: 'stable' }, body: f.action.value } };
+  for (const fields of [{}, { status: [] }, { status: 'x'.repeat(4097) }, { ' status ': 'ready' }, Object.fromEntries(Array.from({length:9}, (_,i) => ['f'+i, 'x']))])
+    assert.equal(parseActionBridgeMessage({ bridge: 'v1', type: 'action.propose', requestId: 'x', action: {...action, value: {...action.value, fields}} }).ok, false);
+  for (const fields of [{ actor: 'spoof' }, { type: 'Other' }, { timestamp: 'fake' }])
+    assert.equal((await f.service.prepare('launch', {...action, value: {...action.value, fields}})).status, 'rejected');
+  assert.equal((await f.service.prepare('launch', {...action, value: {...action.value, body: 'links lost'}})).status, 'rejected');
+});

@@ -19,9 +19,29 @@ export interface DocumentSetBodyAction {
   value: string;
   expectedVersion: string;
 }
-export type DocumentAction = DocumentSetFieldAction | DocumentSetBodyAction;
+export interface DocumentUpdateAction {
+  kind: "document.update";
+  docId: string;
+  field: "document";
+  value: { fields: Record<string, ActionScalar>; body: string };
+  expectedVersion: string;
+}
+export type DocumentAction = DocumentSetFieldAction | DocumentSetBodyAction | DocumentUpdateAction;
 
 export function parseDocumentAction(value: unknown): DocumentAction {
+  if (isPlainRecord(value) && value.kind === "document.update") {
+    if (!exactKeys(value, ["kind", "docId", "field", "value", "expectedVersion"]) || value.field !== "document" ||
+        !isPlainRecord(value.value) || !exactKeys(value.value, ["fields", "body"]) || !isPlainRecord(value.value.fields))
+      throw new Error("document update requires exact fields and body");
+    const body = parseDocumentAction({ ...value, kind: "document.set-body", field: "body", value: value.value.body }) as DocumentSetBodyAction;
+    const entries = Object.entries(value.value.fields);
+    if (entries.length < 1 || entries.length > 8) throw new Error("document update requires one to eight scalar fields");
+    for (const [field, scalar] of entries) {
+      const parsed = parseDocumentSetFieldAction({ kind: "document.set-field", docId: body.docId, field, value: scalar, expectedVersion: body.expectedVersion });
+      if (parsed.field !== field) throw new Error("field names must be canonical");
+    }
+    return { kind: "document.update", docId: body.docId, field: "document", value: { fields: Object.fromEntries(entries) as Record<string, ActionScalar>, body: body.value }, expectedVersion: body.expectedVersion };
+  }
   if (!isPlainRecord(value) || value.kind !== "document.set-body") return parseDocumentSetFieldAction(value);
   if (!exactKeys(value, ["kind", "docId", "field", "value", "expectedVersion"]) ||
       !safeDocId(value.docId) || value.field !== "body" || typeof value.value !== "string" ||
@@ -102,7 +122,7 @@ export function parseDocumentSetFieldAction(value: unknown): DocumentSetFieldAct
 export function parseActionBridgeMessage(value: unknown): { ok: true; message: ActionBridgeMessage } | { ok: false; message: string } | null {
   if (!isPlainRecord(value) || value.bridge !== ACTION_BRIDGE_PROTOCOL || typeof value.type !== "string") return null;
   const size = jsonSize(value);
-  const limit = value.type === "action.propose" && isPlainRecord(value.action) && value.action.kind === "document.set-body" ? MAX_MESSAGE_BYTES : 8 * 1024;
+  const limit = value.type === "action.propose" && isPlainRecord(value.action) && ["document.set-body", "document.update"].includes(String(value.action.kind)) ? MAX_MESSAGE_BYTES : 8 * 1024;
   if (size === null || size > limit) return { ok: false, message: `action bridge message must be acyclic JSON of at most ${limit / 1024} KiB` };
 
   if (value.type === "read-versioned") {
