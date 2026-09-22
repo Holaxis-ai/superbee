@@ -686,7 +686,7 @@ function exactOwnKeys(value: unknown, keys: readonly string[]): value is Record<
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-const MAX_TRUSTED_ACTION_BODY_BYTES = 16 * 1024;
+const MAX_TRUSTED_ACTION_BODY_BYTES = 512 * 1024;
 
 /**
  * The `X-Requested-With` marker a same-origin mutation must carry. Renaming the value cannot be a
@@ -718,7 +718,7 @@ async function trustedPayload(
   }
   const declaredLength = Number(req.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_TRUSTED_ACTION_BODY_BYTES) {
-    return jsonError(413, "USAGE", `${label} request body must be at most 16 KiB`);
+    return jsonError(413, "USAGE", `${label} request body must be at most 512 KiB`);
   }
   let text: string;
   try {
@@ -727,7 +727,7 @@ async function trustedPayload(
     return jsonError(400, "USAGE", `${label} request body could not be read`);
   }
   if (Buffer.byteLength(text, "utf8") > MAX_TRUSTED_ACTION_BODY_BYTES) {
-    return jsonError(413, "USAGE", `${label} request body must be at most 16 KiB`);
+    return jsonError(413, "USAGE", `${label} request body must be at most 512 KiB`);
   }
   let value: unknown;
   try {
@@ -916,7 +916,7 @@ async function handleRequest(
           : "View launch";
       await writeResponseToServerResponse(
         res,
-        jsonError(413, "USAGE", `${label} request body must be at most 16 KiB`),
+        jsonError(413, "USAGE", `${label} request body must be at most 512 KiB`),
       );
       return;
     }

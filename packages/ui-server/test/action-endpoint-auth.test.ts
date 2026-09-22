@@ -298,10 +298,10 @@ const GUARDS: Guard[] = [
     request: (body) => ({ body, headers: { ...JSON_HEADERS, "content-type": "text/plain" } }),
   },
   {
-    name: "16 KiB body cap",
+    name: "512 KiB body cap",
     status: 413,
-    message: /trusted action request body must be at most 16 KiB/,
-    request: (body) => ({ body: { ...body, padding: "x".repeat(16 * 1024) }, headers: JSON_HEADERS }),
+    message: /trusted action request body must be at most 512 KiB/,
+    request: (body) => ({ body: { ...body, padding: "x".repeat(512 * 1024) }, headers: JSON_HEADERS }),
   },
   {
     name: "exact body keys",
@@ -364,13 +364,13 @@ test("request ingress rejects unauthenticated and oversized chunked bodies befor
     const oversized = await postChunkBeforeEnd(
       f.server,
       "/__ui/actions/prepare",
-      Buffer.alloc(16 * 1024 + 1),
+      Buffer.alloc(512 * 1024 + 1),
       JSON_HEADERS,
     );
     assert.equal(oversized.status, 413);
     assert.match(
       String(oversized.body.error?.message ?? ""),
-      /trusted action request body must be at most 16 KiB/,
+      /trusted action request body must be at most 512 KiB/,
     );
   } finally {
     await f.server.close();

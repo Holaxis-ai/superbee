@@ -506,3 +506,25 @@ service over a fixture bundle and asserts every row.
 are compatible with every existing v0 View: new reply fields (`host`), new request types (`graph`,
 `host`) and new error semantics for requests that were never valid before. A change that alters an
 existing reply or request shape needs a new envelope value and a change here first.
+
+### Local body proposals
+
+A local directory host may advertise `actions: ["document.set-field", "document.set-body"]`
+in its `hello` result when the launch has `bundle-propose` access. A consumer must require
+that advertisement before offering body saves. This does not enable body proposals in the
+MCP App or in hosted adapters.
+
+The new action uses the same v1 confirmation envelope with
+`{ kind: "document.set-body", docId, field: "body", value, expectedVersion }`.
+`value` is the complete replacement Markdown body, at most 64 KiB of UTF-8. The existing
+body must also fit that limit so the trusted confirmation can show all before/after text.
+Body envelopes allow up to 512 KiB of JSON to accommodate escaping; scalar and other v1
+messages retain their 8 KiB limit. The local action HTTP transport is bounded to 512 KiB.
+
+The host renders before/after text literally, never as executable markup. It uses the
+same named actor, launch, target-version, edition, Kind-version and one-use confirmation
+checks as scalar actions, and commits through core's strict document mutation service.
+Only the body is assigned; core owns normal metadata changes. Existing concept cross-links
+must remain present with their relation text; relationship changes use canonical link tools.
+No partial body, automatic merge or retry is implied. A cancellation is not a save;
+a missing or failed receipt requires inspection before a new proposal.

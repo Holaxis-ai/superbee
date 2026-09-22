@@ -1571,3 +1571,5 @@ body {
 .relogin-screen pre code {
   font-family: var(--font-mono);
 }
+
+.action-body-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow: auto; margin: 0; }

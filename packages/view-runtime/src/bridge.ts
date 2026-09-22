@@ -762,6 +762,8 @@ export class BridgeService {
           mode: config.mode,
           protocol: BRIDGE_PROTOCOL,
           grant: launch.capability === "bundle-propose" ? "propose" : "read",
+          ...(config.mode === "dir" && this.options.host.kind === "oss" && launch.capability === "bundle-propose"
+            ? { actions: ["document.set-field", "document.set-body"] } : {}),
           host: this.hostDescriptor(),
         }),
       };

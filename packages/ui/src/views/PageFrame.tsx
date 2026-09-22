@@ -643,8 +643,8 @@ export function PageFrame({ pageId }: { pageId: string }) {
               <div><dt>Document</dt><dd><code>{confirmation.target.docId}</code></dd></div>
               <div><dt>Kind</dt><dd>{confirmation.target.kind}</dd></div>
               <div><dt>Field</dt><dd><code>{confirmation.field}</code></dd></div>
-              <div><dt>Before</dt><dd><code>{scalarLabel(confirmation.before)}</code></dd></div>
-              <div><dt>After</dt><dd><code>{scalarLabel(confirmation.after)}</code></dd></div>
+              <div><dt>Before</dt><dd>{confirmation.field === "body" ? <pre className="action-body-preview">{String(confirmation.before ?? "")}</pre> : <code>{scalarLabel(confirmation.before)}</code>}</dd></div>
+              <div><dt>After</dt><dd>{confirmation.field === "body" ? <pre className="action-body-preview">{String(confirmation.after)}</pre> : <code>{scalarLabel(confirmation.after)}</code>}</dd></div>
               <div><dt>Actor</dt><dd><code>{confirmation.actor}</code></dd></div>
               <div><dt>Timestamp</dt><dd><code>{confirmation.timestamp}</code></dd></div>
             </dl>

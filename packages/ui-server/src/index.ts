@@ -23,6 +23,7 @@ export {
   type ActionPrepareResult,
   type ActionScalar,
   type ActionTerminalResult,
+  type DocumentAction,
   type DocumentSetFieldAction,
   type PageLaunch,
   type RegisteredViewAuthorizationSubject,
