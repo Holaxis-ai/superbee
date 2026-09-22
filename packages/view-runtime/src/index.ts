@@ -45,6 +45,7 @@ import {
   parseDocumentSetFieldAction,
   type ActionScalar,
   type DocumentAction,
+  type DocumentUpdateAction,
   type DocumentSetBodyAction,
   type DocumentSetFieldAction,
 } from "./action-bridge.js";
@@ -59,6 +60,7 @@ export {
   type ActionBridgeMessage,
   type ActionScalar,
   type DocumentAction,
+  type DocumentUpdateAction,
   type DocumentSetBodyAction,
   type DocumentSetFieldAction,
 } from "./action-bridge.js";
@@ -815,19 +817,33 @@ export class TrustedActionService {
     const targetType = String(target.doc.frontmatter.type ?? "");
     const kind = registry.kinds.get(targetType);
     if (!kind) return rejected(`document '${action.docId}' is not governed by a declared Kind`);
-    const bodyAction = action.kind === "document.set-body";
-    const fieldCoordinate = bodyAction ? { storageField: "body" } : resolveKindFieldCoordinate(okfVersion, kind, action.field);
+    const update = action.kind === "document.update";
+    const bodyAction = action.kind !== "document.set-field";
+    const proposedBody = action.kind === "document.update" ? action.value.body : bodyAction ? action.value as string : target.doc.body;
+    const updates = action.kind === "document.update" ? Object.entries(action.value.fields) : [];
+    const beforeFields: Record<string, ActionScalar | null> = {};
+    const mapped = new Set<string>();
+    for (const [field] of updates) {
+      const coordinate = resolveKindFieldCoordinate(okfVersion, kind, field);
+      if (["type", "timestamp", "actor"].includes(field) || !coordinate || mapped.has(coordinate.storageField))
+        return rejected("update fields must be distinct declared scalar fields, not shell-managed fields");
+      mapped.add(coordinate.storageField);
+      const prior = target.doc.frontmatter[coordinate.storageField];
+      if (prior != null && (!isActionScalar(prior) || (typeof prior === "string" && new TextEncoder().encode(prior).byteLength > 4096))) return rejected("updates cannot replace non-scalar fields");
+      beforeFields[field] = prior == null ? null : prior as ActionScalar;
+    }
+    const fieldCoordinate = bodyAction ? { storageField: action.field } : resolveKindFieldCoordinate(okfVersion, kind, action.field);
     if (!fieldCoordinate) {
       return rejected(`field '${action.field}' is not declared by the '${kind.governs}' Kind`);
     }
     if (bodyAction && new TextEncoder().encode(target.doc.body).byteLength > MAX_ACTION_BODY_BYTES)
       return rejected("the existing body exceeds the 64 KiB confirmation limit");
     if (bodyAction) {
-      const proposed = new Set(parseLinksFromDoc({ ...target.doc, body: action.value as string }).map(link => JSON.stringify([link.to, link.text])));
+      const proposed = new Set(parseLinksFromDoc({ ...target.doc, body: proposedBody }).map(link => JSON.stringify([link.to, link.text])));
       if (parseLinksFromDoc(target.doc).some(link => !proposed.has(JSON.stringify([link.to, link.text]))))
         return rejected("body proposals must preserve existing cross-links; use the canonical link tools to change relationships");
     }
-    const beforeRaw = bodyAction ? target.doc.body : target.doc.frontmatter[fieldCoordinate.storageField];
+    const beforeRaw = update ? JSON.stringify({ fields: beforeFields, body: target.doc.body }, null, 2) : bodyAction ? target.doc.body : target.doc.frontmatter[fieldCoordinate.storageField];
     let before: ActionScalar | null;
     if (beforeRaw === undefined || beforeRaw === null) {
       before = null;
@@ -843,9 +859,11 @@ export class TrustedActionService {
         return rejected(`unsupported bundle OKF edition '${okfVersion}'`);
       }
       const context = { registry, okfVersion: okfVersion ?? "0.1", now: () => timestamp } as const;
-      const candidate = bodyAction
-        ? { frontmatter: target.doc.frontmatter, body: action.value as string }
-        : prepareDocumentFieldAction(target.doc, { action: "set", field: action.field, value: action.value }, context).candidate;
+      let candidate = action.kind === "document.set-field"
+        ? prepareDocumentFieldAction(target.doc, { action: "set", field: action.field, value: action.value }, context).candidate
+        : { frontmatter: target.doc.frontmatter, body: proposedBody };
+      for (const [field, value] of updates)
+        candidate = prepareDocumentFieldAction({ ...target.doc, ...candidate }, { action: "set", field, value }, context).candidate;
       prepared = prepareDocumentMutationCandidate(target.doc, candidate, {
         ...context, id: action.docId, strict: true, actor, persistActor: true,
       });
@@ -917,7 +935,7 @@ export class TrustedActionService {
           ? { storageField: fieldCoordinate.storageField }
           : {}),
         before,
-        after: bodyAction ? prepared.candidate.body : action.value,
+        after: action.kind === "document.update" ? JSON.stringify({ fields: action.value.fields, body: prepared.candidate.body }, null, 2) : bodyAction ? prepared.candidate.body : action.value as ActionScalar,
         actor,
         timestamp,
       },
@@ -961,7 +979,7 @@ export class TrustedActionService {
       }
       const kind = registry.kinds.get(pending.targetType);
       if (!kind || kind.id !== pending.kindId) return { status: "revoked", action: pending.action.kind, message: "the governing Kind changed" };
-      const fieldCoordinate = pending.action.kind === "document.set-body" ? { storageField: "body" } : resolveKindFieldCoordinate(okfVersion, kind, pending.action.field);
+      const fieldCoordinate = pending.action.kind !== "document.set-field" ? { storageField: pending.action.field } : resolveKindFieldCoordinate(okfVersion, kind, pending.action.field);
       if (!fieldCoordinate || fieldCoordinate.storageField !== pending.storageField) {
         return { status: "revoked", action: pending.action.kind, message: "the governing Kind field mapping changed" };
       }
@@ -987,15 +1005,19 @@ export class TrustedActionService {
         persistActor: true,
         expectedVersion: pending.action.expectedVersion,
         now: () => pending.timestamp,
-        input: (_existing, context) => {
+        buildCandidate: (existing, context) => {
           if (context.okfVersion !== (pending.okfVersion ?? "0.1")) {
             throw new ActionBundleEditionChanged("the bundle OKF edition changed");
           }
-          if (pending.action.kind === "document.set-body") return { kind: "assign", assignments: {}, body: pending.action.value };
-          return {
-            kind: "field-action",
-            action: { action: "set", field: pending.action.field, value: pending.action.value },
-          };
+          if (!existing) throw new Error("target disappeared");
+          const action = pending.action;
+          const fieldContext = { registry, okfVersion: context.okfVersion, now: () => pending.timestamp };
+          if (action.kind === "document.set-field")
+            return prepareDocumentFieldAction(existing, { action: "set", field: action.field, value: action.value }, fieldContext).candidate;
+          let candidate = { frontmatter: existing.frontmatter, body: action.kind === "document.update" ? action.value.body : action.value };
+          if (action.kind === "document.update") for (const [field, value] of Object.entries(action.value.fields))
+            candidate = prepareDocumentFieldAction({ ...existing, ...candidate }, { action: "set", field, value }, fieldContext).candidate;
+          return candidate;
         },
       });
       return {
