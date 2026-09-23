@@ -1311,6 +1311,34 @@ test("owner-record failure leaves a directory that is not the one this claim mad
   }
 });
 
+test("an owner write that meets another claimer's opened but unwritten record leaves the lock to that claimer", async () => {
+  const harness = await isolatedLockPaths();
+  const originalWriteFile = fs.writeFile;
+  let other: import("node:fs/promises").FileHandle | undefined;
+  let lockPath = "";
+  // A resumed claimer has opened owner.json inside this claim's fresh directory but not yet written it.
+  const restore = replaceFsMethod("writeFile", async (...args) => {
+    if (path.basename(String(args[0])) === "owner.json" && other === undefined) {
+      lockPath = path.dirname(String(args[0]));
+      other = await fs.open(String(args[0]), "wx", 0o600);
+    }
+    return Reflect.apply(originalWriteFile, fs, args);
+  });
+  try {
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 50, pollMs: 5 }),
+      (err: unknown) => err instanceof FilesystemMutationLockError && err.malformed && err.lockPath === lockPath,
+    );
+    // The other claimer's directory, and its still-empty record, are where it left them.
+    assert.equal(await fs.readFile(path.join(lockPath, "owner.json"), "utf8"), "");
+    assert.deepEqual(await fs.readdir(harness.lockRoot), [path.basename(lockPath)]);
+  } finally {
+    restore();
+    await other?.close();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("owner-record host-classified sharing failures never re-enter claim contention", async () => {
   const harness = await isolatedLockPaths();
   const originalWriteFile = fs.writeFile;
@@ -1319,13 +1347,18 @@ test("owner-record host-classified sharing failures never re-enter claim content
   const rollbackFailure = Object.assign(new Error("rollback denied"), { code: "TEST_CONTENTION" });
   let restoreWriteFile = () => {};
   let restoreRm = () => {};
+  let rollbackAttempted = false;
   try {
     restoreWriteFile = replaceFsMethod("writeFile", (...args) => {
       if (path.basename(String(args[0])) === "owner.json") return Promise.reject(writeFailure);
       return Reflect.apply(originalWriteFile, fs, args);
     });
     restoreRm = replaceFsMethod("rm", (...args) => {
-      if (String(args[0]).endsWith(".lock")) return Promise.reject(rollbackFailure);
+      // Rollback moves the claimed directory to its token-derived remnant, then removes that.
+      if (/\.lock\.released-[0-9a-f]{64}$/.test(String(args[0]))) {
+        rollbackAttempted = true;
+        return Promise.reject(rollbackFailure);
+      }
       return Reflect.apply(originalRm, fs, args);
     });
     await assert.rejects(
@@ -1336,6 +1369,7 @@ test("owner-record host-classified sharing failures never re-enter claim content
       }),
       (error: unknown) => error === writeFailure,
     );
+    assert.equal(rollbackAttempted, true);
   } finally {
     restoreRm();
     restoreWriteFile();

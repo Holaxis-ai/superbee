@@ -463,9 +463,13 @@ async function claimLockPath(
         mode: 0o600,
       });
     } catch (err) {
-      await rollBackOwnClaim(lockPath, owner, claimed, waitMs, pollMs, policy).catch(() => {});
       const code = (err as NodeJS.ErrnoException).code;
-      if (code === "EEXIST" || code === "ENOENT" || code === "ENOTDIR") continue;
+      // `wx` fails with EEXIST only when another claimer's owner.json was already there, possibly
+      // opened but not yet written. The directory is that claimer's now: never roll it back.
+      // A lost claim re-enters the loop, whose next `mkdir` either claims or reaches the timeout check.
+      if (code === "EEXIST") continue;
+      await rollBackOwnClaim(lockPath, owner, claimed, waitMs, pollMs, policy).catch(() => {});
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
       throw err;
     }
 
@@ -499,7 +503,8 @@ async function claimLockPath(
  * this claim's owner record, or when it carries no record and is still the very directory this
  * claim made (same device, inode and birth time). Any other record is another process's lock, and
  * a directory that is not the one this claim made may be another claim in progress; both are left
- * alone. So is anything this process cannot read, and a host that reports no birth time, where the
+ * alone. So is a record this process still cannot read once the wait budget is spent (a transient
+ * read failure is polled out first), and a host that reports no birth time (Linux on NFS, say), where the
  * directory cannot be told from a successor that reused its inode: an owner-less lock left behind
  * is reported as orphaned once the claim grace passes, while a deleted live lock breaks exclusion.
  */
@@ -511,9 +516,10 @@ async function rollBackOwnClaim(
   pollMs: number,
   policy: FilesystemHostPolicy,
 ): Promise<void> {
-  const record = await readOwnerRecord(lockPath);
+  const started = Date.now();
+  const record = await resolveOwnerRecord(lockPath, started, waitMs, pollMs);
   if (record.state === "record") {
-    if (record.owner.token === owner.token) await removeReleasedLock(lockPath, owner, Date.now(), waitMs, pollMs, policy);
+    if (record.owner.token === owner.token) await removeReleasedLock(lockPath, owner, started, waitMs, pollMs, policy);
     return;
   }
   if (record.state === "unreadable" || !(await isClaimedDirectory(lockPath, claimed))) return;
