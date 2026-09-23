@@ -1,10 +1,12 @@
 /**
  * The sync delivery side: an {@link OperationTransport} that pushes one whole document per
- * request. An intent with no base is a create (`documents.create.v1`, create-only); any other is
- * a replace (`documents.replace.v1`) against exactly the intent's base, so the host's
- * compare-and-swap decides every concurrent change to one document and never merges it. The
- * managed fields the host owns are stripped before sending; the host carries them from the
- * stored document.
+ * request. The intent's kind names the operation and its base must agree with it
+ * ({@link WHOLE_DOCUMENT_INTENT_KINDS}): a create (`documents.create.v1`, create-only) has no
+ * base, and a replace (`documents.replace.v1`) is against exactly the intent's base, so the host's
+ * compare-and-swap decides every concurrent change to one document and never merges it. Any other
+ * kind (a delete, a body update) or a kind its base contradicts is refused before anything is
+ * sent, and never mapped to a create or a replace. The managed fields the host owns are stripped
+ * before sending; the host carries them from the stored document.
  *
  * Every answer is mapped by the shared rows in `answer-rows.ts`, with one difference a
  * create-only write needs: `document_exists` is a conflict against the served head, because a
@@ -74,9 +76,40 @@ export type WholeDocumentRequest =
   | { kind: "create"; operationId: "documents.create.v1"; payload: { bundleId: string; documentId: string; expectAbsent: true; frontmatter: Frontmatter; body: string } }
   | { kind: "replace"; operationId: "documents.replace.v1"; payload: { bundleId: string; documentId: string; expectedVersion: Version; frontmatter: Frontmatter; body: string } };
 
-/** An intent the transport will not send, and why: the answer a `refused` outcome carries. */
+/**
+ * The intent kinds this transport sends, each with the base it requires. `document.write` is the
+ * working-copy engine's whole-document write, a create exactly when it has no base. Every other
+ * kind, `document.delete` included, is unsupported: it is refused without sending, never
+ * routed by its base.
+ */
+export const WHOLE_DOCUMENT_INTENT_KINDS: Readonly<Record<string, "create" | "replace" | "by-base">> = Object.freeze({
+  "document.create": "create",
+  "document.replace": "replace",
+  "document.write": "by-base",
+});
+
+/**
+ * An intent the transport will not send, and why: the answer a `refused` outcome carries.
+ * `unsupported_operation` is an intent kind this transport does not send, or one its base
+ * contradicts; `invalid_input` is a document the host would refuse.
+ */
 export class WholeDocumentInputError extends Error {
   override readonly name = "WholeDocumentInputError";
+  readonly code: "invalid_input" | "unsupported_operation";
+  constructor(message: string, code: "invalid_input" | "unsupported_operation" = "invalid_input") {
+    super(message);
+    this.code = code;
+  }
+}
+
+/** The operation an intent's kind names, refused when the kind is unsupported or its base disagrees. */
+function operationOf(intent: Pick<OperationIntent, "kind" | "target" | "base">): "create" | "replace" {
+  const declared = Object.hasOwn(WHOLE_DOCUMENT_INTENT_KINDS, intent.kind) ? WHOLE_DOCUMENT_INTENT_KINDS[intent.kind] : undefined;
+  if (declared === undefined) throw new WholeDocumentInputError(`'${intent.target}' is a '${intent.kind}' intent, which this transport does not send`, "unsupported_operation");
+  const byBase = intent.base === null ? "create" : "replace";
+  if (declared !== "by-base" && declared !== byBase)
+    throw new WholeDocumentInputError(`'${intent.target}' is a '${intent.kind}' intent that ${intent.base === null ? "has no base" : "has a base"}`, "unsupported_operation");
+  return byBase;
 }
 
 function jsonPure(value: unknown): boolean {
@@ -89,11 +122,13 @@ function jsonPure(value: unknown): boolean {
 
 /**
  * The request an intent becomes: the serialized document parsed under the bundle's edition,
- * managed fields removed, create by `base === null`, else replace against `base`. A document
+ * managed fields removed, a create or a replace against `base` as its kind names. The kind is
+ * checked first, so an unsupported kind is refused before its content is read. A document
  * whose frontmatter is not plain JSON (a date object, say) is refused here, because sending it
  * would change what it says.
  */
-export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationIntent, "target" | "base" | "content">, okfVersion?: string): WholeDocumentRequest {
+export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationIntent, "kind" | "target" | "base" | "content">, okfVersion?: string): WholeDocumentRequest {
+  const operation = operationOf(intent);
   let parsed: { frontmatter: Frontmatter; body: string };
   try {
     parsed = parseMarkdown(intent.content, intent.target, { okfVersion });
@@ -112,7 +147,8 @@ export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationInt
   if (typeof frontmatter.type !== "string" || frontmatter.type.trim() === "") throw new WholeDocumentInputError(`'${intent.target}' has no type`);
   if (keys.some((key) => UNSAFE_KEYS.has(key))) throw new WholeDocumentInputError(`'${intent.target}' names a reserved object key in its frontmatter`);
   const common = { bundleId, documentId: intent.target, frontmatter, body: parsed.body };
-  return intent.base === null
+  // `operationOf` has already bound the operation to the base: a create has none, a replace has one.
+  return operation === "create" || intent.base === null
     ? { kind: "create", operationId: OPERATION_IDS.create, payload: { bundleId, documentId: intent.target, expectAbsent: true, frontmatter, body: parsed.body } }
     : { kind: "replace", operationId: OPERATION_IDS.replace, payload: { ...common, expectedVersion: intent.base } };
 }
@@ -230,7 +266,8 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     try {
       prepared = prepare(intent);
     } catch (error) {
-      return { kind: "refused", code: "invalid_input", message: `${(error as Error).message}; it was not sent.` };
+      const code = error instanceof WholeDocumentInputError ? error.code : "invalid_input";
+      return { kind: "refused", code, message: `${(error as Error).message}; it was not sent.` };
     }
     const { request } = prepared;
     let answer: HostedAnswer;

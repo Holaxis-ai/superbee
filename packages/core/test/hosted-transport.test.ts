@@ -28,6 +28,7 @@ import {
   UPDATE_ANSWER_ROWS,
   wholeDocumentRequest,
   WHOLE_DOCUMENT_SETTLEMENT,
+  WholeDocumentInputError,
   type HostedAnswer,
   type HostedCarrier,
   type HostedRequestOptions,
@@ -443,6 +444,99 @@ test("whole-document transport: a create whose conflict read finds the document 
   const result = await deliver({ ...intent, attempts: 1 });
   assert.equal(result.outcome.kind, "committed");
   assert.deepEqual(requests.map((request) => request.path), ["/sync/v1/create", "/sync/v1/outcome", "/sync/v1/create"]);
+});
+
+// ── the intent-kind guard ──────────────────────────────────────────────────────────────────
+
+/** A transport whose carrier records every request and answers each write committed. */
+function guardedTransport(intent: OperationIntent) {
+  const sent: string[] = [];
+  const carrier: HostedCarrier = {
+    json: async (route) => {
+      sent.push(route);
+      return answerOf(fixture("update-200-ok"), route === "/sync/v1/create" ? toCreate : toReplace);
+    },
+    stream: async () => assert.fail("no stream"),
+  };
+  const transport = createWholeDocumentTransport({ carrier, bundleId: "team.knowledge", binding: BINDING, intentFor: async (id) => (id === intent.requestId ? intent : undefined), remote: { read: async () => assert.fail("no read"), operationsRetentionMs: async () => 2_592_000_000 }, now: () => NOW });
+  const deliver = (candidate = intent) => performUncertainWrite(transport, candidate, { settlement: transport.settlement, sleep: async () => {}, lookupDelayMs: 0 });
+  return { transport, deliver, sent };
+}
+
+test("intent-kind guard: a chained body update with no base, as the body engine mints it, is refused and never sent as a create", async () => {
+  // local-bundle's body composer mints `{ kind: "document.body.update", base: base ?? null, after }`:
+  // a body update chained after an unsettled create carries base null. Chosen by base alone, it
+  // would leave as documents.create.v1, an unintended create of the document.
+  const intent: OperationIntent = { ...intentOf(null), kind: "document.body.update" };
+  const { transport, deliver, sent } = guardedTransport(intent);
+  const outcome = await transport.submit(intent);
+  assert.equal(outcome.kind === "refused" && outcome.code, "unsupported_operation");
+  assert.match((outcome as { message: string }).message, /document\.body\.update.*not sent/);
+  const result = await deliver();
+  assert.equal(result.outcome.kind === "refused" && result.outcome.code, "unsupported_operation");
+  assert.equal(result.intent.state, "refused");
+  // A body update with a base would otherwise leave as a whole-document replace.
+  const based: OperationIntent = { ...intentOf(BASE), kind: "document.body.update" };
+  const replace = guardedTransport(based);
+  assert.equal((await replace.deliver()).outcome.kind, "refused");
+  assert.deepEqual([...sent, ...replace.sent], []);
+});
+
+test("intent-kind guard: an explicit kind that disagrees with its base is refused before any request leaves", async () => {
+  for (const [kind, base, why] of [
+    ["document.create", BASE, /document\.create.*has a base/],
+    ["document.replace", null, /document\.replace.*has no base/],
+  ] as const) {
+    const intent: OperationIntent = { ...intentOf(base), kind };
+    assert.throws(() => wholeDocumentRequest("team.knowledge", intent), (error: unknown) => error instanceof WholeDocumentInputError && error.code === "unsupported_operation" && why.test(error.message));
+    const { transport, deliver, sent } = guardedTransport(intent);
+    const outcome = await transport.submit(intent);
+    assert.equal(outcome.kind === "refused" && outcome.code, "unsupported_operation", kind);
+    assert.equal((await deliver()).outcome.kind, "refused");
+    assert.deepEqual(sent, [], `${kind} with base ${base} sent nothing`);
+  }
+});
+
+test("intent-kind guard: delete and every other unsupported kind is refused, never mapped to create or replace", async () => {
+  for (const kind of ["document.delete", "document.body.update", "document.write.v2", "Document.Write", ""]) {
+    for (const base of [null, BASE]) {
+      const intent: OperationIntent = { ...intentOf(base), kind };
+      assert.throws(() => wholeDocumentRequest("team.knowledge", intent), (error: unknown) => error instanceof WholeDocumentInputError && error.code === "unsupported_operation");
+      const { transport, sent } = guardedTransport(intent);
+      const outcome = await transport.submit(intent);
+      assert.deepEqual(outcome.kind === "refused" && [outcome.code, /it was not sent/.test(outcome.message)], ["unsupported_operation", true], `${kind || "(empty)"} with base ${base}`);
+      assert.deepEqual(sent, []);
+    }
+  }
+});
+
+test("intent-kind guard: a lookup of an unsupported or mismatched intent is held, and nothing is sent to the outcome route", async () => {
+  for (const intent of [
+    { ...intentOf(BASE), kind: "document.delete", attempts: 1 },
+    { ...intentOf(null), kind: "document.body.update", attempts: 1 },
+    { ...intentOf(BASE), kind: "document.create", attempts: 1 },
+  ] satisfies OperationIntent[]) {
+    const { transport, deliver, sent } = guardedTransport(intent);
+    await assert.rejects(transport.lookup(intent.requestId), (error: unknown) => error instanceof HostedOutcomeError && error.reason === "unavailable");
+    const result = await deliver();
+    assert.deepEqual(result.outcome, { kind: "unknown" }, "held for a later call, never resubmitted");
+    assert.deepEqual(sent, []);
+  }
+});
+
+test("intent-kind guard: document.create and document.replace that agree with their base go to their own routes; document.write still chooses by base", async () => {
+  for (const [kind, base, route] of [
+    ["document.create", null, "/sync/v1/create"],
+    ["document.replace", BASE, "/sync/v1/replace"],
+    ["document.write", null, "/sync/v1/create"],
+    ["document.write", BASE, "/sync/v1/replace"],
+  ] as const) {
+    const intent: OperationIntent = { ...intentOf(base), kind };
+    assert.equal(wholeDocumentRequest("team.knowledge", intent).kind, route.endsWith("create") ? "create" : "replace");
+    const { deliver, sent } = guardedTransport(intent);
+    assert.equal((await deliver()).outcome.kind, "committed", `${kind} with base ${base}`);
+    assert.deepEqual(sent, [route]);
+  }
 });
 
 // ── the fetch carrier ──────────────────────────────────────────────────────────────────────
