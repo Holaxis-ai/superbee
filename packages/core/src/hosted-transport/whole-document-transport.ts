@@ -182,16 +182,17 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   const denial = (code: AuthorizationCode, message: string): Outcome => ({ kind: "refused", code, message });
 
   /**
-   * The served head as the conflict a refusal without a current version stands for. A create
-   * that found the document but whose follow-up read finds none raced a deletion: there is no
-   * concurrent content to conflict with, so the outcome is unknown and the next push looks the
-   * identity up and, finding it absent, creates again.
+   * The served head as the conflict a refusal stands for. Absent, it is a conflict against no
+   * document, except for a create that found the document (`absentIs: "unknown"`): its
+   * follow-up read finding none raced a deletion, there is no concurrent content to conflict
+   * with, so the outcome is unknown and the next push looks the identity up and, finding it
+   * absent, creates again.
    */
-  async function servedHead(intent: OperationIntent): Promise<Outcome> {
+  async function servedHead(intent: OperationIntent, absentIs: "conflict" | "unknown" = intent.base === null ? "unknown" : "conflict"): Promise<Outcome> {
     try {
       return { kind: "conflict", actual: (await remote.read(intent.target)).version };
     } catch (error) {
-      if ((error as { code?: unknown } | undefined)?.code === "ENOENT") return intent.base === null ? UNKNOWN : { kind: "conflict", actual: null };
+      if ((error as { code?: unknown } | undefined)?.code === "ENOENT") return absentIs === "unknown" ? UNKNOWN : { kind: "conflict", actual: null };
       return UNKNOWN;
     }
   }
@@ -210,6 +211,11 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     if (error.code === "request_capacity") return capacity(error);
     if (error.code === "document_exists" && intent.base === null) return servedHead(intent);
     if (error.code === "document_not_found") return { kind: "conflict", actual: null };
+    // A create's version conflict may name a tombstone, which no read serves, so it is never
+    // trusted as a remote version: the served head decides, and an absent head is a conflict
+    // against no document ("deleted remotely"), never unknown, or the identity would loop
+    // between lookup and resubmission.
+    if (error.code === "version_conflict" && intent.base === null) return servedHead(intent, "conflict");
     if (error.code === "version_conflict") return error.currentVersion === undefined ? servedHead(intent) : { kind: "conflict", actual: error.currentVersion };
     const row = UPDATE_ANSWER_ROWS.find((candidate) => candidate.answer === `200 ${error.code}`) ?? updateRow("200 other");
     return row.code ? denial(row.code, error.message) : { kind: "refused", code: error.code, message: error.message };

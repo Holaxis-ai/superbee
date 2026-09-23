@@ -446,6 +446,45 @@ test("whole-document transport: a create whose conflict read finds the document 
   assert.deepEqual(requests.map((request) => request.path), ["/sync/v1/create", "/sync/v1/outcome", "/sync/v1/create"]);
 });
 
+// ── a create refused over a tombstone ─────────────────────────────────────────────────────
+
+/** Storage's typed tombstone refusal as the kernel answers it: `version_conflict` naming the tombstone. */
+const TOMBSTONE = "sha256:" + "7".repeat(64);
+const tombstoned = (body: string) => toCreate(body).replace('"code":"version_conflict",', `"code":"version_conflict","currentVersion":"${TOMBSTONE}",`);
+
+test("tombstone refusal: a create of a deleted id without the recreate header is a conflict against no document, never against the tombstone", async () => {
+  const intent = intentOf(null);
+  const { deliver, requests, reads } = transportOver({ "/sync/v1/create": [fixture("update-200-version-conflict")] }, intent, { rewrite: tombstoned });
+  const result = await deliver();
+  assert.deepEqual(result.outcome, { kind: "conflict", actual: null }, "deleted remotely");
+  assert.equal(result.intent.state, "conflict");
+  assert.deepEqual(reads, ["notes/alpha"], "the served head decides, not currentVersion");
+  assert.deepEqual(requests.map((request) => request.path), ["/sync/v1/create"], "no lookup and no resubmission");
+  assert.deepEqual(requests[0]!.options, { maximum: 65536, writeRequest: REQUEST_ID, binding: BINDING }, "no recreate acknowledgement is sent");
+});
+
+test("tombstone refusal: a create whose id was deleted and recreated elsewhere conflicts with the served head", async () => {
+  const intent = intentOf(null);
+  const head = "sha256:" + "9".repeat(64);
+  const { deliver, reads } = transportOver({ "/sync/v1/create": [fixture("update-200-version-conflict")] }, intent, { rewrite: tombstoned, headVersion: head });
+  assert.deepEqual((await deliver()).outcome, { kind: "conflict", actual: head });
+  assert.deepEqual(reads, ["notes/alpha"]);
+});
+
+test("tombstone refusal: a lookup that finds a create recorded as refused over a tombstone settles the same conflict", async () => {
+  const intent = { ...intentOf(null), attempts: 1 };
+  const { deliver, requests, reads } = transportOver({ "/sync/v1/outcome": [fixture("outcome-200-refused")] }, intent, { rewrite: tombstoned });
+  assert.deepEqual((await deliver()).outcome, { kind: "conflict", actual: null });
+  assert.deepEqual(requests.map((request) => request.path), ["/sync/v1/outcome"]);
+  assert.deepEqual(reads, ["notes/alpha"]);
+});
+
+test("tombstone refusal: a create's version conflict with no current version and no served head is a conflict, not unknown", async () => {
+  const intent = intentOf(null);
+  const { deliver } = transportOver({ "/sync/v1/create": [fixture("update-200-version-conflict")] }, intent);
+  assert.deepEqual((await deliver()).outcome, { kind: "conflict", actual: null });
+});
+
 // ── the intent-kind guard ──────────────────────────────────────────────────────────────────
 
 /** A transport whose carrier records every request and answers each write committed. */
