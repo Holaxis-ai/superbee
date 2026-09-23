@@ -909,7 +909,7 @@ async function makeLinkedWorktree(topo: Awaited<ReturnType<typeof makeTwoCloneTo
 }
 
 for (const state of ["absent", "empty directory"] as const) {
-  test(`a linked worktree whose bound board path is ${state} points at the repository's one board checkout without a sync loop`, async () => {
+  test(`a linked worktree whose bound board path is ${state} is unsupported on every surface, and sync creates nothing`, async () => {
     const topo = await makeTwoCloneTopology();
     const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-linked-worktree-home-"));
     try {
@@ -920,9 +920,8 @@ for (const state of ["absent", "empty directory"] as const) {
 
       const expected = await recoveryOf(() => inDir(linked.root, () => status(["--json"], quiet)));
       assert.ok(expected);
-      assert.ok(expected.includes(`another worktree at ${topo.a.board}`), expected);
-      assert.ok(expected.endsWith(`status --dir ${topo.a.board}, npx --no-install superbee sync --dir ${topo.a.board})`) || expected.endsWith(`sync --dir ${topo.a.board})`), expected);
-      assert.doesNotMatch(expected, /<command>/, "names real commands that accept --dir");
+      assert.match(expected, /^run \S+(?: \S+)* from the main checkout at /, expected);
+      assert.ok(expected.endsWith(`from the main checkout at ${topo.a.root}, or pass --dir ${topo.a.board}`), expected);
       for (const [name, run] of [
         ["bundle locate", () => bundleCommand(["locate", "--json"], quiet)],
         ["bare init", () => init(["--recipe", "none", "--json"], quiet)],
@@ -942,7 +941,7 @@ for (const state of ["absent", "empty directory"] as const) {
       assert.equal(setupView.bundle, "unreadable");
       assert.ok(setupView.row.reason.endsWith(`recover with: ${expected}`), setupView.row.reason);
 
-      // Sync gives the same recovery, twice, without touching the path or any ref: no loop.
+      // Sync gives the same recovery, twice, without creating anything or touching any ref.
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const help = await withHome(homeDir, () => recoveryOf(() => inDir(linked.root, () => sync(["--json"], { stdout: () => {}, hookInstalled: () => true }))));
         assert.equal(help, expected, `sync attempt ${attempt + 1}`);
@@ -964,38 +963,49 @@ for (const state of ["absent", "empty directory"] as const) {
   });
 }
 
-test("a linked worktree whose board checkout vanished is sent to the main worktree, and sync never provisions inside it", async () => {
-  const topo = await makeTwoCloneTopology();
-  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-linked-worktree-missing-home-"));
+test("sync --establish from a linked worktree refuses before pushing anything and leaves the bundle untouched", async () => {
+  const topo = await makeGreenfieldTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-linked-establish-home-"));
   try {
     const linked = await makeLinkedWorktree(topo);
-    await rm(topo.a.board, { recursive: true, force: true });
     const quiet = { stdout: () => {} };
-    const syncIn = (dir: string) => withHome(homeDir, () => recoveryOf(() => inDir(dir, () => sync(["--json"], { stdout: () => {}, hookInstalled: () => true }))));
-    const expected = await recoveryOf(() => inDir(linked.root, () => status(["--json"], quiet)));
-    assert.ok((expected ?? "").includes("that no longer exists — run git worktree prune, then "), expected);
-    assert.ok((expected ?? "").endsWith(`sync in the main worktree at ${topo.a.root}`), expected);
-    assert.doesNotMatch(expected ?? "", /checked out in another worktree/);
-    assert.equal(await syncIn(linked.root), expected);
+    await inDir(linked.root, () => init(["--create-only", "--recipe", "none", "--dir", ".superbee", "--json"], quiet));
+    await inDir(linked.root, () => docWrite(["notes/local", "--type", "Note", "--title", "Local", "--body", "x", "--actor", "test/a", "--json"], quiet));
+    await withHome(homeDir, () => assert.rejects(
+      () => inDir(linked.root, () => sync(["--establish", "--yes", "--json"], { stdout: () => {}, hookInstalled: () => true })),
+      (err: unknown) => {
+        const cliErr = err as { code?: string; message: string; help?: string };
+        assert.equal(cliErr.code, "CONFLICT");
+        assert.equal(cliErr.message, "Superbee boards are not supported inside a linked git worktree; nothing was published or moved");
+        assert.ok((cliErr.help ?? "").endsWith(`from the main checkout at ${topo.a.root}, or pass --dir ${topo.a.board}`), cliErr.help);
+        return true;
+      },
+    ));
+    assert.equal(git(topo.a.root, ["ls-remote", "origin", "refs/heads/board"]).trim(), "", "nothing was pushed");
+    assert.notEqual(gitTry(topo.a.root, ["rev-parse", "--verify", "--quiet", "refs/heads/board"]).status, 0, "no local board branch");
+    assert.ok(existsSync(path.join(linked.board, "index.md")), "the plain bundle is untouched");
+    assert.ok(existsSync(path.join(linked.board, "notes", "local.md")), "its doc is untouched");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
 
-    git(linked.root, ["worktree", "prune"]);
-    // Nothing is registered now; the linked worktree still refuses to host the board checkout,
-    // because removing the linked worktree would delete it with any unsynced docs.
-    const linkedAdvice = await recoveryOf(() => inDir(linked.root, () => status(["--json"], quiet)));
-    assert.match(linkedAdvice ?? "", /^this is a linked worktree, and the repository's one board checkout belongs in the main worktree — run \S+(?: \S+)* sync in the main worktree at /, linkedAdvice);
-    assert.ok((linkedAdvice ?? "").endsWith(`status --dir ${topo.a.board})`), linkedAdvice);
-    assert.equal(await syncIn(linked.root), linkedAdvice);
-    assert.equal(existsSync(linked.board), false, "sync did not provision inside the linked worktree");
-    const setupView = await setupBundleRow(linked.root, homeDir);
-    assert.ok(setupView.row.reason.endsWith(`recover with: ${linkedAdvice}`), setupView.row.reason);
-
-    // Following the advice: sync from the main worktree provisions the board there.
+test("a submodule is not a linked worktree: its bound board provisions normally", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-submodule-home-"));
+  try {
+    const superRoot = path.join(topo.dir, "super");
+    git(topo.dir, ["init", "-b", "main", "super"]);
+    git(superRoot, ["-c", "protocol.file.allow=always", "submodule", "add", topo.origin, "sub"]);
+    const sub = path.join(superRoot, "sub");
+    await writeFile(path.join(sub, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    const help = await recoveryOf(() => inDir(sub, () => status(["--json"], { stdout: () => {} })));
+    assert.match(help ?? "", /^\S+(?: \S+)* sync$/, help);
     let out = "";
-    await withHome(homeDir, () => inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true })));
-    assert.match((JSON.parse(out) as { provisioned?: string }).provisioned ?? "", /materialized/);
-    assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
-    const after = await recoveryOf(() => inDir(linked.root, () => status(["--json"], quiet)));
-    assert.ok((after ?? "").includes(`another worktree at ${topo.a.board}`), after);
+    await withHome(homeDir, () => inDir(sub, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true })));
+    assert.match((JSON.parse(out) as { provisioned?: string }).provisioned ?? "", /materialized from origin\/board/);
+    assert.equal(git(path.join(sub, ".superbee"), ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
   } finally {
     await topo.cleanup();
     await rm(homeDir, { recursive: true, force: true });

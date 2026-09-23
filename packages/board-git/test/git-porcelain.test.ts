@@ -63,6 +63,7 @@ import {
   folderPresentInCodeIndex,
   isProvisioned,
   boardWindowGuidance,
+  linkedWorktree,
   trackedBoardDirPaths,
   probeRepoTopLevel,
   repoTopLevel,
@@ -584,44 +585,48 @@ test("provision: board branch checked out at another path is refused with that c
     assert.equal(err.code, "CONFLICT");
     assert.equal(err.details?.board_checkout, elsewhere);
     assert.equal(err.details?.board_checkout_missing, false);
-    assert.ok((err.help ?? "").includes(`--dir '${elsewhere}' `), `the path is shell-quoted: ${err.help}`);
+    assert.equal(err.help, `pass --dir '${elsewhere}'`, "the path is shell-quoted");
     assert.equal(existsSync(topo.a.board), false, "nothing was created at the conventional path");
   } finally {
     await topo.cleanup();
   }
 });
 
-test("provision: a linked worktree of a provisioned clone names the primary board checkout and leaves its path alone", async () => {
-  const topo = await makeTwoCloneTopology();
-  try {
-    const linked = path.join(topo.dir, "linked");
-    git(topo.a.root, ["worktree", "add", "-b", "feature", linked]);
-    const linkedBoard = path.join(linked, ".superbee");
-    mkdirSync(linkedBoard);
-    const err = capture(() => provisionBoardWorktree(linked));
-    assert.ok(isBoardGitError(err));
-    assert.equal(err.code, "CONFLICT");
-    assert.equal(err.details?.board_checkout, topo.a.board);
-    assert.ok(existsSync(linkedBoard), "the empty directory is not removed for an add that cannot succeed");
+for (const state of ["unprovisioned", "provisioned"] as const) {
+  test(`provision: a linked worktree of an ${state} clone is refused and gets no board checkout`, async () => {
+    const topo = await makeTwoCloneTopology({ provision: state === "provisioned" });
+    try {
+      const linked = path.join(topo.dir, "linked");
+      git(topo.a.root, ["worktree", "add", "-b", "feature", linked]);
+      const linkedBoard = path.join(linked, ".superbee");
+      for (const shape of ["absent", "empty"] as const) {
+        if (shape === "empty") mkdirSync(linkedBoard);
+        const err = capture(() => provisionBoardWorktree(linked));
+        assert.ok(isBoardGitError(err), shape);
+        assert.equal(err.code, "CONFLICT");
+        assert.equal(err.message, "Superbee boards are not supported inside a linked git worktree");
+        assert.equal(err.help, `run superbee from the main checkout at ${topo.a.root}, or pass --dir ${topo.a.board}`);
+        assert.equal(existsSync(path.join(linkedBoard, ".git")), false, `${shape}: no checkout inside the linked worktree`);
+        assert.equal(existsSync(linkedBoard), shape === "empty", `${shape}: the path is left alone`);
+      }
+      // The main checkout is unchanged: it provisions (or already has) the board.
+      assert.ok(["provisioned", "already"].includes(provisionBoardWorktree(topo.a.root).kind));
+    } finally {
+      await topo.cleanup();
+    }
+  });
+}
 
-    // A board worktree whose directory vanished stays registered until pruned.
-    await rm(topo.a.board, { recursive: true, force: true });
-    const missing = capture(() => provisionBoardWorktree(linked));
-    assert.ok(isBoardGitError(missing));
-    assert.equal(missing.details?.board_checkout_missing, true);
-    assert.match(missing.help ?? "", /^git worktree prune\b/);
-    git(linked, ["worktree", "prune"]);
-    // Removing a linked worktree deletes anything nested in it, so the board is never created there.
-    const refused = capture(() => provisionBoardWorktree(linked));
-    assert.ok(isBoardGitError(refused));
-    assert.equal(refused.code, "CONFLICT");
-    assert.equal(refused.details?.main_worktree, topo.a.root);
-    assert.match(refused.message, /inside a linked worktree/);
-    assert.equal(existsSync(path.join(linkedBoard, ".git")), false, "no checkout inside the linked worktree");
-    // The main worktree provisions it, and the linked worktree then names that checkout.
-    assert.equal(provisionBoardWorktree(topo.a.root).kind, "provisioned");
-    assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), BOARD_BRANCH);
-    assert.equal(capture(() => provisionBoardWorktree(linked)).details?.board_checkout, topo.a.board);
+test("provision: a submodule is not a linked worktree and provisions normally", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const superRoot = path.join(topo.dir, "super");
+    git(topo.dir, ["init", "-b", "main", "super"]);
+    git(superRoot, ["-c", "protocol.file.allow=always", "submodule", "add", topo.origin, "sub"]);
+    const sub = path.join(superRoot, "sub");
+    assert.equal(linkedWorktree(sub), null);
+    assert.equal(provisionBoardWorktree(sub).kind, "provisioned");
+    assert.equal(git(path.join(sub, ".superbee"), ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), BOARD_BRANCH);
   } finally {
     await topo.cleanup();
   }
@@ -705,7 +710,7 @@ test("provision: a file created after the emptiness check survives and provision
   }
 });
 
-test("provision: a board worktree registered at this missing path is pruned first, and a locked one unlocked", async () => {
+test("provision: a board worktree registered at this missing path is pruned first", async () => {
   const topo = await makeTwoCloneTopology();
   try {
     await rm(topo.a.board, { recursive: true, force: true });
@@ -714,18 +719,6 @@ test("provision: a board worktree registered at this missing path is pruned firs
     assert.equal(missing.details?.board_checkout, topo.a.board);
     assert.equal(missing.details?.board_checkout_missing, true);
     assert.match(missing.help ?? "", /^git worktree prune, then re-run sync$/);
-
-    // Recreate and lock the registration, then lose the directory again: prune keeps a locked
-    // worktree, so the recovery must unlock it first.
-    git(topo.a.root, ["worktree", "prune"]);
-    assert.equal(provisionBoardWorktree(topo.a.root).kind, "provisioned");
-    git(topo.a.root, ["worktree", "lock", topo.a.board]);
-    await rm(topo.a.board, { recursive: true, force: true });
-    const locked = capture(() => provisionBoardWorktree(topo.a.root));
-    assert.ok(isBoardGitError(locked));
-    assert.equal(locked.details?.board_checkout_locked, true);
-    assert.ok((locked.help ?? "").startsWith(`git worktree unlock ${topo.a.board} (or remount it), then git worktree prune`), locked.help);
-    git(topo.a.root, ["worktree", "unlock", topo.a.board]);
     git(topo.a.root, ["worktree", "prune"]);
     assert.equal(provisionBoardWorktree(topo.a.root).kind, "provisioned");
   } finally {

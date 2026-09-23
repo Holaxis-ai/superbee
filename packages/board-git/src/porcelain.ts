@@ -968,12 +968,12 @@ export type BoardWorktreeBlock =
   /** Checked out in a different, existing worktree; Git allows one checkout per branch. */
   | { readonly kind: "elsewhere"; readonly path: string }
   /** Registered to a worktree whose directory no longer exists (possibly this very path). */
-  | { readonly kind: "missing"; readonly path: string; readonly locked: boolean };
+  | { readonly kind: "missing"; readonly path: string };
 
 /**
- * Why Git cannot check the board branch out at `boardPath`: it is checked out in another worktree
- * (a linked worktree shares the repository's one board checkout), or still registered to a
- * worktree whose directory is gone. Null when neither applies. Local only (`git worktree list`).
+ * Why Git cannot check the board branch out at `boardPath`: it is checked out in another worktree,
+ * or still registered to a worktree whose directory is gone. Null when neither applies. Local only
+ * (`git worktree list`).
  */
 export function boardWorktreeBlock(top: string, boardPath: string, hostPolicy?: BoardHostPolicy): BoardWorktreeBlock | null {
   const policy = captureBoardHostPolicy(hostPolicy);
@@ -985,58 +985,11 @@ export function boardWorktreeBlock(top: string, boardPath: string, hostPolicy?: 
     const worktree = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
     if (!worktree || !lines.includes(`branch refs/heads/${BOARD_BRANCH}`)) continue;
     const recorded = path.resolve(worktree);
-    if (!existsSync(recorded)) {
-      return { kind: "missing", path: recorded, locked: lines.some((line) => line === "locked" || line.startsWith("locked ")) };
-    }
+    if (!existsSync(recorded)) return { kind: "missing", path: recorded };
     if (recorded === target || policy.sameResolvedPath(realOrSame(recorded), realOrSame(target))) return null;
     return { kind: "elsewhere", path: recorded };
   }
   return null;
-}
-
-/**
- * The repository's main worktree (the first `git worktree list` entry), or null for a bare main
- * repository or when Git cannot list worktrees. Linked worktrees are disposable: tools add and
- * remove them routinely, and removing one deletes any checkout nested inside it.
- */
-export function mainWorktreePath(top: string): string | null {
-  const list = runGit(top, ["worktree", "list", "--porcelain"]);
-  if (list.status !== 0) return null;
-  const first = list.stdout.split(/\n\s*\n/)[0]?.split("\n") ?? [];
-  const worktree = first.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-  if (!worktree || first.includes("bare")) return null;
-  return path.resolve(worktree);
-}
-
-/** The main worktree when `top` is a linked worktree of it; null for the main worktree itself. */
-export function linkedWorktreeMain(top: string, hostPolicy?: BoardHostPolicy): string | null {
-  const main = mainWorktreePath(top);
-  if (!main) return null;
-  const policy = captureBoardHostPolicy(hostPolicy);
-  return path.resolve(top) === main || policy.sameResolvedPath(realOrSame(top), realOrSame(main)) ? null : main;
-}
-
-/**
- * Provisioning's refusal for a linked worktree: the repository's one board checkout would live
- * inside a worktree that `git worktree remove` deletes, taking unsynced docs with it.
- */
-export function linkedWorktreeProvisionError(boardPath: string, main: string): BoardGitError {
-  return new BoardGitError(
-    "CONFLICT",
-    `${boardPath} is inside a linked worktree — the repository's one board checkout belongs in the main worktree at ${main}, ` +
-      "where removing a linked worktree cannot delete it, so sync will not provision it here",
-    {
-      details: { path: boardPath, main_worktree: main },
-      help: `run sync in the main worktree (${shellToken(main)}), then pass --dir ${shellToken(path.join(main, path.basename(boardPath)))} to sync, status, and other bundle commands here`,
-    },
-  );
-}
-
-/** The next step for a board worktree registered at a missing directory. */
-export function missingBoardWorktreeSteps(block: { path: string; locked: boolean }): string {
-  return block.locked
-    ? `git worktree unlock ${shellToken(block.path)} (or remount it), then git worktree prune`
-    : "git worktree prune";
 }
 
 /** Provisioning's refusal when Git's board registration blocks checking the board out here. */
@@ -1044,22 +997,57 @@ export function boardWorktreeBlockError(boardPath: string, block: BoardWorktreeB
   if (block.kind === "missing") {
     return new BoardGitError(
       "CONFLICT",
-      `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${block.path} that no longer exists` +
-        `${block.locked ? " and is locked" : ""}, so sync cannot check it out at ${boardPath}`,
+      `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${block.path} that no longer exists, so sync cannot check it out at ${boardPath}`,
       {
-        details: { path: boardPath, board_checkout: block.path, board_checkout_missing: true, board_checkout_locked: block.locked },
-        help: `${missingBoardWorktreeSteps(block)}, then re-run sync`,
+        details: { path: boardPath, board_checkout: block.path, board_checkout_missing: true },
+        help: "git worktree prune, then re-run sync",
       },
     );
   }
   return new BoardGitError(
     "CONFLICT",
-    `this repository's board is already checked out at ${block.path}, in another worktree — Git checks a branch out in one worktree at a time, so sync cannot add a second board checkout at ${boardPath}`,
+    `the '${BOARD_BRANCH}' branch is already checked out at ${block.path}, so sync cannot check it out at ${boardPath}`,
     {
       details: { path: boardPath, board_checkout: block.path, board_checkout_missing: false },
-      help: `use that board checkout: pass --dir ${shellToken(block.path)} to sync, status, and other bundle commands`,
+      help: `pass --dir ${shellToken(block.path)}`,
     },
   );
+}
+
+/**
+ * A linked git worktree (its git dir differs from the common dir; equal in the main checkout and
+ * in a submodule), with the main checkout when it is simply the common dir's parent. Superbee
+ * boards are unsupported inside linked worktrees; null for every other checkout.
+ */
+export function linkedWorktree(top: string, hostPolicy?: BoardHostPolicy): { main?: string } | null {
+  const dirs = runGit(top, ["rev-parse", "--git-dir", "--git-common-dir"]);
+  if (dirs.status !== 0) return null;
+  const [gitDir, common] = dirs.stdout.split("\n").map((line) => line.trim());
+  if (!gitDir || !common) return null;
+  const policy = captureBoardHostPolicy(hostPolicy);
+  const absGitDir = path.resolve(top, gitDir);
+  const absCommon = path.resolve(top, common);
+  if (absGitDir === absCommon || policy.sameResolvedPath(realOrSame(absGitDir), realOrSame(absCommon))) return null;
+  return path.basename(absCommon) === ".git" ? { main: path.dirname(absCommon) } : {};
+}
+
+/** The one refusal for boards in a linked worktree; `invocation` names the CLI in the help. */
+export function linkedWorktreeGuidance(linked: { main?: string }, bundleDir: string, invocation = "superbee"): { message: string; help: string } {
+  const where = linked.main ? ` at ${shellToken(linked.main)}` : "";
+  const dir = linked.main ? shellToken(path.join(linked.main, bundleDir)) : `<the main checkout's ${bundleDir}>`;
+  return {
+    message: "Superbee boards are not supported inside a linked git worktree",
+    help: `run ${invocation} from the main checkout${where}, or pass --dir ${dir}`,
+  };
+}
+
+/** Provisioning's refusal inside a linked worktree (see {@link linkedWorktree}). */
+export function linkedWorktreeError(boardPath: string, linked: { main?: string }): BoardGitError {
+  const guidance = linkedWorktreeGuidance(linked, path.basename(boardPath));
+  return new BoardGitError("CONFLICT", guidance.message, {
+    details: { path: boardPath, ...(linked.main ? { main_checkout: linked.main } : {}) },
+    help: guidance.help,
+  });
 }
 
 /** How a non-empty, non-adoptable pre-existing conventional directory was classified. */
@@ -1291,14 +1279,14 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   // it checked out, `worktree add` below would fail and must not be mistaken for this checkout.
   // A worktree signature at the board path defers to the repair path below instead: a moved or
   // remounted repository still registers its board at the old, now-missing location.
+  // Boards are unsupported inside a linked worktree: never create one there. An occupied path keeps
+  // its own refusal or repair below.
+  if (!existsSync(boardPath) || (!hasWorktreeSignature(boardPath) && boardDirEntries(boardPath).meaningful.length === 0)) {
+    const linked = linkedWorktree(top, policy);
+    if (linked) throw linkedWorktreeError(boardPath, linked);
+  }
   const worktreeBlock = hasWorktreeSignature(boardPath) ? null : boardWorktreeBlock(top, boardPath, policy);
   if (worktreeBlock) throw boardWorktreeBlockError(boardPath, worktreeBlock);
-  // Never create the board checkout inside a linked worktree (see linkedWorktreeProvisionError).
-  // An occupied path keeps its own refusal or repair below.
-  if (!existsSync(boardPath) || (!hasWorktreeSignature(boardPath) && boardDirEntries(boardPath).meaningful.length === 0)) {
-    const main = linkedWorktreeMain(top, policy);
-    if (main) throw linkedWorktreeProvisionError(boardPath, main);
-  }
 
   if (existsSync(boardPath)) {
     const entries = boardDirEntries(boardPath);
