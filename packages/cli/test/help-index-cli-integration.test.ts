@@ -98,7 +98,9 @@ test("built CLI: bundle locate is dispatched and returns the canonical explicit 
   });
 });
 
-const RETIRED = ["login", "join", "whoami", "invite", "member", "key"];
+// `login`/`whoami` returned as hosted Superbee sign-in (roadmap-items/cli-access-to-hosted-bundles);
+// the API-key control plane (join, invite, member, key) stays retired.
+const RETIRED = ["join", "invite", "member", "key"];
 
 test("built CLI: hosted control-plane command families are absent from help and unreachable", () => {
   const help = run(["--help"]);
