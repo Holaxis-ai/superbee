@@ -55,12 +55,34 @@ superbee sync                                 # sends what keep or revise decide
   them.
 - If you cannot tell which version is right, ask the person. Do not merge by guessing.
 
+## Deleting documents
+
+Deleting a file (or running `superbee doc delete`) sends a delete of the version you had at the
+next sync. The host keeps the document's history.
+
+Deleting many files at once is held instead. The rule: when the deletes of the last day are more
+than half the checkout and at least 3, the new ones are not sent. The sync receipt then carries
+`deletions_held`, which names the held documents. The hold stays in place across syncs until the
+person decides. Never accept it yourself:
+
+1. Name the held documents to the person and ask whether they should be removed from the bundle.
+   (A typed confirmation in the terminal is planned; until then, ask in the conversation.)
+2. Only after an explicit yes, run `deletions_held.confirmation_required.command_after_confirmation`.
+   That is `superbee sync --accept-deletes <count>:<digest>`, and the token covers exactly that set.
+   If the set changes, the token no longer matches and nothing is accepted.
+3. Otherwise run `superbee sync --restore-deletes`, which puts the files back. `--resolve take --doc
+   <id>` restores a single file.
+
+If the host deleted a document you edited, `--resolve keep` re-creates it, after an `--inspect`
+that shows the deletion. If you deleted a document the host changed, `keep` deletes the host's
+version (after `--inspect`), and `take` brings it back.
+
 ## Refusals that belong to the person
 
 Some commands are refused in a hosted checkout with "do this in the Superbee app". Examples:
-deleting a document, editing Kinds, artifacts, and re-creating a document deleted on the host. Tell
-the person what to do in the app. Do not work around a refusal by editing files, using another
-command, or copying the bundle somewhere else.
+editing Kinds or recipes, artifacts, and `doc verify`. Tell the person what to do in the app. Do
+not work around a refusal by editing files, using another command, or copying the bundle
+somewhere else.
 
 `sync_busy` means another command is working, or is just taking or releasing the lock: wait,
 then retry, and never remove that lock. Only `lock_orphaned` means the lock's holder is gone:

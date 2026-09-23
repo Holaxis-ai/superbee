@@ -25,7 +25,7 @@ import { readDefaultWorkspace } from "../src/hosted/defaults.js";
 import { readFreshness, recordPulled } from "../src/hosted/freshness.js";
 import { digestOf } from "../src/hosted/projection.js";
 import { recoverPlacements } from "../src/hosted/sync-scan.js";
-import { hostedPull, type HostedSyncDeps } from "../src/hosted/sync.js";
+import { hostedLocalState, hostedPull, type HostedSyncDeps } from "../src/hosted/sync.js";
 import type { CheckoutBinding } from "../src/hosted/binding.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 
@@ -134,6 +134,25 @@ test("a failed automatic pull backs off for the whole window", async () => {
   const again = await maybeHostedAutoPull(h.binding, { env: {}, stderr: () => {}, sync: syncDeps(h) });
   assert.equal(again, "throttled");
   assert.equal(h.host.requests.length, 0);
+});
+
+test("an automatic pull over a file deleted locally records the delete and sends nothing; the next sync sends it", async () => {
+  const h = await harness();
+  const { unlink } = await import("node:fs/promises");
+  await unlink(fileOf(h, "notes/beta"));
+  assert.equal(await hostedLocalState(h.binding, h.home), "changed", "a deleted file is a change turn-end must send");
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, stderr: () => {}, sync: syncDeps(h) });
+  assert.equal(outcome, "pulled");
+  assert.deepEqual(writeRoutes(h), [], "an automatic pull never sends a delete");
+  assert.ok(h.host.docs.has("notes/beta"));
+  await readFile(fileOf(h, "notes/beta")).then(
+    () => assert.fail("the pull must not put a locally deleted file back"),
+    () => {},
+  );
+  await runSync(h);
+  assert.equal(h.host.docs.has("notes/beta"), false, "sync sends the delete");
+  assert.equal(await hostedLocalState(h.binding, h.home), "clean");
 });
 
 test("the automatic pull gives up inside its budget when the host hangs", async () => {

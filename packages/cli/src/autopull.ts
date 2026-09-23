@@ -130,7 +130,9 @@ async function attemptHostedPull(binding: CheckoutBinding, opts: HostedAutoPullO
   const deadline = Date.now() + (opts.budgetMs ?? HOSTED_AUTOPULL_BUDGET_MS);
   // Loaded only here, so a read outside a hosted checkout never loads the sync engine.
   const pullOnce = opts.pull ?? (await import("./hosted/sync.js")).hostedPull;
-  const result = await pullOnce(binding, backgroundSyncDeps(opts.sync, home, deadline));
+  // A read never waits on a running sync (it only tries the checkout lock), so the one lock it may
+  // wait on, the sign-in session's, keeps the whole pull inside the budget.
+  const result = await pullOnce(binding, backgroundSyncDeps(opts.sync, home, deadline, { checkoutLockWaitMs: 0 }));
   return result.state === "pulled" ? "pulled" : result.state === "busy" ? "busy" : "signed-out";
 }
 

@@ -102,14 +102,19 @@ export function describeAge(ms: number): string {
  * deadline: every request, including a token refresh, gives up at `deadline`, and neither the
  * checkout lock nor the sign-in session lock is waited on beyond it. A busy lock reads as busy.
  */
-export function backgroundSyncDeps(base: Partial<HostedSyncDeps> | undefined, home: string, deadline: number): Partial<HostedSyncDeps> {
+export function backgroundSyncDeps(
+  base: Partial<HostedSyncDeps> | undefined,
+  home: string,
+  deadline: number,
+  options: { checkoutLockWaitMs?: number } = {},
+): Partial<HostedSyncDeps> {
   const auth = base?.auth ?? defaultHostedAuthDeps(home);
   const remaining = Math.max(0, deadline - Date.now());
   return {
     ...base,
     auth: { ...auth, fetch: fetchWithDeadline(auth.fetch as typeof fetch, deadline), lockWaitMs: Math.min(remaining, auth.lockWaitMs ?? remaining) },
     fetch: fetchWithDeadline(base?.fetch ?? fetch, deadline),
-    lockWaitMs: Math.min(remaining, base?.lockWaitMs ?? remaining),
+    lockWaitMs: Math.min(remaining, options.checkoutLockWaitMs ?? base?.lockWaitMs ?? remaining),
     stdout: () => {},
   };
 }
