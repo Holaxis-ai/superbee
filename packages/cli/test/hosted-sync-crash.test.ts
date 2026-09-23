@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,17 +74,30 @@ function child(env: Record<string, unknown>): Promise<{ signal: NodeJS.Signals |
 }
 
 async function inProcessSync(s: Awaited<ReturnType<typeof scenario>>) {
+  const first = await inProcessSyncOnce(s);
+  return first.aged ? inProcessSyncOnce(s) : first;
+}
+
+async function inProcessSyncOnce(s: Awaited<ReturnType<typeof scenario>>) {
   const out: string[] = [];
   try {
     await sync(["--dir", s.folder], { stdout: (t: string) => void out.push(t), auth: s.auth, cwd: s.cwd, fetch: s.host.fetch, write: { sleep: async () => {}, lookupDelayMs: 0 }, sleep: async () => {}, lockWaitMs: 500 });
-    return { ok: true as const, receipt: decode(out.at(-1)!.trim()) as Record<string, unknown> };
+    return { ok: true as const, aged: false, receipt: decode(out.at(-1)!.trim()) as Record<string, unknown> };
   } catch (error) {
     // A lock orphaned by the kill (a process killed while taking it) is refused as lock_orphaned,
     // not retryable, and its help says to remove it: do exactly that, as the person would.
     if (error instanceof CliError && error.details?.reason === "lock_orphaned" && typeof error.details.lock === "string") {
       await rm(error.details.lock, { recursive: true, force: true });
     }
-    return { ok: false as const, error: error instanceof CliError ? `${error.code} ${error.message} ${JSON.stringify(error.details)}` : String(error), receipt: out.length ? (decode(out.at(-1)!.trim()) as Record<string, unknown>) : null };
+    // Right after the kill, an owner-less lock is indistinguishable from a claim in progress and
+    // reads as busy for the claim grace. Let that time pass (age the lock), then run again: it is
+    // now reported as orphaned, which the branch above handles as the person would.
+    if (error instanceof CliError && error.details?.reason === "sync_busy" && typeof error.details.lock === "string" && !(await stat(path.join(error.details.lock, "owner.json")).catch(() => null))) {
+      const past = new Date(Date.now() - 60_000);
+      const aged = await utimes(error.details.lock, past, past).then(() => true, () => false);
+      if (aged) return { ok: false as const, aged: true, error: "aged an owner-less lock", receipt: null };
+    }
+    return { ok: false as const, aged: false, error: error instanceof CliError ? `${error.code} ${error.message} ${JSON.stringify(error.details)}` : String(error), receipt: out.length ? (decode(out.at(-1)!.trim()) as Record<string, unknown>) : null };
   }
 }
 

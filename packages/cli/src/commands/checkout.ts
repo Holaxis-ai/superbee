@@ -29,6 +29,8 @@ import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, readDefaultHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { readDefaultWorkspace } from "../hosted/defaults.js";
+import { recordPulled } from "../hosted/freshness.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import {
   bindingForPath,
@@ -444,7 +446,11 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   if (ids.length > Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.bound.documents)) throw tooLarge(bundleId, target, ids.length);
   assertProjectable(ids, bundleId, target);
 
-  const workspace = values.workspace ?? (identity.tenantIds.length === 1 ? identity.tenantIds[0]! : null);
+  // Named, else the only one, else the default `setup hosted` recorded for this host (if still yours).
+  const remembered = identity.tenantIds.length > 1 ? await readDefaultWorkspace(deps.auth.home, target.origin) : null;
+  const workspace =
+    values.workspace ??
+    (identity.tenantIds.length === 1 ? identity.tenantIds[0]! : remembered !== null && identity.tenantIds.includes(remembered) ? remembered : null);
   const canonical = await canonicalFolder(folder);
   let createdFolder = false;
   const placed = new Map<string, string>();
@@ -523,6 +529,8 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         await writeProjection(deps.auth.home, binding.checkout_id, { files, root: exported.exported[ROOT_INDEX] ?? null });
         const ready: CheckoutBinding = { ...binding, state: "ready" };
         await writeBinding(deps.auth.home, ready);
+        // The checkout is a complete pull: reads start fresh instead of pulling or warning at once.
+        await recordPulled(deps.auth.home, ready.checkout_id);
         await indexCheckoutPath(deps.auth.home, ready);
         return { binding: ready, documents: exported.documents, root: exported.root, digest: marker.headsDigest ?? null };
       } catch (error) {

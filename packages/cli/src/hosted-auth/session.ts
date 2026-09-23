@@ -230,7 +230,7 @@ export async function readDefaultHost(home: string): Promise<string | null> {
   return typeof record?.host === "string" ? record.host : null;
 }
 
-async function writeDefaultHost(home: string, host: string): Promise<void> {
+export async function writeDefaultHost(home: string, host: string): Promise<void> {
   await writeUserStateFileAtomic0600(home, hostedAuthRoot(home), DEFAULT_HOST_FILE, `${JSON.stringify({ host })}\n`);
 }
 
@@ -517,6 +517,22 @@ export function authRequired(
 export interface SignInOptions {
   readonly clientIdFlag?: string;
   readonly resume?: CommandText;
+  /**
+   * False for background work (a pull on a read, a session start): use the cached token or a
+   * refresh, and otherwise throw {@link SignedOutError} without clearing the stored session or
+   * starting a sign-in, so an explicit command meets the session as it was and relays the link.
+   */
+  readonly signIn?: boolean;
+}
+
+/** Background work found no usable session and, by design, did not start a sign-in. */
+export class SignedOutError extends CliError {
+  constructor(target: HostedTarget, reason: "no_session" | "session_expired") {
+    super("AUTH_REQUIRED", `not signed in to ${target.origin} (${reason}); background sync skipped`, {
+      details: { reason: "signed_out", session: reason, host: target.origin },
+      help: `${cliInvocation()} login --host ${commandToken(hostArgument(target))}`,
+    });
+  }
 }
 
 export interface PreparedSignIn {
@@ -705,10 +721,12 @@ export async function ensureHostedAccessToken(
     const fresh = freshSession(session, deps.now());
     if (fresh) return { accessToken: fresh.access_token, source: "cache", expiresAtMs: fresh.access_token_expires_at_ms };
     let reason: SignInReason = "no_session";
+    if (!session && options.signIn === false) throw new SignedOutError(target, "no_session");
     if (session) {
       reason = "session_expired";
       const store = storeForSession(session, deps);
       const refreshToken = session.has_refresh_token ? await store.get(sessionAccount(target)) : null;
+      if (!refreshToken && options.signIn === false) throw new SignedOutError(target, "session_expired");
       if (refreshToken) {
         const outcome = await refreshWithLeeway(session, sessionAccount(target), store, refreshToken, deps);
         if (outcome.kind === "tokens") {
@@ -732,6 +750,7 @@ export async function ensureHostedAccessToken(
             details: { error: outcome.error, host: target.origin },
           });
         }
+        if (options.signIn === false) throw new SignedOutError(target, "session_expired");
       }
       await clearSession(target, deps, store);
     }

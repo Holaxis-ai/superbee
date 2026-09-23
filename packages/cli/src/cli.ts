@@ -38,6 +38,7 @@ import { home, homeCommand } from "./commands/home.js";
 import { hook } from "./commands/hook.js";
 import { skill } from "./commands/skill.js";
 import { sessionStart } from "./commands/session-start.js";
+import { turnEnd } from "./commands/turn-end.js";
 import { bundleCommand } from "./commands/bundle.js";
 import { catalog } from "./commands/catalog.js";
 import { indexCommand } from "./commands/index.js";
@@ -132,6 +133,7 @@ export const PUBLIC_HANDLERS = Object.freeze({
   whoami,
   logout,
   checkout,
+  "turn-end": turnEnd,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;

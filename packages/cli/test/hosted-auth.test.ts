@@ -683,7 +683,19 @@ test("only the sign-in commands, the hosted checkout and hosted sync import the 
       }
       if (!entry.name.endsWith(".ts")) continue;
       const text = await readFile(full, "utf8");
-      const allowed = [path.join("commands", "hosted-auth.ts"), path.join("commands", "checkout.ts"), path.join("hosted", "client.ts"), path.join("hosted", "sync.ts")];
+      const allowed = [
+        path.join("commands", "hosted-auth.ts"),
+        path.join("commands", "checkout.ts"),
+        path.join("hosted", "client.ts"),
+        path.join("hosted", "sync.ts"),
+        // Hosted-checkout triggers: each reaches the session only for a folder bound as a hosted checkout.
+        "autopull.ts",
+        path.join("commands", "session-start.ts"),
+        path.join("commands", "turn-end.ts"),
+        path.join("commands", "setup-hosted.ts"),
+        path.join("hosted", "defaults.ts"),
+        path.join("hosted", "freshness.ts"),
+      ];
       if (/hosted-auth\//.test(text) && !allowed.includes(path.relative(src, full))) {
         offenders.push(path.relative(src, full));
       }
@@ -1035,6 +1047,67 @@ test("logout keeps revoked:true when revocation succeeded but the store delete f
     assert.ok(result.notes.some((n) => /already revoked at the issuer/.test(n)));
     assert.ok(!result.notes.some((n) => /neither revoked/.test(n)));
     assert.equal(await readSession(h.home, resolveHostedTarget(h.host)), null);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Background work (a pull on a read, a session start) never starts or clears a sign-in
+
+test("signIn:false: a revoked refresh token is signed_out, with no device request and the stored session untouched", async () => {
+  const h = await harness();
+  try {
+    await signIn(h);
+    await expireCachedAccessToken(h);
+    h.issuer.expireAllRefreshTokens();
+    const target = resolveHostedTarget(h.host);
+    const dir = sessionDirFor(h.home, sessionAccount(target));
+    const before = await readFile(path.join(dir, "session.json"), "utf8");
+    const devices = h.issuer.counts.deviceCode;
+    const error = await authRequired(ensureHostedAccessToken(target, { signIn: false }, h.deps));
+    assert.equal((error.details as Record<string, unknown>).reason, "signed_out");
+    assert.equal(h.issuer.counts.deviceCode, devices, "no device authorization was started");
+    assert.equal(await readFile(path.join(dir, "session.json"), "utf8"), before, "the stored session is left for an explicit command");
+    assert.ok(await storedRefreshToken(h), "the refresh token is not cleared");
+    assert.deepEqual((await readdir(dir)).filter((name) => name.startsWith("pending")), []);
+    // An explicit command still handles it: it clears the dead session and relays a new link.
+    await authRequired(ensureHostedAccessToken(target, {}, h.deps));
+    assert.equal(h.issuer.counts.deviceCode, devices + 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("signIn:false: no session at all is signed_out without any request", async () => {
+  const h = await harness();
+  try {
+    const error = await authRequired(ensureHostedAccessToken(resolveHostedTarget(h.host), { signIn: false }, h.deps));
+    assert.equal((error.details as Record<string, unknown>).reason, "signed_out");
+    assert.equal(h.issuer.counts.deviceCode + h.issuer.counts.prm, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a busy session lock is session_busy inside the caller's lock wait, not the 50-second default", async () => {
+  const h = await harness();
+  try {
+    await signIn(h);
+    await expireCachedAccessToken(h);
+    const target = resolveHostedTarget(h.host);
+    let release!: () => void;
+    const held = withSessionLock(target, h.deps, () => new Promise<void>((resolve) => (release = resolve)));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const started = Date.now();
+    await assert.rejects(ensureHostedAccessToken(target, { signIn: false }, { ...h.deps, lockWaitMs: 100 }), (error: unknown) => {
+      assert.ok(error instanceof CliError);
+      assert.equal((error.details as Record<string, unknown>).reason, "session_busy");
+      return true;
+    });
+    assert.ok(Date.now() - started < 2_000);
+    release();
+    await held;
   } finally {
     await h.cleanup();
   }

@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,6 +63,12 @@ async function run(s: S, argv: string[] = []) {
     if (error instanceof CliError && error.details?.reason === "lock_orphaned" && typeof error.details.lock === "string") {
       await rm(error.details.lock, { recursive: true, force: true });
       return run(s, argv);
+    }
+    // Right after the kill, an owner-less lock reads as a claim in progress (busy) for the claim
+    // grace. Let that time pass by aging the lock; the next run then reports it orphaned, as above.
+    if (error instanceof CliError && error.details?.reason === "sync_busy" && typeof error.details.lock === "string" && !(await stat(path.join(error.details.lock, "owner.json")).catch(() => null))) {
+      const past = new Date(Date.now() - 60_000);
+      if (await utimes(error.details.lock, past, past).then(() => true, () => false)) return run(s, argv);
     }
     return { ok: false as const, receipt: out.length ? (decode(out.at(-1)!.trim()) as Record<string, unknown>) : null, error: error instanceof CliError ? error : new CliError("RUNTIME", `UNMAPPED ${String(error)}`) };
   }
