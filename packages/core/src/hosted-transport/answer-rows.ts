@@ -126,19 +126,25 @@ export const OUTCOME_ANSWER_ROWS: readonly OutcomeAnswerRow[] = Object.freeze([
  * copy's pull sees. `admitted` is decoded; `not-modified` is a heads `304`; `truncated` is a
  * snapshot that ended before its terminator, which the pull re-requests; `authority` is a
  * refusal about the bundle or the caller, surfaced with the host's status and code; `offline`
- * says nothing about the bundle (a `503`) and pauses the pull as a carrier failure.
+ * says nothing about the bundle (a `503`) and pauses the pull as a carrier failure; `restart`
+ * is a page the host refused because the bundle moved since the first page pinned it, so the
+ * reader starts the listing again from the first page (a snapshot reports it as truncation).
+ * A `page` answer is one page of a paged listing that names the next; the reader follows it.
  */
 export type ReadAnswerRow = Readonly<{
   answer: string;
-  result: "admitted" | "not-modified" | "truncated" | "authority" | "offline";
+  result: "admitted" | "not-modified" | "truncated" | "authority" | "offline" | "restart";
 }>;
 
 export const READ_ANSWER_ROWS: readonly ReadAnswerRow[] = Object.freeze([
   { answer: "capabilities 200", result: "admitted" },
   { answer: "heads 200", result: "admitted" },
   { answer: "heads 304", result: "not-modified" },
+  { answer: "heads 200 page", result: "admitted" },
   { answer: "snapshot 200 complete", result: "admitted" },
+  { answer: "snapshot 200 page", result: "admitted" },
   { answer: "snapshot 200 truncated", result: "truncated" },
+  { answer: "refusal 409 concurrent_change", result: "restart" },
   { answer: "refusal 400 invalid_input", result: "authority" },
   { answer: "refusal 401 unauthenticated", result: "authority" },
   { answer: "refusal 404 bundle_not_found", result: "authority" },
