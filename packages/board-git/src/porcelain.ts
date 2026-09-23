@@ -872,6 +872,67 @@ export function preShareWindowError(top: string, boardPath: string, originConfig
   return new BoardGitError("RUNTIME", guidance.message, { details, help: guidance.help });
 }
 
+/**
+ * Entries that never make a would-be board directory meaningfully occupied: operating-system
+ * folder metadata and the conventional empty-folder placeholder. A directory holding only these
+ * is empty for provisioning and for the CLI's bound-path resolver alike.
+ */
+export const IGNORABLE_BOARD_DIR_ENTRIES: readonly string[] = [".DS_Store", ".gitkeep", "Thumbs.db"];
+
+/** Directory entries other than regular files named in {@link IGNORABLE_BOARD_DIR_ENTRIES}. */
+function meaningfulEntries(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => !(entry.isFile() && IGNORABLE_BOARD_DIR_ENTRIES.includes(entry.name)))
+    .map((entry) => entry.name);
+}
+
+/** Another worktree of this repository that already has the board branch checked out. */
+export interface BoardCheckoutElsewhere {
+  /** The worktree path Git records for the board branch. */
+  readonly path: string;
+  /** True when Git still registers that worktree but its directory no longer exists. */
+  readonly missing: boolean;
+}
+
+/**
+ * The worktree, other than `boardPath`, where this repository's board branch is checked out. Git
+ * allows a branch in only one worktree at a time, so a linked worktree of a provisioned clone can
+ * never add its own board checkout: the board is shared by every worktree of the repository.
+ * Local only (`git worktree list`); never a network operation.
+ */
+export function boardCheckoutElsewhere(top: string, boardPath: string, hostPolicy?: BoardHostPolicy): BoardCheckoutElsewhere | null {
+  const policy = captureBoardHostPolicy(hostPolicy);
+  const list = runGit(top, ["worktree", "list", "--porcelain"]);
+  if (list.status !== 0) return null;
+  const target = path.resolve(boardPath);
+  for (const block of list.stdout.split(/\n\s*\n/)) {
+    const lines = block.split("\n");
+    const worktree = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+    if (!worktree || !lines.includes(`branch refs/heads/${BOARD_BRANCH}`)) continue;
+    const recorded = path.resolve(worktree);
+    if (recorded === target || policy.sameResolvedPath(realOrSame(recorded), realOrSame(target))) return null;
+    return { path: recorded, missing: !existsSync(recorded) };
+  }
+  return null;
+}
+
+/** Provisioning's refusal when the board branch is checked out in a different worktree. */
+export function boardCheckedOutElsewhereError(boardPath: string, elsewhere: BoardCheckoutElsewhere): BoardGitError {
+  const details = { path: boardPath, board_checkout: elsewhere.path, board_checkout_missing: elsewhere.missing };
+  if (elsewhere.missing) {
+    return new BoardGitError(
+      "CONFLICT",
+      `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${elsewhere.path} that no longer exists, so sync cannot check it out at ${boardPath}`,
+      { details, help: "git worktree prune  # forget the missing worktree, then re-run sync" },
+    );
+  }
+  return new BoardGitError(
+    "CONFLICT",
+    `this repository's board is already checked out at ${elsewhere.path}, in another worktree — Git checks a branch out in one worktree at a time, so sync cannot add a second board checkout at ${boardPath}`,
+    { details, help: `use that board checkout: pass --dir ${elsewhere.path} to sync and other commands` },
+  );
+}
+
 /** How a non-empty, non-adoptable pre-existing conventional directory was classified. */
 export type ExistingDirRefusalReason = "foreign" | "foreign_checkout" | "unrepairable" | "wrong_branch";
 
@@ -1097,8 +1158,18 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     return ffAdopted;
   };
 
+  // A linked worktree shares the repository's one board branch. When another worktree already has
+  // it checked out, `worktree add` below would fail and must not be mistaken for this checkout.
+  // A worktree signature at the board path defers to the repair path below instead: a moved or
+  // remounted repository still registers its board at the old, now-missing location.
+  const elsewhere = hasWorktreeSignature(boardPath) ? null : boardCheckoutElsewhere(top, boardPath, policy);
+  if (elsewhere) throw boardCheckedOutElsewhereError(boardPath, elsewhere);
+
   if (existsSync(boardPath)) {
-    if (readdirSync(boardPath).length > 0) {
+    // Placeholder entries count as empty only while untracked: a tracked placeholder belongs to
+    // the code branch, and removing it would show as a deletion there.
+    const tracked = runGit(top, ["cat-file", "-e", `HEAD:${bundleDir}`]).status === 0;
+    if ((tracked ? readdirSync(boardPath) : meaningfulEntries(boardPath)).length > 0) {
       // The PRE-SHARE WINDOW (see {@link preShareWindowError} for the full hazard story): the
       // generic "move it aside" advice below must never fire while the checked-out branch still
       // TRACKS the folder and the board branch exists on the remote.
@@ -1146,8 +1217,9 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     if (hasLocal && budget.allowLocalBranch === false && !localMatchesRemote && !adoptLocalBoard()) {
       return { kind: "local_board", boardPath, remoteExists: hasRemote };
     }
-    // The one resolvable pre-existing state: an EMPTY directory. Remove it so worktree add can
-    // create the path itself.
+    // The one resolvable pre-existing state: an EMPTY directory (ignoring untracked placeholder
+    // entries). Remove it so worktree add can create the path itself.
+    for (const name of readdirSync(boardPath)) rmSync(path.join(boardPath, name));
     rmdirSync(boardPath);
   }
 

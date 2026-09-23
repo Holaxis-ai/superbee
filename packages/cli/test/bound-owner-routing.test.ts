@@ -19,6 +19,7 @@ import { init } from "../src/commands/init.js";
 import { home } from "../src/commands/home.js";
 import { list } from "../src/commands/list.js";
 import { status } from "../src/commands/status.js";
+import { setup } from "../src/commands/setup.js";
 import { bundleCommand } from "../src/commands/bundle.js";
 import { sessionStart, sessionStartPull } from "../src/commands/session-start.js";
 import { SYNC_LOCAL_ONLY_MESSAGE, sync } from "../src/commands/sync.js";
@@ -66,6 +67,16 @@ async function absentBindingHelp(root: string): Promise<string> {
   );
   assert.ok(help, "the resolver attaches a recovery to an absent binding target");
   return help;
+}
+
+/** Setup's project-bundle state and bundle capability row for the checkout at `root`. */
+async function setupBundleRow(root: string, homeDir: string): Promise<{ bundle: string; row: { state: string; reason: string; command?: string } }> {
+  let out = "";
+  await withHome(homeDir, () => inDir(root, () => setup(["--host", "claude-code", "--scope", "project", "--json"], { stdout: (text) => (out += text) })));
+  const plan = JSON.parse(out).setup as { workspace: { current_project_bundle: string }; capabilities: Array<{ id: string; state: string; reason: string; command?: string }> };
+  const row = plan.capabilities.find((capability) => capability.id === "bundle");
+  assert.ok(row, "setup reports a bundle capability");
+  return { bundle: plan.workspace.current_project_bundle, row };
 }
 
 /** Home's rendered orientation without the static command manual, which always lists `init`. */
@@ -813,6 +824,17 @@ for (const state of ["empty directory", "regular file"] as const) {
         assert.ok((rendered.getting_started ?? "").endsWith(`recover with: ${expected}`), `${name}: ${rendered.getting_started}`);
         assert.doesNotMatch(orientation(rendered), /\binit\b|create the first doc/, name);
       }
+      const setupView = await setupBundleRow(topo.a.root, homeDir);
+      if (state === "empty directory") {
+        // Nothing blocks the path: setup's board detection proposes the provisioning pull.
+        assert.equal(setupView.bundle, "absent");
+        assert.equal(setupView.row.command, "superbee sync --pull-only");
+      } else {
+        // The enum has no separate "blocked" value; a path that must move first reports unreadable.
+        assert.equal(setupView.bundle, "unreadable");
+        assert.equal(setupView.row.state, "blocked");
+        assert.ok(setupView.row.reason.endsWith(`recover with: ${expected}`), setupView.row.reason);
+      }
       assert.equal(existsSync(path.join(topo.a.board, "index.md")), false, "no surface created a divergent bundle");
 
       await withHome(homeDir, async () => {
@@ -875,6 +897,224 @@ test("a regular file at an arbitrary bound path is moved aside before the scoped
     await topo.cleanup();
   }
 });
+
+/** A provisioned clone committing a binding to its own board path, plus a linked worktree of it. */
+async function makeLinkedWorktree(topo: Awaited<ReturnType<typeof makeTwoCloneTopology>>): Promise<{ root: string; board: string }> {
+  await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+  git(topo.a.root, ["add", ".superbee.json"]);
+  git(topo.a.root, ["commit", "-m", "bind the project board"]);
+  const root = path.join(topo.dir, "linked");
+  git(topo.a.root, ["worktree", "add", "-b", "feature", root]);
+  return { root, board: path.join(root, ".superbee") };
+}
+
+for (const state of ["absent", "empty directory"] as const) {
+  test(`a linked worktree whose bound board path is ${state} points at the repository's one board checkout without a sync loop`, async () => {
+    const topo = await makeTwoCloneTopology();
+    const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-linked-worktree-home-"));
+    try {
+      const linked = await makeLinkedWorktree(topo);
+      if (state === "empty directory") await mkdir(linked.board);
+      const quiet = { stdout: () => {} };
+      const refsBefore = git(topo.a.root, ["show-ref"]);
+
+      const expected = await recoveryOf(() => inDir(linked.root, () => status(["--json"], quiet)));
+      assert.ok(expected);
+      assert.ok(expected.includes(`another worktree at ${topo.a.board}`), expected);
+      assert.ok(expected.endsWith(`<command> --dir ${topo.a.board}`), expected);
+      for (const [name, run] of [
+        ["bundle locate", () => bundleCommand(["locate", "--json"], quiet)],
+        ["bare init", () => init(["--recipe", "none", "--json"], quiet)],
+        ["list", () => list(["--json"], quiet)],
+        ["doc write", () => docWrite(["notes/local", "--type", "Note", "--title", "Local", "--body", "x", "--actor", "test/a", "--json"], quiet)],
+      ] as const) {
+        assert.equal(await recoveryOf(() => inDir(linked.root, run)), expected, name);
+      }
+      let homeOut = "";
+      await withHome(homeDir, () => inDir(linked.root, () => home(["--json"], { stdout: (line) => (homeOut += line), loadWorkspaces: async () => [] })));
+      const rendered = JSON.parse(homeOut) as { getting_started?: string } & Record<string, unknown>;
+      assert.ok((rendered.getting_started ?? "").endsWith(`recover with: ${expected}`), rendered.getting_started);
+      assert.doesNotMatch(orientation(rendered), /recover with: \S+(?: \S+)* sync\b|create the first doc/);
+
+      const setupView = await setupBundleRow(linked.root, homeDir);
+      assert.equal(setupView.bundle, "unreadable");
+      assert.ok(setupView.row.reason.endsWith(`recover with: ${expected}`), setupView.row.reason);
+
+      // Sync gives the same recovery, twice, without touching the path or any ref: no loop.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const help = await withHome(homeDir, () => recoveryOf(() => inDir(linked.root, () => sync(["--json"], { stdout: () => {}, hookInstalled: () => true }))));
+        assert.equal(help, expected, `sync attempt ${attempt + 1}`);
+      }
+      assert.equal(existsSync(linked.board), state === "empty directory");
+      assert.equal(git(topo.a.root, ["show-ref"]), refsBefore);
+
+      // Following the recovery reaches the shared board from the linked worktree.
+      let statusOut = "";
+      await inDir(linked.root, () => status(["--json", "--dir", topo.a.board], { stdout: (line) => (statusOut += line) }));
+      assert.ok((JSON.parse(statusOut) as { docs?: number }).docs! > 0);
+      let syncOut = "";
+      await withHome(homeDir, () => inDir(linked.root, () => sync(["--json", "--dir", topo.a.board], { stdout: (line) => (syncOut += line), hookInstalled: () => true })));
+      assert.ok(JSON.parse(syncOut), "sync through the named board checkout succeeds");
+    } finally {
+      await topo.cleanup();
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a linked worktree whose board checkout vanished is told to prune, and sync then provisions it", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-linked-worktree-missing-home-"));
+  try {
+    const linked = await makeLinkedWorktree(topo);
+    await rm(topo.a.board, { recursive: true, force: true });
+    const expected = await recoveryOf(() => inDir(linked.root, () => status(["--json"], { stdout: () => {} })));
+    assert.match(expected ?? "", /missing worktree at \S+ — run git worktree prune, then \S+(?: \S+)* sync$/, expected);
+    git(linked.root, ["worktree", "prune"]);
+    let out = "";
+    await withHome(homeDir, () => inDir(linked.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true })));
+    // The pruned board branch still matches origin/board, so it is adopted as-is.
+    assert.match((JSON.parse(out) as { provisioned?: string }).provisioned ?? "", /materialized from the local board branch/);
+    assert.equal(git(linked.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("an empty bound directory with only a local, unpublished board branch is not described as a shared board", async () => {
+  const topo = await makeGreenfieldTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-local-board-home-"));
+  try {
+    git(topo.a.root, ["branch", "board"]);
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    await mkdir(topo.a.board);
+    let message = "";
+    await assert.rejects(() => inDir(topo.a.root, () => status(["--json"], { stdout: () => {} })), (err: unknown) => {
+      const cliErr = err as { code?: string; message: string; help?: string };
+      assert.equal(cliErr.code, "NOT_FOUND");
+      assert.match(cliErr.help ?? "", /^\S+(?: \S+)* sync$/);
+      message = cliErr.message;
+      return true;
+    });
+    assert.match(message, /has a local 'board' branch that is not checked out there yet/);
+    assert.doesNotMatch(message, /shares a board/);
+    // Sync owns the next step: explicit publication, not another sync.
+    await withHome(homeDir, () => assert.rejects(
+      () => inDir(topo.a.root, () => sync(["--json"], { stdout: () => {}, hookInstalled: () => true })),
+      (err: unknown) => (err as { code?: string }).code === "NO_UPSTREAM" && /sync --establish/.test((err as { help?: string }).help ?? ""),
+    ));
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a dangling symlink at the bound board path is moved aside, not handed to an init that refuses it", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-dangling-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    await symlink(path.join(topo.dir, "nowhere"), topo.a.board);
+    const expected = await recoveryOf(() => inDir(topo.a.root, () => status(["--json"], { stdout: () => {} })));
+    assert.match(expected ?? "", /\.superbee'? is a symlink that does not resolve to a directory — move it aside, then run \S+(?: \S+)* sync$/, expected);
+    assert.doesNotMatch(expected ?? "", /\binit\b/);
+    const setupView = await setupBundleRow(topo.a.root, homeDir);
+    assert.equal(setupView.bundle, "unreadable");
+    assert.ok(setupView.row.reason.endsWith(`recover with: ${expected}`), setupView.row.reason);
+    await rm(topo.a.board);
+    let out = "";
+    await withHome(homeDir, () => inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true })));
+    assert.match((JSON.parse(out) as { provisioned?: string }).provisioned ?? "", /materialized from origin\/board/);
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("an unreadable bound directory reports a permission recovery instead of a raw EACCES", { skip: process.getuid?.() === 0 }, async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    await mkdir(topo.a.board);
+    await chmod(topo.a.board, 0o000);
+    await assert.rejects(() => inDir(topo.a.root, () => status(["--json"], { stdout: () => {} })), (err: unknown) => {
+      const cliErr = err as { code?: string; message: string; help?: string };
+      assert.equal(cliErr.code, "RUNTIME");
+      assert.match(cliErr.message, /is not readable — from project binding/);
+      assert.match(cliErr.help ?? "", /^restore read access to /);
+      return true;
+    });
+  } finally {
+    await chmod(topo.a.board, 0o755).catch(() => {});
+    await topo.cleanup();
+  }
+});
+
+test("a bound board directory holding only placeholder files is empty for every surface and sync alike", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-placeholder-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    await mkdir(topo.a.board);
+    await writeFile(path.join(topo.a.board, ".DS_Store"), "");
+    await writeFile(path.join(topo.a.board, ".gitkeep"), "");
+    const expected = await recoveryOf(() => inDir(topo.a.root, () => status(["--json"], { stdout: () => {} })));
+    assert.match(expected ?? "", /^\S+(?: \S+)* sync$/, "not opened as an empty local bundle");
+    let out = "";
+    await withHome(homeDir, () => inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true })));
+    assert.match((JSON.parse(out) as { provisioned?: string }).provisioned ?? "", /materialized from origin\/board/);
+    assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+for (const state of ["empty directory", "linked worktree"] as const) {
+  test(`home runs no network Git command for a bound board path in the ${state} state`, async () => {
+    const topo = await makeTwoCloneTopology({ provision: state === "linked worktree" });
+    const temp = await mkdtemp(path.join(tmpdir(), "superbee-home-no-network-"));
+    try {
+      let cwd = topo.a.root;
+      if (state === "linked worktree") {
+        cwd = (await makeLinkedWorktree(topo)).root;
+      } else {
+        await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+        await mkdir(topo.a.board);
+      }
+      const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+      assert.ok(realGit, "git is on PATH");
+      const shimDir = path.join(temp, "bin");
+      const log = path.join(temp, "git.log");
+      await mkdir(shimDir);
+      await writeFile(path.join(shimDir, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${realGit}' "$@"\n`);
+      await chmod(path.join(shimDir, "git"), 0o755);
+      const homeDir = path.join(temp, "home");
+      await mkdir(homeDir);
+      const run = spawnSync(process.execPath, [BUILT_CLI, "home", "--json"], {
+        cwd,
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          SUPERBEE_NO_UPDATE_CHECK: "1",
+          ASLITE_NO_UPDATE_CHECK: "1",
+        },
+        encoding: "utf8",
+      });
+      assert.equal(run.status, 0, `home stdout=${run.stdout} stderr=${run.stderr}`);
+      assert.match((JSON.parse(run.stdout) as { getting_started?: string }).getting_started ?? "", /recover with:/);
+      const calls = existsSync(log) ? (await readFile(log, "utf8")).split("\n").filter(Boolean) : [];
+      assert.ok(calls.length > 0, "the shim observed home's local Git probes");
+      const network = calls.filter((line) => /(?:^|\s)(?:fetch|ls-remote|pull|push|clone|remote update)(?:\s|$)/.test(line));
+      assert.deepEqual(network, [], "home stays network-free");
+    } finally {
+      await topo.cleanup();
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+}
 
 test("a fresh clone whose binding names its own conventional board provisions from origin/board through bare sync", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
