@@ -32,6 +32,8 @@ interface Harness {
   auth: HostedAuthDeps;
   host: FakeHost;
   out: string[];
+  /** The fetch sync uses; the host's own unless a test wraps it. */
+  fetch?: typeof fetch;
 }
 
 async function harness(host = new FakeHost(), env: NodeJS.ProcessEnv = { SUPERBEE_ACCESS_TOKEN: TOKEN }): Promise<Harness> {
@@ -57,7 +59,7 @@ async function runSync(h: Harness, argv: string[] = []): Promise<Record<string, 
     stdout: (text: string) => void h.out.push(text),
     auth: h.auth,
     cwd: h.cwd,
-    fetch: h.host.fetch,
+    fetch: h.fetch ?? h.host.fetch,
     write: { sleep: instant, lookupDelayMs: 0 },
     sleep: instant,
   });
@@ -72,7 +74,7 @@ async function failingSync(h: Harness, argv: string[] = []): Promise<{ error: Cl
       stdout: (text: string) => void h.out.push(text),
       auth: h.auth,
       cwd: h.cwd,
-      fetch: h.host.fetch,
+      fetch: h.fetch ?? h.host.fetch,
       write: { sleep: instant, lookupDelayMs: 0 },
       sleep: instant,
       lockWaitMs: 200,
@@ -261,16 +263,131 @@ test("a document deleted on the host while edited locally is a 'deleted remotely
   assert.equal(after.status, "up_to_date");
 });
 
-test("keep on a 'deleted remotely' conflict re-creates the document", async () => {
+test("keep and revise on a 'deleted remotely' conflict are refused until sync can re-create; nothing is sent", async () => {
   const h = await harness();
   h.host.remove("notes/alpha");
   await edit(h, "notes/alpha", (doc) => void (doc.body = "Keep me.\n"));
   await failingSync(h);
+  const review = await runSync(h, ["--inspect", "notes/alpha"]);
+  assert.deepEqual(Object.keys(review.choices as object), ["take"]);
+  assert.equal((review.help as string[]).length, 1);
+  h.host.writes.length = 0;
+  for (const choice of ["keep", "revise"]) {
+    const { error } = await failingSync(h, ["--resolve", choice, "--doc", "notes/alpha"]);
+    assert.equal(error.code, "CONFLICT");
+    assert.equal(error.details?.reason, "recreate_not_available");
+    assert.match(error.help ?? "", /--resolve take/);
+  }
+  // Still a conflict on the next sync, and nothing was ever sent.
+  const again = await failingSync(h);
+  assert.equal(rowFor(again.receipt, "notes/alpha")?.reason, "deleted_remotely");
+  assert.deepEqual(writeRoutes(h), []);
+  assert.equal(h.host.docs.has("notes/alpha"), false);
+  assert.match(await readFile(path.join(h.folder, "notes/alpha.md"), "utf8"), /Keep me\./);
+});
+
+test("B2: a host delete of a document sync holds locally is a conflict, never a silent re-create", async () => {
+  const h = await harness();
+  await edit(h, "notes/alpha", (doc) => void (doc.frontmatter.type = "Decision"));
+  h.host.remove("notes/alpha");
+  const first = await failingSync(h);
+  assert.equal(first.error.code, "CONFLICT");
+  assert.deepEqual([rowFor(first.receipt, "notes/alpha")?.state, rowFor(first.receipt, "notes/alpha")?.reason], ["conflict", "deleted_remotely"]);
+  for (let run = 0; run < 2; run += 1) {
+    const next = await failingSync(h);
+    assert.equal(rowFor(next.receipt, "notes/alpha")?.reason, "deleted_remotely");
+  }
+  assert.deepEqual(writeRoutes(h), [], "no create is ever sent");
+  assert.equal(h.host.docs.has("notes/alpha"), false);
+  const keep = await failingSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  assert.equal(keep.error.details?.reason, "recreate_not_available");
+  const taken = await runSync(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+  assert.equal(taken.file_state, "removed");
+  await assert.rejects(stat(path.join(h.folder, "notes/alpha.md")));
+  assert.equal((await runSync(h)).status, "up_to_date");
+  assert.deepEqual(writeRoutes(h), []);
+});
+
+test("B2: a file edited during the pull of a host delete is a conflict in that run and never re-created", async () => {
+  const h = await harness();
+  h.host.remove("notes/alpha");
+  h.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(input)).pathname.endsWith("/heads")) await writeFile(path.join(h.folder, "notes/alpha.md"), '---\ntype: "Note"\n---\nAgent edit during pull.\n');
+    return h.host.fetch(input, init);
+  }) as typeof fetch;
+  const first = await failingSync(h);
+  assert.equal(first.error.code, "CONFLICT");
+  assert.equal(rowFor(first.receipt, "notes/alpha")?.reason, "deleted_remotely");
+  h.fetch = undefined;
+  const second = await failingSync(h);
+  assert.equal(rowFor(second.receipt, "notes/alpha")?.reason, "deleted_remotely");
+  assert.deepEqual(writeRoutes(h), []);
+  assert.equal(h.host.docs.has("notes/alpha"), false);
+  assert.match(await readFile(path.join(h.folder, "notes/alpha.md"), "utf8"), /Agent edit during pull\./);
+});
+
+test("B3: a file edited during the pull of a host change is a conflict in that run and never overwrites the host", async () => {
+  const h = await harness();
+  const before = hostDoc(h, "notes/alpha");
+  const remote = h.host.put("notes/alpha", before.frontmatter, "Host change.\n");
+  h.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(input)).pathname.endsWith("/heads")) await writeFile(path.join(h.folder, "notes/alpha.md"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nAgent edit made against the OLD version.\n');
+    return h.host.fetch(input, init);
+  }) as typeof fetch;
+  const first = await failingSync(h);
+  assert.equal(first.error.code, "CONFLICT", "the run that saw the edit is not up to date");
+  assert.equal(first.error.exitCode, 5);
+  assert.notEqual(first.receipt!.status, "up_to_date");
+  assert.deepEqual([rowFor(first.receipt, "notes/alpha")?.state, rowFor(first.receipt, "notes/alpha")?.reason], ["conflict", "changed_remotely"]);
+  h.fetch = undefined;
+  const second = await failingSync(h);
+  assert.equal(rowFor(second.receipt, "notes/alpha")?.state, "conflict");
+  assert.deepEqual(writeRoutes(h), [], "nothing is sent over the host's change");
+  assert.equal(hostDoc(h, "notes/alpha").version, remote);
+  assert.equal(hostDoc(h, "notes/alpha").body, "Host change.\n");
+  assert.match(await readFile(path.join(h.folder, "notes/alpha.md"), "utf8"), /OLD version/);
+
+  // Inspect shows the file against the host's version; take places the host's version.
+  const review = await runSync(h, ["--inspect", "notes/alpha"]);
+  assert.match(String((review.local as { content: string }).content), /OLD version/);
+  assert.match(String((review.remote as { content: string }).content), /Host change\./);
+  const taken = await runSync(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+  assert.equal(taken.file_state, "replaced");
+  assert.match(await readFile(path.join(h.folder, "notes/alpha.md"), "utf8"), /Host change\./);
+  assert.equal((await runSync(h)).status, "up_to_date");
+  assert.deepEqual(writeRoutes(h), []);
+});
+
+test("B3: keep on a file edited during a pull sends it only as an explicit decision, against the host's version", async () => {
+  const h = await harness();
+  const before = hostDoc(h, "notes/alpha");
+  const remote = h.host.put("notes/alpha", before.frontmatter, "Host change.\n");
+  h.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(input)).pathname.endsWith("/heads")) await writeFile(path.join(h.folder, "notes/alpha.md"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nMine, decided.\n');
+    return h.host.fetch(input, init);
+  }) as typeof fetch;
+  await failingSync(h);
+  h.fetch = undefined;
   await runSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
   const after = await runSync(h);
   assert.equal(rowFor(after, "notes/alpha")?.state, "committed");
-  assert.equal(writeRoutes(h).at(-1)!.route, "create");
-  assert.equal(hostDoc(h, "notes/alpha").body, "Keep me.\n");
+  assert.equal(writeRoutes(h).at(-1)!.body.expectedVersion, remote);
+  assert.equal(hostDoc(h, "notes/alpha").body, "Mine, decided.\n");
+});
+
+test("B3: a held edit whose document the host changed meanwhile is a conflict, not a rebase", async () => {
+  const h = await harness();
+  await edit(h, "notes/alpha", (doc) => void (doc.frontmatter.type = "Decision"));
+  const before = hostDoc(h, "notes/alpha");
+  const remote = h.host.put("notes/alpha", before.frontmatter, "Host change.\n");
+  const first = await failingSync(h);
+  assert.equal(rowFor(first.receipt, "notes/alpha")?.state, "conflict");
+  // Restoring the type does not rebase the edit silently onto the host's change.
+  await edit(h, "notes/alpha", (doc) => void (doc.frontmatter.type = "Note"));
+  const second = await failingSync(h);
+  assert.equal(rowFor(second.receipt, "notes/alpha")?.reason, "changed_remotely");
+  assert.deepEqual(writeRoutes(h), []);
+  assert.equal(hostDoc(h, "notes/alpha").version, remote);
 });
 
 test("a frontmatter-only change against a body-only change to one document is a conflict too", async () => {

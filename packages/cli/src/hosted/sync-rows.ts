@@ -13,7 +13,7 @@ import type { IntentRecord } from "@superbee/core/journaled-backend";
 import { CAPACITY_REFUSAL_CODES } from "@superbee/core/hosted-transport";
 
 import { CliError, type CliErrorCode } from "../errors.js";
-import type { HeldFile } from "./sync-scan.js";
+import type { FolderConflict, HeldFile } from "./sync-scan.js";
 
 export const ROW_STATES = ["committed", "conflict", "held", "refused", "unknown", "paused"] as const;
 export type RowState = (typeof ROW_STATES)[number];
@@ -63,7 +63,15 @@ function waitingRow(id: string, pausedBy: SyncRow | null, notSent: NotSentReason
   return { id, state: "paused", reason: "not_sent", version: null, message: "Not sent in this run; run sync again." };
 }
 
+export const CHANGED_REMOTELY_MESSAGE = "The document also changed on the host. Nothing was merged or sent. Inspect it, then keep yours, take theirs, or revise.";
+export const DELETED_REMOTELY_MESSAGE =
+  "The document was deleted on the host while you changed it. Nothing was sent. Inspect it, then take the deletion; re-creating it is done in the Superbee app until sync can re-create a deleted document.";
+const FOLDER_CHANGED_MESSAGE =
+  "The file was edited while the host changed this document (during a sync, or while sync held the file). Nothing was merged or sent. Inspect it, then keep your file, take the host's version, or revise.";
+
 export interface RowInputs {
+  /** Files edited against a version the host has since changed or deleted (`folderConflicts`). */
+  readonly folderConflicts?: readonly FolderConflict[];
   /** Unsettled intents after the push, in journal order. */
   readonly unsettled: readonly IntentRecord[];
   /** Documents the host acknowledged in this run, with the committed version. */
@@ -95,9 +103,7 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
           state: "conflict",
           reason: deleted ? "deleted_remotely" : "changed_remotely",
           version: null,
-          message: deleted
-            ? "The document was deleted on the host while you changed it. Nothing was sent. Inspect it, then keep yours (re-creates it) or take the deletion."
-            : "The document also changed on the host. Nothing was merged or sent. Inspect it, then keep yours, take theirs, or revise.",
+          message: deleted ? DELETED_REMOTELY_MESSAGE : CHANGED_REMOTELY_MESSAGE,
         });
         break;
       }
@@ -116,6 +122,16 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
       default:
         break;
     }
+  }
+  for (const conflict of inputs.folderConflicts ?? []) {
+    if (out.get(conflict.id)?.state === "conflict") continue;
+    out.set(conflict.id, {
+      id: conflict.id,
+      state: "conflict",
+      reason: conflict.reason,
+      version: null,
+      message: conflict.reason === "deleted_remotely" ? DELETED_REMOTELY_MESSAGE : FOLDER_CHANGED_MESSAGE,
+    });
   }
   for (const [id, version] of inputs.acknowledged) {
     if (!out.has(id)) out.set(id, { id, state: "committed", reason: "committed", version, message: "Sent and accepted." });

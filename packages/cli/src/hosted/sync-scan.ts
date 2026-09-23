@@ -10,7 +10,14 @@
 //   journaled for them. A managed-only difference is not a change.
 // - **Export.** A settled store document whose version moved past its record (a pull refresh, or
 //   a conflict taken from the host) is placed in the folder without overwriting anything
-//   (`placeNew`, `replaceGuarded`). A file edited in between is kept; the next scan sends it.
+//   (`placeNew`, `replaceGuarded`). A file edited in between is kept as it is.
+//
+// A kept file is never sent as it stands. Its edit was made against the version its record names,
+// not the one the host has now, so it is a **folder conflict** (`folderConflictFor`): the host
+// changed or deleted the document while the file was being edited (during a sync, or while sync
+// held the file). Nothing is sent for it until the person resolves it; sending it against the
+// refreshed version would silently overwrite the host's change, and sending a deleted document
+// as a create would silently re-create it.
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -34,6 +41,8 @@ const HELD_PREFIXES = ["conventions/", "views/"] as const;
 export interface ProjectionEntry {
   readonly digest: string;
   readonly version: string;
+  /** Set when the host deleted the document while the file held an edit: the file was kept. */
+  readonly deleted?: true;
 }
 
 export interface ProjectionRecord {
@@ -92,7 +101,9 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
   if (value && value.schema === PROJECTION_SCHEMA && typeof value.files === "object" && value.files !== null) {
     const files: Record<string, ProjectionEntry> = {};
     for (const [id, entry] of Object.entries(value.files as Record<string, { digest?: unknown; version?: unknown }>)) {
-      if (typeof entry?.digest === "string" && typeof entry.version === "string") files[id] = { digest: entry.digest, version: entry.version };
+      if (typeof entry?.digest === "string" && typeof entry.version === "string") {
+        files[id] = { digest: entry.digest, version: entry.version, ...((entry as { deleted?: unknown }).deleted === true ? { deleted: true as const } : {}) };
+      }
     }
     return { files, root: typeof value.root === "string" ? value.root : null };
   }
@@ -245,6 +256,9 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     const digest = digestOf(bytes);
     const entry = projection.files[id];
     if (entry?.digest === digest) continue;
+    // Edited against a version the host has since changed or deleted: reported as a conflict by
+    // the run's closing pass, never journaled against the host's newer state.
+    if ((await folderConflictFor(id, bytes, entry, local.backend)) !== null) continue;
     if (HELD_PREFIXES.some((prefix) => rel.startsWith(prefix))) {
       report.held.push(held(id, rel, "convention_folder", `${rel} is under ${rel.split("/")[0]}/, which holds conventions edited in the Superbee app`));
       continue;
@@ -280,9 +294,14 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     if (committed.intent) report.committed.push(id);
   }
   // A recorded document whose file is gone is a local deletion, which does not sync yet.
-  for (const id of Object.keys(projection.files)) {
+  for (const [id, entry] of Object.entries(projection.files)) {
     if (seen.has(id) || (context.only && !context.only.has(id))) continue;
     const rel = `${id}.md`;
+    if (entry.deleted) {
+      // Deleted on both sides: nothing is left to decide.
+      delete projection.files[id];
+      continue;
+    }
     if ((await readIfPresent(path.join(folder, rel))) === null) {
       report.held.push(held(id, rel, "deleted_locally", `${rel} was deleted; deleting a document does not sync yet`));
     }
@@ -356,9 +375,11 @@ export async function exportCheckout(
       delete projection.files[id];
       continue;
     }
+    if (entry.deleted) continue;
     if (digestOf(found) !== entry.digest) {
-      // Edited while the host deleted it: the file stays, and is a new document to the next scan.
-      delete projection.files[id];
+      // Edited while the host deleted it: the file stays and is a conflict until resolved, never a
+      // new document to the next scan.
+      projection.files[id] = { ...entry, deleted: true };
       report.kept.push(id);
       continue;
     }
@@ -379,7 +400,7 @@ async function assertInside(folder: string, file: string): Promise<void> {
 }
 
 /** Remove a file only while it holds exactly `expected`: move it aside, verify, then unlink. */
-async function removeGuarded(file: string, expected: Uint8Array): Promise<boolean> {
+export async function removeGuarded(file: string, expected: Uint8Array): Promise<boolean> {
   const aside = path.join(path.dirname(file), `.${path.basename(file)}.superbee-del-${process.pid}-${Date.now()}.tmp`);
   try {
     await fs.rename(file, aside);
@@ -399,4 +420,51 @@ async function removeGuarded(file: string, expected: Uint8Array): Promise<boolea
   }
   await fs.unlink(aside);
   return true;
+}
+
+export type FolderConflictReason = "changed_remotely" | "deleted_remotely";
+
+/**
+ * Why a file's current bytes cannot be sent as they stand, or null. A file is judged against its
+ * projection record: its edit was made against the version the record names. When the store,
+ * with no local change journaled for the document, has since moved to another version (a pull
+ * refreshed it) or no longer has the document (the host deleted it), the host changed that
+ * document concurrently with the edit: a conflict. A file with no record where the store holds
+ * the document is a concurrent creation, the same conflict.
+ */
+export async function folderConflictFor(
+  id: string,
+  bytes: Uint8Array | null,
+  entry: ProjectionEntry | undefined,
+  store: JournaledBackend,
+): Promise<FolderConflictReason | null> {
+  if (bytes === null) return null;
+  if (entry && !entry.deleted && digestOf(bytes) === entry.digest) return null;
+  const read = await store.readWithJournal(id);
+  if (read.intents.some((row) => row.state !== "acknowledged")) return null;
+  if (!read.document) return entry ? "deleted_remotely" : null;
+  if (!entry) return "changed_remotely";
+  return entry.deleted || entry.version !== read.document.version ? "changed_remotely" : null;
+}
+
+export interface FolderConflict {
+  readonly id: string;
+  readonly reason: FolderConflictReason;
+}
+
+/** Every folder conflict in the checkout now: the closing pass of a run, after export and push. */
+export async function folderConflicts(folder: string, store: JournaledBackend, projection: ProjectionRecord): Promise<FolderConflict[]> {
+  const out: FolderConflict[] = [];
+  for (const { rel, symlink } of await walk(folder)) {
+    if (symlink || !rel.endsWith(".md") || isReservedFile(rel)) continue;
+    const id = conceptIdFromPath(rel);
+    try {
+      assertSafeConceptId(id);
+    } catch {
+      continue;
+    }
+    const reason = await folderConflictFor(id, await readIfPresent(path.join(folder, rel)), projection.files[id], store);
+    if (reason) out.push({ id, reason });
+  }
+  return out;
 }

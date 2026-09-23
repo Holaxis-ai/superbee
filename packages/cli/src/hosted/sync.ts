@@ -18,6 +18,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import {
+  baseKey,
+  commitLocal,
   ConflictReviewStaleError,
   inspectConflict,
   openLocalBundle,
@@ -55,8 +57,19 @@ import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery
 import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./binding.js";
 import { createHostedSyncClient, hostedFailure } from "./client.js";
 import { buildRows, BUSY_REFUSAL_CODES, countRows, receiptFailure, rowsFailure, type NotSentReason, type SyncRow } from "./sync-rows.js";
-import { exportCheckout, readProjection, scanCheckout, unsendable, writeProjection, type ProjectionRecord } from "./sync-scan.js";
-import { digestOf } from "./projection.js";
+import {
+  exportCheckout,
+  folderConflictFor,
+  folderConflicts,
+  readProjection,
+  removeGuarded,
+  scanCheckout,
+  unsendable,
+  writeProjection,
+  type FolderConflictReason,
+  type ProjectionRecord,
+} from "./sync-scan.js";
+import { digestOf, replaceGuarded } from "./projection.js";
 
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
 
@@ -75,6 +88,9 @@ comes back as a conflict row, and nothing is sent for it until you resolve it:
   --resolve take      replace your version with the host's (remove the file first to discard
                       edits made since the conflict)
   --resolve revise    send the file as it is now: edit it to the result you want first
+A document deleted on the host takes only --resolve take for now (re-create it in the app). A
+file edited while the host changed or deleted its document (during a sync, or while sync held
+it) is a conflict too; it is never sent over the host's version without --resolve.
 Rows are committed, conflict, held (sync cannot send the file: reserved files, conventions/ and
 views/, a type change, a deleted file, a file over the host's bounds), refused, unknown (the
 answer was lost; the next sync looks it up by the same request) and paused (sign-in, or your
@@ -474,7 +490,11 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     } catch (error) {
       throw readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
     }
+    // The closing pass: a file edited during this run against a document the pull refreshed or
+    // removed is a conflict now, so the run that saw it never reports itself in sync.
+    const conflicts = await folderConflicts(binding.path, store, projection);
     const rows = buildRows({
+      folderConflicts: conflicts,
       unsettled: await store.listIntents(UNSETTLED_STATES),
       acknowledged: outcome.acknowledged,
       held: scan.held,
@@ -514,10 +534,42 @@ function preview(content: string | null): { content: string | null; truncated: b
   return { content: content.length > INSPECT_PREVIEW_CHARS ? content.slice(0, INSPECT_PREVIEW_CHARS) : content, truncated: content.length > INSPECT_PREVIEW_CHARS, chars: content.length };
 }
 
-/** The conflict on one document, or the CLI error that says why there is none to inspect. */
-async function reviewFor(session: Session, id: string, resumeCommand: CommandText): Promise<ConflictReview> {
+async function readIfPresent(file: string): Promise<Buffer | null> {
   try {
-    return await inspectConflict(session.local, session.reader, id);
+    return await fs.readFile(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/**
+ * The conflict on one document: one the push recorded in the journal (`journal`), or a file edited
+ * against a version the host has since changed or deleted (`folder`); or the CLI error that says
+ * there is none.
+ */
+type Conflict =
+  | { kind: "journal"; review: ConflictReview; deleted: boolean }
+  | { kind: "folder"; reason: FolderConflictReason; deleted: boolean; bytes: Buffer; remote: { version: string | null; content: string | null } };
+
+async function conflictFor(session: Session, id: string, resumeCommand: CommandText): Promise<Conflict> {
+  const file = path.join(session.binding.path, `${id}.md`);
+  const bytes = await readIfPresent(file);
+  const reason = await folderConflictFor(id, bytes, session.projection.files[id], session.store);
+  if (reason !== null) {
+    const stored = await session.store.readWithJournal(id, { meta: [baseKey(id)] });
+    const shared = stored.meta.get(baseKey(id)) as { version?: string | null } | undefined;
+    return {
+      kind: "folder",
+      reason,
+      deleted: reason === "deleted_remotely",
+      bytes: bytes!,
+      remote: stored.document ? { version: shared?.version ?? stored.document.version, content: stored.raw } : { version: null, content: null },
+    };
+  }
+  try {
+    const review = await inspectConflict(session.local, session.reader, id);
+    return { kind: "journal", review, deleted: review.remote.version === null };
   } catch (error) {
     if (error instanceof InvalidInputError || error instanceof JournalSnapshotConflict) {
       const intents = (await session.store.readWithJournal(id)).intents.filter((row) => row.state !== "acknowledged");
@@ -530,52 +582,117 @@ async function reviewFor(session: Session, id: string, resumeCommand: CommandTex
   }
 }
 
+/**
+ * Keeping or revising a document the host deleted would re-create it as a plain create, which the
+ * host cannot tell from a new document. That waits for the "deleted remotely" tombstone and
+ * delete (PR 294 gate, `designs/documents-delete-operation` section 6); until then only `take`.
+ */
+function recreateRefusal(id: string, binding: CheckoutBinding, choice: string): CliError {
+  return new CliError("CONFLICT", `'${id}' was deleted on the host; '${choice}' would re-create it, which sync cannot do yet`, {
+    details: { reason: "recreate_not_available", id, choice, file: path.join(binding.path, `${id}.md`) },
+    help: `accept the deletion with ${cliInvocation()} sync --resolve take --doc ${commandToken(id)} --dir ${commandToken(binding.path)}, or re-create the document in the Superbee app`,
+  });
+}
+
 async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
   const id = documentId(values.inspect!);
   const resumeCommand = commandFragment`${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(binding.path)}`;
-  const out = values.out === undefined ? undefined : path.resolve(deps.cwd, values.out);
-  if (out !== undefined && (out === binding.path || out.startsWith(`${binding.path}${path.sep}`))) {
-    throw new CliError("USAGE", "--out must be outside the checkout folder, or the file would be synced as a document", { help: `${resumeCommand} --out <file outside the folder>` });
+  let out: string | undefined;
+  if (values.out !== undefined) {
+    out = path.resolve(deps.cwd, values.out);
+    // Judged by where the file would really land, so a link into the checkout is caught too.
+    let landing = out;
+    try {
+      landing = path.join(await fs.realpath(path.dirname(out)), path.basename(out));
+    } catch {
+      // The parent does not exist yet; the write below fails on its own.
+    }
+    if (landing === binding.path || landing.startsWith(`${binding.path}${path.sep}`)) {
+      throw new CliError("USAGE", "--out must be outside the checkout folder, or the file would be synced as a document", { help: `${resumeCommand} --out <file outside the folder>` });
+    }
   }
   const record = await withSession(binding, deps, resumeCommand, async (session) => {
-    const review = await reviewFor(session, id, resumeCommand);
-    const deleted = review.remote.version === null;
+    const conflict = await conflictFor(session, id, resumeCommand);
+    const sides =
+      conflict.kind === "journal"
+        ? {
+            base: { version: conflict.review.base.version, ...preview(conflict.review.base.content) },
+            local: { version: conflict.review.local.version, ...preview(conflict.review.local.content) },
+            remote: { version: conflict.review.remote.version, ...preview(conflict.review.remote.content) },
+          }
+        : {
+            base: { version: null, ...preview(null) },
+            local: { version: digestOf(conflict.bytes), ...preview(conflict.bytes.toString("utf8")) },
+            remote: { version: conflict.remote.version, ...preview(conflict.remote.content) },
+          };
+    const remoteContent = conflict.kind === "journal" ? conflict.review.remote.content : conflict.remote.content;
     if (out !== undefined) {
-      if (review.remote.content === null) throw new CliError("NOT_FOUND", `the host has no version of '${id}' to write: it was deleted there`, { details: { id } });
-      await fs.writeFile(out, review.remote.content);
+      if (remoteContent === null) throw new CliError("NOT_FOUND", `the host has no version of '${id}' to write: it was deleted there`, { details: { id } });
+      await fs.writeFile(out, remoteContent);
     }
     const doc = commandToken(id);
     const dir = commandToken(binding.path);
+    const take = `${cliInvocation()} sync --resolve take --doc ${doc} --dir ${dir}`;
     return {
       conflict: id,
       file: path.join(binding.path, `${id}.md`),
-      reason: deleted ? "deleted_remotely" : "changed_remotely",
-      base: { version: review.base.version, ...preview(review.base.content) },
-      local: { version: review.local.version, ...preview(review.local.content) },
-      remote: { version: review.remote.version, ...preview(review.remote.content) },
+      reason: conflict.kind === "journal" ? (conflict.deleted ? "deleted_remotely" : "changed_remotely") : conflict.reason,
+      ...sides,
       ...(out !== undefined ? { remote_written_to: out } : {}),
-      choices: {
-        keep: deleted ? "send your version, re-creating the document on the host" : "send your version against the host's current one",
-        take: deleted ? "accept the deletion: the file is removed" : "replace your version with the host's",
-        revise: "edit the file to the result you want, then send it as it is",
-      },
-      help: [
-        `${cliInvocation()} sync --resolve keep --doc ${doc} --dir ${dir}`,
-        `${cliInvocation()} sync --resolve take --doc ${doc} --dir ${dir}`,
-        `${cliInvocation()} sync --resolve revise --doc ${doc} --dir ${dir}`,
-      ],
+      choices: conflict.deleted
+        ? { take: "accept the deletion: the file is removed (re-creating the document is done in the Superbee app)" }
+        : {
+            keep: "send your version against the host's current one",
+            take: "replace your version with the host's",
+            revise: "edit the file to the result you want, then send it as it is",
+          },
+      help: conflict.deleted
+        ? [take]
+        : [`${cliInvocation()} sync --resolve keep --doc ${doc} --dir ${dir}`, take, `${cliInvocation()} sync --resolve revise --doc ${doc} --dir ${dir}`],
     };
   });
   deps.stdout(render(record, mode));
 }
 
-async function readIfPresent(file: string): Promise<Buffer | null> {
+/** Refuse a file sync cannot send as the resolved version. */
+async function assertSendable(session: Session, id: string, file: string, bytes: Buffer, resumeCommand: CommandText): Promise<void> {
+  const stored = await session.store.readWithJournal(id);
+  const held = unsendable(id, `${id}.md`, bytes, stored.document?.doc ?? null, { bundleId: session.binding.bundle_id, okfVersion: session.okfVersion });
+  if (held) throw new CliError("CONFLICT", `${file} cannot be sent: ${held.message}`, { details: { reason: held.reason, id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
+}
+
+/** Resolve a folder conflict: take places the host's version (or removes the file); keep and revise send the file as it is. */
+async function resolveFolder(session: Session, id: string, choice: "keep" | "take" | "revise", conflict: Extract<Conflict, { kind: "folder" }>, resumeCommand: CommandText): Promise<string> {
+  const { binding, projection, store, local } = session;
+  const file = path.join(binding.path, `${id}.md`);
+  if (choice === "take") {
+    if (conflict.deleted) {
+      if (!(await removeGuarded(file, conflict.bytes))) {
+        throw new CliError("CONFLICT", `${file} changed while resolving it`, { details: { reason: "stale_review", id }, help: resumeCommand });
+      }
+      delete projection.files[id];
+      return "removed";
+    }
+    const current = await store.readWithJournal(id);
+    const next = Buffer.from(current.raw!, "utf8");
+    const outcome = await replaceGuarded(file, conflict.bytes, next);
+    if (!outcome.placed) throw new CliError("CONFLICT", `${file} changed while resolving it`, { details: { reason: "stale_review", id }, help: resumeCommand });
+    projection.files[id] = { digest: digestOf(next), version: current.document!.version };
+    return "replaced";
+  }
+  if (conflict.deleted) throw recreateRefusal(id, binding, choice);
+  // An explicit decision to send the file over the host's current version: journaled against it.
+  await assertSendable(session, id, file, conflict.bytes, resumeCommand);
+  const parsed = parseMarkdown(conflict.bytes.toString("utf8"), id, { okfVersion: session.okfVersion });
+  let committed;
   try {
-    return await fs.readFile(file);
+    committed = await commitLocal(local, id, { mode: "replace-document", onAbsent: "create", buildCandidate: () => ({ frontmatter: parsed.frontmatter, body: parsed.body }) });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof InvalidInputError) throw new CliError("CONFLICT", `${file} is not a valid document: ${error.message}`, { details: { reason: "not_sendable", id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
     throw error;
   }
+  projection.files[id] = { digest: digestOf(conflict.bytes), version: committed.version };
+  return "unchanged";
 }
 
 async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
@@ -585,56 +702,58 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
   const record = await withSession(binding, deps, resumeCommand, async (session) => {
     const { projection, store, local, reader } = session;
     const file = path.join(binding.path, `${id}.md`);
-    const bytes = await readIfPresent(file);
-    const entry = projection.files[id];
-    const edited = bytes !== null && digestOf(bytes) !== entry?.digest;
-    if (choice !== "revise" && edited) {
-      throw new CliError("CONFLICT", `${file} has edits made since the conflict, which '${choice}' would ${choice === "keep" ? "not send" : "discard"}`, {
-        details: { reason: "file_edited", id, file },
-        help: choice === "keep"
-          ? `${cliInvocation()} sync --resolve revise --doc ${commandToken(id)} --dir ${commandToken(binding.path)} (sends the file as it is now)`
-          : `remove ${file} to discard your edits, then re-run: ${resumeCommand}`,
-      });
-    }
-    if (choice === "keep" && bytes === null) {
-      throw new CliError("CONFLICT", `${file} was deleted, so there is no version of yours to keep`, {
-        details: { reason: "file_deleted", id, file },
-        help: `${cliInvocation()} sync --resolve take --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`,
-      });
-    }
-    let selected: ConflictChoice;
-    if (choice === "revise") {
-      if (bytes === null) throw new CliError("NOT_FOUND", `${file} does not exist; write the revised document there first`, { details: { id, file } });
-      const stored = await store.readWithJournal(id);
-      const held = unsendable(id, `${id}.md`, bytes, stored.document?.doc ?? null, { bundleId: binding.bundle_id, okfVersion: session.okfVersion });
-      if (held) {
-        throw new CliError("CONFLICT", `${file} cannot be sent: ${held.message}`, { details: { reason: held.reason, id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
-      }
-      const parsed = parseMarkdown(bytes.toString("utf8"), id, { okfVersion: session.okfVersion });
-      selected = { kind: "revise", frontmatter: parsed.frontmatter, body: parsed.body };
-    } else selected = { kind: choice === "keep" ? "keep-local" : "take-remote" };
-    const review = await reviewFor(session, id, resumeCommand);
-    let result;
-    try {
-      result = await resolveConflict(local, reader, review, selected);
-    } catch (error) {
-      if (error instanceof ConflictReviewStaleError) {
-        throw new CliError("CONFLICT", `the conflict on '${id}' changed while resolving it`, {
-          details: { reason: "stale_review", id },
-          help: `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(binding.path)}`,
+    const conflict = await conflictFor(session, id, resumeCommand);
+    let fileState: string;
+    if (conflict.kind === "folder") {
+      fileState = await resolveFolder(session, id, choice, conflict, resumeCommand);
+    } else {
+      if (conflict.deleted && choice !== "take") throw recreateRefusal(id, binding, choice);
+      const bytes = await readIfPresent(file);
+      const entry = projection.files[id];
+      const edited = bytes !== null && digestOf(bytes) !== entry?.digest;
+      if (choice !== "revise" && edited) {
+        throw new CliError("CONFLICT", `${file} has edits made since the conflict, which '${choice}' would ${choice === "keep" ? "not send" : "discard"}`, {
+          details: { reason: "file_edited", id, file },
+          help: choice === "keep"
+            ? `${cliInvocation()} sync --resolve revise --doc ${commandToken(id)} --dir ${commandToken(binding.path)} (sends the file as it is now)`
+            : `remove ${file} to discard your edits, then re-run: ${resumeCommand}`,
         });
       }
-      if (error instanceof InvalidInputError) {
-        throw new CliError("CONFLICT", `${file} is not a valid document: ${error.message}`, { details: { reason: "not_sendable", id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
+      if (choice === "keep" && bytes === null) {
+        throw new CliError("CONFLICT", `${file} was deleted, so there is no version of yours to keep`, {
+          details: { reason: "file_deleted", id, file },
+          help: `${cliInvocation()} sync --resolve take --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`,
+        });
       }
-      throw readFailure(error, session, resumeCommand, 0);
-    }
-    let fileState = "unchanged";
-    if (choice === "take") {
-      const exported = await exportCheckout(binding.path, store, projection, { only: new Set([id]), placeMissing: true });
-      fileState = exported.removed.length > 0 ? "removed" : exported.placed.length > 0 ? "replaced" : exported.kept.length > 0 ? "kept" : "unchanged";
-    } else if (result.version !== null) {
-      projection.files[id] = { digest: digestOf(bytes!), version: result.version };
+      let selected: ConflictChoice;
+      if (choice === "revise") {
+        if (bytes === null) throw new CliError("NOT_FOUND", `${file} does not exist; write the revised document there first`, { details: { id, file } });
+        await assertSendable(session, id, file, bytes, resumeCommand);
+        const parsed = parseMarkdown(bytes.toString("utf8"), id, { okfVersion: session.okfVersion });
+        selected = { kind: "revise", frontmatter: parsed.frontmatter, body: parsed.body };
+      } else selected = { kind: choice === "keep" ? "keep-local" : "take-remote" };
+      let result;
+      try {
+        result = await resolveConflict(local, reader, conflict.review, selected);
+      } catch (error) {
+        if (error instanceof ConflictReviewStaleError) {
+          throw new CliError("CONFLICT", `the conflict on '${id}' changed while resolving it`, {
+            details: { reason: "stale_review", id },
+            help: `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(binding.path)}`,
+          });
+        }
+        if (error instanceof InvalidInputError) {
+          throw new CliError("CONFLICT", `${file} is not a valid document: ${error.message}`, { details: { reason: "not_sendable", id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
+        }
+        throw readFailure(error, session, resumeCommand, 0);
+      }
+      fileState = "unchanged";
+      if (choice === "take") {
+        const exported = await exportCheckout(binding.path, store, projection, { only: new Set([id]), placeMissing: true });
+        fileState = exported.removed.length > 0 ? "removed" : exported.placed.length > 0 ? "replaced" : exported.kept.length > 0 ? "kept" : "unchanged";
+      } else if (result.version !== null) {
+        projection.files[id] = { digest: digestOf(bytes!), version: result.version };
+      }
     }
     return {
       resolved: id,
