@@ -38,6 +38,9 @@ import {
   type ToolRunner,
 } from "../src/hosted-auth/secret-store.js";
 import { loopbackSignIn } from "../src/hosted-auth/loopback.js";
+import { withSessionLock, HOST_ENV } from "../src/hosted-auth/session.js";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { login, logout, whoami } from "../src/commands/hosted-auth.js";
 import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
@@ -394,11 +397,18 @@ test("logout revokes the refresh token at the issuer and deletes the local sessi
   }
 });
 
+function unsignedJwt(claims: Record<string, unknown>): string {
+  const enc = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+  return `${enc({ alg: "none" })}.${enc(claims)}.sig`;
+}
+
 test("SUPERBEE_ACCESS_TOKEN wins, is used as given, and touches neither the network nor the store", async () => {
-  const h = await harness({ env: { [ACCESS_TOKEN_ENV]: "ci-token" } });
+  const h = await harness();
   try {
-    const token = await ensureHostedAccessToken(resolveHostedTarget(h.host), {}, h.deps);
-    assert.deepEqual(token, { accessToken: "ci-token", source: "env" });
+    const ciToken = unsignedJwt({ sub: "ci", aud: `${h.host}/mcp` });
+    const deps = { ...h.deps, env: { ...h.deps.env, [ACCESS_TOKEN_ENV]: ciToken } };
+    const token = await ensureHostedAccessToken(resolveHostedTarget(h.host), {}, deps);
+    assert.deepEqual(token, { accessToken: ciToken, source: "env" });
     assert.equal(h.issuer.counts.prm, 0);
     assert.deepEqual(await readdir(h.home), []);
   } finally {
@@ -721,5 +731,248 @@ test("built CLI: login returns a TOON AUTH_REQUIRED envelope (exit 4); after con
   } finally {
     await issuer.stop();
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Review follow-ups (PR 290 review at d5d1bedb)
+
+test("B1: login --wait shows the link and code on stderr before its first wait", async () => {
+  const h = await harness();
+  try {
+    let stderr = "";
+    let sleptBeforeAnnounce = false;
+    const deps: HostedAuthDeps = {
+      ...h.deps,
+      sleep: async (ms) => {
+        if (!stderr.includes("activate?user_code=")) sleptBeforeAnnounce = true;
+        h.issuer.approve();
+        h.clock.advance(ms);
+      },
+    };
+    let out = "";
+    await login(["--host", h.host, "--wait", "--json"], { stdout: (t) => (out += t), stderr: (t) => (stderr += t), auth: deps });
+    assert.equal(sleptBeforeAnnounce, false);
+    assert.match(stderr, /open http:\/\/127\.0\.0\.1:\d+\/activate\?user_code=\S+ and confirm the code/);
+    assert.equal((JSON.parse(out) as { status: string }).status, "signed_in");
+    assert.equal(stderr.split("activate?").length - 1, 1, "one announcement for one link");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("B1: login --wait announces again when the link changes (expired code restarts)", async () => {
+  const h = await harness();
+  try {
+    let stderr = "";
+    let sleeps = 0;
+    const deps: HostedAuthDeps = {
+      ...h.deps,
+      sleep: async (ms) => {
+        sleeps += 1;
+        h.clock.advance(sleeps === 1 ? 601_000 : ms);
+      },
+    };
+    await authRequired(login(["--host", h.host, "--wait", "--timeout", "3"], { stdout: () => {}, stderr: (t) => (stderr += t), auth: deps }));
+    assert.equal(stderr.split("activate?").length - 1, 2);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("S1: SUPERBEE_ACCESS_TOKEN is refused for a different audience or an unpinned opaque token", async () => {
+  const h = await harness();
+  try {
+    const staging = unsignedJwt({ sub: "ci", aud: "https://staging.example/mcp" });
+    const deps = (env: NodeJS.ProcessEnv): HostedAuthDeps => ({ ...h.deps, env: { ...h.deps.env, ...env } });
+    const broad = resolveHostedTarget(h.host);
+    const agent = resolveHostedTarget(`${h.host}/agents/abc/mcp`);
+    await assert.rejects(ensureHostedAccessToken(broad, {}, deps({ [ACCESS_TOKEN_ENV]: staging })), (e: CliError) => e.code === "USAGE" && /different audience/.test(e.message));
+    const broadToken = unsignedJwt({ aud: [`${h.host}/mcp`, "https://issuer/userinfo"] });
+    assert.equal((await ensureHostedAccessToken(broad, {}, deps({ [ACCESS_TOKEN_ENV]: broadToken }))).source, "env");
+    await assert.rejects(ensureHostedAccessToken(agent, {}, deps({ [ACCESS_TOKEN_ENV]: broadToken })), (e: CliError) => e.code === "USAGE");
+    await assert.rejects(ensureHostedAccessToken(broad, {}, deps({ [ACCESS_TOKEN_ENV]: "opaque" })), (e: CliError) => e.code === "USAGE" && /SUPERBEE_HOST/.test(e.message));
+    assert.equal((await ensureHostedAccessToken(broad, {}, deps({ [ACCESS_TOKEN_ENV]: "opaque", [HOST_ENV]: h.host }))).source, "env");
+    await assert.rejects(ensureHostedAccessToken(agent, {}, deps({ [ACCESS_TOKEN_ENV]: "opaque", [HOST_ENV]: h.host })), (e: CliError) => e.code === "USAGE");
+    assert.equal(h.issuer.counts.prm, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+async function driveLoopback(url: string, stateOverride?: string): Promise<void> {
+  const authorize = await fetch(url, { redirect: "manual" });
+  const location = new URL(authorize.headers.get("location")!);
+  if (stateOverride !== undefined) {
+    const forged = new URL(location);
+    forged.searchParams.set("state", stateOverride);
+    const res = await fetch(forged);
+    assert.equal(res.status, 404, "a callback with the wrong state is ignored");
+  }
+  await fetch(location);
+}
+
+test("S7: loopback ignores a callback with the wrong state and still completes with the right one", async () => {
+  const h = await harness({ realClock: true });
+  try {
+    const session = await loopbackSignIn(resolveHostedTarget(h.host), { timeoutMs: 10_000, announce: (url) => void driveLoopback(url, "forged") }, h.deps);
+    assert.ok(session);
+    assert.equal(h.issuer.counts.authCode, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("S2: loopback saves tokens only under the session lock", async () => {
+  const h = await harness({ realClock: true });
+  try {
+    const target = resolveHostedTarget(h.host);
+    const deps: HostedAuthDeps = { ...h.deps, lockWaitMs: 300 };
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const isLocked = new Promise<void>((r) => (locked = r));
+    const holder = withSessionLock(target, deps, async () => {
+      locked();
+      await held;
+    });
+    await isLocked;
+    await assert.rejects(
+      loopbackSignIn(target, { timeoutMs: 10_000, announce: (url) => void driveLoopback(url) }, deps),
+      (e: CliError) => e.code === "TRANSIENT" && e.details?.reason === "session_busy",
+    );
+    assert.equal(await readSession(h.home, target), null, "nothing written while another process holds the lock");
+    release();
+    await holder;
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("S3: signing in again revokes the replaced refresh-token family; loopback on a live session reports already_signed_in", async () => {
+  const h = await harness({ realClock: true });
+  try {
+    const target = resolveHostedTarget(h.host);
+    const first = await loopbackSignIn(target, { timeoutMs: 10_000, announce: (url) => void driveLoopback(url) }, h.deps);
+    assert.ok(first);
+    const oldRefresh = await storedRefreshToken(h);
+    await loopbackSignIn(target, { timeoutMs: 10_000, announce: (url) => void driveLoopback(url) }, h.deps);
+    assert.ok(h.issuer.revokedFamilies.has(h.issuer.familyOf(oldRefresh!)!), "old family revoked");
+    assert.notEqual(await storedRefreshToken(h), oldRefresh);
+
+    let out = "";
+    let stderr = "";
+    await login(["--host", h.host, "--loopback", "--json"], { stdout: (t) => (out += t), stderr: (t) => (stderr += t), auth: h.deps });
+    assert.equal((JSON.parse(out) as { status: string }).status, "already_signed_in");
+    assert.equal(stderr, "", "no browser link for a live session");
+    assert.equal(h.issuer.counts.authCode, 2);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("S4: logout still signs out locally when the OS store is locked", async () => {
+  const h = await harness();
+  try {
+    const target = resolveHostedTarget(h.host);
+    await signIn(h);
+    const locked = {
+      kind: "file" as const,
+      get: async () => {
+        throw new CliError("CREDENTIAL_STORE_UNAVAILABLE", "locked");
+      },
+      set: async () => {
+        throw new CliError("CREDENTIAL_STORE_UNAVAILABLE", "locked");
+      },
+      delete: async () => {
+        throw new CliError("CREDENTIAL_STORE_UNAVAILABLE", "locked");
+      },
+    };
+    let out = "";
+    await logout(["--host", h.host, "--json"], { stdout: (t) => (out += t), stderr: () => {}, auth: { ...h.deps, store: locked } });
+    const result = JSON.parse(out) as { signed_out: boolean; revoked: boolean; revocation: string; notes: string[] };
+    assert.equal(result.signed_out, true);
+    assert.equal(result.revoked, false);
+    assert.equal(result.revocation, "store_unavailable");
+    assert.ok(result.notes.some((n) => /logout again/.test(n)));
+    assert.equal(await readSession(h.home, target), null, "the live access token is gone from disk");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("S7: a store write failing after rotation surfaces CREDENTIAL_STORE_UNAVAILABLE and a retry inside the leeway recovers", async () => {
+  const h = await harness();
+  try {
+    const target = resolveHostedTarget(h.host);
+    await signIn(h);
+    await expireCachedAccessToken(h);
+    const file = fileSecretStore(h.home, (account) => sessionDirFor(h.home, account));
+    let failNextSet = true;
+    const flaky = {
+      kind: "file" as const,
+      get: (a: string) => file.get(a),
+      delete: (a: string) => file.delete(a),
+      set: async (a: string, v: string) => {
+        if (failNextSet) {
+          failNextSet = false;
+          throw new CliError("CREDENTIAL_STORE_UNAVAILABLE", "keychain write failed");
+        }
+        return file.set(a, v);
+      },
+    };
+    const deps = { ...h.deps, store: flaky };
+    await assert.rejects(ensureHostedAccessToken(target, {}, deps), (e: CliError) => e.code === "CREDENTIAL_STORE_UNAVAILABLE");
+    h.clock.advance(5_000);
+    const token = await ensureHostedAccessToken(target, {}, deps);
+    assert.equal(token.source, "refresh");
+    assert.equal(h.issuer.revokedFamilies.size, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("S5/S7: discovery refuses a missing or mismatched resource, a foreign issuer, plain-http endpoints and redirects", async () => {
+  const h = await harness();
+  try {
+    const target = resolveHostedTarget(h.host);
+    const refuses = async (pattern: RegExp) =>
+      assert.rejects(discoverHosted(h.deps.fetch, target), (e: CliError) => e.code === "RUNTIME" && pattern.test(e.message));
+
+    h.issuer.prmOverride = { resource: undefined };
+    await refuses(/has no resource/);
+    h.issuer.prmOverride = { resource: "https://elsewhere.example/mcp" };
+    await refuses(/names resource/);
+    h.issuer.prmOverride = {};
+
+    h.issuer.oidcOverride = { issuer: "https://evil.example/" };
+    await refuses(/names a different issuer/);
+    h.issuer.oidcOverride = { token_endpoint: "http://evil.example/token" };
+    await refuses(/not an https URL/);
+    h.issuer.oidcOverride = {};
+
+    const redirecting = createServer((_req, res) => {
+      res.writeHead(302, { location: `${h.host}/.well-known/oauth-protected-resource/mcp` });
+      res.end();
+    });
+    await new Promise<void>((r) => redirecting.listen(0, "127.0.0.1", r));
+    try {
+      const port = (redirecting.address() as AddressInfo).port;
+      await assert.rejects(discoverHosted(h.deps.fetch, resolveHostedTarget(`http://127.0.0.1:${port}`)), (e: CliError) => e.code === "TRANSIENT");
+    } finally {
+      redirecting.close();
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("S5: a non-https verification link is never relayed", async () => {
+  const h = await harness();
+  try {
+    h.issuer.deviceOverride = { verification_uri_complete: "http://evil.example/activate?user_code=X" };
+    await assert.rejects(ensureHostedAccessToken(resolveHostedTarget(h.host), {}, h.deps), (e: CliError) => e.code === "RUNTIME" && /refusing to relay/.test(e.message));
+  } finally {
+    await h.cleanup();
   }
 });

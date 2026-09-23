@@ -95,7 +95,8 @@ function assertAccount(account: string): void {
 function failure(kind: SecretStoreKind, result: RunResult, action: string): CliError {
   if (result.missing) return credentialStoreUnavailable(`${kind} tool is not installed`, kind);
   if (result.timedOut) return credentialStoreUnavailable(`${action} did not finish within ${STORE_CALL_TIMEOUT_MS / 1000}s (locked or prompting?)`, kind);
-  const detail = result.stderr.trim().split("\n")[0]?.slice(0, 200) ?? "";
+  // Never surface a long hex run: it could only be encoded secret input echoed back.
+  const detail = (result.stderr.trim().split("\n")[0] ?? "").replace(/[0-9a-f]{32,}/giu, "<redacted>").slice(0, 200);
   return credentialStoreUnavailable(`${action} failed${detail ? `: ${detail}` : ""}`, kind);
 }
 

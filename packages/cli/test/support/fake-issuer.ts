@@ -45,6 +45,10 @@ export class FakeIssuer {
   readonly revokedFamilies = new Set<string>();
   /** Process the next refresh (rotate) but drop the response. */
   dropNextRefreshResponse = false;
+  /** Merged over the protected-resource metadata, issuer metadata and device response (negative tests). */
+  prmOverride: Record<string, unknown> = {};
+  oidcOverride: Record<string, unknown> = {};
+  deviceOverride: Record<string, unknown> = {};
   /** Called during a refresh before answering (lets a test move the clock). */
   onRefresh: (() => void) | undefined;
   base = "";
@@ -135,6 +139,7 @@ export class FakeIssuer {
         authorization_servers: [this.issuer],
         scopes_supported: ["bundles:discover", "documents:read", "documents:write"],
         ...(this.opts.publishedClientId ? { superbee_cli_client_id: this.opts.publishedClientId } : {}),
+        ...this.prmOverride,
       });
       return;
     }
@@ -145,6 +150,7 @@ export class FakeIssuer {
         token_endpoint: `${this.base}/issuer/oauth/token`,
         device_authorization_endpoint: `${this.base}/issuer/oauth/device/code`,
         revocation_endpoint: `${this.base}/issuer/oauth/revoke`,
+        ...this.oidcOverride,
       });
       return;
     }
@@ -186,6 +192,7 @@ export class FakeIssuer {
         verification_uri_complete: `${this.base}/activate?user_code=${userCode}`,
         expires_in: this.opts.deviceExpiresInSeconds,
         interval: this.opts.deviceIntervalSeconds,
+        ...this.deviceOverride,
       });
       return;
     }

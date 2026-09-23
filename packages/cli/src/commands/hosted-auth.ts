@@ -21,7 +21,7 @@ import {
   ACCESS_TOKEN_ENV,
   CLIENT_ID_ENV,
   HOST_ENV,
-  cancelPendingSignIn,
+  assertOverrideFor,
   decodeJwtClaims,
   defaultResumeCommand,
   defaultHostedAuthDeps,
@@ -51,7 +51,7 @@ Usage:
 Device sign-in is the default and never blocks: without a session this returns AUTH_REQUIRED
 (exit 4) with details.sign_in_url, the one link to relay to the person. Re-run the same command
 after they confirm and it completes sign-in. --wait polls instead, for at most --timeout seconds
-(default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS}). Already signed in: reports the session and changes nothing.
+(default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS}). Already signed in (including with --loopback): refreshes if needed, reports the session, and starts no sign-in.
 
 --loopback signs in through a browser redirect to 127.0.0.1 (PKCE), waits at most --timeout
 seconds, then falls back to device sign-in. The link is printed on stderr.
@@ -156,6 +156,12 @@ function parsePort(raw: string | undefined): number | undefined {
   return value;
 }
 
+/** The stderr line `login --wait` shows before it waits (stdout stays the structured record). */
+function signInPrompt(target: HostedTarget, error: CliError): string {
+  const details = error.details ?? {};
+  return `To sign in to ${target.origin}, open ${String(details.sign_in_url)} and confirm the code ${String(details.user_code)} (expires ${String(details.expires_at)}). Waiting...\n`;
+}
+
 export async function login(argv: string[], partial: Partial<HostedAuthCommandDeps> = {}): Promise<void> {
   const deps = commandDeps(partial);
   const { values } = parseLeafOrUsage(
@@ -197,22 +203,35 @@ export async function login(argv: string[], partial: Partial<HostedAuthCommandDe
   const target = await resolveHostSelection(values.host, auth);
   const signIn = { ...(clientIdFlag ? { clientIdFlag } : {}) };
 
-  let token: AccessToken;
-  if (values.loopback) {
+  let token: AccessToken | undefined;
+  if (values.loopback && (await readSession(auth.home, target))) {
+    // An existing session is refreshed rather than replaced; only a dead one falls through.
+    try {
+      token = await ensureHostedAccessToken(target, signIn, auth);
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "AUTH_REQUIRED") throw error;
+    }
+  }
+  if (token) {
+    // already signed in
+  } else if (values.loopback) {
     const session = await loopbackSignIn(
       target,
       { ...signIn, timeoutMs, ...(port !== undefined ? { port } : {}), announce: (url) => deps.stderr(`Open this link to sign in to ${target.origin}:\n${url}\n`) },
       auth,
     );
     if (session) {
-      await cancelPendingSignIn(target, auth);
       token = { accessToken: session.access_token, source: "sign-in" };
     } else {
       // Bounded wait ran out: fall back to the resumable device flow (throws AUTH_REQUIRED).
       token = await ensureHostedAccessToken(target, signIn, auth);
     }
   } else if (values.wait) {
-    token = await waitForHostedSignIn(target, { ...signIn, timeoutMs }, auth);
+    token = await waitForHostedSignIn(
+      target,
+      { ...signIn, timeoutMs, announce: (error) => deps.stderr(signInPrompt(target, error)) },
+      auth,
+    );
   } else {
     token = await ensureHostedAccessToken(target, signIn, auth);
   }
@@ -253,7 +272,16 @@ export async function whoami(argv: string[], partial: Partial<HostedAuthCommandD
   const override = auth.env[ACCESS_TOKEN_ENV];
   if (override) {
     const selected = values.host !== undefined ? await resolveHostSelection(values.host, auth) : await resolveHostOrNull(auth);
-    const where = selected ? { host: selected.origin, audience: selected.audience } : {};
+    let applies: boolean | undefined;
+    if (selected) {
+      try {
+        assertOverrideFor(selected, override, auth);
+        applies = true;
+      } catch {
+        applies = false;
+      }
+    }
+    const where = selected ? { host: selected.origin, audience: selected.audience, applies_to_host: applies } : {};
     deps.stdout(render({ ...where, ...envOverrideView(override) }, mode));
     return;
   }
@@ -314,12 +342,14 @@ async function resolveHostOrNull(auth: HostedAuthDeps): Promise<HostedTarget | n
 
 function envOverrideView(token: string): Record<string, unknown> {
   const claims = decodeJwtClaims(token) ?? {};
+  const aud = claims.aud;
   const exp = typeof claims.exp === "number" ? new Date(claims.exp * 1000).toISOString() : null;
   return {
     signed_in: true,
     source: "env",
     env: ACCESS_TOKEN_ENV,
     subject: typeof claims.sub === "string" ? claims.sub : null,
+    token_audience: typeof aud === "string" || Array.isArray(aud) ? aud : null,
     access_token_expires_at: exp,
     refresh_token: "none (used as given, never refreshed or stored)",
     claims: "unverified (read locally from the token)",
@@ -348,6 +378,9 @@ export async function logout(argv: string[], partial: Partial<HostedAuthCommandD
     notes.push(`the already-issued access token stays valid until ${result.access_token_valid_until}; the gateway does not introspect tokens`);
   }
   if (result.revocation === "failed") notes.push("the issuer did not confirm revocation; the local copy was deleted anyway");
+  if (result.revocation === "store_unavailable") {
+    notes.push(`the OS credential store could not be reached, so the refresh token was neither revoked nor deleted; the local session was removed. Unlock the store and run logout again, or remove the 'superbee-cli' keychain item`);
+  }
   if (deps.auth.env[ACCESS_TOKEN_ENV]) notes.push(`${ACCESS_TOKEN_ENV} is set; unset it to stop hosted commands using it`);
   deps.stdout(render({ ...result, ...(notes.length ? { notes } : {}) }, resolveMode(values)));
 }

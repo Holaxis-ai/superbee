@@ -31,6 +31,7 @@ import { ensureUserStateRoot, readUserStateFile, userStateDir, writeUserStateFil
 import {
   REQUESTED_SCOPE,
   discoverHosted,
+  isSecureUrl,
   resolveClientId,
   resolveHostedTarget,
   type Discovery,
@@ -56,8 +57,15 @@ export const CLIENT_ID_ENV = "SUPERBEE_OAUTH_CLIENT_ID";
 export const REFRESH_SKEW_MS = 120_000;
 /** The issuer's refresh-token reuse leeway (architecture review D3). */
 export const REFRESH_REUSE_LEEWAY_MS = 30_000;
-/** How long a caller waits for another process's refresh before reporting the session busy. */
-export const SESSION_LOCK_WAIT_MS = 15_000;
+/**
+ * How long a caller waits for another process holding the session lock before reporting the
+ * session busy. It must exceed the worst-case hold so parallel agent commands queue behind one
+ * slow refresh instead of failing: a refresh holds the lock for up to two store reads and one
+ * store write (STORE_CALL_TIMEOUT_MS each, 5s) plus two token calls (HTTP_TIMEOUT_MS each, 10s),
+ * about 35s; a device start holds it for a store probe plus three metadata fetches and the device
+ * call, about 45s in the worst case. Waiters past this still get a retryable TRANSIENT.
+ */
+export const SESSION_LOCK_WAIT_MS = 50_000;
 const HTTP_TIMEOUT_MS = 10_000;
 const MAX_RECORD_BYTES = 64 * 1024;
 const SESSION_FILE = "session.json";
@@ -268,7 +276,7 @@ export function storeForSession(session: SessionRecord, deps: HostedAuthDeps): S
   }
 }
 
-async function withSessionLock<T>(target: HostedTarget, deps: HostedAuthDeps, body: () => Promise<T>): Promise<T> {
+export async function withSessionLock<T>(target: HostedTarget, deps: HostedAuthDeps, body: () => Promise<T>): Promise<T> {
   await ensureUserStateRoot(deps.home);
   const dir = sessionDirFor(deps.home, sessionAccount(target));
   await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -393,6 +401,7 @@ export async function persistTokens(
 ): Promise<SessionRecord> {
   const now = deps.now();
   const account = sessionAccount(target);
+  if (!previous) await revokeReplacedSession(target, store, deps);
   if (tokens.refresh_token) await store.set(account, tokens.refresh_token);
   const record: SessionRecord = {
     schema: 1,
@@ -416,18 +425,48 @@ export async function persistTokens(
   return record;
 }
 
-async function clearSession(target: HostedTarget, deps: HostedAuthDeps, store: SecretStore | null): Promise<void> {
-  if (store) await store.delete(sessionAccount(target));
+/**
+ * A fresh sign-in replaces any existing session for the target. Revoke the replaced refresh token
+ * (best-effort) so its family does not stay live at the issuer until idle expiry.
+ */
+async function revokeReplacedSession(target: HostedTarget, newStore: SecretStore, deps: HostedAuthDeps): Promise<void> {
+  const existing = await readSession(deps.home, target);
+  if (!existing?.has_refresh_token || !existing.revocation_endpoint) return;
+  let old: string | null = null;
+  try {
+    old = await storeForSession(existing, deps).get(sessionAccount(target));
+  } catch {
+    return;
+  }
+  if (!old) return;
+  await postForm(deps, existing.revocation_endpoint, { token: old, token_type_hint: "refresh_token", client_id: existing.client_id });
+  if (existing.credential_store !== newStore.kind) {
+    await storeForSession(existing, deps).delete(sessionAccount(target)).catch(() => false);
+  }
+}
+
+/** Remove the session. The local files always go; a store that cannot be reached is reported, not fatal. */
+async function clearSession(target: HostedTarget, deps: HostedAuthDeps, store: SecretStore | null): Promise<boolean> {
+  let storeCleared = true;
+  if (store) {
+    try {
+      await store.delete(sessionAccount(target));
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "CREDENTIAL_STORE_UNAVAILABLE") throw error;
+      storeCleared = false;
+    }
+  }
   await removeFile(join(sessionDirFor(deps.home, sessionAccount(target)), SESSION_FILE));
+  return storeCleared;
 }
 
 async function clearPending(target: HostedTarget, deps: HostedAuthDeps): Promise<void> {
   await removeFile(join(sessionDirFor(deps.home, sessionAccount(target)), PENDING_FILE));
 }
 
-/** Drop an in-progress device authorization (a loopback sign-in completed instead). */
-export async function cancelPendingSignIn(target: HostedTarget, deps: HostedAuthDeps): Promise<void> {
-  await withSessionLock(target, deps, () => clearPending(target, deps));
+/** Drop an in-progress device authorization. Caller holds the session lock. */
+export async function clearPendingSignIn(target: HostedTarget, deps: HostedAuthDeps): Promise<void> {
+  await clearPending(target, deps);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -523,6 +562,15 @@ async function startDeviceAuthorization(target: HostedTarget, options: SignInOpt
     const error = typeof body.error === "string" ? body.error : `http_${result.status}`;
     throw new CliError("RUNTIME", `the issuer refused to start sign-in (${error})`, { details: { error, host: target.origin, client_id: clientId } });
   }
+  for (const key of ["verification_uri", "verification_uri_complete"] as const) {
+    const value = body[key];
+    if (value === undefined) continue;
+    if (typeof value !== "string" || !isSecureUrl(value)) {
+      throw new CliError("RUNTIME", `the issuer returned a ${key} that is not an https URL; refusing to relay it`, {
+        details: { host: target.origin },
+      });
+    }
+  }
   const now = deps.now();
   const interval = positiveInt(body.interval, 5);
   const pending: PendingRecord = {
@@ -558,7 +606,8 @@ async function advanceDeviceSignIn(
   const resume = options.resume ?? defaultResumeCommand(target, options.clientIdFlag);
   let pending = await readPending(deps.home, target);
   const now = deps.now();
-  if (pending && (pending.expires_at_ms <= now || (options.clientIdFlag && options.clientIdFlag !== pending.client_id))) {
+  const requestedClientId = options.clientIdFlag || deps.env[CLIENT_ID_ENV] || undefined;
+  if (pending && (pending.expires_at_ms <= now || (requestedClientId && requestedClientId !== pending.client_id))) {
     await clearPending(target, deps);
     reason = pending.expires_at_ms <= now ? "previous_code_expired" : reason;
     pending = null;
@@ -642,7 +691,10 @@ export async function ensureHostedAccessToken(
   deps: HostedAuthDeps,
 ): Promise<AccessToken> {
   const override = deps.env[ACCESS_TOKEN_ENV];
-  if (override) return { accessToken: override, source: "env" };
+  if (override) {
+    assertOverrideFor(target, override, deps);
+    return { accessToken: override, source: "env" };
+  }
 
   const cached = freshSession(await readSession(deps.home, target), deps.now());
   if (cached) return { accessToken: cached.access_token, source: "cache", expiresAtMs: cached.access_token_expires_at_ms };
@@ -668,6 +720,12 @@ export async function ensureHostedAccessToken(
             help: "retry the same command",
           });
         }
+        if (outcome.status === 429 || outcome.error === "too_many_requests") {
+          throw new CliError("TRANSIENT", `the issuer is rate-limiting refreshes for ${target.origin}`, {
+            details: { reason: "rate_limited", retryable: true, host: target.origin },
+            help: "wait, then retry the same command",
+          });
+        }
         if (outcome.error !== "invalid_grant") {
           throw new CliError("RUNTIME", `the issuer refused to refresh the ${target.origin} session (${outcome.error})`, {
             details: { error: outcome.error, host: target.origin },
@@ -681,18 +739,62 @@ export async function ensureHostedAccessToken(
   });
 }
 
+/** Audiences the override token claims (unverified), or null for an opaque token. */
+export function overrideAudiences(token: string): string[] | null {
+  const aud = decodeJwtClaims(token)?.aud;
+  if (typeof aud === "string") return [aud];
+  if (Array.isArray(aud)) return aud.filter((a): a is string => typeof a === "string");
+  return null;
+}
+
+/**
+ * SUPERBEE_ACCESS_TOKEN is bound to one host: it is used only when its `aud` names this target's
+ * audience, or (for an opaque token) when SUPERBEE_HOST selects this target. Otherwise a CI token
+ * minted for staging could be sent to production or to an agent path.
+ */
+export function assertOverrideFor(target: HostedTarget, token: string, deps: HostedAuthDeps): void {
+  const audiences = overrideAudiences(token);
+  if (audiences !== null) {
+    if (audiences.some((a) => a.replace(/\/+$/u, "") === target.audience)) return;
+    throw new CliError("USAGE", `${ACCESS_TOKEN_ENV} is for a different audience than ${target.audience}`, {
+      details: { host: target.origin, audience: target.audience, token_audiences: audiences },
+      help: `unset ${ACCESS_TOKEN_ENV}, or target the host it was issued for`,
+    });
+  }
+  const pinned = deps.env[HOST_ENV];
+  let pinnedAudience: string | undefined;
+  try {
+    pinnedAudience = pinned ? resolveHostedTarget(pinned).audience : undefined;
+  } catch {
+    pinnedAudience = undefined;
+  }
+  if (pinnedAudience === target.audience) return;
+  throw new CliError("USAGE", `${ACCESS_TOKEN_ENV} carries no readable audience; set ${HOST_ENV} to the host it is for`, {
+    details: { host: target.origin, audience: target.audience },
+    help: `set ${HOST_ENV}=${hostArgument(target)} if the token is for this host, or unset ${ACCESS_TOKEN_ENV}`,
+  });
+}
+
 export interface WaitOptions extends SignInOptions {
   readonly timeoutMs: number;
+  /** Told the link to relay: on the first AUTH_REQUIRED and whenever the link changes. */
+  readonly announce?: (error: CliError) => void;
 }
 
 /** `login --wait`: poll at the issuer's interval until confirmed, denied, expired, or the bound runs out. */
 export async function waitForHostedSignIn(target: HostedTarget, options: WaitOptions, deps: HostedAuthDeps): Promise<AccessToken> {
   const deadline = deps.now() + options.timeoutMs;
+  let announced: unknown;
   while (true) {
     try {
       return await ensureHostedAccessToken(target, options, deps);
     } catch (error) {
       if (!(error instanceof CliError) || error.code !== "AUTH_REQUIRED") throw error;
+      const link = error.details?.sign_in_url;
+      if (link !== announced) {
+        announced = link;
+        options.announce?.(error);
+      }
       const pollAfter = Number(error.details?.poll_after_seconds ?? 5) * 1000;
       const now = deps.now();
       if (now + pollAfter > deadline) throw error;
@@ -709,7 +811,7 @@ export interface LogoutResult {
   readonly audience: string;
   readonly signed_out: boolean;
   readonly revoked: boolean;
-  readonly revocation?: "revoked" | "no_refresh_token" | "no_revocation_endpoint" | "failed";
+  readonly revocation?: "revoked" | "no_refresh_token" | "no_revocation_endpoint" | "failed" | "store_unavailable";
   readonly access_token_valid_until?: string;
   readonly cancelled_pending_sign_in: boolean;
 }
@@ -723,8 +825,15 @@ export async function logoutHosted(target: HostedTarget, deps: HostedAuthDeps): 
       return { host: target.origin, audience: target.audience, signed_out: false, revoked: false, cancelled_pending_sign_in: cancelledPending };
     }
     const store = storeForSession(session, deps);
-    const refreshToken = session.has_refresh_token ? await store.get(sessionAccount(target)) : null;
-    let revocation: LogoutResult["revocation"] = "no_refresh_token";
+    let refreshToken: string | null = null;
+    let storeUnavailable = false;
+    try {
+      refreshToken = session.has_refresh_token ? await store.get(sessionAccount(target)) : null;
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "CREDENTIAL_STORE_UNAVAILABLE") throw error;
+      storeUnavailable = true;
+    }
+    let revocation: LogoutResult["revocation"] = storeUnavailable ? "store_unavailable" : "no_refresh_token";
     if (refreshToken && !session.revocation_endpoint) revocation = "no_revocation_endpoint";
     if (refreshToken && session.revocation_endpoint) {
       const result = await postForm(deps, session.revocation_endpoint, {
@@ -734,7 +843,8 @@ export async function logoutHosted(target: HostedTarget, deps: HostedAuthDeps): 
       });
       revocation = !("lost" in result) && result.status === 200 ? "revoked" : "failed";
     }
-    await clearSession(target, deps, store);
+    const storeCleared = await clearSession(target, deps, storeUnavailable ? null : store);
+    if (!storeCleared) revocation = "store_unavailable";
     const validUntil = session.access_token_expires_at_ms > deps.now() ? new Date(session.access_token_expires_at_ms).toISOString() : undefined;
     return {
       host: target.origin,

@@ -52,6 +52,16 @@ function isLoopbackHostname(hostname: string): boolean {
   return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]" || hostname === "::1";
 }
 
+/** True for https, or plain http on loopback. */
+export function isSecureUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHostname(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
 /** HTTPS everywhere, plain HTTP only on loopback (local issuers and tests). */
 export function assertSecureUrl(value: string, what: string): URL {
   let url: URL;
@@ -117,7 +127,7 @@ function optionalString(value: unknown): string | undefined {
 function endpoint(meta: Record<string, unknown>, key: string): string | undefined {
   const value = optionalString(meta[key]);
   if (value === undefined) return undefined;
-  assertSecureUrl(value, `issuer ${key}`);
+  if (!isSecureUrl(value)) throw new CliError("RUNTIME", `issuer ${key} is not an https URL: ${value}`);
   return value;
 }
 
@@ -150,7 +160,7 @@ export async function discoverIssuer(fetchImpl: FetchLike, issuer: string): Prom
     }
     const named = optionalString(meta.issuer);
     if (named === undefined || !sameIssuer(named, issuer)) {
-      throw new CliError("RUNTIME", `issuer metadata at ${url} names a different issuer`);
+      throw new CliError("RUNTIME", `issuer metadata at ${url} names a different issuer`, { details: { refused: "issuer_mismatch" } });
     }
     const tokenEndpoint = endpoint(meta, "token_endpoint");
     if (tokenEndpoint === undefined) throw new CliError("RUNTIME", `issuer metadata at ${url} has no token_endpoint`);
@@ -171,8 +181,12 @@ export async function discoverIssuer(fetchImpl: FetchLike, issuer: string): Prom
 /** Discover the issuer (and any published CLI client id) from the host's protected-resource metadata. */
 export async function discoverHosted(fetchImpl: FetchLike, target: HostedTarget): Promise<Discovery> {
   const prm = await fetchJson(fetchImpl, target.metadataUrl, "protected-resource metadata");
+  // RFC 9728 section 3.3: `resource` is required and must equal the resource the metadata was fetched for.
   const resource = optionalString(prm.resource);
-  if (resource !== undefined && resource.replace(/\/+$/u, "") !== target.audience) {
+  if (resource === undefined) {
+    throw new CliError("RUNTIME", `protected-resource metadata at ${target.metadataUrl} has no resource`);
+  }
+  if (resource.replace(/\/+$/u, "") !== target.audience) {
     throw new CliError("RUNTIME", `protected-resource metadata names resource ${resource}, expected ${target.audience}`);
   }
   const servers = Array.isArray(prm.authorization_servers) ? prm.authorization_servers : [];

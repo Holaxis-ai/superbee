@@ -2,7 +2,13 @@
 //
 // Bounded: the listener on 127.0.0.1 waits at most `timeoutMs`, then the caller falls back to the
 // resumable device flow. The authorization URL goes to stderr (stdout stays the structured record),
-// and the listener accepts exactly one callback whose `state` matches.
+// and the listener accepts exactly one callback whose `state` matches. There is no `nonce` or
+// RFC 9207 `iss` check: the id_token is used only for display (labeled unverified) and each
+// session has exactly one issuer, fixed by the host's metadata.
+//
+// The code exchange and the token write run under the session lock, so a concurrent refresh of
+// a previous session cannot interleave with this sign-in and leave the store and the cache from
+// different token families.
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -10,9 +16,11 @@ import type { AddressInfo } from "node:net";
 import { CliError } from "../errors.js";
 import { REQUESTED_SCOPE, type HostedTarget } from "./discovery.js";
 import {
+  clearPendingSignIn,
   persistTokens,
   prepareSignIn,
   tokenRequest,
+  withSessionLock,
   type HostedAuthDeps,
   type SessionRecord,
   type SignInOptions,
@@ -96,12 +104,14 @@ export async function loopbackSignIn(target: HostedTarget, options: LoopbackOpti
         details: { host: target.origin, reason: result.error },
       });
     }
-    const exchanged = await tokenRequest(deps, discovery.tokenEndpoint, {
-      grant_type: "authorization_code",
-      code: result.code,
-      redirect_uri: redirectUri,
-      client_id: clientId,
-      code_verifier: verifier,
+    const code = result.code;
+    return await withSessionLock(target, deps, async () => {
+      const exchanged = await tokenRequest(deps, discovery.tokenEndpoint, {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+        code_verifier: verifier,
     });
     if (exchanged.kind !== "tokens") {
       const why = exchanged.kind === "oauth_error" ? exchanged.error : exchanged.reason;
@@ -109,7 +119,7 @@ export async function loopbackSignIn(target: HostedTarget, options: LoopbackOpti
         details: { host: target.origin, reason: why, ...(exchanged.kind === "lost" ? { retryable: true } : {}) },
       });
     }
-    return await persistTokens(
+    const session = await persistTokens(
       target,
       {
         issuer: discovery.issuer,
@@ -121,6 +131,9 @@ export async function loopbackSignIn(target: HostedTarget, options: LoopbackOpti
       store,
       deps,
     );
+    await clearPendingSignIn(target, deps);
+    return session;
+    });
   } finally {
     clearTimeout(timer);
     server.closeAllConnections?.();
