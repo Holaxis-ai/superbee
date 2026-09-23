@@ -155,6 +155,9 @@ export const BEHAVIOR_ASSIGNMENTS = [
   selector("setupMigrateState", "leading-navigation", 0),
   selector("setupHardenState", "leading-navigation", 0),
   selector("setupQuarantineState", "leading-navigation", 0),
+  ordinary("login", 0),
+  ordinary("whoami", 0),
+  ordinary("logout", 0),
 ] as const satisfies readonly BehaviorAssignment[];
 
 /** Exactly one built subprocess owner for every real key above. */

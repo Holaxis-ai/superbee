@@ -1,0 +1,17 @@
+{
+  "name": "refusal-backend-unavailable",
+  "description": "A storage failure before any header: retryable.",
+  "rows": ["refusal 503 backend_unavailable"],
+  "route": "/reader/heads",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 503,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"The bundle backend is unavailable.\",\"retryable\":true}}",
+    "truncated": false
+  }
+}

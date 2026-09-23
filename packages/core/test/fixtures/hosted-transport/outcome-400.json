@@ -1,0 +1,20 @@
+{
+  "name": "outcome-400",
+  "description": "An outcome lookup without its request identity.",
+  "rows": ["400"],
+  "route": "/editor/outcome",
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-recovery-target": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "body": "{\"bundleId\":\"team.knowledge\",\"documentId\":\"notes/alpha\",\"expectedVersion\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":\"Alpha body changed é\\r\\n\"}"
+  },
+  "response": {
+    "status": 400,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

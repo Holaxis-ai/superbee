@@ -1,0 +1,17 @@
+{
+  "name": "refusal-result-too-large",
+  "description": "An inventory beyond the bound is refused whole, before any body is read.",
+  "rows": ["refusal 422 result_too_large"],
+  "route": "/reader/snapshot",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 422,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"error\":{\"code\":\"result_too_large\",\"message\":\"The bundle holds more documents than the working copy routes serve.\",\"retryable\":false}}",
+    "truncated": false
+  }
+}

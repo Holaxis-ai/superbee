@@ -1,0 +1,24 @@
+{
+  "name": "update-200-ok",
+  "description": "A committed identified update, settled under its request id.",
+  "rows": ["200 ok"],
+  "route": "/editor/update",
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-recovery-target": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-2c3d4e5f6a7b"
+    },
+    "body": "{\"bundleId\":\"team.knowledge\",\"documentId\":\"notes/alpha\",\"expectedVersion\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":\"Alpha body changed é\\r\\n\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-2c3d4e5f6a7b"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"documents.update.v1\",\"data\":{\"bundleId\":\"team.knowledge\",\"documentId\":\"notes/alpha\",\"version\":\"sha256:e83157678e87513662c069849c1ff1095c24189bfc5207b5a37f9243413eac6f\",\"changed\":true}}",
+    "truncated": false
+  }
+}
