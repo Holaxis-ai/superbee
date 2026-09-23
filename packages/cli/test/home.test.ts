@@ -833,15 +833,49 @@ test("A1.12b disappeared project-binding target outside Git: scoped init recover
       const view = JSON.parse(out) as Record<string, unknown>;
       const gettingStarted = view.getting_started as string;
       // Outside a Git checkout no board can exist, so the resolver's recovery is the scoped init.
+      // It is recipe-free, agreeing with the text: recipes stay withheld until the binding resolves.
       assert.ok(
         gettingStarted.endsWith(
-          `recover with: ${DEFAULT_INVOKE} init --create-only --dir ${shellArg(missingBundle)}`,
+          `recover with: ${DEFAULT_INVOKE} init --create-only --recipe none --dir ${shellArg(missingBundle)}`,
         ),
         gettingStarted,
       );
       assert.ok(gettingStarted.includes("recipes stay withheld until the binding resolves"));
       assert.ok(!gettingStarted.includes(`${DEFAULT_INVOKE} recipes`));
-      assert.ok(!/init --create-only(?! --dir)/.test(gettingStarted), "must not emit an unscoped init");
+      assert.ok(!/init --create-only(?! --recipe none --dir)/.test(gettingStarted), "must not emit an unscoped or recipe-applying init");
+    } finally {
+      process.chdir(origCwd);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("A1.12c resolved binding with no summary: home falls back to the resolver's scoped, recipe-free init", async () => {
+  const root = await tempDir();
+  try {
+    const physicalRoot = await realpath(root);
+    const projectDir = path.join(physicalRoot, "project");
+    const boundBundle = path.join(physicalRoot, "bound bundle");
+    await mkdir(projectDir, { recursive: true });
+    await initBundle(boundBundle);
+    await writeFile(path.join(projectDir, ".superbee.json"), JSON.stringify({ bundle: "../bound bundle" }));
+
+    const origCwd = process.cwd();
+    try {
+      process.chdir(projectDir);
+      let out = "";
+      // The target resolved, so the resolver attached no recovery; the summary is unavailable
+      // (as when the target vanishes between resolution and the read).
+      await home(["--json"], { stdout: (s) => (out += s), summarizeBundle: async () => null, loadWorkspaces: async () => [] });
+      const gettingStarted = (JSON.parse(out) as Record<string, unknown>).getting_started as string;
+      assert.ok(
+        gettingStarted.endsWith(
+          `recover with: ${DEFAULT_INVOKE} init --create-only --recipe none --dir ${shellArg(boundBundle)}`,
+        ),
+        gettingStarted,
+      );
+      assert.ok(!/init (?!--create-only --recipe none --dir)/.test(gettingStarted), "never an overwriting or recipe-applying init");
     } finally {
       process.chdir(origCwd);
     }

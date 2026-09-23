@@ -18,6 +18,8 @@ import { docWrite } from "../src/commands/doc/write.js";
 import { init } from "../src/commands/init.js";
 import { home } from "../src/commands/home.js";
 import { list } from "../src/commands/list.js";
+import { status } from "../src/commands/status.js";
+import { bundleCommand } from "../src/commands/bundle.js";
 import { sessionStart, sessionStartPull } from "../src/commands/session-start.js";
 import { SYNC_LOCAL_ONLY_MESSAGE, sync } from "../src/commands/sync.js";
 import { resolveBundleKey } from "@superbee/board-git";
@@ -646,7 +648,7 @@ test("Home closes summary, autopull, and board-status gates for a missing bindin
     // board path: Home renders the resolver's own recovery, the init scoped to exactly that path.
     const expected = await absentBindingHelp(topo.a.root);
     assert.ok((rendered.getting_started ?? "").endsWith(`recover with: ${expected}`), rendered.getting_started);
-    assert.match(expected, /init --create-only --dir .*missing-bound-bundle$/);
+    assert.match(expected, /init --create-only --recipe none --dir .*missing-bound-bundle$/);
     const after = await withHome(homeDir, async () => ({
       head: boardHead(topo.a),
       refs: git(topo.a.root, ["show-ref"]),
@@ -754,6 +756,123 @@ test("session-start in a fresh bound clone renders sync recovery and never init 
   } finally {
     await topo.cleanup();
     await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+/** The NOT_FOUND recovery a command gives, or undefined when it succeeds. */
+async function recoveryOf(run: () => Promise<void>): Promise<string | undefined> {
+  try {
+    await run();
+    return undefined;
+  } catch (err) {
+    const cliErr = err as { code?: string; help?: string };
+    assert.equal(cliErr.code, "NOT_FOUND", String(err));
+    return cliErr.help;
+  }
+}
+
+/**
+ * One agreement row per blocked bound-path state: every read, init, and orientation surface gives
+ * the resolver's one recovery, and following it is exactly what sync can then complete.
+ */
+for (const state of ["empty directory", "regular file"] as const) {
+  test(`a fresh clone whose own bound board path is ${state === "empty directory" ? "an" : "a"} ${state} gives one recovery on every surface`, async () => {
+    const topo = await makeTwoCloneTopology({ provision: false });
+    const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-blocked-home-"));
+    try {
+      await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+      if (state === "empty directory") await mkdir(topo.a.board);
+      else await writeFile(topo.a.board, "not a bundle\n");
+      const quiet = { stdout: () => {} };
+
+      const expected = await recoveryOf(() => inDir(topo.a.root, () => status(["--json"], quiet)));
+      assert.ok(expected, "status refuses instead of reporting an empty local bundle");
+      if (state === "empty directory") {
+        assert.match(expected, /^\S+(?: \S+)* sync$/, expected);
+      } else {
+        assert.match(expected, /\.superbee'? is not a directory — move it aside, then run \S+(?: \S+)* sync$/, expected);
+      }
+      assert.doesNotMatch(expected, /\binit\b/);
+      for (const [name, run] of [
+        ["bundle locate", () => bundleCommand(["locate", "--json"], quiet)],
+        ["bare init", () => init(["--recipe", "none", "--json"], quiet)],
+        ["list", () => list(["--json"], quiet)],
+        ["doc write", () => docWrite(["notes/local", "--type", "Note", "--title", "Local", "--body", "x", "--actor", "test/a", "--json"], quiet)],
+      ] as const) {
+        assert.equal(await recoveryOf(() => inDir(topo.a.root, run)), expected, name);
+      }
+
+      for (const [name, run] of [
+        ["home", (out: (s: string) => void) => home(["--json"], { stdout: out, loadWorkspaces: async () => [] })],
+        ["session-start", (out: (s: string) => void) => sessionStart(["--json", "--no-update-check"], { stdout: out })],
+      ] as const) {
+        let output = "";
+        await withHome(homeDir, () => inDir(topo.a.root, () => run((line) => (output += line))));
+        const rendered = JSON.parse(output) as { getting_started?: string; bundle?: unknown } & Record<string, unknown>;
+        assert.equal(rendered.bundle, undefined, `${name} does not present the blocked path as a bundle`);
+        assert.ok((rendered.getting_started ?? "").endsWith(`recover with: ${expected}`), `${name}: ${rendered.getting_started}`);
+        assert.doesNotMatch(orientation(rendered), /\binit\b|create the first doc/, name);
+      }
+      assert.equal(existsSync(path.join(topo.a.board, "index.md")), false, "no surface created a divergent bundle");
+
+      await withHome(homeDir, async () => {
+        const runSync = async () => {
+          let out = "";
+          await inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true }));
+          return JSON.parse(out) as { provisioned?: string };
+        };
+        if (state === "regular file") {
+          // Sync reports the same recovery rather than recommending itself in a loop.
+          assert.equal(await recoveryOf(async () => void (await runSync())), expected);
+          await rm(topo.a.board);
+        }
+        const rec = await runSync();
+        assert.match(rec.provisioned ?? "", /materialized from origin\/board/);
+      });
+      assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+      let statusOut = "";
+      await inDir(topo.a.root, () => status(["--json"], { stdout: (line) => (statusOut += line) }));
+      assert.ok((JSON.parse(statusOut) as { docs?: number }).docs! > 0, "status now reads the shared board");
+    } finally {
+      await topo.cleanup();
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("an empty bound directory in a checkout with no shared board stays a new local bundle", async () => {
+  const topo = await makeGreenfieldTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-empty-unshared-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    await mkdir(topo.a.board);
+    // An origin exists but no board ref is known: nothing proves a shared board, so the empty
+    // directory keeps its ordinary meaning instead of a sync that would report nothing to sync.
+    let statusOut = "";
+    await inDir(topo.a.root, () => status(["--json"], { stdout: (line) => (statusOut += line) }));
+    assert.equal((JSON.parse(statusOut) as { docs?: number }).docs, 0);
+    let output = "";
+    await withHome(homeDir, () => inDir(topo.a.root, () => home(["--json"], { stdout: (line) => (output += line), loadWorkspaces: async () => [] })));
+    const rendered = JSON.parse(output) as { bundle?: { docs?: number; help?: string }; getting_started?: string };
+    assert.equal(rendered.getting_started, undefined);
+    assert.equal(rendered.bundle?.docs, 0);
+    assert.match(rendered.bundle?.help ?? "", /create the first doc/);
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a regular file at an arbitrary bound path is moved aside before the scoped init", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const target = path.join(topo.a.root, "kb");
+    await writeFile(target, "not a bundle\n");
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: "kb" }));
+    const help = await recoveryOf(() => inDir(topo.a.root, () => status(["--json"], { stdout: () => {} })));
+    assert.match(help ?? "", /kb'? is not a directory — move it aside, then run \S+(?: \S+)* init --create-only --recipe none --dir \S*kb'?$/, help);
+  } finally {
+    await topo.cleanup();
   }
 });
 
@@ -941,7 +1060,7 @@ test("a local-only bundle at its own conventional bound path is routed to establ
       (err: unknown) => {
         const cliErr = err as { code?: string; help?: string };
         assert.equal(cliErr.code, "NOT_FOUND");
-        assert.match(cliErr.help ?? "", /init --create-only --dir/);
+        assert.match(cliErr.help ?? "", /init --create-only --recipe none --dir/);
         return true;
       },
     );
