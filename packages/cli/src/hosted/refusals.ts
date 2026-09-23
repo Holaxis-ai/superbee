@@ -14,7 +14,7 @@ import { resolveLocalBundleTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { bindingForPath, type CheckoutBinding } from "./binding.js";
 
-type RefusalReason = "not_syncable" | "sync_not_available" | "checkout_target";
+type RefusalReason = "not_syncable" | "checkout_target";
 
 interface RefusalRow {
   /** The command words, e.g. `["doc", "delete"]`; `"*"` matches any subcommand. */
@@ -38,6 +38,9 @@ function docKey(args: readonly string[]): string | undefined {
   return value;
 }
 
+/** `mcp` subcommands that manage the host registration and never open a bundle. */
+const MCP_REGISTRATION: ReadonlySet<string> = new Set(["install", "status", "uninstall"]);
+
 /** Every command a hosted checkout refuses up front. The order is the lookup order. */
 export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
   { words: ["doc", "delete"], reason: "not_syncable", why: "deleting a document does not sync yet" },
@@ -54,7 +57,13 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     when: (args) => !(docKey(args) ?? "").endsWith(".md"),
   },
   { words: ["serve"], reason: "not_syncable", why: "the served bundle accepts writes and deletes that do not sync" },
-  { words: ["sync"], reason: "sync_not_available", why: "hosted sync is not available in this CLI yet; the checkout is a read copy" },
+  { words: ["ui"], reason: "not_syncable", why: "the local app writes Views and conventions, which do not sync" },
+  {
+    words: ["mcp"],
+    reason: "not_syncable",
+    why: "the local MCP app writes Views and conventions, which do not sync",
+    when: (args) => !MCP_REGISTRATION.has(args.find((token) => !token.startsWith("-")) ?? ""),
+  },
   { words: ["init"], reason: "checkout_target", why: "the folder is a hosted checkout, not a local bundle" },
 ] satisfies RefusalRow[]).map((row): RefusalRow => Object.freeze({ ...row, words: Object.freeze([...row.words]) })));
 
@@ -95,12 +104,6 @@ async function checkoutFor(command: string, dir: string | undefined, home: strin
 
 export function hostedCheckoutRefusal(row: RefusalRow, words: string, binding: CheckoutBinding): CliError {
   const details = { reason: row.reason, command: words, bundle_id: binding.bundle_id, host: binding.origin, checkout: binding.path };
-  if (row.reason === "sync_not_available") {
-    return new CliError("NOT_IMPLEMENTED", `'${words}' is not available in a hosted checkout yet: ${row.why}`, {
-      details,
-      help: `make the change in the Superbee app for bundle ${binding.bundle_id} on ${binding.origin}`,
-    });
-  }
   if (row.reason === "checkout_target") {
     return new CliError("FORBIDDEN", `'${words}' refused: ${row.why} (bundle ${binding.bundle_id} on ${binding.origin})`, {
       details,

@@ -8,13 +8,13 @@
 // existing command then runs unchanged on the folder, and the commands sync cannot send are
 // refused there up front (`hosted/refusals.ts`).
 //
-// This slice is read-only: hosted sync, which sends local edits, is its own command slice.
+// `superbee sync` in the folder sends local edits and brings in the host's (`hosted/sync.ts`).
 import { homedir } from "node:os";
-import { mkdir, readFile, readdir, realpath, rmdir, stat, unlink } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, rmdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { bootstrap, openLocalBundle } from "@superbee/browser-local";
+import { bootstrap, openLocalBundle, UNSETTLED_STATES } from "@superbee/browser-local";
 import { FilesystemMutationLockError, RemoteError } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
@@ -69,15 +69,16 @@ re-run), then copies the hosted bundle into --dir (default: ./<bundle-id>), whic
 empty. The host is --host, else the host of your last sign-in (never SUPERBEE_HOST alone); the
 receipt names the host it bound. The folder holds plain bundle files, so every command runs on it
 with --dir <folder>. The link to the host is kept in private state, keyed by the folder's path,
-never in the folder. Re-running for the same folder and bundle is a no-op; a checkout whose folder
-was deleted or emptied is replaced.
+never in the folder. Re-running for the same folder and bundle is a no-op. A checkout whose folder
+was deleted, or replaced by a new empty folder, is replaced, unless it holds changes sync has not
+sent yet; a checkout emptied in place is refused, because removing every file is a pending edit.
 
 --release <folder> forgets the checkout at that folder: its private binding and store are removed
 and the folder's files are left as they are. Releasing a folder that is not a checkout is a no-op.
 
-A checkout is a read copy for now: commands whose effect sync cannot send (doc delete, delete,
-doc verify, kind, recipe add/evolve, artifact, promote to a non-.md key, serve, sync) are refused
-in it with "do this in the app". Bundles over ${CHECKOUT_DOCUMENT_LIMIT} documents, bundles the host does not
+'superbee sync --dir <folder>' sends your edits and brings in the host's. Commands whose effect
+sync cannot send (doc delete, delete, doc verify, kind, recipe add/evolve, artifact, promote to a
+non-.md key, serve, ui, mcp) are refused in it with "do this in the app". Bundles over ${CHECKOUT_DOCUMENT_LIMIT} documents, bundles the host does not
 serve to a checkout (such as one with a Git source), and ids in two of your workspaces are refused.
 
 Options:
@@ -206,11 +207,54 @@ function lockFailure(error: unknown, folder: string): unknown {
   return error;
 }
 
-/** The canonical path a folder has, or will have once created: its parent's real path plus its name. */
+/**
+ * The canonical path a folder has, or will have once created: its parent's real path plus its
+ * name, or, when the folder is a symbolic link, the real path of the folder it names. A link to
+ * nothing is refused.
+ */
 async function canonicalFolder(folder: string): Promise<string> {
   const parent = path.dirname(folder);
   await mkdir(parent, { recursive: true });
-  return path.join(await realpath(parent), path.basename(folder));
+  let link = false;
+  try {
+    link = (await lstat(folder)).isSymbolicLink();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!link) return path.join(await realpath(parent), path.basename(folder));
+  try {
+    return await realpath(folder);
+  } catch {
+    throw new CliError("USAGE", `the --dir folder ${folder} is a symbolic link to a folder that does not exist`, { help: "pass --dir <the real folder>" });
+  }
+}
+
+/**
+ * Refuse to reclaim a checkout indexed at this path while it may hold a person's work: a folder
+ * that is still the checkout's own (same identity) but empty had every file removed, which is a
+ * pending deletion, and a store with changes sync has not sent would lose them.
+ */
+async function assertReclaimable(home: string, binding: CheckoutBinding, canonical: string): Promise<void> {
+  const identity = await folderIdentity(canonical);
+  if (identity && identity.dev === binding.folder_identity.dev && identity.ino === binding.folder_identity.ino) {
+    throw new CliError("ALREADY_EXISTS", `${canonical} is the checkout of '${binding.bundle_id}' with every file removed; that is a pending change, not a stale checkout`, {
+      details: { reason: "emptied_checkout", ...bindingView(binding) },
+      help: `restore the files, or forget the checkout first: ${cliInvocation()} checkout --release ${commandToken(canonical)}`,
+    });
+  }
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id) });
+  let unsent: number;
+  try {
+    unsent = (await store.listIntents(UNSETTLED_STATES)).length;
+  } finally {
+    await store.close();
+  }
+  if (unsent > 0) {
+    throw new CliError("CONFLICT", `the checkout of '${binding.bundle_id}' at ${canonical} holds ${unsent} change(s) sync has not sent`, {
+      details: { reason: "unsent_changes", unsent, ...bindingView(binding) },
+      help: `to discard them and check out again: ${cliInvocation()} checkout --release ${commandToken(canonical)}`,
+    });
+  }
 }
 
 /**
@@ -237,9 +281,13 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
   const folder = path.resolve(deps.cwd, folderArg);
   let canonical: string;
   try {
-    canonical = path.join(await realpath(path.dirname(folder)), path.basename(folder));
+    canonical = (await lstat(folder)).isSymbolicLink() ? await realpath(folder) : path.join(await realpath(path.dirname(folder)), path.basename(folder));
   } catch {
-    canonical = folder;
+    try {
+      canonical = path.join(await realpath(path.dirname(folder)), path.basename(folder));
+    } catch {
+      canonical = folder;
+    }
   }
   const binding = await indexedBindingForPath(deps.auth.home, canonical);
   if (!binding) {
@@ -265,7 +313,7 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
         released: true,
         ...bindingView(binding),
         files: "kept (the folder is now an ordinary local folder)",
-        help: [`${cliInvocation()} checkout ${commandToken(binding.bundle_id)} --host ${commandToken(binding.origin)} --dir ${commandToken(canonical)}`],
+        help: [`${cliInvocation()} checkout ${commandToken(binding.bundle_id)} --host ${commandToken(binding.origin)} --dir <new folder>`],
       },
       mode,
     ),
@@ -415,10 +463,13 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       if (kind === "dir" || kind === "other") {
         throw new CliError("ALREADY_EXISTS", `${canonical} is no longer empty`, { details: { reason: "not_empty", folder: canonical }, help: "pass --dir <new or empty folder>" });
       }
-      // A ready binding whose folder is now absent or empty is stale: the person removed the
-      // checkout. The store holds only hosted bytes in this read-only slice, so it is discarded.
+      // A ready binding whose folder is gone, or is now another (empty) folder, is stale: the
+      // person removed the checkout. It is discarded only when nothing of theirs is in it.
       replaced = await indexedBindingForPath(deps.auth.home, canonical);
-      if (replaced) await releaseCheckout(deps.auth.home, replaced);
+      if (replaced) {
+        await assertReclaimable(deps.auth.home, replaced, canonical);
+        await releaseCheckout(deps.auth.home, replaced);
+      }
       if (kind === "absent") {
         await mkdir(canonical);
         createdFolder = true;
@@ -504,7 +555,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         root_index: result.root,
         heads_digest: result.digest,
         ...(replacedBinding ? { replaced_stale_checkout: { bundle_id: replacedBinding.bundle_id, host: replacedBinding.origin } } : {}),
-        mode: "read_copy",
+        mode: "sync",
         refused: REFUSED_SUMMARY,
         help: nextSteps(result.binding.path),
       },
