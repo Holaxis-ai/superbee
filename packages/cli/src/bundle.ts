@@ -1365,6 +1365,18 @@ export async function resolveLocalBundleTarget(
       () => absentBindingTargetHelp(binding),
     );
     assertBundleOutsidePrivateState(canonicalRoot);
+    // An empty directory at the checkout's own board path is not a bundle yet. Opening it would let
+    // home, status, init, and writes treat it as a new local bundle diverging from the shared board.
+    if (await emptyDirectory(binding.target)) {
+      const top = await ownConventionalBoardRoot(binding);
+      if (top && hasKnownBoardRef(top)) {
+        throw new CliError(
+          "NOT_FOUND",
+          `the bound board directory ${binding.target} is empty — from project binding ${binding.file}; this checkout shares a board that is not provisioned there yet`,
+          { help: `${cliInvocation()} sync` },
+        );
+      }
+    }
     return {
       root: binding.target,
       canonicalRoot,
@@ -1402,8 +1414,48 @@ export async function ownConventionalBoardRoot(binding: ProjectBinding): Promise
   return top;
 }
 
-/** Prove the binding names a direct conventional child, without choosing a creation path. */
+/** What occupies a binding target path; "other" is any entry sync cannot provision over, such as a regular file. */
+type BindingTargetEntry = "absent" | "directory" | "symlink" | "other" | "unreadable";
+
+async function bindingTargetEntry(target: string): Promise<BindingTargetEntry> {
+  try {
+    const info = await fs.lstat(target);
+    if (info.isSymbolicLink()) return "symlink";
+    return info.isDirectory() ? "directory" : "other";
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable";
+  }
+}
+
+/** True only for an existing, readable, entry-free directory (never a symlink). */
+export async function emptyDirectory(target: string): Promise<boolean> {
+  if ((await bindingTargetEntry(target)) !== "directory") return false;
+  try {
+    // Read at most one entry: bound bundles are opened on every command.
+    const dir = await fs.opendir(target);
+    try {
+      return (await dir.read()) === null;
+    } finally {
+      await dir.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prove the binding names a direct conventional child, without choosing a creation path. Only an
+ * absent path (a fresh clone) or a real directory can be the checkout's own board path: a symlink
+ * is a redirect, and any other entry must be moved aside before sync can provision there.
+ */
 async function ownConventionalBindingRoot(binding: ProjectBinding): Promise<string | null> {
+  const entry = await bindingTargetEntry(path.resolve(binding.target));
+  if (entry !== "absent" && entry !== "directory") return null;
+  return conventionalBindingParentTop(binding);
+}
+
+/** The repository top when the binding's target sits directly in the checkout carrying the binding. */
+async function conventionalBindingParentTop(binding: ProjectBinding): Promise<string | null> {
   const target = path.resolve(binding.target);
   if (!BUNDLE_DIRS.includes(path.basename(target) as (typeof BUNDLE_DIRS)[number])) return null;
   const lexicalParent = path.dirname(target);
@@ -1419,13 +1471,6 @@ async function ownConventionalBindingRoot(binding: ProjectBinding): Promise<stri
     return null;
   }
   if (!samePhysicalPath(parent, bindingDir)) return null;
-  try {
-    // A symlinked conventional target is a redirect, never the checkout's own board path.
-    if ((await fs.lstat(target)).isSymbolicLink()) return null;
-  } catch (err) {
-    // Only absence is a fresh clone; unreadable or invalid entries do not establish ownership.
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null;
-  }
   const top = repoTopLevel(bindingDir);
   if (!top) return null;
   let physicalTop: string;
@@ -1448,10 +1493,19 @@ function hasKnownBoardRef(top: string): boolean {
 /**
  * Recovery for a binding whose target is missing. A fresh clone of a project that already shares
  * its board is the common case, and `init --create-only` there would create a divergent bundle;
- * point at `sync`, which materializes the existing board at exactly the bound path.
+ * point at `sync`, which materializes the existing board at exactly the bound path. A non-directory
+ * occupying the path blocks every recovery, so it must be moved aside first.
  */
 async function absentBindingTargetHelp(binding: ProjectBinding): Promise<string> {
-  const top = await ownConventionalBindingRoot(binding);
+  if ((await bindingTargetEntry(path.resolve(binding.target))) === "other") {
+    const next = await clearedBindingTargetHelp(binding, await conventionalBindingParentTop(binding));
+    return `${commandToken(binding.target)} is not a directory — move it aside, then run ${next}`;
+  }
+  return clearedBindingTargetHelp(binding, await ownConventionalBindingRoot(binding));
+}
+
+/** The recovery once nothing occupies the bound path; `top` is the checkout owning that path, if any. */
+function clearedBindingTargetHelp(binding: ProjectBinding, top: string | null): string {
   // An origin without a cached board ref may be offline or fetched with a restricted refspec.
   // Reads stay offline; sync owns determining whether that remote already shares a board.
   if (top && (hasKnownBoardRef(top) || runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0)) {
@@ -1461,7 +1515,14 @@ async function absentBindingTargetHelp(binding: ProjectBinding): Promise<string>
     // Keep the exact binding authoritative until the user explicitly corrects its absent target.
     return `set "bundle" in ${commandToken(binding.file)} to "${bundleDir}", then run ${cliInvocation()} sync`;
   }
-  return `${cliInvocation()} init --create-only --dir ${commandToken(binding.target)}`;
+  // Bare, like home's first-contact advice: recipes stay withheld until the binding resolves, and
+  // `recipe add` applies the chosen one to the recreated bundle afterwards.
+  return bindingInitRecovery(binding.target, cliInvocation());
+}
+
+/** The scoped, create-only, recipe-free init that recreates a genuinely new bound bundle. */
+export function bindingInitRecovery(target: string, invocation: string): string {
+  return `${invocation} init --create-only --recipe none --dir ${commandToken(target)}`;
 }
 
 function bindingPathConflict(target: LocalBundleTarget, message: string): CliError {

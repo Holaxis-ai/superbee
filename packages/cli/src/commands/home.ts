@@ -57,6 +57,7 @@ import { render } from "../output.js";
 import {
   CONVENTIONAL_BUNDLE_DIR_NAME,
   assertResolvedLocalRouteIdentity,
+  bindingInitRecovery,
   findBundleRoot,
   openBundle,
   resolveLocalBundleRoute,
@@ -953,14 +954,13 @@ export function buildHomeView(
     // with a provisioned/detected board HAS its bundle — "run init" there is the divergent-
     // second-bundle footgun.
     if (binding) {
-      // A reached binding is always local. Its target may have disappeared, but it remains the
-      // committed selection. An absent target renders the resolver's own recovery (sync when the
-      // checkout already shares a board, so home never mints a divergent bundle); a target that
-      // exists but holds no bundle keeps the scoped init. Never suggest an unscoped init, and do
-      // not advertise recipes until the binding resolves (recipes fails closed).
-      const recovery =
-        binding.recovery ??
-        `${deps.invocation()} init --recipe none${commandFragment` --dir ${commandQuoted(binding.target)}`}`;
+      // A reached binding is always local and remains the committed selection. A target the
+      // resolver refused renders its own recovery (sync when the checkout already shares a board,
+      // so home never mints a divergent bundle). A resolved target whose summary is unavailable
+      // (it vanished mid-render, or an injected summarizer) gets the same scoped, create-only,
+      // recipe-free init the resolver gives a genuinely new target, which refuses to overwrite.
+      // Never suggest an unscoped init, and do not advertise recipes until the binding resolves.
+      const recovery = binding.recovery ?? bindingInitRecovery(binding.target, deps.invocation());
       view.getting_started =
         `project binding ${binding.file} -> ${binding.target} did not resolve to a bundle — ` +
         `recipes stay withheld until the binding resolves; recover with: ${recovery}`;

@@ -74,6 +74,7 @@ import {
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
 import {
+  emptyDirectory,
   ownConventionalBoardRoot,
   resolveLocalBundleRoute,
   resolveProjectBinding,
@@ -512,7 +513,9 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
     const binding = await resolveProjectBinding(process.cwd());
     if (binding) {
       ownBoardRoot = (await ownConventionalBoardRoot(binding)) ?? undefined;
-      if (ownBoardRoot === undefined || existsSync(binding.target)) {
+      // An absent or empty own board path is exactly what provisioning fills; the resolver refuses
+      // to open it (its recovery is this very sync), so only an occupied path routes through it.
+      if (ownBoardRoot === undefined || (existsSync(binding.target) && !(await emptyDirectory(binding.target)))) {
         route = await resolveLocalBundleRoute(undefined);
       }
       if (ownBoardRoot !== undefined && route?.kind === "bound-local") route = undefined;
