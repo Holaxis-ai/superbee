@@ -12,7 +12,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { FilesystemMutationLockError } from "../src/filesystem-lock.js";
-import { filesystemPushRoleLocks, pushRoleLockKey, type PushRoleLockManager } from "../src/filesystem-push-role.js";
+import { filesystemPushRoleLocks, processStartedAtFromPs, PushRoleStaleOwnerError, pushRoleLockKey, type PushRoleLockManager } from "../src/filesystem-push-role.js";
+import { hostname } from "node:os";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROLE = "superbee:push:checkout-under-test";
@@ -93,6 +94,45 @@ test("a role lock with no owner record is an unknown holder: the request rejects
   } finally {
     await cleanup();
   }
+});
+
+/** Plant a well-formed owner record for `pid`, claimed at `claimedAt`, as a crashed holder leaves it. */
+async function plantOwner(root: string, pid: number, claimedAt: number): Promise<void> {
+  const seed = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 0 });
+  assert.deepEqual(await withRole(seed, `${ROLE}-seed`, async () => "seed"), { held: true, result: "seed" });
+  const lock = path.join(root, `${pushRoleLockKey(ROLE)}.lock`);
+  await fs.mkdir(lock);
+  await fs.writeFile(path.join(lock, "owner.json"), JSON.stringify({ pid, hostname: hostname(), created_at_ms: claimedAt, token: "planted", target: ROLE }));
+}
+
+test("a holder whose process id now belongs to a younger process is reported as a stale owner, not held elsewhere", async () => {
+  const { root, cleanup } = await lockRoot();
+  try {
+    // This test process is live, and it started long after this planted claim: its id was reused.
+    const claimedAt = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    await plantOwner(root, process.pid, claimedAt);
+    const locks = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10 });
+    let ran = false;
+    await assert.rejects(withRole(locks, ROLE, async () => (ran = true)), (error: unknown) =>
+      error instanceof PushRoleStaleOwnerError && error.owner.pid === process.pid && error.owner.created_at_ms === claimedAt && error.processStartedAt > claimedAt);
+    assert.equal(ran, false);
+
+    // A holder whose process started before its claim is the claimer: held elsewhere.
+    const genuine = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10, processStartedAt: async () => claimedAt - 5_000 });
+    assert.deepEqual(await withRole(genuine, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+    // A host that cannot say when the process started keeps the conservative answer.
+    const silent = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10, processStartedAt: async () => null });
+    assert.deepEqual(await withRole(silent, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("the host reports this process's start time no later than now and no earlier than its uptime allows", async () => {
+  const started = await processStartedAtFromPs(process.pid);
+  assert.ok(started !== null);
+  const expected = Date.now() - process.uptime() * 1000;
+  assert.ok(Math.abs(started - expected) < 5_000, `ps says ${new Date(started).toISOString()}, uptime says ${new Date(expected).toISOString()}`);
 });
 
 test("role names map to distinct fixed-length keys", () => {

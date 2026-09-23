@@ -246,7 +246,9 @@ test("N4: only the lock module reads an ambient host input", async () => {
   // `hostname`, `userInfo`, or `networkInterfaces` would false-positive (none does today). It covers
   // imports only: `process.platform`, `process.getuid()`, `require("os")`, and a computed
   // dynamic specifier are outside it, and outside the sibling `process.env` guard as well.
-  assert.deepEqual(ambientImporters, ["filesystem-lock.ts"]);
+  // The push role compares a lock holder's recorded host with this one before it asks when the
+  // process now carrying the holder's id started (PID reuse), so it takes the host name too.
+  assert.deepEqual(ambientImporters, ["filesystem-lock.ts", "filesystem-push-role.ts"]);
   for (const file of ["backend.ts", "filesystem-identity.ts"]) {
     assert.deepEqual(ambientImports(await parse(file)), [], `${file} imports an ambient host input; identity keys must stay pure`);
   }
