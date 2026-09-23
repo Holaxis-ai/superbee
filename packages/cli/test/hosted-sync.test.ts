@@ -371,6 +371,12 @@ test("a delete of a document the host changed is a conflict: keep deletes the ho
     const first = await failingSync(h);
     assert.deepEqual([rowFor(first.receipt, "notes/alpha")?.state, rowFor(first.receipt, "notes/alpha")?.reason], ["conflict", "changed_remotely"]);
     assert.ok(h.host.docs.has("notes/alpha"), "a stale delete removed nothing");
+    if (choice === "keep") {
+      // Review S2: keeping the deletion removes the host's version, so it needs a current --inspect.
+      const blind = await failingSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+      assert.equal(blind.error.details?.reason, "not_inspected");
+      assert.ok(h.host.docs.has("notes/alpha"));
+    }
     const review = await runSync(h, ["--inspect", "notes/alpha"]);
     assert.equal((review.local as { deleted?: boolean }).deleted, true);
     assert.equal((review.remote as { version: string }).version, theirs);

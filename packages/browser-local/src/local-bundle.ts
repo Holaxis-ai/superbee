@@ -703,6 +703,24 @@ async function composeIntent(backend: JournaledBackend, id: ConceptId, now: stri
   };
 }
 
+/**
+ * What a chained intent, never yet sent, must carry once its predecessor is acknowledged: the
+ * version the authority actually committed it at, not the one the working copy computed. An
+ * authority that stores its own serialization (a hosted checkout's managed fields) commits a
+ * write at another version than its `local`, and a successor sent against `local` would conflict
+ * with the person's own edit. After the working copy's own acknowledged deletion, a create
+ * chained behind it acknowledges that deletion's tombstone, as a create recorded afterwards does.
+ * The identity was never used, so nothing recorded under it changes meaning.
+ */
+function chainedPremise(intent: IntentRecord, predecessor: IntentRecord): Pick<IntentRecord, "base"> | Pick<IntentRecord, "recreates"> | Record<string, never> {
+  const committed = predecessor.acknowledgedVersion;
+  if (committed === undefined) return {};
+  if (predecessor.kind === DOCUMENT_DELETE_KIND) {
+    return intent.base === null && intent.recreates === undefined && intent.kind !== DOCUMENT_DELETE_KIND && committed !== DELETION_VERSION ? { recreates: committed } : {};
+  }
+  return intent.base === predecessor.local && committed !== predecessor.local ? { base: committed } : {};
+}
+
 /** The base a chained intent's successor holds: its local version, or none after a deletion. */
 function chainedBase(intent: IntentRecord): Version | null {
   return intent.kind === DOCUMENT_DELETE_KIND ? null : intent.local;
@@ -1447,16 +1465,18 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
       if ((await backend.readMeta<SyncControl>(SYNC_KEY))?.paused) { report.paused = true; break; }
       continue;
     }
+    let rebase: Pick<IntentRecord, "base"> | Pick<IntentRecord, "recreates"> | Record<string, never> = {};
     if (intent.after !== undefined) {
       const predecessor = await backend.readIntent(intent.after);
       if (predecessor && predecessor.state !== "acknowledged") {
         report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" });
         continue;
       }
+      if (predecessor && intent.attempts === 0) rebase = chainedPremise(intent, predecessor);
     }
     let claimed: IntentRecord;
     try {
-      claimed = await backend.updateIntent(intent.requestId, "pending", { state: "in_flight", attempts: intent.attempts + 1 });
+      claimed = await backend.updateIntent(intent.requestId, "pending", { state: "in_flight", attempts: intent.attempts + 1, ...rebase });
     } catch (error) {
       if (error instanceof IntentStateConflict) {
         report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "claimed-elsewhere" });

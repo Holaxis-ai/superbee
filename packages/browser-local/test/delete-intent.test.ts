@@ -120,3 +120,35 @@ test("a deletion in conflict: keep deletes the shared head as it is now, take br
     }
   }
 });
+
+test("a successor chained behind an acknowledged predecessor takes the authority's committed version (QA L1) or its tombstone (review S3)", async () => {
+  // An edit the authority committed at its own serialization, then a delete chained behind it.
+  const { backend, local } = await synced();
+  await commitLocal(local, id, { mode: "replace-document", buildCandidate: () => note("mine\n") });
+  const lost = scripted(() => ({ kind: "unknown" }));
+  await push(local, lost, { remote: remoteOf({ head: null }), write: { ...immediate, maxSubmissions: 1, maxLookups: 1 } });
+  const chained = await deleteLocal(local, id);
+  const edit = (await backend.listIntents(["pending"])).find((row) => row.kind === "document.write")!;
+  assert.equal(chained.intent?.base, edit.local);
+  const HOSTED = "sha256:" + "5".repeat(64);
+  const sent: OperationIntent[] = [];
+  const answer: OperationTransport = {
+    async submit(intent) { sent.push(intent); return intent.kind === "document.delete" ? { kind: "committed", version: TOMBSTONE } : { kind: "committed", version: HOSTED }; },
+    async lookup(requestId) { return requestId === edit.requestId ? { kind: "committed", version: HOSTED } : null; },
+  };
+  await push(local, answer, { remote: remoteOf({ head: null }), write: immediate });
+  const deletion = sent.find((row) => row.kind === "document.delete")!;
+  assert.equal(deletion.base, HOSTED, "the delete is against what the authority committed, not the local serialization");
+
+  // A re-create chained behind the working copy's own in-flight delete acknowledges its tombstone.
+  const second = await synced();
+  const own = await deleteLocal(second.local, id);
+  await push(second.local, scripted(() => ({ kind: "unknown" })), { remote: remoteOf({ head: null }), write: { ...immediate, maxSubmissions: 1, maxLookups: 1 } });
+  await commitLocal(second.local, id, { mode: "replace-document", onAbsent: "create", buildCandidate: () => note("back\n") });
+  const creates: OperationIntent[] = [];
+  await push(second.local, {
+    async submit(intent) { creates.push(intent); return { kind: "committed", version: HOSTED }; },
+    async lookup(requestId) { return requestId === own.intent!.requestId ? { kind: "committed", version: TOMBSTONE } : null; },
+  }, { remote: remoteOf({ head: null }), write: immediate });
+  assert.deepEqual(creates.map((row) => [row.base, row.recreates]), [[null, TOMBSTONE]]);
+});

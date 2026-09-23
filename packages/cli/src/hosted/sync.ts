@@ -44,7 +44,7 @@ import {
   type HostedCarrier,
   type HostedReadAdapter,
 } from "@superbee/core/hosted-transport";
-import { DOCUMENT_DELETE_KIND, JournalSnapshotConflict, type NewIntentRecord } from "@superbee/core/journaled-backend";
+import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalSnapshotConflict, type NewIntentRecord } from "@superbee/core/journaled-backend";
 import { mintRequestId, type UncertainWriteOptions } from "@superbee/core/uncertain-write";
 
 import { resolveLocalBundleTarget } from "../bundle.js";
@@ -63,6 +63,7 @@ import {
   folderConflictFor,
   folderConflicts,
   inboundLinks,
+  recordAcknowledgedDeletes,
   readProjection,
   removeGuarded,
   scanCheckout,
@@ -81,6 +82,7 @@ Usage:
   superbee sync [--dir <folder>] [--limit <n>] [--json]
   superbee sync --inspect <id> [--out <file>] [--dir <folder>] [--json]
   superbee sync --resolve keep|take|revise --doc <id> [--dir <folder>] [--json]
+  superbee sync --accept-deletes <n> | --restore-deletes [--dir <folder>] [--json]
 
 Each edited file is sent as one whole document under your own access, with no approval step;
 documents changed on the host are refreshed in the folder. A change to one document and a
@@ -93,7 +95,10 @@ comes back as a conflict row, and nothing is sent for it until you resolve it:
                       edits made since the conflict)
   --resolve revise    send the file as it is now: edit it to the result you want first
 A deleted file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
-document's history. Deleting 8 or more files at once, more than half the checkout, is held.
+document's history. A mass delete is held: when the deletes of the last day (sent, unsent and
+new) are more than half the checkout and at least 3 (or every document of a smaller one), the new
+ones are not sent. --accept-deletes <n> sends the n held deletions; --restore-deletes puts held
+and unsent deleted files back (so does --resolve take --doc <id> for one of them).
 On a document deleted on the host, --resolve keep re-creates it, and only after --inspect has
 shown the deletion it re-creates; on a document you deleted that changed on the host, keep
 deletes the host's version and take brings it back. A file edited while the host changed or
@@ -179,12 +184,14 @@ export async function hostedCheckoutFor(argv: readonly string[], home: string = 
 
 /** True when raw argv asks for a hosted-only verb. */
 export function requestsHostedVerb(argv: readonly string[]): boolean {
-  return argv.some((token) => token === "--inspect" || token.startsWith("--inspect=") || token === "--resolve" || token.startsWith("--resolve=") || token === "--doc" || token.startsWith("--doc="));
+  return argv.some((token) => ["--inspect", "--resolve", "--doc", "--accept-deletes", "--restore-deletes"].some((flag) => token === flag || token.startsWith(`${flag}=`)));
 }
 
 const GIT_ONLY_FLAGS = ["establish", "pull-only", "show-incoming", "yes", "body-out", "migrate"] as const;
 
 interface HostedValues {
+  "accept-deletes"?: string;
+  "restore-deletes"?: boolean;
   inspect?: string;
   resolve?: string;
   doc?: string;
@@ -215,6 +222,14 @@ function parseHosted(argv: string[]): HostedValues {
   }
   if (values.resolve !== undefined && !["keep", "take", "revise"].includes(values.resolve)) {
     throw new CliError("USAGE", `--resolve takes keep, take or revise, not '${values.resolve}'`, { help: `${inv} sync --resolve keep|take|revise --doc <id>` });
+  }
+  const accept = values["accept-deletes"];
+  if (accept !== undefined) {
+    if (!/^[1-9][0-9]{0,6}$/.test(accept)) throw new CliError("USAGE", `--accept-deletes takes the number of held deletions, not '${accept}'`, { help: `${inv} sync --accept-deletes <n>` });
+    if (values.inspect !== undefined || values.resolve !== undefined || values["restore-deletes"]) throw new CliError("USAGE", "--accept-deletes goes with a plain sync", { help: `${inv} sync --accept-deletes ${commandToken(accept)}` });
+  }
+  if (values["restore-deletes"] && (values.inspect !== undefined || values.resolve !== undefined)) {
+    throw new CliError("USAGE", "--restore-deletes is a step of its own", { help: `${inv} sync --restore-deletes` });
   }
   return values;
 }
@@ -450,6 +465,8 @@ interface PushOutcome {
   readonly acknowledged: Map<string, string>;
   /** Of the acknowledged documents, those whose change was a delete. */
   readonly deleted: Set<string>;
+  /** The deletes the host acknowledged in this run, for the mass-delete window. */
+  readonly deletedIntents: { requestId: string; id: string }[];
   readonly signInRequired: boolean;
   /** The host answered 403: the grant was withdrawn, which signing in again cannot fix. */
   readonly accessWithdrawn: boolean;
@@ -485,9 +502,10 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
   const { store, local, binding, reader } = session;
   const acknowledged = new Map<string, string>();
   const deleted = new Set<string>();
+  const deletedIntents: { requestId: string; id: string }[] = [];
   const pending = await store.listIntents("pending");
   const refused = await store.listIntents("refused");
-  const none = { acknowledged, deleted, signInRequired: false, accessWithdrawn: false, collisions: [] as HeldFile[] };
+  const none = { acknowledged, deleted, deletedIntents, signInRequired: false, accessWithdrawn: false, collisions: [] as HeldFile[] };
   if (pending.length === 0 && refused.length === 0) return { ...none, notSent: null };
   // A bundle whose host serves no identified writes refuses every one: say so without sending.
   if (!session.capabilities.operations) return { ...none, notSent: "read_only" };
@@ -520,9 +538,12 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     for (const settled of report.settled) {
       if (settled.state !== "acknowledged") continue;
       const row = await store.readIntent(settled.requestId);
-      acknowledged.set(settled.target, row?.acknowledgedVersion ?? "");
-      if (row?.kind === DOCUMENT_DELETE_KIND) deleted.add(settled.target);
-      else deleted.delete(settled.target);
+      // A delete settled by read-back past retention names no tombstone: its row shows no version.
+      acknowledged.set(settled.target, row?.acknowledgedVersion === DELETION_VERSION ? "" : row?.acknowledgedVersion ?? "");
+      if (row?.kind === DOCUMENT_DELETE_KIND) {
+        deleted.add(settled.target);
+        deletedIntents.push({ requestId: row.requestId, id: row.target });
+      } else deleted.delete(settled.target);
     }
     if (report.paused) {
       const control = await store.readMeta<{ reason?: string }>("sync");
@@ -532,7 +553,8 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     if (pass === PUSH_PASSES - 1 || (await requeueBusy(store)) === 0) break;
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, deleted, signInRequired, accessWithdrawn: denied, notSent: null, collisions };
+  await recordAcknowledgedDeletes(store, deletedIntents);
+  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions };
 }
 
 /**
@@ -584,7 +606,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // An earlier run that died mid-push left its claims in flight; this run holds the lock, so no
     // push is live, and each such change is looked up before it is ever sent again.
     await reclaimInFlight(local);
-    const scan = await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection });
+    const acceptDeletes = values["accept-deletes"] === undefined ? undefined : Number(values["accept-deletes"]);
+    const scan = await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, ...(acceptDeletes !== undefined ? { acceptDeletes } : {}) });
     await session.persist();
     const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length;
     const pullAndExport = async () => {
@@ -639,6 +662,19 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       folder: binding.path,
       status: rows.every((row) => row.state === "committed") ? (rows.length === 0 ? "up_to_date" : "synced") : "incomplete",
       pulled: pulledView(pulled, exported.placed, exported.removed, exported.kept),
+      ...(scan.hold
+        ? {
+            deletions_held: {
+              count: scan.hold.count,
+              window_deletions: scan.hold.deletions,
+              baseline: scan.hold.baseline,
+              ...(scan.hold.acceptMismatch !== undefined ? { accept_mismatch: `--accept-deletes ${scan.hold.acceptMismatch} names another count than the ${scan.hold.count} held; nothing was accepted` } : {}),
+              accept: syncCommand(binding, commandFragment` --accept-deletes ${commandToken(String(scan.hold.count))}`),
+              restore: syncCommand(binding, commandLiteral(" --restore-deletes")),
+            },
+          }
+        : {}),
+      ...(scan.accepted !== undefined ? { deletions_accepted: scan.accepted } : {}),
       ...(scan.deleted.length > 0
         ? { deletions: scan.deleted.map((row) => ({ id: row.id, ...(row.inbound.length > 0 ? { still_linked_from: row.inbound.slice(0, 20), warning: `${row.inbound.length} document(s) still link to '${row.id}'; the links are left as they are` } : {}) })) }
         : {}),
@@ -826,7 +862,9 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
         : conflict.deleted
           ? {
               take: "accept the deletion: the file is removed",
-              keep: "re-create the document from your version; it re-creates exactly the deletion shown here",
+              keep: tombstone !== null
+                ? "re-create the document from your version; it re-creates exactly the deletion shown here"
+                : "send your version as a create; if the host has a deletion on record, it comes back naming it, to inspect and keep again",
               revise: "edit the file to the result you want, then re-create the document from it",
             }
           : {
@@ -890,6 +928,14 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
   const record = await withSession(binding, deps, resumeCommand, async (session) => {
     const { projection, store, local, reader } = session;
     const file = path.join(binding.path, `${id}.md`);
+    // `take` on a deletion sync held or the host refused brings the file back, as --restore-deletes does.
+    if (choice === "take" && (await readIfPresent(file)) === null) {
+      const restored = await restoreDeletions(session, new Set([id]));
+      if (restored.length > 0) {
+        await session.persist();
+        return { resolved: id, choice, file, file_state: "restored", next: "nothing to send for this document", help: [] };
+      }
+    }
     const conflict = await conflictFor(session, id, resumeCommand);
     await assertInspectedCurrent(session, id, conflict);
     let fileState: string;
@@ -906,6 +952,8 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
         });
       }
       if (conflict.deleted && !deleting && choice !== "take") await assertInspectedTombstone(session, id, conflict.review.remote.tombstone ?? null, choice);
+      // Keeping your deletion deletes the host's current version: only one --inspect has shown.
+      if (deleting && choice === "keep" && !conflict.deleted) await assertInspectedRemote(session, id, conflict.review.remote.version);
       const bytes = await readIfPresent(file);
       const entry = projection.files[id];
       const edited = bytes !== null && digestOf(bytes) !== entry?.digest;
@@ -967,6 +1015,76 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
   deps.stdout(render(record, mode));
 }
 
+/**
+ * Require that `--inspect` showed the host's current version before a resolution removes it; the
+ * PR 295 QA carry-over rule, for keeping a deletion over a host change.
+ */
+async function assertInspectedRemote(session: Session, id: string, current: string | null): Promise<void> {
+  const inspected = await session.store.readMeta<{ remote?: string | null } | null>(inspectedKey(id));
+  const inspect = `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(session.binding.path)}`;
+  if (!inspected || !("remote" in inspected)) {
+    throw new CliError("CONFLICT", `'${id}' changed on the host; keeping your deletion deletes that version, so inspect it first`, { details: { reason: "not_inspected", id, choice: "keep", current }, help: inspect });
+  }
+  if (inspected.remote !== current) {
+    throw new CliError("CONFLICT", `the host's version of '${id}' changed since you inspected it`, { details: { reason: "stale_review", id, inspected: inspected.remote ?? null, current }, help: inspect });
+  }
+}
+
+/**
+ * Put deleted files back from the checkout's own copy: a deletion the scan held (the file is
+ * gone, the store still has the document and nothing is journaled for it), and a journaled
+ * delete that never left (pending, never sent) or that the host refused (read-only). Anything
+ * that may have reached the host, or is in conflict, is left to sync and `--resolve`. Returns
+ * the ids whose files were placed back; a file written meanwhile is never overwritten.
+ */
+async function restoreDeletions(session: Session, only?: ReadonlySet<string>): Promise<string[]> {
+  const { binding, store, projection } = session;
+  const candidates = new Set<string>();
+  const unsettled = await store.listIntents(UNSETTLED_STATES);
+  for (const [id, entry] of Object.entries(projection.files)) {
+    if ((only && !only.has(id)) || entry.deleted || unsettled.some((row) => row.target === id)) continue;
+    if ((await readIfPresent(path.join(binding.path, `${id}.md`))) !== null) continue;
+    if (!(await store.readWithJournal(id)).document) continue;
+    delete projection.files[id];
+    candidates.add(id);
+  }
+  const byTarget = new Map<string, typeof unsettled>();
+  for (const row of unsettled) byTarget.set(row.target, [...(byTarget.get(row.target) ?? []), row]);
+  for (const [id, rows] of byTarget) {
+    if (only && !only.has(id)) continue;
+    const row = rows[0]!;
+    if (rows.length !== 1 || row.kind !== DOCUMENT_DELETE_KIND || row.base === null || row.baseContent === null) continue;
+    if (!((row.state === "pending" && row.attempts === 0) || (row.state === "refused" && row.refusal !== undefined))) continue;
+    if ((await readIfPresent(path.join(binding.path, `${id}.md`))) !== null) continue;
+    const parsed = parseMarkdown(row.baseContent, id, { okfVersion: session.okfVersion });
+    const meta = [{ key: baseKey(id), value: { version: row.base, content: row.baseContent } }];
+    const doc = { id, frontmatter: parsed.frontmatter, body: parsed.body };
+    await (row.state === "refused"
+      ? store.writeJournaled(id, doc, { expectedVersion: null, resolveIntents: { expected: rows }, meta })
+      : store.writeJournaled(id, doc, { expectedVersion: null, supersede: { requestId: row.requestId, expectedState: "pending", expectedAttempts: 0 }, meta }));
+    delete projection.files[id];
+    candidates.add(id);
+  }
+  if (candidates.size === 0) return [];
+  const exported = await exportCheckout(binding.path, store, projection, { only: candidates, placeMissing: true });
+  return exported.placed;
+}
+
+async function runRestore(binding: CheckoutBinding, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
+  const resumeCommand = syncCommand(binding, commandLiteral(" --restore-deletes"));
+  const record = await withSession(binding, deps, resumeCommand, async (session) => {
+    const restored = await restoreDeletions(session);
+    await session.persist();
+    return {
+      restored: restored.length,
+      ...(restored.length > 0 ? { files: restored.slice(0, 50).map((id) => path.join(binding.path, `${id}.md`)) } : {}),
+      next: restored.length > 0 ? "the files are back as the checkout last had them; nothing is sent for them" : "no held or unsent deletion to restore",
+      help: [syncCommand(binding)],
+    };
+  });
+  deps.stdout(render(record, mode));
+}
+
 /** `superbee sync` in a hosted checkout: sync, `--inspect`, or `--resolve`. */
 export async function hostedSync(argv: string[], binding: CheckoutBinding, partial: Partial<HostedSyncDeps> = {}): Promise<void> {
   const deps = hostedDeps(partial);
@@ -974,5 +1092,6 @@ export async function hostedSync(argv: string[], binding: CheckoutBinding, parti
   const mode = resolveMode(values);
   if (values.inspect !== undefined) return runInspect(binding, values, deps, mode);
   if (values.resolve !== undefined) return runResolve(binding, values, deps, mode);
+  if (values["restore-deletes"]) return runRestore(binding, deps, mode);
   return runSync(binding, values, deps, mode);
 }
