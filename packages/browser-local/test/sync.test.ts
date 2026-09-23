@@ -1506,46 +1506,48 @@ test("a snapshot the host restarts under writes resumes from one heads listing, 
   }
 });
 
-test("a document that moves or goes while a resumed snapshot reads completes the bootstrap without a digest, and the next pull asks unconditionally and matches a clean full fetch", async () => {
-  const fixture = await createRemoteFixture();
-  const ids = await seedMany(fixture, 40);
-  const resumed = openLocal(new IDBFactory(), "resumed");
-  const clean = openLocal(new IDBFactory(), "clean");
-  try {
-    let moved = false;
-    const paging = pagingRemote(fixture, 10, {
-      between: async (page) => {
-        if (page === 2) await remoteEdit(fixture, ids[1]!, "moved after it streamed\n");
-      },
-      // After the heads listing and before the first read: one listed document moves and another goes.
-      beforeReadMany: async () => {
-        if (moved) return;
-        moved = true;
-        await remoteEdit(fixture, ids[25]!, "moved after it was listed\n");
-        assert.equal(await fixture.authority.delete(ids[35]!), true);
-      },
-    });
-    const marker = await bootstrap(paging.remote, resumed, { batchSize: 10, concurrency: 1 });
-    assert.equal(paging.snapshots(), 1);
-    assert.equal(marker.complete, true);
-    assert.equal(marker.headsDigest, undefined, "the working copy is not the listing's state, so its digest is not recorded");
-    assert.equal(marker.documentCount, 39);
-    await assert.rejects(resumed.backend.read(ids[35]!), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
+for (const change of ["moves", "goes"] as const) {
+  test(`a document that ${change} after the resume's listing and before its read completes the bootstrap without a digest, and the next pull asks unconditionally and matches a clean full fetch`, async () => {
+    const fixture = await createRemoteFixture();
+    const ids = await seedMany(fixture, 40);
+    const resumed = openLocal(new IDBFactory(), "resumed");
+    const clean = openLocal(new IDBFactory(), "clean");
+    try {
+      let changed = false;
+      const paging = pagingRemote(fixture, 10, {
+        between: async (page) => {
+          if (page === 2) await remoteEdit(fixture, ids[1]!, "moved after it streamed\n");
+        },
+        // After the heads listing and before the first read: exactly one listed document changes.
+        beforeReadMany: async () => {
+          if (changed) return;
+          changed = true;
+          if (change === "moves") await remoteEdit(fixture, ids[25]!, "moved after it was listed\n");
+          else assert.equal(await fixture.authority.delete(ids[35]!), true);
+        },
+      });
+      const marker = await bootstrap(paging.remote, resumed, { batchSize: 10, concurrency: 1 });
+      assert.equal(paging.snapshots(), 1);
+      assert.equal(marker.complete, true);
+      assert.equal(marker.headsDigest, undefined, "the working copy is not the listing's state, so its digest is not recorded");
+      assert.equal(marker.documentCount, change === "moves" ? 40 : 39);
+      if (change === "goes") await assert.rejects(resumed.backend.read(ids[35]!), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
 
-    await bootstrap(fixture.remote, clean, { batchSize: 10 });
-    assert.deepEqual(await snapshot(resumed), await snapshot(clean), "every document is at a version the authority served");
+      await bootstrap(fixture.remote, clean, { batchSize: 10 });
+      assert.deepEqual(await snapshot(resumed), await snapshot(clean), "every document is at a version the authority served");
 
-    const next = countingRemote(fixture);
-    await pull(resumed, next.remote);
-    assert.deepEqual(next.ifNoneMatch, [null], "no digest is offered for a working copy that matches none");
-    const settled = countingRemote(fixture);
-    await pull(resumed, settled.remote);
-    assert.deepEqual(settled.requests, [{ method: "GET", path: HEADS, status: 304 }]);
-  } finally {
-    resumed.close();
-    clean.close();
-  }
-});
+      const next = countingRemote(fixture);
+      await pull(resumed, next.remote);
+      assert.deepEqual(next.ifNoneMatch, [null], "no digest is offered for a working copy that matches none");
+      const settled = countingRemote(fixture);
+      await pull(resumed, settled.remote);
+      assert.deepEqual(settled.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+    } finally {
+      resumed.close();
+      clean.close();
+    }
+  });
+}
 
 test("a restarted snapshot without heads to resume from stands as the restart, with the marker incomplete", async () => {
   const fixture = await createRemoteFixture();
