@@ -19,6 +19,14 @@ import {
   createFetchCarrier,
   createHostedReadAdapter,
   createWholeDocumentTransport,
+  decodeHeadsPage,
+  decodeHostedCapabilities,
+  HeadsPages,
+  isPageRestart,
+  isSnapshotRestart,
+  PAGE_RESTART_DELAYS_MS,
+  retrySnapshotRestarts,
+  SNAPSHOT_RESTART_ATTEMPTS,
   decodeOutcomeAnswer,
   capacityScopeOf,
   HostedCarrierError,
@@ -41,7 +49,7 @@ import { isAuthorizationRefusal, performUncertainWrite, type OperationIntent, ty
 import { versionOfBytes } from "../src/versioning.js";
 
 /** The hosted commit the fixtures were copied from. */
-const FIXTURE_SOURCE = "Holaxis-ai/superbee-hosted PR 581 head 9b83e718 (test/fixtures/hosted-transport)";
+const FIXTURE_SOURCE = "Holaxis-ai/superbee-hosted PR 605 head 52d1fc97 (test/fixtures/hosted-transport)";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, "fixtures", "hosted-transport");
 
@@ -75,7 +83,7 @@ const tableFor = (route: string): readonly { answer: string }[] =>
 // ── the index ──────────────────────────────────────────────────────────────────────────────
 
 test(`golden fixtures (${FIXTURE_SOURCE}): every exchange names rows the shared tables hold, and every read row is exercised`, () => {
-  assert.equal(index.exchanges.length, 28);
+  assert.equal(index.exchanges.length, 33);
   for (const entry of index.exchanges) {
     const exchange = fixture(entry.name);
     assert.equal(exchange.name, entry.name);
@@ -223,6 +231,167 @@ for (const [name, expected] of [
         : error instanceof RemoteError && error.code === expected.code && error.status === expected.status);
   });
 }
+
+// ── pages ──────────────────────────────────────────────────────────────────────────────────
+
+/** A capabilities answer without the paged bound: a host from before paging. */
+const unpaged = (body: string) => body.replace(/,"paged":\{"documents":\d+\}/, "");
+const cursorOf = (name: string): string => (JSON.parse(fixture(name).request.body) as { cursor: string }).cursor;
+
+test("pages: a paged host's heads pages assemble into the unpaged listing, one request per page", async () => {
+  assert.doesNotMatch(unpaged(fixture("capabilities-read-only").response.body), /paged/);
+  const { carrier, requests } = replayCarrier({
+    "/reader/capabilities": [fixture("capabilities-read-only")],
+    "/reader/heads": [fixture("heads-page-first"), fixture("heads-page-last")],
+  });
+  const adapter = createHostedReadAdapter({ carrier, bundleId: "team.knowledge" });
+  assert.deepEqual((await adapter.hostedCapabilities()).paged, { documents: 10_000 });
+  const heads = await adapter.heads();
+  const whole = JSON.parse(fixture("heads-200").response.body) as { digest: string; heads: unknown[] };
+  assert.deepEqual(heads, { digest: whole.digest, heads: whole.heads });
+  assert.deepEqual(requests.filter((request) => request.path === "/reader/heads").map((request) => request.input), [
+    { bundleId: "team.knowledge" },
+    { bundleId: "team.knowledge", cursor: cursorOf("heads-page-last") },
+  ]);
+});
+
+test("pages: a paged host's snapshot pages stitch into the unpaged body's documents", async () => {
+  const { carrier, requests } = replayCarrier({
+    "/reader/capabilities": [fixture("capabilities-read-only")],
+    "/reader/snapshot": [fixture("snapshot-page-first"), fixture("snapshot-page-last")],
+  });
+  const adapter = createHostedReadAdapter({ carrier, bundleId: "team.knowledge" });
+  const snapshot = await adapter.snapshot();
+  const expected = fixture("snapshot-complete").response.body.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.deepEqual(snapshot.header, { count: expected[0]!.count, digest: expected[0]!.digest });
+  const docs = [];
+  for await (const doc of snapshot.docs) docs.push({ kind: "doc", ...doc });
+  assert.deepEqual(docs, expected.slice(1, -1));
+  assert.deepEqual(requests.filter((request) => request.path === "/reader/snapshot").map((request) => request.input), [
+    { bundleId: "team.knowledge" },
+    { bundleId: "team.knowledge", cursor: cursorOf("snapshot-page-last") },
+  ]);
+});
+
+test("pages: a restart refusal starts heads again from the first page, and stands after three attempts", async () => {
+  const restarted = replayCarrier({
+    "/reader/capabilities": [fixture("capabilities-operations")],
+    "/reader/heads": [fixture("heads-page-first"), fixture("refusal-concurrent-change"), fixture("heads-page-first"), fixture("heads-page-last")],
+  });
+  const sleeps: number[] = [];
+  const sleep = async (ms: number) => { sleeps.push(ms); };
+  const adapter = createHostedReadAdapter({ carrier: restarted.carrier, bundleId: "team.knowledge", sleep });
+  await adapter.hostedCapabilities();
+  assert.equal((await adapter.heads())!.heads.length, 3);
+  // One pause before the restart: about a quarter second, jittered to half of it or more.
+  assert.equal(sleeps.length, 1);
+  assert.ok(sleeps[0]! >= PAGE_RESTART_DELAYS_MS[0]! / 2 && sleeps[0]! <= PAGE_RESTART_DELAYS_MS[0]!);
+  assert.deepEqual(restarted.requests.filter((request) => request.path === "/reader/heads").map((request) => (request.input as { cursor?: unknown }).cursor === undefined), [true, false, true, false]);
+  // The restart says nothing about the caller: the held answer stands and is not read again.
+  assert.equal(restarted.requests.filter((request) => request.path === "/reader/capabilities").length, 1);
+  const moving = replayCarrier({
+    "/reader/capabilities": [fixture("capabilities-operations")],
+    "/reader/heads": Array.from({ length: 3 }, () => [fixture("heads-page-first"), fixture("refusal-concurrent-change")]).flat(),
+  });
+  const movingSleeps: number[] = [];
+  await assert.rejects(createHostedReadAdapter({ carrier: moving.carrier, bundleId: "team.knowledge", sleep: async (ms) => { movingSleeps.push(ms); } }).heads(), (error: unknown) => isPageRestart(error));
+  assert.equal(movingSleeps.length, 2, "a pause before each of the two restarts, none after the last refusal");
+  assert.ok(movingSleeps[1]! >= PAGE_RESTART_DELAYS_MS[1]! / 2);
+  // An abort during the pause ends the listing as the carrier's failure.
+  const aborted = replayCarrier({ "/reader/heads": [fixture("heads-page-first"), fixture("refusal-concurrent-change")] });
+  const stopping = createHostedReadAdapter({ carrier: aborted.carrier, bundleId: "team.knowledge", sleep: async () => { stopping.abort(); throw new Error("aborted"); } });
+  await assert.rejects(stopping.heads(), (error: unknown) => error instanceof HostedCarrierError && error.code === "unavailable");
+});
+
+test("pages: a root that moved between heads pages drops the held answer and the listing stands", async () => {
+  const moved = (body: string) => body;
+  const last = fixture("heads-page-last");
+  const { carrier, requests } = replayCarrier({
+    "/reader/capabilities": [fixture("capabilities-operations"), fixture("capabilities-read-only")],
+    "/reader/heads": [fixture("heads-page-first"), { ...last, response: { ...last.response, headers: { ...last.response.headers, "x-superbee-root-version": "none" } } }],
+  }, moved);
+  const adapter = createHostedReadAdapter({ carrier, bundleId: "team.knowledge" });
+  await adapter.hostedCapabilities();
+  assert.equal((await adapter.heads())!.heads.length, 3);
+  assert.equal((await adapter.hostedCapabilities()).root, null);
+  assert.equal(requests.filter((request) => request.path === "/reader/capabilities").length, 2);
+});
+
+test("pages: a snapshot consumer runs again after a restart truncation, a bounded number of times", async () => {
+  const restartTruncation = new RemoteError("cut", SNAPSHOT_TRUNCATED, 200, new RemoteError("moved", "concurrent_change", 409));
+  assert.equal(isSnapshotRestart(restartTruncation), true);
+  assert.equal(isSnapshotRestart(new RemoteError("cut", SNAPSHOT_TRUNCATED, 200)), false);
+  const sleeps: number[] = [];
+  let runs = 0;
+  assert.equal(await retrySnapshotRestarts(async () => { if (++runs < 3) throw restartTruncation; return "done"; }, { signal: new AbortController().signal, sleep: async (ms) => { sleeps.push(ms); } }), "done");
+  assert.equal(runs, 3);
+  assert.equal(sleeps.length, 2);
+  runs = 0;
+  await assert.rejects(retrySnapshotRestarts(async () => { runs += 1; throw restartTruncation; }, { signal: new AbortController().signal, sleep: async () => {} }), (error: unknown) => error === restartTruncation);
+  assert.equal(runs, SNAPSHOT_RESTART_ATTEMPTS);
+  // The adapter's own snapshot truncation after a refused later page is a restart truncation.
+  const { carrier } = replayCarrier({ "/reader/snapshot": [fixture("snapshot-page-first"), fixture("refusal-concurrent-change")] });
+  const snapshot = await createHostedReadAdapter({ carrier, bundleId: "team.knowledge" }).snapshot();
+  await assert.rejects(async () => { for await (const _ of snapshot.docs) void _; }, (error: unknown) => isSnapshotRestart(error));
+});
+
+test("pages: a snapshot whose later page is refused, cut or contradicts the first ends as truncation", async () => {
+  const lastWithHeader = (header: Record<string, unknown>) => (body: string) => {
+    const lines = body.split("\n");
+    return [JSON.stringify(header), ...lines.slice(1)].join("\n");
+  };
+  const first = JSON.parse(fixture("snapshot-page-first").response.body.split("\n")[0]!) as Record<string, unknown>;
+  const cases: [string, Exchange | HostedStream][] = [
+    ["a restart refusal", fixture("refusal-concurrent-change")],
+    ["a cut page", fixture("snapshot-truncated")],
+    ["a header for another listing", { ...fixture("snapshot-page-last"), response: { ...fixture("snapshot-page-last").response, body: lastWithHeader({ ...first, count: 4 })(fixture("snapshot-page-last").response.body) } }],
+  ];
+  for (const [why, second] of cases) {
+    const { carrier } = replayCarrier({
+      "/reader/capabilities": [fixture("capabilities-read-only")],
+      "/reader/snapshot": [fixture("snapshot-page-first"), second as Exchange],
+    });
+    const snapshot = await createHostedReadAdapter({ carrier, bundleId: "team.knowledge" }).snapshot();
+    const ids: string[] = [];
+    await assert.rejects(async () => { for await (const doc of snapshot.docs) ids.push(doc.id); }, (error: unknown) => error instanceof RemoteError && error.code === SNAPSHOT_TRUNCATED, why);
+    assert.deepEqual(ids, ["notes/alpha", "notes/beta"], why);
+  }
+  // A first page the host refuses is the snapshot's own refusal.
+  const { carrier } = replayCarrier({ "/reader/capabilities": [fixture("capabilities-read-only")], "/reader/snapshot": [fixture("refusal-concurrent-change")] });
+  await assert.rejects(createHostedReadAdapter({ carrier, bundleId: "team.knowledge" }).snapshot(), (error: unknown) => isPageRestart(error));
+});
+
+test("pages: heads pages that disagree, repeat a row or stall are malformed, never diffed", () => {
+  const page = decodeHeadsPage(JSON.parse(fixture("heads-page-first").response.body));
+  const last = decodeHeadsPage(JSON.parse(fixture("heads-page-last").response.body));
+  const other = { ...last, digest: "sha256:" + "0".repeat(64) };
+  for (const [why, pages] of [
+    ["another digest", [page, other]],
+    ["a repeated row", [page, { ...last, heads: [page.heads[1]!, ...last.heads] }]],
+    ["an empty page that names a next", [{ ...page, heads: [] }]],
+    ["more rows than the count", [page, { ...last, heads: [...last.heads, { id: "zz", version: last.heads[0]!.version }] }]],
+  ] as const) {
+    const collected = new HeadsPages();
+    assert.throws(() => { for (const each of pages) collected.add(each); }, (error: unknown) => error instanceof RemoteError && error.status === 502, why);
+  }
+  for (const body of [{ ...JSON.parse(fixture("heads-page-first").response.body), next: "" }, { count: -1, digest: page.digest, heads: [] }, []])
+    assert.throws(() => decodeHeadsPage(body), (error: unknown) => error instanceof RemoteError && error.status === 502);
+});
+
+test("pages: a bundle within one page is read with the one request a host from before paging answers", async () => {
+  const { carrier, requests } = replayCarrier({
+    "/reader/capabilities": [fixture("capabilities-read-only")],
+    "/reader/heads": [fixture("heads-200")],
+    "/reader/snapshot": [fixture("snapshot-complete")],
+  }, unpaged);
+  const adapter = createHostedReadAdapter({ carrier, bundleId: "team.knowledge" });
+  assert.equal((await adapter.hostedCapabilities()).paged, null);
+  assert.equal((await adapter.heads())!.heads.length, 3);
+  const snapshot = await adapter.snapshot();
+  for await (const _ of snapshot.docs) void _;
+  assert.deepEqual(requests.filter((request) => request.path !== "/reader/capabilities").map((request) => request.input), [{ bundleId: "team.knowledge" }, { bundleId: "team.knowledge" }]);
+  assert.throws(() => decodeHostedCapabilities({ ...JSON.parse(fixture("capabilities-read-only").response.body), paged: { documents: 10 } }), RemoteError, "a paged bound below one page");
+});
 
 // ── the whole-document transport ───────────────────────────────────────────────────────────
 

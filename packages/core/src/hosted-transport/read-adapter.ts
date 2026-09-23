@@ -14,6 +14,10 @@
  * heads answer states the root's version; one that differs from the held answer's root drops
  * it, so the root and the edition it declares are as new as the listing. Any authority refusal
  * drops it too.
+ *
+ * The host serves heads and snapshot a page at a time; a bundle that fits in one page gets one
+ * answer, as before paging. The adapter follows the `next` cursor (`paged-reads.ts`) and hands
+ * the verbs the same whole listing and the same one snapshot body.
  */
 
 import { RemoteError } from "../remote-error.js";
@@ -22,6 +26,7 @@ import type { HeadsOptions, WireCapabilities } from "../remote-backend.js";
 import type { ConceptId, ReadResult, ReservedFilename, ReservedReadResult, StorageBackend } from "../types.js";
 import { isContentVersion } from "../version-transport.js";
 import { HostedCarrierError, type HostedAnswer, type HostedCarrier } from "./carrier.js";
+import { decodeHeadsPage, HEADS_PAGE_ATTEMPTS, HeadsPages, isPageRestart, pageRestartDelay, pause, stitchSnapshotPages } from "./paged-reads.js";
 
 /** What the capabilities route states about one bundle, beyond the wire booleans. */
 export interface HostedCapabilities {
@@ -30,6 +35,12 @@ export interface HostedCapabilities {
   readonly operations: boolean;
   /** The inventory bound and the per-document byte bound the host serves a working copy within. */
   readonly bound: Readonly<{ documents: number; bytes: number }>;
+  /**
+   * The inventory bound a host that pages serves a bundle within (each page within
+   * `bound.documents`), or `null` for a host from before paging, which serves only
+   * `bound.documents` in one answer.
+   */
+  readonly paged: Readonly<{ documents: number }> | null;
   /** The bundle root's reserved `index.md` as exact bytes with its version, or `null` without one. */
   readonly root: Readonly<{ content: string; version: string }> | null;
   /** How long the host keeps a request identity, in milliseconds (stated, or the thirty-day default). */
@@ -103,6 +114,8 @@ export interface HostedReadAdapterOptions {
   routes?: HostedReadRoutes;
   /** Pinned on every document read, when the family binds reads (the browser's recovery target). */
   binding?: string;
+  /** Test seam: how the adapter waits before a heads restart. Default: a timer that the adapter's abort cancels. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 export interface HostedReadAdapter extends StorageBackend {
@@ -165,6 +178,13 @@ export function decodeHostedCapabilities(value: unknown): HostedCapabilities {
       throw malformed("capabilities answer carries a malformed root");
     root = Object.freeze({ content: raw.content, version: raw.version });
   }
+  let paged: HostedCapabilities["paged"] = null;
+  if (body.paged !== undefined) {
+    const raw = body.paged as { documents?: unknown } | null;
+    if (typeof raw !== "object" || raw === null || !positiveInteger(raw.documents) || raw.documents < bound.documents)
+      throw malformed("capabilities answer carries a malformed paged bound");
+    paged = Object.freeze({ documents: raw.documents });
+  }
   const retention = body.operationsRetentionMs;
   // A window inside the skew margin leaves no interval in which absence is evidence.
   if (retention !== undefined && (!positiveInteger(retention) || retention <= OPERATIONS_RETENTION_SKEW_MS))
@@ -174,6 +194,7 @@ export function decodeHostedCapabilities(value: unknown): HostedCapabilities {
     snapshot: flag("snapshot"),
     operations: flag("operations"),
     bound: Object.freeze({ documents: bound.documents, bytes: bound.bytes }),
+    paged,
     root,
     operationsRetentionMs: retention ?? DEFAULT_OPERATIONS_RETENTION_MS,
   });
@@ -237,7 +258,8 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
   };
   const refused = (answer: HostedAnswer | { status: number; body: unknown }): never => {
     const error = readRefusal(answer);
-    if (error instanceof RemoteError) forget();
+    // A page restart says the bundle moved, nothing about the caller or the held answer.
+    if (error instanceof RemoteError && !isPageRestart(error)) forget();
     throw error;
   };
   async function acquire() {
@@ -301,6 +323,47 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
       release();
     }
   }
+  /** A heads answer's root version, checked against the held capabilities answer. */
+  function headsRootVersion(answer: HostedAnswer): string | null {
+    const rootVersion = decodeRootVersion(answer.headers.get(ROOT_VERSION_HEADER));
+    if (rootVersion === undefined) throw malformed("heads answered without the root version");
+    if (held && (held.root?.version ?? null) !== rootVersion) forget();
+    return rootVersion;
+  }
+  /** Every page of one listing, from the first. The first request is the one a host from before
+   * paging answered, and so is its answer when the bundle fits in one page; a `304` is possible
+   * only there. A first answer that names `next` starts the pages. */
+  async function readHeads(ifNoneMatch: string | undefined): Promise<HeadsResult | null> {
+    const pages = new HeadsPages();
+    let cursor: string | undefined;
+    for (;;) {
+      assertOpen();
+      const input = cursor === undefined ? { bundleId, ...(ifNoneMatch === undefined ? {} : { ifNoneMatch }) } : { bundleId, cursor };
+      const answer = await carrier.json(routes.heads, input, controller.signal, { maximum: HOSTED_READ_BOUNDS.headsBytes }).catch(carrierFailure);
+      if (answer.status !== 200 && !(answer.status === 304 && cursor === undefined)) refused(answer);
+      // Pages pin the documents, not the root: a root that moved between pages drops the held
+      // answer as any heads answer's root does, and the listing stands.
+      headsRootVersion(answer);
+      if (answer.status === 304) {
+        if (ifNoneMatch === undefined) throw malformed("heads answered 304 to a request that sent no digest");
+        return null;
+      }
+      const next = (answer.body as { next?: unknown } | null)?.next;
+      if (cursor === undefined && next === undefined) return parseHeadsAnswer(answer.body);
+      cursor = pages.add(decodeHeadsPage(answer.body));
+      if (cursor === undefined) return parseHeadsAnswer(pages.whole());
+    }
+  }
+  /** One snapshot page's body; only the first page's refusal is the caller's refusal. */
+  async function snapshotPage(cursor: string | undefined): Promise<ReadableStream<Uint8Array>> {
+    assertOpen();
+    const answer = await carrier.stream(routes.snapshot, cursor === undefined ? { bundleId } : { bundleId, cursor }, controller.signal).catch(carrierFailure);
+    if (!answer.ok) {
+      if (cursor === undefined) refused(answer);
+      throw readRefusal(answer);
+    }
+    return boundedLines(answer.body, HOSTED_READ_BOUNDS.documentBytes);
+  }
   const refuse = (code: HostedReadAdapterError["code"]) => async (): Promise<never> => {
     throw new HostedReadAdapterError(code);
   };
@@ -321,23 +384,26 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
     },
     async heads(headsOptions = {}) {
       assertOpen();
-      const input = { bundleId, ...(headsOptions.ifNoneMatch === undefined ? {} : { ifNoneMatch: headsOptions.ifNoneMatch }) };
-      const answer = await carrier.json(routes.heads, input, controller.signal, { maximum: HOSTED_READ_BOUNDS.headsBytes }).catch(carrierFailure);
-      if (answer.status !== 200 && answer.status !== 304) refused(answer);
-      const rootVersion = decodeRootVersion(answer.headers.get(ROOT_VERSION_HEADER));
-      if (rootVersion === undefined) throw malformed("heads answered without the root version");
-      if (held && (held.root?.version ?? null) !== rootVersion) forget();
-      if (answer.status === 304) {
-        if (headsOptions.ifNoneMatch === undefined) throw malformed("heads answered 304 to a request that sent no digest");
-        return null;
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await readHeads(headsOptions.ifNoneMatch);
+        } catch (error) {
+          // The documents changed between two pages: after a pause, the listing starts again
+          // from the first page.
+          if (attempt >= HEADS_PAGE_ATTEMPTS || !isPageRestart(error)) throw error;
+          await (options.sleep ?? pause)(pageRestartDelay(attempt), controller.signal).catch(() => assertOpen());
+          assertOpen();
+        }
       }
-      return parseHeadsAnswer(answer.body);
     },
     async snapshot() {
       assertOpen();
-      const answer = await carrier.stream(routes.snapshot, { bundleId }, controller.signal).catch(carrierFailure);
-      if (!answer.ok) refused(answer);
-      return readSnapshotStream(boundedLines((answer as { body: ReadableStream<Uint8Array> }).body, HOSTED_READ_BOUNDS.documentBytes), { status: answer.status });
+      // The first page's refusal is the snapshot's; a later page's failure (the bundle moved, the
+      // host refused or the carrier failed) ends the stitched body before its terminator, which
+      // the parser reports as truncation, so the caller re-requests the snapshot from the start.
+      // A body that names no next page passes through the stitch unchanged.
+      const first = await snapshotPage(undefined);
+      return readSnapshotStream(stitchSnapshotPages(first, snapshotPage), { status: 200 });
     },
     abort() {
       controller.abort();

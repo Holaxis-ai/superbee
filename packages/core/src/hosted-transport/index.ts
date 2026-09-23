@@ -10,4 +10,5 @@
 export * from "./carrier.js";
 export * from "./answer-rows.js";
 export * from "./read-adapter.js";
+export * from "./paged-reads.js";
 export * from "./whole-document-transport.js";

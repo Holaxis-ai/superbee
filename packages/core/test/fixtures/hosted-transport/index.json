@@ -84,6 +84,41 @@
       "status": 401
     },
     {
+      "name": "heads-page-first",
+      "file": "heads-page-first.json",
+      "route": "/reader/heads",
+      "rows": ["heads 200 page"],
+      "status": 200
+    },
+    {
+      "name": "heads-page-last",
+      "file": "heads-page-last.json",
+      "route": "/reader/heads",
+      "rows": ["heads 200 page"],
+      "status": 200
+    },
+    {
+      "name": "snapshot-page-first",
+      "file": "snapshot-page-first.json",
+      "route": "/reader/snapshot",
+      "rows": ["snapshot 200 page"],
+      "status": 200
+    },
+    {
+      "name": "snapshot-page-last",
+      "file": "snapshot-page-last.json",
+      "route": "/reader/snapshot",
+      "rows": ["snapshot 200 page"],
+      "status": 200
+    },
+    {
+      "name": "refusal-concurrent-change",
+      "file": "refusal-concurrent-change.json",
+      "route": "/reader/heads",
+      "rows": ["refusal 409 concurrent_change"],
+      "status": 409
+    },
+    {
       "name": "update-200-ok",
       "file": "update-200-ok.json",
       "route": "/editor/update",
