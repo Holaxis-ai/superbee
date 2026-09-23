@@ -133,6 +133,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     login: simple(CLI_LEAVES.login, ["login"], [], ["--host", "http://127.0.0.1:9"]),
     whoami: simple(CLI_LEAVES.whoami, ["whoami"], [], ["--host", "http://127.0.0.1:9"]),
     logout: simple(CLI_LEAVES.logout, ["logout"], [], ["--host", "http://127.0.0.1:9"]),
+    checkout: simple(CLI_LEAVES.checkout, ["checkout"], ["team.knowledge"], ["--host", "http://127.0.0.1:9"]),
   };
 }
 

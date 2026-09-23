@@ -41,6 +41,7 @@
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@superbee/board-git": "*",
+    "@superbee/browser-local": "*",
     "@superbee/bundle-descriptor": "*",
     "@superbee/core": "*",
     "@superbee/markdown-renderer": "*",

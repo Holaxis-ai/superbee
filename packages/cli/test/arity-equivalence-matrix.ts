@@ -158,6 +158,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("login", 0),
   ordinary("whoami", 0),
   ordinary("logout", 0),
+  ordinary("checkout", 1),
 ] as const satisfies readonly BehaviorAssignment[];
 
 /** Exactly one built subprocess owner for every real key above. */

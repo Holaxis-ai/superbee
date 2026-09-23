@@ -56,5 +56,5 @@ export function renderErrorEnvelope(envelope: ErrorEnvelope): string {
 /** Usage is CLI-owned prose; substitute only its known executable command token. */
 export function renderUsage(usage:string):string {
  const bin=distributionBinName();
- return bin==='superbee'?usage:usage.replace(/\bsuperbee(?= (?:doc|init|new|bundle|catalog|index|artifact|link|list|query|delete|blobs|kind|kinds|recipe|recipes|status|serve|ui|mcp|sync|home|hook|skill|session-start|version|view|setup|promote|pull|login|whoami|logout|--help)(?:\s|$))/g,bin);
+ return bin==='superbee'?usage:usage.replace(/\bsuperbee(?= (?:doc|init|new|bundle|catalog|index|artifact|link|list|query|delete|blobs|kind|kinds|recipe|recipes|status|serve|ui|mcp|sync|home|hook|skill|session-start|version|view|setup|promote|pull|login|whoami|logout|checkout|--help)(?:\s|$))/g,bin);
 }
