@@ -284,7 +284,7 @@ function encodeValue(value: unknown, ancestors: Set<object>): unknown {
     if (value instanceof Date) return ["D", encodeValue(value.getTime(), ancestors)];
     if (value instanceof Map) return ["M", ...[...value].flatMap(([key, entry]) => [encodeValue(key, ancestors), encodeValue(entry, ancestors)])];
     if (value instanceof Set) return ["S", ...[...value].map((entry) => encodeValue(entry, ancestors))];
-    if (value instanceof RegExp) return ["R", value.source, value.flags];
+    if (value instanceof RegExp) throw new FileJournalValueError("a regular expression cannot be stored");
     if (value instanceof ArrayBuffer) return ["B", bytesOf(new Uint8Array(value))];
     if (value instanceof DataView) return ["V", bytesOf(value)];
     if (ArrayBuffer.isView(value)) {
@@ -299,6 +299,24 @@ function encodeValue(value: unknown, ancestors: Set<object>): unknown {
     return out;
   } finally {
     ancestors.delete(value);
+  }
+}
+
+/** A typed array of a fixed, named kind over `buffer`; any other name is not a value this store wrote. */
+function typedArray(name: unknown, buffer: ArrayBuffer): ArrayBufferView {
+  switch (name) {
+    case "Int8Array": return new Int8Array(buffer);
+    case "Uint8Array": return new Uint8Array(buffer);
+    case "Uint8ClampedArray": return new Uint8ClampedArray(buffer);
+    case "Int16Array": return new Int16Array(buffer);
+    case "Uint16Array": return new Uint16Array(buffer);
+    case "Int32Array": return new Int32Array(buffer);
+    case "Uint32Array": return new Uint32Array(buffer);
+    case "Float32Array": return new Float32Array(buffer);
+    case "Float64Array": return new Float64Array(buffer);
+    case "BigInt64Array": return new BigInt64Array(buffer);
+    case "BigUint64Array": return new BigUint64Array(buffer);
+    default: throw new TypeError("unknown typed array");
   }
 }
 
@@ -333,8 +351,6 @@ function decodeValue(value: unknown): unknown {
     }
     case "S":
       return new Set(rest.map(decodeValue));
-    case "R":
-      return new RegExp(rest[0] as string, rest[1] as string);
     case "B": {
       const source = bytes(rest[0]);
       return new Uint8Array(source).buffer;
@@ -344,19 +360,17 @@ function decodeValue(value: unknown): unknown {
       return new DataView(new Uint8Array(source).buffer);
     }
     case "T": {
-      const ctor = TYPED_ARRAYS[rest[0] as TypedArrayName];
-      if (!ctor) throw new TypeError("unknown typed array");
-      const source = new Uint8Array(bytes(rest[1])).buffer;
-      return new ctor(source);
+      return typedArray(rest[0], new Uint8Array(bytes(rest[1])).buffer);
     }
     case "O": {
-      const out: Record<string, unknown> = {};
+      const entries: [string, unknown][] = [];
       for (let index = 0; index < rest.length; index += 2) {
         const key = rest[index];
         if (typeof key !== "string") throw new TypeError("object key is not a string");
-        Object.defineProperty(out, key, { value: decodeValue(rest[index + 1]), enumerable: true, writable: true, configurable: true });
+        entries.push([key, decodeValue(rest[index + 1])]);
       }
-      return out;
+      // Own data properties, as structured clone makes them: a `__proto__` key stays a key.
+      return Object.fromEntries(entries);
     }
     default:
       throw new TypeError(`unknown tag ${tag}`);

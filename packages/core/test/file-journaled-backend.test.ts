@@ -489,8 +489,8 @@ test("the log is tagged JSON owned by the store: opaque meta values round-trip t
     const sparse: unknown[] = [1]; sparse[3] = "three";
     const values: Record<string, unknown> = {
       undef: undefined, nan: NaN, inf: -Infinity, negzero: -0, big: 12345678901234567890n, date: new Date(1_700_000_000_000),
-      map: new Map<unknown, unknown>([[1, { a: [true] }], ["k", new Set(["x"])]]), re: /a+b/gi, bytes: new Uint8Array([0, 255, 7]),
-      floats: new Float64Array([1.5, -2]), buffer: new Uint8Array([9, 8]).buffer, sparse, nested: { "__proto__x": null, list: [new Date(0)] },
+      map: new Map<unknown, unknown>([[1, { a: [true] }], ["k", new Set(["x"])]]), bytes: new Uint8Array([0, 255, 7]),
+      floats: new Float64Array([1.5, -2]), buffer: new Uint8Array([9, 8]).buffer, sparse, nested: { "__proto__x": null, list: [new Date(0)] }, protoKey: JSON.parse('{"__proto__": {"polluted": true}}'),
     };
     const backend = await reopened(root);
     for (const [key, value] of Object.entries(values)) await backend.writeMeta(key, value);
@@ -517,6 +517,7 @@ test("a value the log cannot hold is refused before anything is written", async 
     const size = (await logBytes(root)).byteLength;
     const cycle: Record<string, unknown> = {}; cycle.self = cycle;
     await assert.rejects(backend.writeMeta("cycle", cycle), FileJournalValueError);
+    await assert.rejects(backend.writeMeta("pattern", /a+b/), FileJournalValueError);
     assert.equal((await logBytes(root)).byteLength, size);
     assert.equal(await backend.readMeta("cycle"), undefined);
     await backend.close();
