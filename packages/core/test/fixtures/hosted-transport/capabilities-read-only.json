@@ -11,7 +11,7 @@
   "response": {
     "status": 200,
     "headers": { "content-type": "application/json; charset=utf-8" },
-    "body": "{\"heads\":true,\"snapshot\":true,\"operations\":false,\"operationsRetentionMs\":2592000000,\"bound\":{\"documents\":1000,\"bytes\":1048576},\"root\":null}",
+    "body": "{\"heads\":true,\"snapshot\":true,\"operations\":false,\"operationsRetentionMs\":2592000000,\"bound\":{\"documents\":1000,\"bytes\":1048576},\"paged\":{\"documents\":10000},\"root\":null}",
     "truncated": false
   }
 }

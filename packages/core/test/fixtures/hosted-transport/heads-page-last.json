@@ -1,0 +1,21 @@
+{
+  "name": "heads-page-last",
+  "description": "The last heads page: the remaining rows under the same count and digest, and no next cursor.",
+  "rows": ["heads 200 page"],
+  "route": "/reader/heads",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\",\"cursor\":\"7.e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14.bm90ZXMvYmV0YQ\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "etag": "\"sha256:e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14\"",
+      "x-superbee-root-version": "sha256:2d4238b1970c24a72552dc8e00a8ec0afa9a66d5f56418f8ac2fe5498945b107"
+    },
+    "body": "{\"count\":3,\"digest\":\"sha256:e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14\",\"heads\":[{\"id\":\"projects/2026/plan\",\"version\":\"sha256:422eea40f06017c6ce64c5caa63af90c8e2f4caacc1209f8e46c8335ff3f7c0d\"}]}",
+    "truncated": false
+  }
+}
