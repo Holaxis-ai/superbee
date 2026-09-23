@@ -34,7 +34,7 @@
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "test": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
-    "test:host-class": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts ./test/command-text.test.ts ./test/hosted-checkout.test.ts ./test/hosted-sync.test.ts ./test/hosted-sync-adversarial.test.ts",
+    "test:host-class": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts ./test/command-text.test.ts ./test/hosted-checkout.test.ts ./test/hosted-sync.test.ts ./test/hosted-sync-adversarial.test.ts ./test/qa-pr297-probes.test.ts",
     "mutation": "node scripts/run-test-command.mjs npm-exec stryker run",
     "prepublishOnly": "node -e \"console.error('Direct publish is disabled. Use release-cli-library.yml (cli/v<version>) and human npm approval; see CONTRIBUTING.md.'); process.exit(1)\""
   },
