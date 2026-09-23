@@ -88,6 +88,7 @@ import type { KindRegistry } from "@superbee/core/kinds";
 import type { RefusedDeletions, RefusedDeletionsReason } from "@superbee/core/platform";
 import type { RemoteBackend, WireCapabilities } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
+import { isSnapshotRestart } from "@superbee/core/hosted-transport";
 import {
   AUTHORIZATION_REFUSAL_CODES,
   isAuthorizationRefusal,
@@ -340,6 +341,33 @@ async function forEachBatch<T>(batches: readonly T[][], concurrency: number, wor
   if (failure !== null) throw failure.error;
 }
 
+function isAbsent(error: unknown): boolean {
+  return (error as { code?: unknown })?.code === "ENOENT";
+}
+
+/**
+ * `ids` as the authority holds them now, with the ids it no longer holds. `readMany` rejects a
+ * whole batch for one absent id, so only then is the batch read one id at a time.
+ */
+async function readPresent(remote: StorageBackend, ids: ConceptId[]): Promise<{ found: ReadResult[]; absent: ConceptId[] }> {
+  try {
+    return { found: await remote.readMany(ids), absent: [] };
+  } catch (error) {
+    if (!isAbsent(error)) throw error;
+  }
+  const found: ReadResult[] = [];
+  const absent: ConceptId[] = [];
+  for (const id of ids) {
+    try {
+      found.push(await remote.read(id));
+    } catch (error) {
+      if (!isAbsent(error)) throw error;
+      absent.push(id);
+    }
+  }
+  return { found, absent };
+}
+
 /** The version of the document currently stored locally, or `null` when absent. */
 async function localVersion(backend: JournaledBackend, id: ConceptId): Promise<Version | null> {
   try {
@@ -502,7 +530,20 @@ export interface BootstrapOptions extends FetchOptions {
  * copy that the snapshot did not carry are reconciled exactly as a pull reconciles deletions
  * (removed with their base, retained when a local edit holds them, refused as a whole when out
  * of bounds), and the marker records the digest the snapshot announced as `headsDigest` only
- * when the working copy now matches it. Otherwise the ids are listed and fetched in batches
+ * when the working copy now matches it.
+ *
+ * A snapshot the host restarts part-way, because the documents changed between its pages
+ * (`isSnapshotRestart`), is resumed rather than run again: one fresh heads listing, then only
+ * the listed documents this run has not already written at their listed version are read, in
+ * concurrent batches, and deletions are reconciled against that listing. Versions are content
+ * addressed, so a document written earlier in this run at its listed version is that listing's
+ * document; a document an earlier generation left is read again, as a clean snapshot would
+ * write it. The listing's digest is recorded only when every document read back at the version
+ * the listing named; when one moved or went since, the bootstrap still completes, with every
+ * document at a version the authority served and no digest, as the list path completes, so the
+ * next pull asks unconditionally. Without `heads` the restart stands.
+ *
+ * Otherwise the ids are listed and fetched in batches
  * that travel concurrently (see {@link FetchOptions}); each batch is written as it arrives,
  * through the same per-document write, and nothing is removed. A failed batch leaves the
  * marker incomplete and its error propagates once the batches in flight have finished.
@@ -532,6 +573,8 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const findings: string[] = [];
   const held: ConceptId[] = [];
+  /** The documents this run wrote, at the version the authority served; what a resumed snapshot keeps. */
+  const written = new Map<ConceptId, Version>();
   let index = 0;
   /** One document as the authority served it, into the working copy, with the marker's bookkeeping. */
   const hydrate = async (head: ReadResult, total: number, premises?: BodyRefreshPremises): Promise<void> => {
@@ -546,6 +589,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
       if (version !== head.version) {
         findings.push(`'${id}': local token ${version} differs from shared token ${head.version}`);
       }
+      written.set(id, head.version);
     } catch (error) {
       if (!(error instanceof IntentHoldConflict)) throw error;
       held.push(id);
@@ -561,32 +605,79 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   let headsDigest: string | undefined;
   let deleted: ConceptId[] = [];
   let refused: DeletionRefusal | undefined;
+  /**
+   * The rest of a snapshot the host restarted: a fresh heads listing, and only the documents this
+   * run has not written at their listed version. `consistent` says every document read back at
+   * the version the listing named, so the working copy is exactly that listing's state.
+   */
+  const resumeFromHeads = async (restart: unknown): Promise<{ listed: Set<ConceptId>; digest: string; premises?: BodyRefreshPremises; consistent: boolean }> => {
+    const lister = await wireFor(remote, local, "heads", options);
+    if (!lister) throw restart;
+    const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode) : undefined;
+    const answer = await lister.heads();
+    // A 304 answers only a conditional request, and this one carries no digest.
+    if (answer === null) throw restart;
+    await validateReadSide?.();
+    await premises?.checkAll();
+    const listed = new Set<ConceptId>();
+    const wanted = new Map<ConceptId, Version>();
+    for (const head of answer.heads) {
+      listed.add(head.id);
+      if (written.get(head.id) !== head.version) wanted.set(head.id, head.version);
+    }
+    let consistent = true;
+    // Progress restarts at the documents kept, which count as hydrated.
+    index = listed.size - wanted.size;
+    await forEachBatch(chunked([...wanted.keys()], batchSize), concurrency, async (ids) => {
+      const batchPremises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, ids) : undefined;
+      const { found, absent } = await readPresent(remote, ids);
+      for (const id of absent) {
+        listed.delete(id);
+        consistent = false;
+      }
+      for (const head of found) {
+        if (head.version !== wanted.get(head.doc.id)) consistent = false;
+        await hydrate(head, answer.heads.length, batchPremises);
+      }
+    });
+    return { listed, digest: answer.digest, ...(premises ? { premises } : {}), consistent };
+  };
+
   const wire = await wireFor(remote, local, "snapshot", options);
   if (wire) {
-    const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode) : undefined;
+    let premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode) : undefined;
     // One stream: concurrency does not apply. Each batch is written as soon as it has arrived,
     // so a cut stream leaves whole batches behind and the marker incomplete.
     const { header, docs } = await wire.snapshot();
     await validateReadSide?.();
-    const listed = new Set<ConceptId>();
+    let listed = new Set<ConceptId>();
+    let digest = header.digest;
+    let consistent = true;
     let batch: ReadResult[] = [];
-    for await (const doc of docs) {
-      listed.add(doc.id);
-      batch.push({ doc: { id: doc.id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version });
-      if (batch.length < batchSize) continue;
+    try {
+      for await (const doc of docs) {
+        listed.add(doc.id);
+        batch.push({ doc: { id: doc.id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version });
+        if (batch.length < batchSize) continue;
+        for (const head of batch) await hydrate(head, header.count, premises);
+        batch = [];
+      }
       for (const head of batch) await hydrate(head, header.count, premises);
-      batch = [];
+      // The loop ended normally, so the stream was whole and its rows digest to the header: the
+      // listing may now say what the working copy should not hold.
+    } catch (error) {
+      if (!isSnapshotRestart(error)) throw error;
+      // The documents written so far stand; the batch that had not been written is read again
+      // if the listing still names it.
+      ({ listed, digest, premises, consistent } = await resumeFromHeads(error));
     }
-    for (const head of batch) await hydrate(head, header.count, premises);
-    // The loop ended normally, so the stream was whole and its rows digest to the header: the
-    // listing may now say what the working copy should not hold.
     await validateReadSide?.();
-    const reconciled = await reconcileDeletions(backend, listed, header.digest, undefined, premises, validateReadSide);
+    const reconciled = await reconcileDeletions(backend, listed, digest, undefined, premises, validateReadSide);
     deleted = reconciled.deleted;
     held.push(...reconciled.held);
     refused = reconciled.refused;
-    documentCount = header.count;
-    if (refused === undefined) headsDigest = header.digest;
+    documentCount = listed.size;
+    if (refused === undefined && consistent) headsDigest = digest;
   } else {
     const ids = await remote.list();
     await forEachBatch(chunked(ids, batchSize), concurrency, async (batch) => {
