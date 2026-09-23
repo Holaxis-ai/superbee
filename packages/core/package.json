@@ -91,6 +91,10 @@
       "types": "./dist/remote-operations.d.ts",
       "default": "./dist/remote-operations.js"
     },
+    "./hosted-transport": {
+      "types": "./dist/hosted-transport/index.d.ts",
+      "default": "./dist/hosted-transport/index.js"
+    },
     "./storage": {
       "types": "./dist/storage.d.ts",
       "default": "./dist/storage.js"

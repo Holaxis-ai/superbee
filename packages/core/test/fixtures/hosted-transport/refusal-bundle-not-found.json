@@ -1,0 +1,17 @@
+{
+  "name": "refusal-bundle-not-found",
+  "description": "A bundle outside the caller's read access is absent from this surface.",
+  "rows": ["refusal 404 bundle_not_found"],
+  "route": "/reader/heads",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 404,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"error\":{\"code\":\"bundle_not_found\",\"message\":\"The bundle is unavailable for this operation. Check your bundle access with a workspace administrator.\",\"retryable\":false}}",
+    "truncated": false
+  }
+}
