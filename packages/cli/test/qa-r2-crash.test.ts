@@ -1,4 +1,4 @@
-// Adversarial QA for PR 297 (head 2163424d): SIGKILL just before every side effect of the delete
+// Adversarial QA round 2 (18466ef1): the adopted sweep plus a window case. Adversarial QA for PR 297 (head 2163424d): SIGKILL just before every side effect of the delete
 // and re-create paths (a scan-journaled delete, keep and take on a deletion in conflict, the
 // checkout's own re-create after its delete, and keep on "deleted remotely"), then recover and
 // check the outcome matches the decision: one tombstone, no duplicate create, nothing lost.
@@ -125,6 +125,20 @@ async function deletedRemotelyInspected(): Promise<S> {
   return s;
 }
 
+const BULK = Array.from({ length: 20 }, (_, i) => `bulk/n${String(i).padStart(2, "0")}`);
+async function sevenOf23(): Promise<S> {
+  const host = new FakeHost();
+  for (const id of BULK) host.put(id, { type: "Note", title: id }, "x\n");
+  current = host;
+  const home = await mkdtemp(path.join(tmpdir(), "sb-qa297c-home-"));
+  const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-qa297c-cwd-")));
+  const auth = defaultHostedAuthDeps(home, { env: { SUPERBEE_ACCESS_TOKEN: TOKEN }, fetch: async () => { throw new Error("no sign-in"); } });
+  await checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth, cwd, fetch: host.fetch });
+  const s = { host, home, cwd, folder: path.join(cwd, "team"), auth };
+  for (const id of BULK.slice(0, 7)) await unlink(path.join(s.folder, `${id}.md`));
+  return s;
+}
+
 function child(env: Record<string, unknown>): Promise<{ signal: NodeJS.Signals | null; code: number | null; stderr: string }> {
   return new Promise((resolve) => {
     const proc = spawn(process.execPath, ["--import", "./test/ts-loader.mjs", "./test/support/qa-pr297-child.ts"], { cwd: CLI_ROOT, env: { ...process.env, QA_CHILD: JSON.stringify(env) }, stdio: ["ignore", "ignore", "pipe"] });
@@ -168,6 +182,21 @@ const gone = async (s: S, expectTombs: number) => {
 };
 
 const CASES: Case[] = [
+  {
+    name: "7 of 23 deleted, sync; afterwards 7 more must still be held (the window survives the crash)",
+    setup: sevenOf23,
+    argv: [],
+    check: async (s) => {
+      const p: string[] = [];
+      const gone = BULK.slice(0, 7).filter((id) => !s.host.docs.has(id)).length;
+      if (gone !== 7) p.push(`${gone} of the first 7 deleted`);
+      for (const id of BULK.slice(7, 14)) await unlink(path.join(s.folder, `${id}.md`));
+      const r = await run(s);
+      const held = ((r.receipt?.rows as { reason: string }[]) ?? []).filter((row) => row.reason === "bulk_deletion").length;
+      if (held !== 7) p.push(`second batch held=${held} (window lost by the crash); host holds ${s.host.docs.size}`);
+      return p;
+    },
+  },
   { name: "scan-journaled delete, sync", setup: plainDelete, argv: [], check: (s) => gone(s, 1) },
   { name: "deletion in conflict, --resolve keep", setup: deletionInConflict, argv: ["--resolve", "keep", "--doc", "notes/alpha"], check: (s) => gone(s, 1) },
   {
@@ -211,7 +240,7 @@ const CASES: Case[] = [
   },
 ];
 
-for (const c of CASES) {
+for (const c of CASES.filter((c) => !process.env.QA_ONLY || c.name.startsWith(process.env.QA_ONLY))) {
   test(`SIGKILL at every step: ${c.name}`, { timeout: 1_800_000 }, async () => {
     const { server, url } = await bridge();
     const failures: string[] = [];

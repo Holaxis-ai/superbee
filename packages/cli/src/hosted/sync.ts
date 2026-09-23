@@ -63,7 +63,6 @@ import {
   folderConflictFor,
   folderConflicts,
   inboundLinks,
-  recordAcknowledgedDeletes,
   readProjection,
   removeGuarded,
   scanCheckout,
@@ -82,7 +81,7 @@ Usage:
   superbee sync [--dir <folder>] [--limit <n>] [--json]
   superbee sync --inspect <id> [--out <file>] [--dir <folder>] [--json]
   superbee sync --resolve keep|take|revise --doc <id> [--dir <folder>] [--json]
-  superbee sync --accept-deletes <n> | --restore-deletes [--dir <folder>] [--json]
+  superbee sync --restore-deletes | --accept-deletes <token> [--dir <folder>] [--json]
 
 Each edited file is sent as one whole document under your own access, with no approval step;
 documents changed on the host are refreshed in the folder. A change to one document and a
@@ -97,8 +96,10 @@ comes back as a conflict row, and nothing is sent for it until you resolve it:
 A deleted file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
 document's history. A mass delete is held: when the deletes of the last day (sent, unsent and
 new) are more than half the checkout and at least 3 (or every document of a smaller one), the new
-ones are not sent. --accept-deletes <n> sends the n held deletions; --restore-deletes puts held
+ones are not sent, and they stay held until restored or accepted. --restore-deletes puts held
 and unsent deleted files back (so does --resolve take --doc <id> for one of them).
+--accept-deletes <token> sends exactly the held set the receipt names: an agent runs it only
+after the person explicitly confirms removing those documents.
 On a document deleted on the host, --resolve keep re-creates it, and only after --inspect has
 shown the deletion it re-creates; on a document you deleted that changed on the host, keep
 deletes the host's version and take brings it back. A file edited while the host changed or
@@ -225,7 +226,7 @@ function parseHosted(argv: string[]): HostedValues {
   }
   const accept = values["accept-deletes"];
   if (accept !== undefined) {
-    if (!/^[1-9][0-9]{0,6}$/.test(accept)) throw new CliError("USAGE", `--accept-deletes takes the number of held deletions, not '${accept}'`, { help: `${inv} sync --accept-deletes <n>` });
+    if (!/^[1-9][0-9]{0,6}:[0-9a-f]{12}$/.test(accept)) throw new CliError("USAGE", `--accept-deletes takes the token printed with the held deletions (<count>:<digest>), not '${accept}'`, { help: `${inv} sync (the receipt's deletions_held names the token)` });
     if (values.inspect !== undefined || values.resolve !== undefined || values["restore-deletes"]) throw new CliError("USAGE", "--accept-deletes goes with a plain sync", { help: `${inv} sync --accept-deletes ${commandToken(accept)}` });
   }
   if (values["restore-deletes"] && (values.inspect !== undefined || values.resolve !== undefined)) {
@@ -553,7 +554,6 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     if (pass === PUSH_PASSES - 1 || (await requeueBusy(store)) === 0) break;
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  await recordAcknowledgedDeletes(store, deletedIntents);
   return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions };
 }
 
@@ -606,7 +606,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // An earlier run that died mid-push left its claims in flight; this run holds the lock, so no
     // push is live, and each such change is looked up before it is ever sent again.
     await reclaimInFlight(local);
-    const acceptDeletes = values["accept-deletes"] === undefined ? undefined : Number(values["accept-deletes"]);
+    const acceptDeletes = values["accept-deletes"];
     const scan = await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, ...(acceptDeletes !== undefined ? { acceptDeletes } : {}) });
     await session.persist();
     const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length;
@@ -666,11 +666,17 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
         ? {
             deletions_held: {
               count: scan.hold.count,
+              documents: scan.hold.ids.slice(0, 50),
               window_deletions: scan.hold.deletions,
               baseline: scan.hold.baseline,
-              ...(scan.hold.acceptMismatch !== undefined ? { accept_mismatch: `--accept-deletes ${scan.hold.acceptMismatch} names another count than the ${scan.hold.count} held; nothing was accepted` } : {}),
-              accept: syncCommand(binding, commandFragment` --accept-deletes ${commandToken(String(scan.hold.count))}`),
+              ...(scan.hold.pending ? { held_since_earlier_sync: true } : {}),
+              ...(scan.hold.acceptMismatch !== undefined ? { accept_mismatch: `the token given (${JSON.stringify(scan.hold.acceptMismatch)}) does not name the held set (${scan.hold.token}); nothing was accepted` } : {}),
               restore: syncCommand(binding, commandLiteral(" --restore-deletes")),
+              confirmation_required: {
+                agent_instruction: `Do not run this yourself. Ask the person whether these ${scan.hold.count} documents should be removed from the bundle, naming them. Only after they explicitly confirm, run the command; otherwise restore the files.`,
+                token: scan.hold.token,
+                command_after_confirmation: syncCommand(binding, commandFragment` --accept-deletes ${commandToken(scan.hold.token)}`),
+              },
             },
           }
         : {}),

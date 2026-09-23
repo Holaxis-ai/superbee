@@ -605,17 +605,20 @@ test("DC1d a scoped resolve of another document pulls a host edit of a document 
   assert.equal(h.host.docs.get("notes/alpha")?.version, theirs, "the host edit was deleted");
 });
 
-test("MD1c a held mass delete is released only by --accept-deletes with the exact count, and restored by --restore-deletes", async () => {
+test("MD1c a held mass delete is released only by --accept-deletes naming the exact held set, and restored by --restore-deletes", async () => {
   const h = await harness(bulkHost(9));
   for (const id of bulkIds(9)) await unlink(fileOf(h, id));
   const held = await fails(h);
-  const hold = held.receipt?.deletions_held as { count: number; accept: string; restore: string };
+  const hold = held.receipt?.deletions_held as { count: number; restore: string; confirmation_required: { token: string; agent_instruction: string; command_after_confirmation: string } };
   assert.equal(hold.count, 9);
-  assert.match(hold.accept, /--accept-deletes 9/);
-  const wrong = await fails(h, ["--accept-deletes", "8"]);
-  assert.match(String((wrong.receipt?.deletions_held as { accept_mismatch?: string }).accept_mismatch), /another count/);
+  assert.match(hold.confirmation_required.token, /^9:[0-9a-f]{12}$/);
+  assert.match(hold.confirmation_required.agent_instruction, /Do not run this yourself/);
+  assert.match(hold.confirmation_required.command_after_confirmation, new RegExp(`--accept-deletes ${hold.confirmation_required.token}`));
+  assert.ok(!("accept" in hold), "the accept is never offered as a ready next step");
+  const wrong = await fails(h, ["--accept-deletes", `8:${hold.confirmation_required.token.split(":")[1]}`]);
+  assert.match(String((wrong.receipt?.deletions_held as { accept_mismatch?: string }).accept_mismatch), /does not name the held set/);
   assert.equal(deletes(h).length, 0);
-  const accepted = await ok(h, ["--accept-deletes", "9"]);
+  const accepted = await ok(h, ["--accept-deletes", hold.confirmation_required.token]);
   assert.equal(accepted.deletions_accepted, 9);
   assert.equal(deletes(h).length, 9);
   // The acceptance starts a new window: one more delete is not held by the ones just accepted.
