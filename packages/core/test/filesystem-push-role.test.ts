@@ -83,6 +83,71 @@ test("a role another process holds is held elsewhere; once that process dies it 
   }
 });
 
+/** Messages from a forked fixture, in order: `next()` answers the next one, or rejects if the child exits first. */
+function messages(child: ChildProcess): { next(): Promise<Record<string, unknown>> } {
+  const queue: Record<string, unknown>[] = [];
+  const waiters: { resolve(message: Record<string, unknown>): void; reject(error: Error): void }[] = [];
+  let stderr = "";
+  let exited = false;
+  child.stderr?.on("data", (chunk) => (stderr += chunk));
+  child.on("message", (message: Record<string, unknown>) => {
+    const waiter = waiters.shift();
+    if (waiter) waiter.resolve(message);
+    else queue.push(message);
+  });
+  child.on("exit", () => {
+    exited = true;
+    for (const waiter of waiters.splice(0)) waiter.reject(new Error(`child exited: ${stderr}`));
+  });
+  return {
+    next: () => {
+      const queued = queue.shift();
+      if (queued) return Promise.resolve(queued);
+      if (exited) return Promise.reject(new Error(`child exited: ${stderr}`));
+      return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
+    },
+  };
+}
+
+test("a claimer that resumes after its orphaned lock was removed and claimed again never deletes the new holder's lock", { timeout: 30_000 }, async () => {
+  const { root, cleanup } = await lockRoot();
+  const lock = path.join(root, `${pushRoleLockKey(ROLE)}.lock`);
+  const claimer = fork(path.join(HERE, "fixtures", "push-role-paused-claimer-child.ts"), [ROLE, root], {
+    execArgv: ["--import", path.join(HERE, "ts-loader.mjs")],
+    stdio: ["ignore", "ignore", "pipe", "ipc"],
+  });
+  const fromClaimer = messages(claimer);
+  let second: ReturnType<typeof holder> | undefined;
+  try {
+    // The first process has made the lock directory and is suspended before its owner record.
+    assert.deepEqual(await fromClaimer.next(), { type: "paused" });
+    assert.deepEqual(await fs.readdir(lock), []);
+    // A person, told the owner-less lock is orphaned, removes it; a second process claims the role.
+    await fs.rm(lock, { recursive: true });
+    second = holder(root);
+    assert.equal(await second.holding, "holding");
+    const holderRecord = JSON.parse(await fs.readFile(path.join(lock, "owner.json"), "utf8")) as { pid: number; token: string };
+    assert.equal(holderRecord.pid, second.child.pid);
+
+    // The first process resumes: its owner record cannot be written into the second's lock.
+    claimer.send({ type: "resume" });
+    const outcome = await fromClaimer.next();
+
+    // The second process's lock, record and all, is untouched, so the role stays exclusive.
+    const after = await fs.readFile(path.join(lock, "owner.json"), "utf8").then((raw) => JSON.parse(raw) as unknown, (error: NodeJS.ErrnoException) => error.code);
+    assert.deepEqual(after, holderRecord);
+    // The first process lost its claim and reports the role held elsewhere, as any later claimer would.
+    assert.deepEqual(outcome, { type: "held-elsewhere" });
+    const locks = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10 });
+    assert.deepEqual(await withRole(locks, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+  } finally {
+    claimer.kill("SIGKILL");
+    second?.child.kill("SIGKILL");
+    await second?.exited;
+    await cleanup();
+  }
+});
+
 test("a role lock with no owner record past the claim grace is an unknown holder: the request rejects instead of reporting held elsewhere", async () => {
   const { root, cleanup } = await lockRoot();
   try {
