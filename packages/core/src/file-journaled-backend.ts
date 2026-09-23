@@ -1,12 +1,15 @@
 /**
+ * Experimental (`0.2.0-pre`): the API and the on-disk format may change before a stable release.
+ *
  * A Node {@link JournaledBackend}: the private store behind a CLI working copy, proven by the
  * same contract kit as the IndexedDB adapter. It is an append-only, checksummed transaction log
  * over an in-memory index, in one directory the store owns:
  *
  * - `store.log` holds one record per transaction. A record is the transaction's effect as a list
  *   of absolute puts and removals over the five record families (documents, reserved files,
- *   blobs, intents, meta) plus the intent sequence, framed as magic, length, SHA-256 of the
- *   payload, payload. Every check a verb makes runs synchronously against the index before its
+ *   blobs, intents, meta) plus the intent sequence, framed as magic, format version, length,
+ *   SHA-256 of the payload, payload. The payload is tagged JSON this module owns, so the bytes
+ *   never depend on the Node version that wrote them. Every check a verb makes runs synchronously against the index before its
  *   record is written; the record is written at the log's end and fsynced, and only then applied
  *   to the index and the verb resolved. So a resolved write survives a crash, a rejected one
  *   left nothing behind, and a record that was never fsynced was never acknowledged.
@@ -16,10 +19,10 @@
  *   the whole log, or the new snapshot and log records it already covers, which open skips by
  *   transaction number.
  *
- * At open the snapshot is loaded and the log replayed. An invalid record at the log's end is a
- * torn write (the append that was interrupted, never acknowledged) and is truncated away; an
- * invalid record followed by more data is corruption, and open refuses without touching the
- * files. One transaction spans documents, intents and meta, which is what the seam requires:
+ * At open the snapshot is loaded and the log replayed. Bytes after the last whole record are a
+ * torn write (the one append that can be interrupted, never acknowledged, its pages persisted in
+ * any order) and are truncated away, unless a whole record begins inside them: that is
+ * corruption, and open refuses without touching the files. One transaction spans documents, intents and meta, which is what the seam requires:
  * the engine settles an intent together with the global pause flag, and writes a receipt, a
  * base and a body record at once.
  *
@@ -35,9 +38,10 @@
 
 import { promises as fs, type Stats } from "node:fs";
 import path from "node:path";
-import { deserialize, serialize } from "node:v8";
 
 import { resolveContentType } from "./content-type.js";
+import { OPEN_LOG, STORE_RAW, type FileJournalHandle } from "./file-journaled-backend-internal.js";
+import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 import { acquireFilesystemMutationLock, type FilesystemMutationLockOptions } from "./filesystem-lock.js";
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
 import {
@@ -104,10 +108,8 @@ const SNAPSHOT_TEMP = "store.snapshot.tmp";
 const RECORD_MAGIC = 0x53424a52; // "SBJR"
 const RECORD_MAGIC_BYTES = Buffer.from([0x53, 0x42, 0x4a, 0x52]);
 const SNAPSHOT_MAGIC = 0x53424a53; // "SBJS"
-/** magic (4) + payload length (4) + SHA-256 of the payload (32). */
-const RECORD_HEADER = 40;
-/** magic (4) + format version (4) + payload length (4) + SHA-256 of the payload (32). */
-const SNAPSHOT_HEADER = 44;
+/** Every record and the snapshot: magic (4) + format version (4) + payload length (4) + SHA-256 of the payload (32). */
+const HEADER = 44;
 /** A record larger than this is refused at write and read as corruption at open. */
 const MAXIMUM_RECORD_BYTES = 256 * 1024 * 1024;
 const DEFAULT_COMPACT_AFTER_BYTES = 8 * 1024 * 1024;
@@ -201,13 +203,23 @@ function applyChanges(state: State, changes: readonly Change[]): void {
 
 /** The store's files do not hold a log or snapshot this adapter wrote; open changes nothing. */
 export class FileJournalCorruptError extends Error {
-  override readonly name = "FileJournalCorruptError";
+  override readonly name: string = "FileJournalCorruptError";
   readonly file: string;
   readonly offset: number | undefined;
   constructor(file: string, message: string, offset?: number) {
     super(`${file}${offset === undefined ? "" : ` at byte ${offset}`}: ${message}`);
     this.file = file;
     this.offset = offset;
+  }
+}
+
+/** A whole, checksummed record or snapshot in a format this adapter does not read (a newer store wrote it). */
+export class FileJournalFormatError extends FileJournalCorruptError {
+  override readonly name = "FileJournalFormatError";
+  readonly format: number;
+  constructor(file: string, format: number, offset?: number) {
+    super(file, `written in store format ${format}; this adapter reads only format ${FILE_JOURNAL_FORMAT_VERSION}`, offset);
+    this.format = format;
   }
 }
 
@@ -219,19 +231,165 @@ export class FileJournalUnavailableError extends Error {
   override readonly name = "FileJournalUnavailableError";
 }
 
-function frame(magic: number, header: number, payload: Uint8Array, format?: number): Buffer {
-  const out = Buffer.alloc(header + payload.byteLength);
-  let at = 0;
-  out.writeUInt32BE(magic, at); at += 4;
-  if (format !== undefined) { out.writeUInt32BE(format, at); at += 4; }
-  out.writeUInt32BE(payload.byteLength, at); at += 4;
-  Buffer.from(sha256HexOfBytes(payload), "hex").copy(out, at); at += 32;
-  Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength).copy(out, at);
+// ── the payload codec ──────────────────────────────────────────────────────────────────────
+//
+// Payloads are UTF-8 JSON in a tagged form that carries what the journal seam's opaque meta
+// rows may hold (the structured-clone values: undefined, special numbers, bigint, Date, Map,
+// Set, RegExp, typed arrays), so the bytes on disk depend on this module alone and never on the
+// Node or V8 version that wrote them. A JSON string, boolean, null or finite number stands for
+// itself; every other value is an array whose first element is its tag.
+
+const TYPED_ARRAYS = {
+  Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array,
+  Float32Array, Float64Array, BigInt64Array, BigUint64Array,
+} as const;
+type TypedArrayName = keyof typeof TYPED_ARRAYS;
+
+/** A value the codec cannot persist; the mutation carrying it is refused before anything is written. */
+export class FileJournalValueError extends TypeError {
+  override readonly name = "FileJournalValueError";
+}
+
+const bytesOf = (view: ArrayBufferView): string => Buffer.from(view.buffer, view.byteOffset, view.byteLength).toString("base64");
+
+function encodeValue(value: unknown, ancestors: Set<object>): unknown {
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return value;
+    case "undefined":
+      return ["U"];
+    case "bigint":
+      return ["I", value.toString()];
+    case "number":
+      if (Number.isNaN(value)) return ["N", "NaN"];
+      if (value === Infinity) return ["N", "Infinity"];
+      if (value === -Infinity) return ["N", "-Infinity"];
+      if (Object.is(value, -0)) return ["N", "-0"];
+      return value;
+    case "object":
+      break;
+    default:
+      throw new FileJournalValueError(`a ${typeof value} cannot be stored`);
+  }
+  if (value === null) return null;
+  if (ancestors.has(value)) throw new FileJournalValueError("a cyclic value cannot be stored");
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const out: unknown[] = ["A"];
+      for (let index = 0; index < value.length; index++) out.push(index in value ? encodeValue(value[index], ancestors) : ["H"]);
+      return out;
+    }
+    if (value instanceof Date) return ["D", encodeValue(value.getTime(), ancestors)];
+    if (value instanceof Map) return ["M", ...[...value].flatMap(([key, entry]) => [encodeValue(key, ancestors), encodeValue(entry, ancestors)])];
+    if (value instanceof Set) return ["S", ...[...value].map((entry) => encodeValue(entry, ancestors))];
+    if (value instanceof RegExp) return ["R", value.source, value.flags];
+    if (value instanceof ArrayBuffer) return ["B", bytesOf(new Uint8Array(value))];
+    if (value instanceof DataView) return ["V", bytesOf(value)];
+    if (ArrayBuffer.isView(value)) {
+      const name = (Object.keys(TYPED_ARRAYS) as TypedArrayName[]).find((candidate) => value instanceof TYPED_ARRAYS[candidate]);
+      if (!name) throw new FileJournalValueError("an unsupported typed array cannot be stored");
+      return ["T", name, bytesOf(value)];
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw new FileJournalValueError("only plain objects and structured-clone built-ins can be stored");
+    const out: unknown[] = ["O"];
+    for (const [key, entry] of Object.entries(value)) out.push(key, encodeValue(entry, ancestors));
+    return out;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function decodeValue(value: unknown): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") return value;
+  if (!Array.isArray(value) || typeof value[0] !== "string") throw new TypeError("untagged value");
+  const [tag, ...rest] = value as [string, ...unknown[]];
+  const bytes = (text: unknown) => {
+    if (typeof text !== "string") throw new TypeError("bytes are not base64");
+    return Buffer.from(text, "base64");
+  };
+  switch (tag) {
+    case "U":
+      return undefined;
+    case "I":
+      return BigInt(rest[0] as string);
+    case "N":
+      return ({ NaN, Infinity, "-Infinity": -Infinity, "-0": -0 } as Record<string, number>)[rest[0] as string] ?? (() => { throw new TypeError("unknown number"); })();
+    case "A": {
+      const out: unknown[] = new Array(rest.length);
+      rest.forEach((entry, index) => {
+        if (!(Array.isArray(entry) && entry.length === 1 && entry[0] === "H")) out[index] = decodeValue(entry);
+      });
+      return out;
+    }
+    case "D":
+      return new Date(decodeValue(rest[0]) as number);
+    case "M": {
+      const out = new Map();
+      for (let index = 0; index < rest.length; index += 2) out.set(decodeValue(rest[index]), decodeValue(rest[index + 1]));
+      return out;
+    }
+    case "S":
+      return new Set(rest.map(decodeValue));
+    case "R":
+      return new RegExp(rest[0] as string, rest[1] as string);
+    case "B": {
+      const source = bytes(rest[0]);
+      return new Uint8Array(source).buffer;
+    }
+    case "V": {
+      const source = bytes(rest[0]);
+      return new DataView(new Uint8Array(source).buffer);
+    }
+    case "T": {
+      const ctor = TYPED_ARRAYS[rest[0] as TypedArrayName];
+      if (!ctor) throw new TypeError("unknown typed array");
+      const source = new Uint8Array(bytes(rest[1])).buffer;
+      return new ctor(source);
+    }
+    case "O": {
+      const out: Record<string, unknown> = {};
+      for (let index = 0; index < rest.length; index += 2) {
+        const key = rest[index];
+        if (typeof key !== "string") throw new TypeError("object key is not a string");
+        Object.defineProperty(out, key, { value: decodeValue(rest[index + 1]), enumerable: true, writable: true, configurable: true });
+      }
+      return out;
+    }
+    default:
+      throw new TypeError(`unknown tag ${tag}`);
+  }
+}
+
+const utf8 = new TextEncoder();
+const encodePayload = (value: unknown): Uint8Array => utf8.encode(JSON.stringify(encodeValue(value, new Set())));
+const decodePayload = (bytes: Uint8Array): unknown => decodeValue(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+
+// ── framing ────────────────────────────────────────────────────────────────────────────────
+
+/** magic (4) + format version (4) + payload length (4) + SHA-256 of the payload (32), then the payload. */
+function frame(magic: number, payload: Uint8Array): Buffer {
+  const out = Buffer.alloc(HEADER + payload.byteLength);
+  out.writeUInt32BE(magic, 0);
+  out.writeUInt32BE(FILE_JOURNAL_FORMAT_VERSION, 4);
+  out.writeUInt32BE(payload.byteLength, 8);
+  Buffer.from(sha256HexOfBytes(payload), "hex").copy(out, 12);
+  Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength).copy(out, HEADER);
   return out;
 }
 
-function checksumMatches(expected: Buffer, payload: Buffer): boolean {
-  return Buffer.from(sha256HexOfBytes(payload), "hex").equals(expected);
+/** A whole, checksummed frame starting at `at`, or `null` when the bytes there are not one. */
+function frameAt(bytes: Buffer, at: number, magic: number): { format: number; payload: Buffer; end: number } | null {
+  if (bytes.byteLength - at < HEADER || bytes.readUInt32BE(at) !== magic) return null;
+  const length = bytes.readUInt32BE(at + 8);
+  if (length > MAXIMUM_RECORD_BYTES) return null;
+  const end = at + HEADER + length;
+  if (end > bytes.byteLength) return null;
+  const payload = bytes.subarray(at + HEADER, end);
+  if (!Buffer.from(sha256HexOfBytes(payload), "hex").equals(bytes.subarray(at + 12, at + HEADER))) return null;
+  return { format: bytes.readUInt32BE(at + 4), payload, end };
 }
 
 /** The result of reading `store.log`: the records that are whole, and where the valid prefix ends. */
@@ -241,64 +399,54 @@ interface ScannedLog {
   totalBytes: number;
 }
 
+/** Whether a whole, checksummed record begins anywhere at or after `from`. */
+function wholeRecordFrom(bytes: Buffer, from: number): boolean {
+  for (let at = bytes.indexOf(RECORD_MAGIC_BYTES, from); at !== -1; at = bytes.indexOf(RECORD_MAGIC_BYTES, at + 1)) {
+    if (frameAt(bytes, at, RECORD_MAGIC)) return true;
+  }
+  return false;
+}
+
 /**
- * Split a log into whole records. An invalid record is a torn tail when nothing after it could be
- * a later record: its header or declared payload runs past the end, its checksum fails and it
- * ends exactly at the end, or everything from it on is zero (a file a crash extended but never
- * filled). Anything else is corruption.
+ * Split a log into whole records. Every record but the last was fsynced before the next was
+ * written, so only the last append can be incomplete, and its pages may have reached the disk
+ * in any order: cut short, zero-filled, zero at the front with data behind, or with a header
+ * whose length was never written. So the bytes after the last whole record are a torn tail
+ * exactly when no whole, checksummed record begins anywhere inside them; when one does, a record
+ * the store acknowledged is damaged, and that is corruption.
  */
 function scanLog(bytes: Buffer, file: string): ScannedLog {
   const records: LogRecord[] = [];
   let at = 0;
-  const torn = (): ScannedLog => ({ records, validBytes: at, totalBytes: bytes.byteLength });
   while (at < bytes.byteLength) {
-    const remaining = bytes.byteLength - at;
-    const zeroTail = () => bytes.subarray(at).every((byte) => byte === 0);
-    if (remaining < RECORD_HEADER) {
-      const head = bytes.subarray(at, at + Math.min(4, remaining));
-      if (head.equals(RECORD_MAGIC_BYTES.subarray(0, head.byteLength)) || zeroTail()) return torn();
-      throw new FileJournalCorruptError(file, "unrecognized bytes where a record should start", at);
+    const found = frameAt(bytes, at, RECORD_MAGIC);
+    if (!found) {
+      if (wholeRecordFrom(bytes, at + 1)) throw new FileJournalCorruptError(file, "a damaged record is followed by a whole one", at);
+      return { records, validBytes: at, totalBytes: bytes.byteLength };
     }
-    if (bytes.readUInt32BE(at) !== RECORD_MAGIC) {
-      if (zeroTail()) return torn();
-      throw new FileJournalCorruptError(file, "unrecognized bytes where a record should start", at);
-    }
-    const length = bytes.readUInt32BE(at + 4);
-    if (length > MAXIMUM_RECORD_BYTES) throw new FileJournalCorruptError(file, `record declares ${length} bytes`, at);
-    const end = at + RECORD_HEADER + length;
-    if (end > bytes.byteLength) return torn();
-    const payload = bytes.subarray(at + RECORD_HEADER, end);
-    if (!checksumMatches(bytes.subarray(at + 8, at + RECORD_HEADER), payload)) {
-      if (end === bytes.byteLength) return torn();
-      throw new FileJournalCorruptError(file, "record checksum does not match and more records follow", at);
-    }
+    if (found.format !== FILE_JOURNAL_FORMAT_VERSION) throw new FileJournalFormatError(file, found.format, at);
     let record: LogRecord;
     try {
-      record = deserialize(payload) as LogRecord;
+      record = decodePayload(found.payload) as LogRecord;
     } catch {
       throw new FileJournalCorruptError(file, "record checksum matches but its payload does not decode", at);
     }
     if (!record || !Number.isSafeInteger(record.txn) || !Array.isArray(record.changes))
       throw new FileJournalCorruptError(file, "record has no transaction number or changes", at);
     records.push(record);
-    at = end;
+    at = found.end;
   }
   return { records, validBytes: at, totalBytes: bytes.byteLength };
 }
 
 function decodeSnapshot(bytes: Buffer, file: string): SnapshotPayload {
-  if (bytes.byteLength < SNAPSHOT_HEADER || bytes.readUInt32BE(0) !== SNAPSHOT_MAGIC)
-    throw new FileJournalCorruptError(file, "not a store snapshot");
-  const format = bytes.readUInt32BE(4);
-  if (format !== FILE_JOURNAL_FORMAT_VERSION)
-    throw new FileJournalCorruptError(file, `snapshot format ${format}; this adapter reads only format ${FILE_JOURNAL_FORMAT_VERSION}`);
-  const length = bytes.readUInt32BE(8);
-  if (SNAPSHOT_HEADER + length !== bytes.byteLength) throw new FileJournalCorruptError(file, "snapshot length does not match the file");
-  const payload = bytes.subarray(SNAPSHOT_HEADER);
-  if (!checksumMatches(bytes.subarray(12, SNAPSHOT_HEADER), payload)) throw new FileJournalCorruptError(file, "snapshot checksum does not match");
+  if (bytes.byteLength < HEADER || bytes.readUInt32BE(0) !== SNAPSHOT_MAGIC) throw new FileJournalCorruptError(file, "not a store snapshot");
+  const found = frameAt(bytes, 0, SNAPSHOT_MAGIC);
+  if (!found || found.end !== bytes.byteLength) throw new FileJournalCorruptError(file, "snapshot checksum or length does not match");
+  if (found.format !== FILE_JOURNAL_FORMAT_VERSION) throw new FileJournalFormatError(file, found.format);
   let decoded: SnapshotPayload;
   try {
-    decoded = deserialize(payload) as SnapshotPayload;
+    decoded = decodePayload(found.payload) as SnapshotPayload;
   } catch {
     throw new FileJournalCorruptError(file, "snapshot checksum matches but its payload does not decode");
   }
@@ -360,14 +508,6 @@ function headOf(id: ConceptId, record: DocumentRecord, intents: IntentRecord[], 
 
 // ── the adapter ────────────────────────────────────────────────────────────────────────────
 
-/** The file operations the store performs; a test substitutes a handle that fails on cue. */
-export interface FileJournalHandle {
-  write(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ bytesWritten: number }>;
-  sync(): Promise<void>;
-  truncate(length: number): Promise<void>;
-  close(): Promise<void>;
-}
-
 export interface FileJournaledBackendOptions {
   /** The directory that holds this store's log and snapshot. Created (mode 0700) when absent. */
   directory: string;
@@ -376,18 +516,45 @@ export interface FileJournaledBackendOptions {
    * tests, the lock namespace. The default waits five seconds in the per-user runtime namespace.
    */
   lock?: Pick<FilesystemMutationLockOptions, "waitMs" | "pollMs" | "lockRoot">;
+  /**
+   * The trusted host construction, as every Node filesystem protocol in core takes it. Omitted,
+   * the supported default (macOS and Linux); another host (the Windows distribution) passes its
+   * own. It decides the lock namespace and which replacement errors are transient.
+   */
+  hostPolicy?: FilesystemHostPolicy;
   /** Open compacts when the log is larger than this many bytes. Default 8 MiB. */
   compactAfterBytes?: number;
-  /** @internal Opens the existing log for positional writes (`r+`); a test wraps the real handle to fail on cue. */
-  openLog?: (file: string) => Promise<FileJournalHandle>;
 }
 
+/**
+ * Make a directory entry durable. Windows cannot open a directory as a file handle to flush it
+ * (NTFS journals its own metadata), so there the open or flush refusal is expected and skipped;
+ * on every other host it propagates.
+ */
 async function syncDirectory(directory: string): Promise<void> {
-  const handle = await fs.open(directory, "r");
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   try {
+    handle = await fs.open(directory, "r");
     await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!(process.platform === "win32" && (code === "EISDIR" || code === "EPERM" || code === "EACCES" || code === "EINVAL" || code === "ENOTSUP"))) throw error;
   } finally {
-    await handle.close();
+    await handle?.close();
+  }
+}
+
+/** Rename over `to`, retrying what the host classifies as a transient replacement conflict (a scanner holding the file open). */
+async function renameOver(from: string, to: string, policy: FilesystemHostPolicy, waitMs: number, pollMs: number): Promise<void> {
+  const started = Date.now();
+  for (;;) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (error) {
+      if (!policy.isReplacementConflict(error) || Date.now() - started >= waitMs) throw error;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
   }
 }
 
@@ -428,14 +595,16 @@ export class FileJournaledBackend implements JournaledBackend {
   readonly #state: State;
   readonly #log: FileJournalHandle;
   readonly #release: () => Promise<void>;
+  readonly #policy: FilesystemHostPolicy;
   #txn: number;
   #logBytes: number;
   #queue: Promise<unknown> = Promise.resolve();
   #unavailable: Error | null = null;
   #closing: Promise<void> | null = null;
 
-  private constructor(directory: string, state: State, log: FileJournalHandle, release: () => Promise<void>, txn: number, logBytes: number) {
+  private constructor(directory: string, state: State, log: FileJournalHandle, release: () => Promise<void>, txn: number, logBytes: number, policy: FilesystemHostPolicy) {
     this.directory = directory;
+    this.#policy = policy;
     this.#state = state;
     this.#log = log;
     this.#release = release;
@@ -448,7 +617,16 @@ export class FileJournaledBackend implements JournaledBackend {
    * corrupt snapshot or a corrupt record before the log's end refuses the open and changes no
    * file. Compacts when the log is larger than `compactAfterBytes`.
    */
-  static async open(options: FileJournaledBackendOptions): Promise<FileJournaledBackend> {
+  static open(options: FileJournaledBackendOptions): Promise<FileJournaledBackend> {
+    return FileJournaledBackend.#open(options, (file) => fs.open(file, "r+"));
+  }
+
+  /** @internal The test seam: open with a substitute log handle. Reachable only through {@link OPEN_LOG}. */
+  static [OPEN_LOG](options: FileJournaledBackendOptions, openLog: (file: string) => Promise<FileJournalHandle>): Promise<FileJournaledBackend> {
+    return FileJournaledBackend.#open(options, openLog);
+  }
+
+  static async #open(options: FileJournaledBackendOptions, openLog: (file: string) => Promise<FileJournalHandle>): Promise<FileJournaledBackend> {
     if (typeof options.directory !== "string" || options.directory.trim() === "") throw new TypeError("FileJournaledBackend requires a directory.");
     const directory = path.resolve(options.directory);
     const compactAfter = options.compactAfterBytes ?? DEFAULT_COMPACT_AFTER_BYTES;
@@ -462,7 +640,8 @@ export class FileJournaledBackend implements JournaledBackend {
       await fs.mkdir(directory, { recursive: true, mode: 0o700 });
       created = true;
     }
-    const release = await acquireFilesystemMutationLock(directory, { ...options.lock });
+    const policy = captureFilesystemHostPolicy(options.hostPolicy);
+    const release = await acquireFilesystemMutationLock(directory, { ...options.lock, hostPolicy: policy });
     let log: FileJournalHandle | undefined;
     try {
       if (created) await syncDirectory(path.dirname(directory));
@@ -497,12 +676,12 @@ export class FileJournaledBackend implements JournaledBackend {
         await (await fs.open(logFile, "a", 0o600)).close();
         await syncDirectory(directory);
       }
-      log = options.openLog ? await options.openLog(logFile) : await fs.open(logFile, "r+");
+      log = await openLog(logFile);
       if (scanned.validBytes !== scanned.totalBytes) {
         await log.truncate(scanned.validBytes);
         await log.sync();
       }
-      const backend = new FileJournaledBackend(directory, state, log, release, txn, scanned.validBytes);
+      const backend = new FileJournaledBackend(directory, state, log, release, txn, scanned.validBytes, policy);
       if (scanned.validBytes > compactAfter) await backend.compact();
       return backend;
     } catch (error) {
@@ -552,7 +731,7 @@ export class FileJournaledBackend implements JournaledBackend {
         intents: [...state.intents],
         meta: [...state.meta],
       };
-      const bytes = frame(SNAPSHOT_MAGIC, SNAPSHOT_HEADER, serialize(payload), FILE_JOURNAL_FORMAT_VERSION);
+      const bytes = frame(SNAPSHOT_MAGIC, encodePayload(payload));
       const temp = path.join(this.directory, SNAPSHOT_TEMP);
       const handle = await fs.open(temp, "w", 0o600);
       try {
@@ -564,7 +743,7 @@ export class FileJournaledBackend implements JournaledBackend {
         throw error;
       }
       await handle.close();
-      await fs.rename(temp, path.join(this.directory, FILE_JOURNAL_SNAPSHOT));
+      await renameOver(temp, path.join(this.directory, FILE_JOURNAL_SNAPSHOT), this.#policy, 5_000, 25);
       await syncDirectory(this.directory);
       // From here the snapshot covers every record, so a failure to empty the log costs space, not
       // state. Once the truncation lands, the next append goes to offset zero whether or not the
@@ -601,9 +780,9 @@ export class FileJournaledBackend implements JournaledBackend {
       const { changes, result } = decide(this.#state);
       if (changes.length === 0) return result;
       const record: LogRecord = { txn: this.#txn + 1, changes };
-      const payload = serialize(record);
+      const payload = encodePayload(record);
       if (payload.byteLength > MAXIMUM_RECORD_BYTES) throw new RangeError(`a transaction of ${payload.byteLength} bytes exceeds the log's record bound`);
-      const bytes = frame(RECORD_MAGIC, RECORD_HEADER, payload);
+      const bytes = frame(RECORD_MAGIC, payload);
       const at = this.#logBytes;
       try {
         await writeAll(this.#log, bytes, at);
@@ -958,9 +1137,10 @@ export class FileJournaledBackend implements JournaledBackend {
 
   /**
    * @internal Plant exact bytes as `id`'s stored serialization, bypassing the serializer, through
-   * the log like any other write: the contract kit's malformed-record and edition rows.
+   * the log like any other write: the contract kit's malformed-record and edition rows. Reachable
+   * only through {@link STORE_RAW}.
    */
-  async storeRaw(id: ConceptId, raw: string): Promise<void> {
+  async [STORE_RAW](id: ConceptId, raw: string): Promise<void> {
     assertSafeConceptId(id);
     const record: DocumentRecord = { raw, version: versionOfBytes(raw), updatedBy: defaultActor(), updatedAt: new Date().toISOString() };
     await this.#mutate(() => ({ changes: [{ family: "document", key: id, value: record }], result: undefined }));

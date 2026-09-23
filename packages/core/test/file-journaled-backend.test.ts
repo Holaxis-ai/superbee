@@ -17,12 +17,16 @@ import { fileURLToPath } from "node:url";
 import {
   FILE_JOURNAL_LOG,
   FILE_JOURNAL_SNAPSHOT,
+  FILE_JOURNAL_FORMAT_VERSION,
   FileJournalCorruptError,
   FileJournaledBackend,
+  FileJournalFormatError,
   FileJournalUnavailableError,
-  type FileJournalHandle,
+  FileJournalValueError,
   type FileJournaledBackendOptions,
 } from "../src/file-journaled-backend.js";
+import { OPEN_LOG, STORE_RAW, type FileJournalHandle } from "../src/file-journaled-backend-internal.js";
+import type { FilesystemHostPolicy } from "../src/filesystem-host.js";
 import { FilesystemMutationLockError } from "../src/filesystem-lock.js";
 import { IntentHoldConflict, IntentStateConflict, type JournaledBackend, type NewIntentRecord } from "../src/journaled-backend.js";
 import type { OkfDocument } from "../src/types.js";
@@ -88,7 +92,7 @@ registerJournaledBackendContract({
   name: "FileJournaledBackend",
   create: async () => {
     const made = await fixture();
-    return { ...made, storeRaw: (id, raw) => made.backend.storeRaw(id, raw) };
+    return { ...made, storeRaw: (id, raw) => made.backend[STORE_RAW](id, raw) };
   },
   seam: { IntentStateConflict, IntentHoldConflict, VersionConflict },
 });
@@ -128,8 +132,9 @@ async function populate(backend: FileJournaledBackend): Promise<void> {
   await backend.deleteJournaled("notes/beta", { removeMeta: [] });
 }
 
-async function reopened(root: Root, extra?: Partial<FileJournaledBackendOptions>): Promise<FileJournaledBackend> {
-  return FileJournaledBackend.open(root.options(extra));
+async function reopened(root: Root, extra?: Partial<FileJournaledBackendOptions> & { openLog?: (file: string) => Promise<FileJournalHandle> }): Promise<FileJournaledBackend> {
+  const { openLog, ...rest } = extra ?? {};
+  return openLog ? FileJournaledBackend[OPEN_LOG](root.options(rest), openLog) : FileJournaledBackend.open(root.options(rest));
 }
 
 async function logBytes(root: Root): Promise<Buffer> {
@@ -292,7 +297,7 @@ async function logWithOneMore(root: Root): Promise<{ prefix: Buffer; record: Buf
   await populate(backend);
   const before = await observe(backend);
   const prefix = await logBytes(root);
-  await backend.writeJournaled("notes/gamma", doc("notes/gamma", "one more\n"), { meta: [{ key: "pause", value: true }] });
+  await backend.writeJournaled("notes/gamma", doc("notes/gamma", `one more ${"x".repeat(9000)}\n`), { meta: [{ key: "pause", value: true }] });
   const record = (await logBytes(root)).subarray(prefix.byteLength);
   await backend.close();
   return { prefix, record, before };
@@ -304,6 +309,10 @@ for (const tear of [
   { name: "a whole record whose checksum fails", bytes: (record: Buffer) => { const copy = Buffer.from(record); copy[copy.byteLength - 1]! ^= 0xff; return copy; } },
   { name: "a zero-filled extension", bytes: (record: Buffer) => Buffer.alloc(record.byteLength) },
   { name: "three stray bytes", bytes: (record: Buffer) => record.subarray(0, 3) },
+  // Pages of the interrupted append reached the disk out of order: its first page never did.
+  { name: "a record whose first page is zeros while later pages hold its data", bytes: (record: Buffer) => { const copy = Buffer.from(record); copy.fill(0, 0, 4096); return copy; } },
+  { name: "a header whose length field was torn to an impossible size", bytes: (record: Buffer) => { const copy = Buffer.from(record); copy.writeUInt32BE(0xffffffff, 8); return copy; } },
+  { name: "a failed checksum with stray bytes after it", bytes: (record: Buffer) => { const copy = Buffer.from(record); copy[60]! ^= 0xff; return Buffer.concat([copy, Buffer.from("SBJRtrailing garbage")]); } },
 ]) {
   test(`torn tail: ${tear.name} is truncated at open and the store continues from the last whole record`, async () => {
     const root = await newRoot();
@@ -447,7 +456,7 @@ test("a log whose transaction numbers skip one is corruption, not a torn tail", 
     const log = await logBytes(root);
     const records: Buffer[] = [];
     for (let at = 0; at < log.byteLength;) {
-      const end = at + 40 + log.readUInt32BE(at + 4);
+      const end = at + 44 + log.readUInt32BE(at + 8);
       records.push(log.subarray(at, end));
       at = end;
     }
@@ -456,6 +465,79 @@ test("a log whose transaction numbers skip one is corruption, not a torn tail", 
     await fs.writeFile(path.join(root.directory, FILE_JOURNAL_LOG), gapped);
     await assert.rejects(reopened(root), /transaction 3 follows 1/);
     assert.deepEqual(await logBytes(root), gapped);
+  } finally {
+    await root.cleanup();
+  }
+});
+
+test("a whole record in a newer store format refuses the open by name, not as damage", async () => {
+  const root = await newRoot();
+  try {
+    const { prefix, record } = await logWithOneMore(root);
+    const newer = Buffer.from(record);
+    newer.writeUInt32BE(FILE_JOURNAL_FORMAT_VERSION + 1, 4);
+    await fs.writeFile(path.join(root.directory, FILE_JOURNAL_LOG), Buffer.concat([prefix, newer]));
+    await assert.rejects(reopened(root), (error: unknown) => error instanceof FileJournalFormatError && error.format === FILE_JOURNAL_FORMAT_VERSION + 1);
+  } finally {
+    await root.cleanup();
+  }
+});
+
+test("the log is tagged JSON owned by the store: opaque meta values round-trip through the log and the snapshot", async () => {
+  const root = await newRoot();
+  try {
+    const sparse: unknown[] = [1]; sparse[3] = "three";
+    const values: Record<string, unknown> = {
+      undef: undefined, nan: NaN, inf: -Infinity, negzero: -0, big: 12345678901234567890n, date: new Date(1_700_000_000_000),
+      map: new Map<unknown, unknown>([[1, { a: [true] }], ["k", new Set(["x"])]]), re: /a+b/gi, bytes: new Uint8Array([0, 255, 7]),
+      floats: new Float64Array([1.5, -2]), buffer: new Uint8Array([9, 8]).buffer, sparse, nested: { "__proto__x": null, list: [new Date(0)] },
+    };
+    const backend = await reopened(root);
+    for (const [key, value] of Object.entries(values)) await backend.writeMeta(key, value);
+    await backend.close();
+    const payload = (await logBytes(root)).subarray(44, 44 + (await logBytes(root)).readUInt32BE(8));
+    assert.doesNotThrow(() => JSON.parse(payload.toString("utf8")));
+    for (const compactAfterBytes of [Infinity, 0]) {
+      const again = await reopened(root, { compactAfterBytes });
+      for (const [key, value] of Object.entries(values)) assert.deepEqual(await again.readMeta(key), value, key);
+      assert.ok(Object.is(await again.readMeta("negzero"), -0));
+      assert.equal(1 in ((await again.readMeta<unknown[]>("sparse"))!), false);
+      await again.close();
+    }
+  } finally {
+    await root.cleanup();
+  }
+});
+
+test("a value the log cannot hold is refused before anything is written", async () => {
+  const root = await newRoot();
+  try {
+    const backend = await reopened(root);
+    await backend.writeMeta("kept", 1);
+    const size = (await logBytes(root)).byteLength;
+    const cycle: Record<string, unknown> = {}; cycle.self = cycle;
+    await assert.rejects(backend.writeMeta("cycle", cycle), FileJournalValueError);
+    assert.equal((await logBytes(root)).byteLength, size);
+    assert.equal(await backend.readMeta("cycle"), undefined);
+    await backend.close();
+  } finally {
+    await root.cleanup();
+  }
+});
+
+test("a trusted host policy decides where the store's lock lives", async () => {
+  const root = await newRoot();
+  try {
+    const parent = path.join(path.dirname(root.lockRoot), "policy-parent");
+    await fs.mkdir(parent, { mode: 0o700 });
+    const policy: FilesystemHostPolicy = {
+      runtimeLockParent: () => parent, runtimeOwnerKey: () => "policy-test", enforcePrivateMode: true,
+      isTransientOpenError: () => false, isReplacementConflict: () => false, isDirectoryContentionError: () => false,
+    };
+    const backend = await FileJournaledBackend.open({ directory: root.directory, hostPolicy: policy, lock: { waitMs: 0 } });
+    const locks = await fs.readdir(path.join(parent, "agentstate-lite-mutation-locks-policy-test"));
+    assert.equal(locks.filter((entry) => entry.endsWith(".lock")).length, 1);
+    await backend.close();
   } finally {
     await root.cleanup();
   }
