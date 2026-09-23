@@ -22,8 +22,9 @@
  * creates never count toward the bound; fewer than eight deletions always apply; and the
  * recorded refusal passed back as `acceptRefusedDeletions` applies the shrink only against the
  * same listing. A snapshot bootstrap over an earlier generation reconciles what the snapshot
- * did not carry the same way; a plain backend, and a wire authority without the features, still
- * walk the list. The Chromium unit runs the same runtime in a real page.
+ * did not carry the same way; a snapshot the host restarts under writes resumes from one heads
+ * listing, reads only the documents that moved or never arrived, and ends where a clean full
+ * fetch ends; a plain backend, and a wire authority without the features, still walk the list. The Chromium unit runs the same runtime in a real page.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -31,7 +32,7 @@ import { IDBFactory } from "fake-indexeddb";
 
 import { RemoteBackend, type ConceptId, type OkfDocument, type StorageBackend } from "@superbee/core";
 import { IntentStateConflict } from "@superbee/core/journaled-backend";
-import { headsDigest, type DocumentHead, type RemoteError } from "@superbee/core/remote";
+import { RemoteError, SNAPSHOT_TRUNCATED, headsDigest, sortHeads, type DocumentHead, type RemoteSnapshot } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
 import { performUncertainWrite, type OperationTransport } from "@superbee/core/uncertain-write";
 
@@ -1386,6 +1387,183 @@ test("a snapshot the authority cuts short leaves the marker incomplete with whol
     assert.equal(repaired.documentCount, 60);
     assert.equal(repaired.headsDigest, await authorityDigest(fixture));
     assert.equal((await local.backend.list()).length, 60);
+  } finally {
+    local.close();
+  }
+});
+
+/**
+ * The fixture's read side as a host that pages its snapshot, `pageSize` documents a page: before
+ * each later page `between(page)` runs (writes landing between pages), and a page asked for after
+ * the documents' digest moved ends the stream as the paging reader ends it, a truncation whose
+ * cause is the host's `409 concurrent_change`. `beforeReadMany` runs before every document read,
+ * and `read` records the ids every read asked for. Everything else passes through.
+ */
+function pagingRemote(
+  fixture: RemoteFixture,
+  pageSize: number,
+  hooks: { between?: (page: number) => Promise<void>; beforeReadMany?: () => Promise<void> } = {},
+): { remote: StorageBackend; snapshots: () => number; read: ConceptId[] } {
+  const read: ConceptId[] = [];
+  let snapshots = 0;
+  const pagedSnapshot = async (): Promise<RemoteSnapshot> => {
+    snapshots += 1;
+    const heads: DocumentHead[] = [];
+    for (const id of await fixture.authority.list()) heads.push({ id, version: (await fixture.authority.read(id)).version });
+    const listing = sortHeads(heads);
+    const digest = headsDigest(listing);
+    async function* docs() {
+      for (let start = 0, page = 0; start < listing.length; start += pageSize, page += 1) {
+        if (page > 0) {
+          await hooks.between?.(page);
+          if ((await authorityDigest(fixture)) !== digest) {
+            throw new RemoteError("snapshot ended before its terminator", SNAPSHOT_TRUNCATED, 200, new RemoteError("the bundle moved", "concurrent_change", 409));
+          }
+        }
+        for (const head of listing.slice(start, start + pageSize)) {
+          const current = await fixture.authority.read(head.id);
+          yield { id: head.id, version: current.version, frontmatter: current.doc.frontmatter, body: current.doc.body };
+        }
+      }
+    }
+    return { header: { count: listing.length, digest }, docs: docs() };
+  };
+  const remote = new Proxy(fixture.remote, {
+    get(target, prop) {
+      if (prop === "snapshot") return pagedSnapshot;
+      if (prop === "readMany") {
+        return async (ids: ConceptId[]) => {
+          await hooks.beforeReadMany?.();
+          read.push(...ids);
+          return target.readMany(ids);
+        };
+      }
+      if (prop === "read") {
+        return async (id: ConceptId) => {
+          read.push(id);
+          return target.read(id);
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as StorageBackend;
+  return { remote, snapshots: () => snapshots, read };
+}
+
+/** A body edit straight at the authority, as another writer makes it. */
+async function remoteEdit(fixture: RemoteFixture, id: string, body: string): Promise<void> {
+  await fixture.authority.write(id, doc(id, body));
+}
+
+test("a snapshot the host restarts under writes resumes from one heads listing, reads only what moved or never arrived, and ends where a clean full fetch ends", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 60);
+  const resumed = openLocal(new IDBFactory(), "resumed");
+  const clean = openLocal(new IDBFactory(), "clean");
+  try {
+    // Writes land between the third and fourth pages of every snapshot the host serves, so a
+    // bootstrap that ran the snapshot again would meet the same restart on every run.
+    let writes = 0;
+    const paging = pagingRemote(fixture, 10, {
+      between: async (page) => {
+        if (page !== 3) return;
+        writes += 1;
+        await remoteEdit(fixture, ids[2]!, `moved after it streamed, ${writes}\n`);
+        assert.equal(await fixture.authority.delete(ids[4]!), true);
+        await remoteEdit(fixture, ids[40]!, `moved before it streamed, ${writes}\n`);
+        assert.equal(await fixture.authority.delete(ids[50]!), true);
+        await remoteEdit(fixture, "notes/n9999", "created mid-pass\n");
+      },
+    });
+    const marker = await bootstrap(paging.remote, resumed, { batchSize: 10 });
+    assert.equal(paging.snapshots(), 1, "the snapshot is not run again");
+    assert.equal(writes, 1);
+    // Kept: the first 30 minus the one that moved and the one that went. Read: that one moved
+    // document, the 30 that never streamed less the one deleted, and the one created.
+    const expectedReads = [ids[2]!, ...ids.slice(30).filter((id) => id !== ids[50]), "notes/n9999"].sort();
+    assert.deepEqual([...paging.read].sort(), expectedReads);
+    assert.equal(marker.complete, true);
+    assert.equal(marker.documentCount, 59);
+    assert.deepEqual(marker.deleted, [ids[4]]);
+    assert.equal(marker.refused, undefined);
+    assert.equal(marker.headsDigest, await authorityDigest(fixture));
+
+    const cleanMarker = await bootstrap(fixture.remote, clean, { batchSize: 10 });
+    assert.equal(marker.headsDigest, cleanMarker.headsDigest);
+    assert.equal(marker.documentCount, cleanMarker.documentCount);
+    const expected = await snapshot(clean);
+    assert.equal(expected.length, 59);
+    assert.deepEqual(await snapshot(resumed), expected, "ids, versions and shared bases agree document for document");
+    for (const row of expected) assert.equal((await resumed.backend.read(row.id)).doc.body, (await clean.backend.read(row.id)).doc.body);
+
+    const next = countingRemote(fixture);
+    await pull(resumed, next.remote);
+    assert.deepEqual(next.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+  } finally {
+    resumed.close();
+    clean.close();
+  }
+});
+
+test("a document that moves or goes while a resumed snapshot reads completes the bootstrap without a digest, and the next pull asks unconditionally and matches a clean full fetch", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 40);
+  const resumed = openLocal(new IDBFactory(), "resumed");
+  const clean = openLocal(new IDBFactory(), "clean");
+  try {
+    let moved = false;
+    const paging = pagingRemote(fixture, 10, {
+      between: async (page) => {
+        if (page === 2) await remoteEdit(fixture, ids[1]!, "moved after it streamed\n");
+      },
+      // After the heads listing and before the first read: one listed document moves and another goes.
+      beforeReadMany: async () => {
+        if (moved) return;
+        moved = true;
+        await remoteEdit(fixture, ids[25]!, "moved after it was listed\n");
+        assert.equal(await fixture.authority.delete(ids[35]!), true);
+      },
+    });
+    const marker = await bootstrap(paging.remote, resumed, { batchSize: 10, concurrency: 1 });
+    assert.equal(paging.snapshots(), 1);
+    assert.equal(marker.complete, true);
+    assert.equal(marker.headsDigest, undefined, "the working copy is not the listing's state, so its digest is not recorded");
+    assert.equal(marker.documentCount, 39);
+    await assert.rejects(resumed.backend.read(ids[35]!), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
+
+    await bootstrap(fixture.remote, clean, { batchSize: 10 });
+    assert.deepEqual(await snapshot(resumed), await snapshot(clean), "every document is at a version the authority served");
+
+    const next = countingRemote(fixture);
+    await pull(resumed, next.remote);
+    assert.deepEqual(next.ifNoneMatch, [null], "no digest is offered for a working copy that matches none");
+    const settled = countingRemote(fixture);
+    await pull(resumed, settled.remote);
+    assert.deepEqual(settled.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+  } finally {
+    resumed.close();
+    clean.close();
+  }
+});
+
+test("a restarted snapshot without heads to resume from stands as the restart, with the marker incomplete", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 30);
+  const local = openLocal(new IDBFactory());
+  try {
+    const paging = pagingRemote(fixture, 10, {
+      between: async (page) => {
+        if (page === 1) await remoteEdit(fixture, ids[0]!, "moved\n");
+      },
+    });
+    await assert.rejects(bootstrap(paging.remote, local, { batchSize: 10, wire: { heads: false } }), (error: unknown) => {
+      assert.equal((error as RemoteError).code, SNAPSHOT_TRUNCATED);
+      assert.equal(((error as RemoteError).cause as RemoteError).status, 409);
+      return true;
+    });
+    assert.equal(await isComplete(local), false);
+    assert.deepEqual(paging.read, [], "nothing is read without a listing to read against");
   } finally {
     local.close();
   }
