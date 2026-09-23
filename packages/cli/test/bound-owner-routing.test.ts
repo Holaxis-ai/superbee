@@ -964,21 +964,38 @@ for (const state of ["absent", "empty directory"] as const) {
   });
 }
 
-test("a linked worktree whose board checkout vanished is told to prune, and sync then provisions it", async () => {
+test("a linked worktree whose board checkout vanished is sent to the main worktree, and sync never provisions inside it", async () => {
   const topo = await makeTwoCloneTopology();
   const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-linked-worktree-missing-home-"));
   try {
     const linked = await makeLinkedWorktree(topo);
     await rm(topo.a.board, { recursive: true, force: true });
-    const expected = await recoveryOf(() => inDir(linked.root, () => status(["--json"], { stdout: () => {} })));
-    assert.match(expected ?? "", /registered to a worktree at \S+ that no longer exists — run git worktree prune, then \S+(?: \S+)* sync$/, expected);
+    const quiet = { stdout: () => {} };
+    const syncIn = (dir: string) => withHome(homeDir, () => recoveryOf(() => inDir(dir, () => sync(["--json"], { stdout: () => {}, hookInstalled: () => true }))));
+    const expected = await recoveryOf(() => inDir(linked.root, () => status(["--json"], quiet)));
+    assert.ok((expected ?? "").includes("that no longer exists — run git worktree prune, then "), expected);
+    assert.ok((expected ?? "").endsWith(`sync in the main worktree at ${topo.a.root}`), expected);
     assert.doesNotMatch(expected ?? "", /checked out in another worktree/);
+    assert.equal(await syncIn(linked.root), expected);
+
     git(linked.root, ["worktree", "prune"]);
+    // Nothing is registered now; the linked worktree still refuses to host the board checkout,
+    // because removing the linked worktree would delete it with any unsynced docs.
+    const linkedAdvice = await recoveryOf(() => inDir(linked.root, () => status(["--json"], quiet)));
+    assert.match(linkedAdvice ?? "", /^this is a linked worktree, and the repository's one board checkout belongs in the main worktree — run \S+(?: \S+)* sync in the main worktree at /, linkedAdvice);
+    assert.ok((linkedAdvice ?? "").endsWith(`status --dir ${topo.a.board})`), linkedAdvice);
+    assert.equal(await syncIn(linked.root), linkedAdvice);
+    assert.equal(existsSync(linked.board), false, "sync did not provision inside the linked worktree");
+    const setupView = await setupBundleRow(linked.root, homeDir);
+    assert.ok(setupView.row.reason.endsWith(`recover with: ${linkedAdvice}`), setupView.row.reason);
+
+    // Following the advice: sync from the main worktree provisions the board there.
     let out = "";
-    await withHome(homeDir, () => inDir(linked.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true })));
-    // The pruned board branch still matches origin/board, so it is adopted as-is.
-    assert.match((JSON.parse(out) as { provisioned?: string }).provisioned ?? "", /materialized from the local board branch/);
-    assert.equal(git(linked.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+    await withHome(homeDir, () => inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true })));
+    assert.match((JSON.parse(out) as { provisioned?: string }).provisioned ?? "", /materialized/);
+    assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+    const after = await recoveryOf(() => inDir(linked.root, () => status(["--json"], quiet)));
+    assert.ok((after ?? "").includes(`another worktree at ${topo.a.board}`), after);
   } finally {
     await topo.cleanup();
     await rm(homeDir, { recursive: true, force: true });
@@ -1017,7 +1034,7 @@ test("a tracked placeholder at the bound board path gets one untrack recovery fr
     git(topo.a.root, ["add", "-f", ".superbee/.gitkeep"]);
     git(topo.a.root, ["commit", "-m", "track a placeholder"]);
     const expected = await recoveryOf(() => inDir(topo.a.root, () => status(["--json"], { stdout: () => {} })));
-    assert.match(expected ?? "", /^git rm -r --cached -- \.superbee && git commit/, expected);
+    assert.match(expected ?? "", /^git rm -r -- \.superbee && git commit -m '[^']+' -- \.superbee, then re-run sync$/, expected);
     const setupView = await setupBundleRow(topo.a.root, homeDir);
     assert.equal(setupView.bundle, "unreadable");
     assert.ok(setupView.row.reason.endsWith(`recover with: ${expected}`), setupView.row.reason);

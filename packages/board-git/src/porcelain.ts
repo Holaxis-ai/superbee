@@ -811,9 +811,16 @@ export function boardWindowGuidance(
   }
   // Only empty-folder placeholders are tracked: no cleanup PR or pull story applies, the fix is
   // to stop tracking them.
+  // Same placeholder rules as provisioning: regular zero-byte `.gitkeep` files and the like, in a
+  // folder with nothing else meaningful; anything more keeps the remnant/pre-share guidance below.
+  const boardDir = path.join(top, bundleDir);
   const tracked = trackedBoardDirPaths(top, bundleDir);
-  if (tracked.length > 0 && tracked.every((entry) => IGNORABLE_BOARD_DIR_ENTRIES.includes(path.posix.basename(entry)))) {
-    const guidance = trackedPlaceholderGuidance(path.join(top, bundleDir), bundleDir, tracked);
+  if (
+    tracked.length > 0 &&
+    tracked.every((entry) => isIgnorableBoardDirEntry(path.join(top, path.dirname(entry)), path.posix.basename(entry))) &&
+    (!existsSync(boardDir) || boardDirEntries(boardDir).meaningful.length === 0)
+  ) {
+    const guidance = trackedPlaceholderGuidance(top, boardDir, bundleDir, tracked);
     return { state: "tracked-placeholder", originConfigured, trackedRemnants: tracked, ...guidance };
   }
   const remnants = trackedBoardRemnantPaths(top, bundleDir);
@@ -913,23 +920,41 @@ function boardDirEntries(dir: string): { meaningful: string[]; placeholders: str
  * placeholder belongs to the code branch: deleting it would show there as a deletion.
  */
 export function trackedBoardDirPaths(top: string, bundleDir: string): string[] {
-  const paths = new Set<string>();
-  const index = runGit(top, ["ls-files", "-z", "--", bundleDir]);
-  if (index.status === 0) for (const entry of index.stdout.split("\0")) if (entry) paths.add(entry);
-  const head = runGit(top, ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", bundleDir]);
-  if (head.status === 0) for (const entry of head.stdout.split("\0")) if (entry) paths.add(entry);
-  return [...paths].sort();
+  return [...new Set([...indexBoardDirPaths(top, bundleDir), ...headBoardDirPaths(top, bundleDir)])].sort();
+}
+
+/** Paths under `bundleDir` in the index. A Git failure throws: unknown must never read as untracked. */
+function indexBoardDirPaths(top: string, bundleDir: string): string[] {
+  const args = ["ls-files", "-z", "--", bundleDir];
+  const r = runGit(top, args);
+  if (r.status !== 0) throw classifyGitError(failureOf(args, r));
+  return r.stdout.split("\0").filter(Boolean);
+}
+
+/** Paths under `bundleDir` in HEAD; none on an unborn branch. A Git failure throws. */
+function headBoardDirPaths(top: string, bundleDir: string): string[] {
+  if (runGit(top, ["rev-parse", "--verify", "--quiet", "HEAD"]).status !== 0) return [];
+  const args = ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", bundleDir];
+  const r = runGit(top, args);
+  if (r.status !== 0) throw classifyGitError(failureOf(args, r));
+  return r.stdout.split("\0").filter(Boolean);
 }
 
 /** Recovery for a board path that holds only placeholders, some of them tracked on the code branch. */
-export function trackedPlaceholderGuidance(boardPath: string, bundleDir: string, tracked: readonly string[]): { message: string; help: string } {
+export function trackedPlaceholderGuidance(top: string, boardPath: string, bundleDir: string, tracked: readonly string[]): { message: string; help: string } {
   const plural = tracked.length !== 1;
+  const dir = shellToken(bundleDir);
+  // Committed placeholders: remove them (they are zero-byte placeholders) and commit only that
+  // path, never other staged work. Staged-only placeholders: unstaging them is enough.
+  const untrack = headBoardDirPaths(top, bundleDir).length > 0
+    ? `git rm -r -- ${dir} && git commit -m 'Untrack the board folder placeholder' -- ${dir}`
+    : `git rm -r --cached -- ${dir}`;
   return {
     message:
       `${tracked.length} ${plural ? "paths" : "path"} under '${bundleDir}' at ${boardPath} ${plural ? "are" : "is"} tracked ` +
       `on this branch (${tracked.slice(0, 5).join(", ")}) — the board checkout cannot replace tracked files, so ` +
       `untrack ${plural ? "them" : "it"} first`,
-    help: `git rm -r --cached -- ${shellToken(bundleDir)} && git commit -m 'Untrack the board folder placeholder', then re-run sync`,
+    help: `${untrack}, then re-run sync`,
   };
 }
 
@@ -967,6 +992,44 @@ export function boardWorktreeBlock(top: string, boardPath: string, hostPolicy?: 
     return { kind: "elsewhere", path: recorded };
   }
   return null;
+}
+
+/**
+ * The repository's main worktree (the first `git worktree list` entry), or null for a bare main
+ * repository or when Git cannot list worktrees. Linked worktrees are disposable: tools add and
+ * remove them routinely, and removing one deletes any checkout nested inside it.
+ */
+export function mainWorktreePath(top: string): string | null {
+  const list = runGit(top, ["worktree", "list", "--porcelain"]);
+  if (list.status !== 0) return null;
+  const first = list.stdout.split(/\n\s*\n/)[0]?.split("\n") ?? [];
+  const worktree = first.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+  if (!worktree || first.includes("bare")) return null;
+  return path.resolve(worktree);
+}
+
+/** The main worktree when `top` is a linked worktree of it; null for the main worktree itself. */
+export function linkedWorktreeMain(top: string, hostPolicy?: BoardHostPolicy): string | null {
+  const main = mainWorktreePath(top);
+  if (!main) return null;
+  const policy = captureBoardHostPolicy(hostPolicy);
+  return path.resolve(top) === main || policy.sameResolvedPath(realOrSame(top), realOrSame(main)) ? null : main;
+}
+
+/**
+ * Provisioning's refusal for a linked worktree: the repository's one board checkout would live
+ * inside a worktree that `git worktree remove` deletes, taking unsynced docs with it.
+ */
+export function linkedWorktreeProvisionError(boardPath: string, main: string): BoardGitError {
+  return new BoardGitError(
+    "CONFLICT",
+    `${boardPath} is inside a linked worktree — the repository's one board checkout belongs in the main worktree at ${main}, ` +
+      "where removing a linked worktree cannot delete it, so sync will not provision it here",
+    {
+      details: { path: boardPath, main_worktree: main },
+      help: `run sync in the main worktree (${shellToken(main)}), then pass --dir ${shellToken(path.join(main, path.basename(boardPath)))} to sync, status, and other bundle commands here`,
+    },
+  );
 }
 
 /** The next step for a board worktree registered at a missing directory. */
@@ -1230,6 +1293,12 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   // remounted repository still registers its board at the old, now-missing location.
   const worktreeBlock = hasWorktreeSignature(boardPath) ? null : boardWorktreeBlock(top, boardPath, policy);
   if (worktreeBlock) throw boardWorktreeBlockError(boardPath, worktreeBlock);
+  // Never create the board checkout inside a linked worktree (see linkedWorktreeProvisionError).
+  // An occupied path keeps its own refusal or repair below.
+  if (!existsSync(boardPath) || (!hasWorktreeSignature(boardPath) && boardDirEntries(boardPath).meaningful.length === 0)) {
+    const main = linkedWorktreeMain(top, policy);
+    if (main) throw linkedWorktreeProvisionError(boardPath, main);
+  }
 
   if (existsSync(boardPath)) {
     const entries = boardDirEntries(boardPath);
@@ -1238,7 +1307,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     if (entries.meaningful.length === 0 && entries.placeholders.length > 0) {
       const tracked = trackedBoardDirPaths(top, bundleDir);
       if (tracked.length > 0) {
-        const guidance = trackedPlaceholderGuidance(boardPath, bundleDir, tracked);
+        const guidance = trackedPlaceholderGuidance(top, boardPath, bundleDir, tracked);
         throw new BoardGitError("CONFLICT", guidance.message, {
           details: { path: boardPath, tracked_placeholders: tracked.slice(0, 20) },
           help: guidance.help,

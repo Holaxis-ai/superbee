@@ -60,6 +60,7 @@ import {
   boardWorktreeBlock,
   bundleDirNameForProject,
   isIgnorableBoardDirEntry,
+  linkedWorktreeMain,
   missingBoardWorktreeSteps,
   trackedBoardDirPaths,
   trackedPlaceholderGuidance,
@@ -1384,7 +1385,8 @@ export async function resolveLocalBundleTarget(
     // home, status, init, and writes treat it as a new local bundle diverging from the shared board.
     if (contents === "empty" || contents === "placeholders") {
       const top = await ownConventionalBoardRoot(binding);
-      const blocked = top ? boardWorktreeRecovery(top) : null;
+      const known = top ? knownBoardRef(top) : null;
+      const blocked = top ? boardWorktreeRecovery(top, known !== null) : null;
       if (blocked) {
         throw new CliError(
           "NOT_FOUND",
@@ -1392,13 +1394,12 @@ export async function resolveLocalBundleTarget(
           blocked.recovery,
         );
       }
-      const known = top ? knownBoardRef(top) : null;
       if (known && contents === "placeholders") {
         // Provisioning cannot remove a placeholder the code branch tracks; give its recovery here.
         const bundleDir = path.basename(binding.target);
         const tracked = trackedBoardDirPaths(top!, bundleDir);
         if (tracked.length > 0) {
-          const guidance = trackedPlaceholderGuidance(binding.target, bundleDir, tracked);
+          const guidance = trackedPlaceholderGuidance(top!, binding.target, bundleDir, tracked);
           throw new CliError("NOT_FOUND", `${guidance.message} — from project binding ${binding.file}`, {
             help: guidance.help,
             details: { binding_target_blocked: "tracked_placeholder" },
@@ -1550,6 +1551,15 @@ function knownBoardRef(top: string): "shared" | "local" | null {
   return runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]).status === 0 ? "local" : null;
 }
 
+/**
+ * Whether sync may find a board to provision for this checkout. An origin without a cached board
+ * ref may be offline or fetched with a restricted refspec; reads stay offline, and sync owns
+ * determining whether that remote already shares a board.
+ */
+function syncCanProvision(top: string): boolean {
+  return knownBoardRef(top) !== null || runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0;
+}
+
 /** The NOT_FOUND help, plus a marker when the bound path itself must change before sync can help. */
 export interface BindingRecovery {
   readonly help: string;
@@ -1566,7 +1576,8 @@ export type BindingTargetBlock =
   | "unresolved_symlink"
   | "tracked_placeholder"
   | "board_checked_out_elsewhere"
-  | "board_worktree_missing";
+  | "board_worktree_missing"
+  | "linked_worktree";
 
 /**
  * Recovery for a checkout whose own board path cannot be provisioned because of Git's board
@@ -1575,26 +1586,42 @@ export type BindingTargetBlock =
  * gone must be pruned first. `sync` alone could only fail. Runs `git worktree list` (local), and
  * only for an absent or empty bound path.
  */
-function boardWorktreeRecovery(top: string): { reason: string; recovery: BindingRecovery } | null {
+function boardWorktreeRecovery(top: string, syncApplies: boolean): { reason: string; recovery: BindingRecovery } | null {
   const block = boardWorktreeBlock(top, path.join(top, bundleDirNameForProject(top)));
-  if (!block) return null;
-  const at = commandToken(block.path);
   const inv = cliInvocation();
-  if (block.kind === "missing") {
+  // A linked worktree is disposable: `git worktree remove` would delete a board checkout nested in
+  // it, with any unsynced docs. Provisioning belongs in the main worktree.
+  const main = block?.kind === "elsewhere" || (!block && !syncApplies) ? null : linkedWorktreeMain(top);
+  const mainBoard = main ? commandToken(path.join(main, bundleDirNameForProject(main))) : null;
+  const syncInMain = main ? `${inv} sync in the main worktree at ${commandToken(main)}` : `${inv} sync`;
+  if (block?.kind === "missing") {
     return {
       reason: `this repository's '${BOARD_BRANCH}' branch is registered to a worktree that no longer exists`,
       recovery: {
-        help: `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${at} that no longer exists — run ${missingBoardWorktreeSteps(block)}, then ${inv} sync`,
+        help: `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${commandToken(block.path)} that no longer exists — ` +
+          `run ${missingBoardWorktreeSteps(block)}, then ${syncInMain}`,
         details: { binding_target_blocked: "board_worktree_missing" },
       },
     };
   }
+  if (block) {
+    const at = commandToken(block.path);
+    return {
+      reason: "this repository's board is checked out in another worktree",
+      recovery: {
+        help: `this repository's board is checked out in another worktree at ${at}, and a repository has one board checkout — ` +
+          `run bundle commands against it with --dir (for example: ${inv} status --dir ${at}, ${inv} sync --dir ${at})`,
+        details: { binding_target_blocked: "board_checked_out_elsewhere" },
+      },
+    };
+  }
+  if (!main || !mainBoard) return null;
   return {
-    reason: "this repository's board is checked out in another worktree",
+    reason: "this is a linked worktree, and the repository's one board checkout belongs in the main worktree",
     recovery: {
-      help: `this repository's board is checked out in another worktree at ${at}, and a repository has one board checkout — ` +
-        `run bundle commands against it with --dir (for example: ${inv} status --dir ${at}, ${inv} sync --dir ${at})`,
-      details: { binding_target_blocked: "board_checked_out_elsewhere" },
+      help: `this is a linked worktree, and the repository's one board checkout belongs in the main worktree — run ${syncInMain}, ` +
+        `then run bundle commands here with --dir (for example: ${inv} status --dir ${mainBoard})`,
+      details: { binding_target_blocked: "linked_worktree" },
     },
   };
 }
@@ -1608,7 +1635,7 @@ export async function boundBoardWorktreeError(binding: ProjectBinding): Promise<
   const entry = await bindingTargetEntry(path.resolve(binding.target));
   if (entry !== "absent" && !(entry === "directory" && (await emptyDirectory(binding.target)))) return null;
   const top = await ownConventionalBoardRoot(binding);
-  const blocked = top ? boardWorktreeRecovery(top) : null;
+  const blocked = top ? boardWorktreeRecovery(top, syncCanProvision(top)) : null;
   if (!blocked) return null;
   return new CliError(
     "NOT_FOUND",
@@ -1643,12 +1670,10 @@ async function absentBindingTargetHelp(binding: ProjectBinding): Promise<Binding
 /** The recovery once nothing occupies the bound path; `top` is the checkout owning that path, if any. */
 function clearedBindingTargetHelp(binding: ProjectBinding, top: string | null): BindingRecovery {
   if (top && path.basename(binding.target) === bundleDirNameForProject(top)) {
-    const blocked = boardWorktreeRecovery(top);
+    const blocked = boardWorktreeRecovery(top, syncCanProvision(top));
     if (blocked) return blocked.recovery;
   }
-  // An origin without a cached board ref may be offline or fetched with a restricted refspec.
-  // Reads stay offline; sync owns determining whether that remote already shares a board.
-  if (top && (knownBoardRef(top) || runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0)) {
+  if (top && syncCanProvision(top)) {
     const bundleDir = bundleDirNameForProject(top);
     if (path.basename(binding.target) === bundleDir) return { help: `${cliInvocation()} sync` };
     // Fresh checkouts use the canonical name; legacy creation is reserved for establish recovery.

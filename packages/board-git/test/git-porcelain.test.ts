@@ -62,6 +62,8 @@ import {
   committedBundleAtHead,
   folderPresentInCodeIndex,
   isProvisioned,
+  boardWindowGuidance,
+  trackedBoardDirPaths,
   probeRepoTopLevel,
   repoTopLevel,
   provisionBoardWorktree,
@@ -609,10 +611,54 @@ test("provision: a linked worktree of a provisioned clone names the primary boar
     assert.equal(missing.details?.board_checkout_missing, true);
     assert.match(missing.help ?? "", /^git worktree prune\b/);
     git(linked, ["worktree", "prune"]);
-    assert.equal(provisionBoardWorktree(linked).kind, "provisioned");
-    assert.equal(git(linkedBoard, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), BOARD_BRANCH);
+    // Removing a linked worktree deletes anything nested in it, so the board is never created there.
+    const refused = capture(() => provisionBoardWorktree(linked));
+    assert.ok(isBoardGitError(refused));
+    assert.equal(refused.code, "CONFLICT");
+    assert.equal(refused.details?.main_worktree, topo.a.root);
+    assert.match(refused.message, /inside a linked worktree/);
+    assert.equal(existsSync(path.join(linkedBoard, ".git")), false, "no checkout inside the linked worktree");
+    // The main worktree provisions it, and the linked worktree then names that checkout.
+    assert.equal(provisionBoardWorktree(topo.a.root).kind, "provisioned");
+    assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), BOARD_BRANCH);
+    assert.equal(capture(() => provisionBoardWorktree(linked)).details?.board_checkout, topo.a.board);
   } finally {
     await topo.cleanup();
+  }
+});
+
+test("window guidance: only zero-byte tracked placeholders take the untrack arm; a tracked .gitkeep with content keeps the remnant arm", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    mkdirSync(topo.a.board);
+    writeFileSync(path.join(topo.a.board, ".gitkeep"), "");
+    git(topo.a.root, ["add", "-f", ".superbee/.gitkeep"]);
+    git(topo.a.root, ["commit", "-m", "track a placeholder"]);
+    const placeholder = boardWindowGuidance(topo.a.root);
+    assert.equal(placeholder.state, "tracked-placeholder");
+    // Following the recovery verbatim clears the state and commits only the placeholder.
+    writeFileSync(path.join(topo.a.root, "staged.txt"), "other work\n");
+    git(topo.a.root, ["add", "staged.txt"]);
+    execFileSync("sh", ["-c", placeholder.help.replace(/, then re-run sync$/, "")], { cwd: topo.a.root });
+    assert.deepEqual(trackedBoardDirPaths(topo.a.root, ".superbee"), []);
+    assert.equal(git(topo.a.root, ["diff", "--cached", "--name-only"]).trim(), "staged.txt", "other staged work stays staged");
+
+    mkdirSync(topo.a.board, { recursive: true });
+    writeFileSync(path.join(topo.a.board, ".gitkeep"), "kept content\n");
+    git(topo.a.root, ["add", "-f", ".superbee/.gitkeep"]);
+    git(topo.a.root, ["commit", "-m", "track a real file"]);
+    assert.equal(boardWindowGuidance(topo.a.root).state, "window-remnant");
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("trackedBoardDirPaths fails closed when Git cannot answer", async () => {
+  const notRepo = await mkdtemp(path.join(tmpdir(), "board-git-not-repo-"));
+  try {
+    assert.throws(() => trackedBoardDirPaths(notRepo, ".superbee"), (err: unknown) => isBoardGitError(err));
+  } finally {
+    await rm(notRepo, { recursive: true, force: true });
   }
 });
 
@@ -707,7 +753,13 @@ test("provision: an untracked placeholder-only .superbee is empty; a tracked pla
       assert.equal(err.code, "CONFLICT", stage);
       assert.match(err.message, /1 path under '\.superbee' at \S+ is tracked on this branch \(\.superbee\/\.gitkeep\)/, stage);
       assert.doesNotMatch(err.message, /re-added|cleanup/, stage);
-      assert.match(err.help ?? "", /^git rm -r --cached -- \.superbee && git commit/, stage);
+      assert.match(
+        err.help ?? "",
+        stage === "staged"
+          ? /^git rm -r --cached -- \.superbee, then re-run sync$/
+          : /^git rm -r -- \.superbee && git commit -m '[^']+' -- \.superbee, then re-run sync$/,
+        stage,
+      );
       assert.ok(existsSync(path.join(topo.b.board, ".gitkeep")), `${stage}: the tracked placeholder is untouched`);
       assert.equal(git(topo.b.root, ["ls-files", "--", ".superbee"]).trim(), ".superbee/.gitkeep", `${stage}: still tracked`);
       assert.equal(gitTry(topo.b.root, ["diff", "--quiet"]).status, 0, `${stage}: the code worktree shows no deletion`);
