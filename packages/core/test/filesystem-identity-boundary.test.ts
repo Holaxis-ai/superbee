@@ -210,7 +210,9 @@ test("N4: only the identity and lock modules import node:fs, and the backend rea
     const specifiers = importSpecifiers(await parse(file));
     if (specifiers.some((specifier) => FS_SPECIFIERS.has(specifier))) fsImporters.push(file);
   }
-  assert.deepEqual(fsImporters, ["filesystem-identity.ts", "filesystem-lock.ts"]);
+  // The Node log store persists to its own private directory, never to a bundle path, so it is
+  // the one storage module beside the identity and lock modules that owns file I/O.
+  assert.deepEqual(fsImporters, ["file-journaled-backend.ts", "filesystem-identity.ts", "filesystem-lock.ts"]);
 
   const backend = importSpecifiers(await parse("backend.ts"));
   for (const banned of [...FS_SPECIFIERS, "node:crypto", "crypto", "./filesystem-lock.js"]) {
