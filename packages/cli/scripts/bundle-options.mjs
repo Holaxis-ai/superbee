@@ -21,7 +21,25 @@ export const workspaceAliases = {
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
       "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
       "@superbee/core/publication-filesystem": r("../core/src/publication-filesystem.ts"),
+      // The hosted checkout (`src/hosted/**`) runs the shared working-copy engine
+      // (`@superbee/browser-local`) over core's Node log store, push role and hosted transport.
+      // These are that closure's core subpaths, source-aliased like the ones above.
+      "@superbee/core/document-mutation": r("../core/src/document-mutation.ts"),
+      "@superbee/core/file-journaled-backend": r("../core/src/file-journaled-backend.ts"),
+      "@superbee/core/filesystem-push-role": r("../core/src/filesystem-push-role.ts"),
+      "@superbee/core/governed-body-write": r("../core/src/governed-body-write.ts"),
+      "@superbee/core/hosted-transport": r("../core/src/hosted-transport/index.ts"),
+      "@superbee/core/indexeddb-backend": r("../core/src/indexeddb-backend.ts"),
+      "@superbee/core/journaled-backend": r("../core/src/journaled-backend.ts"),
+      "@superbee/core/kinds": r("../core/src/kinds.ts"),
+      "@superbee/core/platform": r("../core/src/platform.ts"),
+      "@superbee/core/query-filter": r("../core/src/query-filter.ts"),
+      "@superbee/core/remote": r("../core/src/remote.ts"),
+      "@superbee/core/uncertain-write": r("../core/src/uncertain-write.ts"),
+      "@superbee/core/verification": r("../core/src/verification.ts"),
+      "@superbee/core/versioning": r("../core/src/versioning.ts"),
       "@superbee/core": r("../core/src/index.ts"),
+      "@superbee/browser-local": r("../browser-local/src/index.ts"),
       // The git tier lives in its own workspace package (board-git A1); alias to source so the
       // npm artifact stays ONE self-contained file with no dist pre-build.
       "@superbee/board-git": r("../board-git/src/index.ts"),

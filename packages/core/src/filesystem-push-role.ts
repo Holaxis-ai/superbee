@@ -80,11 +80,20 @@ export function pushRoleLockKey(name: string): string {
 /** `ps` reports a start time to the second, so a genuine claimer can look up to this much later than its claim. */
 const START_TIME_RESOLUTION_MS = 1_000;
 
+/**
+ * The environment `ps` runs in: this process's own, with the C locale. `TZ` must pass through:
+ * `ps` formats `lstart` in its time zone and `Date.parse` reads it in this process's, so both
+ * must be the same zone, or a live holder can look younger than its claim.
+ */
+export function psEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...env, LC_ALL: "C" };
+}
+
 /** When `pid` started, from `ps -o lstart=` under the C locale; `null` when no `ps` answers. */
 export function processStartedAtFromPs(pid: number): Promise<number | null> {
   const attempt = (binary: string) =>
     new Promise<number | null>((resolve) => {
-      execFile(binary, ["-o", "lstart=", "-p", String(pid)], { env: { LC_ALL: "C" }, timeout: 2_000 }, (error, stdout) => {
+      execFile(binary, ["-o", "lstart=", "-p", String(pid)], { env: psEnvironment(), timeout: 2_000 }, (error, stdout) => {
         if (error) return resolve(null);
         const parsed = Date.parse(stdout.trim().replace(/\s+/g, " "));
         resolve(Number.isFinite(parsed) ? parsed : null);

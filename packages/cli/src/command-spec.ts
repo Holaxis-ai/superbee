@@ -593,6 +593,13 @@ export const CLI_COMMAND_GROUPS = [
         usage: "logout [--host <url>] [--json]",
         summary: "Revoke the hosted refresh token, delete the local session, and cancel a pending sign-in (idempotent)",
       },
+      {
+        id: "checkout",
+        leaves: [publicLeaf("checkout", "checkout", one, 32, DIR_SURFACE)],
+        usage: "checkout (<bundle-id> [--host <url>] [--dir <folder>] [--workspace <id>] | --release <folder>) [--json]",
+        summary:
+          "Mirror a hosted bundle into a new local folder (a read copy for now): signs in if needed (AUTH_REQUIRED carries the link), the host defaults to your last sign-in, the binding stays in private state, and every command then runs on the folder; commands sync cannot send are refused there with 'do this in the app'; --release forgets a checkout and keeps its files",
+      },
     ],
   },
 ] as const satisfies readonly CommandSpecGroup[];

@@ -46,6 +46,8 @@ import { versionCommand } from "./commands/version.js";
 import { view } from "./commands/view.js";
 import { setup } from "./commands/setup.js";
 import { login, logout, whoami } from "./commands/hosted-auth.js";
+import { checkout } from "./commands/checkout.js";
+import { assertAllowedInHostedCheckout } from "./hosted/refusals.js";
 import { cliVersion, isBareVersionFlag } from "./build-identity.js";
 import { CliError, toEnvelope, toExit } from "./errors.js";
 import { renderErrorEnvelope } from "./output.js";
@@ -129,12 +131,24 @@ export const PUBLIC_HANDLERS = Object.freeze({
   login,
   whoami,
   logout,
+  checkout,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;
 
+/**
+ * Every public command first passes the hosted checkout refusal: a command sync cannot send is
+ * refused up front in a hosted checkout. Only the refused command families do any work here.
+ */
+const guarded =
+  (name: PublicCommandName, fn: PublicHandler): PublicHandler =>
+  async (args: string[]) => {
+    await assertAllowedInHostedCheckout(name, args);
+    await fn(args);
+  };
+
 const publicRuntimeCommands = Object.fromEntries(
-  PUBLIC_COMMAND_NAMES.map((name) => [name, wrap(PUBLIC_HANDLERS[name])]),
+  PUBLIC_COMMAND_NAMES.map((name) => [name, wrap(guarded(name, PUBLIC_HANDLERS[name]))]),
 ) as Record<PublicCommandName, RuntimeHandler>;
 
 /** The sole SDK registry: public entries project from the command graph plus two exact exceptions. */
