@@ -36,6 +36,7 @@ import {
   checkoutStoreDir,
   discardCheckoutState,
   folderIdentity,
+  sameFolder,
   indexCheckoutPath,
   indexedBindingForPath,
   newCheckoutId,
@@ -235,7 +236,7 @@ async function canonicalFolder(folder: string): Promise<string> {
  */
 async function assertReclaimable(home: string, binding: CheckoutBinding, canonical: string): Promise<void> {
   const identity = await folderIdentity(canonical);
-  if (identity && identity.dev === binding.folder_identity.dev && identity.ino === binding.folder_identity.ino) {
+  if (identity && sameFolder(identity, binding.folder_identity)) {
     throw new CliError("ALREADY_EXISTS", `${canonical} is the checkout of '${binding.bundle_id}' with every file removed; that is a pending change, not a stale checkout`, {
       details: { reason: "emptied_checkout", ...bindingView(binding) },
       help: `restore the files, or forget the checkout first: ${cliInvocation()} checkout --release ${commandToken(canonical)}`,

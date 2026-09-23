@@ -19,7 +19,7 @@ import { checkout, CHECKOUT_DOCUMENT_LIMIT } from "../src/commands/checkout.js";
 import { list } from "../src/commands/list.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
-import { bindingForPath, checkoutLockName, hostedCheckoutsRoot } from "../src/hosted/binding.js";
+import { bindingForPath, checkoutLockName, folderIdentity, hostedCheckoutsRoot, sameFolder, writeBinding } from "../src/hosted/binding.js";
 import { WORKSPACE_HEADER } from "../src/hosted/client.js";
 import { hostedAuthRoot } from "../src/hosted-auth/session.js";
 import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
@@ -555,4 +555,22 @@ test("the client-side document limit refuses a heads listing over it", async () 
   assert.equal(error.details?.reason, "bundle_too_large");
   assert.equal(error.details?.documents, CHECKOUT_DOCUMENT_LIMIT + 1);
   assert.deepEqual(await readdir(h.cwd), []);
+});
+
+test("a folder that reuses the checkout folder's inode (Linux) is told apart by its birth time", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const folder = await realpath(path.join(h.cwd, "team"));
+  const binding = (await bindingForPath(h.home, folder))!;
+  const now = (await folderIdentity(folder))!;
+  assert.ok(sameFolder(now, binding.folder_identity));
+  // The same device and inode with another birth time is another folder, as when Linux hands a
+  // freed inode to a folder recreated at the same path.
+  if (now.birth) {
+    await writeBinding(h.home, { ...binding, folder_identity: { dev: now.dev, ino: now.ino, birth: now.birth - 1000 } });
+    assert.equal(await bindingForPath(h.home, folder), null);
+  }
+  // A filesystem without birth times falls back to device and inode.
+  assert.ok(sameFolder({ dev: 1, ino: 2 }, { dev: 1, ino: 2, birth: 5 }));
+  assert.ok(!sameFolder({ dev: 1, ino: 2, birth: 4 }, { dev: 1, ino: 2, birth: 5 }));
 });
