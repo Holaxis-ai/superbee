@@ -43,14 +43,17 @@ export const QUOTA_MESSAGES = Object.freeze({
 });
 
 export const READ_ONLY_MESSAGE =
-  "The host refused writes to this bundle: you have read-only access, or sync writes are not enabled for it. Your change stays in the folder; ask a bundle admin for write access, or make the change in the Superbee app.";
+  "The host refused writes to this bundle: you have read-only access, your access was withdrawn, or sync writes are not enabled for it. Your change stays in the folder; ask a bundle admin for write access, or make the change in the Superbee app.";
+export const ACCESS_WITHDRAWN_MESSAGE =
+  "The host denied access to this bundle (403): your access was withdrawn. Signing in again does not restore it. Your change stays in the folder; ask a bundle admin for access.";
 
-function refusalRow(id: string, row: IntentRecord): SyncRow {
+function refusalRow(id: string, row: IntentRecord, accessWithdrawn = false): SyncRow {
   const code = row.refusal?.code ?? "refused";
   const message = row.refusal?.message ?? "the host refused the change";
   if (code === CAPACITY_REFUSAL_CODES.principal) return { id, state: "paused", reason: "sync_quota_principal", version: null, message: QUOTA_MESSAGES.principal };
   if (code === CAPACITY_REFUSAL_CODES.bundle) return { id, state: "paused", reason: "sync_quota_bundle", version: null, message: QUOTA_MESSAGES.bundle };
   if (code === "PERMISSION_DENIED") return { id, state: "refused", reason: "read_only", version: null, message: READ_ONLY_MESSAGE };
+  if (SIGN_IN_CODES.has(code) && accessWithdrawn) return { id, state: "refused", reason: "access_withdrawn", version: null, message: ACCESS_WITHDRAWN_MESSAGE };
   if (SIGN_IN_CODES.has(code)) return { id, state: "paused", reason: "sign_in", version: null, message: "The hosted session ended before this change was sent; sign in and run sync again." };
   if (BUSY_REFUSAL_CODES.has(code)) return { id, state: "paused", reason: "busy", version: null, message: "The host was busy and did not apply this change; run sync again." };
   return { id, state: "refused", reason: code, version: null, message: `The host refused this document (${code}): ${message} Edit the file and run sync again.` };
@@ -77,6 +80,10 @@ export interface RowInputs {
   /** Documents the host acknowledged in this run, with the committed version. */
   readonly acknowledged: ReadonlyMap<string, string>;
   readonly held: readonly HeldFile[];
+  /** Local changes the push did not offer (a create whose id differs only in case from a host document). */
+  readonly blocked?: readonly HeldFile[];
+  /** The host answered 403 during the push: a sign-in refusal is a withdrawn grant. */
+  readonly accessWithdrawn?: boolean;
   readonly notSent: NotSentReason;
 }
 
@@ -89,8 +96,8 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
   for (const [id, rows] of byTarget) {
     const head = rows[0]!;
     if (head.state !== "refused") continue;
-    const row = refusalRow(id, head);
-    if (row.state === "paused" || row.reason === "read_only") pausedBy = row;
+    const row = refusalRow(id, head, inputs.accessWithdrawn);
+    if (row.state === "paused" || row.reason === "read_only" || row.reason === "access_withdrawn") pausedBy = row;
   }
   const out = new Map<string, SyncRow>();
   for (const [id, rows] of byTarget) {
@@ -108,7 +115,7 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
         break;
       }
       case "refused":
-        out.set(id, refusalRow(id, head));
+        out.set(id, refusalRow(id, head, inputs.accessWithdrawn));
         break;
       case "pending":
       case "in_flight":
@@ -122,6 +129,9 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
       default:
         break;
     }
+  }
+  for (const file of inputs.blocked ?? []) {
+    out.set(file.id, { id: file.id, state: "held", reason: file.reason, version: null, message: `${file.message}. Nothing is sent for it.` });
   }
   for (const conflict of inputs.folderConflicts ?? []) {
     if (out.get(conflict.id)?.state === "conflict") continue;
@@ -159,9 +169,9 @@ export function countRows(rows: readonly SyncRow[]): Record<RowState, number> {
 export function rowsFailure(rows: readonly SyncRow[]): { code: CliErrorCode; message: string } | null {
   const pending = rows.filter((row) => row.state !== "committed");
   if (pending.length === 0) return null;
-  const needsPerson = pending.filter((row) => row.state === "conflict" || row.state === "held" || (row.state === "refused" && row.reason !== "read_only"));
+  const needsPerson = pending.filter((row) => row.state === "conflict" || row.state === "held" || (row.state === "refused" && row.reason !== "read_only" && row.reason !== "access_withdrawn"));
   if (needsPerson.length > 0) return { code: "CONFLICT", message: `${pending.length} document(s) not synced; ${needsPerson.length} need your decision` };
-  if (pending.some((row) => row.reason === "read_only")) return { code: "FORBIDDEN", message: `${pending.length} document(s) not synced: the host refused writes to this bundle` };
+  if (pending.some((row) => row.reason === "read_only" || row.reason === "access_withdrawn")) return { code: "FORBIDDEN", message: `${pending.length} document(s) not synced: the host refused writes to this bundle` };
   return { code: "TRANSIENT", message: `${pending.length} document(s) not synced yet; run sync again` };
 }
 

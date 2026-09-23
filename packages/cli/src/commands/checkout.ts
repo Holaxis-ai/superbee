@@ -28,12 +28,10 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
-import { writeUserStateFileAtomic0600 } from "../user-state.js";
 import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, readDefaultHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import {
   bindingForPath,
-  checkoutDir,
   checkoutLockName,
   checkoutStoreDir,
   discardCheckoutState,
@@ -47,7 +45,8 @@ import {
 } from "../hosted/binding.js";
 import { createHostedSyncClient, hostedFailure, syncRoutePrefix, WORKSPACE_HEADER } from "../hosted/client.js";
 import { HOSTED_CHECKOUT_REFUSALS } from "../hosted/refusals.js";
-import { digestOf, exportFresh, findPathCollision } from "../hosted/projection.js";
+import { digestOf, exportFresh, findPathCollision, ROOT_INDEX } from "../hosted/projection.js";
+import { writeProjection } from "../hosted/sync-scan.js";
 
 /**
  * Checkout refuses a bundle over this many documents until paged heads and snapshot land: the
@@ -512,12 +511,15 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
             help: "retry the same command once nothing else writes to the folder",
           });
         }
-        await writeUserStateFileAtomic0600(
-          deps.auth.home,
-          checkoutDir(deps.auth.home, binding.checkout_id),
-          "projection.json",
-          `${JSON.stringify({ schema: 1, exported: exported.exported })}\n`,
-        );
+        // The folder's baseline: each file's digest and the store version it holds, so a sync that
+        // stops part way never mistakes a stale file for a current one.
+        const versions = new Map(await store.readHeads({ project: (head) => [head.id, head.version] as const }));
+        const files: Record<string, { digest: string; version: string }> = {};
+        for (const [id, digest] of Object.entries(exported.exported)) {
+          const version = versions.get(id);
+          if (id !== ROOT_INDEX && version) files[id] = { digest, version };
+        }
+        await writeProjection(deps.auth.home, binding.checkout_id, { files, root: exported.exported[ROOT_INDEX] ?? null });
         const ready: CheckoutBinding = { ...binding, state: "ready" };
         await writeBinding(deps.auth.home, ready);
         await indexCheckoutPath(deps.auth.home, ready);

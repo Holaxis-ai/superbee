@@ -34,13 +34,14 @@ import {
   type LocalBundle,
   type PullReport,
 } from "@superbee/browser-local";
-import { conceptIdFromPath, FilesystemMutationLockError, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
+import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
 import {
   createWholeDocumentTransport,
   WHOLE_DOCUMENT_SETTLEMENT,
   type HostedCapabilities,
+  type HostedCarrier,
   type HostedReadAdapter,
 } from "@superbee/core/hosted-transport";
 import { JournalSnapshotConflict } from "@superbee/core/journaled-backend";
@@ -66,10 +67,12 @@ import {
   scanCheckout,
   unsendable,
   writeProjection,
+  recoverPlacements,
   type FolderConflictReason,
+  type HeldFile,
   type ProjectionRecord,
 } from "./sync-scan.js";
-import { digestOf, replaceGuarded } from "./projection.js";
+import { digestOf, fold, replaceGuarded } from "./projection.js";
 
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
 
@@ -220,7 +223,13 @@ function rowLimit(value: string | undefined): number {
 
 /** The document id a person typed: a concept id, or the file path of one. */
 function documentId(input: string): string {
-  return conceptIdFromPath(input.trim());
+  const id = conceptIdFromPath(input.trim());
+  try {
+    assertSafeConceptId(id);
+  } catch (error) {
+    throw new CliError("USAGE", `'${input}' is not a document id in this checkout (${(error as Error).message})`, { help: `${cliInvocation()} sync --inspect <id>` });
+  }
+  return id;
 }
 
 function syncCommand(binding: CheckoutBinding, extra: CommandText = commandFragment``): CommandText {
@@ -239,6 +248,8 @@ interface Session {
   readonly local: LocalBundle;
   readonly okfVersion: "0.1" | "0.2" | undefined;
   readonly projection: ProjectionRecord;
+  /** Write the projection record now: after each phase that changed the folder or the store. */
+  persist(): Promise<void>;
 }
 
 function bundleGone(binding: CheckoutBinding, unsent: number): CliError {
@@ -259,7 +270,15 @@ function readFailure(error: unknown, session: Pick<Session, "binding" | "target"
 }
 
 function lockFailure(error: unknown, folder: string): unknown {
-  if (error instanceof PushRoleStaleOwnerError || error instanceof FilesystemMutationLockError) {
+  // A lock with no readable owner (a process killed while taking it) never clears on its own:
+  // retrying cannot help, and the help names the one fix.
+  if (error instanceof PushRoleStaleOwnerError || (error instanceof FilesystemMutationLockError && error.malformed)) {
+    return new CliError("CONFLICT", `the checkout lock for ${folder} was left by a command that is gone`, {
+      details: { reason: "lock_orphaned", folder, lock: error.lockPath, retryable: false },
+      help: `confirm no superbee command is using ${folder}, remove ${error.lockPath}, then retry the same command`,
+    });
+  }
+  if (error instanceof FilesystemMutationLockError) {
     return new CliError("CONFLICT", `another command holds the checkout lock for ${folder}`, {
       details: { reason: "sync_busy", folder, lock: error.lockPath, retryable: true },
       help: `wait for it to finish, then retry; if no superbee command is using ${folder}, remove ${error.lockPath}`,
@@ -319,6 +338,13 @@ async function withSession<T>(binding: CheckoutBinding, deps: HostedSyncDeps, re
           throw readFailure(error, { binding, target }, resumeCommand, await unsent());
         }
         projection = await readProjection(deps.auth.home, binding.checkout_id, store);
+        // Finish or undo any placement an interrupted run left, then record the baseline before
+        // anything changes the store, so a crash from here on never leaves it describing a store
+        // that moved.
+        await recoverPlacements(binding.path, projection);
+        const record = projection;
+        const persist = () => writeProjection(deps.auth.home, binding.checkout_id, record);
+        await persist();
         return await body({
           binding,
           target,
@@ -330,6 +356,7 @@ async function withSession<T>(binding: CheckoutBinding, deps: HostedSyncDeps, re
           local,
           okfVersion: await storeOkfVersion(store),
           projection,
+          persist,
         });
       } finally {
         try {
@@ -344,14 +371,17 @@ async function withSession<T>(binding: CheckoutBinding, deps: HostedSyncDeps, re
     });
 }
 
-/** Push with creates first, then replaces, each in journal order (new link targets exist first). */
-function createsFirst(store: JournaledBackend): JournaledBackend {
+/**
+ * Push with creates first, then replaces, each in journal order (new link targets exist first).
+ * A create in `blocked` is not offered to the push at all.
+ */
+function createsFirst(store: JournaledBackend, blocked: ReadonlySet<string>): JournaledBackend {
   return new Proxy(store, {
     get(inner, prop) {
       if (prop === "listIntents") {
         return async (state?: Parameters<JournaledBackend["listIntents"]>[0]) => {
           const rows = await inner.listIntents(state);
-          return state === "pending" ? [...rows.filter((row) => row.base === null), ...rows.filter((row) => row.base !== null)] : rows;
+          return state === "pending" ? [...rows.filter((row) => row.base === null && !blocked.has(row.target)), ...rows.filter((row) => row.base !== null)] : rows;
         };
       }
       const value = Reflect.get(inner, prop, inner);
@@ -396,7 +426,34 @@ async function requeueBusy(store: JournaledBackend): Promise<number> {
 interface PushOutcome {
   readonly acknowledged: Map<string, string>;
   readonly signInRequired: boolean;
+  /** The host answered 403: the grant was withdrawn, which signing in again cannot fix. */
+  readonly accessWithdrawn: boolean;
   readonly notSent: NotSentReason;
+  /** Creates not sent because the host holds a document whose id differs only in case. */
+  readonly collisions: HeldFile[];
+}
+
+/**
+ * Pending creates whose id differs only in letter case from another document the store now holds
+ * (a host document the pull brought in): sending one would give the bundle two ids that one
+ * case-insensitive disk cannot hold apart.
+ */
+async function caseCollidingCreates(store: JournaledBackend): Promise<HeldFile[]> {
+  const creates = (await store.listIntents("pending")).filter((row) => row.base === null);
+  if (creates.length === 0) return [];
+  const byFold = new Map<string, string[]>();
+  for (const id of await store.readHeads({ project: (head) => head.id })) {
+    const key = id.split("/").map(fold).join("/");
+    byFold.set(key, [...(byFold.get(key) ?? []), id]);
+  }
+  const out: HeldFile[] = [];
+  for (const row of creates) {
+    const twin = byFold.get(row.target.split("/").map(fold).join("/"))?.find((id) => id !== row.target);
+    if (twin !== undefined) {
+      out.push({ id: row.target, path: `${row.target}.md`, reason: "case_collision", message: `'${row.target}' differs only in letter case from the host's '${twin}', which a case-insensitive disk treats as the same file; rename your file` });
+    }
+  }
+  return out;
 }
 
 async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<PushOutcome> {
@@ -404,14 +461,25 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
   const acknowledged = new Map<string, string>();
   const pending = await store.listIntents("pending");
   const refused = await store.listIntents("refused");
-  if (pending.length === 0 && refused.length === 0) return { acknowledged, signInRequired: false, notSent: null };
+  const none = { acknowledged, signInRequired: false, accessWithdrawn: false, collisions: [] as HeldFile[] };
+  if (pending.length === 0 && refused.length === 0) return { ...none, notSent: null };
   // A bundle whose host serves no identified writes refuses every one: say so without sending.
-  if (!session.capabilities.operations) return { acknowledged, signInRequired: false, notSent: "read_only" };
+  if (!session.capabilities.operations) return { ...none, notSent: "read_only" };
+  const collisions = await caseCollidingCreates(store);
+  let denied = false;
+  const carrier: HostedCarrier = {
+    async json(route, input, signal, options) {
+      const answer = await session.carrier.json(route, input, signal, options);
+      if (answer.status === 403) denied = true;
+      return answer;
+    },
+    stream: (route, input, signal) => session.carrier.stream(route, input, signal),
+  };
   // Running sync is the person's decision to retry: a pause from an earlier run (sign-in, quota,
   // a withdrawn grant) is lifted and its refused changes are requeued under their identities.
   await resume(local);
   const transport = createWholeDocumentTransport({
-    carrier: session.carrier,
+    carrier,
     bundleId: binding.bundle_id,
     binding: checkoutBindingDigest(binding.checkout_id),
     intentFor: (requestId) => store.readIntent(requestId),
@@ -419,7 +487,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     routes: { create: `${session.routes}/create`, replace: `${session.routes}/replace`, outcome: `${session.routes}/outcome` },
     ...(session.okfVersion ? { okfVersion: session.okfVersion } : {}),
   });
-  const ordered = createsFirst(store);
+  const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)));
   let signInRequired = false;
   for (let pass = 0; pass < PUSH_PASSES; pass += 1) {
     const report = await push(ordered, transport, { remote: reader, write: { ...deps.write, settlement: WHOLE_DOCUMENT_SETTLEMENT } });
@@ -430,13 +498,25 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     }
     if (report.paused) {
       const control = await store.readMeta<{ reason?: string }>("sync");
-      signInRequired = /^(AUTH_REQUIRED|UNAUTHORIZED)\b/.test(control?.reason ?? "");
+      signInRequired = /^(AUTH_REQUIRED|UNAUTHORIZED)\b/.test(control?.reason ?? "") && !denied;
       break;
     }
     if (pass === PUSH_PASSES - 1 || (await requeueBusy(store)) === 0) break;
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, signInRequired, notSent: null };
+  return { acknowledged, signInRequired, accessWithdrawn: denied, notSent: null, collisions };
+}
+
+/**
+ * Make the next pull ask for the whole listing. A pull that held documents recorded the listing's
+ * digest, yet the held documents were not refreshed from it; if the host changes one before its
+ * local change settles, a later conditional pull would answer 304 and never bring it in.
+ */
+async function forgetPullDigest(store: JournaledBackend): Promise<void> {
+  const marker = await store.readMeta<Record<string, unknown>>("pull");
+  if (!marker || marker.headsDigest === undefined) return;
+  const { headsDigest: _digest, ...rest } = marker;
+  await store.writeMeta("pull", rest);
 }
 
 function pulledView(report: PullReport | null, placed: string[], removed: string[], kept: string[]): Record<string, unknown> {
@@ -477,27 +557,47 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // push is live, and each such change is looked up before it is ever sent again.
     await reclaimInFlight(local);
     const scan = await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection });
-    let pulled: PullReport;
-    try {
-      pulled = await pull(local, reader);
-    } catch (error) {
-      throw readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
-    }
-    const exported = await exportCheckout(binding.path, store, projection);
+    await session.persist();
+    const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length;
+    const pullAndExport = async () => {
+      let report: PullReport;
+      try {
+        report = await pull(local, reader);
+      } catch (error) {
+        throw readFailure(error, session, resumeCommand, await unsent());
+      }
+      if (report.held.length > 0) await forgetPullDigest(store);
+      const placed = await exportCheckout(binding.path, store, projection);
+      await session.persist();
+      return { report, placed };
+    };
+    const first = await pullAndExport();
     let outcome: PushOutcome;
     try {
       outcome = await pushChanges(session, deps);
     } catch (error) {
-      throw readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
+      throw readFailure(error, session, resumeCommand, await unsent());
     }
+    // A document the pull held for a change that has now committed may have changed on the host
+    // meanwhile: pull it once more so the folder is current when the run says so.
+    const second = first.report.held.some((id) => outcome.acknowledged.has(id)) ? await pullAndExport() : null;
+    const pulled = second?.report ?? first.report;
+    const exported = {
+      placed: [...first.placed.placed, ...(second?.placed.placed ?? [])],
+      removed: [...first.placed.removed, ...(second?.placed.removed ?? [])],
+      kept: second?.placed.kept ?? first.placed.kept,
+      held: second?.placed.held ?? first.placed.held,
+    };
     // The closing pass: a file edited during this run against a document the pull refreshed or
     // removed is a conflict now, so the run that saw it never reports itself in sync.
-    const conflicts = await folderConflicts(binding.path, store, projection);
+    const conflicts = await folderConflicts(binding.path, store, projection, session.okfVersion);
     const rows = buildRows({
       folderConflicts: conflicts,
       unsettled: await store.listIntents(UNSETTLED_STATES),
       acknowledged: outcome.acknowledged,
-      held: scan.held,
+      held: [...scan.held, ...exported.held],
+      blocked: outcome.collisions,
+      accessWithdrawn: outcome.accessWithdrawn,
       notSent: outcome.notSent,
     });
     const counts = countRows(rows);
@@ -582,6 +682,31 @@ async function conflictFor(session: Session, id: string, resumeCommand: CommandT
   }
 }
 
+/** The meta row that records the host's version a person was shown by `--inspect`. */
+function inspectedKey(id: string): string {
+  return `cli-inspected:${id}`;
+}
+
+function remoteVersionOf(conflict: Conflict): string | null {
+  return conflict.kind === "journal" ? conflict.review.remote.version : conflict.remote.version;
+}
+
+/**
+ * Refuse a resolution when the host's version moved since the person inspected it: `keep` would
+ * otherwise overwrite a version they never saw. Without an inspection there is nothing to bind to.
+ */
+async function assertInspectedCurrent(session: Session, id: string, conflict: Conflict): Promise<void> {
+  const inspected = await session.store.readMeta<{ remote?: string | null } | null>(inspectedKey(id));
+  if (!inspected || !("remote" in inspected)) return;
+  const current = remoteVersionOf(conflict);
+  if (inspected.remote !== current) {
+    throw new CliError("CONFLICT", `the host's version of '${id}' changed since you inspected it`, {
+      details: { reason: "stale_review", id, inspected: inspected.remote ?? null, current },
+      help: `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(session.binding.path)}`,
+    });
+  }
+}
+
 /**
  * Keeping or revising a document the host deleted would re-create it as a plain create, which the
  * host cannot tell from a new document. That waits for the "deleted remotely" tombstone and
@@ -613,6 +738,7 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
   }
   const record = await withSession(binding, deps, resumeCommand, async (session) => {
     const conflict = await conflictFor(session, id, resumeCommand);
+    await session.store.writeMeta(inspectedKey(id), { remote: remoteVersionOf(conflict) });
     const sides =
       conflict.kind === "journal"
         ? {
@@ -703,6 +829,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
     const { projection, store, local, reader } = session;
     const file = path.join(binding.path, `${id}.md`);
     const conflict = await conflictFor(session, id, resumeCommand);
+    await assertInspectedCurrent(session, id, conflict);
     let fileState: string;
     if (conflict.kind === "folder") {
       fileState = await resolveFolder(session, id, choice, conflict, resumeCommand);
@@ -755,6 +882,8 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
         projection.files[id] = { digest: digestOf(bytes!), version: result.version };
       }
     }
+    await store.writeMeta(inspectedKey(id), null);
+    await session.persist();
     return {
       resolved: id,
       choice,

@@ -54,7 +54,7 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     words: ["promote"],
     reason: "not_syncable",
     why: "a key that is not a .md document is stored as a blob, and blobs do not sync",
-    when: (args) => !(docKey(args) ?? "").endsWith(".md"),
+    when: (args) => !(docKey(args) ?? "").toLowerCase().endsWith(".md"),
   },
   { words: ["serve"], reason: "not_syncable", why: "the served bundle accepts writes and deletes that do not sync" },
   { words: ["ui"], reason: "not_syncable", why: "the local app writes Views and conventions, which do not sync" },

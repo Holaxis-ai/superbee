@@ -27,7 +27,7 @@ import { FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wh
 
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { checkoutDir } from "./binding.js";
-import { digestOf, placeNew, replaceGuarded, ROOT_INDEX } from "./projection.js";
+import { digestOf, ensureParentInside, fold, parentUnsafe, placeNew, PLACEMENT_TEMP, replaceGuarded, ROOT_INDEX, UnsafePlacementError } from "./projection.js";
 
 export const PROJECTION_FILE = "projection.json";
 const PROJECTION_SCHEMA = 2;
@@ -62,7 +62,8 @@ export type HeldReason =
   | "deleted_locally"
   | "type_change"
   | "too_large"
-  | "not_sendable";
+  | "not_sendable"
+  | "case_collision";
 
 export interface HeldFile {
   /** The document id, or the folder-relative path when the file is not a document. */
@@ -163,6 +164,34 @@ function sameAuthored(a: { frontmatter: Frontmatter; body: string }, b: { frontm
   return a.body === b.body && JSON.stringify(authored(a.frontmatter)) === JSON.stringify(authored(b.frontmatter));
 }
 
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+/** The file's text, or null when its bytes are not UTF-8 (sending them would change what they say). */
+export function utf8(bytes: Uint8Array): string | null {
+  try {
+    return UTF8.decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/** True when the file says exactly what the store's document says (managed fields aside). */
+function sameAsStored(bytes: Uint8Array, id: string, doc: { frontmatter: Frontmatter; body?: string } | undefined, okfVersion?: "0.1" | "0.2"): boolean {
+  if (!doc) return false;
+  const text = utf8(bytes);
+  if (text === null) return false;
+  try {
+    return sameAuthored(parseMarkdown(text, id, { okfVersion }), { frontmatter: doc.frontmatter, body: doc.body ?? "" });
+  } catch {
+    return false;
+  }
+}
+
+/** A path spelling folded as a case-insensitive, normalizing filesystem equates it. */
+function foldedPath(id: string): string {
+  return id.split("/").map(fold).join("/");
+}
+
 export interface ScanContext {
   readonly folder: string;
   readonly bundleId: string;
@@ -192,7 +221,8 @@ export function unsendable(
   if (bytes.byteLength > WHOLE_DOCUMENT_BOUNDS.payloadBytes) {
     return held(id, rel, "too_large", `'${id}' is over the ${WHOLE_DOCUMENT_BOUNDS.payloadBytes / 1024} KiB a sync write carries`);
   }
-  const content = Buffer.from(bytes).toString("utf8");
+  const content = utf8(bytes);
+  if (content === null) return held(id, rel, "not_sendable", `'${id}' is not UTF-8 text; sending it would change its bytes`);
   let request;
   try {
     request = wholeDocumentRequest(context.bundleId, { kind: "document.write", target: id, base: null, content }, context.okfVersion);
@@ -255,26 +285,35 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     const bytes = await fs.readFile(file);
     const digest = digestOf(bytes);
     const entry = projection.files[id];
-    if (entry?.digest === digest) continue;
+    if (entry && !entry.deleted && entry.digest === digest) continue;
+    const stored = await local.backend.readWithJournal(id);
+    // The file already says what the store holds (a crash after placing it, or a managed-only
+    // edit): nothing to send; the record catches up.
+    if (stored.document && sameAsStored(bytes, id, stored.document.doc, context.okfVersion)) {
+      projection.files[id] = { digest, version: stored.document.version };
+      report.managedOnly.push(id);
+      continue;
+    }
     // Edited against a version the host has since changed or deleted: reported as a conflict by
     // the run's closing pass, never journaled against the host's newer state.
-    if ((await folderConflictFor(id, bytes, entry, local.backend)) !== null) continue;
+    if ((await folderConflictFor(id, bytes, entry, local.backend, context.okfVersion)) !== null) continue;
+    if (!entry && !stored.document) {
+      const twin = (await caseTwins(local.backend, projection)).get(foldedPath(id));
+      if (twin !== undefined && twin !== id) {
+        report.held.push(held(id, rel, "case_collision", `'${id}' differs only in letter case from '${twin}', which a case-insensitive disk treats as the same file`));
+        continue;
+      }
+    }
     if (HELD_PREFIXES.some((prefix) => rel.startsWith(prefix))) {
       report.held.push(held(id, rel, "convention_folder", `${rel} is under ${rel.split("/")[0]}/, which holds conventions edited in the Superbee app`));
       continue;
     }
-    const stored = await local.backend.readWithJournal(id);
     const refusal = unsendable(id, rel, bytes, stored.document?.doc ?? null, context);
     if (refusal) {
       report.held.push(refusal);
       continue;
     }
-    const parsed = parseMarkdown(bytes.toString("utf8"), id, { okfVersion: context.okfVersion });
-    if (stored.document && sameAuthored(parsed, { frontmatter: stored.document.doc.frontmatter, body: stored.document.doc.body ?? "" })) {
-      projection.files[id] = { digest, version: stored.document.version };
-      report.managedOnly.push(id);
-      continue;
-    }
+    const parsed = parseMarkdown(utf8(bytes)!, id, { okfVersion: context.okfVersion });
     let committed;
     try {
       committed = await commitLocal(local, id, {
@@ -297,14 +336,13 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   for (const [id, entry] of Object.entries(projection.files)) {
     if (seen.has(id) || (context.only && !context.only.has(id))) continue;
     const rel = `${id}.md`;
-    if (entry.deleted) {
+    if ((await readIfPresent(path.join(folder, rel))) !== null) continue;
+    if (entry.deleted || !(await local.backend.readWithJournal(id)).document) {
       // Deleted on both sides: nothing is left to decide.
       delete projection.files[id];
       continue;
     }
-    if ((await readIfPresent(path.join(folder, rel))) === null) {
-      report.held.push(held(id, rel, "deleted_locally", `${rel} was deleted; deleting a document does not sync yet`));
-    }
+    report.held.push(held(id, rel, "deleted_locally", `${rel} was deleted; deleting a document does not sync yet`));
   }
   return report;
 }
@@ -314,8 +352,10 @@ export interface ExportReport {
   readonly placed: string[];
   /** Documents whose file was removed because the host no longer has them. */
   readonly removed: string[];
-  /** Documents whose file was edited in the meantime and so was kept; the next scan sends it. */
+  /** Documents whose file was edited in the meantime and so was kept, as it is. */
   readonly kept: string[];
+  /** Host documents the folder cannot hold as they are (a case twin, or a symbolic link on the way). */
+  readonly held: HeldFile[];
 }
 
 /**
@@ -331,24 +371,47 @@ export async function exportCheckout(
   projection: ProjectionRecord,
   options: { only?: ReadonlySet<string>; placeMissing?: boolean } = {},
 ): Promise<ExportReport> {
-  const report: ExportReport = { placed: [], removed: [], kept: [] };
+  const report: ExportReport = { placed: [], removed: [], kept: [], held: [] };
   const unsettled = new Set((await store.listIntents(UNSETTLED_STATES)).map((row) => row.target));
   const heads = await store.readHeads({ project: (head) => ({ id: head.id, version: head.version, raw: head.raw }) });
+  const twins = await caseTwins(store, projection);
   const present = new Set<string>();
   for (const head of heads) {
     present.add(head.id);
     if (options.only && !options.only.has(head.id)) continue;
     if (unsettled.has(head.id)) continue;
     const entry = projection.files[head.id];
-    if (entry?.version === head.version) continue;
-    const file = path.join(folder, `${head.id}.md`);
+    if (entry && !entry.deleted && entry.version === head.version) continue;
+    const rel = `${head.id}.md`;
+    const file = path.join(folder, rel);
+    if (!entry) {
+      const twin = twins.get(foldedPath(head.id));
+      if (twin !== undefined && twin !== head.id) {
+        report.held.push(held(head.id, rel, "case_collision", `the host's '${head.id}' differs only in letter case from '${twin}', which a case-insensitive disk treats as the same file; rename one in the Superbee app`));
+        continue;
+      }
+    }
+    if (await parentUnsafe(folder, file)) {
+      report.held.push(held(head.id, rel, "unsafe_path", `${rel} is under a symbolic link or a file, so sync does not place it`));
+      continue;
+    }
     const next = Buffer.from(head.raw, "utf8");
     const found = await readIfPresent(file);
+    if (found !== null && digestOf(found) === digestOf(next)) {
+      // Already placed (a run that stopped before recording it): the record catches up.
+      projection.files[head.id] = { digest: digestOf(next), version: head.version };
+      continue;
+    }
     if (found === null) {
       // A recorded document whose file is gone was deleted locally: it stays gone.
-      if (entry && !options.placeMissing) continue;
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      await assertInside(folder, file);
+      if (entry && !entry.deleted && !options.placeMissing) continue;
+      try {
+        await ensureParentInside(folder, file);
+      } catch (error) {
+        if (!(error instanceof UnsafePlacementError)) throw error;
+        report.held.push(held(head.id, rel, "unsafe_path", error.message));
+        continue;
+      }
       const outcome = await placeNew(file, next);
       if (outcome.placed) {
         projection.files[head.id] = { digest: digestOf(next), version: head.version };
@@ -356,11 +419,10 @@ export async function exportCheckout(
       } else report.kept.push(head.id);
       continue;
     }
-    if (!entry || digestOf(found) !== entry.digest) {
+    if (!entry || entry.deleted || digestOf(found) !== entry.digest) {
       report.kept.push(head.id);
       continue;
     }
-    await assertInside(folder, file);
     const outcome = await replaceGuarded(file, found, next);
     if (outcome.placed) {
       projection.files[head.id] = { digest: digestOf(next), version: head.version };
@@ -370,6 +432,7 @@ export async function exportCheckout(
   for (const [id, entry] of Object.entries(projection.files)) {
     if (present.has(id) || (options.only && !options.only.has(id))) continue;
     const file = path.join(folder, `${id}.md`);
+    if (await parentUnsafe(folder, file)) continue;
     const found = await readIfPresent(file);
     if (found === null) {
       delete projection.files[id];
@@ -389,14 +452,6 @@ export async function exportCheckout(
     } else report.kept.push(id);
   }
   return report;
-}
-
-/** Refuse a placement whose parent resolves outside the folder (a symlinked directory inside it). */
-async function assertInside(folder: string, file: string): Promise<void> {
-  const parent = await fs.realpath(path.dirname(file));
-  if (parent !== folder && !parent.startsWith(`${folder}${path.sep}`)) {
-    throw Object.assign(new Error(`${path.relative(folder, file)} resolves outside the checkout folder`), { code: "EXDEV" });
-  }
 }
 
 /** Remove a file only while it holds exactly `expected`: move it aside, verify, then unlink. */
@@ -437,12 +492,15 @@ export async function folderConflictFor(
   bytes: Uint8Array | null,
   entry: ProjectionEntry | undefined,
   store: JournaledBackend,
+  okfVersion?: "0.1" | "0.2",
 ): Promise<FolderConflictReason | null> {
   if (bytes === null) return null;
   if (entry && !entry.deleted && digestOf(bytes) === entry.digest) return null;
   const read = await store.readWithJournal(id);
   if (read.intents.some((row) => row.state !== "acknowledged")) return null;
   if (!read.document) return entry ? "deleted_remotely" : null;
+  // A file that already says what the store holds is in sync, whatever its record says.
+  if (sameAsStored(bytes, id, read.document.doc, okfVersion)) return null;
   if (!entry) return "changed_remotely";
   return entry.deleted || entry.version !== read.document.version ? "changed_remotely" : null;
 }
@@ -453,7 +511,7 @@ export interface FolderConflict {
 }
 
 /** Every folder conflict in the checkout now: the closing pass of a run, after export and push. */
-export async function folderConflicts(folder: string, store: JournaledBackend, projection: ProjectionRecord): Promise<FolderConflict[]> {
+export async function folderConflicts(folder: string, store: JournaledBackend, projection: ProjectionRecord, okfVersion?: "0.1" | "0.2"): Promise<FolderConflict[]> {
   const out: FolderConflict[] = [];
   for (const { rel, symlink } of await walk(folder)) {
     if (symlink || !rel.endsWith(".md") || isReservedFile(rel)) continue;
@@ -463,8 +521,76 @@ export async function folderConflicts(folder: string, store: JournaledBackend, p
     } catch {
       continue;
     }
-    const reason = await folderConflictFor(id, await readIfPresent(path.join(folder, rel)), projection.files[id], store);
+    if (await parentUnsafe(folder, path.join(folder, rel))) continue;
+    const reason = await folderConflictFor(id, await readIfPresent(path.join(folder, rel)), projection.files[id], store, okfVersion);
     if (reason) out.push({ id, reason });
   }
   return out;
+}
+
+/** Every document spelling the store and the record know, by its case-folded path. */
+async function caseTwins(store: JournaledBackend, projection: ProjectionRecord): Promise<Map<string, string>> {
+  const twins = new Map<string, string>();
+  for (const id of Object.keys(projection.files)) twins.set(foldedPath(id), id);
+  for (const id of await store.readHeads({ project: (head) => head.id })) if (!twins.has(foldedPath(id))) twins.set(foldedPath(id), id);
+  return twins;
+}
+
+/** Every file under the folder whose name is a placement temp, relative; symlinked folders are not entered. */
+async function placementTemps(folder: string, prefix = ""): Promise<string[]> {
+  const out: string[] = [];
+  let entries;
+  try {
+    entries = await fs.readdir(path.join(folder, prefix), { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory() && !entry.name.startsWith(".")) out.push(...(await placementTemps(folder, rel)));
+    else if (entry.isFile() && PLACEMENT_TEMP.test(entry.name)) out.push(rel);
+  }
+  return out;
+}
+
+/**
+ * Finish or undo a placement a crash interrupted, under the checkout lock, before anything reads
+ * the folder. Every temp holds bytes that are either reproducible (a staged `new` copy of store
+ * bytes) or a file's own bytes moved aside (`pre` for a replacement, `del` for a removal):
+ * - a staged copy is dropped;
+ * - moved-aside bytes go back under their name when the name is free, except that a removal of
+ *   exactly the recorded bytes is completed instead (the document was deleted on the host);
+ * - when the name is taken, moved-aside bytes that match it or the record are dropped, and any
+ *   other bytes are kept where they are, never deleted.
+ */
+export async function recoverPlacements(folder: string, projection: ProjectionRecord): Promise<void> {
+  for (const rel of await placementTemps(folder)) {
+    const temp = path.join(folder, rel);
+    const [, name, label] = PLACEMENT_TEMP.exec(path.basename(rel))!;
+    const target = path.join(path.dirname(temp), name!);
+    if (label === "new") {
+      await fs.unlink(temp).catch(() => {});
+      continue;
+    }
+    const aside = await fs.readFile(temp);
+    const relTarget = path.relative(folder, target).split(path.sep).join("/");
+    const entry = relTarget.endsWith(".md") ? projection.files[conceptIdFromPath(relTarget)] : undefined;
+    const recorded = entry !== undefined && digestOf(aside) === entry.digest;
+    const current = await readIfPresent(target);
+    if (current === null) {
+      if (label === "del" && recorded) {
+        await fs.unlink(temp);
+        continue;
+      }
+      try {
+        await fs.link(temp, target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+        throw error;
+      }
+      await fs.unlink(temp);
+      continue;
+    }
+    if (recorded || Buffer.from(current).equals(aside)) await fs.unlink(temp);
+  }
 }
