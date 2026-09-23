@@ -91,6 +91,10 @@
       "types": "./dist/remote-operations.d.ts",
       "default": "./dist/remote-operations.js"
     },
+    "./hosted-transport": {
+      "types": "./dist/hosted-transport/index.d.ts",
+      "default": "./dist/hosted-transport/index.js"
+    },
     "./storage": {
       "types": "./dist/storage.d.ts",
       "default": "./dist/storage.js"
@@ -111,6 +115,10 @@
       "types": "./dist/journaled-backend.d.ts",
       "default": "./dist/journaled-backend.js"
     },
+    "./file-journaled-backend": {
+      "types": "./dist/file-journaled-backend.d.ts",
+      "default": "./dist/file-journaled-backend.js"
+    },
     "./uncertain-write": {
       "types": "./dist/uncertain-write.d.ts",
       "default": "./dist/uncertain-write.js"
@@ -122,6 +130,10 @@
     "./filesystem": {
       "types": "./dist/filesystem.d.ts",
       "default": "./dist/filesystem.js"
+    },
+    "./filesystem-push-role": {
+      "types": "./dist/filesystem-push-role.d.ts",
+      "default": "./dist/filesystem-push-role.js"
     }
   },
   "files": [

@@ -1,0 +1,17 @@
+{
+  "name": "capabilities-read-only",
+  "description": "Capabilities with no identified writes and no root index.",
+  "rows": ["capabilities 200"],
+  "route": "/reader/capabilities",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "content-type": "application/json; charset=utf-8" },
+    "body": "{\"heads\":true,\"snapshot\":true,\"operations\":false,\"operationsRetentionMs\":2592000000,\"bound\":{\"documents\":1000,\"bytes\":1048576},\"root\":null}",
+    "truncated": false
+  }
+}
