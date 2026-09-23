@@ -6,7 +6,7 @@
   "request": {
     "method": "POST",
     "headers": { "content-type": "application/json" },
-    "body": "{\"bundleId\":\"team.knowledge\",\"cursor\":\"7.e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14.bm90ZXMvYmV0YQ\"}"
+    "body": "{\"bundleId\":\"team.knowledge\",\"cursor\":\"e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14.bm90ZXMvYmV0YQ\"}"
   },
   "response": {
     "status": 409,

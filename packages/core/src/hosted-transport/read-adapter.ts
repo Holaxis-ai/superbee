@@ -26,7 +26,7 @@ import type { HeadsOptions, WireCapabilities } from "../remote-backend.js";
 import type { ConceptId, ReadResult, ReservedFilename, ReservedReadResult, StorageBackend } from "../types.js";
 import { isContentVersion } from "../version-transport.js";
 import { HostedCarrierError, type HostedAnswer, type HostedCarrier } from "./carrier.js";
-import { decodeHeadsPage, HEADS_PAGE_ATTEMPTS, HeadsPages, isPageRestart, stitchSnapshotPages } from "./paged-reads.js";
+import { decodeHeadsPage, HEADS_PAGE_ATTEMPTS, HeadsPages, isPageRestart, pageRestartDelay, pause, stitchSnapshotPages } from "./paged-reads.js";
 
 /** What the capabilities route states about one bundle, beyond the wire booleans. */
 export interface HostedCapabilities {
@@ -114,6 +114,8 @@ export interface HostedReadAdapterOptions {
   routes?: HostedReadRoutes;
   /** Pinned on every document read, when the family binds reads (the browser's recovery target). */
   binding?: string;
+  /** Test seam: how the adapter waits before a heads restart. Default: a timer that the adapter's abort cancels. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 export interface HostedReadAdapter extends StorageBackend {
@@ -334,15 +336,14 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
   async function readHeads(ifNoneMatch: string | undefined): Promise<HeadsResult | null> {
     const pages = new HeadsPages();
     let cursor: string | undefined;
-    let rootVersion: string | null | undefined;
     for (;;) {
       assertOpen();
       const input = cursor === undefined ? { bundleId, ...(ifNoneMatch === undefined ? {} : { ifNoneMatch }) } : { bundleId, cursor };
       const answer = await carrier.json(routes.heads, input, controller.signal, { maximum: HOSTED_READ_BOUNDS.headsBytes }).catch(carrierFailure);
       if (answer.status !== 200 && !(answer.status === 304 && cursor === undefined)) refused(answer);
-      // Every page is served under one revision, so every page states the same root.
-      if (rootVersion === undefined) rootVersion = headsRootVersion(answer);
-      else if (decodeRootVersion(answer.headers.get(ROOT_VERSION_HEADER)) !== rootVersion) throw malformed("heads pages disagree on the root version");
+      // Pages pin the documents, not the root: a root that moved between pages drops the held
+      // answer as any heads answer's root does, and the listing stands.
+      headsRootVersion(answer);
       if (answer.status === 304) {
         if (ifNoneMatch === undefined) throw malformed("heads answered 304 to a request that sent no digest");
         return null;
@@ -387,9 +388,11 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
         try {
           return await readHeads(headsOptions.ifNoneMatch);
         } catch (error) {
-          // The bundle moved between two pages: the listing starts again from the first page.
-          if (attempt < HEADS_PAGE_ATTEMPTS && isPageRestart(error)) continue;
-          throw error;
+          // The documents changed between two pages: after a pause, the listing starts again
+          // from the first page.
+          if (attempt >= HEADS_PAGE_ATTEMPTS || !isPageRestart(error)) throw error;
+          await (options.sleep ?? pause)(pageRestartDelay(attempt), controller.signal).catch(() => assertOpen());
+          assertOpen();
         }
       }
     },

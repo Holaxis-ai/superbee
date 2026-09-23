@@ -13,11 +13,40 @@
 
 import { isHeadsDigest, type DocumentHead } from "../heads-digest.js";
 import { RemoteError } from "../remote-error.js";
+import { SNAPSHOT_TRUNCATED } from "../remote-parsers.js";
 
 /** The refusal a page answers when the bundle moved since the first page pinned it. */
 export const PAGE_RESTART_CODE = "concurrent_change";
 /** How many times a heads listing starts again from the first page before the refusal stands. */
 export const HEADS_PAGE_ATTEMPTS = 3;
+/**
+ * The pause before each restart, by restart: about a quarter second, then about a second. A burst
+ * of writes (an organizer apply, an agent's batch) usually settles within that, where restarts
+ * back to back would spend every attempt inside the same burst.
+ */
+export const PAGE_RESTART_DELAYS_MS: readonly number[] = Object.freeze([250, 1000]);
+
+/** The pause before restart `restart` (1-based): half the base plus up to half again, at random. */
+export function pageRestartDelay(restart: number, random: () => number = Math.random): number {
+  const base = PAGE_RESTART_DELAYS_MS[Math.min(restart, PAGE_RESTART_DELAYS_MS.length) - 1]!;
+  return Math.round(base / 2 + (random() * base) / 2);
+}
+
+/** Waits `ms`, or rejects with the signal's reason once it aborts. */
+export function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", aborted);
+      resolve();
+    }, ms);
+    const aborted = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", aborted, { once: true });
+  });
+}
 /** The longest cursor a reader passes back; the host's are far shorter. */
 export const MAXIMUM_CURSOR_LENGTH = 4096;
 
@@ -26,6 +55,40 @@ const malformed = (message: string) => new RemoteError(message, "RUNTIME", 502);
 /** True when `error` is the host's refusal of a page because the bundle moved since the first. */
 export function isPageRestart(error: unknown): boolean {
   return error instanceof RemoteError && error.status === 409 && error.code === PAGE_RESTART_CODE;
+}
+
+/**
+ * True when a snapshot ended as truncation because a later page was refused as a restart: the
+ * documents changed while the pages streamed. The snapshot cannot start again by itself, since
+ * its header and first documents already reached the consumer; the caller that consumes it
+ * (a bootstrap or a checkout) runs again, after {@link pageRestartDelay}, a bounded number of
+ * times ({@link SNAPSHOT_RESTART_ATTEMPTS}).
+ */
+export function isSnapshotRestart(error: unknown): boolean {
+  return error instanceof RemoteError && error.code === SNAPSHOT_TRUNCATED && isPageRestart(error.cause);
+}
+
+/** How many times a snapshot consumer runs before a restart truncation stands. */
+export const SNAPSHOT_RESTART_ATTEMPTS = 3;
+
+/**
+ * Runs `consume` (a bootstrap or a checkout over one snapshot) again when it fails with a
+ * snapshot restart, pausing before each run, at most `attempts` times in all. Any other failure,
+ * and the last restart, stand.
+ */
+export async function retrySnapshotRestarts<T>(
+  consume: () => Promise<T>,
+  options: { signal: AbortSignal; attempts?: number; sleep?: (ms: number, signal: AbortSignal) => Promise<void> },
+): Promise<T> {
+  const attempts = options.attempts ?? SNAPSHOT_RESTART_ATTEMPTS;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await consume();
+    } catch (error) {
+      if (attempt >= attempts || !isSnapshotRestart(error)) throw error;
+      await (options.sleep ?? pause)(pageRestartDelay(attempt), options.signal);
+    }
+  }
 }
 
 /** One page of a paged heads answer, shape-checked; the whole listing is checked once assembled. */
