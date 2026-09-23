@@ -18,7 +18,9 @@ import { sessionStart, hostedSessionStartPull } from "../src/commands/session-st
 import { setupHosted } from "../src/commands/setup-hosted.js";
 import { turnEnd } from "../src/commands/turn-end.js";
 import { hostedCheckoutAt, maybeAutoPull, maybeHostedAutoPull } from "../src/autopull.js";
-import { defaultHostedAuthDeps, readDefaultHost, type HostedAuthDeps } from "../src/hosted-auth/session.js";
+import { defaultHostedAuthDeps, readDefaultHost, sessionAccount, sessionDirFor, withSessionLock, type HostedAuthDeps } from "../src/hosted-auth/session.js";
+import { resolveHostedTarget } from "../src/hosted-auth/discovery.js";
+import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
 import { readDefaultWorkspace } from "../src/hosted/defaults.js";
 import { readFreshness, recordPulled } from "../src/hosted/freshness.js";
 import { digestOf } from "../src/hosted/projection.js";
@@ -186,6 +188,61 @@ test("sync records its pull, so a read after it is fresh; push always follows a 
   assert.equal(outcome, "fresh");
 });
 
+/** A stored session whose access token has expired and that has no refresh token: signed out. */
+async function deadSession(h: Harness): Promise<{ file: string; auth: HostedAuthDeps }> {
+  const target = resolveHostedTarget(HOST);
+  const dir = sessionDirFor(h.home, sessionAccount(target));
+  const record = {
+    schema: 1, host: target.origin, audience: target.audience, issuer: "https://issuer.example/", client_id: "cli",
+    token_endpoint: "https://issuer.example/oauth/token", credential_store: "file", has_refresh_token: false,
+    access_token: TOKEN, access_token_expires_at_ms: 0, subject: { sub: "auth0|person" }, signed_in_at_ms: 0,
+  };
+  await writeUserStateFileAtomic0600(h.home, dir, "session.json", `${JSON.stringify(record)}\n`);
+  const auth = defaultHostedAuthDeps(h.home, {
+    env: { SUPERBEE_CREDENTIAL_STORE: "file" },
+    fetch: async () => {
+      throw new Error("background work must not reach the issuer");
+    },
+  });
+  return { file: path.join(dir, "session.json"), auth };
+}
+
+test("B1: a pull on a read with a dead stored session skips with a note, starts no sign-in, and leaves the session alone", async () => {
+  const h = await harness();
+  const { file, auth } = await deadSession(h);
+  const before = await readFile(file, "utf8");
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  const notes: string[] = [];
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, stderr: (t) => void notes.push(t), sync: { ...syncDeps(h), auth } });
+  assert.equal(outcome, "signed-out");
+  assert.match(notes.join(""), /not signed in to https:\/\/hosted\.example, so the automatic pull was skipped/);
+  assert.equal(await readFile(file, "utf8"), before);
+  assert.deepEqual((await readdir(path.dirname(file))).filter((name) => name.startsWith("pending")), []);
+  assert.equal(h.host.requests.length, 0);
+  // The session-start pull is the same.
+  const block = await hostedSessionStartPull(h.binding, 2_000, { env: {}, sync: { ...syncDeps(h), auth } });
+  assert.equal(block.pull, "signed_out");
+  assert.equal(await readFile(file, "utf8"), before);
+});
+
+test("B2: a busy sign-in session lock never holds a read past its budget", async () => {
+  const h = await harness();
+  const { auth } = await deadSession(h);
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  let release!: () => void;
+  const held = withSessionLock(resolveHostedTarget(HOST), auth, () => new Promise<void>((resolve) => (release = resolve)));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const notes: string[] = [];
+  const started = Date.now();
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, budgetMs: 400, stderr: (t) => void notes.push(t), sync: { ...syncDeps(h), auth } });
+  const took = Date.now() - started;
+  release();
+  await held;
+  assert.equal(outcome, "busy");
+  assert.ok(took < 2_000, `took ${took} ms`);
+  assert.match(notes.join(""), /another superbee command is using/);
+});
+
 // ------------------------------------------------------------------------ session start
 
 test("session-start in a hosted checkout pulls from the host and appends the hosted_checkout block", async () => {
@@ -241,8 +298,30 @@ test("turn-end sends edits silently, and hands a conflict back to the agent once
   assert.match(decision.reason, /Superbee app is for the person/);
   // Already continuing because of this hook: never blocked twice.
   assert.equal(await turnEndOutput(h, JSON.stringify({ stop_hook_active: true })), "");
+  // The same unresolved conflict on a later turn is not reported again.
+  assert.equal(await turnEndOutput(h), "");
+  // A new condition is.
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nAnother edit.\n');
+  const before = h.host.docs.get("notes/beta")!.version;
+  h.host.put("notes/beta", h.host.docs.get("notes/beta")!.frontmatter, "Host beta.\n");
+  assert.notEqual(h.host.docs.get("notes/beta")!.version, before);
+  const second = JSON.parse(await turnEndOutput(h)) as { reason: string };
+  assert.match(second.reason, /notes\/beta/);
   // Opt-out for a shell.
   assert.equal(await turnEndOutput(h, "{}", { SUPERBEE_NO_TURN_SYNC: "1" }), "");
+});
+
+test("turn-end does not touch the network when nothing changed and the last pull is recent", async () => {
+  const h = await harness();
+  assert.equal(await turnEndOutput(h), "");
+  assert.equal(h.host.requests.length, 0);
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(10));
+  assert.equal(await turnEndOutput(h), "");
+  assert.ok(h.host.requests.length > 0, "a stale copy is synced");
+  h.host.requests.length = 0;
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nEdited.\n');
+  assert.equal(await turnEndOutput(h), "");
+  assert.equal(h.host.docs.get("notes/beta")!.body, "Edited.\n");
 });
 
 test("turn-end relays the sign-in link when the session is gone", async () => {
@@ -253,6 +332,7 @@ test("turn-end relays the sign-in link when the session is gone", async () => {
     env: {},
     readStdin: async () => null,
     hostedCheckout: async () => h.binding,
+    localState: async () => "changed",
     sync: async () => {
       throw new CliError("AUTH_REQUIRED", "sign-in to x is required", { details: { sign_in_url: "https://issuer.example/activate?user_code=ABCD" } });
     },
@@ -286,6 +366,7 @@ test("turn-end does nothing outside a hosted checkout, and never blocks for offl
       env: {},
       readStdin: async () => null,
       hostedCheckout: async () => h.binding,
+      localState: async () => "changed",
       sync: async () => {
         ran = true;
         throw failure;

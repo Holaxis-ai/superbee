@@ -7,6 +7,7 @@
 // (`{"decision":"block","reason":...}`), which hands the reason back to the agent once; a turn that
 // is already continuing because of this hook (`stop_hook_active`) is never blocked again.
 // Anywhere other than a hosted checkout it does nothing, so a Git board is never synced by a hook.
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 
@@ -18,9 +19,8 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { renderUsage } from "../output.js";
 import type { CheckoutBinding } from "../hosted/binding.js";
-import { fetchWithDeadline } from "../hosted/freshness.js";
+import { ageMs, backgroundSyncDeps, HOSTED_AUTOPULL_STALE_MS, readFreshness, recordTurnEndBlock } from "../hosted/freshness.js";
 import type { HostedSyncDeps } from "../hosted/sync.js";
-import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
 
 /** Set to any non-empty value to turn the end-of-turn sync off without uninstalling the hook. */
 export const NO_TURN_SYNC_ENV = "SUPERBEE_NO_TURN_SYNC";
@@ -36,10 +36,12 @@ Usage:
   superbee turn-end [--dir <path>]
 
 In a hosted checkout (made by 'superbee checkout'), runs one sync: edited files are sent and host
-changes are pulled. Anywhere else it does nothing. It never fails the turn (exit 0) and prints
-nothing unless the sync needs the agent: a conflict, a held file, or a sign-in link to relay.
-Then it prints a Stop-hook decision ({"decision":"block","reason":...}) whose reason is the sync
-receipt and the next command, once per turn.
+changes are pulled. With nothing to send and a pull under five minutes old it does not touch the
+network. Anywhere else it does nothing. It never fails the turn (exit 0) and prints nothing unless
+the sync needs the agent: a conflict, a held file, or a sign-in link to relay. Then it prints a
+Stop-hook decision ({"decision":"block","reason":...}) whose reason is the sync receipt and the
+next command, once per condition: the same unresolved condition is not reported again until it
+changes.
 
 \`hook install --turn-end-sync\` installs it as the Stop hook for Claude Code and Codex; \`hook
 uninstall --turn-end-sync\` removes only that hook. ${NO_TURN_SYNC_ENV}=<any value> turns it off
@@ -61,6 +63,8 @@ export interface TurnEndDeps {
   /** Sync seams (tests pass the fake host's fetch and auth). */
   syncDeps: Partial<HostedSyncDeps>;
   budgetMs: number;
+  /** Whether the checkout has anything to send (default: the private store and folder, read-only). */
+  localState: (binding: CheckoutBinding) => Promise<"changed" | "clean" | "busy">;
 }
 
 async function readHookStdin(): Promise<string | null> {
@@ -139,23 +143,57 @@ export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}
   const stdin = await (partial.readStdin ?? readHookStdin)().catch(() => null);
   if (continuingForHook(stdin)) return;
 
+  const home = partial.syncDeps?.auth?.home ?? homedir();
   const deadline = Date.now() + (partial.budgetMs ?? TURN_END_BUDGET_MS);
-  const auth = partial.syncDeps?.auth ?? defaultHostedAuthDeps(homedir());
+  // Nothing to send and a recent pull: no network at all. Reads pull on their own.
+  const local = await (partial.localState ?? ((b: CheckoutBinding) => import("../hosted/sync.js").then((m) => m.hostedLocalState(b, home))))(binding).catch(() => "changed" as const);
+  if (local === "busy") return;
+  if (local === "clean") {
+    const age = ageMs((await readFreshness(home, binding.checkout_id)).pulled_at, new Date());
+    if (age !== null && age <= HOSTED_AUTOPULL_STALE_MS) return;
+  }
+
   const captured: string[] = [];
   const run = partial.sync ?? (async (args, deps) => (await import("./sync.js")).sync(args, deps));
+  let blocking: CliError | null = null;
   try {
-    await run(["--dir", binding.path, "--limit", String(REASON_ROWS)], {
-      ...partial.syncDeps,
-      auth: { ...auth, fetch: fetchWithDeadline(auth.fetch as typeof fetch, deadline) },
-      fetch: fetchWithDeadline(partial.syncDeps?.fetch ?? fetch, deadline),
-      lockWaitMs: 2_000,
+    // Every request and lock (the checkout's and the sign-in session's) is bounded by the budget.
+    await run(["--dir", binding.path, "--limit", String(REASON_ROWS), "--json"], {
+      ...backgroundSyncDeps(partial.syncDeps, home, deadline),
       stdout: (text) => void captured.push(text),
     });
   } catch (error) {
     // Only what the agent can act on blocks the turn; offline, busy or refused writes wait for the
     // next turn or the next sync, which report them in full.
-    if (error instanceof CliError && (error.code === "AUTH_REQUIRED" || error.code === "CONFLICT") && (error.details as { reason?: unknown } | undefined)?.reason !== "sync_busy") {
-      stdout(`${JSON.stringify({ decision: "block", reason: reasonFor(binding, error, captured.join("")) })}\n`);
+    const reason = error instanceof CliError ? (error.details as { reason?: unknown } | undefined)?.reason : undefined;
+    if (error instanceof CliError && (error.code === "AUTH_REQUIRED" || error.code === "CONFLICT") && reason !== "sync_busy" && reason !== "session_busy") {
+      blocking = error;
     }
   }
+  const receipt = captured.join("");
+  if (!blocking) {
+    await recordTurnEndBlock(home, binding.checkout_id, null).catch(() => {});
+    return;
+  }
+  // Once per condition: the same unresolved condition does not block every later turn.
+  const condition = conditionDigest(blocking, receipt);
+  const previous = (await readFreshness(home, binding.checkout_id).catch(() => null))?.turn_end_block ?? null;
+  if (condition === previous) return;
+  await recordTurnEndBlock(home, binding.checkout_id, condition).catch(() => {});
+  stdout(`${JSON.stringify({ decision: "block", reason: reasonFor(binding, blocking, receipt) })}\n`);
+}
+
+/** What makes two blocks the same: the error, and the documents still not synced with their states. */
+function conditionDigest(error: CliError, receipt: string): string {
+  let rows: unknown = null;
+  try {
+    const parsed = JSON.parse(receipt) as { rows?: { id?: unknown; state?: unknown; reason?: unknown }[] };
+    rows = (parsed.rows ?? []).filter((row) => row.state !== "committed").map((row) => [row.id, row.state, row.reason]);
+  } catch {
+    rows = null;
+  }
+  const details = error.details as { reason?: unknown; sign_in_url?: unknown } | undefined;
+  return createHash("sha256")
+    .update(JSON.stringify([error.code, details?.reason ?? null, details?.sign_in_url ?? null, rows]))
+    .digest("hex");
 }

@@ -702,3 +702,16 @@ export async function withFilesystemMutationLock<T>(
     await release();
   }
 }
+
+/**
+ * How long ago a lock directory last changed (its owner record written or removed), or null when
+ * it is gone. Lets a caller tell a claim or release in progress from an orphaned lock.
+ */
+export async function filesystemLockAgeMs(lockPath: string): Promise<number | null> {
+  try {
+    const info = await fs.stat(lockPath);
+    return Math.max(0, Date.now() - info.mtimeMs);
+  } catch {
+    return null;
+  }
+}

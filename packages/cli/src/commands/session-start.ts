@@ -76,15 +76,13 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
 import { assertSearchDirOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../bundle.js";
-import { hostedCheckoutAt } from "../autopull.js";
+import { hostedAutoPullOptedOut, hostedCheckoutAt } from "../autopull.js";
 import { CliError } from "../errors.js";
 import { commandToken } from "../command-text.js";
 import { render } from "../output.js";
 import type { CheckoutBinding } from "../hosted/binding.js";
-import { fetchWithDeadline, readFreshness } from "../hosted/freshness.js";
+import { backgroundSyncDeps, readFreshness } from "../hosted/freshness.js";
 import type { HostedPullResult, HostedSyncDeps } from "../hosted/sync.js";
-import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
-import { NO_AUTOPULL_ENV, SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
 export const SESSION_START_PULL_BUDGET_MS = 7_000;
@@ -149,50 +147,50 @@ export async function hostedSessionStartPull(
   budgetMs: number,
   deps: { env?: Record<string, string | undefined>; sync?: Partial<HostedSyncDeps>; pull?: (binding: CheckoutBinding, deps: Partial<HostedSyncDeps>) => Promise<HostedPullResult> } = {},
 ): Promise<Record<string, unknown>> {
-  const env = deps.env ?? process.env;
   const home = deps.sync?.auth?.home ?? homedir();
-  let state: HostedSessionPull;
-  let counts: Record<string, number> = {};
-  if (env[SUPERBEE_NO_AUTOPULL_ENV] || env[NO_AUTOPULL_ENV]) state = "disabled";
-  else {
-    const deadline = Date.now() + budgetMs;
-    const auth = deps.sync?.auth ?? defaultHostedAuthDeps(home);
-    try {
-      const pullOnce = deps.pull ?? (await import("../hosted/sync.js")).hostedPull;
-      const result = await pullOnce(binding, {
-        ...deps.sync,
-        auth: { ...auth, fetch: fetchWithDeadline(auth.fetch as typeof fetch, deadline) },
-        fetch: fetchWithDeadline(deps.sync?.fetch ?? fetch, deadline),
-        lockWaitMs: 0,
-        stdout: () => {},
-      });
-      if (result.state === "pulled") {
-        state = "pulled";
-        counts = { refreshed: result.refreshed, removed: result.removed, kept_local_edits: result.kept };
-      } else state = "signed_out";
-    } catch (error) {
-      const code = error instanceof CliError ? error.code : undefined;
-      const reason = error instanceof CliError ? (error.details as { reason?: unknown } | undefined)?.reason : undefined;
-      state = code === "AUTH_REQUIRED" ? "signed_out" : code === "TRANSIENT" ? "offline" : reason === "sync_busy" ? "busy" : error instanceof CliError ? "failed" : "offline";
-    }
-  }
+  const state = await sessionPullState(binding, budgetMs, home, deps);
+  const counts: Record<string, number> = typeof state === "object" ? state : {};
   const pulledAt = (await readFreshness(home, binding.checkout_id).catch(() => null))?.pulled_at ?? null;
   const sync = `${cliInvocation()} sync --dir ${commandToken(binding.path)}`;
   return {
     folder: binding.path,
     bundle_id: binding.bundle_id,
     host: binding.origin,
-    pull: state,
+    pull: typeof state === "object" ? "pulled" : state,
     ...counts,
     last_pulled: pulledAt,
     note:
       state === "signed_out"
         ? "not signed in: run sync, and relay the sign-in link it returns"
-        : state === "pulled"
+        : state === "busy"
+          ? "another superbee command is using this checkout, so it was not pulled; sync when it finishes"
+          : typeof state === "object"
           ? "edit files here, then sync at the end of a batch of edits"
           : "showing the folder as last pulled; sync reports the full story",
     help: [sync],
   };
+}
+
+/**
+ * The pull itself: never a sign-in (a dead or missing session is left for an explicit command),
+ * and every request and lock bounded by the budget.
+ */
+async function sessionPullState(
+  binding: CheckoutBinding,
+  budgetMs: number,
+  home: string,
+  deps: { env?: Record<string, string | undefined>; sync?: Partial<HostedSyncDeps>; pull?: (binding: CheckoutBinding, deps: Partial<HostedSyncDeps>) => Promise<HostedPullResult> },
+): Promise<Exclude<HostedSessionPull, "pulled"> | { refreshed: number; removed: number; kept_local_edits: number }> {
+  if (hostedAutoPullOptedOut(deps.env ?? process.env)) return "disabled";
+  try {
+    const pullOnce = deps.pull ?? (await import("../hosted/sync.js")).hostedPull;
+    const result = await pullOnce(binding, backgroundSyncDeps(deps.sync, home, Date.now() + budgetMs));
+    if (result.state === "pulled") return { refreshed: result.refreshed, removed: result.removed, kept_local_edits: result.kept };
+    return result.state === "busy" ? "busy" : "signed_out";
+  } catch (error) {
+    if (error instanceof CliError) return error.code === "AUTH_REQUIRED" ? "signed_out" : error.code === "TRANSIENT" ? "offline" : "failed";
+    return "offline";
+  }
 }
 
 /** Injectable seam for the fall-through tests. */

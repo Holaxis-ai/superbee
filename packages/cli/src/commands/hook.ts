@@ -1374,7 +1374,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       });
     }
     const command = launch.command;
-    let stopInstalled = false;
+    const stopHosts: IntegrationHost[] = [];
     const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
     // Claude Code settings.json + Codex hooks.json: OUR SDK-modeled pure updater, recognizing
     // both managed command forms (see the module header for why the SDK's marker cannot).
@@ -1393,8 +1393,8 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
           timeoutSeconds: HOOK_TIMEOUT_SECONDS,
         });
         // An installed Stop hook is kept current by every install; only the flag adds one.
-        if (turnEndSync || turnEndHookInstalled(read.settings)) {
-          stopInstalled = true;
+        const wantsStop = turnEndSync || turnEndHookInstalled(read.settings);
+        if (wantsStop) {
           const problem = stopShapeProblem(updated);
           if (problem) {
             refusals.push(`${collapseHomeDirectory(target)}: ${problem} — nothing was written to this file`);
@@ -1408,6 +1408,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
           changed = changed || stopChanged;
         }
         if (changed) writeSettings(target, updated);
+        if (wantsStop) stopHosts.push(host);
         changedByHost[host] = changed;
       } catch (err) {
         failTarget(target, err);
@@ -1453,8 +1454,8 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       scope,
       installed: true,
       command,
-      turn_end_sync: stopInstalled
-        ? { installed: true, hosts: ["claude_code", "codex"], command: turnEndHookCommand(launch, deps.platform), opt_out: `${cliInvocation()} hook uninstall --turn-end-sync` }
+      turn_end_sync: stopHosts.length > 0
+        ? { installed: true, hosts: stopHosts, command: turnEndHookCommand(launch, deps.platform), opt_out: `${cliInvocation()} hook uninstall --turn-end-sync` }
         : { installed: false, opt_in: `${cliInvocation()} hook install --turn-end-sync` },
       ...lifecycle,
       targets: {

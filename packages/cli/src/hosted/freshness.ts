@@ -5,7 +5,9 @@ import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
+import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
 import { checkoutDir } from "./binding.js";
+import type { HostedSyncDeps } from "./sync.js";
 
 /** A read pulls first once the last pull is older than this. */
 export const HOSTED_AUTOPULL_STALE_MS = 5 * 60_000;
@@ -22,9 +24,11 @@ export interface CheckoutFreshness {
   readonly pulled_at: string | null;
   /** The last automatic pull that started, whether or not it completed. */
   readonly attempt_at: string | null;
+  /** Digest of the condition the end-of-turn hook last handed to the agent, until it changes. */
+  readonly turn_end_block: string | null;
 }
 
-const EMPTY: CheckoutFreshness = { pulled_at: null, attempt_at: null };
+const EMPTY: CheckoutFreshness = { pulled_at: null, attempt_at: null, turn_end_block: null };
 
 export async function readFreshness(home: string, checkoutId: string): Promise<CheckoutFreshness> {
   const file = join(checkoutDir(home, checkoutId), FRESHNESS_FILE);
@@ -34,6 +38,7 @@ export async function readFreshness(home: string, checkoutId: string): Promise<C
     return {
       pulled_at: typeof value?.pulled_at === "string" ? value.pulled_at : null,
       attempt_at: typeof value?.attempt_at === "string" ? value.attempt_at : null,
+      turn_end_block: typeof value?.turn_end_block === "string" ? value.turn_end_block : null,
     };
   } catch {
     return EMPTY;
@@ -53,6 +58,11 @@ export async function recordPulled(home: string, checkoutId: string, now: Date =
 /** Record that an automatic pull is starting, before any request, so a failing one backs off. */
 export async function recordPullAttempt(home: string, checkoutId: string, now: Date = new Date()): Promise<void> {
   await update(home, checkoutId, { attempt_at: now.toISOString() });
+}
+
+/** Record the condition the end-of-turn hook reported (null once a sync needs nothing). */
+export async function recordTurnEndBlock(home: string, checkoutId: string, digest: string | null): Promise<void> {
+  await update(home, checkoutId, { turn_end_block: digest });
 }
 
 /** Milliseconds since `iso`, or null when there is no usable time. */
@@ -79,4 +89,21 @@ export function describeAge(ms: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+/**
+ * Sync seams for background work (a pull on a read, a session start, a turn end) bounded by one
+ * deadline: every request, including a token refresh, gives up at `deadline`, and neither the
+ * checkout lock nor the sign-in session lock is waited on beyond it. A busy lock reads as busy.
+ */
+export function backgroundSyncDeps(base: Partial<HostedSyncDeps> | undefined, home: string, deadline: number): Partial<HostedSyncDeps> {
+  const auth = base?.auth ?? defaultHostedAuthDeps(home);
+  const remaining = Math.max(0, deadline - Date.now());
+  return {
+    ...base,
+    auth: { ...auth, fetch: fetchWithDeadline(auth.fetch as typeof fetch, deadline), lockWaitMs: Math.min(remaining, auth.lockWaitMs ?? remaining) },
+    fetch: fetchWithDeadline(base?.fetch ?? fetch, deadline),
+    lockWaitMs: Math.min(remaining, base?.lockWaitMs ?? remaining),
+    stdout: () => {},
+  };
 }

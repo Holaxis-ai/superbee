@@ -83,10 +83,10 @@ test("a role another process holds is held elsewhere; once that process dies it 
   }
 });
 
-test("a role lock with no owner record is an unknown holder: the request rejects instead of reporting held elsewhere", async () => {
+test("a role lock with no owner record past the claim grace is an unknown holder: the request rejects instead of reporting held elsewhere", async () => {
   const { root, cleanup } = await lockRoot();
   try {
-    const locks = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10 });
+    const locks = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10, claimGraceMs: 0 });
     // Create the private root the way a claim does, then plant an ownerless lock directory.
     assert.deepEqual(await withRole(locks, `${ROLE}-seed`, async () => "seed"), { held: true, result: "seed" });
     await fs.mkdir(path.join(root, `${pushRoleLockKey(ROLE)}.lock`));
@@ -162,4 +162,27 @@ test("role names map to distinct fixed-length keys", () => {
   const keys = new Set([ROLE, `${ROLE}x`, "", "a/b", "a\0b"].map(pushRoleLockKey));
   assert.equal(keys.size, 5);
   for (const key of keys) assert.match(key, /^[0-9a-f]{64}$/);
+});
+
+test("an owner-less lock younger than the claim grace is a claim or release in progress, never an orphan", async () => {
+  const { root, cleanup } = await lockRoot();
+  try {
+    const locks = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, waitMs: 50, pollMs: 10 });
+    assert.deepEqual(await withRole(locks, `${ROLE}-seed`, async () => "seed"), { held: true, result: "seed" });
+    const lock = path.join(root, `${pushRoleLockKey(ROLE)}.lock`);
+    await fs.mkdir(lock);
+    // ifAvailable: held elsewhere.
+    assert.deepEqual(await withRole(locks, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+    // A waiting request: busy (retryable), not malformed.
+    await assert.rejects(
+      locks.request(ROLE, {}, async () => "never"),
+      (error: unknown) => error instanceof FilesystemMutationLockError && !error.malformed && error.owner === null,
+    );
+    // Once the grace has passed, the same lock is reported as the orphan it is.
+    const past = new Date(Date.now() - 60_000);
+    await fs.utimes(lock, past, past);
+    await assert.rejects(withRole(locks, ROLE, async () => "never"), (error: unknown) => error instanceof FilesystemMutationLockError && error.malformed);
+  } finally {
+    await cleanup();
+  }
 });

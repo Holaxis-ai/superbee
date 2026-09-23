@@ -243,6 +243,30 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
   return { files, root: typeof exported[ROOT_INDEX] === "string" ? (exported[ROOT_INDEX] as string) : null };
 }
 
+/**
+ * True when every document file in the folder holds exactly the bytes the projection records and
+ * no recorded file is missing: nothing a sync would send. Reads only; files sync never sends
+ * (not `.md`, dot-files) are ignored.
+ */
+export async function folderMatchesProjection(folder: string, projection: ProjectionRecord): Promise<boolean> {
+  const seen = new Set<string>();
+  for (const entry of await walk(folder)) {
+    if (!entry.rel.endsWith(".md")) continue;
+    if (entry.symlink) return false;
+    const bytes = await readIfPresent(path.join(folder, entry.rel));
+    if (bytes === null) return false;
+    if (entry.rel === ROOT_INDEX) {
+      if (digestOf(bytes) !== projection.root) return false;
+      continue;
+    }
+    const id = conceptIdFromPath(entry.rel);
+    seen.add(id);
+    const recorded = projection.files[id];
+    if (!recorded || recorded.deleted || digestOf(bytes) !== recorded.digest) return false;
+  }
+  return Object.entries(projection.files).every(([id, entry]) => entry.deleted === true || seen.has(id));
+}
+
 export async function writeProjection(home: string, checkoutId: string, record: ProjectionRecord): Promise<void> {
   const sorted = Object.fromEntries(Object.entries(record.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}) })}\n`);

@@ -53,7 +53,7 @@ import { commandFragment, commandLiteral, commandToken, type CommandText } from 
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
-import { ACCESS_TOKEN_ENV, defaultHostedAuthDeps, ensureHostedAccessToken, readSession, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { ACCESS_TOKEN_ENV, defaultHostedAuthDeps, ensureHostedAccessToken, readSession, SignedOutError, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./binding.js";
 import { createHostedSyncClient, hostedFailure } from "./client.js";
@@ -63,6 +63,7 @@ import {
   folderConflictFor,
   folderConflicts,
   inboundLinks,
+  folderMatchesProjection,
   readProjection,
   removeGuarded,
   scanCheckout,
@@ -305,7 +306,7 @@ function lockFailure(error: unknown, folder: string): unknown {
   if (error instanceof FilesystemMutationLockError) {
     return new CliError("CONFLICT", `another command holds the checkout lock for ${folder}`, {
       details: { reason: "sync_busy", folder, lock: error.lockPath, retryable: true },
-      help: `wait for it to finish, then retry; if no superbee command is using ${folder}, remove ${error.lockPath}`,
+      help: "wait for it to finish, then retry the same command",
     });
   }
   return error;
@@ -327,14 +328,20 @@ async function storeOkfVersion(store: JournaledBackend): Promise<"0.1" | "0.2" |
  * host's capabilities read and the private store open. The projection record is written back
  * whatever happens after it was read, so a journaled edit is never scanned twice.
  */
-async function withSession<T>(binding: CheckoutBinding, deps: HostedSyncDeps, resumeCommand: CommandText, body: (session: Session) => Promise<T>): Promise<T> {
+async function withSession<T>(
+  binding: CheckoutBinding,
+  deps: HostedSyncDeps,
+  resumeCommand: CommandText,
+  body: (session: Session) => Promise<T>,
+  options: { signIn?: boolean } = {},
+): Promise<T> {
   const target = resolveHostedTarget(binding.audience);
   if (target.origin !== binding.origin) throw new CliError("RUNTIME", `the checkout binding for ${binding.path} is inconsistent`, { help: `${cliInvocation()} checkout --release ${commandToken(binding.path)}` });
   const locks = filesystemPushRoleLocks(deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {});
   return locks
     .request(checkoutLockName(binding.path), {}, async () => {
       // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
-      const token = await ensureHostedAccessToken(target, { resume: resumeCommand }, deps.auth);
+      const token = await ensureHostedAccessToken(target, { resume: resumeCommand, ...(options.signIn === false ? { signIn: false } : {}) }, deps.auth);
       const client = createHostedSyncClient({
         target,
         accessToken: token.accessToken,
@@ -712,7 +719,9 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
 /** What a pull-only pass did, or why it did not run. */
 export type HostedPullResult =
   | { readonly state: "pulled"; readonly refreshed: number; readonly removed: number; readonly kept: number }
-  | { readonly state: "signed_out" };
+  | { readonly state: "signed_out" }
+  /** The checkout or session lock is held by another command; nothing was done. */
+  | { readonly state: "busy" };
 
 /**
  * A pull with no push: the first half of a sync. Edited files are recorded locally first, exactly
@@ -726,8 +735,41 @@ export async function hostedPull(binding: CheckoutBinding, partial: Partial<Host
     return { state: "signed_out" };
   }
   const resumeCommand = syncCommand(binding);
-  return withSession(binding, deps, resumeCommand, async (session) => {
+  try {
+    return await withSession(binding, deps, resumeCommand, (session) => pullOnly(binding, session, deps, resumeCommand), { signIn: false });
+  } catch (error) {
+    if (error instanceof SignedOutError) return { state: "signed_out" };
+    if (error instanceof CliError && ["sync_busy", "session_busy"].includes(String((error.details as { reason?: unknown } | undefined)?.reason))) {
+      return { state: "busy" };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Whether a sync of this checkout has anything to send: an unsettled change in the private store,
+ * or a file that differs from what the last sync or pull placed. Nothing is written and nothing
+ * leaves the machine; `busy` when another command holds the checkout.
+ */
+export async function hostedLocalState(binding: CheckoutBinding, home: string): Promise<"changed" | "clean" | "busy"> {
+  return filesystemPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {
+    if (!lock) return "busy" as const;
+    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id) });
+    try {
+      if ((await store.listIntents(UNSETTLED_STATES)).length > 0) return "changed" as const;
+      const projection = await readProjection(home, binding.checkout_id, store);
+      return (await folderMatchesProjection(binding.path, projection)) ? ("clean" as const) : ("changed" as const);
+    } finally {
+      await store.close();
+    }
+  });
+}
+
+async function pullOnly(binding: CheckoutBinding, session: Session, deps: HostedSyncDeps, resumeCommand: CommandText): Promise<HostedPullResult> {
+  {
     const { store, local, reader, projection } = session;
+    // As in sync: an interrupted push's claims are looked up before anything could send them.
+    await reclaimInFlight(local);
     await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection });
     await session.persist();
     let report: PullReport;
@@ -741,7 +783,7 @@ export async function hostedPull(binding: CheckoutBinding, partial: Partial<Host
     await session.persist();
     await recordPulled(deps.auth.home, binding.checkout_id);
     return { state: "pulled", refreshed: placed.placed.length, removed: placed.removed.length, kept: placed.kept.length };
-  });
+  }
 }
 
 function preview(content: string | null): { content: string | null; truncated: boolean; chars: number } {

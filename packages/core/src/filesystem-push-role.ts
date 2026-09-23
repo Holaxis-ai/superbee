@@ -26,10 +26,11 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import path from "node:path";
 import { hostname } from "node:os";
 
 import type { FilesystemHostPolicy } from "./filesystem-host.js";
-import { acquireFilesystemIdentityLock, FilesystemMutationLockError, type FilesystemMutationLockOptions, type FilesystemMutationLockOwner } from "./filesystem-lock.js";
+import { acquireFilesystemIdentityLock, filesystemLockAgeMs as lockAgeMs, FilesystemMutationLockError, type FilesystemMutationLockOptions, type FilesystemMutationLockOwner } from "./filesystem-lock.js";
 
 /** The Web Locks `LockManager` subset the push role uses; `withPushRole` accepts any value of this shape. */
 export interface PushRoleLockManager {
@@ -48,6 +49,8 @@ export interface FilesystemPushRoleOptions extends Pick<FilesystemMutationLockOp
    * cannot say. Defaults to asking `ps`; a test or another host substitutes its own.
    */
   processStartedAt?: (pid: number) => Promise<number | null>;
+  /** How long an owner-less lock counts as a claim or release in progress. Default 5 s. */
+  claimGraceMs?: number;
 }
 
 /**
@@ -76,6 +79,13 @@ export class PushRoleStaleOwnerError extends Error {
 export function pushRoleLockKey(name: string): string {
   return createHash("sha256").update(`superbee:push-role\0${name}`, "utf8").digest("hex");
 }
+
+/**
+ * How long an owner-less lock may be a claim or release in progress rather than an orphan. A live
+ * claimer writes its owner record right after its `mkdir`; a releaser removes the directory right
+ * after the record. Either takes milliseconds, so an owner-less lock older than this was orphaned.
+ */
+const CLAIM_GRACE_MS = 5_000;
 
 /** `ps` reports a start time to the second, so a genuine claimer can look up to this much later than its claim. */
 const START_TIME_RESOLUTION_MS = 1_000;
@@ -107,19 +117,44 @@ export function filesystemPushRoleLocks(options: FilesystemPushRoleOptions = {})
   const contentionWaitMs = options.contentionWaitMs ?? 250;
   const waitMs = options.waitMs ?? 5_000;
   const startedAt = options.processStartedAt ?? processStartedAtFromPs;
+  const claimGraceMs = options.claimGraceMs ?? CLAIM_GRACE_MS;
+  const acquire = (name: string, wait: number) =>
+    acquireFilesystemIdentityLock(pushRoleLockKey(name), name, { lockRoot: options.lockRoot, pollMs: options.pollMs, hostPolicy: options.hostPolicy, waitMs: wait });
+  /**
+   * Acquire, telling a lock caught between states from an orphan. A timeout whose last look found
+   * no owner record may have caught a live holder between its claim and its record, or between
+   * removing its record and its directory on release. The lock is looked at again: gone means a
+   * release just finished, so the claim is retried once; a directory younger than the grace is a
+   * claim or release in progress, reported as held by an unknown live holder (not malformed). Only
+   * an owner-less lock older than the grace is left as the malformed, orphaned lock it is.
+   */
+  const acquireSettled = async (name: string, wait: number): Promise<() => Promise<void>> => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await acquire(name, wait);
+      } catch (error) {
+        if (!(error instanceof FilesystemMutationLockError) || !error.malformed || path.basename(error.lockPath) !== `${pushRoleLockKey(name)}.lock`) throw error;
+        const age = await lockAgeMs(error.lockPath);
+        if (age === null && attempt === 0) continue;
+        if (age === null || age < claimGraceMs) {
+          throw new FilesystemMutationLockError(
+            `filesystem mutation lock '${error.lockPath}' is being claimed or released by another process; retry the mutation.`,
+            { lockPath: error.lockPath, owner: null, stale: false, malformed: false },
+          );
+        }
+        throw error;
+      }
+    }
+  };
   return {
     async request<T>(name: string, request: { ifAvailable?: boolean }, callback: (lock: { name: string } | null) => Promise<T>): Promise<T> {
       if (typeof name !== "string" || name === "") throw new TypeError("a push role needs a name");
       let release: () => Promise<void>;
       try {
-        release = await acquireFilesystemIdentityLock(pushRoleLockKey(name), name, {
-          lockRoot: options.lockRoot,
-          pollMs: options.pollMs,
-          hostPolicy: options.hostPolicy,
-          waitMs: request.ifAvailable ? contentionWaitMs : waitMs,
-        });
+        release = await acquireSettled(name, request.ifAvailable ? contentionWaitMs : waitMs);
       } catch (error) {
-        if (request.ifAvailable && error instanceof FilesystemMutationLockError && heldByKnownOwner(error)) {
+        if (request.ifAvailable && error instanceof FilesystemMutationLockError && heldByLiveClaim(error)) {
+          if (error.owner === null) return callback(null);
           const owner = error.owner!;
           if (owner.hostname === hostname()) {
             const started = await startedAt(owner.pid);
@@ -142,7 +177,11 @@ export function filesystemPushRoleLocks(options: FilesystemPushRoleOptions = {})
   };
 }
 
-/** A holder with a well-formed owner record; a missing or malformed one is an unknown holder the caller must see. */
-function heldByKnownOwner(error: FilesystemMutationLockError): boolean {
-  return !error.malformed && !error.stale && error.owner !== null;
+/**
+ * A live holder: one with a well-formed owner record, or a claim or release caught in progress
+ * (no record, not malformed). A malformed or stale lock is one the caller must see.
+ */
+function heldByLiveClaim(error: FilesystemMutationLockError): boolean {
+  return !error.malformed && !error.stale;
 }
+

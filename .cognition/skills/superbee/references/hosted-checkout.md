@@ -25,8 +25,10 @@ every file. Sync always pulls before it sends. Its receipt has one row per docum
 committed.
 
 Reads keep the folder current on their own:
-- `list`, `doc read`, `status`, `home` and `link show` pull first when the last pull is more than
-  five minutes old. They wait at most two seconds and never send anything.
+- `list`, `doc read`, `status`, `home`, `link show` and `view list` pull first when the last pull
+  is more than five minutes old. They wait at most two seconds and never send anything.
+- These pulls never start a sign-in. When you are signed out, they print a note on stderr and skip
+  the pull. Run `superbee sync`, which returns the sign-in link to relay.
 - When the last pull is more than thirty minutes old, they print a warning on stderr. Run sync
   then.
 - `SUPERBEE_NO_AUTOPULL=<any value>` turns these pulls off.
@@ -60,16 +62,19 @@ deleting a document, editing Kinds, artifacts, and re-creating a document delete
 the person what to do in the app. Do not work around a refusal by editing files, using another
 command, or copying the bundle somewhere else.
 
-If sync reports `lock_orphaned`, confirm that no superbee command is still running, then remove
-the lock named in the help. `sync_busy` means another command is working: wait, then retry.
+`sync_busy` means another command is working, or is just taking or releasing the lock: wait,
+then retry, and never remove that lock. Only `lock_orphaned` means the lock's holder is gone:
+confirm that no superbee command is still running, then remove the lock named in the help.
 
 ## Session hooks (opt-in)
 
 - `superbee hook install` installs the SessionStart hook. In a hosted checkout, it pulls from the
   host at the start of each session.
 - `superbee hook install --turn-end-sync` also installs a Stop hook for Claude Code and Codex. It
-  syncs the checkout when each turn ends. If that sync finds a conflict, a held file or a sign-in
-  link, the hook hands it back to you once, before the turn ends: handle it as above.
+  syncs the checkout when each turn ends, and skips the network when nothing changed and the last
+  pull is recent. If that sync finds a conflict, a held file or a sign-in link, the hook hands it
+  back to you before the turn ends: handle it as above. It reports each condition once; the same
+  unresolved condition is not reported on later turns, so check `superbee sync` yourself.
 - Offer the Stop hook, but install it only when the person agrees.
   `superbee hook uninstall --turn-end-sync` removes it, and `SUPERBEE_NO_TURN_SYNC=<any value>`
   turns it off for a shell.

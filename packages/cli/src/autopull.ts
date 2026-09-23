@@ -26,8 +26,8 @@ import { commandToken } from "./command-text.js";
 import { bindingForPath, type CheckoutBinding } from "./hosted/binding.js";
 import {
   ageMs,
+  backgroundSyncDeps,
   describeAge,
-  fetchWithDeadline,
   HOSTED_AUTOPULL_BUDGET_MS,
   HOSTED_AUTOPULL_STALE_MS,
   HOSTED_STALE_WARNING_MS,
@@ -35,7 +35,6 @@ import {
   recordPullAttempt,
 } from "./hosted/freshness.js";
 import type { HostedPullResult, HostedSyncDeps } from "./hosted/sync.js";
-import { defaultHostedAuthDeps } from "./hosted-auth/session.js";
 import { NO_AUTOPULL_ENV as LEGACY_NO_AUTOPULL, SUPERBEE_NO_AUTOPULL_ENV as NO_AUTOPULL } from "@superbee/board-git";
 
 export {
@@ -71,14 +70,14 @@ export async function hostedCheckoutAt(dir: string | undefined, home: string = h
 }
 
 /** What the automatic pull did in a hosted checkout. Diagnostic only, like {@link AutoPullOutcome}. */
-export type HostedAutoPullOutcome = "disabled" | "fresh" | "throttled" | "pulled" | "signed-out" | "skipped";
+export type HostedAutoPullOutcome = "disabled" | "fresh" | "throttled" | "pulled" | "signed-out" | "busy" | "skipped";
 
 export interface HostedAutoPullOptions {
   env?: Record<string, string | undefined>;
   now?: () => Date;
   staleMs?: number;
   budgetMs?: number;
-  /** Where the staleness warning goes (default: stderr, so a read's stdout stays its own record). */
+  /** Where the notes go (default: stderr, so a read's stdout stays its own record). */
   stderr?: (text: string) => void;
   /** The pull-only pass (default {@link hostedPull}). */
   pull?: (binding: CheckoutBinding, deps: Partial<HostedSyncDeps>) => Promise<HostedPullResult>;
@@ -86,58 +85,53 @@ export interface HostedAutoPullOptions {
   sync?: Partial<HostedSyncDeps>;
 }
 
+/** True when the person turned the automatic pulls off. A preference, not an access check. */
+export function hostedAutoPullOptedOut(env: Record<string, string | undefined>): boolean {
+  return Boolean(env[NO_AUTOPULL] || env[LEGACY_NO_AUTOPULL]);
+}
+
 /**
  * The hosted checkout's automatic pull: a read pulls first once the last pull is over five
- * minutes old, within a two-second budget, and never more than once per five minutes whether or
- * not the attempt completed. It never starts a sign-in, never sends, and never fails the read.
- * Afterwards, if the last completed pull is over thirty minutes old (or there was none), one line
- * on stderr says so and names the sync command.
+ * minutes old, within a two-second budget that also bounds every lock it takes, and never more
+ * than once per five minutes whether or not the attempt completed. It never starts or clears a
+ * sign-in, never sends, and never fails the read. A skipped pull (signed out, or a busy lock)
+ * leaves one note on stderr; past thirty minutes since the last completed pull (or with none), one
+ * line says the copy may be out of date and names the sync command.
  */
 export async function maybeHostedAutoPull(binding: CheckoutBinding, opts: HostedAutoPullOptions = {}): Promise<HostedAutoPullOutcome> {
-  const env = opts.env ?? process.env;
   const now = opts.now ?? (() => new Date());
   const home = opts.sync?.auth?.home ?? homedir();
-  let outcome: HostedAutoPullOutcome = "skipped";
-  try {
-    const freshness = await readFreshness(home, binding.checkout_id);
-    const staleMs = opts.staleMs ?? HOSTED_AUTOPULL_STALE_MS;
-    const pulledAge = ageMs(freshness.pulled_at, now());
-    const attemptAge = ageMs(freshness.attempt_at, now());
-    if (env[NO_AUTOPULL] || env[LEGACY_NO_AUTOPULL]) outcome = "disabled";
-    else if (pulledAge !== null && pulledAge <= staleMs) outcome = "fresh";
-    else if (attemptAge !== null && attemptAge <= staleMs) outcome = "throttled";
-    else {
-      await recordPullAttempt(home, binding.checkout_id, now());
-      const deadline = Date.now() + (opts.budgetMs ?? HOSTED_AUTOPULL_BUDGET_MS);
-      const auth = opts.sync?.auth ?? defaultHostedAuthDeps(home);
-      const deps: Partial<HostedSyncDeps> = {
-        ...opts.sync,
-        auth: { ...auth, fetch: fetchWithDeadline(auth.fetch as typeof fetch, deadline) },
-        fetch: fetchWithDeadline(opts.sync?.fetch ?? fetch, deadline),
-        lockWaitMs: 0,
-        stdout: () => {},
-      };
-      // Loaded only here, so a read outside a hosted checkout never loads the sync engine.
-      const pullOnce = opts.pull ?? (await import("./hosted/sync.js")).hostedPull;
-      const result = await pullOnce(binding, deps);
-      outcome = result.state === "pulled" ? "pulled" : "signed-out";
-    }
-  } catch {
-    // Offline, busy, refused, or anything unexpected: the read goes on with the folder as it is.
-    outcome = "skipped";
-  }
+  const stderr = opts.stderr ?? ((text: string) => void process.stderr.write(text));
+  const sync = `${cliInvocation()} sync --dir ${commandToken(binding.path)}`;
+  const outcome = await attemptHostedPull(binding, opts, home, now).catch((): HostedAutoPullOutcome => "skipped");
+  if (outcome === "signed-out") stderr(`superbee: note: not signed in to ${binding.origin}, so the automatic pull was skipped. Run: ${sync}\n`);
+  if (outcome === "busy") stderr(`superbee: note: another superbee command is using ${binding.path}, so the automatic pull was skipped\n`);
   try {
     const age = ageMs((await readFreshness(home, binding.checkout_id)).pulled_at, now());
     if (age === null || age > HOSTED_STALE_WARNING_MS) {
       const since = age === null ? "has not been pulled since checkout" : `was last pulled ${describeAge(age)} ago`;
-      (opts.stderr ?? ((text: string) => void process.stderr.write(text)))(
-        `superbee: warning: hosted checkout ${binding.path} ${since}; it may be out of date. Run: ${cliInvocation()} sync --dir ${commandToken(binding.path)}\n`,
-      );
+      stderr(`superbee: warning: hosted checkout ${binding.path} ${since}; it may be out of date. Run: ${sync}\n`);
     }
   } catch {
     // The warning is advisory.
   }
   return outcome;
+}
+
+async function attemptHostedPull(binding: CheckoutBinding, opts: HostedAutoPullOptions, home: string, now: () => Date): Promise<HostedAutoPullOutcome> {
+  if (hostedAutoPullOptedOut(opts.env ?? process.env)) return "disabled";
+  const freshness = await readFreshness(home, binding.checkout_id);
+  const staleMs = opts.staleMs ?? HOSTED_AUTOPULL_STALE_MS;
+  const pulledAge = ageMs(freshness.pulled_at, now());
+  if (pulledAge !== null && pulledAge <= staleMs) return "fresh";
+  const attemptAge = ageMs(freshness.attempt_at, now());
+  if (attemptAge !== null && attemptAge <= staleMs) return "throttled";
+  await recordPullAttempt(home, binding.checkout_id, now());
+  const deadline = Date.now() + (opts.budgetMs ?? HOSTED_AUTOPULL_BUDGET_MS);
+  // Loaded only here, so a read outside a hosted checkout never loads the sync engine.
+  const pullOnce = opts.pull ?? (await import("./hosted/sync.js")).hostedPull;
+  const result = await pullOnce(binding, backgroundSyncDeps(opts.sync, home, deadline));
+  return result.state === "pulled" ? "pulled" : result.state === "busy" ? "busy" : "signed-out";
 }
 
 /** See the package's `maybeAutoPull` — this binds the CLI's store + bundle discovery. */
