@@ -52,6 +52,16 @@ function isLoopbackHostname(hostname: string): boolean {
   return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]" || hostname === "::1";
 }
 
+/**
+ * Drop trailing "/" characters. A plain loop, not a regex: `/\/+$/` backtracks quadratically on
+ * long slash runs in attacker-supplied metadata (CodeQL js/polynomial-redos).
+ */
+export function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return end === value.length ? value : value.slice(0, end);
+}
+
 /** True for https, or plain http on loopback. */
 export function isSecureUrl(value: string): boolean {
   try {
@@ -84,7 +94,7 @@ export function resolveHostedTarget(host: string): HostedTarget {
   if (url.username || url.password || url.search || url.hash) {
     throw new CliError("USAGE", "--host must be a plain URL without credentials, query or fragment");
   }
-  const path = url.pathname.replace(/\/+$/u, "");
+  const path = trimTrailingSlashes(url.pathname);
   const resourcePath = path === "" ? DEFAULT_RESOURCE_PATH : path;
   return {
     origin: url.origin,
@@ -134,8 +144,8 @@ function endpoint(meta: Record<string, unknown>, key: string): string | undefine
 /** Candidate authorization-server metadata URLs: OIDC first (Auth0), then RFC 8414. */
 export function issuerMetadataUrls(issuer: string): string[] {
   const url = new URL(issuer);
-  const trimmed = issuer.replace(/\/+$/u, "");
-  const path = url.pathname.replace(/\/+$/u, "");
+  const trimmed = trimTrailingSlashes(issuer);
+  const path = trimTrailingSlashes(url.pathname);
   return [
     `${trimmed}/.well-known/openid-configuration`,
     `${url.origin}/.well-known/oauth-authorization-server${path}`,
@@ -143,7 +153,7 @@ export function issuerMetadataUrls(issuer: string): string[] {
 }
 
 function sameIssuer(a: string, b: string): boolean {
-  return a.replace(/\/+$/u, "") === b.replace(/\/+$/u, "");
+  return trimTrailingSlashes(a) === trimTrailingSlashes(b);
 }
 
 /** Read the issuer's endpoints, requiring the metadata to name the same issuer. */
@@ -186,7 +196,7 @@ export async function discoverHosted(fetchImpl: FetchLike, target: HostedTarget)
   if (resource === undefined) {
     throw new CliError("RUNTIME", `protected-resource metadata at ${target.metadataUrl} has no resource`);
   }
-  if (resource.replace(/\/+$/u, "") !== target.audience) {
+  if (trimTrailingSlashes(resource) !== target.audience) {
     throw new CliError("RUNTIME", `protected-resource metadata names resource ${resource}, expected ${target.audience}`);
   }
   const servers = Array.isArray(prm.authorization_servers) ? prm.authorization_servers : [];

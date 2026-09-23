@@ -32,6 +32,7 @@ import {
   REQUESTED_SCOPE,
   discoverHosted,
   isSecureUrl,
+  trimTrailingSlashes,
   resolveClientId,
   resolveHostedTarget,
   type Discovery,
@@ -755,7 +756,7 @@ export function overrideAudiences(token: string): string[] | null {
 export function assertOverrideFor(target: HostedTarget, token: string, deps: HostedAuthDeps): void {
   const audiences = overrideAudiences(token);
   if (audiences !== null) {
-    if (audiences.some((a) => a.replace(/\/+$/u, "") === target.audience)) return;
+    if (audiences.some((a) => trimTrailingSlashes(a) === target.audience)) return;
     throw new CliError("USAGE", `${ACCESS_TOKEN_ENV} is for a different audience than ${target.audience}`, {
       details: { host: target.origin, audience: target.audience, token_audiences: audiences },
       help: `unset ${ACCESS_TOKEN_ENV}, or target the host it was issued for`,
@@ -813,6 +814,8 @@ export interface LogoutResult {
   readonly revoked: boolean;
   readonly revocation?: "revoked" | "no_refresh_token" | "no_revocation_endpoint" | "failed" | "store_unavailable";
   readonly access_token_valid_until?: string;
+  /** Whether the refresh token was removed from the credential store (absent when there was no session). */
+  readonly store_cleared?: boolean;
   readonly cancelled_pending_sign_in: boolean;
 }
 
@@ -843,8 +846,9 @@ export async function logoutHosted(target: HostedTarget, deps: HostedAuthDeps): 
       });
       revocation = !("lost" in result) && result.status === 200 ? "revoked" : "failed";
     }
-    const storeCleared = await clearSession(target, deps, storeUnavailable ? null : store);
-    if (!storeCleared) revocation = "store_unavailable";
+    // Revocation and local deletion are separate facts: a revoke can succeed and the store delete still fail.
+    const storeCleared = !storeUnavailable && (await clearSession(target, deps, store));
+    if (storeUnavailable) await clearSession(target, deps, null);
     const validUntil = session.access_token_expires_at_ms > deps.now() ? new Date(session.access_token_expires_at_ms).toISOString() : undefined;
     return {
       host: target.origin,
@@ -852,6 +856,7 @@ export async function logoutHosted(target: HostedTarget, deps: HostedAuthDeps): 
       signed_out: true,
       revoked: revocation === "revoked",
       revocation,
+      store_cleared: storeCleared,
       ...(validUntil ? { access_token_valid_until: validUntil } : {}),
       cancelled_pending_sign_in: cancelledPending,
     };

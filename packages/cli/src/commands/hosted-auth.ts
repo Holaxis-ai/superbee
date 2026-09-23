@@ -380,6 +380,8 @@ export async function logout(argv: string[], partial: Partial<HostedAuthCommandD
   if (result.revocation === "failed") notes.push("the issuer did not confirm revocation; the local copy was deleted anyway");
   if (result.revocation === "store_unavailable") {
     notes.push(`the OS credential store could not be reached, so the refresh token was neither revoked nor deleted; the local session was removed. Unlock the store and run logout again, or remove the 'superbee-cli' keychain item`);
+  } else if (result.store_cleared === false) {
+    notes.push(`the OS credential store could not delete the refresh token (it is ${result.revoked ? "already revoked at the issuer" : "not revoked"}); the local session was removed. Remove the 'superbee-cli' keychain item once the store is unlocked`);
   }
   if (deps.auth.env[ACCESS_TOKEN_ENV]) notes.push(`${ACCESS_TOKEN_ENV} is set; unset it to stop hosted commands using it`);
   deps.stdout(render({ ...result, ...(notes.length ? { notes } : {}) }, resolveMode(values)));

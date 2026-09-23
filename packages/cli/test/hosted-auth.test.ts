@@ -6,6 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,7 @@ import {
   discoverHosted,
   resolveClientId,
   resolveHostedTarget,
+  trimTrailingSlashes,
 } from "../src/hosted-auth/discovery.js";
 import {
   ACCESS_TOKEN_ENV,
@@ -972,6 +974,66 @@ test("S5: a non-https verification link is never relayed", async () => {
   try {
     h.issuer.deviceOverride = { verification_uri_complete: "http://evil.example/activate?user_code=X" };
     await assert.rejects(ensureHostedAccessToken(resolveHostedTarget(h.host), {}, h.deps), (e: CliError) => e.code === "RUNTIME" && /refusing to relay/.test(e.message));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("trimTrailingSlashes strips only trailing slashes and stays linear on long slash runs", () => {
+  assert.equal(trimTrailingSlashes(""), "");
+  assert.equal(trimTrailingSlashes("/"), "");
+  assert.equal(trimTrailingSlashes("///"), "");
+  assert.equal(trimTrailingSlashes("https://a.example/mcp"), "https://a.example/mcp");
+  assert.equal(trimTrailingSlashes("https://a.example/mcp///"), "https://a.example/mcp");
+  assert.equal(trimTrailingSlashes("https://a.example//mcp/"), "https://a.example//mcp");
+  const hostile = `${"/".repeat(200_000)}x${"/".repeat(200_000)}`;
+  const started = performance.now();
+  assert.equal(trimTrailingSlashes(hostile), `${"/".repeat(200_000)}x`);
+  assert.ok(performance.now() - started < 500, "linear time on a hostile slash run");
+  const noRegex = /\.replace\(\/\\\/\+\$\//;
+  for (const file of ["discovery.ts", "session.ts"]) {
+    const text = readFileSync(path.resolve(here, "../src/hosted-auth", file), "utf8");
+    assert.doesNotMatch(text, noRegex, `${file} must use trimTrailingSlashes`);
+  }
+});
+
+test("discovery tolerates trailing slashes on resource and issuer through the shared helper", async () => {
+  const h = await harness();
+  try {
+    h.issuer.prmOverride = { resource: `${h.host}/mcp//` };
+    h.issuer.oidcOverride = { issuer: `${h.issuer.issuer}//` };
+    const d = await discoverHosted(h.deps.fetch, resolveHostedTarget(`${h.host}//`));
+    assert.equal(d.issuer, h.issuer.issuer);
+    const token = unsignedJwt({ aud: `${h.host}/mcp///` });
+    const deps = { ...h.deps, env: { ...h.deps.env, [ACCESS_TOKEN_ENV]: token } };
+    assert.equal((await ensureHostedAccessToken(resolveHostedTarget(h.host), {}, deps)).source, "env");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("logout keeps revoked:true when revocation succeeded but the store delete failed", async () => {
+  const h = await harness();
+  try {
+    await signIn(h);
+    const file = fileSecretStore(h.home, (account) => sessionDirFor(h.home, account));
+    const stuck = {
+      kind: "file" as const,
+      get: (a: string) => file.get(a),
+      set: (a: string, v: string) => file.set(a, v),
+      delete: async () => {
+        throw new CliError("CREDENTIAL_STORE_UNAVAILABLE", "locked");
+      },
+    };
+    let out = "";
+    await logout(["--host", h.host, "--json"], { stdout: (t) => (out += t), stderr: () => {}, auth: { ...h.deps, store: stuck } });
+    const result = JSON.parse(out) as { revoked: boolean; revocation: string; store_cleared: boolean; notes: string[] };
+    assert.equal(result.revoked, true);
+    assert.equal(result.revocation, "revoked");
+    assert.equal(result.store_cleared, false);
+    assert.ok(result.notes.some((n) => /already revoked at the issuer/.test(n)));
+    assert.ok(!result.notes.some((n) => /neither revoked/.test(n)));
+    assert.equal(await readSession(h.home, resolveHostedTarget(h.host)), null);
   } finally {
     await h.cleanup();
   }
