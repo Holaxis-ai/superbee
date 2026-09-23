@@ -27,6 +27,7 @@ import {
   classifyWriteAnswer,
   decodeOutcomeAnswer,
   HostedOutcomeError,
+  CAPACITY_REFUSAL_CODES,
   updateRow,
   UPDATE_ANSWER_ROWS,
   type AuthorizationCode,
@@ -37,6 +38,10 @@ import { OPERATIONS_RETENTION_SKEW_MS, type HostedReadAdapter } from "./read-ada
 
 /** Frontmatter the host owns; no caller may set it, and the host carries it from the stored document. */
 export const HOSTED_MANAGED_FIELDS: ReadonlySet<string> = new Set(["actor", "superbee_updated_by", "generated", "verified", "timestamp", "okf_version"]);
+
+/** The most frontmatter fields the kernel accepts on a create or replace. */
+export const FRONTMATTER_KEY_LIMIT = 32;
+const UNSAFE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
 
 /** The settlement mode a whole-document delivery must use. */
 export const WHOLE_DOCUMENT_SETTLEMENT: NonNullable<UncertainWriteOptions["settlement"]> = "recorded-only";
@@ -100,6 +105,12 @@ export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationInt
     if (!HOSTED_MANAGED_FIELDS.has(key)) (frontmatter as Record<string, unknown>)[key] = value;
   }
   if (!jsonPure(frontmatter)) throw new WholeDocumentInputError(`'${intent.target}' has frontmatter that is not plain JSON`);
+  // The kernel's input schema bounds, checked here so a document it would refuse is refused
+  // before it leaves rather than answered and looked up.
+  const keys = Object.keys(frontmatter);
+  if (keys.length > FRONTMATTER_KEY_LIMIT) throw new WholeDocumentInputError(`'${intent.target}' has ${keys.length} frontmatter fields; at most ${FRONTMATTER_KEY_LIMIT} are accepted`);
+  if (typeof frontmatter.type !== "string" || frontmatter.type.trim() === "") throw new WholeDocumentInputError(`'${intent.target}' has no type`);
+  if (keys.some((key) => UNSAFE_KEYS.has(key))) throw new WholeDocumentInputError(`'${intent.target}' names a reserved object key in its frontmatter`);
   const common = { bundleId, documentId: intent.target, frontmatter, body: parsed.body };
   return intent.base === null
     ? { kind: "create", operationId: OPERATION_IDS.create, payload: { bundleId, documentId: intent.target, expectAbsent: true, frontmatter, body: parsed.body } }
@@ -134,21 +145,36 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   const requestSignal = (signal?: AbortSignal) => (signal ? AbortSignal.any([lifetime, signal]) : lifetime);
   const denial = (code: AuthorizationCode, message: string): Outcome => ({ kind: "refused", code, message });
 
-  async function servedHead(target: string): Promise<Outcome> {
+  /**
+   * The served head as the conflict a refusal without a current version stands for. A create
+   * that found the document but whose follow-up read finds none raced a deletion: there is no
+   * concurrent content to conflict with, so the outcome is unknown and the next push looks the
+   * identity up and, finding it absent, creates again.
+   */
+  async function servedHead(intent: OperationIntent): Promise<Outcome> {
     try {
-      return { kind: "conflict", actual: (await remote.read(target)).version };
+      return { kind: "conflict", actual: (await remote.read(intent.target)).version };
     } catch (error) {
-      if ((error as { code?: unknown } | undefined)?.code === "ENOENT") return { kind: "conflict", actual: null };
+      if ((error as { code?: unknown } | undefined)?.code === "ENOENT") return intent.base === null ? UNKNOWN : { kind: "conflict", actual: null };
       return UNKNOWN;
     }
+  }
+
+  /** The sync quota, as the pausing refusal its scope names. */
+  function capacity(error: WriteFailure["error"]): Outcome {
+    const scope = error.scope ?? "bundle";
+    const reset = error.resetAt ? ` It resets at ${error.resetAt}.` : "";
+    const whose = scope === "principal" ? "Your sync quota for this bundle is used up." : "This bundle's sync capacity is used up.";
+    return { kind: "refused", code: CAPACITY_REFUSAL_CODES[scope], message: `${whose}${reset} Nothing was written; sync resumes when it resets.` };
   }
 
   /** A definitive recorded refusal, from the write answer or from the stored result a lookup returns. */
   function settleRecorded(intent: OperationIntent, failure: WriteFailure): Promise<Outcome> | Outcome {
     const { error } = failure;
-    if (error.code === "document_exists" && intent.base === null) return servedHead(intent.target);
+    if (error.code === "request_capacity") return capacity(error);
+    if (error.code === "document_exists" && intent.base === null) return servedHead(intent);
     if (error.code === "document_not_found") return { kind: "conflict", actual: null };
-    if (error.code === "version_conflict") return error.currentVersion === undefined ? servedHead(intent.target) : { kind: "conflict", actual: error.currentVersion };
+    if (error.code === "version_conflict") return error.currentVersion === undefined ? servedHead(intent) : { kind: "conflict", actual: error.currentVersion };
     const row = UPDATE_ANSWER_ROWS.find((candidate) => candidate.answer === `200 ${error.code}`) ?? updateRow("200 other");
     return row.code ? denial(row.code, error.message) : { kind: "refused", code: error.code, message: error.message };
   }
@@ -221,6 +247,15 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     }
     const { row, result } = classifyWriteAnswer(answer, { operationIds: [request.operationId], documentId: intent.target, bundleId });
     if (result?.ok) return { kind: "committed", version: result.data.version };
+    if (result && !result.ok && result.error.code === "request_capacity") return capacity(result.error);
+    // The carrier refuses a malformed identity or binding before sending, so a 400 here, and any
+    // invalid_input, is the host's schema refusing this exact document. That is deterministic:
+    // resending or looking it up again can only repeat it, so it is a terminal refusal.
+    if (row.answer === "400") {
+      const code = (answer.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+      return { kind: "refused", code: typeof code?.code === "string" ? code.code : "invalid_input", message: typeof code?.message === "string" ? code.message : "The host refused the request as malformed; nothing was written." };
+    }
+    if (result && !result.ok && result.error.code === "invalid_input") return { kind: "refused", code: "invalid_input", message: result.error.message };
     const settled = answer.headers.get("X-Superbee-Write-Settled") === intent.requestId;
     const lookupRecorded = async (): Promise<Outcome> => {
       try {
@@ -234,7 +269,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
         return settleRecorded(intent, result as WriteFailure);
       case "settled-only":
         // A create-only write that found the document is a conflict whether or not it was recorded.
-        if ((result as WriteFailure).error.code === "document_exists" && intent.base === null) return servedHead(intent.target);
+        if ((result as WriteFailure).error.code === "document_exists" && intent.base === null) return servedHead(intent);
         return settled ? settleRecorded(intent, result as WriteFailure) : lookupRecorded();
       case "no":
         return row.code ? denial(row.code, result?.ok === false ? result.error.message : "The host refused the request before dispatch.") : UNKNOWN;

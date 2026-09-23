@@ -92,8 +92,19 @@ export interface UncertainWriteResult {
   lookups: number;
 }
 
-/** Refusal codes that mean the caller's authorization is gone rather than the content wrong. */
-export const AUTHORIZATION_REFUSAL_CODES: ReadonlySet<string> = new Set(["AUTH_REQUIRED", "FORBIDDEN", "UNAUTHORIZED", "PERMISSION_DENIED"]);
+/**
+ * Refusal codes that pause shared operations rather than say the content is wrong: the caller's
+ * authorization is gone, or a hosted sync quota (`REQUEST_CAPACITY_*`, one per scope the host
+ * names) is spent. Nothing is lost; the refused intents are requeued when the store resumes.
+ */
+export const AUTHORIZATION_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "AUTH_REQUIRED",
+  "FORBIDDEN",
+  "UNAUTHORIZED",
+  "PERMISSION_DENIED",
+  "REQUEST_CAPACITY_PRINCIPAL",
+  "REQUEST_CAPACITY_BUNDLE",
+]);
 
 /** True when a refusal reports lost permission, which pauses further shared operations. */
 export function isAuthorizationRefusal(outcome: Outcome): boolean {

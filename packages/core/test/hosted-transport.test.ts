@@ -20,6 +20,7 @@ import {
   createHostedReadAdapter,
   createWholeDocumentTransport,
   decodeOutcomeAnswer,
+  capacityScopeOf,
   HostedCarrierError,
   HostedOutcomeError,
   OUTCOME_ANSWER_ROWS,
@@ -380,6 +381,68 @@ test("whole-document transport: frontmatter that is not plain JSON, or a documen
   const outcomes = [await transport.submit(infinite), await transport.submit(intentOf(BASE, { type: "Note" }, "x".repeat(70_000)))];
   for (const outcome of outcomes) assert.equal(outcome.kind === "refused" && outcome.code, "invalid_input");
   assert.equal(sent, 0);
+});
+
+const capacityAnswer = (status: 200 | 429, error: Record<string, unknown>) => (): HostedAnswer => ({
+  status,
+  headers: new Headers(),
+  body: status === 200 ? { ok: false, operationId: "documents.replace.v1", error: { message: "quota", retryable: false, writeState: "not_applied", code: "request_capacity", ...error } } : { error: { code: "request_capacity", ...error } },
+});
+
+test("whole-document transport: a spent sync quota pauses with its scope, never reads as possibly delivered", async () => {
+  const intent = intentOf(BASE);
+  for (const [status, scope, code] of [[200, "principal", "REQUEST_CAPACITY_PRINCIPAL"], [429, "bundle", "REQUEST_CAPACITY_BUNDLE"]] as const) {
+    const { deliver, requests } = transportOver({ "/sync/v1/replace": [capacityAnswer(status, { scope, resetAt: "2026-09-23T00:00:00.000Z" })] }, intent);
+    const result = await deliver();
+    assert.equal(result.outcome.kind === "refused" && result.outcome.code, code);
+    assert.equal(capacityScopeOf(result.outcome), scope);
+    assert.ok(isAuthorizationRefusal(result.outcome), "the shared primitive pauses the store on it");
+    assert.match((result.outcome as { message: string }).message, /2026-09-23T00:00:00.000Z/);
+    assert.equal(result.intent.state, "refused");
+    assert.equal(requests.length, 1, "no lookup and no resubmission");
+  }
+  // A capacity refusal that names no valid scope is not one the client admits.
+  assert.equal(classifyWriteAnswer(capacityAnswer(200, { scope: "tenant" })(), { operationIds: ["documents.replace.v1"], documentId: "notes/alpha" }).row.answer, "200 other");
+  assert.equal(classifyWriteAnswer(capacityAnswer(200, {})(), { operationIds: ["documents.replace.v1"], documentId: "notes/alpha" }).row.answer, "200 other");
+  assert.equal(capacityScopeOf({ kind: "refused", code: "validation_failed" }), null);
+});
+
+test("whole-document transport: a 400 or an unrecorded invalid_input is a terminal refusal, not an unknown to look up", async () => {
+  const intent = intentOf(BASE);
+  const four = transportOver({ "/sync/v1/replace": [fixture("update-400")] }, intent);
+  const refused = await four.deliver();
+  assert.deepEqual([refused.outcome.kind, (refused.outcome as { code?: string }).code], ["refused", "invalid_input"]);
+  assert.equal(four.requests.length, 1);
+  const invalid = (): HostedAnswer => ({ status: 200, headers: new Headers(), body: { ok: false, operationId: "documents.replace.v1", error: { code: "invalid_input", message: "too many fields", retryable: false, writeState: "not_applied" } } });
+  const unsettled = transportOver({ "/sync/v1/replace": [invalid] }, intent);
+  assert.deepEqual((await unsettled.deliver()).outcome, { kind: "refused", code: "invalid_input", message: "too many fields" });
+  assert.deepEqual(unsettled.requests.map((request) => request.path), ["/sync/v1/replace"]);
+});
+
+test("whole-document request: the kernel's structural bounds refuse a document before it leaves", () => {
+  const many = Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`f${index}`, index]));
+  assert.throws(() => wholeDocumentRequest("team.knowledge", intentOf(BASE, { type: "Note", ...many })), /at most 32/);
+  assert.throws(() => wholeDocumentRequest("team.knowledge", intentOf(BASE, { title: "no type" })), /no type/);
+  assert.throws(() => wholeDocumentRequest("team.knowledge", intentOf(BASE, { type: "  " })), /no type/);
+  assert.throws(() => wholeDocumentRequest("team.knowledge", intentOf(BASE, { type: "Note", constructor: "x" })), /reserved object key/);
+  // Managed fields do not count toward the bound: they never leave.
+  const managed = Object.fromEntries(Array.from({ length: 31 }, (_, index) => [`f${index}`, index]));
+  assert.equal(wholeDocumentRequest("team.knowledge", intentOf(BASE, { type: "Note", ...managed, timestamp: "2026-09-22T00:00:00.000Z", actor: "a" })).kind, "replace");
+});
+
+test("whole-document transport: a create whose conflict read finds the document deleted is unknown, and the next delivery creates it", async () => {
+  const intent = intentOf(null);
+  const exists = (): HostedAnswer => ({
+    status: 200,
+    headers: new Headers({ "x-superbee-write-settled": REQUEST_ID }),
+    body: { ok: false, operationId: "documents.create.v1", error: { code: "document_exists", message: "exists", retryable: false, writeState: "not_applied" } },
+  });
+  const { transport, deliver, requests, reads } = transportOver({ "/sync/v1/create": [exists, fixture("update-200-ok")], "/sync/v1/outcome": [fixture("outcome-200-absent")] }, intent);
+  assert.deepEqual(await transport.submit(intent), { kind: "unknown" });
+  assert.deepEqual(reads, ["notes/alpha"]);
+  const result = await deliver({ ...intent, attempts: 1 });
+  assert.equal(result.outcome.kind, "committed");
+  assert.deepEqual(requests.map((request) => request.path), ["/sync/v1/create", "/sync/v1/outcome", "/sync/v1/create"]);
 });
 
 // ── the fetch carrier ──────────────────────────────────────────────────────────────────────

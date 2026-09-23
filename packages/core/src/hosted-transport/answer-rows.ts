@@ -4,7 +4,8 @@
  * browser editor's body delivery and the CLI's whole-document sync read these same tables, so
  * "recorded", "unknown" and "absent past retention" mean one thing in both.
  *
- * Until the hosted browser imports this module, hosted's golden exchanges
+ * The update rows are hosted's browser table plus the sync quota rows (`request_capacity`),
+ * which only the `/sync/v1` routes answer. Until the hosted browser imports this module, hosted's golden exchanges
  * (`test/fixtures/hosted-transport/`, produced from the hosted encoders) pin that these rows
  * classify exactly what the host emits.
  *
@@ -21,6 +22,23 @@ import type { HostedAnswer } from "./carrier.js";
 
 /** A refusal code the shared primitive treats as lost authorization, pausing the store. */
 export type AuthorizationCode = "AUTH_REQUIRED" | "PERMISSION_DENIED";
+
+/**
+ * The refusal codes of a sync quota the host enforces on identified writes (`request_capacity`),
+ * one per scope it names: the person's rolling daily bound in this bundle, or the bundle's own
+ * bound. The shared primitive counts both as pausing refusals, so the store pauses with nothing
+ * lost and `resume` requeues the refused intents once the quota resets.
+ */
+export const CAPACITY_REFUSAL_CODES = Object.freeze({ principal: "REQUEST_CAPACITY_PRINCIPAL", bundle: "REQUEST_CAPACITY_BUNDLE" } as const);
+export type CapacityScope = keyof typeof CAPACITY_REFUSAL_CODES;
+
+/** The quota scope a refused outcome names, or `null` when it is not a capacity refusal. */
+export function capacityScopeOf(outcome: { kind: string; code?: string }): CapacityScope | null {
+  if (outcome.kind !== "refused") return null;
+  if (outcome.code === CAPACITY_REFUSAL_CODES.principal) return "principal";
+  if (outcome.code === CAPACITY_REFUSAL_CODES.bundle) return "bundle";
+  return null;
+}
 
 /**
  * One identified-write answer and how the shared primitive sees it. `answer` names the hosted
@@ -59,6 +77,9 @@ export const UPDATE_ANSWER_ROWS: readonly UpdateAnswerRow[] = Object.freeze([
   { answer: "200 document_exists", recorded: "settled-only", outcome: "refused" },
   { answer: "200 candidate_unavailable", recorded: "settled-only", outcome: "refused" },
   { answer: "200 candidate_recovery_unavailable", recorded: "settled-only", outcome: "refused" },
+  // The sync quota, refused before dispatch; the row's outcome code is chosen by the scope the answer names.
+  { answer: "200 request_capacity", recorded: "no", outcome: "refused" },
+  { answer: "429 request_capacity", recorded: "no", outcome: "refused" },
   { answer: "200 write_outcome_unknown", recorded: "maybe", outcome: "unknown" },
   { answer: "200 other", recorded: "unknown", outcome: "unknown" },
   { answer: "400", recorded: "no", outcome: "unknown" },
@@ -148,6 +169,7 @@ export const WRITE_ERROR_CODES = Object.freeze([
   "internal_error",
   "candidate_unavailable",
   "candidate_recovery_unavailable",
+  "request_capacity",
 ] as const);
 export type WriteErrorCode = (typeof WRITE_ERROR_CODES)[number];
 
@@ -159,7 +181,17 @@ export type WriteSuccess = {
 export type WriteFailure = {
   ok: false;
   operationId: string;
-  error: { code: WriteErrorCode; message: string; retryable: false; writeState: "not_applied" | "unknown"; currentVersion?: Version };
+  error: {
+    code: WriteErrorCode;
+    message: string;
+    retryable: false;
+    writeState: "not_applied" | "unknown";
+    currentVersion?: Version;
+    /** On `request_capacity` only: which bound refused. */
+    scope?: CapacityScope;
+    /** On `request_capacity` only, when the host states it: when the bound admits writes again (ISO instant). */
+    resetAt?: string;
+  };
 };
 export type WriteResult = WriteSuccess | WriteFailure;
 
@@ -170,7 +202,7 @@ export class HostedAnswerError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const onlyKeys = (value: Record<string, unknown>, allowed: readonly string[]) => Object.keys(value).every((key) => allowed.includes(key));
 const DATA_KEYS = ["bundleId", "documentId", "version", "changed", "scope"] as const;
-const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "candidate", "retentionUnavailable"] as const;
+const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "candidate", "retentionUnavailable", "scope", "resetAt"] as const;
 
 /**
  * A write operation's result envelope, admitted or refused as one: the operation it answers,
@@ -195,7 +227,10 @@ export function parseWriteResult(raw: unknown, expected: { operationIds: readonl
   if (raw.data !== undefined || !isRecord(error) || !onlyKeys(error, ERROR_KEYS) || !(WRITE_ERROR_CODES as readonly unknown[]).includes(error.code) ||
       typeof error.message !== "string" || error.retryable !== false || (error.writeState !== "not_applied" && error.writeState !== "unknown") ||
       (error.currentVersion !== undefined && !isContentVersion(error.currentVersion)) ||
-      (error.code === "write_outcome_unknown" && error.writeState !== "unknown")) throw refuse();
+      (error.code === "write_outcome_unknown" && error.writeState !== "unknown") ||
+      (error.code === "request_capacity"
+        ? (error.scope !== "principal" && error.scope !== "bundle") || error.writeState !== "not_applied" || (error.resetAt !== undefined && (typeof error.resetAt !== "string" || !Number.isFinite(Date.parse(error.resetAt))))
+        : error.scope !== undefined || error.resetAt !== undefined)) throw refuse();
   return { ok: false, operationId, error: { ...(error as WriteFailure["error"]) } };
 }
 
@@ -237,6 +272,18 @@ export function classifyWriteAnswer(
     return { row: updateRow("401 other") };
   }
   if (status === 403) return { row: updateRow("403") };
+  if (status === 429) {
+    const error = (body as { error?: unknown } | undefined)?.error;
+    if (isRecord(error) && error.code === "request_capacity") {
+      try {
+        const result = parseWriteResult({ ok: false, operationId: expected.operationIds[0], error: { retryable: false, writeState: "not_applied", message: "", ...error } }, expected);
+        return { row: updateRow("429 request_capacity"), result };
+      } catch {
+        return { row: updateRow("other status") };
+      }
+    }
+    return { row: updateRow("other status") };
+  }
   if (status === 503) return { row: updateRow("503") };
   return { row: updateRow("other status") };
 }
