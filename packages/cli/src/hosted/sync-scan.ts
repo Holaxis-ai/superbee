@@ -52,6 +52,12 @@ export interface ProjectionRecord {
   files: Record<string, ProjectionEntry>;
   /** The digest of the root `index.md` as exported, or null without one. */
   root: string | null;
+  /**
+   * Document id to the digest of local bytes a `--resolve take` is replacing, recorded before the
+   * replacement starts. A crash mid-take can leave those bytes moved aside; recovery drops them
+   * because the person already chose to discard them. Cleared by the next recovery.
+   */
+  discarded?: Record<string, string>;
 }
 
 /** Why a file is held: it stays in the folder and nothing is sent for it. */
@@ -220,7 +226,12 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
         files[id] = { digest: entry.digest, version: entry.version, ...((entry as { deleted?: unknown }).deleted === true ? { deleted: true as const } : {}) };
       }
     }
-    return { files, root: typeof value.root === "string" ? value.root : null };
+    const discarded: Record<string, string> = {};
+    const rawDiscarded = (value as { discarded?: unknown }).discarded;
+    if (typeof rawDiscarded === "object" && rawDiscarded !== null) {
+      for (const [id, digest] of Object.entries(rawDiscarded as Record<string, unknown>)) if (typeof digest === "string") discarded[id] = digest;
+    }
+    return { files, root: typeof value.root === "string" ? value.root : null, ...(Object.keys(discarded).length > 0 ? { discarded } : {}) };
   }
   const exported = value && value.schema === 1 && typeof value.exported === "object" && value.exported !== null ? (value.exported as Record<string, unknown>) : {};
   const versions = new Map((await store.readHeads({ project: (head) => [head.id, head.version] as const })).map(([id, version]) => [id, version]));
@@ -234,7 +245,7 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
 
 export async function writeProjection(home: string, checkoutId: string, record: ProjectionRecord): Promise<void> {
   const sorted = Object.fromEntries(Object.entries(record.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root })}\n`);
+  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}) })}\n`);
 }
 
 /** Every file under the folder, relative and POSIX-spelled; dot-files and dot-folders are skipped. */
@@ -771,8 +782,11 @@ async function placementTemps(folder: string, prefix = ""): Promise<string[]> {
  * - a staged copy is dropped;
  * - moved-aside bytes go back under their name when the name is free, except that a removal of
  *   exactly the recorded bytes is completed instead (the document was deleted on the host);
- * - when the name is taken, moved-aside bytes that match it or the record are dropped, and any
- *   other bytes are kept where they are, never deleted.
+ * - when the name is taken, moved-aside bytes that match it or the record are dropped, and so are
+ *   bytes a `--resolve take` recorded as discarded; any other bytes are kept where they are, never
+ *   deleted.
+ * The discard records are cleared afterwards: a take the crash interrupted is either complete now
+ * or its file is back, and the conflict still stands.
  */
 export async function recoverPlacements(folder: string, projection: ProjectionRecord): Promise<void> {
   for (const rel of await placementTemps(folder)) {
@@ -787,6 +801,7 @@ export async function recoverPlacements(folder: string, projection: ProjectionRe
     const relTarget = path.relative(folder, target).split(path.sep).join("/");
     const entry = relTarget.endsWith(".md") ? projection.files[conceptIdFromPath(relTarget)] : undefined;
     const recorded = entry !== undefined && digestOf(aside) === entry.digest;
+    const discarded = relTarget.endsWith(".md") && projection.discarded?.[conceptIdFromPath(relTarget)] === digestOf(aside);
     const current = await readIfPresent(target);
     if (current === null) {
       if (label === "del" && recorded) {
@@ -802,6 +817,7 @@ export async function recoverPlacements(folder: string, projection: ProjectionRe
       await fs.unlink(temp);
       continue;
     }
-    if (recorded || Buffer.from(current).equals(aside)) await fs.unlink(temp);
+    if (recorded || discarded || Buffer.from(current).equals(aside)) await fs.unlink(temp);
   }
+  delete projection.discarded;
 }

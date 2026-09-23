@@ -649,6 +649,14 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     expect: 0,
   },
   {
+    // turn-end is the Stop hook payload: it acts only in a hosted checkout, whose binding lives in
+    // private state and is found by folder path; a guarded root is never one, so it does nothing.
+    leaf: "turnEnd",
+    surface: "--dir",
+    argv: (t) => ["turn-end", "--dir", t],
+    expect: "no-refusal",
+  },
+  {
     // `home` is the session render: it consults the guard, reports `bundle.status: conflict` with the
     // boundary help, and performs no bundle operation. Degrading rather than exiting non-zero is
     // deliberate here (a hard failure would break the SessionStart payload), so the row pins exit 0

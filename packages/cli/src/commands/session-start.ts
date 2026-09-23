@@ -51,6 +51,7 @@ import { provisionBoardWorktree } from "../board-runtime.js";
 // step itself is SHARED, not owned here: autopull.ts's `pullBoardAndRecord` (extracted from this
 // command) is the ONE code path both this hook and the opportunistic read-command trigger use —
 // do not fork the state-write discipline back into either caller.
+import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import path from "node:path";
 
@@ -75,6 +76,15 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
 import { assertSearchDirOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../bundle.js";
+import { hostedCheckoutAt } from "../autopull.js";
+import { CliError } from "../errors.js";
+import { commandToken } from "../command-text.js";
+import { render } from "../output.js";
+import type { CheckoutBinding } from "../hosted/binding.js";
+import { fetchWithDeadline, readFreshness } from "../hosted/freshness.js";
+import type { HostedPullResult, HostedSyncDeps } from "../hosted/sync.js";
+import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
+import { NO_AUTOPULL_ENV, SUPERBEE_NO_AUTOPULL_ENV } from "@superbee/board-git";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
 export const SESSION_START_PULL_BUDGET_MS = 7_000;
@@ -126,6 +136,65 @@ const OFFLINE_REASONS = new Set(["network", "auth", "busy", "git-missing"]);
 /** The same offline classes as {@link OFFLINE_REASONS}, in `BoardGitError.code` vocabulary (in-tree fetch). */
 const OFFLINE_CODES = new Set(["TRANSIENT", "AUTH_REQUIRED", "GIT_BUSY", "GIT_MISSING"]);
 
+/** How the session-start pull of a hosted checkout went. */
+export type HostedSessionPull = "pulled" | "disabled" | "signed_out" | "offline" | "busy" | "failed";
+
+/**
+ * The session-start pull of a hosted checkout: one pull-only pass within the budget (never a
+ * sign-in, never a send), reported as the `hosted_checkout` block after the home view. Opt out
+ * with SUPERBEE_NO_AUTOPULL, which also stops the automatic pull on reads.
+ */
+export async function hostedSessionStartPull(
+  binding: CheckoutBinding,
+  budgetMs: number,
+  deps: { env?: Record<string, string | undefined>; sync?: Partial<HostedSyncDeps>; pull?: (binding: CheckoutBinding, deps: Partial<HostedSyncDeps>) => Promise<HostedPullResult> } = {},
+): Promise<Record<string, unknown>> {
+  const env = deps.env ?? process.env;
+  const home = deps.sync?.auth?.home ?? homedir();
+  let state: HostedSessionPull;
+  let counts: Record<string, number> = {};
+  if (env[SUPERBEE_NO_AUTOPULL_ENV] || env[NO_AUTOPULL_ENV]) state = "disabled";
+  else {
+    const deadline = Date.now() + budgetMs;
+    const auth = deps.sync?.auth ?? defaultHostedAuthDeps(home);
+    try {
+      const pullOnce = deps.pull ?? (await import("../hosted/sync.js")).hostedPull;
+      const result = await pullOnce(binding, {
+        ...deps.sync,
+        auth: { ...auth, fetch: fetchWithDeadline(auth.fetch as typeof fetch, deadline) },
+        fetch: fetchWithDeadline(deps.sync?.fetch ?? fetch, deadline),
+        lockWaitMs: 0,
+        stdout: () => {},
+      });
+      if (result.state === "pulled") {
+        state = "pulled";
+        counts = { refreshed: result.refreshed, removed: result.removed, kept_local_edits: result.kept };
+      } else state = "signed_out";
+    } catch (error) {
+      const code = error instanceof CliError ? error.code : undefined;
+      const reason = error instanceof CliError ? (error.details as { reason?: unknown } | undefined)?.reason : undefined;
+      state = code === "AUTH_REQUIRED" ? "signed_out" : code === "TRANSIENT" ? "offline" : reason === "sync_busy" ? "busy" : error instanceof CliError ? "failed" : "offline";
+    }
+  }
+  const pulledAt = (await readFreshness(home, binding.checkout_id).catch(() => null))?.pulled_at ?? null;
+  const sync = `${cliInvocation()} sync --dir ${commandToken(binding.path)}`;
+  return {
+    folder: binding.path,
+    bundle_id: binding.bundle_id,
+    host: binding.origin,
+    pull: state,
+    ...counts,
+    last_pulled: pulledAt,
+    note:
+      state === "signed_out"
+        ? "not signed in: run sync, and relay the sign-in link it returns"
+        : state === "pulled"
+          ? "edit files here, then sync at the end of a batch of edits"
+          : "showing the folder as last pulled; sync reports the full story",
+    help: [sync],
+  };
+}
+
 /** Injectable seam for the fall-through tests. */
 export interface SessionStartDeps {
   stdout: (s: string) => void;
@@ -135,6 +204,10 @@ export interface SessionStartDeps {
   budgetMs: number;
   /** Injected final renderer for argv-forwarding tests; production uses {@link home}. */
   renderHome: typeof home;
+  /** The hosted checkout the run is in (default: found from --dir or the cwd). */
+  hostedCheckout: (dir: string | undefined) => Promise<CheckoutBinding | null>;
+  /** The hosted session-start pull (default {@link hostedSessionStartPull}). */
+  hostedPull: (binding: CheckoutBinding, budgetMs: number) => Promise<Record<string, unknown>>;
 }
 
 /**
@@ -336,6 +409,42 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
 
   const budgetMs = deps.budgetMs ?? SESSION_START_PULL_BUDGET_MS;
   const pull = deps.pull ?? sessionStartPull;
+
+  // A hosted checkout has no Git board: pull it from the host instead, then render home with a
+  // settled board outcome (so home starts no pull of its own) and the hosted block after it.
+  let hosted: CheckoutBinding | null = null;
+  try {
+    hosted = await (deps.hostedCheckout ?? ((d) => hostedCheckoutAt(d)))(values.dir);
+  } catch {
+    hosted = null;
+  }
+  if (hosted) {
+    let block: Record<string, unknown>;
+    try {
+      block = await (deps.hostedPull ?? ((binding, budget) => hostedSessionStartPull(binding, budget)))(hosted, budgetMs);
+    } catch {
+      block = { folder: hosted.path, pull: "failed" };
+    }
+    const captured: string[] = [];
+    const homeArgv: string[] = [];
+    if (values.dir !== undefined) homeArgv.push("--dir", values.dir);
+    if (values.json) homeArgv.push("--json");
+    if (values["no-update-check"]) homeArgv.push("--no-update-check");
+    await (deps.renderHome ?? home)(homeArgv, { stdout: (text) => void captured.push(text), boardPull: { offline: false } });
+    const rendered = captured.join("");
+    if (values.json) {
+      let view: unknown;
+      try {
+        view = JSON.parse(rendered);
+      } catch {
+        view = undefined;
+      }
+      stdout(view && typeof view === "object" && !Array.isArray(view) ? `${JSON.stringify({ ...view, hosted_checkout: block })}\n` : rendered);
+    } else {
+      stdout(`${rendered}${rendered.endsWith("\n") || rendered === "" ? "" : "\n"}${render({ hosted_checkout: block }, "default")}`);
+    }
+    return;
+  }
 
   // The belt to the pull step's internal per-op suspenders: race the WHOLE pull against the
   // budget, so even a pull that hangs in ways the per-op kills can't see (an injected async dep,

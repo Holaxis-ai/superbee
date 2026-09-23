@@ -215,6 +215,7 @@ test("--resolve keep sends the local version against the host's current one", as
   const remote = h.host.put("notes/alpha", before.frontmatter, "Host alpha.\n");
   await edit(h, "notes/alpha", (doc) => void (doc.body = "Local alpha.\n"));
   await failingSync(h);
+  await runSync(h, ["--inspect", "notes/alpha"]);
   await runSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
   const after = await runSync(h);
   assert.equal(rowFor(after, "notes/alpha")?.state, "committed");
@@ -230,6 +231,7 @@ test("--resolve revise sends the file as edited after the conflict", async () =>
   await failingSync(h);
   // keep refuses a file edited since the conflict; revise sends it as it is now.
   await edit(h, "notes/alpha", (doc) => void (doc.body = "Host alpha.\nLocal alpha.\n"));
+  await runSync(h, ["--inspect", "notes/alpha"]);
   const keep = await failingSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
   assert.equal(keep.error.code, "CONFLICT");
   assert.equal(keep.error.details?.reason, "file_edited");
@@ -502,6 +504,7 @@ test("B3: keep on a file edited during a pull sends it only as an explicit decis
   }) as typeof fetch;
   await failingSync(h);
   h.fetch = undefined;
+  await runSync(h, ["--inspect", "notes/alpha"]);
   await runSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
   const after = await runSync(h);
   assert.equal(rowFor(after, "notes/alpha")?.state, "committed");

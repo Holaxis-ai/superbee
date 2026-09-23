@@ -230,7 +230,7 @@ export async function readDefaultHost(home: string): Promise<string | null> {
   return typeof record?.host === "string" ? record.host : null;
 }
 
-async function writeDefaultHost(home: string, host: string): Promise<void> {
+export async function writeDefaultHost(home: string, host: string): Promise<void> {
   await writeUserStateFileAtomic0600(home, hostedAuthRoot(home), DEFAULT_HOST_FILE, `${JSON.stringify({ host })}\n`);
 }
 

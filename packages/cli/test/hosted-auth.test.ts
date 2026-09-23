@@ -683,7 +683,18 @@ test("only the sign-in commands, the hosted checkout and hosted sync import the 
       }
       if (!entry.name.endsWith(".ts")) continue;
       const text = await readFile(full, "utf8");
-      const allowed = [path.join("commands", "hosted-auth.ts"), path.join("commands", "checkout.ts"), path.join("hosted", "client.ts"), path.join("hosted", "sync.ts")];
+      const allowed = [
+        path.join("commands", "hosted-auth.ts"),
+        path.join("commands", "checkout.ts"),
+        path.join("hosted", "client.ts"),
+        path.join("hosted", "sync.ts"),
+        // Hosted-checkout triggers: each reaches the session only for a folder bound as a hosted checkout.
+        "autopull.ts",
+        path.join("commands", "session-start.ts"),
+        path.join("commands", "turn-end.ts"),
+        path.join("commands", "setup-hosted.ts"),
+        path.join("hosted", "defaults.ts"),
+      ];
       if (/hosted-auth\//.test(text) && !allowed.includes(path.relative(src, full))) {
         offenders.push(path.relative(src, full));
       }

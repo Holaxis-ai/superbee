@@ -212,7 +212,9 @@ test("the shipped View authoring reference teaches Superbee commands while prese
 const renderedNpm = renderNpm();
 
 test("the eager npm Skill stays lean and routes exact syntax to the live CLI", () => {
-  assert.ok(renderedNpm.split("\n").length <= 100, "the eager Skill must remain a bounded front door");
+  // 105: the hosted-checkout section (sign-in relay, batch sync, conflicts, app refusals) is eager
+  // because an agent meets it before it would think to read a reference.
+  assert.ok(renderedNpm.split("\n").length <= 105, "the eager Skill must remain a bounded front door");
   assert.match(renderedNpm, /## Keep the front door short/);
   assert.match(renderedNpm, /Each outcome is one short sentence/);
   assert.match(renderedNpm, /complete opener to five lines and at most 80 words/);

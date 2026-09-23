@@ -295,6 +295,7 @@ test("MR1 disjoint frontmatter keys: conflict, and keep sends exactly the local 
   const { receipt } = await fails(h);
   assert.equal(rowFor(receipt, "projects/2026/plan")?.state, "conflict");
   assert.equal(applyCount(h, "projects/2026/plan"), 0);
+  await ok(h, ["--inspect", "projects/2026/plan"]);
   await ok(h, ["--resolve", "keep", "--doc", "projects/2026/plan"]);
   await ok(h);
   const stored = hostDoc(h, "projects/2026/plan");
@@ -337,6 +338,7 @@ test("RS1 take: the file becomes exactly the host's bytes, and nothing is sent",
 test("RS2 keep: the host holds exactly the local document afterwards", async () => {
   const h = await harness();
   await conflicted(h);
+  await ok(h, ["--inspect", "notes/alpha"]);
   await ok(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
   await ok(h);
   const stored = hostDoc(h, "notes/alpha");
@@ -348,6 +350,7 @@ test("RS2 keep: the host holds exactly the local document afterwards", async () 
 test("RS3 revise: the host holds exactly the revised file", async () => {
   const h = await harness();
   await conflicted(h);
+  await ok(h, ["--inspect", "notes/alpha"]);
   await writeDoc(h, "notes/alpha", "Alpha merged", "Host v2.\nLocal.\n");
   await ok(h, ["--resolve", "revise", "--doc", "notes/alpha"]);
   await ok(h);
@@ -371,6 +374,7 @@ test("RS4a keep after the host moved on since --inspect: stale review, the unsee
 test("RS4b the host changes during --resolve itself: stale_review", async () => {
   const h = await harness();
   await conflicted(h);
+  await ok(h, ["--inspect", "notes/alpha"]);
   let reads = 0;
   h.before = (route, body) => {
     if (route === "read" && body.documentId === "notes/alpha" && (reads += 1) === 2) {

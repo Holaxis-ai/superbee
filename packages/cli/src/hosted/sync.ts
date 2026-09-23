@@ -53,7 +53,7 @@ import { commandFragment, commandLiteral, commandToken, type CommandText } from 
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
-import { defaultHostedAuthDeps, ensureHostedAccessToken, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { ACCESS_TOKEN_ENV, defaultHostedAuthDeps, ensureHostedAccessToken, readSession, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./binding.js";
 import { createHostedSyncClient, hostedFailure } from "./client.js";
@@ -74,6 +74,7 @@ import {
   type ProjectionRecord,
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded } from "./projection.js";
+import { recordPulled } from "./freshness.js";
 
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
 
@@ -93,6 +94,8 @@ comes back as a conflict row, and nothing is sent for it until you resolve it:
   --resolve take      replace your version with the host's (remove the file first to discard
                       edits made since the conflict)
   --resolve revise    send the file as it is now: edit it to the result you want first
+keep and revise send over the host's version, so they need an --inspect first, and are refused
+(stale_review) if the host's version changed after it; take needs none.
 A deleted file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
 document's history. A mass delete is held: when the deletes of the last day (sent, unsent and
 new) are more than half the checkout and at least 3 (or every document of a smaller one), the new
@@ -622,7 +625,9 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       await session.persist();
       return { report, placed };
     };
+    // Push always follows a pull in the same run, so nothing is sent against a stale listing.
     const first = await pullAndExport();
+    await recordPulled(deps.auth.home, binding.checkout_id);
     let outcome: PushOutcome;
     try {
       outcome = await pushChanges(session, deps);
@@ -704,6 +709,41 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
   if (failure) throw failure;
 }
 
+/** What a pull-only pass did, or why it did not run. */
+export type HostedPullResult =
+  | { readonly state: "pulled"; readonly refreshed: number; readonly removed: number; readonly kept: number }
+  | { readonly state: "signed_out" };
+
+/**
+ * A pull with no push: the first half of a sync. Edited files are recorded locally first, exactly
+ * as sync records them, so a refreshed document never overtakes an edit; nothing is sent. Only a
+ * stored session (or the access-token environment variable) is used: a pull that rides on a read
+ * or a session start never starts a sign-in, and reports `signed_out` instead.
+ */
+export async function hostedPull(binding: CheckoutBinding, partial: Partial<HostedSyncDeps> = {}): Promise<HostedPullResult> {
+  const deps = hostedDeps(partial);
+  if (!deps.auth.env[ACCESS_TOKEN_ENV] && !(await readSession(deps.auth.home, resolveHostedTarget(binding.audience)))) {
+    return { state: "signed_out" };
+  }
+  const resumeCommand = syncCommand(binding);
+  return withSession(binding, deps, resumeCommand, async (session) => {
+    const { store, local, reader, projection } = session;
+    await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection });
+    await session.persist();
+    let report: PullReport;
+    try {
+      report = await pull(local, reader);
+    } catch (error) {
+      throw readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
+    }
+    if (report.held.length > 0) await forgetPullDigest(store);
+    const placed = await exportCheckout(binding.path, store, projection);
+    await session.persist();
+    await recordPulled(deps.auth.home, binding.checkout_id);
+    return { state: "pulled", refreshed: placed.placed.length, removed: placed.removed.length, kept: placed.kept.length };
+  });
+}
+
 function preview(content: string | null): { content: string | null; truncated: boolean; chars: number } {
   if (content === null) return { content: null, truncated: false, chars: 0 };
   return { content: content.length > INSPECT_PREVIEW_CHARS ? content.slice(0, INSPECT_PREVIEW_CHARS) : content, truncated: content.length > INSPECT_PREVIEW_CHARS, chars: content.length };
@@ -768,12 +808,19 @@ function remoteVersionOf(conflict: Conflict): string | null {
 
 /**
  * Refuse a resolution when the host's version moved since the person inspected it: `keep` would
- * otherwise overwrite a version they never saw. Without an inspection there is nothing to bind to.
+ * otherwise overwrite a version they never saw. `keep` and `revise` send over the host's version,
+ * so they need an inspection to bind to; `take` sends nothing and needs none.
  */
-async function assertInspectedCurrent(session: Session, id: string, conflict: Conflict): Promise<void> {
+async function assertInspectedCurrent(session: Session, id: string, conflict: Conflict, choice: "keep" | "take" | "revise"): Promise<void> {
   const inspected = await session.store.readMeta<{ remote?: string | null } | null>(inspectedKey(id));
-  if (!inspected || !("remote" in inspected)) return;
   const current = remoteVersionOf(conflict);
+  if (!inspected || !("remote" in inspected)) {
+    if (choice === "take") return;
+    throw new CliError("CONFLICT", `'${choice}' sends your version over the host's, so inspect the host's version of '${id}' first`, {
+      details: { reason: "not_inspected", id, choice, current },
+      help: `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(session.binding.path)}`,
+    });
+  }
   if (inspected.remote !== current) {
     throw new CliError("CONFLICT", `the host's version of '${id}' changed since you inspected it`, {
       details: { reason: "stale_review", id, inspected: inspected.remote ?? null, current },
@@ -896,8 +943,13 @@ async function resolveFolder(session: Session, id: string, choice: "keep" | "tak
   const { binding, projection, store, local } = session;
   const file = path.join(binding.path, `${id}.md`);
   if (choice === "take") {
+    // Recorded before the file moves, so a crash mid-take leaves nothing recovery must keep.
+    projection.discarded = { ...projection.discarded, [id]: digestOf(conflict.bytes) };
+    await session.persist();
     if (conflict.deleted) {
-      if (!(await removeGuarded(file, conflict.bytes))) {
+      const removed = await removeGuarded(file, conflict.bytes);
+      delete projection.discarded[id];
+      if (!removed) {
         throw new CliError("CONFLICT", `${file} changed while resolving it`, { details: { reason: "stale_review", id }, help: resumeCommand });
       }
       delete projection.files[id];
@@ -906,6 +958,7 @@ async function resolveFolder(session: Session, id: string, choice: "keep" | "tak
     const current = await store.readWithJournal(id);
     const next = Buffer.from(current.raw!, "utf8");
     const outcome = await replaceGuarded(file, conflict.bytes, next);
+    delete projection.discarded[id];
     if (!outcome.placed) throw new CliError("CONFLICT", `${file} changed while resolving it`, { details: { reason: "stale_review", id }, help: resumeCommand });
     projection.files[id] = { digest: digestOf(next), version: current.document!.version };
     return "replaced";
@@ -943,7 +996,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       }
     }
     const conflict = await conflictFor(session, id, resumeCommand);
-    await assertInspectedCurrent(session, id, conflict);
+    await assertInspectedCurrent(session, id, conflict, choice);
     let fileState: string;
     if (conflict.kind === "folder") {
       // A folder conflict knows no tombstone; its re-create still waits for an inspection of the deletion.

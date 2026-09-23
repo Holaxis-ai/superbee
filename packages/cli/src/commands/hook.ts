@@ -66,6 +66,7 @@ import {
   classifyHookEntry,
   isOwnedHookCompatibility,
   renderGeneratedHookToken,
+  tokenizeGeneratedHookCommand,
   type HookCompatibility,
 } from "../hook-compatibility.js";
 import {
@@ -80,9 +81,9 @@ import { integrationChangeReceipt, type IntegrationHost } from "../integration-r
 export const HOOK_USAGE = `superbee hook — manage the SessionStart board-aware hook
 
 Usage:
-  superbee hook install   [--scope project|user]
+  superbee hook install   [--scope project|user] [--turn-end-sync]
   superbee hook status    [--scope project|user]
-  superbee hook uninstall [--scope project|user]
+  superbee hook uninstall [--scope project|user] [--turn-end-sync]
 
 Installs (or removes) a SessionStart hook that runs \`session-start\` — a time-boxed best-effort
 board pull, then the home view — as ambient context at the start of every agent session, for
@@ -94,7 +95,17 @@ For npm distribution, install must run from a verified global install (\`npm ins
 superbee\`). One-off npx execution remains supported for read-only/trial commands but cannot
 authorize persistent host configuration.
 
+In a hosted checkout (made by \`checkout\`), session-start pulls from the host instead of a board.
+
+End-of-turn sync is a separate opt-in: \`hook install --turn-end-sync\` also installs a Stop hook
+that runs \`turn-end\` (one sync of a hosted checkout when the agent's turn ends; nothing anywhere
+else) for Claude Code and Codex. OpenCode has no Stop hook, so there it is not installed.
+\`hook uninstall --turn-end-sync\` removes only the Stop hook; plain \`hook uninstall\` removes both.
+SUPERBEE_NO_TURN_SYNC=<any value> turns the Stop hook off without uninstalling it, and
+SUPERBEE_NO_AUTOPULL=<any value> turns off the automatic hosted pulls (reads and session start).
+
 Options:
+  --turn-end-sync   install: also install the end-of-turn Stop hook; uninstall: remove only it
   --scope project   Write to the CURRENT project (default): .claude/, .codex/, .config/opencode/
   --scope user      Write to each host's configured user home (environment override or default)
   --json            Emit compact JSON instead of TOON
@@ -115,6 +126,10 @@ export function isManagedHookCommand(command: string, platform: string = process
 export const HOOK_TIMEOUT_SECONDS = 10;
 /** The pull-then-render subcommand the installed hook runs. */
 export const HOOK_SUBCOMMAND = "session-start";
+/** The end-of-turn subcommand the opt-in Stop hook runs. */
+export const TURN_END_SUBCOMMAND = "turn-end";
+/** Stop hook timeout, in seconds: above turn-end's own 20-second sync budget. */
+export const TURN_END_HOOK_TIMEOUT_SECONDS = 30;
 /** The OpenCode plugin filename (SDK naming convention for this marker) and its managed-file marker. */
 const OPENCODE_PLUGIN_FILENAME = "axi-superbee.js";
 const LEGACY_OPENCODE_PLUGIN_FILENAME = "axi-agentstate-lite.js";
@@ -143,6 +158,123 @@ export function sessionStartHookCommand(
     );
   }
   return command;
+}
+
+/**
+ * The Stop hook's command: the SessionStart launch with `turn-end` as its subcommand. A command is
+ * ours exactly when it ends in `turn-end` and the same launch ending in `session-start` is a
+ * recognized generated SessionStart command, so both hooks share one ownership rule.
+ */
+export function turnEndHookCommand(launch: HookLaunchSpec, platform: string = process.platform): string {
+  const args = [...launch.args.slice(0, -1), TURN_END_SUBCOMMAND];
+  const command = [launch.program, ...args].map((token) => renderGeneratedHookToken(token, platform)).join(" ");
+  if (!isManagedTurnEndCommand(command, platform)) {
+    throw new Error(`composed turn-end hook command ${JSON.stringify(command)} would not be recognized as managed`);
+  }
+  return command;
+}
+
+export function isManagedTurnEndCommand(command: string, platform: string = process.platform): boolean {
+  const tokens = tokenizeGeneratedHookCommand(command, platform);
+  if (!tokens || tokens.length < 2 || tokens.at(-1) !== TURN_END_SUBCOMMAND) return false;
+  const sessionStart = [...tokens.slice(0, -1), HOOK_SUBCOMMAND].map((token) => renderGeneratedHookToken(token, platform)).join(" ");
+  return isManagedHookCommand(sessionStart, platform);
+}
+
+function isManagedTurnEndHook(hook: HookEntry | undefined): boolean {
+  return hook?.type === "command" && typeof hook.command === "string" && isManagedTurnEndCommand(hook.command);
+}
+
+type HookGroupLike = { matcher?: unknown; hooks?: HookEntry[] };
+
+/** Why a settings file's `hooks.Stop` cannot be edited faithfully, or null. */
+function stopShapeProblem(settings: HookSettings): string | null {
+  const stop = settings.hooks?.Stop;
+  if (stop === undefined) return null;
+  if (!Array.isArray(stop)) return "`hooks.Stop` exists but is not an array";
+  for (const [i, group] of (stop as unknown[]).entries()) {
+    if (!isPlainObject(group)) return `\`hooks.Stop[${i}]\` is not an object`;
+    if (group.hooks !== undefined && !Array.isArray(group.hooks)) return `\`hooks.Stop[${i}].hooks\` exists but is not an array`;
+  }
+  return null;
+}
+
+/** Pure install of the managed Stop hook: one entry, rewritten in place, duplicates dropped. */
+export function computeTurnEndHookInstall(settings: HookSettings, spec: { command: string; timeoutSeconds?: number }): [HookSettings, boolean] {
+  const updated = structuredClone(settings);
+  const hooks = (updated.hooks ??= {});
+  let changed = settings.hooks === undefined;
+  const timeout = spec.timeoutSeconds ?? TURN_END_HOOK_TIMEOUT_SECONDS;
+  const groups = (Array.isArray(hooks.Stop) ? hooks.Stop : []) as HookGroupLike[];
+  if (!Array.isArray(hooks.Stop)) changed = true;
+  let rewritten = false;
+  const next: HookGroupLike[] = [];
+  for (const group of groups) {
+    if (!Array.isArray(group?.hooks)) {
+      next.push(group);
+      continue;
+    }
+    const kept: HookEntry[] = [];
+    for (const h of group.hooks) {
+      if (!isManagedTurnEndHook(h)) {
+        kept.push(h);
+        continue;
+      }
+      if (rewritten) {
+        changed = true;
+        continue;
+      }
+      rewritten = true;
+      if (h.command !== spec.command || h.timeout !== timeout) {
+        changed = true;
+        h.command = spec.command;
+        h.timeout = timeout;
+      }
+      kept.push(h);
+    }
+    if (kept.length !== group.hooks.length) {
+      if (kept.length === 0) continue;
+      group.hooks = kept;
+    }
+    next.push(group);
+  }
+  if (!rewritten) {
+    next.push({ hooks: [{ type: "command", command: spec.command, timeout }] });
+    changed = true;
+  }
+  hooks.Stop = next as typeof hooks.SessionStart;
+  return changed ? [updated, true] : [settings, false];
+}
+
+/** Pure removal of every managed Stop hook; foreign hooks and groups survive untouched. */
+export function computeTurnEndHookUninstall(settings: HookSettings): [HookSettings, boolean] {
+  const stop = settings.hooks?.Stop;
+  if (!Array.isArray(stop)) return [settings, false];
+  const updated = structuredClone(settings);
+  let changed = false;
+  const next: HookGroupLike[] = [];
+  for (const group of updated.hooks!.Stop as HookGroupLike[]) {
+    if (!Array.isArray(group?.hooks)) {
+      next.push(group);
+      continue;
+    }
+    const kept = group.hooks.filter((h) => !isManagedTurnEndHook(h));
+    if (kept.length !== group.hooks.length) {
+      changed = true;
+      if (kept.length === 0) continue;
+      next.push({ ...group, hooks: kept });
+    } else next.push(group);
+  }
+  if (!changed) return [settings, false];
+  if (next.length === 0) delete updated.hooks!.Stop;
+  else updated.hooks!.Stop = next as NonNullable<HookSettings["hooks"]>["SessionStart"];
+  return [updated, true];
+}
+
+/** True when the managed Stop hook is installed in this settings file. */
+export function turnEndHookInstalled(settings: HookSettings): boolean {
+  const stop = settings.hooks?.Stop;
+  return Array.isArray(stop) && (stop as HookGroupLike[]).some((group) => Array.isArray(group?.hooks) && group.hooks.some(isManagedTurnEndHook));
 }
 
 export interface HookLaunchSpec {
@@ -1084,6 +1216,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         args: argv,
         options: {
           scope: { type: "string" },
+          "turn-end-sync": { type: "boolean" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -1131,6 +1264,12 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
   }
 
   const mode = resolveMode(values);
+  const turnEndSync = values["turn-end-sync"] === true;
+  if (turnEndSync && sub === "status") {
+    throw new CliError("USAGE", "--turn-end-sync applies to hook install and hook uninstall; status always reports it", {
+      help: `${cliInvocation()} hook status`,
+    });
+  }
 
   if (sub === "status") {
     const inspection = inspectHookStatus(scope, deps);
@@ -1145,6 +1284,10 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
             claude_code: claude.installed,
             codex: codex.installed,
             opencode: opencode.installed,
+            turn_end_sync: {
+              claude_code: turnEndHookInstalled(readSettings(inspection.targets.claudeSettings)),
+              codex: turnEndHookInstalled(readSettings(inspection.targets.codexHooks)),
+            },
             ...(inspection.displayCommand !== undefined ? { command: inspection.displayCommand } : {}),
             hosts: {
               claude_code: {
@@ -1231,6 +1374,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       });
     }
     const command = launch.command;
+    let stopInstalled = false;
     const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
     // Claude Code settings.json + Codex hooks.json: OUR SDK-modeled pure updater, recognizing
     // both managed command forms (see the module header for why the SDK's marker cannot).
@@ -1244,10 +1388,25 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
           refusals.push(`${collapseHomeDirectory(target)}: ${read.reason} — nothing was written to this file`);
           continue;
         }
-        const [updated, changed] = computeSessionStartHookInstall(read.settings, {
+        let [updated, changed] = computeSessionStartHookInstall(read.settings, {
           command,
           timeoutSeconds: HOOK_TIMEOUT_SECONDS,
         });
+        // An installed Stop hook is kept current by every install; only the flag adds one.
+        if (turnEndSync || turnEndHookInstalled(read.settings)) {
+          stopInstalled = true;
+          const problem = stopShapeProblem(updated);
+          if (problem) {
+            refusals.push(`${collapseHomeDirectory(target)}: ${problem} — nothing was written to this file`);
+            continue;
+          }
+          const [withStop, stopChanged] = computeTurnEndHookInstall(updated, {
+            command: turnEndHookCommand(launch, deps.platform),
+            timeoutSeconds: TURN_END_HOOK_TIMEOUT_SECONDS,
+          });
+          updated = withStop;
+          changed = changed || stopChanged;
+        }
         if (changed) writeSettings(target, updated);
         changedByHost[host] = changed;
       } catch (err) {
@@ -1294,6 +1453,9 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       scope,
       installed: true,
       command,
+      turn_end_sync: stopInstalled
+        ? { installed: true, hosts: ["claude_code", "codex"], command: turnEndHookCommand(launch, deps.platform), opt_out: `${cliInvocation()} hook uninstall --turn-end-sync` }
+        : { installed: false, opt_in: `${cliInvocation()} hook install --turn-end-sync` },
       ...lifecycle,
       targets: {
         claude_code: collapseHomeDirectory(targets.claudeSettings),
@@ -1310,11 +1472,30 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
   let changed = false;
   const notes: string[] = [];
   for (const path of [targets.claudeSettings, targets.codexHooks]) {
-    const [updated, didChange] = computeHookUninstall(readSettings(path));
-    if (didChange) {
+    const settings = readSettings(path);
+    const [withoutSessionStart, sessionStartChanged] = turnEndSync ? [settings, false] : computeHookUninstall(settings);
+    const [updated, stopChanged] = computeTurnEndHookUninstall(withoutSessionStart);
+    if (sessionStartChanged || stopChanged) {
       writeSettings(path, updated);
       changed = true;
     }
+  }
+  if (turnEndSync) {
+    stdout(
+      render(
+        {
+          hook: {
+            action: "uninstall",
+            scope,
+            turn_end_sync: { installed: false },
+            changed,
+            targets: { claude_code: collapseHomeDirectory(targets.claudeSettings), codex: collapseHomeDirectory(targets.codexHooks) },
+          },
+        },
+        mode,
+      ),
+    );
+    return;
   }
   for (const path of [targets.opencodePlugin, targets.legacyOpencodePlugin]) {
     const openCodeStatus = readOpenCodeHookStatus(path);
