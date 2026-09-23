@@ -74,11 +74,17 @@ export function ageMs(iso: string | null, now: Date): number | null {
 
 /** A fetch that gives up at `deadline` (epoch ms), so a pull on a read never outlives its budget. */
 export function fetchWithDeadline(inner: typeof fetch, deadline: number): typeof fetch {
-  return ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-    const remaining = Math.max(0, deadline - Date.now());
-    const timeout = AbortSignal.timeout(Math.max(1, remaining));
-    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-    return inner(input, { ...init, signal });
+  return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    // A plain timer, not AbortSignal.timeout: that one is unreferenced, so a request that holds
+    // nothing else open would let the process settle before the deadline fires.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new DOMException("the background sync budget ran out", "TimeoutError")), Math.max(1, deadline - Date.now()));
+    const signal = init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
+    try {
+      return await inner(input, { ...init, signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }) as typeof fetch;
 }
 
