@@ -921,7 +921,8 @@ for (const state of ["absent", "empty directory"] as const) {
       const expected = await recoveryOf(() => inDir(linked.root, () => status(["--json"], quiet)));
       assert.ok(expected);
       assert.ok(expected.includes(`another worktree at ${topo.a.board}`), expected);
-      assert.ok(expected.endsWith(`<command> --dir ${topo.a.board}`), expected);
+      assert.ok(expected.endsWith(`status --dir ${topo.a.board}, npx --no-install superbee sync --dir ${topo.a.board})`) || expected.endsWith(`sync --dir ${topo.a.board})`), expected);
+      assert.doesNotMatch(expected, /<command>/, "names real commands that accept --dir");
       for (const [name, run] of [
         ["bundle locate", () => bundleCommand(["locate", "--json"], quiet)],
         ["bare init", () => init(["--recipe", "none", "--json"], quiet)],
@@ -934,7 +935,8 @@ for (const state of ["absent", "empty directory"] as const) {
       await withHome(homeDir, () => inDir(linked.root, () => home(["--json"], { stdout: (line) => (homeOut += line), loadWorkspaces: async () => [] })));
       const rendered = JSON.parse(homeOut) as { getting_started?: string } & Record<string, unknown>;
       assert.ok((rendered.getting_started ?? "").endsWith(`recover with: ${expected}`), rendered.getting_started);
-      assert.doesNotMatch(orientation(rendered), /recover with: \S+(?: \S+)* sync\b|create the first doc/);
+      assert.doesNotMatch(rendered.getting_started ?? "", / sync$/, "never a bare sync");
+      assert.doesNotMatch(orientation(rendered), /create the first doc/);
 
       const setupView = await setupBundleRow(linked.root, homeDir);
       assert.equal(setupView.bundle, "unreadable");
@@ -969,13 +971,66 @@ test("a linked worktree whose board checkout vanished is told to prune, and sync
     const linked = await makeLinkedWorktree(topo);
     await rm(topo.a.board, { recursive: true, force: true });
     const expected = await recoveryOf(() => inDir(linked.root, () => status(["--json"], { stdout: () => {} })));
-    assert.match(expected ?? "", /missing worktree at \S+ — run git worktree prune, then \S+(?: \S+)* sync$/, expected);
+    assert.match(expected ?? "", /registered to a worktree at \S+ that no longer exists — run git worktree prune, then \S+(?: \S+)* sync$/, expected);
+    assert.doesNotMatch(expected ?? "", /checked out in another worktree/);
     git(linked.root, ["worktree", "prune"]);
     let out = "";
     await withHome(homeDir, () => inDir(linked.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true })));
     // The pruned board branch still matches origin/board, so it is adopted as-is.
     assert.match((JSON.parse(out) as { provisioned?: string }).provisioned ?? "", /materialized from the local board branch/);
     assert.equal(git(linked.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a primary checkout whose board directory was deleted is told to prune, and sync then re-provisions", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-primary-missing-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    await rm(topo.a.board, { recursive: true, force: true });
+    const quiet = { stdout: () => {} };
+    const expected = await recoveryOf(() => inDir(topo.a.root, () => status(["--json"], quiet)));
+    assert.match(expected ?? "", /registered to a worktree at \S+ that no longer exists — run git worktree prune, then \S+(?: \S+)* sync$/, expected);
+    const syncHelp = await withHome(homeDir, () => recoveryOf(() => inDir(topo.a.root, () => sync(["--json"], { stdout: () => {}, hookInstalled: () => true }))));
+    assert.equal(syncHelp, expected, "sync gives the same recovery instead of a raw rev-parse failure");
+    git(topo.a.root, ["worktree", "prune"]);
+    let out = "";
+    await withHome(homeDir, () => inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true })));
+    assert.match((JSON.parse(out) as { provisioned?: string }).provisioned ?? "", /materialized/);
+    assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a tracked placeholder at the bound board path gets one untrack recovery from the resolver, setup, and sync", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-tracked-placeholder-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    await mkdir(topo.a.board);
+    await writeFile(path.join(topo.a.board, ".gitkeep"), "");
+    git(topo.a.root, ["add", "-f", ".superbee/.gitkeep"]);
+    git(topo.a.root, ["commit", "-m", "track a placeholder"]);
+    const expected = await recoveryOf(() => inDir(topo.a.root, () => status(["--json"], { stdout: () => {} })));
+    assert.match(expected ?? "", /^git rm -r --cached -- \.superbee && git commit/, expected);
+    const setupView = await setupBundleRow(topo.a.root, homeDir);
+    assert.equal(setupView.bundle, "unreadable");
+    assert.ok(setupView.row.reason.endsWith(`recover with: ${expected}`), setupView.row.reason);
+    await withHome(homeDir, () => assert.rejects(
+      () => inDir(topo.a.root, () => sync(["--json"], { stdout: () => {}, hookInstalled: () => true })),
+      (err: unknown) => {
+        const cliErr = err as { help?: string; message: string };
+        assert.equal(cliErr.help, expected);
+        assert.doesNotMatch(cliErr.message, /re-added|cleanup/);
+        return true;
+      },
+    ));
+    assert.ok(existsSync(path.join(topo.a.board, ".gitkeep")), "the tracked placeholder is untouched");
   } finally {
     await topo.cleanup();
     await rm(homeDir, { recursive: true, force: true });

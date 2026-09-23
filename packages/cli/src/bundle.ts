@@ -56,10 +56,13 @@ import {
   BOARD_REMOTE,
   BUNDLE_DIR,
   BUNDLE_DIRS,
-  IGNORABLE_BOARD_DIR_ENTRIES,
   LEGACY_BUNDLE_DIR,
-  boardCheckoutElsewhere,
+  boardWorktreeBlock,
   bundleDirNameForProject,
+  isIgnorableBoardDirEntry,
+  missingBoardWorktreeSteps,
+  trackedBoardDirPaths,
+  trackedPlaceholderGuidance,
   repoTopLevel,
   resolveBundleKey,
   runGit,
@@ -1379,17 +1382,29 @@ export async function resolveLocalBundleTarget(
     }
     // An empty directory at the checkout's own board path is not a bundle yet. Opening it would let
     // home, status, init, and writes treat it as a new local bundle diverging from the shared board.
-    if (contents === "empty") {
+    if (contents === "empty" || contents === "placeholders") {
       const top = await ownConventionalBoardRoot(binding);
-      const elsewhere = top ? boardElsewhereRecovery(top) : null;
-      if (elsewhere) {
+      const blocked = top ? boardWorktreeRecovery(top) : null;
+      if (blocked) {
         throw new CliError(
           "NOT_FOUND",
-          `the bound board directory ${binding.target} is empty — from project binding ${binding.file}; this repository's board is checked out in another worktree`,
-          elsewhere,
+          `the bound board directory ${binding.target} is empty — from project binding ${binding.file}; ${blocked.reason}`,
+          blocked.recovery,
         );
       }
       const known = top ? knownBoardRef(top) : null;
+      if (known && contents === "placeholders") {
+        // Provisioning cannot remove a placeholder the code branch tracks; give its recovery here.
+        const bundleDir = path.basename(binding.target);
+        const tracked = trackedBoardDirPaths(top!, bundleDir);
+        if (tracked.length > 0) {
+          const guidance = trackedPlaceholderGuidance(binding.target, bundleDir, tracked);
+          throw new CliError("NOT_FOUND", `${guidance.message} — from project binding ${binding.file}`, {
+            help: guidance.help,
+            details: { binding_target_blocked: "tracked_placeholder" },
+          });
+        }
+      }
       if (known) {
         throw new CliError(
           "NOT_FOUND",
@@ -1453,9 +1468,10 @@ async function bindingTargetEntry(target: string): Promise<BindingTargetEntry> {
 
 /**
  * How a real directory (never a symlink) at a bound path is populated; null for anything else.
- * "empty" ignores the placeholder files provisioning also ignores, so both agree on emptiness.
+ * "placeholders" holds only the placeholder files provisioning also ignores, so both agree on
+ * emptiness.
  */
-async function directoryContents(target: string): Promise<"empty" | "occupied" | "unreadable" | null> {
+async function directoryContents(target: string): Promise<"empty" | "placeholders" | "occupied" | "unreadable" | null> {
   if ((await bindingTargetEntry(target)) !== "directory") return null;
   let dir: Dir;
   try {
@@ -1466,10 +1482,12 @@ async function directoryContents(target: string): Promise<"empty" | "occupied" |
   }
   try {
     // Stop at the first meaningful entry: bound bundles are opened on every command.
+    let placeholders = false;
     for (let entry = await dir.read(); entry !== null; entry = await dir.read()) {
-      if (!(entry.isFile() && IGNORABLE_BOARD_DIR_ENTRIES.includes(entry.name))) return "occupied";
+      if (!isIgnorableBoardDirEntry(target, entry.name)) return "occupied";
+      placeholders = true;
     }
-    return "empty";
+    return placeholders ? "placeholders" : "empty";
   } catch {
     return null;
   } finally {
@@ -1479,7 +1497,8 @@ async function directoryContents(target: string): Promise<"empty" | "occupied" |
 
 /** True only for an existing, readable directory holding no meaningful entry (never a symlink). */
 export async function emptyDirectory(target: string): Promise<boolean> {
-  return (await directoryContents(target)) === "empty";
+  const contents = await directoryContents(target);
+  return contents === "empty" || contents === "placeholders";
 }
 
 /**
@@ -1539,51 +1558,62 @@ export interface BindingRecovery {
 
 /**
  * Why a bound path blocks every ordinary recovery: something that is not a directory occupies it,
- * or this repository's board is already checked out (or registered) in another worktree.
+ * the code branch tracks a placeholder there, or Git's board registration (checked out in another
+ * worktree, or registered to a missing one) prevents a checkout at this path.
  */
 export type BindingTargetBlock =
   | "not_a_directory"
   | "unresolved_symlink"
+  | "tracked_placeholder"
   | "board_checked_out_elsewhere"
   | "board_worktree_missing";
 
 /**
- * Recovery for a checkout whose own board path cannot be provisioned because Git already has the
- * board branch in a different worktree. A branch lives in one worktree at a time, so a linked
- * worktree shares the repository's one board checkout rather than adding its own; `sync` there
- * could only fail. Runs `git worktree list` (local), and only for an absent or empty bound path.
+ * Recovery for a checkout whose own board path cannot be provisioned because of Git's board
+ * registration. A branch lives in one worktree at a time, so a linked worktree shares the
+ * repository's one board checkout rather than adding its own; a registration whose directory is
+ * gone must be pruned first. `sync` alone could only fail. Runs `git worktree list` (local), and
+ * only for an absent or empty bound path.
  */
-function boardElsewhereRecovery(top: string): BindingRecovery | null {
-  const elsewhere = boardCheckoutElsewhere(top, path.join(top, bundleDirNameForProject(top)));
-  if (!elsewhere) return null;
-  const at = commandToken(elsewhere.path);
-  if (elsewhere.missing) {
+function boardWorktreeRecovery(top: string): { reason: string; recovery: BindingRecovery } | null {
+  const block = boardWorktreeBlock(top, path.join(top, bundleDirNameForProject(top)));
+  if (!block) return null;
+  const at = commandToken(block.path);
+  const inv = cliInvocation();
+  if (block.kind === "missing") {
     return {
-      help: `the '${BOARD_BRANCH}' branch is still registered to a missing worktree at ${at} — run git worktree prune, then ${cliInvocation()} sync`,
-      details: { binding_target_blocked: "board_worktree_missing" },
+      reason: `this repository's '${BOARD_BRANCH}' branch is registered to a worktree that no longer exists`,
+      recovery: {
+        help: `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${at} that no longer exists — run ${missingBoardWorktreeSteps(block)}, then ${inv} sync`,
+        details: { binding_target_blocked: "board_worktree_missing" },
+      },
     };
   }
   return {
-    help: `this repository's board is checked out in another worktree at ${at}, and a repository has one board checkout — run ${cliInvocation()} <command> --dir ${at}`,
-    details: { binding_target_blocked: "board_checked_out_elsewhere" },
+    reason: "this repository's board is checked out in another worktree",
+    recovery: {
+      help: `this repository's board is checked out in another worktree at ${at}, and a repository has one board checkout — ` +
+        `run bundle commands against it with --dir (for example: ${inv} status --dir ${at}, ${inv} sync --dir ${at})`,
+      details: { binding_target_blocked: "board_checked_out_elsewhere" },
+    },
   };
 }
 
 /**
- * The resolver's refusal for a bound path that is the checkout's own board path but belongs to a
- * board checked out in another worktree; null when that does not apply. Sync consults it before
- * provisioning so its refusal is the same recovery every other command gives.
+ * The resolver's refusal for a bound path that is the checkout's own board path but that Git's
+ * board registration blocks; null when that does not apply. Sync consults it before provisioning
+ * so its refusal is the same recovery every other command gives.
  */
-export async function boardElsewhereError(binding: ProjectBinding): Promise<CliError | null> {
+export async function boundBoardWorktreeError(binding: ProjectBinding): Promise<CliError | null> {
   const entry = await bindingTargetEntry(path.resolve(binding.target));
   if (entry !== "absent" && !(entry === "directory" && (await emptyDirectory(binding.target)))) return null;
   const top = await ownConventionalBoardRoot(binding);
-  const elsewhere = top ? boardElsewhereRecovery(top) : null;
-  if (!elsewhere) return null;
+  const blocked = top ? boardWorktreeRecovery(top) : null;
+  if (!blocked) return null;
   return new CliError(
     "NOT_FOUND",
-    `the bound board path ${binding.target} — from project binding ${binding.file} — cannot hold a board checkout: this repository's board is checked out in another worktree`,
-    elsewhere,
+    `the bound board path ${binding.target} — from project binding ${binding.file} — cannot hold a board checkout: ${blocked.reason}`,
+    blocked.recovery,
   );
 }
 
@@ -1613,8 +1643,8 @@ async function absentBindingTargetHelp(binding: ProjectBinding): Promise<Binding
 /** The recovery once nothing occupies the bound path; `top` is the checkout owning that path, if any. */
 function clearedBindingTargetHelp(binding: ProjectBinding, top: string | null): BindingRecovery {
   if (top && path.basename(binding.target) === bundleDirNameForProject(top)) {
-    const elsewhere = boardElsewhereRecovery(top);
-    if (elsewhere) return elsewhere;
+    const blocked = boardWorktreeRecovery(top);
+    if (blocked) return blocked.recovery;
   }
   // An origin without a cached board ref may be offline or fetched with a restricted refspec.
   // Reads stay offline; sync owns determining whether that remote already shares a board.

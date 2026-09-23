@@ -74,7 +74,7 @@ import {
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
 import {
-  boardElsewhereError,
+  boundBoardWorktreeError,
   emptyDirectory,
   ownConventionalBoardRoot,
   resolveLocalBundleRoute,
@@ -514,11 +514,12 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
     const binding = await resolveProjectBinding(process.cwd());
     if (binding) {
       ownBoardRoot = (await ownConventionalBoardRoot(binding)) ?? undefined;
-      // A linked worktree cannot provision the repository's one board checkout a second time; give
-      // the resolver's recovery instead of a provisioning attempt that can only fail.
+      // A linked worktree cannot provision the repository's one board checkout a second time, and
+      // a board registered to a missing worktree must be pruned first; give the resolver's recovery
+      // instead of a provisioning attempt that can only fail.
       if (ownBoardRoot !== undefined) {
-        const elsewhere = await boardElsewhereError(binding);
-        if (elsewhere) throw elsewhere;
+        const blocked = await boundBoardWorktreeError(binding);
+        if (blocked) throw blocked;
       }
       // An absent or empty own board path is exactly what provisioning fills; the resolver refuses
       // to open it (its recovery is this very sync), so only an occupied path routes through it.

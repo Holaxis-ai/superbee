@@ -786,7 +786,7 @@ export function trackedBoardRemnantPaths(
  * refusal carries in `details.state`.
  */
 export interface BoardWindowGuidance {
-  state: "pre-share-window" | "window-remnant";
+  state: "pre-share-window" | "window-remnant" | "tracked-placeholder";
   message: string;
   help: string;
   /** Remnant arm only: the still-tracked folder paths (full list — display capping is the consumer's). */
@@ -808,6 +808,13 @@ export function boardWindowGuidance(
         `folder committed on this branch, and sync cannot pull the shared board without the remote`,
       help: `git remote add ${BOARD_REMOTE} <url>  # restore the remote, 'git pull' once the cleanup PR merges, then re-run sync`,
     };
+  }
+  // Only empty-folder placeholders are tracked: no cleanup PR or pull story applies, the fix is
+  // to stop tracking them.
+  const tracked = trackedBoardDirPaths(top, bundleDir);
+  if (tracked.length > 0 && tracked.every((entry) => IGNORABLE_BOARD_DIR_ENTRIES.includes(path.posix.basename(entry)))) {
+    const guidance = trackedPlaceholderGuidance(path.join(top, bundleDir), bundleDir, tracked);
+    return { state: "tracked-placeholder", originConfigured, trackedRemnants: tracked, ...guidance };
   }
   const remnants = trackedBoardRemnantPaths(top, bundleDir);
   if (remnants !== null) {
@@ -879,28 +886,71 @@ export function preShareWindowError(top: string, boardPath: string, originConfig
  */
 export const IGNORABLE_BOARD_DIR_ENTRIES: readonly string[] = [".DS_Store", ".gitkeep", "Thumbs.db"];
 
-/** Directory entries other than regular files named in {@link IGNORABLE_BOARD_DIR_ENTRIES}. */
-function meaningfulEntries(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => !(entry.isFile() && IGNORABLE_BOARD_DIR_ENTRIES.includes(entry.name)))
-    .map((entry) => entry.name);
+/**
+ * True when a directory entry is an ignorable placeholder: a regular file with an ignorable name,
+ * and for `.gitkeep` only when it is zero bytes (a non-empty one carries content someone wrote).
+ */
+export function isIgnorableBoardDirEntry(dir: string, name: string): boolean {
+  if (!IGNORABLE_BOARD_DIR_ENTRIES.includes(name)) return false;
+  try {
+    const info = lstatSync(path.join(dir, name));
+    return info.isFile() && (name !== ".gitkeep" || info.size === 0);
+  } catch {
+    return false;
+  }
 }
 
-/** Another worktree of this repository that already has the board branch checked out. */
-export interface BoardCheckoutElsewhere {
-  /** The worktree path Git records for the board branch. */
-  readonly path: string;
-  /** True when Git still registers that worktree but its directory no longer exists. */
-  readonly missing: boolean;
+/** How a directory at the board path is populated, ignoring nothing but placeholders. */
+function boardDirEntries(dir: string): { meaningful: string[]; placeholders: string[] } {
+  const meaningful: string[] = [];
+  const placeholders: string[] = [];
+  for (const name of readdirSync(dir)) (isIgnorableBoardDirEntry(dir, name) ? placeholders : meaningful).push(name);
+  return { meaningful, placeholders };
 }
 
 /**
- * The worktree, other than `boardPath`, where this repository's board branch is checked out. Git
- * allows a branch in only one worktree at a time, so a linked worktree of a provisioned clone can
- * never add its own board checkout: the board is shared by every worktree of the repository.
- * Local only (`git worktree list`); never a network operation.
+ * Paths under `bundleDir` that the code checkout tracks, in HEAD or staged in the index. A tracked
+ * placeholder belongs to the code branch: deleting it would show there as a deletion.
  */
-export function boardCheckoutElsewhere(top: string, boardPath: string, hostPolicy?: BoardHostPolicy): BoardCheckoutElsewhere | null {
+export function trackedBoardDirPaths(top: string, bundleDir: string): string[] {
+  const paths = new Set<string>();
+  const index = runGit(top, ["ls-files", "-z", "--", bundleDir]);
+  if (index.status === 0) for (const entry of index.stdout.split("\0")) if (entry) paths.add(entry);
+  const head = runGit(top, ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", bundleDir]);
+  if (head.status === 0) for (const entry of head.stdout.split("\0")) if (entry) paths.add(entry);
+  return [...paths].sort();
+}
+
+/** Recovery for a board path that holds only placeholders, some of them tracked on the code branch. */
+export function trackedPlaceholderGuidance(boardPath: string, bundleDir: string, tracked: readonly string[]): { message: string; help: string } {
+  const plural = tracked.length !== 1;
+  return {
+    message:
+      `${tracked.length} ${plural ? "paths" : "path"} under '${bundleDir}' at ${boardPath} ${plural ? "are" : "is"} tracked ` +
+      `on this branch (${tracked.slice(0, 5).join(", ")}) — the board checkout cannot replace tracked files, so ` +
+      `untrack ${plural ? "them" : "it"} first`,
+    help: `git rm -r --cached -- ${shellToken(bundleDir)} && git commit -m 'Untrack the board folder placeholder', then re-run sync`,
+  };
+}
+
+/** A shell-inert rendering of one argument, matching the CLI's command-token rule. */
+function shellToken(value: string): string {
+  return /^[A-Za-z0-9_@+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** Where Git registers this repository's board branch, when that blocks provisioning `boardPath`. */
+export type BoardWorktreeBlock =
+  /** Checked out in a different, existing worktree; Git allows one checkout per branch. */
+  | { readonly kind: "elsewhere"; readonly path: string }
+  /** Registered to a worktree whose directory no longer exists (possibly this very path). */
+  | { readonly kind: "missing"; readonly path: string; readonly locked: boolean };
+
+/**
+ * Why Git cannot check the board branch out at `boardPath`: it is checked out in another worktree
+ * (a linked worktree shares the repository's one board checkout), or still registered to a
+ * worktree whose directory is gone. Null when neither applies. Local only (`git worktree list`).
+ */
+export function boardWorktreeBlock(top: string, boardPath: string, hostPolicy?: BoardHostPolicy): BoardWorktreeBlock | null {
   const policy = captureBoardHostPolicy(hostPolicy);
   const list = runGit(top, ["worktree", "list", "--porcelain"]);
   if (list.status !== 0) return null;
@@ -910,26 +960,42 @@ export function boardCheckoutElsewhere(top: string, boardPath: string, hostPolic
     const worktree = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
     if (!worktree || !lines.includes(`branch refs/heads/${BOARD_BRANCH}`)) continue;
     const recorded = path.resolve(worktree);
+    if (!existsSync(recorded)) {
+      return { kind: "missing", path: recorded, locked: lines.some((line) => line === "locked" || line.startsWith("locked ")) };
+    }
     if (recorded === target || policy.sameResolvedPath(realOrSame(recorded), realOrSame(target))) return null;
-    return { path: recorded, missing: !existsSync(recorded) };
+    return { kind: "elsewhere", path: recorded };
   }
   return null;
 }
 
-/** Provisioning's refusal when the board branch is checked out in a different worktree. */
-export function boardCheckedOutElsewhereError(boardPath: string, elsewhere: BoardCheckoutElsewhere): BoardGitError {
-  const details = { path: boardPath, board_checkout: elsewhere.path, board_checkout_missing: elsewhere.missing };
-  if (elsewhere.missing) {
+/** The next step for a board worktree registered at a missing directory. */
+export function missingBoardWorktreeSteps(block: { path: string; locked: boolean }): string {
+  return block.locked
+    ? `git worktree unlock ${shellToken(block.path)} (or remount it), then git worktree prune`
+    : "git worktree prune";
+}
+
+/** Provisioning's refusal when Git's board registration blocks checking the board out here. */
+export function boardWorktreeBlockError(boardPath: string, block: BoardWorktreeBlock): BoardGitError {
+  if (block.kind === "missing") {
     return new BoardGitError(
       "CONFLICT",
-      `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${elsewhere.path} that no longer exists, so sync cannot check it out at ${boardPath}`,
-      { details, help: "git worktree prune  # forget the missing worktree, then re-run sync" },
+      `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${block.path} that no longer exists` +
+        `${block.locked ? " and is locked" : ""}, so sync cannot check it out at ${boardPath}`,
+      {
+        details: { path: boardPath, board_checkout: block.path, board_checkout_missing: true, board_checkout_locked: block.locked },
+        help: `${missingBoardWorktreeSteps(block)}, then re-run sync`,
+      },
     );
   }
   return new BoardGitError(
     "CONFLICT",
-    `this repository's board is already checked out at ${elsewhere.path}, in another worktree — Git checks a branch out in one worktree at a time, so sync cannot add a second board checkout at ${boardPath}`,
-    { details, help: `use that board checkout: pass --dir ${elsewhere.path} to sync and other commands` },
+    `this repository's board is already checked out at ${block.path}, in another worktree — Git checks a branch out in one worktree at a time, so sync cannot add a second board checkout at ${boardPath}`,
+    {
+      details: { path: boardPath, board_checkout: block.path, board_checkout_missing: false },
+      help: `use that board checkout: pass --dir ${shellToken(block.path)} to sync, status, and other bundle commands`,
+    },
   );
 }
 
@@ -1162,14 +1228,24 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   // it checked out, `worktree add` below would fail and must not be mistaken for this checkout.
   // A worktree signature at the board path defers to the repair path below instead: a moved or
   // remounted repository still registers its board at the old, now-missing location.
-  const elsewhere = hasWorktreeSignature(boardPath) ? null : boardCheckoutElsewhere(top, boardPath, policy);
-  if (elsewhere) throw boardCheckedOutElsewhereError(boardPath, elsewhere);
+  const worktreeBlock = hasWorktreeSignature(boardPath) ? null : boardWorktreeBlock(top, boardPath, policy);
+  if (worktreeBlock) throw boardWorktreeBlockError(boardPath, worktreeBlock);
 
   if (existsSync(boardPath)) {
-    // Placeholder entries count as empty only while untracked: a tracked placeholder belongs to
-    // the code branch, and removing it would show as a deletion there.
-    const tracked = runGit(top, ["cat-file", "-e", `HEAD:${bundleDir}`]).status === 0;
-    if ((tracked ? readdirSync(boardPath) : meaningfulEntries(boardPath)).length > 0) {
+    const entries = boardDirEntries(boardPath);
+    // Placeholders count as empty only while untracked: a tracked placeholder belongs to the code
+    // branch, and removing it would show as a deletion there.
+    if (entries.meaningful.length === 0 && entries.placeholders.length > 0) {
+      const tracked = trackedBoardDirPaths(top, bundleDir);
+      if (tracked.length > 0) {
+        const guidance = trackedPlaceholderGuidance(boardPath, bundleDir, tracked);
+        throw new BoardGitError("CONFLICT", guidance.message, {
+          details: { path: boardPath, tracked_placeholders: tracked.slice(0, 20) },
+          help: guidance.help,
+        });
+      }
+    }
+    if (entries.meaningful.length > 0) {
       // The PRE-SHARE WINDOW (see {@link preShareWindowError} for the full hazard story): the
       // generic "move it aside" advice below must never fire while the checked-out branch still
       // TRACKS the folder and the board branch exists on the remote.
@@ -1218,9 +1294,18 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
       return { kind: "local_board", boardPath, remoteExists: hasRemote };
     }
     // The one resolvable pre-existing state: an EMPTY directory (ignoring untracked placeholder
-    // entries). Remove it so worktree add can create the path itself.
-    for (const name of readdirSync(boardPath)) rmSync(path.join(boardPath, name));
-    rmdirSync(boardPath);
+    // entries). Remove only the placeholders approved above, still placeholders now, then the
+    // directory itself: anything created since the check makes rmdir fail closed.
+    for (const name of entries.placeholders) {
+      if (isIgnorableBoardDirEntry(boardPath, name)) rmSync(path.join(boardPath, name));
+    }
+    try {
+      rmdirSync(boardPath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOTEMPTY" || code === "EEXIST") throw existingDirRefusal("foreign", boardPath, top, policy);
+      throw err;
+    }
   }
 
   // A branch name alone is not provenance. Interactive sync and SessionStart adopt an
@@ -1266,8 +1351,12 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     // ("already checked out" ≤2.47, "already used by worktree" ≥2.48), and LC_ALL=C pins locale
     // but not version. `worktree list --porcelain` names the checked-out branch of every
     // worktree in a stable machine format — version-proof.
+    // Only a checkout at THIS path (a concurrent provisioning run won the race) is success; a
+    // registration elsewhere or at a missing directory gets its own recovery.
+    const block = boardWorktreeBlock(top, boardPath, policy);
+    if (block) throw boardWorktreeBlockError(boardPath, block);
     const list = runGit(top, ["worktree", "list", "--porcelain"]);
-    if (list.status === 0 && list.stdout.split("\n").includes(`branch refs/heads/${BOARD_BRANCH}`)) {
+    if (list.status === 0 && list.stdout.split("\n").includes(`branch refs/heads/${BOARD_BRANCH}`) && existsSync(boardPath)) {
       return withIgnoreCoverage({ kind: "already" as const, boardPath });
     }
     throw classifyGitError(failureOf(["worktree", "add"], r));
