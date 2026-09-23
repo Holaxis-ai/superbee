@@ -1284,6 +1284,33 @@ test("owner-record failure preserves exclusive-create flags and rolls back the c
   }
 });
 
+test("owner-record failure leaves a directory that is not the one this claim made", async () => {
+  const harness = await isolatedLockPaths();
+  const originalWriteFile = fs.writeFile;
+  const writeFailure = Object.assign(new Error("owner write failed"), { code: "EIO" });
+  let lockPath = "";
+  // While this claimer is suspended, its directory is removed and another claim makes a new one.
+  const restore = replaceFsMethod("writeFile", async (...args) => {
+    if (path.basename(String(args[0])) === "owner.json") {
+      lockPath = path.dirname(String(args[0]));
+      await fs.rm(lockPath, { recursive: true });
+      await fs.mkdir(lockPath);
+      throw writeFailure;
+    }
+    return Reflect.apply(originalWriteFile, fs, args);
+  });
+  try {
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot }),
+      (err: unknown) => err === writeFailure,
+    );
+    assert.deepEqual(await fs.readdir(harness.lockRoot), [path.basename(lockPath)]);
+  } finally {
+    restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("owner-record host-classified sharing failures never re-enter claim contention", async () => {
   const harness = await isolatedLockPaths();
   const originalWriteFile = fs.writeFile;
