@@ -22,6 +22,20 @@ interface RefusalRow {
   readonly reason: RefusalReason;
   /** Why sync cannot send it, in a few words. */
   readonly why: string;
+  /** When present, the row applies only to invocations this accepts. */
+  readonly when?: (args: readonly string[]) => boolean;
+}
+
+/** The `--doc-key` value in argv, in either spelling; the last one wins, as the parser takes it. */
+function docKey(args: readonly string[]): string | undefined {
+  let value: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") break;
+    if (token === "--doc-key") value = args[index + 1];
+    else if (token.startsWith("--doc-key=")) value = token.slice("--doc-key=".length);
+  }
+  return value;
 }
 
 /** Every command a hosted checkout refuses up front. The order is the lookup order. */
@@ -33,6 +47,13 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
   { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change Kind and View conventions, which are edited in the app" },
   { words: ["recipe", "evolve"], reason: "not_syncable", why: "recipes change Kind and View conventions, which are edited in the app" },
   { words: ["artifact", "*"], reason: "not_syncable", why: "artifacts carry blobs, which do not sync" },
+  {
+    words: ["promote"],
+    reason: "not_syncable",
+    why: "a key that is not a .md document is stored as a blob, and blobs do not sync",
+    when: (args) => !(docKey(args) ?? "").endsWith(".md"),
+  },
+  { words: ["serve"], reason: "not_syncable", why: "the served bundle accepts writes and deletes that do not sync" },
   { words: ["sync"], reason: "sync_not_available", why: "hosted sync is not available in this CLI yet; the checkout is a read copy" },
   { words: ["init"], reason: "checkout_target", why: "the folder is a hosted checkout, not a local bundle" },
 ] satisfies RefusalRow[]).map((row): RefusalRow => Object.freeze({ ...row, words: Object.freeze([...row.words]) })));
@@ -41,6 +62,7 @@ function matchRow(command: string, args: readonly string[]): RefusalRow | undefi
   const sub = args.find((token) => !token.startsWith("-"));
   return HOSTED_CHECKOUT_REFUSALS.find((row) => {
     if (row.words[0] !== command) return false;
+    if (row.when && !row.when(args)) return false;
     if (row.words.length === 1) return true;
     return row.words[1] === "*" ? sub !== undefined : row.words[1] === sub;
   });

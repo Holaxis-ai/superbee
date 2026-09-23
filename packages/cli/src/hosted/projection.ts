@@ -16,7 +16,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { pathFromConceptId, type JournaledBackend } from "@superbee/core";
+import { assertSafeConceptId, pathFromConceptId, type JournaledBackend } from "@superbee/core";
 
 export type PlaceOutcome =
   | { readonly placed: true }
@@ -145,10 +145,63 @@ export interface ExportReport {
 export const ROOT_INDEX = "index.md";
 
 /**
+ * One path segment folded as a case-insensitive host equates it: NFKD, then lower-upper-lower
+ * (the same fold core's filesystem identity uses), so ß/ss and final-sigma pairs collide too.
+ */
+function fold(segment: string): string {
+  return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
+}
+
+/** Two document paths that one case-insensitive or normalizing filesystem would merge. */
+export interface PathCollision {
+  readonly first: string;
+  readonly second: string;
+}
+
+/**
+ * Check every document path before any file is written: each id must be a safe concept id, and no
+ * two paths (or two spellings of one directory) may differ only by letter case or Unicode
+ * normalization, because the host's filesystem may treat them as one name. Returns the first
+ * collision, or null.
+ */
+export function findPathCollision(ids: readonly string[]): PathCollision | null {
+  const spelled = new Map<string, string>();
+  const claim = (spelling: string): PathCollision | null => {
+    const key = spelling.split("/").map(fold).join("/");
+    const seen = spelled.get(key);
+    if (seen !== undefined && seen !== spelling) return { first: seen, second: spelling };
+    spelled.set(key, spelling);
+    return null;
+  };
+  const root = claim(ROOT_INDEX);
+  if (root) return root;
+  for (const id of ids) {
+    assertSafeConceptId(id);
+    const file = pathFromConceptId(id);
+    const segments = file.split("/");
+    for (let depth = 1; depth < segments.length; depth += 1) {
+      const collision = claim(`${segments.slice(0, depth).join("/")}/`);
+      if (collision) return collision;
+    }
+    const collision = claim(file);
+    if (collision) return collision;
+  }
+  return null;
+}
+
+/** Refuse a placement whose parent resolves outside the folder (a symlinked directory inside it). */
+async function assertContained(folder: string, file: string): Promise<void> {
+  const parent = await fs.realpath(path.dirname(file));
+  if (parent !== folder && !parent.startsWith(`${folder}${path.sep}`)) {
+    throw Object.assign(new Error(`${path.relative(folder, file)} resolves outside the checkout folder`), { code: "EXDEV" });
+  }
+}
+
+/**
  * Project every document and the root index from the store into an empty checkout folder. The
  * bytes are the store's exact serialization, the bytes each version names.
  */
-export async function exportFresh(store: JournaledBackend, folder: string): Promise<ExportReport> {
+export async function exportFresh(store: JournaledBackend, folder: string, onPlaced: (file: string, digest: string) => void = () => {}): Promise<ExportReport> {
   const exported: Record<string, string> = {};
   const kept: string[] = [];
   let root = false;
@@ -157,6 +210,7 @@ export async function exportFresh(store: JournaledBackend, folder: string): Prom
     const bytes = Buffer.from(index.content, "utf8");
     const outcome = await placeNew(path.join(folder, ROOT_INDEX), bytes);
     if (outcome.placed) {
+      onPlaced(path.join(folder, ROOT_INDEX), digestOf(bytes));
       exported[ROOT_INDEX] = digestOf(bytes);
       root = true;
     } else kept.push(ROOT_INDEX);
@@ -165,8 +219,12 @@ export async function exportFresh(store: JournaledBackend, folder: string): Prom
   let documents = 0;
   for (const head of heads) {
     const bytes = Buffer.from(head.raw, "utf8");
-    const outcome = await placeNew(path.join(folder, pathFromConceptId(head.id)), bytes);
+    const file = path.join(folder, pathFromConceptId(head.id));
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await assertContained(folder, file);
+    const outcome = await placeNew(file, bytes);
     if (outcome.placed) {
+      onPlaced(file, digestOf(bytes));
       exported[head.id] = digestOf(bytes);
       documents += 1;
     } else kept.push(head.id);

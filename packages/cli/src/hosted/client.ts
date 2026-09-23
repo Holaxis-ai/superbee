@@ -67,9 +67,20 @@ export interface HostedBundleRow {
   readonly name: string;
 }
 
+/**
+ * The header that names the workspace a request means. The sync routes select the tenant from the
+ * bundle and do not read it yet; it is sent so a host that learns to select by it needs no client
+ * change, and it never widens anything (the tenant must still be one the admission reached).
+ */
+export const WORKSPACE_HEADER = "X-Superbee-Workspace";
+
 export interface HostedClientOptions {
   readonly target: HostedTarget;
   readonly accessToken: string;
+  /** The workspace the person named, sent on every request as {@link WORKSPACE_HEADER}. */
+  readonly workspace?: string;
+  /** The command that repeats this one, carried on an AUTH_REQUIRED so an agent can resume it. */
+  readonly resume?: string;
   readonly fetch?: typeof fetch;
   readonly deadlineMs?: number;
 }
@@ -79,7 +90,10 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
   const prefix = syncRoutePrefix(target);
   const carrier = createFetchCarrier({
     baseUrl: target.origin,
-    credentials: async () => ({ Authorization: `Bearer ${options.accessToken}` }),
+    credentials: async () => ({
+      Authorization: `Bearer ${options.accessToken}`,
+      ...(options.workspace !== undefined ? { [WORKSPACE_HEADER]: options.workspace } : {}),
+    }),
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.deadlineMs ? { deadlineMs: options.deadlineMs } : {}),
   });
@@ -90,12 +104,12 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
     try {
       answer = await carrier.json(`${prefix}/${route}`, {}, controller.signal, { maximum });
     } catch (error) {
-      throw hostedFailure(error, target);
+      throw hostedFailure(error, target, options.resume);
     }
     if (answer.status !== 200) {
       const code = (answer.body as { error?: { code?: unknown } | unknown } | undefined)?.error;
       const named = typeof code === "string" ? code : typeof (code as { code?: unknown })?.code === "string" ? (code as { code: string }).code : undefined;
-      throw hostedFailure(new RemoteError(`hosted ${route} answered ${answer.status}`, named ?? "RUNTIME", answer.status), target);
+      throw hostedFailure(new RemoteError(`hosted ${route} answered ${answer.status}`, named ?? "RUNTIME", answer.status), target, options.resume);
     }
     return answer.body;
   }
@@ -123,7 +137,7 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
         | undefined;
       if (body?.ok === false) {
         const code = typeof body.error?.code === "string" ? body.error.code : "RUNTIME";
-        throw hostedFailure(new RemoteError(`hosted bundles answered ${code}`, code, code === "insufficient_scope" ? 403 : 422), target);
+        throw hostedFailure(new RemoteError(`hosted bundles answered ${code}`, code, code === "insufficient_scope" ? 403 : 422), target, options.resume);
       }
       const rows = body?.data?.bundles;
       if (body?.ok !== true || !Array.isArray(rows)) throw new CliError("RUNTIME", `${target.origin} answered a malformed bundle list`);
@@ -146,7 +160,7 @@ function loginHelp(target: HostedTarget): string {
  * answer is AUTH_REQUIRED naming the login command; a withdrawn grant is FORBIDDEN; a carrier
  * failure is TRANSIENT (the request may not have been answered). Any other error passes through.
  */
-export function hostedFailure(error: unknown, target: HostedTarget): unknown {
+export function hostedFailure(error: unknown, target: HostedTarget, resume?: string): unknown {
   if (error instanceof CliError) return error;
   if (error instanceof HostedCarrierError) {
     return new CliError("TRANSIENT", `could not reach ${target.origin} (${error.code === "denied" ? "no credential" : "no answer"})`, {
@@ -159,8 +173,8 @@ export function hostedFailure(error: unknown, target: HostedTarget): unknown {
     const code = error.code;
     if (status === 401 || code === "AUTH_REQUIRED" || code === "unauthenticated" || code === "invalid_token") {
       return new CliError("AUTH_REQUIRED", `${target.origin} did not accept the hosted session`, {
-        details: { host: target.origin, audience: target.audience, code },
-        help: loginHelp(target),
+        details: { host: target.origin, audience: target.audience, code, ...(resume ? { resume } : {}) },
+        help: resume ? `${loginHelp(target)}, then re-run: ${resume}` : loginHelp(target),
       });
     }
     if (status === 403 || code === "insufficient_scope" || code === "access_denied") {

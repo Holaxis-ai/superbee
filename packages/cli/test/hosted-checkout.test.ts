@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { decode } from "@toon-format/toon";
 import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
+import { headsDigest } from "@superbee/core";
 
 import { CliError } from "../src/errors.js";
 import { checkout, CHECKOUT_DOCUMENT_LIMIT } from "../src/commands/checkout.js";
@@ -19,8 +20,11 @@ import { list } from "../src/commands/list.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
 import { bindingForPath, checkoutLockName, hostedCheckoutsRoot } from "../src/hosted/binding.js";
+import { WORKSPACE_HEADER } from "../src/hosted/client.js";
+import { hostedAuthRoot } from "../src/hosted-auth/session.js";
+import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
 import { assertAllowedInHostedCheckout, HOSTED_CHECKOUT_REFUSALS } from "../src/hosted/refusals.js";
-import { placeNew, replaceGuarded } from "../src/hosted/projection.js";
+import { findPathCollision, placeNew, replaceGuarded } from "../src/hosted/projection.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
@@ -51,6 +55,8 @@ interface FakeOptions {
   fixtures?: Record<string, string>;
   bundles?: string[];
   tenants?: string[];
+  /** Raw answers by route, over the fixtures. */
+  raw?: Record<string, { status: number; headers: Record<string, string>; body: string }>;
 }
 
 /**
@@ -60,7 +66,7 @@ interface FakeOptions {
  * surface }` and the `bundles.list.v1` result envelope.
  */
 function fakeSyncFamily(options: FakeOptions = {}) {
-  const requests: { path: string; body: unknown; authorization: string | null }[] = [];
+  const requests: { path: string; body: unknown; authorization: string | null; workspace: string | null }[] = [];
   const routes: Record<string, string> = {
     capabilities: "capabilities-operations",
     heads: "heads-200",
@@ -71,7 +77,7 @@ function fakeSyncFamily(options: FakeOptions = {}) {
     const url = new URL(String(input));
     const headers = new Headers(init?.headers);
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    requests.push({ path: url.pathname, body, authorization: headers.get("authorization") });
+    requests.push({ path: url.pathname, body, authorization: headers.get("authorization"), workspace: headers.get(WORKSPACE_HEADER) });
     assert.equal(url.origin, HOST);
     assert.equal(init?.method, "POST");
     assert.equal(init?.redirect, "error");
@@ -91,6 +97,8 @@ function fakeSyncFamily(options: FakeOptions = {}) {
         data: { bundles: ids.map((bundleId) => ({ bundleId, name: bundleId, purpose: "", domains: [], lifecycle: "active", sensitivity: "internal" })) },
       });
     }
+    const raw = options.raw?.[route];
+    if (raw) return new Response(raw.body, { status: raw.status, headers: raw.headers });
     const name = routes[route];
     if (!name) return Response.json({ error: "not_found" }, { status: 404 });
     assert.deepEqual(body, { bundleId: BUNDLE });
@@ -204,11 +212,16 @@ test("existing commands run unchanged on the checkout folder", async () => {
   for (const id of ["notes/alpha", "notes/beta", "projects/2026/plan"]) assert.ok(ids.includes(id), ids);
 });
 
-test("checkout needs an explicit --host; neither SUPERBEE_HOST nor the last sign-in is a default", async () => {
+test("the host defaults to the last sign-in, never to SUPERBEE_HOST alone", async () => {
   const h = await harness({ SUPERBEE_ACCESS_TOKEN: TOKEN, SUPERBEE_HOST: HOST });
   const error = await rejects(run(h, [BUNDLE]));
   assert.equal(error.code, "USAGE");
-  assert.match(error.message, /--host/);
+  assert.match(error.help ?? "", /login --host/);
+
+  await writeUserStateFileAtomic0600(h.home, hostedAuthRoot(h.home), "default-host.json", `${JSON.stringify({ host: HOST })}\n`);
+  const receipt = await run(h, [BUNDLE]);
+  assert.equal(receipt.checkout, "created");
+  assert.equal(receipt.host, HOST);
 });
 
 test("AUTH_REQUIRED from sign-in passes through with its link and a resume command that re-runs checkout", async () => {
@@ -218,11 +231,15 @@ test("AUTH_REQUIRED from sign-in passes through with its link and a resume comma
     const cwd = await mkdtemp(path.join(tmpdir(), "sb-checkout-cwd-"));
     const auth = defaultHostedAuthDeps(home, { env: { [CREDENTIAL_STORE_ENV]: "file" } });
     const fake = fakeSyncFamily();
-    const error = await rejects(checkout([BUNDLE, "--host", issuer.base], { stdout: () => {}, auth, cwd, fetch: fake.fetch }));
+    const error = await rejects(checkout([BUNDLE, "--host", issuer.base, "--dir", "team", "--workspace", "tenant-a", "--json"], { stdout: () => {}, auth, cwd, fetch: fake.fetch }));
     assert.equal(error.code, "AUTH_REQUIRED");
     assert.equal(error.exitCode, 4);
     assert.match(String(error.details?.sign_in_url), /activate\?user_code=/);
-    assert.match(String(error.details?.resume), new RegExp(`checkout ${BUNDLE.replace(".", "\\.")} --host`));
+    const resume = String(error.details?.resume);
+    assert.match(resume, new RegExp(`checkout ${BUNDLE.replace(".", "\\.")} --host`));
+    assert.match(resume, /--workspace tenant-a/);
+    assert.match(resume, / --json$/);
+    assert.ok(resume.includes(`--dir ${path.join(await realpath(cwd), "team")}`) || resume.includes(`--dir ${path.join(cwd, "team")}`), resume);
     assert.equal(fake.requests.length, 0, "no sync request before sign-in");
     assert.deepEqual(await readdir(cwd), [], "no folder before sign-in");
   } finally {
@@ -235,14 +252,15 @@ test("a host that refuses the token is AUTH_REQUIRED naming the login command", 
   const error = await rejects(run(h, [BUNDLE, "--host", HOST]));
   assert.equal(error.code, "AUTH_REQUIRED");
   assert.match(error.help ?? "", /login --host/);
+  assert.match(String(error.details?.resume), /checkout team\.knowledge --host/);
   assert.deepEqual(await readdir(h.cwd), []);
 });
 
-test("a listed bundle the working copy routes do not serve is refused as a Git-source bundle", async () => {
+test("a listed bundle the working copy routes do not serve is refused as not served (Git source named as a possibility)", async () => {
   const h = await harness();
   const error = await rejects(run(h, [BUNDLE, "--host", HOST], fakeSyncFamily({ fixtures: { capabilities: "refusal-bundle-not-found" } })));
   assert.equal(error.code, "FORBIDDEN");
-  assert.equal(error.details?.reason, "git_source");
+  assert.equal(error.details?.reason, "not_served");
   assert.match(error.message, /Git board/);
   assert.deepEqual(await readdir(h.cwd), []);
 });
@@ -360,7 +378,13 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   const elsewhere = await mkdtemp(path.join(tmpdir(), "sb-local-"));
   await writeFile(path.join(elsewhere, "index.md"), '---\nokf_version: "0.2"\n---\n');
   await assertAllowedInHostedCheckout("doc", ["delete", "x", "--dir", elsewhere], context);
-  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 9);
+  // promote to a blob key and serve are refused; promote of a .md document key is not.
+  const blob = await rejects(assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "files/x.pdf", "--dir", folder], context));
+  assert.equal(blob.details?.do_this_in, "app");
+  const serve = await rejects(assertAllowedInHostedCheckout("serve", ["--dir", folder, "--port", "0"], context));
+  assert.equal(serve.details?.do_this_in, "app");
+  await assertAllowedInHostedCheckout("promote", ["x.md", "--doc-key", "notes/x.md", "--dir", folder], context);
+  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 11);
 });
 
 test("projection placement never overwrites: new files are exclusive, replacements are pre-image guarded", async () => {
@@ -401,7 +425,8 @@ test("built CLI: checkout is registered, and a refused command in a checkout is 
     });
   const help = await runCli(["checkout", "--help"]);
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /checkout <bundle-id> --host <url>/);
+  assert.match(help.stdout, /checkout <bundle-id> \[--host <url>\]/);
+  assert.match(help.stdout, /checkout --release <folder>/);
 
   const refused = await runCli(["doc", "delete", "notes/alpha", "--dir", folder]);
   assert.equal(refused.status, 2, refused.stdout);
@@ -416,4 +441,107 @@ test("built CLI: checkout is registered, and a refused command in a checkout is 
 
   const missingHost = await runCli(["checkout", BUNDLE]);
   assert.equal(missingHost.status, 2);
+});
+
+test("a checkout whose folder was deleted or emptied is replaced at the same path", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const folder = path.join(h.cwd, "team");
+  await rm(folder, { recursive: true });
+  const again = await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  assert.equal(again.checkout, "created");
+  assert.deepEqual(again.replaced_stale_checkout, { bundle_id: BUNDLE, host: HOST });
+  assert.ok((await stat(path.join(folder, "notes/alpha.md"))).isFile());
+
+  // Emptied in place (same folder identity) is stale too.
+  for (const entry of await readdir(folder)) await rm(path.join(folder, entry), { recursive: true });
+  const third = await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  assert.equal(third.checkout, "created");
+  assert.ok(third.replaced_stale_checkout);
+  // Only one private checkout remains.
+  const ids = (await readdir(hostedCheckoutsRoot(h.home))).filter((name) => name !== "paths");
+  assert.equal(ids.length, 1);
+});
+
+test("a folder recreated with other files is not mistaken for the checkout", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const folder = path.join(h.cwd, "team");
+  await rm(folder, { recursive: true });
+  await mkdir(folder);
+  await writeFile(path.join(folder, "index.md"), '---\nokf_version: "0.2"\n---\n');
+  // The refusal table no longer applies: the marker (folder identity) does not match.
+  await assertAllowedInHostedCheckout("doc", ["delete", "x", "--dir", folder], { home: h.home, cwd: h.cwd });
+  const error = await rejects(run(h, [BUNDLE, "--host", HOST, "--dir", "team"]));
+  assert.equal(error.details?.reason, "not_empty");
+});
+
+test("checkout --release forgets the binding, keeps the files, and is idempotent", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const folder = path.join(h.cwd, "team");
+  const released = await run(h, ["--release", folder]);
+  assert.equal(released.released, true);
+  assert.ok((await stat(path.join(folder, "notes/alpha.md"))).isFile());
+  assert.equal(await bindingForPath(h.home, await realpath(folder)), null);
+  assert.deepEqual((await readdir(hostedCheckoutsRoot(h.home))).filter((name) => name !== "paths"), []);
+  await assertAllowedInHostedCheckout("doc", ["delete", "notes/alpha", "--dir", folder], { home: h.home, cwd: h.cwd });
+  const again = await run(h, ["--release", folder]);
+  assert.equal(again.released, false);
+  // Release also works for a deleted folder.
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "other"]);
+  await rm(path.join(h.cwd, "other"), { recursive: true });
+  assert.equal((await run(h, ["--release", path.join(h.cwd, "other")])).released, true);
+});
+
+test("--workspace is sent on every request, and an id in two workspaces is ambiguous, not a Git source", async () => {
+  const h = await harness();
+  const fake = fakeSyncFamily({ tenants: ["tenant-a", "tenant-b"] });
+  const receipt = await run(h, [BUNDLE, "--host", HOST, "--workspace", "tenant-b"], fake);
+  assert.equal(receipt.workspace, "tenant-b");
+  assert.ok(fake.requests.every((r) => r.workspace === "tenant-b"));
+
+  const twice = fakeSyncFamily({ tenants: ["tenant-a", "tenant-b"], bundles: [BUNDLE, BUNDLE], fixtures: { capabilities: "refusal-bundle-not-found" } });
+  const error = await rejects(run(h, [BUNDLE, "--host", HOST, "--workspace", "tenant-a", "--dir", "amb"], twice));
+  assert.equal(error.code, "CONFLICT");
+  assert.equal(error.details?.reason, "ambiguous_bundle");
+  assert.deepEqual(error.details?.workspaces, ["tenant-a", "tenant-b"]);
+  assert.ok(!twice.requests.some((r) => r.path.endsWith("/capabilities")));
+});
+
+function withDocs(ids: string[]) {
+  // A heads answer with these ids under their true digest; the snapshot is never reached when
+  // checkout refuses first.
+  const heads = ids.map((id) => ({ id, version: `sha256:${"0".repeat(64)}` }));
+  return {
+    heads: {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8", "x-superbee-root-version": "sha256:2d4238b1970c24a72552dc8e00a8ec0afa9a66d5f56418f8ac2fe5498945b107" },
+      body: JSON.stringify({ count: heads.length, digest: headsDigest(heads), heads }),
+    },
+  };
+}
+
+test("ids that differ only in letter case are refused before any file is written", async () => {
+  assert.deepEqual(findPathCollision(["Notes/A", "notes/b"]), { first: "Notes/", second: "notes/" });
+  assert.deepEqual(findPathCollision(["notes/Straße", "notes/STRASSE"]), { first: "notes/Straße.md", second: "notes/STRASSE.md" });
+  assert.equal(findPathCollision(["notes/a", "notes/b", "projects/x"]), null);
+  assert.deepEqual(findPathCollision(["INDEX"]), { first: "index.md", second: "INDEX.md" });
+
+  const h = await harness();
+  const fake = fakeSyncFamily({ raw: withDocs(["notes/Alpha", "notes/alpha"]) });
+  const error = await rejects(run(h, [BUNDLE, "--host", HOST], fake));
+  assert.equal(error.code, "FORBIDDEN");
+  assert.equal(error.details?.reason, "path_collision");
+  assert.deepEqual(await readdir(h.cwd), []);
+  assert.ok(!fake.requests.some((r) => r.path.endsWith("/snapshot")));
+});
+
+test("the client-side document limit refuses a heads listing over it", async () => {
+  const h = await harness();
+  const ids = Array.from({ length: CHECKOUT_DOCUMENT_LIMIT + 1 }, (_, index) => `notes/n${index}`);
+  const error = await rejects(run(h, [BUNDLE, "--host", HOST], fakeSyncFamily({ raw: withDocs(ids) })));
+  assert.equal(error.details?.reason, "bundle_too_large");
+  assert.equal(error.details?.documents, CHECKOUT_DOCUMENT_LIMIT + 1);
+  assert.deepEqual(await readdir(h.cwd), []);
 });

@@ -9,7 +9,7 @@
 //   hosted-checkouts/<checkout id>/store/         the working copy's log store (`FileJournaledBackend`)
 //   hosted-checkouts/paths/<sha256 of path>.json  the path index: folder path -> checkout id
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, rm } from "node:fs/promises";
+import { lstat, rm, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
@@ -39,6 +39,23 @@ export interface CheckoutBinding {
   readonly created_at: string;
   /** `hydrating` until the projection is complete; only a `ready` record is indexed by path. */
   readonly state: "hydrating" | "ready";
+  /**
+   * The folder's filesystem identity at checkout (device and inode), the marker that ties the
+   * record to that folder without writing anything into it. A folder deleted and recreated at the
+   * same path has another identity, so the record no longer applies to it.
+   */
+  readonly folder_identity: { readonly dev: number; readonly ino: number };
+}
+
+/** The identity a folder has now, or null when nothing is there. */
+export async function folderIdentity(folder: string): Promise<{ dev: number; ino: number } | null> {
+  try {
+    const info = await stat(folder);
+    return info.isDirectory() ? { dev: info.dev, ino: info.ino } : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return null;
+    throw error;
+  }
 }
 
 export function hostedCheckoutsRoot(home: string): string {
@@ -113,7 +130,9 @@ function isBinding(value: unknown): value is CheckoutBinding {
     Array.isArray(record.workspaces) &&
     typeof record.bundle_id === "string" &&
     typeof record.principal_id === "string" &&
-    (record.state === "hydrating" || record.state === "ready")
+    (record.state === "hydrating" || record.state === "ready") &&
+    typeof record.folder_identity?.dev === "number" &&
+    typeof record.folder_identity?.ino === "number"
   );
 }
 
@@ -137,10 +156,11 @@ export async function indexCheckoutPath(home: string, binding: CheckoutBinding):
 }
 
 /**
- * The ready binding for exactly this canonical folder path, or null. The record must name the same
- * path as its index entry; any disagreement reads as no checkout, never as a different one.
+ * The ready binding indexed at this canonical path, whether or not the folder there is still the
+ * one it was made for. Only reclaim and release read this; every other caller uses
+ * {@link bindingForPath}.
  */
-export async function bindingForPath(home: string, canonicalPath: string): Promise<CheckoutBinding | null> {
+export async function indexedBindingForPath(home: string, canonicalPath: string): Promise<CheckoutBinding | null> {
   const entry = (await readJson(home, join(pathIndexDir(home), `${pathKey(canonicalPath)}.json`))) as {
     path?: unknown;
     checkout_id?: unknown;
@@ -148,6 +168,26 @@ export async function bindingForPath(home: string, canonicalPath: string): Promi
   if (!entry || entry.path !== canonicalPath || typeof entry.checkout_id !== "string" || !/^[0-9a-f-]{36}$/.test(entry.checkout_id)) return null;
   const binding = await readBinding(home, entry.checkout_id);
   return binding && binding.state === "ready" && binding.path === canonicalPath ? binding : null;
+}
+
+/**
+ * The live binding for exactly this canonical folder path, or null: the indexed record must name
+ * the same path, and the folder there must still be the one it was made for (its identity
+ * marker). Any disagreement reads as no checkout, never as a different one.
+ */
+export async function bindingForPath(home: string, canonicalPath: string): Promise<CheckoutBinding | null> {
+  const binding = await indexedBindingForPath(home, canonicalPath);
+  if (!binding) return null;
+  const identity = await folderIdentity(canonicalPath);
+  return identity && identity.dev === binding.folder_identity.dev && identity.ino === binding.folder_identity.ino ? binding : null;
+}
+
+/** Remove a checkout's path index entry and its private state (binding and store). The folder is never touched. */
+export async function releaseCheckout(home: string, binding: CheckoutBinding): Promise<void> {
+  await unlink(join(pathIndexDir(home), `${pathKey(binding.path)}.json`)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+  await discardCheckoutState(home, binding.checkout_id);
 }
 
 /** Remove a checkout's private state (binding and store). Used only for a checkout that never became ready. */
