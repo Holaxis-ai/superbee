@@ -379,9 +379,12 @@ function requestsShowIncomingStdoutByteChannel(argv: string[]): boolean {
   return false;
 }
 
-/** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
-async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
-  const { values } = parseLeafOrUsage(
+/**
+ * The one parse of `sync` argv, for both kinds of target: a Git board (below) and a hosted
+ * checkout (`../../hosted/sync.ts`, which owns `--inspect`, `--resolve` and `--doc`).
+ */
+export function parseSyncArgs(argv: string[]) {
+  return parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -397,12 +400,25 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
           limit: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
+          inspect: { type: "string" },
+          resolve: { type: "string" },
+          doc: { type: "string" },
         },
         allowPositionals: true,
       }),
     CLI_LEAVES.sync,
   );
+}
+
+/** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
+async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
+  const { values } = parseSyncArgs(argv);
   if (values.help) return { kind: "help" };
+  if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined) {
+    throw new CliError("USAGE", "--inspect, --resolve and --doc apply to a hosted checkout; this folder is not one", {
+      help: `for a Git board, see incoming changes with: ${inv} sync --show-incoming <id>`,
+    });
+  }
 
   // `--migrate` is a RETIRED spelling: `--establish` subsumed the committed-folder case. The flag
   // stays recognized so old muscle memory gets a pointer instead of a generic unknown-option error.

@@ -42,16 +42,30 @@ export interface CheckoutBinding {
   /**
    * The folder's filesystem identity at checkout (device and inode), the marker that ties the
    * record to that folder without writing anything into it. A folder deleted and recreated at the
-   * same path has another identity, so the record no longer applies to it.
+   * same path has another identity, so the record no longer applies to it. A filesystem that
+   * reuses a freed inode at once (Linux) is told apart by the folder's birth time, when the
+   * filesystem reports one.
    */
-  readonly folder_identity: { readonly dev: number; readonly ino: number };
+  readonly folder_identity: FolderIdentity;
+}
+
+export interface FolderIdentity {
+  readonly dev: number;
+  readonly ino: number;
+  /** Birth time in milliseconds; absent or 0 where the filesystem does not report one. */
+  readonly birth?: number;
+}
+
+/** True when two identities name the same folder: device and inode, and birth time when both know it. */
+export function sameFolder(a: FolderIdentity, b: FolderIdentity): boolean {
+  return a.dev === b.dev && a.ino === b.ino && (!a.birth || !b.birth || a.birth === b.birth);
 }
 
 /** The identity a folder has now, or null when nothing is there. */
-export async function folderIdentity(folder: string): Promise<{ dev: number; ino: number } | null> {
+export async function folderIdentity(folder: string): Promise<FolderIdentity | null> {
   try {
     const info = await stat(folder);
-    return info.isDirectory() ? { dev: info.dev, ino: info.ino } : null;
+    return info.isDirectory() ? { dev: info.dev, ino: info.ino, ...(info.birthtimeMs > 0 ? { birth: info.birthtimeMs } : {}) } : null;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return null;
     throw error;
@@ -179,7 +193,7 @@ export async function bindingForPath(home: string, canonicalPath: string): Promi
   const binding = await indexedBindingForPath(home, canonicalPath);
   if (!binding) return null;
   const identity = await folderIdentity(canonicalPath);
-  return identity && identity.dev === binding.folder_identity.dev && identity.ino === binding.folder_identity.ino ? binding : null;
+  return identity && sameFolder(identity, binding.folder_identity) ? binding : null;
 }
 
 /** Remove a checkout's path index entry and its private state (binding and store). The folder is never touched. */

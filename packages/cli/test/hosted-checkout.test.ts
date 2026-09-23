@@ -19,7 +19,7 @@ import { checkout, CHECKOUT_DOCUMENT_LIMIT } from "../src/commands/checkout.js";
 import { list } from "../src/commands/list.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
-import { bindingForPath, checkoutLockName, hostedCheckoutsRoot } from "../src/hosted/binding.js";
+import { bindingForPath, checkoutLockName, folderIdentity, hostedCheckoutsRoot, sameFolder, writeBinding } from "../src/hosted/binding.js";
 import { WORKSPACE_HEADER } from "../src/hosted/client.js";
 import { hostedAuthRoot } from "../src/hosted-auth/session.js";
 import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
@@ -364,8 +364,11 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   // From inside the folder, with no --dir, the checkout is still found.
   const inside = await rejects(assertAllowedInHostedCheckout("doc", ["delete", "notes/alpha"], { home: h.home, cwd: path.join(folder, "notes") }));
   assert.equal(inside.code, "FORBIDDEN");
-  const sync = await rejects(assertAllowedInHostedCheckout("sync", ["--dir", folder], context));
-  assert.equal(sync.code, "NOT_IMPLEMENTED");
+  // sync runs in a checkout (hosted sync); ui and mcp are refused because they write Views.
+  await assertAllowedInHostedCheckout("sync", ["--dir", folder], context);
+  assert.equal((await rejects(assertAllowedInHostedCheckout("ui", ["--dir", folder], context))).details?.do_this_in, "app");
+  assert.equal((await rejects(assertAllowedInHostedCheckout("mcp", ["--dir", folder], context))).details?.do_this_in, "app");
+  await assertAllowedInHostedCheckout("mcp", ["install", "--dir", folder], context);
   const init = await rejects(assertAllowedInHostedCheckout("init", ["--dir", folder], context));
   assert.equal(init.code, "FORBIDDEN");
   assert.equal(init.details?.reason, "checkout_target");
@@ -384,7 +387,7 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   const serve = await rejects(assertAllowedInHostedCheckout("serve", ["--dir", folder, "--port", "0"], context));
   assert.equal(serve.details?.do_this_in, "app");
   await assertAllowedInHostedCheckout("promote", ["x.md", "--doc-key", "notes/x.md", "--dir", folder], context);
-  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 11);
+  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 12);
 });
 
 test("projection placement never overwrites: new files are exclusive, replacements are pre-image guarded", async () => {
@@ -443,7 +446,7 @@ test("built CLI: checkout is registered, and a refused command in a checkout is 
   assert.equal(missingHost.status, 2);
 });
 
-test("a checkout whose folder was deleted or emptied is replaced at the same path", async () => {
+test("a checkout whose folder was deleted is replaced at the same path; one emptied in place is refused", async () => {
   const h = await harness();
   await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
   const folder = path.join(h.cwd, "team");
@@ -453,8 +456,16 @@ test("a checkout whose folder was deleted or emptied is replaced at the same pat
   assert.deepEqual(again.replaced_stale_checkout, { bundle_id: BUNDLE, host: HOST });
   assert.ok((await stat(path.join(folder, "notes/alpha.md"))).isFile());
 
-  // Emptied in place (same folder identity) is stale too.
+  // Emptied in place (same folder identity) is a pending change to the live checkout, not a
+  // stale one: every file removed would sync as deletions once delete exists.
   for (const entry of await readdir(folder)) await rm(path.join(folder, entry), { recursive: true });
+  const emptied = await rejects(run(h, [BUNDLE, "--host", HOST, "--dir", "team"]));
+  assert.equal(emptied.code, "ALREADY_EXISTS");
+  assert.equal(emptied.details?.reason, "emptied_checkout");
+  assert.match(emptied.help ?? "", /checkout --release/);
+  // A new empty folder at the path (another identity) is replaced.
+  await rm(folder, { recursive: true });
+  await mkdir(folder);
   const third = await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
   assert.equal(third.checkout, "created");
   assert.ok(third.replaced_stale_checkout);
@@ -544,4 +555,22 @@ test("the client-side document limit refuses a heads listing over it", async () 
   assert.equal(error.details?.reason, "bundle_too_large");
   assert.equal(error.details?.documents, CHECKOUT_DOCUMENT_LIMIT + 1);
   assert.deepEqual(await readdir(h.cwd), []);
+});
+
+test("a folder that reuses the checkout folder's inode (Linux) is told apart by its birth time", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const folder = await realpath(path.join(h.cwd, "team"));
+  const binding = (await bindingForPath(h.home, folder))!;
+  const now = (await folderIdentity(folder))!;
+  assert.ok(sameFolder(now, binding.folder_identity));
+  // The same device and inode with another birth time is another folder, as when Linux hands a
+  // freed inode to a folder recreated at the same path.
+  if (now.birth) {
+    await writeBinding(h.home, { ...binding, folder_identity: { dev: now.dev, ino: now.ino, birth: now.birth - 1000 } });
+    assert.equal(await bindingForPath(h.home, folder), null);
+  }
+  // A filesystem without birth times falls back to device and inode.
+  assert.ok(sameFolder({ dev: 1, ino: 2 }, { dev: 1, ino: 2, birth: 5 }));
+  assert.ok(!sameFolder({ dev: 1, ino: 2, birth: 4 }, { dev: 1, ino: 2, birth: 5 }));
 });

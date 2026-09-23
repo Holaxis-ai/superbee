@@ -60,15 +60,23 @@ function isCode(error: unknown, code: string): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === code;
 }
 
-/** Place bytes at a path that should be empty. An existing file is kept and reported `occupied`. */
+/**
+ * Place bytes at a path that should be empty. An existing file is kept and reported `occupied`.
+ * The bytes are written whole to a staged sibling first and linked into place, so a crash never
+ * leaves a partly written file under the document's name.
+ */
 export async function placeNew(file: string, bytes: Uint8Array): Promise<PlaceOutcome> {
   await fs.mkdir(path.dirname(file), { recursive: true });
+  const staged = sibling(file, "new");
+  await createExclusive(staged, bytes);
   try {
-    await createExclusive(file, bytes);
+    await fs.link(staged, file);
   } catch (error) {
+    await fs.unlink(staged).catch(() => {});
     if (isCode(error, "EEXIST")) return { placed: false, reason: "occupied" };
     throw error;
   }
+  await fs.unlink(staged);
   await syncDir(path.dirname(file));
   return { placed: true };
 }
@@ -148,7 +156,7 @@ export const ROOT_INDEX = "index.md";
  * One path segment folded as a case-insensitive host equates it: NFKD, then lower-upper-lower
  * (the same fold core's filesystem identity uses), so ß/ss and final-sigma pairs collide too.
  */
-function fold(segment: string): string {
+export function fold(segment: string): string {
   return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
 }
 
@@ -230,4 +238,57 @@ export async function exportFresh(store: JournaledBackend, folder: string, onPla
     } else kept.push(head.id);
   }
   return { documents, root, exported, kept };
+}
+
+/** The temporary names placement leaves beside a target: `.NAME.superbee-<pre|new|del>-<tag>.tmp`. */
+export const PLACEMENT_TEMP = /^\.(.+)\.superbee-(pre|new|del)-[^./]+\.tmp$/;
+
+/** A path under the folder that cannot be placed safely: a symbolic link or a file on the way to it. */
+export class UnsafePlacementError extends Error {
+  override readonly name = "UnsafePlacementError";
+}
+
+/**
+ * Create the directories from the folder down to `file`'s parent, one level at a time, refusing
+ * any component that is a symbolic link or not a directory, before anything is created below it.
+ * Nothing is ever created through a link, inside or outside the folder.
+ */
+export async function ensureParentInside(folder: string, file: string): Promise<void> {
+  const rel = path.relative(folder, path.dirname(file));
+  if (rel.startsWith("..") || path.isAbsolute(rel)) throw new UnsafePlacementError(`${file} is outside the checkout folder`);
+  let dir = folder;
+  for (const segment of rel === "" ? [] : rel.split(path.sep)) {
+    dir = path.join(dir, segment);
+    let info;
+    try {
+      info = await fs.lstat(dir);
+    } catch (error) {
+      if (!isCode(error, "ENOENT")) throw error;
+      try {
+        await fs.mkdir(dir);
+      } catch (made) {
+        if (!isCode(made, "EEXIST")) throw made;
+      }
+      info = await fs.lstat(dir);
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new UnsafePlacementError(`${path.relative(folder, dir)} is a symbolic link or a file, so sync does not place documents under it`);
+  }
+}
+
+/** True when some directory between the folder and `file` is a symbolic link or not a directory. */
+export async function parentUnsafe(folder: string, file: string): Promise<boolean> {
+  const rel = path.relative(folder, path.dirname(file));
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return true;
+  let dir = folder;
+  for (const segment of rel === "" ? [] : rel.split(path.sep)) {
+    dir = path.join(dir, segment);
+    try {
+      const info = await fs.lstat(dir);
+      if (info.isSymbolicLink() || !info.isDirectory()) return true;
+    } catch (error) {
+      if (isCode(error, "ENOENT")) return false;
+      throw error;
+    }
+  }
+  return false;
 }

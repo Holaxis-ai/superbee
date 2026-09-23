@@ -671,7 +671,7 @@ test("the file store keeps the refresh token 0600 inside the private state root"
 // ---------------------------------------------------------------------------------------------
 // Boundary: no existing command reaches hosted before the transport exists
 
-test("only the sign-in commands and the hosted checkout import the hosted session module", async () => {
+test("only the sign-in commands, the hosted checkout and hosted sync import the hosted session module", async () => {
   const src = path.resolve(here, "../src");
   const offenders: string[] = [];
   async function walk(dir: string): Promise<void> {
@@ -683,7 +683,7 @@ test("only the sign-in commands and the hosted checkout import the hosted sessio
       }
       if (!entry.name.endsWith(".ts")) continue;
       const text = await readFile(full, "utf8");
-      const allowed = [path.join("commands", "hosted-auth.ts"), path.join("commands", "checkout.ts"), path.join("hosted", "client.ts")];
+      const allowed = [path.join("commands", "hosted-auth.ts"), path.join("commands", "checkout.ts"), path.join("hosted", "client.ts"), path.join("hosted", "sync.ts")];
       if (/hosted-auth\//.test(text) && !allowed.includes(path.relative(src, full))) {
         offenders.push(path.relative(src, full));
       }
