@@ -451,7 +451,7 @@ async function alreadyShared(
  */
 function windowNote(top: string, inv: CommandPrefix, branch: string, bundleDir: BundleDirName): string {
   const guidance = boardWindowGuidance(top, true, bundleDir);
-  if (guidance.state === "window-remnant") return guidance.message;
+  if (guidance.state !== "pre-share-window") return guidance.message;
   const landedUpstream = pathLandedAbsentOnRemoteBranch(top, branch, bundleDir);
   return landedUpstream
     ? syncOutcomeLine("line.window-note.landed", { inv, branch, bundleDir })

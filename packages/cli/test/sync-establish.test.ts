@@ -752,7 +752,7 @@ test("generic remote rejection during first publication stays provider-neutral a
   }
 });
 
-test("recovery markers are isolated between linked code worktrees", async () => {
+test("establish from a linked code worktree is refused and leaves the main worktree's recovery marker alone", async () => {
   const topo = await makeGreenfieldTopology();
   const { home, cleanup } = await tempHome();
   const siblingRoot = path.join(topo.dir, "A-sibling");
@@ -778,11 +778,16 @@ test("recovery markers are isolated between linked code worktrees", async () => 
     await chmod(hook, 0o755);
 
     assert.equal((await runSync(home, ["--establish", "--dir", topo.a.root])).err?.code, "AUTH_REQUIRED");
-    assert.equal((await runSync(home, ["--establish", "--dir", siblingRoot])).err?.code, "AUTH_REQUIRED");
     const markerA = establishMarkerPath(topo.a.root);
-    const markerSibling = establishMarkerPath(siblingRoot);
-    assert.notEqual(markerA, markerSibling);
-    assert.notEqual(readFileSync(markerA, "utf8"), readFileSync(markerSibling, "utf8"));
+    const markerBefore = readFileSync(markerA, "utf8");
+    // Boards are unsupported inside a linked worktree: establish refuses before any snapshot,
+    // marker, or push, so the main worktree's interrupted establishment is untouched.
+    const refused = (await runSync(home, ["--establish", "--dir", siblingRoot])).err;
+    assert.equal(refused?.code, "CONFLICT");
+    assert.match(refused?.message ?? "", /not supported inside a linked git worktree/);
+    assert.equal(existsSync(establishMarkerPath(siblingRoot)), false, "no marker in the linked worktree");
+    assert.equal(readFileSync(markerA, "utf8"), markerBefore);
+    assert.ok(existsSync(path.join(sibling.board, "notes", "from-sibling.md")), "the linked worktree's bundle is untouched");
   } finally {
     await cleanup();
     await topo.cleanup();

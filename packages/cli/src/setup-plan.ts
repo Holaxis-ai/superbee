@@ -69,6 +69,8 @@ export interface SetupHookHostState {
 export interface SetupWorkspaceState {
   readonly board?: ChannelDetection;
   readonly bundle: "selected" | "absent" | "unreadable";
+  /** The resolver's recovery when bundle selection is blocked (reported as "unreadable"). */
+  readonly recovery?: string;
   readonly catalog: "ready" | "empty" | "unreadable";
   readonly selected_registered: boolean;
 }
@@ -506,7 +508,9 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
       id: "bundle",
       requirement: "recommended",
       state: "blocked",
-      reason: "local bundle selection is unreadable or conflicting",
+      reason: input.workspace.recovery
+        ? `local bundle selection is blocked; recover with: ${input.workspace.recovery}`
+        : "local bundle selection is unreadable or conflicting",
       command: "superbee bundle locate",
     };
   }

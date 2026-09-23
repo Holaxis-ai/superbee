@@ -171,11 +171,18 @@ export async function inspectSetupBoard(startDir: string): Promise<ChannelDetect
 async function inspectWorkspace(deps: SetupDeps): Promise<SetupWorkspaceState> {
   let selected: LocalBundleTarget | undefined;
   let bundle: SetupWorkspaceState["bundle"] = "absent";
+  let recovery: string | undefined;
   try {
     selected = await deps.resolveBundle(deps.cwd());
     bundle = "selected";
   } catch (error) {
     bundle = error instanceof CliError && error.code === "NOT_FOUND" ? "absent" : "unreadable";
+    // A bound path that must change before any bundle can be created or provisioned there is
+    // blocked, not absent: board detection would otherwise recommend a sync that cannot succeed.
+    if (error instanceof CliError && (bundle === "unreadable" || error.details?.binding_target_blocked !== undefined)) {
+      bundle = "unreadable";
+      if (error.help) recovery = error.help;
+    }
   }
   let board: ChannelDetection | undefined;
   if (bundle === "absent") {
@@ -191,13 +198,14 @@ async function inspectWorkspace(deps: SetupDeps): Promise<SetupWorkspaceState> {
     const available = entries.filter((entry) => entry.available);
     return {
       bundle,
+      ...(recovery ? { recovery } : {}),
       ...(board ? { board } : {}),
       catalog: available.length > 0 ? "ready" : "empty",
       selected_registered: selected !== undefined
         && available.some((entry) => samePhysicalPath(entry.locator.path, selected!.canonicalRoot)),
     };
   } catch {
-    return { bundle, ...(board ? { board } : {}), catalog: "unreadable", selected_registered: false };
+    return { bundle, ...(recovery ? { recovery } : {}), ...(board ? { board } : {}), catalog: "unreadable", selected_registered: false };
   }
 }
 
