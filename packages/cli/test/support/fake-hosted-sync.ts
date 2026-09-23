@@ -12,8 +12,14 @@
 //   `X-Superbee-Checkout`, compare-and-swap on absence or on `expectedVersion`, never a merge; a
 //   recorded answer carries `X-Superbee-Write-Settled`; a repeated identity answers its recorded
 //   result; the capacity refusal is `429 {"error":{"code":"request_capacity","scope",…}}`;
+// - `/delete` and the tombstone check on creates (superbee-hosted `docs/documents-delete-operation.md`
+//   and `docs/sync-v1-writes.md` at PR 606 head 93bd1ab1): a delete at exactly `expectedVersion`
+//   leaves a tombstone (`data.version`, with `deletedVersion` and `deleted: true`); a new identity
+//   at the same base answers `changed: false` naming it; a create of a tombstoned id is refused as
+//   `version_conflict` naming the latest tombstone unless `X-Superbee-Recreate` names exactly it,
+//   and without `currentVersion` when it acknowledges a tombstone the id does not have;
 // - `/outcome`: the `encodeIdentifiedOutcome` answer (`schemaVersion` 1, `absent`, `committed`
-//   with the committed bytes as base64, or `refused`).
+//   with the committed bytes as base64, or none for a delete, or `refused`).
 // The host stores its own serialization (the managed `superbee_updated_by` field added), so a
 // committed version is never the client's local version, as on the real host.
 import assert from "node:assert/strict";
@@ -55,9 +61,11 @@ export interface HostedDoc {
 type Recorded = { result: Record<string, unknown>; content?: { version: string; raw: string } };
 
 export interface WriteCall {
-  route: "create" | "replace" | "outcome";
+  route: "create" | "replace" | "delete" | "outcome";
   requestId: string | null;
   binding: string | null;
+  /** The `X-Superbee-Recreate` header, when sent. */
+  recreate: string | null;
   body: Record<string, unknown>;
 }
 
@@ -81,8 +89,18 @@ export interface FakeHostOptions {
 const WRITE_REQUEST = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BINDING = /^sha256:[a-f0-9]{64}$/;
 
+export interface Tombstone {
+  tombstone: string;
+  deletedVersion: string;
+  revision: number;
+}
+
 export class FakeHost {
   readonly docs = new Map<string, HostedDoc>();
+  /** Every deletion of each id, oldest first; the last is the latest tombstone. */
+  readonly tombstones = new Map<string, Tombstone[]>();
+  /** The bundle revision: bumped by every write and delete, kept across deletion. */
+  revision = 1;
   readonly requests: { path: string; body: unknown; headers: Headers }[] = [];
   readonly writes: WriteCall[] = [];
   readonly recorded = new Map<string, Recorded>();
@@ -121,6 +139,26 @@ export class FakeHost {
 
   remove(id: string): void {
     this.docs.delete(id);
+  }
+
+  /** A delete made on the host by someone else (another checkout's sync): it leaves a tombstone. */
+  deleteWithTombstone(id: string): string {
+    const doc = this.docs.get(id);
+    assert.ok(doc, `the host has ${id}`);
+    return this.tombstone(id, doc.version);
+  }
+
+  latestTombstone(id: string): Tombstone | undefined {
+    return this.tombstones.get(id)?.at(-1);
+  }
+
+  private tombstone(id: string, deletedVersion: string): string {
+    const revision = this.revision;
+    const tombstone = versionOfBytes(JSON.stringify({ deletedVersion, id, revision, superbee: "tombstone" }));
+    this.tombstones.set(id, [...(this.tombstones.get(id) ?? []), { tombstone, deletedVersion, revision }]);
+    this.docs.delete(id);
+    this.revision += 1;
+    return tombstone;
   }
 
   heads() {
@@ -181,6 +219,7 @@ export class FakeHost {
       }
       case "create":
       case "replace":
+      case "delete":
       case "outcome":
         return this.write(route, body, headers);
       default:
@@ -188,38 +227,66 @@ export class FakeHost {
     }
   }) as typeof fetch;
 
-  private write(route: "create" | "replace" | "outcome", body: Record<string, unknown>, headers: Headers): Response {
+  private write(route: "create" | "replace" | "delete" | "outcome", body: Record<string, unknown>, headers: Headers): Response {
     const requestId = headers.get("x-superbee-write-request");
     const binding = headers.get("x-superbee-checkout");
-    const call: WriteCall = { route, requestId, binding, body };
+    const recreate = headers.get("x-superbee-recreate");
+    const call: WriteCall = { route, requestId, binding, recreate, body };
     this.writes.push(call);
     if (!requestId || !WRITE_REQUEST.test(requestId) || !binding || !BINDING.test(binding)) {
       return Response.json({ error: { code: "invalid_input", message: "identity and binding are required" } }, { status: 400 });
     }
+    // The acknowledgement is a create's (and its outcome's) alone, and a version.
+    const creates = route === "create" || (route === "outcome" && body.expectAbsent === true);
+    if (recreate !== null && (!creates || !BINDING.test(recreate))) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     const hooked = this.hook?.(call);
     if (hooked?.kind === "respond") return new Response(JSON.stringify(hooked.body), { status: hooked.status, headers: { "content-type": "application/json", ...hooked.headers } });
     if (hooked?.kind === "drop") throw new TypeError("fetch failed");
     if (route === "outcome") return this.outcome(requestId, binding, body);
-    const operationId = route === "create" ? "documents.create.v1" : "documents.replace.v1";
+    const operationId = route === "create" ? "documents.create.v1" : route === "replace" ? "documents.replace.v1" : "documents.delete.v1";
     let recorded = this.recorded.get(requestId);
     if (!recorded) {
-      recorded = hooked?.kind === "record" ? { result: failure(operationId, hooked.code) } : this.apply(route, operationId, body);
+      recorded = hooked?.kind === "record" ? { result: failure(operationId, hooked.code) } : route === "delete" ? this.applyDelete(body) : this.apply(route, operationId, body, recreate);
       this.recorded.set(requestId, recorded);
     }
     if (hooked?.kind === "apply-then-drop") throw new TypeError("fetch failed");
     return new Response(JSON.stringify(recorded.result), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "x-superbee-write-settled": requestId } });
   }
 
-  private apply(route: "create" | "replace", operationId: string, body: Record<string, unknown>): Recorded {
+  private applyDelete(body: Record<string, unknown>): Recorded {
+    const operationId = "documents.delete.v1";
+    const id = String(body.documentId);
+    const expected = String(body.expectedVersion);
+    const existing = this.docs.get(id);
+    const answer = (tombstone: string, changed: boolean): Recorded => ({
+      result: { ok: true, operationId, data: { bundleId: BUNDLE, documentId: id, version: tombstone, deletedVersion: expected, changed, deleted: true } },
+    });
+    if (existing && existing.version !== expected) return { result: failure(operationId, "version_conflict", existing.version) };
+    if (existing) {
+      this.applied.push(id);
+      return answer(this.tombstone(id, expected), true);
+    }
+    const latest = this.latestTombstone(id);
+    if (latest && latest.deletedVersion === expected) return answer(latest.tombstone, false);
+    return { result: failure(operationId, "document_not_found") };
+  }
+
+  private apply(route: "create" | "replace", operationId: string, body: Record<string, unknown>, recreate: string | null = null): Recorded {
     const id = String(body.documentId);
     const existing = this.docs.get(id);
     if (route === "create" && existing) return { result: failure(operationId, "document_exists") };
+    if (route === "create") {
+      // The tombstone check on a sync create: admitted only when it names the id's latest deletion.
+      const latest = this.latestTombstone(id)?.tombstone;
+      if ((latest ?? null) !== recreate) return { result: failure(operationId, "version_conflict", latest) };
+    }
     if (route === "replace" && !existing) return { result: failure(operationId, "document_not_found") };
     if (route === "replace" && existing!.version !== body.expectedVersion) return { result: failure(operationId, "version_conflict", existing!.version) };
     const frontmatter = { ...(body.frontmatter as Record<string, unknown>), superbee_updated_by: this.principal };
     const raw = stringifyDoc(frontmatter as never, String(body.body));
     const version = versionOfBytes(raw);
     this.docs.set(id, { frontmatter, body: String(body.body), version, raw });
+    this.revision += 1;
     this.applied.push(id);
     return {
       result: { ok: true, operationId, data: { bundleId: BUNDLE, documentId: id, version, changed: route === "create" || existing!.version !== version } },
@@ -232,6 +299,7 @@ export class FakeHost {
     const envelope = { schemaVersion: 1, requestId, binding };
     if (!recorded) return Response.json({ ...envelope, status: "absent" });
     assert.equal((recorded.result as { data?: { documentId?: unknown } }).data?.documentId ?? body.documentId, body.documentId);
+    if ((recorded.result as { ok?: unknown }).ok === true && !recorded.content) return Response.json({ ...envelope, status: "committed", result: recorded.result });
     if (recorded.content) {
       return Response.json({
         ...envelope,

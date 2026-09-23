@@ -625,7 +625,7 @@ test("tombstone refusal: a create of a deleted id without the recreate header is
   const intent = intentOf(null);
   const { deliver, requests, reads } = transportOver({ "/sync/v1/create": [fixture("update-200-version-conflict")] }, intent, { rewrite: tombstoned });
   const result = await deliver();
-  assert.deepEqual(result.outcome, { kind: "conflict", actual: null }, "deleted remotely");
+  assert.deepEqual(result.outcome, { kind: "conflict", actual: null, tombstone: TOMBSTONE }, "deleted remotely, carrying the tombstone keep needs");
   assert.equal(result.intent.state, "conflict");
   assert.deepEqual(reads, ["notes/alpha"], "the served head decides, not currentVersion");
   assert.deepEqual(requests.map((request) => request.path), ["/sync/v1/create"], "no lookup and no resubmission");
@@ -643,7 +643,7 @@ test("tombstone refusal: a create whose id was deleted and recreated elsewhere c
 test("tombstone refusal: a lookup that finds a create recorded as refused over a tombstone settles the same conflict", async () => {
   const intent = { ...intentOf(null), attempts: 1 };
   const { deliver, requests, reads } = transportOver({ "/sync/v1/outcome": [fixture("outcome-200-refused")] }, intent, { rewrite: tombstoned });
-  assert.deepEqual((await deliver()).outcome, { kind: "conflict", actual: null });
+  assert.deepEqual((await deliver()).outcome, { kind: "conflict", actual: null, tombstone: TOMBSTONE });
   assert.deepEqual(requests.map((request) => request.path), ["/sync/v1/outcome"]);
   assert.deepEqual(reads, ["notes/alpha"]);
 });
@@ -694,6 +694,7 @@ test("intent-kind guard: an explicit kind that disagrees with its base is refuse
   for (const [kind, base, why] of [
     ["document.create", BASE, /document\.create.*has a base/],
     ["document.replace", null, /document\.replace.*has no base/],
+    ["document.delete", null, /document\.delete.*has no base/],
   ] as const) {
     const intent: OperationIntent = { ...intentOf(base), kind };
     assert.throws(() => wholeDocumentRequest("team.knowledge", intent), (error: unknown) => error instanceof WholeDocumentInputError && error.code === "unsupported_operation" && why.test(error.message));
@@ -705,8 +706,8 @@ test("intent-kind guard: an explicit kind that disagrees with its base is refuse
   }
 });
 
-test("intent-kind guard: delete and every other unsupported kind is refused, never mapped to create or replace", async () => {
-  for (const kind of ["document.delete", "document.body.update", "document.write.v2", "Document.Write", ""]) {
+test("intent-kind guard: every unsupported kind is refused, never mapped to create, replace or delete", async () => {
+  for (const kind of ["document.body.update", "document.write.v2", "Document.Write", "Document.Delete", ""]) {
     for (const base of [null, BASE]) {
       const intent: OperationIntent = { ...intentOf(base), kind };
       assert.throws(() => wholeDocumentRequest("team.knowledge", intent), (error: unknown) => error instanceof WholeDocumentInputError && error.code === "unsupported_operation");
@@ -720,7 +721,7 @@ test("intent-kind guard: delete and every other unsupported kind is refused, nev
 
 test("intent-kind guard: a lookup of an unsupported or mismatched intent is held, and nothing is sent to the outcome route", async () => {
   for (const intent of [
-    { ...intentOf(BASE), kind: "document.delete", attempts: 1 },
+    { ...intentOf(null), kind: "document.delete", attempts: 1 },
     { ...intentOf(null), kind: "document.body.update", attempts: 1 },
     { ...intentOf(BASE), kind: "document.create", attempts: 1 },
   ] satisfies OperationIntent[]) {

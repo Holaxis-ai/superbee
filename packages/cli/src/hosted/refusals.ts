@@ -1,6 +1,7 @@
 // Up-front refusals in a hosted checkout (Mike's decision, September 22, 2026: refuse at the
 // command, with "do this in the app"). A hosted checkout syncs whole documents only, through
-// `documents.create.v1` and `documents.replace.v1`. A command whose effect sync cannot send is
+// `documents.create.v1`, `documents.replace.v1` and `documents.delete.v1` (a deleted file, from
+// `doc delete` or by hand, syncs as a delete). A command whose effect sync cannot send is
 // refused before it touches the folder, instead of succeeding locally and being held forever.
 // The held backstop at scan time (C2) still covers direct file edits.
 //
@@ -43,8 +44,6 @@ const MCP_REGISTRATION: ReadonlySet<string> = new Set(["install", "status", "uni
 
 /** Every command a hosted checkout refuses up front. The order is the lookup order. */
 export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
-  { words: ["doc", "delete"], reason: "not_syncable", why: "deleting a document does not sync yet" },
-  { words: ["delete"], reason: "not_syncable", why: "deleting a document does not sync yet" },
   { words: ["doc", "verify"], reason: "not_syncable", why: "verification is a managed field the host records" },
   { words: ["kind", "*"], reason: "not_syncable", why: "Kind conventions are edited in the app" },
   { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change Kind and View conventions, which are edited in the app" },

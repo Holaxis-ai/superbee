@@ -179,10 +179,19 @@ export const WRITE_ERROR_CODES = Object.freeze([
 ] as const);
 export type WriteErrorCode = (typeof WRITE_ERROR_CODES)[number];
 
+/** The whole-document delete: its success names the tombstone as `version`, and the version that left. */
+export const DELETE_OPERATION_ID = "documents.delete.v1";
+
 export type WriteSuccess = {
   ok: true;
   operationId: string;
-  data: { bundleId: string; documentId: string; version: Version; changed: boolean; scope?: unknown };
+  /**
+   * `version` is what committed: the document's new version, or for a delete the tombstone
+   * version. A delete's data alone also carries `deletedVersion` (the version that left, which
+   * is the request's `expectedVersion`) and `deleted: true`; `changed: false` there says the
+   * document had already left at exactly that base, and `version` names that deletion.
+   */
+  data: { bundleId: string; documentId: string; version: Version; changed: boolean; scope?: unknown; deletedVersion?: Version; deleted?: true };
 };
 export type WriteFailure = {
   ok: false;
@@ -208,6 +217,7 @@ export class HostedAnswerError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const onlyKeys = (value: Record<string, unknown>, allowed: readonly string[]) => Object.keys(value).every((key) => allowed.includes(key));
 const DATA_KEYS = ["bundleId", "documentId", "version", "changed", "scope"] as const;
+const DELETE_DATA_KEYS = [...DATA_KEYS, "deletedVersion", "deleted"] as const;
 const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "candidate", "retentionUnavailable", "scope", "resetAt"] as const;
 
 /**
@@ -222,9 +232,12 @@ export function parseWriteResult(raw: unknown, expected: { operationIds: readonl
   const { operationId } = raw as { operationId: string };
   if (raw.ok === true) {
     const data = raw.data;
-    if (raw.error !== undefined || !isRecord(data) || !onlyKeys(data, DATA_KEYS) || typeof data.bundleId !== "string" || data.bundleId.length === 0 ||
+    // A delete's success, and only a delete's, names the version that left and says it left.
+    const deletion = operationId === DELETE_OPERATION_ID;
+    if (raw.error !== undefined || !isRecord(data) || !onlyKeys(data, deletion ? DELETE_DATA_KEYS : DATA_KEYS) || typeof data.bundleId !== "string" || data.bundleId.length === 0 ||
         data.documentId !== expected.documentId || (expected.bundleId !== undefined && data.bundleId !== expected.bundleId) ||
-        !isContentVersion(data.version) || typeof data.changed !== "boolean") throw refuse();
+        !isContentVersion(data.version) || typeof data.changed !== "boolean" ||
+        (deletion && (!isContentVersion(data.deletedVersion) || data.deleted !== true))) throw refuse();
     const accepted = data as WriteSuccess["data"];
     return { ok: true, operationId, data: { ...accepted } };
   }
@@ -314,7 +327,8 @@ export class HostedOutcomeError extends Error {
 export type OutcomeAnswer =
   | { status: "absent" }
   | { status: "pending" }
-  | { status: "committed"; result: WriteSuccess; content: { version: Version; bytes: Uint8Array } }
+  /** `content` is the committed bytes; `null` for a delete alone, whose tombstone has no bytes. */
+  | { status: "committed"; result: WriteSuccess; content: { version: Version; bytes: Uint8Array } | null }
   | { status: "refused"; result: WriteFailure };
 
 /** An outcome answer carries the committed document's exact bytes under this bound. */
@@ -335,7 +349,8 @@ function decodeBase64(text: string, maximum: number): Uint8Array {
  * The lookup route's `200` answer, admitted or refused as one: `schemaVersion` 1, the request
  * identity and binding it answers for, and one status. A committed answer carries the original
  * validated success and the committed document's exact bytes as base64 at the receipt's
- * version; a refused answer carries the original definitive failure. Anything else, including a
+ * version (a delete's carries none: a tombstone has no bytes); a refused answer carries the
+ * original definitive failure. Anything else, including a
  * stored result whose write state is not definitive, is malformed evidence.
  */
 export function decodeOutcomeAnswer(
@@ -361,6 +376,11 @@ export function decodeOutcomeAnswer(
   switch (observation) {
     case "committed": {
       const parsed = result();
+      // A committed delete carries the recorded result and no content: nothing it committed has bytes.
+      if (parsed.ok && parsed.operationId === DELETE_OPERATION_ID) {
+        if (body.content !== undefined) throw malformed();
+        return { status: "committed", result: parsed, content: null };
+      }
       const content = body.content as { encoding?: unknown; version?: unknown; bytes?: unknown } | undefined;
       if (!parsed.ok || !isRecord(content) || content.encoding !== "base64" || !isContentVersion(content.version) || typeof content.bytes !== "string") throw malformed();
       return { status: "committed", result: parsed, content: { version: content.version, bytes: decodeBase64(content.bytes, OUTCOME_CONTENT_BYTES) } };

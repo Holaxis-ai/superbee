@@ -72,6 +72,9 @@ import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, bodyDatabaseName,
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
 import { IndexedDbBackend, type IdbFactoryLike } from "@superbee/core/indexeddb-backend";
 import {
+  DELETION_CONTENT,
+  DELETION_VERSION,
+  DOCUMENT_DELETE_KIND,
   IntentHoldConflict,
   IntentStateConflict,
   assertJournalSnapshot,
@@ -188,6 +191,13 @@ export function baseKey(id: ConceptId): string {
 export interface SharedBase {
   version: Version | null;
   content: string | null;
+  /**
+   * With `version: null`: the deletion that removed the document at the authority, when the
+   * working copy knows it. On a base record it is the working copy's own committed delete (the
+   * authority's answer), which a create recorded afterwards acknowledges automatically; on a
+   * conflict review it is the deletion the authority named, which `keep-local` acknowledges.
+   */
+  tombstone?: Version;
 }
 
 /**
@@ -645,6 +655,9 @@ async function composeIntent(backend: JournaledBackend, id: ConceptId, now: stri
   const latest = unsettled[unsettled.length - 1];
   if (!latest) {
     const shared = await backend.readMeta<SharedBase>(baseKey(id));
+    // A document this working copy itself deleted, and the authority acknowledged: a create
+    // recorded after that acknowledges the deletion it re-creates (design binding decision 3).
+    const recreates = (shared?.version ?? null) === null ? shared?.tombstone : undefined;
     return {
       intent: {
         requestId: mintRequestId(),
@@ -653,11 +666,14 @@ async function composeIntent(backend: JournaledBackend, id: ConceptId, now: stri
         base: shared?.version ?? null,
         baseContent: shared?.content ?? null,
         createdAt: now,
+        ...(recreates !== undefined ? { recreates } : {}),
       },
     };
   }
   const neverDelivered = latest.state === "pending" && latest.attempts === 0;
   if (neverDelivered || latest.state === "refused") {
+    // A write over a never-delivered delete collapses the two into one change against the base:
+    // a replace, never a delete and a re-create.
     return {
       intent: {
         requestId: mintRequestId(),
@@ -667,21 +683,47 @@ async function composeIntent(backend: JournaledBackend, id: ConceptId, now: stri
         baseContent: latest.baseContent,
         createdAt: now,
         ...(latest.after !== undefined ? { after: latest.after } : {}),
+        ...(latest.recreates !== undefined && latest.base === null ? { recreates: latest.recreates } : {}),
       },
       supersede: { requestId: latest.requestId, expectedState: latest.state, expectedAttempts: latest.attempts },
     };
   }
+  // After a delete that may have landed, the document is absent: the next write is a create.
+  const deleting = latest.kind === DOCUMENT_DELETE_KIND;
   return {
     intent: {
       requestId: mintRequestId(),
       kind: "document.write",
       target: id,
-      base: latest.local,
-      baseContent: latest.content,
+      base: deleting ? null : latest.local,
+      baseContent: deleting ? null : latest.content,
       createdAt: now,
       after: latest.requestId,
     },
   };
+}
+
+/**
+ * What a chained intent, never yet sent, must carry once its predecessor is acknowledged: the
+ * version the authority actually committed it at, not the one the working copy computed. An
+ * authority that stores its own serialization (a hosted checkout's managed fields) commits a
+ * write at another version than its `local`, and a successor sent against `local` would conflict
+ * with the person's own edit. After the working copy's own acknowledged deletion, a create
+ * chained behind it acknowledges that deletion's tombstone, as a create recorded afterwards does.
+ * The identity was never used, so nothing recorded under it changes meaning.
+ */
+function chainedPremise(intent: IntentRecord, predecessor: IntentRecord): Pick<IntentRecord, "base"> | Pick<IntentRecord, "recreates"> | Record<string, never> {
+  const committed = predecessor.acknowledgedVersion;
+  if (committed === undefined) return {};
+  if (predecessor.kind === DOCUMENT_DELETE_KIND) {
+    return intent.base === null && intent.recreates === undefined && intent.kind !== DOCUMENT_DELETE_KIND && committed !== DELETION_VERSION ? { recreates: committed } : {};
+  }
+  return intent.base === predecessor.local && committed !== predecessor.local ? { base: committed } : {};
+}
+
+/** The base a chained intent's successor holds: its local version, or none after a deletion. */
+function chainedBase(intent: IntentRecord): Version | null {
+  return intent.kind === DOCUMENT_DELETE_KIND ? null : intent.local;
 }
 
 const COMPOSE_ATTEMPTS = 3;
@@ -738,6 +780,67 @@ export async function commitLocal(local: LocalTarget, id: ConceptId, mutation: L
   return { ...result, intent: recorded.intent };
 }
 
+export interface DeleteLocalResult {
+  /** True when the working copy held the document and removed it. */
+  deleted: boolean;
+  /**
+   * The deletion journaled with it, or `null` when there is nothing to delete at the authority:
+   * the document never reached it (a create that never left collapses to nothing), or the
+   * working copy never held a shared version of it.
+   */
+  intent: IntentRecord | null;
+}
+
+/**
+ * Remove a document from the working copy and journal its deletion (`document.delete`) in the
+ * same store transaction, compare-and-swap on the local version (`expectedVersion`, the current
+ * one by default). The deletion is against the shared base the local change was made against,
+ * composed as {@link composeIntent} composes a write:
+ * - over a never-delivered or refused change, it supersedes it, keeping its base; a create that
+ *   never left collapses to nothing (no intent);
+ * - after a change that may have landed, it is chained after it (`after`), against its version;
+ * - over a recorded conflict it is refused: resolve the conflict first.
+ * An absent document is not an error: nothing changes and `deleted` is false.
+ */
+export async function deleteLocal(local: LocalTarget, id: ConceptId, options: { expectedVersion?: Version } = {}): Promise<DeleteLocalResult> {
+  const backend = backendOf(local);
+  if (await admitBodyMode(backend)) throw new BodyRuntimeError("Body delivery does not delete documents.");
+  for (let attempt = 0; ; attempt++) {
+    const read = await backend.readWithJournal(id, { meta: [baseKey(id)] });
+    if (!read.document) return { deleted: false, intent: null };
+    const unsettled = read.intents.filter((row) => row.state !== "acknowledged");
+    const latest = unsettled[unsettled.length - 1];
+    const now = new Date().toISOString();
+    let intent: NewIntentRecord | undefined;
+    let supersede: { requestId: string; expectedState: OperationState; expectedAttempts: number } | undefined;
+    if (!latest) {
+      const shared = read.meta.get(baseKey(id)) as SharedBase | undefined;
+      if (shared?.version) intent = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: id, base: shared.version, baseContent: shared.content, createdAt: now };
+    } else if ((latest.state === "pending" && latest.attempts === 0) || latest.state === "refused") {
+      supersede = { requestId: latest.requestId, expectedState: latest.state, expectedAttempts: latest.attempts };
+      if (latest.base !== null) {
+        intent = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: id, base: latest.base, baseContent: latest.baseContent, createdAt: now, ...(latest.after !== undefined ? { after: latest.after } : {}) };
+      }
+    } else if (latest.state === "conflict") {
+      throw new InvalidInputError(`'${id}' has a conflict to resolve before it can be deleted.`);
+    } else {
+      intent = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: id, base: latest.local, baseContent: latest.content, createdAt: now, after: latest.requestId };
+    }
+    try {
+      const result = await backend.deleteJournaled(id, {
+        expectedVersion: options.expectedVersion ?? read.document.version,
+        ...(intent ? { intent } : {}),
+        ...(supersede ? { supersede } : {}),
+      });
+      return { deleted: result.outcome === "deleted", intent: result.outcome === "held" ? null : result.intent ?? null };
+    } catch (error) {
+      // Another realm moved the superseded intent between the read and the transaction.
+      if (error instanceof IntentStateConflict && attempt < COMPOSE_ATTEMPTS - 1) continue;
+      throw error;
+    }
+  }
+}
+
 export interface BodyLocalMutation { body: string; expectedVersion?: Version; actor?: string; now?: () => string }
 /** Explicit body intent, authored by the existing engine and journaled in its document CAS. */
 export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutation: BodyLocalMutation): Promise<CommitResult> {
@@ -789,7 +892,8 @@ export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutatio
 /** A reviewable snapshot, not permission to overwrite a later local or shared version. */
 export interface ConflictReview {
   id: ConceptId;
-  local: { version: Version; content: string };
+  /** The working copy's side: its document, or, for a journaled deletion, `deleted` with no content. */
+  local: { version: Version; content: string; deleted?: true };
   base: SharedBase;
   remote: SharedBase;
   intents: IntentRecord[];
@@ -859,21 +963,23 @@ function conflictChain(id: ConceptId, snapshot: JournaledReadResult, admitRefuse
   if (!admitRefused && !intents.some(row => row.state === "conflict")) throw new JournalSnapshotConflict(id);
   assertJournalSnapshot(id, intents, snapshot.intents);
   const head = intents[0];
-  if (!snapshot.document || snapshot.raw === null || !head || !(head.state === "conflict" || (admitRefused && isContentRefusal(head)))) {
+  // A chain that ends in a journaled deletion describes an absent working document.
+  const deleting = intents[intents.length - 1]?.kind === DOCUMENT_DELETE_KIND;
+  if ((deleting ? snapshot.document !== null : !snapshot.document || snapshot.raw === null) || !head || !(head.state === "conflict" || (admitRefused && isContentRefusal(head)))) {
     throw new InvalidInputError(admitRefused
       ? "Conflict recovery requires an existing local document and a first pending edit the authority answered with a conflict or a content refusal; lost permission is resumed, not resolved."
       : "Conflict recovery requires an existing local document and a conflicted first pending edit.");
   }
   for (let index = 1; index < intents.length; index++) {
-    if (intents[index]!.after !== intents[index - 1]!.requestId || intents[index]!.base !== intents[index - 1]!.local) {
+    if (intents[index]!.after !== intents[index - 1]!.requestId || intents[index]!.base !== chainedBase(intents[index - 1]!)) {
       throw new InvalidInputError("Conflict recovery requires one dependent edit chain.");
     }
   }
   const latest = intents[intents.length - 1]!;
-  if (latest.local !== snapshot.document.version || latest.content !== snapshot.raw) {
+  if (!deleting && (latest.local !== snapshot.document!.version || latest.content !== snapshot.raw)) {
     throw new InvalidInputError("The working document is not the latest journaled edit; preserve and reconcile it before resolving.");
   }
-  return { snapshot, intents, document: snapshot.document };
+  return { snapshot, intents, document: snapshot.document, deleting };
 }
 
 async function conflictLocal(backend: JournaledBackend, id: ConceptId, admitRefused = false) {
@@ -889,11 +995,22 @@ export async function inspectConflict(local: LocalTarget, remote: StorageBackend
   const shared = await readConflictRemote(remote, id);
   return {
     id,
-    local: { version: document.version, content: snapshot.raw! },
+    local: document ? { version: document.version, content: snapshot.raw! } : { version: DELETION_VERSION, content: DELETION_CONTENT, deleted: true },
     base: { version: intents[0]!.base, content: intents[0]!.baseContent },
-    remote: shared.base,
+    remote: reviewedRemote(shared.base, intents[0]!),
     intents,
   };
+}
+
+/**
+ * The shared head a review shows: the fresh read, and, when it serves no document, the deletion
+ * the authority named when the conflict was recorded. That tombstone is what `keep-local`
+ * acknowledges; if the document was deleted again since, the authority refuses it and the
+ * refusal is recorded as a new conflict naming the newer one.
+ */
+function reviewedRemote(shared: SharedBase, head: IntentRecord): SharedBase {
+  const tombstone = shared.version === null && head.remote?.version === null ? head.remote.tombstone : undefined;
+  return tombstone !== undefined ? { ...shared, tombstone } : shared;
 }
 
 /** The mutation options a resolution honours when it authors a fresh local edit. */
@@ -922,9 +1039,13 @@ export async function resolveConflict(
   const backend = await runtimeBackend(local);
   const current = await conflictLocal(backend, review.id);
   assertJournalSnapshot(review.id, review.intents, current.intents);
-  if (current.document.version !== review.local.version || current.snapshot.raw !== review.local.content) throw new ConflictReviewStaleError();
+  const localVersion = current.document?.version ?? DELETION_VERSION;
+  const localContent = current.document ? current.snapshot.raw : DELETION_CONTENT;
+  if (localVersion !== review.local.version || localContent !== review.local.content || current.deleting !== (review.local.deleted === true)) throw new ConflictReviewStaleError();
   const shared = await readConflictRemote(remote, review.id);
-  if (shared.base.version !== review.remote.version || shared.base.content !== review.remote.content) throw new ConflictReviewStaleError();
+  const reviewedShared = reviewedRemote(shared.base, current.intents[0]!);
+  if (reviewedShared.version !== review.remote.version || reviewedShared.content !== review.remote.content || reviewedShared.tombstone !== review.remote.tombstone) throw new ConflictReviewStaleError();
+  if (current.deleting && selected.kind === "revise") throw new InvalidInputError("A deletion in conflict is resolved by keeping the deletion or taking the shared version.");
   const resolvedAt = options.now?.() ?? new Date().toISOString();
   const requestId = selected.kind === "take-remote" ? null : mintRequestId();
   const receipt: ConflictResolutionReceipt = {
@@ -936,9 +1057,25 @@ export async function resolveConflict(
   const resolveIntents = { expected: current.intents };
   const meta: MetaRecord[] = [
     { key: conflictResolutionKey(receipt.id), value: receipt },
-    { key: baseKey(review.id), value: shared.base },
+    // Someone else's deletion is never remembered as this working copy's own: a later create of
+    // the id acknowledges nothing and meets the conflict again, until an explicit keep.
+    { key: baseKey(review.id), value: { version: shared.base.version, content: shared.base.content } satisfies SharedBase },
   ];
-  const common = { expectedVersion: review.local.version, resolveIntents, meta, actor: options.actor };
+  // A deletion chain holds no working document: its compare-and-swap is on absence.
+  const common = { expectedVersion: (current.document ? review.local.version : null) as Version, resolveIntents, meta, actor: options.actor };
+  if (current.deleting && selected.kind === "keep-local") {
+    // Keep the deletion: delete again against the shared head as it is now, under a new identity.
+    // A head that is already gone has nothing to delete, so the chain simply retires.
+    if (shared.base.version === null) {
+      await backend.deleteJournaled(review.id, common);
+      return { receipt: { ...receipt, replacementRequestId: null }, version: null, intent: null };
+    }
+    const deleted = await backend.deleteJournaled(review.id, {
+      ...common,
+      intent: { requestId: requestId!, kind: DOCUMENT_DELETE_KIND, target: review.id, base: shared.base.version, baseContent: shared.base.content, createdAt: resolvedAt },
+    });
+    return { receipt, version: null, intent: deleted.outcome === "held" ? null : deleted.intent ?? null };
+  }
   if (selected.kind === "take-remote") {
     if (!shared.doc) {
       await backend.deleteJournaled(review.id, common);
@@ -947,9 +1084,13 @@ export async function resolveConflict(
     const written = await backend.writeJournaled(review.id, shared.doc, common);
     return { receipt, version: written.version, intent: null };
   }
+  // Keeping or revising over a deletion re-creates the document: the create acknowledges the
+  // deletion the review showed, and only that one (a newer one refuses it into a new conflict).
+  const recreates = shared.base.version === null ? review.remote.tombstone : undefined;
   const intent: NewIntentRecord = {
     requestId: requestId!, kind: "document.write", target: review.id,
     base: shared.base.version, baseContent: shared.base.content, createdAt: resolvedAt,
+    ...(recreates !== undefined ? { recreates } : {}),
   };
   let written: Awaited<ReturnType<JournaledBackend["writeJournaled"]>> | undefined;
   const write = async (id: ConceptId, doc: OkfDocument): Promise<Version> => {
@@ -1014,6 +1155,8 @@ async function resolveBodyConflict(
     const snap = await bodySnapshot(backend, id, mode, requestId === null ? [receiptKey] : [receiptKey, bodyRecordKey(requestId)]);
     const current = conflictChain(id, snap.read, true);
     assertJournalSnapshot(id, review.intents, current.intents);
+    // Body mode never journals a deletion, so its chain always holds a working document.
+    if (!current.document) throw new ConflictReviewStaleError();
     if (current.document.version !== review.local.version || snap.read.raw !== review.local.content) throw new ConflictReviewStaleError();
     return { snap, chain: current.intents, expectedVersion: current.document.version };
   };
@@ -1147,6 +1290,12 @@ async function remoteHead(remote: StorageBackend | undefined, id: ConceptId, act
   }
 }
 
+/** The shared head a conflict records, with the deletion the authority named when it serves none. */
+async function conflictRemote(remote: StorageBackend | undefined, id: ConceptId, outcome: Extract<Outcome, { kind: "conflict" }>): Promise<{ version: Version | null; content: string | null; tombstone?: Version }> {
+  const head = await remoteHead(remote, id, outcome.actual);
+  return head.version === null && outcome.actual === null && outcome.tombstone !== undefined ? { ...head, tombstone: outcome.tombstone } : head;
+}
+
 /**
  * Settle an in-flight intent against the authority's outcome, as one compare-and-swap on the
  * intent's state. A committed outcome marks it acknowledged and moves the document's shared
@@ -1173,6 +1322,17 @@ export async function settleIntent(
   outcome = settleAgainstIntent(outcome, current);
   switch (outcome.kind) {
     case "committed": {
+      if (current.kind === DOCUMENT_DELETE_KIND) {
+        // The document left the authority. Its version is the deletion's tombstone, which a
+        // create recorded later acknowledges; the deletion version itself says none is known.
+        const tombstone = outcome.version !== DELETION_VERSION ? outcome.version : undefined;
+        return backend.updateIntent(
+          requestId,
+          "in_flight",
+          { state: "acknowledged", attempts, acknowledgedVersion: outcome.version },
+          { meta: [baseRow(current.target, { version: null, content: null, ...(tombstone !== undefined ? { tombstone } : {}) })] },
+        );
+      }
       const finding = outcome.version === current.local ? undefined : `acknowledged version ${outcome.version} differs from local version ${current.local}`;
       return backend.updateIntent(
         requestId,
@@ -1184,8 +1344,7 @@ export async function settleIntent(
     case "conflict": {
       // What reaches this branch is a moved head: a conflict naming the intent's own version was
       // settled as committed above.
-      const remote = await remoteHead(options.remote, current.target, outcome.actual);
-      return backend.updateIntent(requestId, "in_flight", { state: "conflict", attempts, remote });
+      return backend.updateIntent(requestId, "in_flight", { state: "conflict", attempts, remote: await conflictRemote(options.remote, current.target, outcome) });
     }
     case "refused": {
       const authorization = isAuthorizationRefusal(outcome);
@@ -1306,16 +1465,18 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
       if ((await backend.readMeta<SyncControl>(SYNC_KEY))?.paused) { report.paused = true; break; }
       continue;
     }
+    let rebase: Pick<IntentRecord, "base"> | Pick<IntentRecord, "recreates"> | Record<string, never> = {};
     if (intent.after !== undefined) {
       const predecessor = await backend.readIntent(intent.after);
       if (predecessor && predecessor.state !== "acknowledged") {
         report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" });
         continue;
       }
+      if (predecessor && intent.attempts === 0) rebase = chainedPremise(intent, predecessor);
     }
     let claimed: IntentRecord;
     try {
-      claimed = await backend.updateIntent(intent.requestId, "pending", { state: "in_flight", attempts: intent.attempts + 1 });
+      claimed = await backend.updateIntent(intent.requestId, "pending", { state: "in_flight", attempts: intent.attempts + 1, ...rebase });
     } catch (error) {
       if (error instanceof IntentStateConflict) {
         report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "claimed-elsewhere" });

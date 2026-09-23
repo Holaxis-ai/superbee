@@ -403,6 +403,8 @@ export function parseSyncArgs(argv: string[]) {
           inspect: { type: "string" },
           resolve: { type: "string" },
           doc: { type: "string" },
+          "accept-deletes": { type: "string" },
+          "restore-deletes": { type: "boolean" },
         },
         allowPositionals: true,
       }),
@@ -414,8 +416,8 @@ export function parseSyncArgs(argv: string[]) {
 async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
   const { values } = parseSyncArgs(argv);
   if (values.help) return { kind: "help" };
-  if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined) {
-    throw new CliError("USAGE", "--inspect, --resolve and --doc apply to a hosted checkout; this folder is not one", {
+  if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined || values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined) {
+    throw new CliError("USAGE", "--inspect, --resolve, --doc, --accept-deletes and --restore-deletes apply to a hosted checkout; this folder is not one", {
       help: `for a Git board, see incoming changes with: ${inv} sync --show-incoming <id>`,
     });
   }

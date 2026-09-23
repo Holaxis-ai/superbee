@@ -263,27 +263,161 @@ test("a document deleted on the host while edited locally is a 'deleted remotely
   assert.equal(after.status, "up_to_date");
 });
 
-test("keep and revise on a 'deleted remotely' conflict are refused until sync can re-create; nothing is sent", async () => {
+test("keep on a file edited while the host deleted it re-creates only through the tombstone, after --inspect shows it", async () => {
   const h = await harness();
-  h.host.remove("notes/alpha");
+  const tombstone = h.host.deleteWithTombstone("notes/alpha");
   await edit(h, "notes/alpha", (doc) => void (doc.body = "Keep me.\n"));
   await failingSync(h);
   const review = await runSync(h, ["--inspect", "notes/alpha"]);
-  assert.deepEqual(Object.keys(review.choices as object), ["take"]);
-  assert.equal((review.help as string[]).length, 1);
+  assert.equal(review.reason, "deleted_remotely");
+  assert.deepEqual(Object.keys(review.choices as object).sort(), ["keep", "revise", "take"]);
   h.host.writes.length = 0;
-  for (const choice of ["keep", "revise"]) {
-    const { error } = await failingSync(h, ["--resolve", choice, "--doc", "notes/alpha"]);
-    assert.equal(error.code, "CONFLICT");
-    assert.equal(error.details?.reason, "recreate_not_available");
-    assert.match(error.help ?? "", /--resolve take/);
-  }
-  // Still a conflict on the next sync, and nothing was ever sent.
-  const again = await failingSync(h);
-  assert.equal(rowFor(again.receipt, "notes/alpha")?.reason, "deleted_remotely");
-  assert.deepEqual(writeRoutes(h), []);
+  // The replace's refusal named no tombstone, so keep journals a create that acknowledges
+  // nothing, and the host refuses it into a "deleted remotely" conflict that names the tombstone.
+  await runSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  const refused = await failingSync(h);
+  assert.equal(rowFor(refused.receipt, "notes/alpha")?.reason, "deleted_remotely");
+  assert.deepEqual(writeRoutes(h).map((call) => [call.route, call.recreate]), [["create", null]]);
+  assert.equal(h.host.docs.has("notes/alpha"), false, "never re-created without the acknowledgement");
+  // keep without an inspection of that tombstone is refused, and sends nothing.
+  const blind = await failingSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  assert.equal(blind.error.details?.reason, "not_inspected");
+  const shown = await runSync(h, ["--inspect", "notes/alpha"]);
+  assert.equal((shown.remote as { deleted_as?: string }).deleted_as, tombstone);
+  await runSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  const done = await runSync(h);
+  assert.equal(rowFor(done, "notes/alpha")?.state, "committed");
+  const creates = writeRoutes(h).filter((call) => call.route === "create");
+  assert.equal(creates.at(-1)!.recreate, tombstone, "the re-create acknowledges exactly the inspected tombstone");
+  assert.notEqual(creates.at(-1)!.requestId, creates[0]!.requestId, "under a new identity");
+  assert.equal(hostDoc(h, "notes/alpha").body, "Keep me.\n");
+});
+
+test("a stale tombstone is a conflict again, never last-writer-wins: a second delete after --inspect refuses the re-create", async () => {
+  const h = await harness();
+  const first = h.host.deleteWithTombstone("notes/alpha");
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Mine.\n"));
+  await failingSync(h);
+  await runSync(h, ["--inspect", "notes/alpha"]);
+  await runSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  await failingSync(h);
+  const shown = await runSync(h, ["--inspect", "notes/alpha"]);
+  assert.equal((shown.remote as { deleted_as?: string }).deleted_as, first);
+  // Someone re-creates and deletes it again between the inspection and the keep.
+  h.host.put("notes/alpha", { type: "Note", title: "Theirs" }, "Theirs.\n");
+  const second = h.host.deleteWithTombstone("notes/alpha");
+  await runSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  const stale = await failingSync(h);
+  assert.equal(rowFor(stale.receipt, "notes/alpha")?.reason, "deleted_remotely");
+  assert.equal(h.host.docs.has("notes/alpha"), false, "the stale acknowledgement re-created nothing");
+  assert.equal(writeRoutes(h).at(-1)!.recreate, first);
+  // The new conflict names the newer tombstone; an inspection of the old one no longer admits keep.
+  const again = await failingSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  assert.equal(again.error.details?.reason, "not_inspected");
+  const fresh = await runSync(h, ["--inspect", "notes/alpha"]);
+  assert.equal((fresh.remote as { deleted_as?: string }).deleted_as, second);
+});
+
+test("a deleted file syncs as a CAS-bound delete; the checkout's own later re-create acknowledges its tombstone", async () => {
+  const h = await harness();
+  const base = hostDoc(h, "notes/alpha").version;
+  const saved = await readFile(path.join(h.folder, "notes/alpha.md"), "utf8");
+  await unlink(path.join(h.folder, "notes/alpha.md"));
+  const receipt = await runSync(h);
+  assert.equal(receipt.status, "synced");
+  assert.deepEqual([rowFor(receipt, "notes/alpha")?.state, rowFor(receipt, "notes/alpha")?.reason], ["committed", "deleted"]);
+  const [call] = writeRoutes(h);
+  assert.equal(call!.route, "delete");
+  assert.deepEqual(call!.body, { bundleId: BUNDLE, documentId: "notes/alpha", expectedVersion: base });
+  const tombstone = h.host.latestTombstone("notes/alpha")!;
+  assert.equal(rowFor(receipt, "notes/alpha")?.version, tombstone.tombstone);
   assert.equal(h.host.docs.has("notes/alpha"), false);
-  assert.match(await readFile(path.join(h.folder, "notes/alpha.md"), "utf8"), /Keep me\./);
+  assert.equal((await runSync(h)).status, "up_to_date", "nothing more to send, and the file stays gone");
+  // Writing the file again later is this checkout re-creating its own deletion: acknowledged automatically.
+  await writeFile(path.join(h.folder, "notes/alpha.md"), saved);
+  const again = await runSync(h);
+  assert.equal(rowFor(again, "notes/alpha")?.state, "committed");
+  const create = writeRoutes(h).at(-1)!;
+  assert.deepEqual([create.route, create.recreate], ["create", tombstone.tombstone]);
+  assert.ok(h.host.docs.has("notes/alpha"));
+});
+
+test("`doc delete` in a checkout is no longer refused; the next sync sends the delete", async () => {
+  const h = await harness();
+  assert.equal(HOSTED_CHECKOUT_REFUSALS.some((row) => row.words.join(" ") === "doc delete" || row.words.join(" ") === "delete"), false);
+  const context = { home: h.home, cwd: h.cwd };
+  await assertAllowedInHostedCheckout("doc", ["delete", "notes/alpha", "--dir", h.folder], context);
+  await assertAllowedInHostedCheckout("delete", ["notes/alpha", "--dir", h.folder], context);
+});
+
+test("a lost delete answer is looked up by the same identity, and a retried no-op delete answers unchanged", async () => {
+  const h = await harness();
+  let dropped = false;
+  h.host.hook = (call) => (call.route === "delete" && !dropped ? ((dropped = true), { kind: "apply-then-drop" }) : undefined);
+  await unlink(path.join(h.folder, "notes/alpha.md"));
+  const lost = await runSync(h);
+  assert.equal(rowFor(lost, "notes/alpha")?.state, "committed", "the lookup found the recorded delete");
+  const calls = h.host.writes.map((call) => call.route);
+  assert.deepEqual(calls, ["delete", "outcome"]);
+  assert.equal(h.host.writes[0]!.requestId, h.host.writes[1]!.requestId);
+  assert.equal(h.host.tombstones.get("notes/alpha")!.length, 1);
+});
+
+test("a delete of a document the host changed is a conflict: keep deletes the host's version, take brings it back", async () => {
+  for (const choice of ["keep", "take"] as const) {
+    const h = await harness();
+    await unlink(path.join(h.folder, "notes/alpha.md"));
+    const theirs = h.host.put("notes/alpha", { type: "Note", title: "Alpha" }, "Changed on the host.\n");
+    const first = await failingSync(h);
+    assert.deepEqual([rowFor(first.receipt, "notes/alpha")?.state, rowFor(first.receipt, "notes/alpha")?.reason], ["conflict", "changed_remotely"]);
+    assert.ok(h.host.docs.has("notes/alpha"), "a stale delete removed nothing");
+    if (choice === "keep") {
+      // Review S2: keeping the deletion removes the host's version, so it needs a current --inspect.
+      const blind = await failingSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+      assert.equal(blind.error.details?.reason, "not_inspected");
+      assert.ok(h.host.docs.has("notes/alpha"));
+    }
+    const review = await runSync(h, ["--inspect", "notes/alpha"]);
+    assert.equal((review.local as { deleted?: boolean }).deleted, true);
+    assert.equal((review.remote as { version: string }).version, theirs);
+    const revise = await failingSync(h, ["--resolve", "revise", "--doc", "notes/alpha"]);
+    assert.equal(revise.error.details?.reason, "deletion_conflict");
+    await runSync(h, ["--resolve", choice, "--doc", "notes/alpha"]);
+    const done = await runSync(h);
+    if (choice === "keep") {
+      assert.equal(rowFor(done, "notes/alpha")?.reason, "deleted");
+      assert.equal(h.host.docs.has("notes/alpha"), false);
+      assert.equal(writeRoutes(h).at(-1)!.body.expectedVersion, theirs);
+    } else {
+      assert.equal(done.status, "up_to_date");
+      assert.match(await readFile(path.join(h.folder, "notes/alpha.md"), "utf8"), /Changed on the host\./);
+      assert.ok(h.host.docs.has("notes/alpha"));
+    }
+  }
+});
+
+test("deleting most of the checkout at once is held as a whole, as pull bounds deletions; nothing is sent", async () => {
+  const host = new FakeHost();
+  for (let index = 0; index < 10; index += 1) host.put(`bulk/n${index}`, { type: "Note", title: `N${index}` }, "x\n");
+  const h = await harness(host);
+  for (let index = 0; index < 10; index += 1) await unlink(path.join(h.folder, `bulk/n${index}.md`));
+  const { receipt } = await failingSync(h);
+  assert.equal(rowsOf(receipt).filter((row) => row.reason === "bulk_deletion").length, 10);
+  assert.deepEqual(writeRoutes(h), []);
+  assert.equal(h.host.docs.size >= 10, true);
+});
+
+test("deleting a linked document warns with the documents that still link to it, and never refuses", async () => {
+  const host = new FakeHost();
+  host.put("notes/linker", { type: "Note", title: "Linker" }, "See [Alpha](alpha.md).\n");
+  const h = await harness(host);
+  await unlink(path.join(h.folder, "notes/alpha.md"));
+  const receipt = await runSync(h);
+  assert.equal(rowFor(receipt, "notes/alpha")?.reason, "deleted");
+  assert.match(rowFor(receipt, "notes/alpha")!.message, /still link here: .*notes\/linker/);
+  // The fixture's plan links to alpha too.
+  assert.deepEqual((receipt.deletions as { still_linked_from?: string[] }[])[0]!.still_linked_from, ["notes/linker", "projects/2026/plan"]);
+  assert.equal(h.host.docs.has("notes/alpha"), false);
 });
 
 test("B2: a host delete of a document sync holds locally is a conflict, never a silent re-create", async () => {
@@ -300,7 +434,7 @@ test("B2: a host delete of a document sync holds locally is a conflict, never a 
   assert.deepEqual(writeRoutes(h), [], "no create is ever sent");
   assert.equal(h.host.docs.has("notes/alpha"), false);
   const keep = await failingSync(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
-  assert.equal(keep.error.details?.reason, "recreate_not_available");
+  assert.equal(keep.error.details?.reason, "not_inspected", "a re-create waits for an inspection of the deletion");
   const taken = await runSync(h, ["--resolve", "take", "--doc", "notes/alpha"]);
   assert.equal(taken.file_state, "removed");
   await assert.rejects(stat(path.join(h.folder, "notes/alpha.md")));
@@ -593,13 +727,14 @@ test("held files stay as they are and nothing is sent for them", async () => {
     "index.md": ["held", "reserved_file"],
     "notes/alpha": ["held", "type_change"],
     "notes/badstatus": ["held", "not_sendable"],
-    "notes/beta": ["held", "deleted_locally"],
+    "notes/beta": ["committed", "deleted"],
     "notes/untyped": ["held", "not_sendable"],
     "notes/image.png": ["held", "not_a_document"],
     "views/board": ["held", "convention_folder"],
   });
-  assert.deepEqual(h.host.writes, []);
-  assert.ok(h.host.docs.has("notes/beta"));
+  // The deleted file is the only thing sent: a delete of the version the file held.
+  assert.deepEqual(writeRoutes(h).map((call) => call.route), ["delete"]);
+  assert.equal(h.host.docs.has("notes/beta"), false);
 });
 
 test("a managed-only difference is not a change", async () => {
