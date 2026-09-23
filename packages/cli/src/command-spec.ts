@@ -571,6 +571,30 @@ export const CLI_COMMAND_GROUPS = [
       },
     ],
   },
+  {
+    group: "Hosted",
+    commands: [
+      {
+        id: "login",
+        leaves: [publicLeaf("login", "login", zero, 29)],
+        usage: "login [--host <url>] [--client-id <id>] [--wait [--timeout <s>] | --loopback [--port <n>] [--timeout <s>]] [--json]",
+        summary:
+          "Sign in to hosted Superbee: device sign-in by default, never blocking — without a session it returns AUTH_REQUIRED (exit 4) with one link to relay, and re-running completes it; --wait polls within a bound, --loopback uses a bounded PKCE browser redirect; the refresh token goes to the OS credential store",
+      },
+      {
+        id: "whoami",
+        leaves: [publicLeaf("whoami", "whoami", zero, 30)],
+        usage: "whoami [--host <url>] [--json]",
+        summary: "Show the local hosted session (host, issuer, subject from unverified claims, expiry, credential store, pending sign-in); never prints a token",
+      },
+      {
+        id: "logout",
+        leaves: [publicLeaf("logout", "logout", zero, 31)],
+        usage: "logout [--host <url>] [--json]",
+        summary: "Revoke the hosted refresh token, delete the local session, and cancel a pending sign-in (idempotent)",
+      },
+    ],
+  },
 ] as const satisfies readonly CommandSpecGroup[];
 
 function publicLeaves<const Groups extends readonly CommandSpecGroup[]>(groups: Groups): LeavesOf<Groups>[] {
