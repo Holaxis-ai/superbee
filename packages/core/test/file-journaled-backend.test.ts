@@ -393,6 +393,29 @@ test("compaction: the snapshot replaces the log, and every crash point reopens t
   }
 });
 
+test("compaction: when the log's fsync fails after it was emptied, later appends still start at its beginning", async () => {
+  const root = await newRoot();
+  try {
+    const plan = { failSync: true, armed: false };
+    const backend = await reopened(root, { openLog: faultyLog(plan) });
+    await populate(backend);
+    plan.armed = true;
+    await assert.rejects(backend.compact(), /injected fsync failure/);
+    const next = await backend.write("notes/gamma", doc("notes/gamma", "after a failed compaction\n"));
+    const before = await observe(backend);
+    await backend.close();
+    const again = await reopened(root);
+    try {
+      assert.deepEqual(await observe(again), before);
+      assert.equal((await again.read("notes/gamma")).version, next);
+    } finally {
+      await again.close();
+    }
+  } finally {
+    await root.cleanup();
+  }
+});
+
 test("compaction: a damaged snapshot refuses the open; a log past the threshold compacts at open", async () => {
   const root = await newRoot();
   try {

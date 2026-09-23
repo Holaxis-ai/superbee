@@ -566,10 +566,12 @@ export class FileJournaledBackend implements JournaledBackend {
       await handle.close();
       await fs.rename(temp, path.join(this.directory, FILE_JOURNAL_SNAPSHOT));
       await syncDirectory(this.directory);
-      // From here the snapshot covers every record, so a failure to empty the log costs space, not state.
+      // From here the snapshot covers every record, so a failure to empty the log costs space, not
+      // state. Once the truncation lands, the next append goes to offset zero whether or not the
+      // fsync that follows succeeds, so no append can leave a hole before its record.
       await this.#log.truncate(0);
-      await this.#log.sync();
       this.#logBytes = 0;
+      await this.#log.sync();
     });
   }
 
