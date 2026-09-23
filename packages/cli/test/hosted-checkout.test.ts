@@ -344,8 +344,6 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   const folder = path.join(h.cwd, "team");
   const context = { home: h.home, cwd: h.cwd };
   const refused: [string, string[]][] = [
-    ["doc", ["delete", "notes/alpha", "--dir", folder]],
-    ["delete", ["--doc-key", "notes/alpha.md", "--dir", folder]],
     ["doc", ["verify", "notes/alpha", "--dir", folder]],
     ["kind", ["field", "Note", "add", "owner", "--dir", folder]],
     ["kind", ["draft", "Note", "--dir", folder]],
@@ -362,7 +360,7 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     assert.equal(error.details?.bundle_id, BUNDLE);
   }
   // From inside the folder, with no --dir, the checkout is still found.
-  const inside = await rejects(assertAllowedInHostedCheckout("doc", ["delete", "notes/alpha"], { home: h.home, cwd: path.join(folder, "notes") }));
+  const inside = await rejects(assertAllowedInHostedCheckout("doc", ["verify", "notes/alpha"], { home: h.home, cwd: path.join(folder, "notes") }));
   assert.equal(inside.code, "FORBIDDEN");
   // sync runs in a checkout (hosted sync); ui and mcp are refused because they write Views.
   await assertAllowedInHostedCheckout("sync", ["--dir", folder], context);
@@ -376,6 +374,9 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   // Everything else, help, remote targets, and other folders run unchanged.
   await assertAllowedInHostedCheckout("doc", ["update", "notes/alpha", "--title", "x", "--dir", folder], context);
   await assertAllowedInHostedCheckout("list", ["--dir", folder], context);
+  // A deletion syncs as a delete now (documents.delete.v1), so neither spelling is refused.
+  await assertAllowedInHostedCheckout("doc", ["delete", "notes/alpha", "--dir", folder], context);
+  await assertAllowedInHostedCheckout("delete", ["--doc-key", "notes/alpha.md", "--dir", folder], context);
   await assertAllowedInHostedCheckout("doc", ["delete", "--help", "--dir", folder], context);
   await assertAllowedInHostedCheckout("doc", ["delete", "x", "--remote", "http://127.0.0.1:9"], context);
   const elsewhere = await mkdtemp(path.join(tmpdir(), "sb-local-"));
@@ -387,7 +388,7 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   const serve = await rejects(assertAllowedInHostedCheckout("serve", ["--dir", folder, "--port", "0"], context));
   assert.equal(serve.details?.do_this_in, "app");
   await assertAllowedInHostedCheckout("promote", ["x.md", "--doc-key", "notes/x.md", "--dir", folder], context);
-  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 12);
+  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 10);
 });
 
 test("projection placement never overwrites: new files are exclusive, replacements are pre-image guarded", async () => {
@@ -431,7 +432,8 @@ test("built CLI: checkout is registered, and a refused command in a checkout is 
   assert.match(help.stdout, /checkout <bundle-id> \[--host <url>\]/);
   assert.match(help.stdout, /checkout --release <folder>/);
 
-  const refused = await runCli(["doc", "delete", "notes/alpha", "--dir", folder]);
+  // `doc delete` now syncs as a delete; a command sync still cannot send stays refused.
+  const refused = await runCli(["kind", "list", "--dir", folder]);
   assert.equal(refused.status, 2, refused.stdout);
   const envelope = decode(refused.stdout.trim()) as { error: { code: string; details: Record<string, unknown> } };
   assert.equal(envelope.error.code, "FORBIDDEN");

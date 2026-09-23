@@ -21,8 +21,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { commitLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
-import { assertSafeConceptId, conceptIdFromPath, InvalidInputError, isReservedFile, MalformedDocumentError, parseMarkdown, type Frontmatter, type JournaledBackend } from "@superbee/core";
+import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
+import { assertSafeConceptId, conceptIdFromPath, InvalidInputError, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, type Frontmatter, type JournaledBackend } from "@superbee/core";
 import { FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
@@ -60,6 +60,7 @@ export type HeldReason =
   | "symlink"
   | "unsafe_path"
   | "deleted_locally"
+  | "bulk_deletion"
   | "type_change"
   | "too_large"
   | "not_sendable"
@@ -73,9 +74,25 @@ export interface HeldFile {
   readonly message: string;
 }
 
+/** A document whose file was deleted and whose deletion this scan journaled, with the documents that still link to it. */
+export interface ScannedDeletion {
+  readonly id: string;
+  /** Documents in the checkout whose body links to it; the deletion does not change them (the host never cascades). */
+  readonly inbound: string[];
+}
+
+/**
+ * Deletions below this count sync on the folder's word; at or above it, and more than half the
+ * checkout's documents, they are held as a whole: the pull's own bound (browser-local
+ * `MIN_BOUNDED_DELETIONS`), so emptying a folder by mistake never empties the bundle.
+ */
+export const MIN_BOUNDED_DELETIONS = 8;
+
 export interface ScanReport {
   /** Documents whose edits were journaled by this scan. */
   readonly committed: string[];
+  /** Documents whose file deletion this scan journaled as a delete. */
+  readonly deleted: ScannedDeletion[];
   /** Documents whose only differences were managed fields. */
   readonly managedOnly: string[];
   readonly held: HeldFile[];
@@ -230,6 +247,8 @@ export function unsendable(
     if (error instanceof WholeDocumentInputError) return held(id, rel, "not_sendable", error.message);
     throw error;
   }
+  // A `document.write` is never a delete; the narrowing says so to the type checker.
+  if (request.kind === "delete") throw new Error(`'${id}' became a delete request`);
   const { frontmatter } = request.payload;
   if (Buffer.byteLength(JSON.stringify(request.payload)) > WHOLE_DOCUMENT_BOUNDS.payloadBytes) {
     return held(id, rel, "too_large", `'${id}' is over the ${WHOLE_DOCUMENT_BOUNDS.payloadBytes / 1024} KiB a sync write carries`);
@@ -251,7 +270,7 @@ export function unsendable(
  */
 export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   const { folder, local, projection } = context;
-  const report: ScanReport = { committed: [], managedOnly: [], held: [] };
+  const report: ScanReport = { committed: [], deleted: [], managedOnly: [], held: [] };
   const seen = new Set<string>();
   for (const { rel, symlink } of await walk(folder)) {
     const isMarkdown = rel.endsWith(".md");
@@ -332,19 +351,82 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     projection.files[id] = { digest, version: committed.version };
     if (committed.intent) report.committed.push(id);
   }
-  // A recorded document whose file is gone is a local deletion, which does not sync yet.
+  // A recorded document whose file is gone is a local deletion: a delete of exactly the version
+  // the file held, compare-and-swap on the host.
+  const deletions: { id: string; rel: string; version: string }[] = [];
   for (const [id, entry] of Object.entries(projection.files)) {
     if (seen.has(id) || (context.only && !context.only.has(id))) continue;
     const rel = `${id}.md`;
     if ((await readIfPresent(path.join(folder, rel))) !== null) continue;
-    if (entry.deleted || !(await local.backend.readWithJournal(id)).document) {
+    const stored = await local.backend.readWithJournal(id);
+    if (entry.deleted || !stored.document) {
       // Deleted on both sides: nothing is left to decide.
       delete projection.files[id];
       continue;
     }
-    report.held.push(held(id, rel, "deleted_locally", `${rel} was deleted; deleting a document does not sync yet`));
+    if (stored.intents.some((row) => row.state === "conflict")) {
+      report.held.push(held(id, rel, "deleted_locally", `${rel} was deleted while '${id}' has a conflict to resolve; resolve it first`));
+      continue;
+    }
+    if (stored.document.version !== entry.version) {
+      // The store moved past the version the file held (a pull refreshed it while the file was
+      // gone): the person deleted a version the host no longer has. Deleting the newer one would
+      // remove a change they never saw, so the host's version is placed back instead.
+      delete projection.files[id];
+      report.held.push(held(id, rel, "deleted_locally", `${rel} was deleted, but the host changed '${id}' since; its current version is placed back in the folder, and deleting the file again deletes it`));
+      continue;
+    }
+    deletions.push({ id, rel, version: entry.version });
   }
+  const documents = Object.keys(projection.files).length;
+  if (deletions.length >= MIN_BOUNDED_DELETIONS && deletions.length * 2 > documents) {
+    for (const { id, rel } of deletions) {
+      report.held.push(held(id, rel, "bulk_deletion", `${rel} is one of ${deletions.length} files deleted at once, more than half of the ${documents} documents in the checkout; sync never deletes that many from the host at once. Restore the files, or delete fewer than ${MIN_BOUNDED_DELETIONS} per sync`));
+    }
+    return report;
+  }
+  for (const { id, rel, version } of deletions) {
+    try {
+      await deleteLocal(local, id, { expectedVersion: version });
+    } catch (error) {
+      if (error instanceof InvalidInputError) {
+        report.held.push(held(id, rel, "deleted_locally", `${rel} was deleted, but sync cannot delete '${id}' now: ${error.message}`));
+        continue;
+      }
+      throw error;
+    }
+    delete projection.files[id];
+    report.deleted.push({ id, inbound: [] });
+  }
+  const inbound = await inboundLinks(local.backend, report.deleted.map((row) => row.id), context.okfVersion);
+  for (const row of report.deleted) row.inbound.push(...(inbound.get(row.id) ?? []));
   return report;
+}
+
+/**
+ * The documents the store holds that link to each of `ids`. The host never checks or cascades
+ * links, so a person deleting a linked document is warned, never refused (design binding
+ * decision 2).
+ */
+export async function inboundLinks(store: JournaledBackend, ids: Iterable<string>, okfVersion?: "0.1" | "0.2"): Promise<Map<string, string[]>> {
+  const byId = new Map<string, string[]>([...ids].map((id) => [id, []]));
+  if (byId.size === 0) return byId;
+  const rows = await store.readHeads({ project: (head) => ({ id: head.id, raw: head.raw }) });
+  for (const { id, raw } of rows) {
+    let links;
+    try {
+      const parsed = parseMarkdown(raw, id, { okfVersion });
+      links = parseLinksFromDoc({ id, frontmatter: parsed.frontmatter, body: parsed.body });
+    } catch {
+      continue;
+    }
+    for (const link of links) {
+      const inbound = byId.get(link.to);
+      if (inbound && link.to !== id && !inbound.includes(id)) inbound.push(id);
+    }
+  }
+  for (const inbound of byId.values()) inbound.sort();
+  return byId;
 }
 
 export interface ExportReport {

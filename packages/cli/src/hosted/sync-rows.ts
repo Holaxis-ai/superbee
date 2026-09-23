@@ -68,7 +68,9 @@ function waitingRow(id: string, pausedBy: SyncRow | null, notSent: NotSentReason
 
 export const CHANGED_REMOTELY_MESSAGE = "The document also changed on the host. Nothing was merged or sent. Inspect it, then keep yours, take theirs, or revise.";
 export const DELETED_REMOTELY_MESSAGE =
-  "The document was deleted on the host while you changed it. Nothing was sent. Inspect it, then take the deletion; re-creating it is done in the Superbee app until sync can re-create a deleted document.";
+  "The document was deleted on the host while you changed it. Nothing was sent. Inspect it, then take the deletion, or keep your version to re-create it.";
+export const CHANGED_WHILE_DELETED_MESSAGE =
+  "The document changed on the host while you deleted it. Nothing was deleted. Inspect it, then keep your deletion (it deletes the host's current version) or take the host's version back.";
 const FOLDER_CHANGED_MESSAGE =
   "The file was edited while the host changed this document (during a sync, or while sync held the file). Nothing was merged or sent. Inspect it, then keep your file, take the host's version, or revise.";
 
@@ -79,6 +81,8 @@ export interface RowInputs {
   readonly unsettled: readonly IntentRecord[];
   /** Documents the host acknowledged in this run, with the committed version. */
   readonly acknowledged: ReadonlyMap<string, string>;
+  /** Of those, the deletions, with the documents that still link to each (a warning, never a refusal). */
+  readonly deleted?: ReadonlyMap<string, readonly string[]>;
   readonly held: readonly HeldFile[];
   /** Local changes the push did not offer (a create whose id differs only in case from a host document). */
   readonly blocked?: readonly HeldFile[];
@@ -105,12 +109,13 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
     switch (head.state) {
       case "conflict": {
         const deleted = head.remote !== undefined && head.remote.version === null;
+        const deleting = rows[rows.length - 1]!.kind === "document.delete";
         out.set(id, {
           id,
           state: "conflict",
           reason: deleted ? "deleted_remotely" : "changed_remotely",
           version: null,
-          message: deleted ? DELETED_REMOTELY_MESSAGE : CHANGED_REMOTELY_MESSAGE,
+          message: deleting && !deleted ? CHANGED_WHILE_DELETED_MESSAGE : deleted ? DELETED_REMOTELY_MESSAGE : CHANGED_REMOTELY_MESSAGE,
         });
         break;
       }
@@ -144,7 +149,15 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
     });
   }
   for (const [id, version] of inputs.acknowledged) {
-    if (!out.has(id)) out.set(id, { id, state: "committed", reason: "committed", version, message: "Sent and accepted." });
+    if (out.has(id)) continue;
+    const inbound = inputs.deleted?.get(id);
+    if (inbound === undefined) {
+      out.set(id, { id, state: "committed", reason: "committed", version, message: "Sent and accepted." });
+      continue;
+    }
+    const shown = inbound.slice(0, 10).join(", ");
+    const links = inbound.length === 0 ? "" : ` ${inbound.length} document(s) still link here: ${shown}${inbound.length > 10 ? ", …" : ""}.`;
+    out.set(id, { id, state: "committed", reason: "deleted", version, message: `Removed from the bundle; its history is kept on the host.${links}` });
   }
   for (const file of inputs.held) {
     const existing = out.get(file.id);

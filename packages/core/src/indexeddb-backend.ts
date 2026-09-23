@@ -34,6 +34,9 @@ import { resolveContentType } from "./content-type.js";
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
 import {
+  assertDeletionIntent,
+  deletionIntentRecord,
+  JournalSnapshotConflict,
   assertJournalGuard,
   assertJournalIntentChanges,
   assertJournalMetaChanges,
@@ -894,10 +897,14 @@ export class IndexedDbBackend implements JournaledBackend {
     options = captureJournalDeleteOptions(id, options);
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
+    assertDeletionIntent(id, options);
     const expected = options.expectedVersion;
     const { requireSettled, onHeld } = options;
     const puts = options.meta ?? [];
     const removals = options.removeMeta ?? [];
+    const intent = options.intent ? structuredClone(options.intent) : undefined;
+    const supersede = options.supersede ? { ...options.supersede } : undefined;
+    const now = new Date().toISOString();
     return this.#transact<JournaledDeleteResult>([DOCUMENTS, INTENTS, META], "readwrite", (tx, done, fail, guard) => {
       this.#checkJournalGuard(tx, options.guard, () => {
       const documents = tx.objectStore(DOCUMENTS);
@@ -920,6 +927,54 @@ export class IndexedDbBackend implements JournaledBackend {
           removal.onerror = () => fail(requestError(removal, `IndexedDB meta delete failed for '${key}'`));
         }
       };
+      // The superseded intent and the recorded deletion intent, in the same transaction as the
+      // deletion and its meta rows, as `writeJournaled` records a write's.
+      const journal = (outcome: "deleted" | "absent") => {
+        const record = (sequence: number) => {
+          if (!intent) {
+            applyMeta();
+            done({ outcome });
+            return;
+          }
+          const row = deletionIntentRecord(intent, sequence, now);
+          const counter = metaStore.put({ key: INTENT_SEQUENCE_KEY, value: sequence });
+          counter.onerror = () => fail(requestError(counter, "IndexedDB sequence write failed"));
+          const put = intents.put(row);
+          put.onerror = () => fail(requestError(put, `IndexedDB intent write failed for '${row.requestId}'`));
+          applyMeta();
+          done({ outcome, intent: row });
+        };
+        const next = () => {
+          if (!intent) {
+            record(0);
+            return;
+          }
+          request(intents.get(intent.requestId), "intent read", (taken) => {
+            if (taken !== undefined) {
+              fail(new JournalSnapshotConflict(id));
+              return;
+            }
+            request(metaStore.get(INTENT_SEQUENCE_KEY), "sequence read", (current) => {
+              const previous = (current as MetaRecord | undefined)?.value;
+              record((typeof previous === "number" ? previous : 0) + 1);
+            });
+          });
+        };
+        if (!supersede) {
+          next();
+          return;
+        }
+        request(intents.get(supersede.requestId), "intent read", (current) => {
+          const existing = current as IntentRecord | undefined;
+          if (!existing || existing.target !== id || existing.state !== supersede.expectedState || existing.attempts !== supersede.expectedAttempts) {
+            fail(new IntentStateConflict(supersede.requestId, supersede.expectedState, existing?.state ?? null));
+            return;
+          }
+          const removal = intents.delete(supersede.requestId);
+          removal.onerror = () => fail(requestError(removal, `IndexedDB intent delete failed for '${supersede.requestId}'`));
+          next();
+        });
+      };
       const deleteDocument = () => {
         request(documents.get(id), "read", (current) => {
           const record = current as DocumentRecord | undefined;
@@ -928,8 +983,7 @@ export class IndexedDbBackend implements JournaledBackend {
             return;
           }
           if (!record) {
-            applyMeta();
-            done({ outcome: "absent" });
+            journal("absent");
             return;
           }
           if (expected !== undefined && expected !== record.version) {
@@ -938,13 +992,12 @@ export class IndexedDbBackend implements JournaledBackend {
           }
           const removal = documents.delete(id);
           removal.onerror = () => fail(requestError(removal, `IndexedDB delete failed for '${id}'`));
-          applyMeta();
-          done({ outcome: "deleted" });
+          journal("deleted");
         });
       };
       if (options.resolveIntents) {
         request(intents.getAll(), "resolution snapshot", (rows) => {
-          assertJournalSnapshot(id, options.resolveIntents!.expected, rows as IntentRecord[]);
+          assertJournalSnapshot(id, options.resolveIntents!.expected, rows as IntentRecord[], intent?.requestId);
           for (const row of options.resolveIntents!.expected) {
             const removal = intents.delete(row.requestId);
             removal.onerror = () => fail(requestError(removal, "IndexedDB resolution delete failed"));

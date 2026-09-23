@@ -506,7 +506,7 @@ test("RF4 sign-in expires after some writes landed: AUTH_REQUIRED, resume sends 
   for (const id of ["notes/alpha", "notes/beta", "notes/gamma"]) assert.equal(applyCount(h, id), 1, id);
 });
 
-test("RF5 locally refused commands in a checkout: delete, Kinds, ui, mcp", async () => {
+test("RF5 locally refused commands in a checkout: Kinds, ui, mcp (a delete now syncs)", async () => {
   const h = await harness();
   const refused = async (name: string, args: string[]) => {
     try {
@@ -517,8 +517,6 @@ test("RF5 locally refused commands in a checkout: delete, Kinds, ui, mcp", async
     }
   };
   const cases: [string, string[]][] = [
-    ["doc", ["delete", "notes/alpha", "--dir", h.folder]],
-    ["delete", ["notes/alpha", "--dir", h.folder]],
     ["kind", ["add", "Thing", "--dir", h.folder]],
     ["ui", ["--dir", h.folder]],
     ["mcp", ["--dir", h.folder]],
@@ -704,12 +702,14 @@ test("FS3b a host doc two levels under a symlinked directory never creates direc
   assert.deepEqual(await readdir(outside), [], "sync created directories through a symlink, outside the checkout");
 });
 
-test("RF5b the real CLI: `doc --dir <checkout> delete <id>` must not delete a checkout file", async () => {
+// Superseded by the tombstone lane: `doc delete` in a checkout now deletes the file, and the next
+// sync sends it as a CAS-bound delete (hosted-sync.test.ts, "a deleted file syncs as a delete").
+test("RF5b the real CLI: `doc delete <id> --dir <checkout>` deletes the checkout file for sync to send", async () => {
   const h = await harness();
   const env = { ...process.env, HOME: h.home, SUPERBEE_ACTOR: "qa/probe" };
   const plain = await run(process.execPath, [SUPERBEE, "doc", "delete", "notes/alpha", "--dir", h.folder], { env }).catch((e) => e);
   const flagFirst = await run(process.execPath, [SUPERBEE, "doc", "--dir", h.folder, "delete", "notes/alpha"], { env }).catch((e) => e);
   console.log(`# RF5b plain: ${(plain.stdout ?? "") + (plain.stderr ?? "")}`.replace(/\s+/g, " ").slice(0, 250));
   console.log(`# RF5b flag-first: ${(flagFirst.stdout ?? "") + (flagFirst.stderr ?? "")}`.replace(/\s+/g, " ").slice(0, 250));
-  assert.ok(await stat(fileOf(h, "notes/alpha")).then(() => true, () => false), "the checkout file was deleted by a command the checkout must refuse");
+  assert.equal(await stat(fileOf(h, "notes/alpha")).then(() => true, () => false), false, "doc delete removes the checkout file for sync to send");
 });

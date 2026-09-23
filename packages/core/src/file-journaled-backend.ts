@@ -45,6 +45,7 @@ import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesy
 import { acquireFilesystemMutationLock, type FilesystemMutationLockOptions } from "./filesystem-lock.js";
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
 import {
+  assertDeletionIntent,
   assertJournalGuard,
   assertJournalIntentChanges,
   assertJournalMetaChanges,
@@ -57,9 +58,11 @@ import {
   captureJournalValue,
   captureJournalWriteOptions,
   captureMetaWrite,
+  deletionIntentRecord,
   IntentHoldConflict,
   IntentStateConflict,
   JournalGuardConflict,
+  JournalSnapshotConflict,
   type IntentPatch,
   type IntentRecord,
   type IntentUpdateOptions,
@@ -1043,12 +1046,15 @@ export class FileJournaledBackend implements JournaledBackend {
     options = captureJournalDeleteOptions(id, options);
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
-    const captured = structuredClone({ meta: options.meta ?? [], removeMeta: [...(options.removeMeta ?? [])], onHeld: options.onHeld, resolveIntents: options.resolveIntents });
+    assertDeletionIntent(id, options);
+    const captured = structuredClone({ meta: options.meta ?? [], removeMeta: [...(options.removeMeta ?? [])], onHeld: options.onHeld, resolveIntents: options.resolveIntents, intent: options.intent, supersede: options.supersede });
     const { guard, requireSettled } = options;
     const expected = options.expectedVersion;
+    const now = new Date().toISOString();
     return this.#mutate<JournaledDeleteResult>((state) => {
       this.#checkGuard(state, guard);
-      if (captured.resolveIntents) assertJournalSnapshot(id, captured.resolveIntents.expected, [...state.intents.values()]);
+      if (captured.resolveIntents) assertJournalSnapshot(id, captured.resolveIntents.expected, [...state.intents.values()], captured.intent?.requestId);
+      if (captured.intent && state.intents.has(captured.intent.requestId)) throw new JournalSnapshotConflict(id);
       if (requireSettled) {
         const holder = FileJournaledBackend.#holder(state, id);
         if (holder) {
@@ -1058,11 +1064,24 @@ export class FileJournaledBackend implements JournaledBackend {
       }
       const current = state.documents.get(id)?.version ?? null;
       if ((current !== null || captured.resolveIntents) && expected !== undefined && expected !== current) throw new VersionConflict(id, expected, current);
+      const { supersede } = captured;
+      if (supersede) {
+        const existing = state.intents.get(supersede.requestId);
+        if (!existing || existing.target !== id || existing.state !== supersede.expectedState || existing.attempts !== supersede.expectedAttempts)
+          throw new IntentStateConflict(supersede.requestId, supersede.expectedState, existing?.state ?? null);
+      }
       const changes: Change[] = [];
       if (current !== null) changes.push({ family: "document", key: id, value: null });
+      if (supersede) changes.push({ family: "intent", key: supersede.requestId, value: null });
       for (const row of captured.resolveIntents?.expected ?? []) changes.push({ family: "intent", key: row.requestId, value: null });
+      let record: IntentRecord | undefined;
+      if (captured.intent) {
+        const sequence = state.sequence + 1;
+        record = deletionIntentRecord(captured.intent, sequence, now);
+        changes.push({ family: "sequence", value: sequence }, { family: "intent", key: record.requestId, value: structuredClone(record) });
+      }
       changes.push(...FileJournaledBackend.#metaChanges(captured.meta, captured.removeMeta));
-      return { changes, result: { outcome: current !== null ? "deleted" : "absent" } };
+      return { changes, result: { outcome: current !== null ? "deleted" : "absent", ...(record ? { intent: record } : {}) } };
     });
   }
 

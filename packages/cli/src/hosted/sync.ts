@@ -44,7 +44,7 @@ import {
   type HostedCarrier,
   type HostedReadAdapter,
 } from "@superbee/core/hosted-transport";
-import { JournalSnapshotConflict } from "@superbee/core/journaled-backend";
+import { DOCUMENT_DELETE_KIND, JournalSnapshotConflict, type NewIntentRecord } from "@superbee/core/journaled-backend";
 import { mintRequestId, type UncertainWriteOptions } from "@superbee/core/uncertain-write";
 
 import { resolveLocalBundleTarget } from "../bundle.js";
@@ -62,6 +62,7 @@ import {
   exportCheckout,
   folderConflictFor,
   folderConflicts,
+  inboundLinks,
   readProjection,
   removeGuarded,
   scanCheckout,
@@ -91,11 +92,15 @@ comes back as a conflict row, and nothing is sent for it until you resolve it:
   --resolve take      replace your version with the host's (remove the file first to discard
                       edits made since the conflict)
   --resolve revise    send the file as it is now: edit it to the result you want first
-A document deleted on the host takes only --resolve take for now (re-create it in the app). A
-file edited while the host changed or deleted its document (during a sync, or while sync held
-it) is a conflict too; it is never sent over the host's version without --resolve.
+A deleted file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
+document's history. Deleting 8 or more files at once, more than half the checkout, is held.
+On a document deleted on the host, --resolve keep re-creates it, and only after --inspect has
+shown the deletion it re-creates; on a document you deleted that changed on the host, keep
+deletes the host's version and take brings it back. A file edited while the host changed or
+deleted its document (during a sync, or while sync held it) is a conflict too; it is never sent
+over the host's version without --resolve.
 Rows are committed, conflict, held (sync cannot send the file: reserved files, conventions/ and
-views/, a type change, a deleted file, a file over the host's bounds), refused, unknown (the
+views/, a type change, a bulk deletion, a file over the host's bounds), refused, unknown (the
 answer was lost; the next sync looks it up by the same request) and paused (sign-in, or your
 sync quota for this bundle). The exit is 0 only when every row is committed: 5 when a row needs
 your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a lost answer, and
@@ -372,8 +377,9 @@ async function withSession<T>(binding: CheckoutBinding, deps: HostedSyncDeps, re
 }
 
 /**
- * Push with creates first, then replaces, each in journal order (new link targets exist first).
- * A create in `blocked` is not offered to the push at all.
+ * Push with creates first, then replaces, then deletes, each in journal order (new link targets
+ * exist first, and a document leaves only after the edits that may repair links to it). A create
+ * in `blocked` is not offered to the push at all.
  */
 function createsFirst(store: JournaledBackend, blocked: ReadonlySet<string>): JournaledBackend {
   return new Proxy(store, {
@@ -381,7 +387,13 @@ function createsFirst(store: JournaledBackend, blocked: ReadonlySet<string>): Jo
       if (prop === "listIntents") {
         return async (state?: Parameters<JournaledBackend["listIntents"]>[0]) => {
           const rows = await inner.listIntents(state);
-          return state === "pending" ? [...rows.filter((row) => row.base === null && !blocked.has(row.target)), ...rows.filter((row) => row.base !== null)] : rows;
+          if (state !== "pending") return rows;
+          const deleting = (row: (typeof rows)[number]) => row.kind === DOCUMENT_DELETE_KIND;
+          return [
+            ...rows.filter((row) => row.base === null && !deleting(row) && !blocked.has(row.target)),
+            ...rows.filter((row) => row.base !== null && !deleting(row)),
+            ...rows.filter(deleting),
+          ];
         };
       }
       const value = Reflect.get(inner, prop, inner);
@@ -404,7 +416,17 @@ async function requeueBusy(store: JournaledBackend): Promise<number> {
     if (unsettled.some((other) => other.after === row.requestId)) continue;
     const current = await store.readWithJournal(row.target);
     const latest = current.intents.filter((intent) => intent.state !== "acknowledged").at(-1);
-    if (!current.document || latest?.requestId !== row.requestId) continue;
+    if (latest?.requestId !== row.requestId) continue;
+    const supersede = { requestId: row.requestId, expectedState: "refused" as const, expectedAttempts: row.attempts };
+    if (row.kind === DOCUMENT_DELETE_KIND) {
+      // A deletion holds no document: the same deletion, recorded again under a fresh identity.
+      if (current.document) continue;
+      const intent: NewIntentRecord = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: row.target, base: row.base, baseContent: row.baseContent, createdAt: new Date().toISOString(), ...(row.after !== undefined ? { after: row.after } : {}) };
+      await store.deleteJournaled(row.target, { intent, supersede });
+      requeued += 1;
+      continue;
+    }
+    if (!current.document) continue;
     await store.writeJournaled(row.target, current.document.doc, {
       expectedVersion: current.document.version,
       intent: {
@@ -415,8 +437,9 @@ async function requeueBusy(store: JournaledBackend): Promise<number> {
         baseContent: row.baseContent,
         createdAt: new Date().toISOString(),
         ...(row.after !== undefined ? { after: row.after } : {}),
+        ...(row.recreates !== undefined ? { recreates: row.recreates } : {}),
       },
-      supersede: { requestId: row.requestId, expectedState: "refused", expectedAttempts: row.attempts },
+      supersede,
     });
     requeued += 1;
   }
@@ -425,6 +448,8 @@ async function requeueBusy(store: JournaledBackend): Promise<number> {
 
 interface PushOutcome {
   readonly acknowledged: Map<string, string>;
+  /** Of the acknowledged documents, those whose change was a delete. */
+  readonly deleted: Set<string>;
   readonly signInRequired: boolean;
   /** The host answered 403: the grant was withdrawn, which signing in again cannot fix. */
   readonly accessWithdrawn: boolean;
@@ -459,9 +484,10 @@ async function caseCollidingCreates(store: JournaledBackend): Promise<HeldFile[]
 async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<PushOutcome> {
   const { store, local, binding, reader } = session;
   const acknowledged = new Map<string, string>();
+  const deleted = new Set<string>();
   const pending = await store.listIntents("pending");
   const refused = await store.listIntents("refused");
-  const none = { acknowledged, signInRequired: false, accessWithdrawn: false, collisions: [] as HeldFile[] };
+  const none = { acknowledged, deleted, signInRequired: false, accessWithdrawn: false, collisions: [] as HeldFile[] };
   if (pending.length === 0 && refused.length === 0) return { ...none, notSent: null };
   // A bundle whose host serves no identified writes refuses every one: say so without sending.
   if (!session.capabilities.operations) return { ...none, notSent: "read_only" };
@@ -484,7 +510,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     binding: checkoutBindingDigest(binding.checkout_id),
     intentFor: (requestId) => store.readIntent(requestId),
     remote: reader,
-    routes: { create: `${session.routes}/create`, replace: `${session.routes}/replace`, outcome: `${session.routes}/outcome` },
+    routes: { create: `${session.routes}/create`, replace: `${session.routes}/replace`, delete: `${session.routes}/delete`, outcome: `${session.routes}/outcome` },
     ...(session.okfVersion ? { okfVersion: session.okfVersion } : {}),
   });
   const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)));
@@ -495,6 +521,8 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
       if (settled.state !== "acknowledged") continue;
       const row = await store.readIntent(settled.requestId);
       acknowledged.set(settled.target, row?.acknowledgedVersion ?? "");
+      if (row?.kind === DOCUMENT_DELETE_KIND) deleted.add(settled.target);
+      else deleted.delete(settled.target);
     }
     if (report.paused) {
       const control = await store.readMeta<{ reason?: string }>("sync");
@@ -504,7 +532,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     if (pass === PUSH_PASSES - 1 || (await requeueBusy(store)) === 0) break;
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, signInRequired, accessWithdrawn: denied, notSent: null, collisions };
+  return { acknowledged, deleted, signInRequired, accessWithdrawn: denied, notSent: null, collisions };
 }
 
 /**
@@ -591,10 +619,12 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // The closing pass: a file edited during this run against a document the pull refreshed or
     // removed is a conflict now, so the run that saw it never reports itself in sync.
     const conflicts = await folderConflicts(binding.path, store, projection, session.okfVersion);
+    const inbound = await inboundLinks(store, outcome.deleted, session.okfVersion);
     const rows = buildRows({
       folderConflicts: conflicts,
       unsettled: await store.listIntents(UNSETTLED_STATES),
       acknowledged: outcome.acknowledged,
+      deleted: inbound,
       held: [...scan.held, ...exported.held],
       blocked: outcome.collisions,
       accessWithdrawn: outcome.accessWithdrawn,
@@ -609,6 +639,9 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       folder: binding.path,
       status: rows.every((row) => row.state === "committed") ? (rows.length === 0 ? "up_to_date" : "synced") : "incomplete",
       pulled: pulledView(pulled, exported.placed, exported.removed, exported.kept),
+      ...(scan.deleted.length > 0
+        ? { deletions: scan.deleted.map((row) => ({ id: row.id, ...(row.inbound.length > 0 ? { still_linked_from: row.inbound.slice(0, 20), warning: `${row.inbound.length} document(s) still link to '${row.id}'; the links are left as they are` } : {}) })) }
+        : {}),
       counts,
       rows: shown,
       ...(shown.length < rows.length ? { rows_shown: shown.length, rows_total: rows.length, rows_all: syncCommand(binding, commandFragment` --limit ${commandToken(String(rows.length))}`) } : {}),
@@ -708,15 +741,29 @@ async function assertInspectedCurrent(session: Session, id: string, conflict: Co
 }
 
 /**
- * Keeping or revising a document the host deleted would re-create it as a plain create, which the
- * host cannot tell from a new document. That waits for the "deleted remotely" tombstone and
- * delete (PR 294 gate, `designs/documents-delete-operation` section 6); until then only `take`.
+ * Keeping or revising a document the host deleted re-creates it: the create acknowledges the
+ * deletion the conflict names (`X-Superbee-Recreate`), and the host admits it only while that is
+ * the id's latest deletion. It is sent only once `--inspect` has shown the person exactly that
+ * deletion (the PR 295 QA carry-over rule, applied to re-creation): without an inspection, or
+ * after the conflict came back naming another deletion, it is refused here. A deletion made again
+ * after the inspection is refused by the host and comes back as a new conflict, never as an
+ * overwrite.
  */
-function recreateRefusal(id: string, binding: CheckoutBinding, choice: string): CliError {
-  return new CliError("CONFLICT", `'${id}' was deleted on the host; '${choice}' would re-create it, which sync cannot do yet`, {
-    details: { reason: "recreate_not_available", id, choice, file: path.join(binding.path, `${id}.md`) },
-    help: `accept the deletion with ${cliInvocation()} sync --resolve take --doc ${commandToken(id)} --dir ${commandToken(binding.path)}, or re-create the document in the Superbee app`,
-  });
+async function assertInspectedTombstone(session: Session, id: string, current: string | null, choice: string): Promise<void> {
+  const inspected = await session.store.readMeta<{ remote?: string | null; tombstone?: string | null } | null>(inspectedKey(id));
+  const inspect = `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(session.binding.path)}`;
+  if (!inspected || !("remote" in inspected)) {
+    throw new CliError("CONFLICT", `'${id}' was deleted on the host; '${choice}' re-creates it, so inspect the deletion first`, {
+      details: { reason: "not_inspected", id, choice, tombstone: current },
+      help: inspect,
+    });
+  }
+  if (inspected.remote !== null || (inspected.tombstone ?? null) !== current) {
+    throw new CliError("CONFLICT", `the host's deletion of '${id}' is not the one you inspected`, {
+      details: { reason: "stale_review", id, inspected: inspected.tombstone ?? inspected.remote ?? null, current },
+      help: inspect,
+    });
+  }
 }
 
 async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
@@ -738,13 +785,17 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
   }
   const record = await withSession(binding, deps, resumeCommand, async (session) => {
     const conflict = await conflictFor(session, id, resumeCommand);
-    await session.store.writeMeta(inspectedKey(id), { remote: remoteVersionOf(conflict) });
+    // The deletion shown with a "deleted remotely" conflict is recorded too: a re-create acknowledges exactly it.
+    const tombstone = conflict.kind === "journal" && conflict.review.remote.version === null ? conflict.review.remote.tombstone ?? null : null;
+    await session.store.writeMeta(inspectedKey(id), { remote: remoteVersionOf(conflict), tombstone });
     const sides =
       conflict.kind === "journal"
         ? {
             base: { version: conflict.review.base.version, ...preview(conflict.review.base.content) },
-            local: { version: conflict.review.local.version, ...preview(conflict.review.local.content) },
-            remote: { version: conflict.review.remote.version, ...preview(conflict.review.remote.content) },
+            local: conflict.review.local.deleted
+              ? { version: null, deleted: true, ...preview(null) }
+              : { version: conflict.review.local.version, ...preview(conflict.review.local.content) },
+            remote: { version: conflict.review.remote.version, ...(tombstone !== null ? { deleted_as: tombstone } : {}), ...preview(conflict.review.remote.content) },
           }
         : {
             base: { version: null, ...preview(null) },
@@ -759,22 +810,31 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
     const doc = commandToken(id);
     const dir = commandToken(binding.path);
     const take = `${cliInvocation()} sync --resolve take --doc ${doc} --dir ${dir}`;
+    const keep = `${cliInvocation()} sync --resolve keep --doc ${doc} --dir ${dir}`;
+    const revise = `${cliInvocation()} sync --resolve revise --doc ${doc} --dir ${dir}`;
+    const deleting = conflict.kind === "journal" && conflict.review.local.deleted === true;
     return {
       conflict: id,
       file: path.join(binding.path, `${id}.md`),
       reason: conflict.kind === "journal" ? (conflict.deleted ? "deleted_remotely" : "changed_remotely") : conflict.reason,
       ...sides,
       ...(out !== undefined ? { remote_written_to: out } : {}),
-      choices: conflict.deleted
-        ? { take: "accept the deletion: the file is removed (re-creating the document is done in the Superbee app)" }
-        : {
-            keep: "send your version against the host's current one",
-            take: "replace your version with the host's",
-            revise: "edit the file to the result you want, then send it as it is",
-          },
-      help: conflict.deleted
-        ? [take]
-        : [`${cliInvocation()} sync --resolve keep --doc ${doc} --dir ${dir}`, take, `${cliInvocation()} sync --resolve revise --doc ${doc} --dir ${dir}`],
+      choices: deleting
+        ? conflict.deleted
+          ? { keep: "keep your deletion: the host has no version left, so nothing is sent", take: "accept the host's state: nothing is sent" }
+          : { keep: "keep your deletion: delete the host's current version", take: "bring the host's version back into the folder" }
+        : conflict.deleted
+          ? {
+              take: "accept the deletion: the file is removed",
+              keep: "re-create the document from your version; it re-creates exactly the deletion shown here",
+              revise: "edit the file to the result you want, then re-create the document from it",
+            }
+          : {
+              keep: "send your version against the host's current one",
+              take: "replace your version with the host's",
+              revise: "edit the file to the result you want, then send it as it is",
+            },
+      help: deleting ? [keep, take] : conflict.deleted ? [take, keep, revise] : [keep, take, revise],
     };
   });
   deps.stdout(render(record, mode));
@@ -806,8 +866,10 @@ async function resolveFolder(session: Session, id: string, choice: "keep" | "tak
     projection.files[id] = { digest: digestOf(next), version: current.document!.version };
     return "replaced";
   }
-  if (conflict.deleted) throw recreateRefusal(id, binding, choice);
   // An explicit decision to send the file over the host's current version: journaled against it.
+  // Over a deletion it is a create that acknowledges nothing (the folder never saw the deletion's
+  // tombstone), so the host refuses it and it comes back as a "deleted remotely" conflict naming
+  // the deletion, to inspect and keep.
   await assertSendable(session, id, file, conflict.bytes, resumeCommand);
   const parsed = parseMarkdown(conflict.bytes.toString("utf8"), id, { okfVersion: session.okfVersion });
   let committed;
@@ -832,9 +894,18 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
     await assertInspectedCurrent(session, id, conflict);
     let fileState: string;
     if (conflict.kind === "folder") {
+      // A folder conflict knows no tombstone; its re-create still waits for an inspection of the deletion.
+      if (conflict.deleted && choice !== "take") await assertInspectedTombstone(session, id, null, choice);
       fileState = await resolveFolder(session, id, choice, conflict, resumeCommand);
     } else {
-      if (conflict.deleted && choice !== "take") throw recreateRefusal(id, binding, choice);
+      const deleting = conflict.review.local.deleted === true;
+      if (deleting && choice === "revise") {
+        throw new CliError("USAGE", `'${id}' is your deletion in conflict; keep the deletion or take the host's version`, {
+          details: { reason: "deletion_conflict", id },
+          help: `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(binding.path)}`,
+        });
+      }
+      if (conflict.deleted && !deleting && choice !== "take") await assertInspectedTombstone(session, id, conflict.review.remote.tombstone ?? null, choice);
       const bytes = await readIfPresent(file);
       const entry = projection.files[id];
       const edited = bytes !== null && digestOf(bytes) !== entry?.digest;
@@ -846,7 +917,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
             : `remove ${file} to discard your edits, then re-run: ${resumeCommand}`,
         });
       }
-      if (choice === "keep" && bytes === null) {
+      if (choice === "keep" && bytes === null && !deleting) {
         throw new CliError("CONFLICT", `${file} was deleted, so there is no version of yours to keep`, {
           details: { reason: "file_deleted", id, file },
           help: `${cliInvocation()} sync --resolve take --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`,

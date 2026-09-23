@@ -2,11 +2,19 @@
  * The sync delivery side: an {@link OperationTransport} that pushes one whole document per
  * request. The intent's kind names the operation and its base must agree with it
  * ({@link WHOLE_DOCUMENT_INTENT_KINDS}): a create (`documents.create.v1`, create-only) has no
- * base, and a replace (`documents.replace.v1`) is against exactly the intent's base, so the host's
+ * base, a replace (`documents.replace.v1`) is against exactly the intent's base, and a delete
+ * (`documents.delete.v1`) removes the document at exactly the intent's base, so the host's
  * compare-and-swap decides every concurrent change to one document and never merges it. Any other
- * kind (a delete, a body update) or a kind its base contradicts is refused before anything is
- * sent, and never mapped to a create or a replace. The managed fields the host owns are stripped
- * before sending; the host carries them from the stored document.
+ * kind (a body update) or a kind its base contradicts is refused before anything is sent, and
+ * never mapped to another operation. The managed fields the host owns are stripped before
+ * sending; the host carries them from the stored document.
+ *
+ * A deleted document leaves a tombstone on the host. A create of that id is refused as a
+ * `version_conflict` naming the tombstone unless it acknowledges exactly the id's latest one
+ * (`X-Superbee-Recreate`), and the refusal comes back as the "deleted remotely" conflict carrying
+ * the tombstone (`{ kind: "conflict", actual: null, tombstone }`). The acknowledgement is sent
+ * only when the intent says so ({@link OperationIntent.recreates}); a stale one is refused again
+ * and comes back as a fresh conflict naming the newer tombstone, never as last-writer-wins.
  *
  * Every answer is mapped by the shared rows in `answer-rows.ts`, with one difference a
  * create-only write needs: `document_exists` is a conflict against the served head, because a
@@ -35,7 +43,9 @@ import {
   type AuthorizationCode,
   type WriteFailure,
 } from "./answer-rows.js";
-import { HostedCarrierError, type HostedAnswer, type HostedCarrier } from "./carrier.js";
+import { DELETE_OPERATION_ID } from "./answer-rows.js";
+import { HostedCarrierError, type HostedAnswer, type HostedCarrier, type HostedRequestOptions } from "./carrier.js";
+import { isContentVersion } from "../version-transport.js";
 import { OPERATIONS_RETENTION_SKEW_MS, type HostedReadAdapter } from "./read-adapter.js";
 
 /** Frontmatter the host owns; no caller may set it, and the host carries it from the stored document. */
@@ -60,31 +70,39 @@ export const WHOLE_DOCUMENT_BOUNDS = Object.freeze({
 export interface WholeDocumentRoutes {
   create: string;
   replace: string;
+  delete: string;
   outcome: string;
 }
 
 export const SYNC_WRITE_ROUTES: WholeDocumentRoutes = Object.freeze({
   create: "/sync/v1/create",
   replace: "/sync/v1/replace",
+  delete: "/sync/v1/delete",
   outcome: "/sync/v1/outcome",
 });
 
-const OPERATION_IDS = { create: "documents.create.v1", replace: "documents.replace.v1" } as const;
+const OPERATION_IDS = { create: "documents.create.v1", replace: "documents.replace.v1", delete: DELETE_OPERATION_ID } as const;
 
-/** The exact kernel input one intent becomes, and the route and operation it goes to. */
+/**
+ * The exact kernel input one intent becomes, and the route and operation it goes to. A create
+ * that re-creates a deleted document carries the tombstone it acknowledges in `recreates`, which
+ * rides the `X-Superbee-Recreate` header, never the body.
+ */
 export type WholeDocumentRequest =
-  | { kind: "create"; operationId: "documents.create.v1"; payload: { bundleId: string; documentId: string; expectAbsent: true; frontmatter: Frontmatter; body: string } }
-  | { kind: "replace"; operationId: "documents.replace.v1"; payload: { bundleId: string; documentId: string; expectedVersion: Version; frontmatter: Frontmatter; body: string } };
+  | { kind: "create"; operationId: "documents.create.v1"; payload: { bundleId: string; documentId: string; expectAbsent: true; frontmatter: Frontmatter; body: string }; recreates?: Version }
+  | { kind: "replace"; operationId: "documents.replace.v1"; payload: { bundleId: string; documentId: string; expectedVersion: Version; frontmatter: Frontmatter; body: string } }
+  | { kind: "delete"; operationId: typeof DELETE_OPERATION_ID; payload: { bundleId: string; documentId: string; expectedVersion: Version } };
 
 /**
  * The intent kinds this transport sends, each with the base it requires. `document.write` is the
- * working-copy engine's whole-document write, a create exactly when it has no base. Every other
- * kind, `document.delete` included, is unsupported: it is refused without sending, never
- * routed by its base.
+ * working-copy engine's whole-document write, a create exactly when it has no base.
+ * `document.delete` removes the document at exactly its base, so it requires one. Every other
+ * kind is unsupported: it is refused without sending, never routed by its base.
  */
-export const WHOLE_DOCUMENT_INTENT_KINDS: Readonly<Record<string, "create" | "replace" | "by-base">> = Object.freeze({
+export const WHOLE_DOCUMENT_INTENT_KINDS: Readonly<Record<string, "create" | "replace" | "delete" | "by-base">> = Object.freeze({
   "document.create": "create",
   "document.replace": "replace",
+  "document.delete": "delete",
   "document.write": "by-base",
 });
 
@@ -102,14 +120,22 @@ export class WholeDocumentInputError extends Error {
   }
 }
 
-/** The operation an intent's kind names, refused when the kind is unsupported or its base disagrees. */
-function operationOf(intent: Pick<OperationIntent, "kind" | "target" | "base">): "create" | "replace" {
+/**
+ * The operation an intent's kind names, refused when the kind is unsupported, its base
+ * disagrees, or it carries a re-create acknowledgement that is not a create's.
+ */
+function operationOf(intent: Pick<OperationIntent, "kind" | "target" | "base" | "recreates">): "create" | "replace" | "delete" {
   const declared = Object.hasOwn(WHOLE_DOCUMENT_INTENT_KINDS, intent.kind) ? WHOLE_DOCUMENT_INTENT_KINDS[intent.kind] : undefined;
   if (declared === undefined) throw new WholeDocumentInputError(`'${intent.target}' is a '${intent.kind}' intent, which this transport does not send`, "unsupported_operation");
   const byBase = intent.base === null ? "create" : "replace";
-  if (declared !== "by-base" && declared !== byBase)
+  const operation = declared === "by-base" ? byBase : declared;
+  if ((operation === "delete" && intent.base === null) || (operation !== "delete" && operation !== byBase))
     throw new WholeDocumentInputError(`'${intent.target}' is a '${intent.kind}' intent that ${intent.base === null ? "has no base" : "has a base"}`, "unsupported_operation");
-  return byBase;
+  if (intent.recreates !== undefined) {
+    if (operation !== "create") throw new WholeDocumentInputError(`'${intent.target}' acknowledges a deletion, which only a create re-creating it may`, "unsupported_operation");
+    if (!isContentVersion(intent.recreates)) throw new WholeDocumentInputError(`'${intent.target}' acknowledges a deletion that is not a version`);
+  }
+  return operation;
 }
 
 function jsonPure(value: unknown): boolean {
@@ -127,8 +153,10 @@ function jsonPure(value: unknown): boolean {
  * whose frontmatter is not plain JSON (a date object, say) is refused here, because sending it
  * would change what it says.
  */
-export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationIntent, "kind" | "target" | "base" | "content">, okfVersion?: string): WholeDocumentRequest {
+export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationIntent, "kind" | "target" | "base" | "content" | "recreates">, okfVersion?: string): WholeDocumentRequest {
   const operation = operationOf(intent);
+  // A delete names the version that leaves and nothing else: its content is never read or sent.
+  if (operation === "delete") return { kind: "delete", operationId: OPERATION_IDS.delete, payload: { bundleId, documentId: intent.target, expectedVersion: intent.base! } };
   let parsed: { frontmatter: Frontmatter; body: string };
   try {
     parsed = parseMarkdown(intent.content, intent.target, { okfVersion });
@@ -149,7 +177,12 @@ export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationInt
   const common = { bundleId, documentId: intent.target, frontmatter, body: parsed.body };
   // `operationOf` has already bound the operation to the base: a create has none, a replace has one.
   return operation === "create" || intent.base === null
-    ? { kind: "create", operationId: OPERATION_IDS.create, payload: { bundleId, documentId: intent.target, expectAbsent: true, frontmatter, body: parsed.body } }
+    ? {
+        kind: "create",
+        operationId: OPERATION_IDS.create,
+        payload: { bundleId, documentId: intent.target, expectAbsent: true, frontmatter, body: parsed.body },
+        ...(intent.recreates !== undefined ? { recreates: intent.recreates } : {}),
+      }
     : { kind: "replace", operationId: OPERATION_IDS.replace, payload: { ...common, expectedVersion: intent.base } };
 }
 
@@ -183,16 +216,17 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
 
   /**
    * The served head as the conflict a refusal stands for. Absent, it is a conflict against no
-   * document, except for a create that found the document (`absentIs: "unknown"`): its
-   * follow-up read finding none raced a deletion, there is no concurrent content to conflict
-   * with, so the outcome is unknown and the next push looks the identity up and, finding it
-   * absent, creates again.
+   * document ("deleted remotely"), carrying `tombstone` when the refusal named one; except for a
+   * create that found the document (`absentIs: "unknown"`): its follow-up read finding none raced
+   * a deletion, there is no concurrent content to conflict with, so the outcome is unknown and the
+   * next push looks the identity up and, finding it absent, creates again.
    */
-  async function servedHead(intent: OperationIntent, absentIs: "conflict" | "unknown" = intent.base === null ? "unknown" : "conflict"): Promise<Outcome> {
+  async function servedHead(intent: OperationIntent, absentIs: "conflict" | "unknown" = intent.base === null ? "unknown" : "conflict", tombstone?: Version): Promise<Outcome> {
     try {
       return { kind: "conflict", actual: (await remote.read(intent.target)).version };
     } catch (error) {
-      if ((error as { code?: unknown } | undefined)?.code === "ENOENT") return absentIs === "unknown" ? UNKNOWN : { kind: "conflict", actual: null };
+      if ((error as { code?: unknown } | undefined)?.code === "ENOENT")
+        return absentIs === "unknown" ? UNKNOWN : { kind: "conflict", actual: null, ...(tombstone !== undefined ? { tombstone } : {}) };
       return UNKNOWN;
     }
   }
@@ -212,10 +246,12 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     if (error.code === "document_exists" && intent.base === null) return servedHead(intent);
     if (error.code === "document_not_found") return { kind: "conflict", actual: null };
     // A create's version conflict may name a tombstone, which no read serves, so it is never
-    // trusted as a remote version: the served head decides, and an absent head is a conflict
-    // against no document ("deleted remotely"), never unknown, or the identity would loop
-    // between lookup and resubmission.
-    if (error.code === "version_conflict" && intent.base === null) return servedHead(intent, "conflict");
+    // trusted as a remote version: the served head decides. An absent head is a conflict against
+    // no document ("deleted remotely") that carries the tombstone for a deliberate re-create,
+    // never unknown, or the identity would loop between lookup and resubmission. A re-create
+    // whose acknowledgement went stale (another deletion since) lands here too, naming the newer
+    // tombstone: a conflict again, never a silent overwrite.
+    if (error.code === "version_conflict" && intent.base === null) return servedHead(intent, "conflict", error.currentVersion);
     if (error.code === "version_conflict") return error.currentVersion === undefined ? servedHead(intent) : { kind: "conflict", actual: error.currentVersion };
     const row = UPDATE_ANSWER_ROWS.find((candidate) => candidate.answer === `200 ${error.code}`) ?? updateRow("200 other");
     return row.code ? denial(row.code, error.message) : { kind: "refused", code: error.code, message: error.message };
@@ -229,6 +265,25 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     return { request, body };
   }
 
+  /** The identity headers of a write and of its lookup: the same, including a create's acknowledgement. */
+  function identity(intent: OperationIntent, request: WholeDocumentRequest, maximum: number): HostedRequestOptions {
+    return { maximum, writeRequest: intent.requestId, binding, ...(request.kind === "create" && request.recreates !== undefined ? { recreate: request.recreates } : {}) };
+  }
+
+  /**
+   * A delete whose identity the host no longer holds (absent past retention) is settled by
+   * reading the document back (review S5): absent, it is settled as removed with no tombstone
+   * known (committed at the intent's own `local`, the deletion version); present at any version,
+   * even the one it was deleted at (a same-bytes re-create), it is a conflict, never resent.
+   */
+  async function deleteReadBack(intent: OperationIntent): Promise<Outcome> {
+    try {
+      return { kind: "conflict", actual: (await remote.read(intent.target)).version };
+    } catch (error) {
+      return (error as { code?: unknown } | undefined)?.code === "ENOENT" ? { kind: "committed", version: intent.local } : UNKNOWN;
+    }
+  }
+
   async function lookupIntent(intent: OperationIntent): Promise<Outcome | null> {
     let request: WholeDocumentRequest;
     try {
@@ -238,7 +293,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     }
     let answer: HostedAnswer;
     try {
-      answer = await carrier.json(routes.outcome, request.payload, lifetime, { maximum: WHOLE_DOCUMENT_BOUNDS.outcomeAnswerBytes, writeRequest: intent.requestId, binding });
+      answer = await carrier.json(routes.outcome, request.payload, lifetime, identity(intent, request, WHOLE_DOCUMENT_BOUNDS.outcomeAnswerBytes));
     } catch {
       throw new HostedOutcomeError("unavailable");
     }
@@ -252,7 +307,8 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
         // An identity the host already expired looks absent too; past the window, less the skew
         // margin, absence is no longer evidence that the request never arrived.
         const trusted = (await remote.operationsRetentionMs()) - OPERATIONS_RETENTION_SKEW_MS;
-        return now() - Date.parse(intent.createdAt) > trusted ? UNKNOWN : null;
+        if (now() - Date.parse(intent.createdAt) <= trusted) return null;
+        return request.kind === "delete" ? deleteReadBack(intent) : UNKNOWN;
       }
       case "pending":
         return null;
@@ -260,6 +316,13 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
         return settleRecorded(intent, outcome.result);
       case "committed": {
         const { result, content } = outcome;
+        if (request.kind === "delete") {
+          // The recorded delete must be of exactly this base; `changed` is the host's
+          // classification (false: it had already left at this base) and either is a commit.
+          if (content !== null || result.data.deletedVersion !== intent.base) throw new HostedOutcomeError("contradiction");
+          return { kind: "committed", version: result.data.version };
+        }
+        if (content === null) throw new HostedOutcomeError("contradiction");
         const changed = intent.base === null || intent.base !== content.version;
         if (result.data.version !== content.version || result.data.changed !== changed) throw new HostedOutcomeError("contradiction");
         return { kind: "committed", version: content.version };
@@ -278,17 +341,16 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     const { request } = prepared;
     let answer: HostedAnswer;
     try {
-      answer = await carrier.json(routes[request.kind], request.payload, requestSignal(submitOptions.signal), {
-        maximum: WHOLE_DOCUMENT_BOUNDS.answerBytes,
-        writeRequest: intent.requestId,
-        binding,
-      });
+      answer = await carrier.json(routes[request.kind], request.payload, requestSignal(submitOptions.signal), identity(intent, request, WHOLE_DOCUMENT_BOUNDS.answerBytes));
     } catch (error) {
       // A credential that was already gone sent nothing; anything else may have left.
       if (error instanceof HostedCarrierError && error.code === "denied") return denial("AUTH_REQUIRED", "No credential was available; the change was not sent.");
       return UNKNOWN;
     }
     const { row, result } = classifyWriteAnswer(answer, { operationIds: [request.operationId], documentId: intent.target, bundleId });
+    // A delete's success, `changed` or not, is the document gone at exactly this base, and its
+    // version is the tombstone. One naming another base is not evidence about this request.
+    if (result?.ok && request.kind === "delete" && result.data.deletedVersion !== intent.base) return UNKNOWN;
     if (result?.ok) return { kind: "committed", version: result.data.version };
     if (result && !result.ok && result.error.code === "request_capacity") return capacity(result.error);
     // The carrier refuses a malformed identity or binding before sending, so a 400 here, and any

@@ -25,7 +25,16 @@ export interface HostedRequestOptions {
    * checkout's digest. The carrier decides which header carries it.
    */
   binding?: string;
+  /**
+   * The tombstone a create acknowledges it re-creates (`X-Superbee-Recreate`), on a create and
+   * on that create's outcome lookup only. It is part of the request identity on the host, so a
+   * lookup must carry exactly what the write carried.
+   */
+  recreate?: string;
 }
+
+/** The header that carries {@link HostedRequestOptions.recreate}. */
+export const RECREATE_HEADER = "X-Superbee-Recreate";
 
 export interface HostedCarrier {
   json(path: string, input: unknown, signal: AbortSignal, options: HostedRequestOptions): Promise<HostedAnswer>;
@@ -147,9 +156,11 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
     async json(path, input, signal, request) {
       if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
       if (request.binding !== undefined && !BINDING.test(request.binding)) throw new HostedCarrierError("denied");
+      if (request.recreate !== undefined && !BINDING.test(request.recreate)) throw new HostedCarrierError("denied");
       const extra: Record<string, string> = {};
       if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
       if (request.binding !== undefined) extra[bindingHeader] = request.binding;
+      if (request.recreate !== undefined) extra[RECREATE_HEADER] = request.recreate;
       const deadline = AbortSignal.timeout(deadlineMs);
       const response = await send(path, input, signal, extra, deadline);
       let body: unknown;

@@ -18,8 +18,11 @@
 
 import type { Version } from "./types.js";
 
-/** The operation an intent performs. Only document writes exist today; the union is open. */
-export type OperationKind = "document.write" | (string & {});
+/**
+ * The operation an intent performs: a whole-document write, or `document.delete` (the document
+ * leaves at exactly the intent's base). The union is open.
+ */
+export type OperationKind = "document.write" | "document.delete" | (string & {});
 
 /**
  * The journal states of an intent. `unknown` is the primitive's own classification of an
@@ -35,6 +38,15 @@ export interface OperationIntent {
   kind: OperationKind;
   /** The target the operation applies to; a concept id for `document.write`. */
   target: string;
+  /**
+   * The tombstone a create acknowledges it re-creates: the id's latest deletion, as the
+   * authority named it. Set only by an explicit decision to re-create a deleted document (the
+   * caller's own observed delete, or `keep` on a "deleted remotely" conflict), and only on a
+   * create recorded after that decision; never inferred by a transport. An authority whose latest
+   * deletion of the id is another one refuses the create, and the refusal comes back as a
+   * conflict.
+   */
+  recreates?: Version;
   /** The shared version the local edit was made against, or `null` for a create. */
   base: Version | null;
   /** The content-addressed version of `content`. */
@@ -54,7 +66,13 @@ export interface OperationIntent {
 /** The authority's answer for one request identity. */
 export type Outcome =
   | { kind: "committed"; version: Version }
-  | { kind: "conflict"; actual: Version | null }
+  /**
+   * The shared head moved. `actual` is the version the authority serves now, or `null` when it
+   * serves none ("deleted remotely"). With `actual: null`, `tombstone` names the deletion the
+   * authority reported, when it reported one: the acknowledgement a deliberate re-create sends.
+   * It is never a version any read serves, so it is never a base or a remote version.
+   */
+  | { kind: "conflict"; actual: Version | null; tombstone?: Version }
   | { kind: "refused"; code: string; message: string }
   | { kind: "unknown" };
 
