@@ -5,14 +5,14 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fork, type ChildProcess } from "node:child_process";
+import { fork, spawnSync, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { FilesystemMutationLockError } from "../src/filesystem-lock.js";
-import { filesystemPushRoleLocks, processStartedAtFromPs, PushRoleStaleOwnerError, pushRoleLockKey, type PushRoleLockManager } from "../src/filesystem-push-role.js";
+import { filesystemPushRoleLocks, processStartedAtFromPs, psEnvironment, PushRoleStaleOwnerError, pushRoleLockKey, type PushRoleLockManager } from "../src/filesystem-push-role.js";
 import { hostname } from "node:os";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -133,6 +133,29 @@ test("the host reports this process's start time no later than now and no earlie
   assert.ok(started !== null);
   const expected = Date.now() - process.uptime() * 1000;
   assert.ok(Math.abs(started - expected) < 5_000, `ps says ${new Date(started).toISOString()}, uptime says ${new Date(expected).toISOString()}`);
+});
+
+test("a process whose TZ differs from the system zone still reads its own start time correctly", () => {
+  // `ps` formats the start time in its TZ and the caller parses it in its own; with TZ dropped
+  // from the child environment the two disagree by the zones' offset.
+  const systemOffset = new Date().getTimezoneOffset();
+  const zone = systemOffset === -14 * 60 ? "Etc/GMT+12" : "Pacific/Kiritimati";
+  const moduleUrl = new URL("../src/filesystem-push-role.ts", import.meta.url).href;
+  const loader = new URL("./ts-loader.mjs", import.meta.url).href;
+  const probe = `const { processStartedAtFromPs } = await import(${JSON.stringify(moduleUrl)});
+const started = await processStartedAtFromPs(process.pid);
+const expected = Date.now() - process.uptime() * 1000;
+process.stdout.write(JSON.stringify({ started, expected }));`;
+  const run = spawnSync(process.execPath, ["--import", loader, "--input-type=module", "-e", probe], {
+    env: { ...process.env, TZ: zone },
+    encoding: "utf8",
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const { started, expected } = JSON.parse(run.stdout) as { started: number | null; expected: number };
+  assert.ok(started !== null);
+  assert.ok(Math.abs(started - expected) < 5_000, `in TZ=${zone} ps says ${new Date(started).toISOString()}, uptime says ${new Date(expected).toISOString()}`);
+  assert.equal(psEnvironment({ TZ: zone, LANG: "fr_FR.UTF-8" }).TZ, zone);
+  assert.equal(psEnvironment({ TZ: zone, LANG: "fr_FR.UTF-8" }).LC_ALL, "C");
 });
 
 test("role names map to distinct fixed-length keys", () => {
