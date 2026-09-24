@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "check:package-versions": "node scripts/package-version-preflight.mjs",
+    "check:node-policy": "node scripts/node-runtime-policy.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "npm run build -w @superbee/core -w @superbee/browser-local -w @superbee/board-git -w @superbee/server -w @superbee/view-runtime -w @superbee/ui-server -w @superbee/markdown-renderer -w @superbee/mcp-app -w @superbee/publication -w @superbee/bundle-descriptor -w @superbee/cli && npm run typecheck --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
@@ -32,6 +33,7 @@
     "mutation:board-git": "npm run mutation -w @superbee/board-git",
     "mutation:survivors": "node scripts/mutation-survivors.mjs",
     "verify:cli-library": "node scripts/verify-cli-library-entry.mjs",
+    "verify:cli-tarball": "node scripts/verify-cli-tarball.mjs",
     "typecheck:after-build": "node scripts/typecheck-after-build.mjs"
   },
   "dependencies": {

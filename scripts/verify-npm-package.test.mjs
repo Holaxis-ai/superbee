@@ -226,7 +226,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   );
   assert.match(
     npmReadme,
-    /Node\.js 20 or newer on macOS and Linux/,
+    /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\) on macOS or Linux/,
     "npm README must advertise every supported native platform",
   );
   assert.match(npmReadme, /Native Windows is not supported by this package/);
@@ -266,6 +266,7 @@ test("lockfile workspace metadata preserves the npm package platform contract", 
   assert.equal(locked.version, npmManifest.version, "lockfile CLI version must match the publish manifest");
   assert.deepEqual(locked.os, npmManifest.os, "lockfile must not retain a stale OS restriction");
   assert.deepEqual(locked.cpu, npmManifest.cpu, "lockfile must not retain a stale CPU restriction");
+  assert.deepEqual(locked.engines, npmManifest.engines, "lockfile must not retain a stale Node support policy");
 });
 
 test("the expected tarball set is the fixed base plus the references tree", () => {

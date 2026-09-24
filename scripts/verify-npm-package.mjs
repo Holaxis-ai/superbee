@@ -768,7 +768,7 @@ async function runInstalledProof(spec) {
       "create-only refusal must not change the quickstart project: ",
     );
 
-    // Node's ESM --import preload is common to the supported Node 20/22/26 lines. Instrument the
+    // Node's ESM --import preload is common to the supported Node 22/24/26 lines. Instrument the
     // installed process externally (never through a product test hook) at its actual atomic
     // production-lock mkdir: the holder owns the real lock directory while the contender proves
     // EEXIST on the exact same path, and neither command may publish before the verifier releases it.
@@ -1116,7 +1116,7 @@ async function runInstalledProof(spec) {
     assert.match(normalizedInstalledReadme, /You rarely type Superbee commands yourself/);
     assert.match(normalizedInstalledReadme, /translates the\s+request into CLI calls/i);
     assert.match(normalizedInstalledReadme, /^## Install$/m);
-    assert.match(normalizedInstalledReadme, /Node\.js 20 or newer on macOS and Linux/);
+    assert.match(normalizedInstalledReadme, /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\) on macOS or Linux/);
     assert.match(normalizedInstalledReadme, /Native Windows is not supported by this package/);
     assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
     assertPackageReadmeReleaseChannel(manifest.version, normalizedInstalledReadme);

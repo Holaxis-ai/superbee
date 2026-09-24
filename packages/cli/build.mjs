@@ -14,7 +14,7 @@ export async function buildCliRuntime({ preparedInputs, source = currentSourceFa
   // Source facts describe the tree the bundler reads, so capture them before this build writes.
   await rm(resolve(root, "dist"), { recursive: true, force: true });
   const assets = preparedInputs ?? await prepareCliBundleInputs();
-  const runtimeBuild = await build({ metafile:true, absWorkingDir: root, entryPoints: [resolve(root, "src/index.ts")], outfile: resolve(root, "dist/index.mjs"), bundle: true, platform: "node", format: "esm", target: "node20", alias: workspaceAliases, banner: runtimeBanner,
+  const runtimeBuild = await build({ metafile:true, absWorkingDir: root, entryPoints: [resolve(root, "src/index.ts")], outfile: resolve(root, "dist/index.mjs"), bundle: true, platform: "node", format: "esm", target: "node22", alias: workspaceAliases, banner: runtimeBanner,
     // A reusable library has no baked distribution policy or identity. Fold their absence into the
     // artifact so a host's same-named globals cannot override its explicit source identity.
     define: {
@@ -41,7 +41,7 @@ export async function buildCliRuntime({ preparedInputs, source = currentSourceFa
   const inventoryBuild=await build({entryPoints:[resolve(root,'src/distribution-resources.ts')],bundle:true,format:'esm',platform:'node',write:false});
   const {DISTRIBUTION_RESOURCES}=await import('data:text/javascript;base64,'+Buffer.from(inventoryBuild.outputFiles[0].text).toString('base64'));
   const references=await Promise.all(DISTRIBUTION_RESOURCES.map(async row=>({path:'references/'+row.dest,content:await readFile(resolve(root,'../..',row.src),'utf8')})));
-  await build({entryPoints:[resolve(root,'src/resources.ts')],outfile:resolve(root,'dist/resources.mjs'),bundle:true,format:'esm',platform:'node',target:'node20',define:{__SUPERBEE_DISTRIBUTION_REFERENCES__:JSON.stringify(references)}});
+  await build({entryPoints:[resolve(root,'src/resources.ts')],outfile:resolve(root,'dist/resources.mjs'),bundle:true,format:'esm',platform:'node',target:'node22',define:{__SUPERBEE_DISTRIBUTION_REFERENCES__:JSON.stringify(references)}});
 
 }
 
