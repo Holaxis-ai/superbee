@@ -1,0 +1,26 @@
+{
+  "name": "create-200-ok",
+  "description": "A create that commits.",
+  "route": "/sync/v1/create",
+  "rows": [
+    "200 ok"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000001",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"two\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000001"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"documents.create.v1\",\"data\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"version\":\"sha256:97aeb632d61afe4c8150ec90163d61cb8becf659e73d500ca9c199d14be08188\",\"changed\":true}}",
+    "truncated": false
+  }
+}

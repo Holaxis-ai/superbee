@@ -40,7 +40,7 @@ even to different frontmatter keys, comes back as a `conflict` row, and nothing 
 document until you resolve it:
 
 ```sh
-superbee sync --inspect <id>                  # base, your version, the host's version
+superbee sync --inspect --doc <id>            # base, your version, the host's version
 superbee sync --resolve take --doc <id>       # use the host's version
 superbee sync --resolve keep --doc <id>       # send yours over the inspected host version
 superbee sync --resolve revise --doc <id>     # edit the file to the combined result first, then send it
@@ -49,6 +49,7 @@ superbee sync                                 # sends what keep or revise decide
 
 - `keep` and `revise` need an `--inspect` first (`not_inspected` otherwise). If the host changes
   after the inspection, they refuse with `stale_review`: inspect again, and decide again.
+- `--inspect <id>` is an alias of `--inspect --doc <id>`.
 - `keep` refuses a file edited since the conflict (`file_edited`). Use `revise` to send the file as
   it is now.
 - To discard your edits with `take`, remove the file first if the command says it would discard

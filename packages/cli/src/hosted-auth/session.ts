@@ -40,6 +40,7 @@ import {
   type HostedTarget,
 } from "./discovery.js";
 import {
+  CREDENTIAL_STORE_ENV,
   fileSecretStore,
   macosKeychainStore,
   probeSecretStore,
@@ -63,10 +64,11 @@ export const REFRESH_REUSE_LEEWAY_MS = 30_000;
  * session busy. It must exceed the worst-case hold so parallel agent commands queue behind one
  * slow refresh instead of failing: a refresh holds the lock for up to two store reads and one
  * store write (STORE_CALL_TIMEOUT_MS each, 5s) plus two token calls (HTTP_TIMEOUT_MS each, 10s),
- * about 35s; a device start holds it for a store probe plus three metadata fetches and the device
- * call, about 45s in the worst case. Waiters past this still get a retryable TRANSIENT.
+ * about 35s; a device poll that restarts sign-in holds it for the poll, a store write probe (two
+ * store calls), three metadata fetches and the device call, about 60s in the worst case. Waiters
+ * past this still get a retryable TRANSIENT.
  */
-export const SESSION_LOCK_WAIT_MS = 50_000;
+export const SESSION_LOCK_WAIT_MS = 65_000;
 const HTTP_TIMEOUT_MS = 10_000;
 const MAX_RECORD_BYTES = 64 * 1024;
 const SESSION_FILE = "session.json";
@@ -478,6 +480,7 @@ export type SignInReason =
   | "session_expired"
   | "authorization_pending"
   | "previous_code_expired"
+  | "previous_code_rejected"
   | "previous_request_denied";
 
 export function defaultResumeCommand(target: HostedTarget, clientIdFlag?: string): CommandText {
@@ -610,6 +613,42 @@ async function startDeviceAuthorization(target: HostedTarget, options: SignInOpt
   return pending;
 }
 
+/** Device-poll errors that end the current code and are answered with a fresh one. */
+const DEVICE_RESTART_REASONS: ReadonlyMap<string, SignInReason> = new Map([
+  ["expired_token", "previous_code_expired"],
+  ["access_denied", "previous_request_denied"],
+  ["invalid_grant", "previous_code_rejected"],
+]);
+
+/**
+ * Save a just-redeemed device sign-in. The device code is spent once redeemed, so the pending
+ * record goes whether or not the save succeeds: a later run must start a fresh code rather than
+ * poll a dead one. When the save fails the tokens cannot be kept, so the new refresh token is
+ * revoked (best-effort) and the failure is reported as a store problem with its remedy.
+ */
+async function completeDeviceSignIn(target: HostedTarget, pending: PendingRecord, tokens: TokenSet, deps: HostedAuthDeps): Promise<SessionRecord> {
+  try {
+    return await persistTokens(target, pending, tokens, storeForNewSession(deps), deps);
+  } catch (error) {
+    if (tokens.refresh_token && pending.revocation_endpoint) {
+      await postForm(deps, pending.revocation_endpoint, {
+        token: tokens.refresh_token,
+        token_type_hint: "refresh_token",
+        client_id: pending.client_id,
+      });
+    }
+    if (error instanceof CliError && error.code === "CREDENTIAL_STORE_UNAVAILABLE") {
+      throw new CliError("CREDENTIAL_STORE_UNAVAILABLE", `sign-in to ${target.origin} was confirmed but could not be saved: ${error.message}`, {
+        details: { ...error.details, host: target.origin, reason: "store_write_failed_after_sign_in", sign_in_discarded: true },
+        help: `${error.help ?? `set ${CREDENTIAL_STORE_ENV}=file to use a 0600 file store`}; then re-run the same command, which starts a fresh sign-in`,
+      });
+    }
+    throw error;
+  } finally {
+    await clearPending(target, deps);
+  }
+}
+
 /**
  * Advance device sign-in by at most one poll. Returns the new session when the person has
  * confirmed; otherwise throws AUTH_REQUIRED with the (same, or a fresh) link. Caller holds the lock.
@@ -640,12 +679,7 @@ async function advanceDeviceSignIn(
     device_code: pending.device_code,
     client_id: pending.client_id,
   });
-  if (outcome.kind === "tokens") {
-    const store = storeForNewSession(deps);
-    const session = await persistTokens(target, pending, outcome.tokens, store, deps);
-    await clearPending(target, deps);
-    return session;
-  }
+  if (outcome.kind === "tokens") return completeDeviceSignIn(target, pending, outcome.tokens, deps);
   const after = deps.now();
   if (outcome.kind === "lost" || outcome.error === "authorization_pending" || outcome.error === "slow_down") {
     const interval = outcome.kind === "oauth_error" && outcome.error === "slow_down" ? pending.interval_s + 5 : pending.interval_s;
@@ -654,9 +688,12 @@ async function advanceDeviceSignIn(
     throw authRequired(target, next, "authorization_pending", resume, after);
   }
   await clearPending(target, deps);
-  if (outcome.error === "expired_token" || outcome.error === "access_denied") {
+  // invalid_grant on a device poll means the issuer no longer knows the code: it was already
+  // redeemed or has aged out. Either way only a fresh code can make progress.
+  const restartAs = DEVICE_RESTART_REASONS.get(outcome.error);
+  if (restartAs) {
     const restarted = await startDeviceAuthorization(target, options, deps);
-    throw authRequired(target, restarted, outcome.error === "expired_token" ? "previous_code_expired" : "previous_request_denied", resume, deps.now());
+    throw authRequired(target, restarted, restartAs, resume, deps.now());
   }
   throw new CliError("RUNTIME", `the issuer rejected sign-in (${outcome.error})`, {
     details: { error: outcome.error, host: target.origin, client_id: pending.client_id },

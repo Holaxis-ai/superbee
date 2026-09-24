@@ -1,0 +1,23 @@
+{
+  "name": "bundles-200",
+  "description": "The bundles the bearer may sync.",
+  "route": "/sync/v1/bundles",
+  "rows": [
+    "bundles 200"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"bundles.list.v1\",\"data\":{\"bundles\":[{\"bundleId\":\"notes.a\",\"name\":\"notes.a\",\"purpose\":\"\",\"domains\":[],\"lifecycle\":\"active\",\"sensitivity\":\"private\"},{\"bundleId\":\"ro.a\",\"name\":\"ro.a\",\"purpose\":\"\",\"domains\":[],\"lifecycle\":\"active\",\"sensitivity\":\"private\"}]}}",
+    "truncated": false
+  }
+}

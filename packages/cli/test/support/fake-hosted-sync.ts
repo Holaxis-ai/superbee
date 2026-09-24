@@ -20,6 +20,8 @@
 //   and without `currentVersion` when it acknowledges a tombstone the id does not have;
 // - `/outcome`: the `encodeIdentifiedOutcome` answer (`schemaVersion` 1, `absent`, `committed`
 //   with the committed bytes as base64, or none for a delete, or `refused`).
+// Every answer shape is held to the `/sync/v1` golden exchanges captured from the real hosted
+// gateway (core's `test/fixtures/hosted-sync-v1/`) by `hosted-fake-contract.test.ts`.
 // The host stores its own serialization (the managed `superbee_updated_by` field added), so a
 // committed version is never the client's local version, as on the real host.
 import assert from "node:assert/strict";
@@ -42,6 +44,13 @@ interface Fixture {
 
 export function fixture(name: string): Fixture {
   return JSON.parse(readFileSync(path.join(FIXTURES, `${name}.json`), "utf8")) as Fixture;
+}
+
+/** The `/sync/v1` golden exchanges, captured from the real hosted gateway (core's `test/fixtures/hosted-sync-v1/`). */
+export const SYNC_FIXTURES = path.resolve(here, "../../../core/test/fixtures/hosted-sync-v1");
+
+export function syncFixture(name: string): Fixture {
+  return JSON.parse(readFileSync(path.join(SYNC_FIXTURES, `${name}.json`), "utf8")) as Fixture;
 }
 
 export function jwt(claims: Record<string, unknown>): string {
@@ -174,7 +183,7 @@ export class FakeHost {
     assert.equal(url.origin, this.origin);
     assert.equal(init?.method, "POST");
     if (headers.get("authorization") !== `Bearer ${this.token}`) {
-      const refusal = fixture("refusal-unauthenticated").response;
+      const refusal = syncFixture("read-401-unauthenticated").response;
       return new Response(refusal.body, { status: refusal.status, headers: refusal.headers });
     }
     const route = url.pathname.replace(/^\/sync\/v1\//, "");
@@ -210,12 +219,14 @@ export class FakeHost {
         return new Response(`${lines.join("\n")}\n`, { status: 200, headers: { "content-type": "application/x-ndjson; charset=utf-8", etag: `"${listing.digest}"` } });
       }
       case "read": {
+        if (!onlyKeys(body, ["bundleId", "documentId"])) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+        if (body.bundleId !== BUNDLE) return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } });
         const id = String(body.documentId);
         const doc = this.docs.get(id);
         if (!doc) {
           return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "document_not_found", message: "No document", retryable: false } });
         }
-        return Response.json({ ok: true, operationId: "documents.read.v1", data: { bundleId: BUNDLE, documentId: id, version: doc.version, document: { frontmatter: doc.frontmatter, body: doc.body } } });
+        return Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version } });
       }
       case "create":
       case "replace":
@@ -233,8 +244,8 @@ export class FakeHost {
     const recreate = headers.get("x-superbee-recreate");
     const call: WriteCall = { route, requestId, binding, recreate, body };
     this.writes.push(call);
-    if (!requestId || !WRITE_REQUEST.test(requestId) || !binding || !BINDING.test(binding)) {
-      return Response.json({ error: { code: "invalid_input", message: "identity and binding are required" } }, { status: 400 });
+    if (!requestId || !WRITE_REQUEST.test(requestId) || !binding || !BINDING.test(binding) || !onlyKeys(body, WRITE_BODY_KEYS[route === "outcome" ? outcomeOf(body) : route])) {
+      return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     }
     // The acknowledgement is a create's (and its outcome's) alone, and a version.
     const creates = route === "create" || (route === "outcome" && body.expectAbsent === true);
@@ -274,7 +285,7 @@ export class FakeHost {
   private apply(route: "create" | "replace", operationId: string, body: Record<string, unknown>, recreate: string | null = null): Recorded {
     const id = String(body.documentId);
     const existing = this.docs.get(id);
-    if (route === "create" && existing) return { result: failure(operationId, "document_exists") };
+    if (route === "create" && existing) return { result: failure(operationId, "document_exists", existing.version) };
     if (route === "create") {
       // The tombstone check on a sync create: admitted only when it names the id's latest deletion.
       const latest = this.latestTombstone(id)?.tombstone;
@@ -311,6 +322,17 @@ export class FakeHost {
     return Response.json({ ...envelope, status: "refused", result: recorded.result });
   }
 }
+
+const onlyKeys = (body: Record<string, unknown>, allowed: readonly string[]) => Object.keys(body).every((key) => allowed.includes(key));
+
+/** The strict input of each write (the outcome route takes the body of the write it identifies). */
+const WRITE_BODY_KEYS = {
+  create: ["bundleId", "documentId", "expectAbsent", "frontmatter", "body"],
+  replace: ["bundleId", "documentId", "expectedVersion", "frontmatter", "body"],
+  delete: ["bundleId", "documentId", "expectedVersion"],
+} as const;
+
+const outcomeOf = (body: Record<string, unknown>): keyof typeof WRITE_BODY_KEYS => (body.expectAbsent === true ? "create" : body.body === undefined ? "delete" : "replace");
 
 function failure(operationId: string, code: string, currentVersion?: string): Record<string, unknown> {
   return {

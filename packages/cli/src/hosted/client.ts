@@ -13,7 +13,7 @@ import {
   type HostedReadAdapter,
   type HostedReadRoutes,
 } from "@superbee/core/hosted-transport";
-import { RemoteError } from "@superbee/core";
+import { isMalformedAnswer, RemoteError } from "@superbee/core";
 
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -158,7 +158,8 @@ function loginHelp(target: HostedTarget): string {
 /**
  * One translation from the hosted transport's failures to the CLI taxonomy. An unauthenticated
  * answer is AUTH_REQUIRED naming the login command; a withdrawn grant is FORBIDDEN; a carrier
- * failure is TRANSIENT (the request may not have been answered). Any other error passes through.
+ * failure is TRANSIENT (the request may not have been answered); an answer the client cannot
+ * read is a non-retryable RUNTIME naming the route. Any other error passes through.
  */
 export function hostedFailure(error: unknown, target: HostedTarget, resume?: string): unknown {
   if (error instanceof CliError) return error;
@@ -166,6 +167,15 @@ export function hostedFailure(error: unknown, target: HostedTarget, resume?: str
     return new CliError("TRANSIENT", `could not reach ${target.origin} (${error.code === "denied" ? "no credential" : "no answer"})`, {
       details: { host: target.origin, retryable: true },
       help: "retry the same command",
+    });
+  }
+  if (isMalformedAnswer(error)) {
+    // The host answered, and the client cannot read what it said: the same request gets the same
+    // answer, so retrying never helps. It is a client/host contract mismatch to report or upgrade past.
+    const route = error.route ?? "unknown";
+    return new CliError("RUNTIME", `${target.origin} answered ${route} with an answer this CLI cannot read (client/host contract mismatch)`, {
+      details: { host: target.origin, route, code: error.code, reason: error.message, retryable: false },
+      help: "upgrade Superbee (npm install -g superbee); retrying the same command gets the same answer, so if it persists, report this route and reason",
     });
   }
   if (error instanceof RemoteError) {

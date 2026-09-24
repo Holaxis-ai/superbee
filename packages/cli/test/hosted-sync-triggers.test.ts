@@ -312,7 +312,7 @@ test("turn-end sends edits silently, and hands a conflict back to the agent once
   await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nLocal alpha.\n');
   const decision = JSON.parse(await turnEndOutput(h)) as { decision: string; reason: string };
   assert.equal(decision.decision, "block");
-  assert.match(decision.reason, /sync --inspect <id>/);
+  assert.match(decision.reason, /sync --inspect --doc <id>/);
   assert.match(decision.reason, /notes\/alpha/);
   assert.match(decision.reason, /Superbee app is for the person/);
   // Already continuing because of this hook: never blocked twice.
@@ -491,7 +491,7 @@ test("keep and revise without an inspection are refused (not_inspected); take ne
     const error = await syncError(h, ["--resolve", choice, "--doc", "notes/alpha"]);
     assert.equal(error.code, "CONFLICT");
     assert.equal(error.details?.reason, "not_inspected");
-    assert.match(error.help ?? "", /sync --inspect notes\/alpha/);
+    assert.match(error.help ?? "", /sync --inspect --doc notes\/alpha/);
   }
   assert.deepEqual(writeRoutes(h), []);
   // After the host moves on past the conflict the person saw, an inspection binds keep to it.

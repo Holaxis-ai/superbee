@@ -1484,7 +1484,7 @@ test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a
     ["digest mismatch", { count: 1, digest: first.digest, heads: [row] }],
     ["digest of another version", { count: 2, digest: headsDigest(first.heads.map((h) => ({ id: h.id, version: `sha256:${"f".repeat(64)}` }))), heads: first.heads }],
   ] as const) {
-    await assert.rejects(answering(payload).heads(), (err: unknown) => err instanceof RemoteError && err.code === "RUNTIME" && err.status === 502, label);
+    await assert.rejects(answering(payload).heads(), (err: unknown) => err instanceof RemoteError && err.code === "MALFORMED_ANSWER" && err.status === 502, label);
   }
   // The recomputation sorts by the recipe, so the served row order does not decide.
   const reversed = await answering({ count: 2, digest: first.digest, heads: [...first.heads].reverse() }).heads();
@@ -1499,7 +1499,7 @@ test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a
   });
   await assert.rejects(
     unconditional304.heads(),
-    (err: unknown) => err instanceof RemoteError && err.code === "RUNTIME" && err.status === 502,
+    (err: unknown) => err instanceof RemoteError && err.code === "MALFORMED_ANSWER" && err.status === 502,
     "a 304 to a request that sent no If-None-Match is malformed, not null",
   );
   assert.equal(await unconditional304.heads({ ifNoneMatch: first.digest }), null, "the same 304 to a conditional request is null");

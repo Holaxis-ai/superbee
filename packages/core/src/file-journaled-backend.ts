@@ -541,6 +541,12 @@ export interface FileJournaledBackendOptions {
   hostPolicy?: FilesystemHostPolicy;
   /** Open compacts when the log is larger than this many bytes. Default 8 MiB. */
   compactAfterBytes?: number;
+  /**
+   * Open an existing store to read it and change no file in its directory: no directory or log is
+   * created, a torn log tail is ignored rather than truncated, nothing is compacted, and every
+   * mutation (and `compact`) is refused. The lock is still taken, so no writer runs meanwhile.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -599,6 +605,14 @@ interface Decision<T> {
   result: T;
 }
 
+/** The log handle of a read-only open: nothing is opened, so closing it is all it does. */
+const READ_ONLY_LOG: FileJournalHandle = Object.freeze({
+  write: () => Promise.reject(new FileJournalUnavailableError("the store is open read-only")),
+  sync: () => Promise.reject(new FileJournalUnavailableError("the store is open read-only")),
+  truncate: () => Promise.reject(new FileJournalUnavailableError("the store is open read-only")),
+  close: () => Promise.resolve(),
+});
+
 /**
  * The Node working copy's persistent store: one directory, one exclusive lock, one log. Open it
  * with {@link FileJournaledBackend.open}; {@link close} releases the lock.
@@ -618,6 +632,7 @@ export class FileJournaledBackend implements JournaledBackend {
   #queue: Promise<unknown> = Promise.resolve();
   #unavailable: Error | null = null;
   #closing: Promise<void> | null = null;
+  #readOnly = false;
 
   private constructor(directory: string, state: State, log: FileJournalHandle, release: () => Promise<void>, txn: number, logBytes: number, policy: FilesystemHostPolicy) {
     this.directory = directory;
@@ -653,7 +668,7 @@ export class FileJournaledBackend implements JournaledBackend {
       const stat: Stats = await fs.stat(directory);
       if (!stat.isDirectory()) throw new Error(`'${directory}' is not a directory`);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || options.readOnly) throw error;
       await fs.mkdir(directory, { recursive: true, mode: 0o700 });
       created = true;
     }
@@ -687,6 +702,11 @@ export class FileJournaledBackend implements JournaledBackend {
         if (record.txn !== txn + 1) throw new FileJournalCorruptError(logFile, `transaction ${record.txn} follows ${txn}`);
         applyChanges(state, record.changes);
         txn = record.txn;
+      }
+      if (options.readOnly) {
+        const backend = new FileJournaledBackend(directory, state, READ_ONLY_LOG, release, txn, scanned.validBytes, policy);
+        backend.#readOnly = true;
+        return backend;
       }
       await fs.rm(path.join(directory, SNAPSHOT_TEMP), { force: true });
       if (logRead === null) {
@@ -776,6 +796,7 @@ export class FileJournaledBackend implements JournaledBackend {
   /** Run `fn` after every earlier mutation settles; mutations never interleave. */
   #serial<T>(fn: () => Promise<T>): Promise<T> {
     if (this.#closing) return Promise.reject(new FileJournalUnavailableError("the store is closed"));
+    if (this.#readOnly) return Promise.reject(new FileJournalUnavailableError("the store is open read-only"));
     const run = this.#queue.then(() => {
       if (this.#unavailable) throw this.#unavailable;
       return fn();

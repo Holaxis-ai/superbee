@@ -337,6 +337,35 @@ for (const tear of [
   });
 }
 
+test("readOnly: a torn tail and an oversize log are read, and no file in the directory changes; every mutation is refused", async () => {
+  const root = await newRoot();
+  try {
+    const { prefix, record, before } = await logWithOneMore(root);
+    await fs.writeFile(path.join(root.directory, FILE_JOURNAL_LOG), Buffer.concat([prefix, record.subarray(0, record.byteLength - 3)]));
+    const listing = async () => {
+      const names = (await fs.readdir(root.directory)).sort();
+      return Promise.all(names.map(async (name) => [name, (await fs.readFile(path.join(root.directory, name))).toString("base64")]));
+    };
+    const untouched = await listing();
+    const backend = await FileJournaledBackend.open({ ...root.options(), readOnly: true, compactAfterBytes: 0 });
+    try {
+      assert.deepEqual(await observe(backend), before);
+      await assert.rejects(backend.write("notes/gamma", doc("notes/gamma", "no\n")), FileJournalUnavailableError);
+      await assert.rejects(backend.writeMeta("k", 1), FileJournalUnavailableError);
+      await assert.rejects(backend.compact(), FileJournalUnavailableError);
+    } finally {
+      await backend.close();
+    }
+    assert.deepEqual(await listing(), untouched);
+    // A read-only open of a store that does not exist creates nothing.
+    const absent = path.join(root.directory, "..", "absent-store");
+    await assert.rejects(FileJournaledBackend.open({ ...root.options(), directory: absent, readOnly: true }), { code: "ENOENT" });
+    await assert.rejects(fs.stat(absent), { code: "ENOENT" });
+  } finally {
+    await root.cleanup();
+  }
+});
+
 for (const damage of [
   { name: "a flipped payload byte in an early record", at: (prefix: Buffer) => prefix.byteLength - 60 },
   { name: "a damaged record header in the middle", at: () => 0 },

@@ -225,7 +225,24 @@ export function selectSecretStore(options: SelectStoreOptions): SecretStore {
   throw credentialStoreUnavailable(`no supported OS credential store on ${platform}`);
 }
 
-/** Prove the store answers (a read of the account) before asking a person to sign in. */
+/** The account a writability probe uses: never the session's own, so the probe cannot clobber a live refresh token. */
+export function probeAccount(account: string): string {
+  return `${account} probe`;
+}
+
+/**
+ * Prove the store can hold the refresh token before a person is asked to sign in. An OS store can
+ * answer reads and still refuse writes (a HOME with no default keychain reports every item as not
+ * found), and a device code is spent the moment it is redeemed, so the OS stores are probed with a
+ * write and delete of a throwaway item. The file store lives in the private state root the session
+ * lock has already created, so a read is enough there.
+ */
 export async function probeSecretStore(store: SecretStore, account: string): Promise<void> {
-  await store.get(account);
+  if (store.kind === "file") {
+    await store.get(account);
+    return;
+  }
+  const probe = probeAccount(account);
+  await store.set(probe, "superbee-cli write probe");
+  await store.delete(probe).catch(() => false);
 }

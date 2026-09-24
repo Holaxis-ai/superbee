@@ -81,7 +81,7 @@ export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checko
 
 Usage:
   superbee sync [--dir <folder>] [--limit <n>] [--json]
-  superbee sync --inspect <id> [--out <file>] [--dir <folder>] [--json]
+  superbee sync --inspect --doc <id> [--out <file>] [--dir <folder>] [--json]
   superbee sync --resolve keep|take|revise --doc <id> [--dir <folder>] [--json]
   superbee sync --restore-deletes | --accept-deletes <token> [--dir <folder>] [--json]
 
@@ -89,8 +89,9 @@ Each edited file is sent as one whole document under your own access, with no ap
 documents changed on the host are refreshed in the folder. A change to one document and a
 change on the host to another both land. A document changed on both sides is never merged: it
 comes back as a conflict row, and nothing is sent for it until you resolve it:
-  --inspect <id>      show the base, your version and the host's version (--out <file> writes
-                      the host's exact bytes)
+  --inspect --doc <id>
+                      show the base, your version and the host's version (--out <file> writes
+                      the host's exact bytes); --inspect <id> is an alias
   --resolve keep      send your version against the host's current one
   --resolve take      replace your version with the host's (remove the file first to discard
                       edits made since the conflict)
@@ -214,16 +215,25 @@ function parseHosted(argv: string[]): HostedValues {
     }
   }
   if (values.inspect !== undefined && values.resolve !== undefined) {
-    throw new CliError("USAGE", "--inspect and --resolve are separate steps", { help: `${inv} sync --inspect <id>` });
+    throw new CliError("USAGE", "--inspect and --resolve are separate steps", { help: `${inv} sync --inspect --doc <id>` });
+  }
+  if (values.inspect !== undefined) {
+    // `--inspect --doc <id>` is the spelling; `--inspect <id>` is its alias.
+    if (values.inspect === "" && values.doc === undefined) throw new CliError("USAGE", "--inspect needs --doc <id>", { help: `${inv} sync --inspect --doc <id>` });
+    if (values.inspect !== "" && values.doc !== undefined && values.inspect !== values.doc) {
+      throw new CliError("USAGE", `--inspect names '${values.inspect}' and --doc names '${values.doc}'; name one document`, { help: `${inv} sync --inspect --doc ${commandToken(values.doc)}` });
+    }
+    values.inspect = values.inspect === "" ? values.doc : values.inspect;
+    delete values.doc;
   }
   if (values.resolve !== undefined && values.doc === undefined) {
     throw new CliError("USAGE", "--resolve needs --doc <id>", { help: `${inv} sync --resolve ${commandToken(values.resolve)} --doc <id>` });
   }
   if (values.doc !== undefined && values.resolve === undefined) {
-    throw new CliError("USAGE", "--doc names the document for --resolve", { help: `${inv} sync --resolve keep|take|revise --doc ${commandToken(values.doc)}` });
+    throw new CliError("USAGE", "--doc names the document for --inspect or --resolve", { help: `${inv} sync --inspect --doc ${commandToken(values.doc)}` });
   }
   if (values.out !== undefined && values.inspect === undefined) {
-    throw new CliError("USAGE", "--out writes the host's version for --inspect", { help: `${inv} sync --inspect <id> --out <file>` });
+    throw new CliError("USAGE", "--out writes the host's version for --inspect", { help: `${inv} sync --inspect --doc <id> --out <file>` });
   }
   if (values.resolve !== undefined && !["keep", "take", "revise"].includes(values.resolve)) {
     throw new CliError("USAGE", `--resolve takes keep, take or revise, not '${values.resolve}'`, { help: `${inv} sync --resolve keep|take|revise --doc <id>` });
@@ -252,7 +262,7 @@ function documentId(input: string): string {
   try {
     assertSafeConceptId(id);
   } catch (error) {
-    throw new CliError("USAGE", `'${input}' is not a document id in this checkout (${(error as Error).message})`, { help: `${cliInvocation()} sync --inspect <id>` });
+    throw new CliError("USAGE", `'${input}' is not a document id in this checkout (${(error as Error).message})`, { help: `${cliInvocation()} sync --inspect --doc <id>` });
   }
   return id;
 }
@@ -599,7 +609,7 @@ function pulledView(report: PullReport | null, placed: string[], removed: string
 function rowHelp(rows: readonly SyncRow[], binding: CheckoutBinding): string[] {
   const help: string[] = [];
   const firstConflict = rows.find((row) => row.state === "conflict");
-  if (firstConflict) help.push(`${cliInvocation()} sync --inspect ${commandToken(firstConflict.id)} --dir ${commandToken(binding.path)}`);
+  if (firstConflict) help.push(`${cliInvocation()} sync --inspect --doc ${commandToken(firstConflict.id)} --dir ${commandToken(binding.path)}`);
   if (rows.some((row) => row.state === "paused" || row.state === "unknown")) help.push(syncCommand(binding));
   if (rows.some((row) => row.state === "held" || (row.state === "refused" && row.reason !== "read_only"))) {
     help.push(`edit or restore the files named in the held and refused rows, then: ${syncCommand(binding)}`);
@@ -860,13 +870,13 @@ async function assertInspectedCurrent(session: Session, id: string, conflict: Co
     if (choice === "take") return;
     throw new CliError("CONFLICT", `'${choice}' sends your version over the host's, so inspect the host's version of '${id}' first`, {
       details: { reason: "not_inspected", id, choice, current },
-      help: `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(session.binding.path)}`,
+      help: `${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(session.binding.path)}`,
     });
   }
   if (inspected.remote !== current) {
     throw new CliError("CONFLICT", `the host's version of '${id}' changed since you inspected it`, {
       details: { reason: "stale_review", id, inspected: inspected.remote ?? null, current },
-      help: `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(session.binding.path)}`,
+      help: `${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(session.binding.path)}`,
     });
   }
 }
@@ -882,7 +892,7 @@ async function assertInspectedCurrent(session: Session, id: string, conflict: Co
  */
 async function assertInspectedTombstone(session: Session, id: string, current: string | null, choice: string): Promise<void> {
   const inspected = await session.store.readMeta<{ remote?: string | null; tombstone?: string | null } | null>(inspectedKey(id));
-  const inspect = `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(session.binding.path)}`;
+  const inspect = `${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(session.binding.path)}`;
   if (!inspected || !("remote" in inspected)) {
     throw new CliError("CONFLICT", `'${id}' was deleted on the host; '${choice}' re-creates it, so inspect the deletion first`, {
       details: { reason: "not_inspected", id, choice, tombstone: current },
@@ -899,7 +909,7 @@ async function assertInspectedTombstone(session: Session, id: string, current: s
 
 async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
   const id = documentId(values.inspect!);
-  const resumeCommand = commandFragment`${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(binding.path)}`;
+  const resumeCommand = commandFragment`${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`;
   let out: string | undefined;
   if (values.out !== undefined) {
     out = path.resolve(deps.cwd, values.out);
@@ -1049,7 +1059,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       if (deleting && choice === "revise") {
         throw new CliError("USAGE", `'${id}' is your deletion in conflict; keep the deletion or take the host's version`, {
           details: { reason: "deletion_conflict", id },
-          help: `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(binding.path)}`,
+          help: `${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`,
         });
       }
       if (conflict.deleted && !deleting && choice !== "take") await assertInspectedTombstone(session, id, conflict.review.remote.tombstone ?? null, choice);
@@ -1086,7 +1096,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
         if (error instanceof ConflictReviewStaleError) {
           throw new CliError("CONFLICT", `the conflict on '${id}' changed while resolving it`, {
             details: { reason: "stale_review", id },
-            help: `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(binding.path)}`,
+            help: `${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`,
           });
         }
         if (error instanceof InvalidInputError) {
@@ -1122,7 +1132,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
  */
 async function assertInspectedRemote(session: Session, id: string, current: string | null): Promise<void> {
   const inspected = await session.store.readMeta<{ remote?: string | null } | null>(inspectedKey(id));
-  const inspect = `${cliInvocation()} sync --inspect ${commandToken(id)} --dir ${commandToken(session.binding.path)}`;
+  const inspect = `${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(session.binding.path)}`;
   if (!inspected || !("remote" in inspected)) {
     throw new CliError("CONFLICT", `'${id}' changed on the host; keeping your deletion deletes that version, so inspect it first`, { details: { reason: "not_inspected", id, choice: "keep", current }, help: inspect });
   }

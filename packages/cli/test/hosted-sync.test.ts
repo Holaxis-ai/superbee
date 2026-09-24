@@ -150,6 +150,63 @@ test("a new file is created against absence, and creates are sent before replace
   assert.equal(hostDoc(h, "notes/gamma").frontmatter.title, "Gamma");
 });
 
+test("an existing checkout pulls a document created, one replaced and one deleted on the host through /read", async () => {
+  const h = await harness();
+  const created = h.host.put("notes/delta", { type: "Note", title: "Delta from the host" }, "Delta body.\n");
+  const replaced = h.host.put("notes/beta", { type: "Note", title: "Beta from the host" }, "Beta host body.\n");
+  h.host.deleteWithTombstone("notes/alpha");
+  const receipt = await runSync(h);
+  // Nothing was sent, so the checkout is up to date; the pull brought in two documents and removed one.
+  assert.equal(receipt.status, "up_to_date", JSON.stringify(receipt));
+  assert.deepEqual(receipt.pulled, { refreshed: 2, removed: 1 });
+  assert.deepEqual(rowsOf(receipt), []);
+  // The new and the replaced documents are each read whole: the path a fresh checkout never takes.
+  const reads = h.host.requests.filter((request) => request.path === "/sync/v1/read").map((request) => (request.body as { documentId: string }).documentId).sort();
+  assert.deepEqual(reads, ["notes/beta", "notes/delta"]);
+  const delta = parseMarkdown(await readFile(path.join(h.folder, "notes/delta.md"), "utf8"), "notes/delta");
+  assert.equal(delta.frontmatter.title, "Delta from the host");
+  assert.equal(delta.body, "Delta body.\n");
+  const beta = parseMarkdown(await readFile(path.join(h.folder, "notes/beta.md"), "utf8"), "notes/beta");
+  assert.equal(beta.frontmatter.title, "Beta from the host");
+  assert.equal(beta.body, "Beta host body.\n");
+  await assert.rejects(stat(path.join(h.folder, "notes/alpha.md")), { code: "ENOENT" });
+  assert.notEqual(created, replaced);
+
+  // The checkout now records the host's versions: the next sync sends and reads nothing.
+  h.host.requests.length = 0;
+  const again = await runSync(h);
+  assert.equal(again.status, "up_to_date");
+  assert.equal(h.host.requests.filter((request) => request.path === "/sync/v1/read").length, 0);
+  assert.equal(h.host.writes.length, 0);
+
+  // A local edit on a pulled document goes out against the host's version it pulled.
+  await edit(h, "notes/delta", (doc) => void (doc.body = "Delta, edited here.\n"));
+  const sent = await runSync(h);
+  assert.equal(rowFor(sent, "notes/delta")?.state, "committed");
+  assert.equal(writeRoutes(h).at(-1)!.body.expectedVersion, created);
+});
+
+test("an answer the CLI cannot read is a non-retryable RUNTIME naming the route, never TRANSIENT", async () => {
+  const h = await harness();
+  h.host.put("notes/beta", { type: "Note", title: "Beta from the host" }, "Beta host body.\n");
+  // The host answers 200, in a shape this client does not admit (the write result's shape).
+  h.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const response = await h.host.fetch(input, init);
+    if (new URL(String(input)).pathname !== "/sync/v1/read") return response;
+    const { data } = (await response.json()) as { data: { document: { id: string; frontmatter: unknown; body: string }; version: string } };
+    return Response.json({ ok: true, operationId: "documents.read.v1", data: { bundleId: BUNDLE, documentId: data.document.id, version: data.version, document: { frontmatter: data.document.frontmatter, body: data.document.body } } });
+  }) as typeof fetch;
+  const { error } = await failingSync(h);
+  assert.equal(error.code, "RUNTIME", error.message);
+  assert.match(error.message, /\/sync\/v1\/read/);
+  assert.match(error.message, /contract mismatch/);
+  const details = error.details as { route?: string; retryable?: boolean; code?: string };
+  assert.equal(details.route, "/sync/v1/read");
+  assert.equal(details.retryable, false);
+  assert.equal(details.code, "MALFORMED_ANSWER");
+  assert.doesNotMatch(error.help ?? "", /retry the same command/);
+});
+
 test("different documents changed on each side both land, with no conflict", async () => {
   const h = await harness();
   h.host.put("notes/beta", { type: "Note", title: "Beta from the host" }, "Host body.\n");
@@ -181,16 +238,31 @@ test("the same document changed on each side, even in disjoint frontmatter keys,
   assert.deepEqual(h.host.applied, []);
   // The local file keeps the local edit.
   assert.match(await readFile(path.join(h.folder, "projects/2026/plan.md"), "utf8"), /Plan, retitled/);
-  assert.match(String((receipt!.help as string[])[0]), new RegExp(`sync --inspect projects/2026/plan --dir ${h.folder}$`));
+  assert.match(String((receipt!.help as string[])[0]), new RegExp(`sync --inspect --doc projects/2026/plan --dir ${h.folder}$`));
 
-  // Inspect shows base, local and remote; nothing is written.
-  const review = await runSync(h, ["--inspect", "projects/2026/plan"]);
+  // Inspect shows base, local and remote; nothing is written. `--inspect --doc <id>` is the
+  // spelling the help names, like --resolve's; `--inspect <id>` is its alias and answers the same.
+  const review = await runSync(h, ["--inspect", "--doc", "projects/2026/plan"]);
+  assert.deepEqual(await runSync(h, ["--inspect", "projects/2026/plan"]), review);
+  assert.deepEqual(await runSync(h, ["--doc", "projects/2026/plan", "--inspect"]), review);
   assert.equal(review.conflict, "projects/2026/plan");
   assert.equal(review.reason, "changed_remotely");
   assert.match(String((review.local as { content: string }).content), /Plan, retitled/);
   assert.match(String((review.remote as { content: string }).content), /status: paused/);
   assert.equal((review.remote as { version: string }).version, remoteVersion);
   assert.equal((review.base as { version: string }).version, "sha256:422eea40f06017c6ce64c5caa63af90c8e2f4caacc1209f8e46c8335ff3f7c0d");
+});
+
+test("--inspect takes its document from --doc, and refuses a missing or a second, different id", async () => {
+  const h = await harness();
+  const bare = await failingSync(h, ["--inspect"]);
+  assert.equal(bare.error.code, "USAGE");
+  assert.match(bare.error.message, /--inspect needs --doc <id>/);
+  const both = await failingSync(h, ["--inspect", "notes/alpha", "--doc", "notes/beta"]);
+  assert.equal(both.error.code, "USAGE");
+  assert.match(both.error.message, /name one document/);
+  const docOnly = await failingSync(h, ["--doc", "notes/alpha"]);
+  assert.match(docOnly.error.message, /--doc names the document for --inspect or --resolve/);
 });
 
 test("--resolve take replaces the file with the host's version and nothing is sent", async () => {
