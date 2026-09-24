@@ -199,6 +199,10 @@ export interface ScanReport {
   /** Documents whose only differences were managed fields. */
   readonly managedOnly: string[];
   readonly held: HeldFile[];
+  /** Documents whose file was edited against a version the host has since changed or deleted. */
+  readonly conflicted: string[];
+  /** In a preview: the edits and deletions the scan would journal (nothing is journaled). */
+  readonly pending: string[];
 }
 
 async function readProjectionJson(home: string, checkoutId: string): Promise<unknown> {
@@ -351,6 +355,13 @@ export interface ScanContext {
   readonly only?: ReadonlySet<string>;
   /** The person's `--accept-deletes <n>:<digest>`: admits held deletions when it names exactly their set. */
   readonly acceptDeletes?: string;
+  /**
+   * Classify without writing anything (`status`): no edit or deletion is journaled, no hold is
+   * recorded, and each one that would be is listed in `pending`. The caller passes a projection
+   * record it will not write back. An edit the local kernel would refuse as invalid is counted as
+   * pending here; only the journaling that a preview skips can find it.
+   */
+  readonly preview?: boolean;
 }
 
 function held(id: string, rel: string, reason: HeldReason, message: string): HeldFile {
@@ -404,7 +415,7 @@ export function unsendable(
  */
 export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   const { folder, local, projection } = context;
-  const report: ScanReport = { committed: [], deleted: [], managedOnly: [], held: [] };
+  const report: ScanReport = { committed: [], deleted: [], managedOnly: [], held: [], conflicted: [], pending: [] };
   const seen = new Set<string>();
   // The baseline is what the checkout held before this scan: files new in it never dilute the hold.
   const baselineIds = Object.entries(projection.files).filter(([, entry]) => !entry.deleted).map(([id]) => id);
@@ -451,7 +462,10 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     }
     // Edited against a version the host has since changed or deleted: reported as a conflict by
     // the run's closing pass, never journaled against the host's newer state.
-    if ((await folderConflictFor(id, bytes, entry, local.backend, context.okfVersion)) !== null) continue;
+    if ((await folderConflictFor(id, bytes, entry, local.backend, context.okfVersion)) !== null) {
+      report.conflicted.push(id);
+      continue;
+    }
     if (!entry && !stored.document) {
       const twin = (await caseTwins(local.backend, projection)).get(foldedPath(id));
       if (twin !== undefined && twin !== id) {
@@ -466,6 +480,10 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     const refusal = unsendable(id, rel, bytes, stored.document?.doc ?? null, context);
     if (refusal) {
       report.held.push(refusal);
+      continue;
+    }
+    if (context.preview) {
+      report.pending.push(id);
       continue;
     }
     const parsed = parseMarkdown(utf8(bytes)!, id, { okfVersion: context.okfVersion });
@@ -526,7 +544,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   const accepting = holding && context.acceptDeletes === token;
   if (holding && !accepting) {
     const ids = counting.map(({ id }) => id).sort();
-    await local.backend.writeMeta(DELETION_WINDOW_KEY, { ...window, hold: { ids, token } } satisfies DeletionWindow);
+    if (!context.preview) await local.backend.writeMeta(DELETION_WINDOW_KEY, { ...window, hold: { ids, token } } satisfies DeletionWindow);
     report.hold = { count: counting.length, ids, token, pending: pendingHold && !decision.held, deletions: decision.deletions, baseline: decision.baseline, ...(context.acceptDeletes !== undefined ? { acceptMismatch: context.acceptDeletes } : {}) };
     for (const { id, rel } of counting) {
       report.held.push(held(id, rel, "bulk_deletion", `${rel} is one of ${counting.length} files deleted and held: with the deletes of the last day that is ${decision.deletions} of the ${decision.baseline} documents${pendingHold && !decision.held ? " (held since an earlier sync)" : ""}, so none is sent. Put the files back with sync --restore-deletes; removing them from the bundle needs the person's explicit confirmation (see deletions_held)`));
@@ -535,11 +553,15 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     const heldIds = new Set(ids);
     deletions.splice(0, deletions.length, ...deletions.filter(({ id }) => !heldIds.has(id)));
   }
-  if (!report.hold && (counting.length > 0 || window.hold !== null)) {
+  if (!context.preview && !report.hold && (counting.length > 0 || window.hold !== null)) {
     // Opening the window freezes its baseline; an acceptance, or a hold whose files came back, closes it.
     const opening = counted === 0 && counting.length > 0 && !accepting;
     const next: DeletionWindow = { acceptedAt: window.acceptedAt, baseline: accepting ? null : opening ? baseline : window.baseline, hold: null };
     await local.backend.writeMeta(DELETION_WINDOW_KEY, next satisfies DeletionWindow);
+  }
+  if (context.preview) {
+    report.pending.push(...deletions.map(({ id }) => id));
+    return report;
   }
   const admitted: string[] = [];
   for (const { id, rel, version } of deletions) {
