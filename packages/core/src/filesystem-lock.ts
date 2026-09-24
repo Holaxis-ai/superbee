@@ -345,15 +345,23 @@ async function canonicalTargetInDirectory(directory: string, requestedBasename: 
  */
 async function timeoutError(
   lockPath: string,
-  owner: FilesystemMutationLockOwner | null,
+  snapshot: FilesystemMutationLockOwner | null,
   guarded: string,
 ): Promise<FilesystemMutationLockError> {
-  const malformed = owner === null;
-  const sameHost = owner?.hostname === hostname();
   // A dead-owner answer is only about the snapshot; report it as stale only while the path still
-  // carries that owner's record, because the lock may have been released and claimed since.
-  const stale = owner !== null && sameHost && !processExists(owner.pid) &&
-    (await readOwner(lockPath))?.token === owner.token;
+  // carries that owner's record. Otherwise the lock was released and possibly claimed since, so
+  // diagnose the record there now, never the dead snapshot as its holder: a caller that checks the
+  // named PID (the push role's PID-reuse check, or a person running `ps`) would otherwise judge a
+  // live replacement by a process that no longer holds anything.
+  let diagnosed = snapshot;
+  let stale = false;
+  if (snapshot !== null && snapshot.hostname === hostname() && !processExists(snapshot.pid)) {
+    const current = await readOwner(lockPath);
+    if (current?.token === snapshot.token) stale = true;
+    else diagnosed = current;
+  }
+  const owner = diagnosed;
+  const malformed = owner === null;
   let message: string;
   if (malformed) {
     message =
