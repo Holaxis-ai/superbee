@@ -14,6 +14,7 @@ import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
 import { checkout } from "../src/commands/checkout.js";
 import { status } from "../src/commands/status.js";
+import { bundleCommand } from "../src/commands/bundle.js";
 import { sync } from "../src/commands/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { readFreshness } from "../src/hosted/freshness.js";
@@ -90,7 +91,8 @@ async function edit(h: Harness, id: string, change: (doc: { frontmatter: Record<
 test("a fresh checkout is clean, pulled just now, not stale, and asks for nothing", async () => {
   const h = await harness();
   const { record, sync: block, help } = await runStatus(h);
-  assert.equal(Object.keys(record)[0], "sync", "the sync block leads the report");
+  assert.deepEqual(Object.keys(record).slice(0, 2), ["home", "sync"], "the home and the sync block lead the report");
+  assert.equal(record.home, "hosted");
   assert.equal(block.bundle_id, BUNDLE);
   assert.equal(block.host, HOST);
   assert.equal(block.state, "clean");
@@ -211,4 +213,25 @@ test("status writes nothing: with unsent edits, a pending delete and a torn stor
   assert.equal(block.state, "unsent_changes");
   assert.equal(block.unsent, 3);
   assert.deepEqual({ home: await tree(h.home), folder: await tree(h.folder) }, before);
+});
+
+test("bundle locate names a hosted checkout's home, its host and bundle, and that the checkout selected it", async () => {
+  const h = await harness();
+  const locate = async (argv: string[], cwd: string): Promise<Record<string, unknown>> => {
+    let out = "";
+    await bundleCommand([...argv, "--json"], { cwd: () => cwd, stdout: (s) => (out += s), home: h.home });
+    return JSON.parse(out) as Record<string, unknown>;
+  };
+  const found = await locate(["locate"], h.folder);
+  const binding = (await hostedCheckoutAt(h.folder, h.home))!;
+  assert.deepEqual(found, {
+    schema_version: 1,
+    locator: { kind: "local-path", path: h.folder },
+    home: "hosted",
+    hosted: { host: HOST, bundle_id: BUNDLE, workspace: binding.workspace, principal: binding.principal_id },
+    selected_by: "hosted-checkout",
+    available: true,
+  });
+  assert.equal((await locate(["locate", "--dir", h.folder], h.cwd)).selected_by, "explicit-dir");
+  assert.equal(h.host.requests.length, 0, "locate sends no request to the host");
 });
