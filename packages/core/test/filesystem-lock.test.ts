@@ -1154,6 +1154,27 @@ test("a record naming this process's own id is reclaimed only when an earlier pr
   }
 });
 
+test("a claim by another copy of the lock module in this process stays held after the wall clock jumps past it", async () => {
+  const harness = await isolatedLockPaths();
+  const copy = (await import(new URL("../src/filesystem-lock.ts?second-copy", import.meta.url).href)) as typeof import("../src/filesystem-lock.js");
+  assert.notEqual(copy.acquireFilesystemMutationLock, acquireFilesystemMutationLock);
+  const realNow = Date.now;
+  try {
+    const release = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot });
+    // A suspend or a forward clock step: the wall clock moves while this process's uptime does not.
+    Date.now = () => realNow() + 60 * 60 * 1000;
+    await assert.rejects(
+      () => copy.acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 20, pollMs: 5 }),
+      (err: unknown) => err instanceof copy.FilesystemMutationLockError && !err.stale && err.owner?.pid === process.pid,
+    );
+    Date.now = realNow;
+    await release();
+  } finally {
+    Date.now = realNow;
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("an explicit lock root isolates runtime state while preserving the portable-root boundary", async () => {
   const harness = await isolatedLockPaths();
   try {

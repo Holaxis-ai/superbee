@@ -213,16 +213,22 @@ function processExists(pid: number): boolean {
   }
 }
 
-/** Tokens of the claims this module holds, from just before each owner record is written until its release. */
-const heldTokens = new Set<string>();
+/**
+ * Tokens of the claims held in this process, from just before each owner record is written until
+ * its release. The set lives on the global object so every copy of this module one process loads
+ * (each published bundle carries its own) shares it: the start-time test below cannot protect
+ * such a copy's claims, because a suspend or a forward clock step moves the start it computes past
+ * them.
+ */
+const HELD_TOKENS: unique symbol = Symbol.for("superbee.filesystem-lock.held-tokens");
+const heldTokens: Set<string> = ((globalThis as { [HELD_TOKENS]?: Set<string> })[HELD_TOKENS] ??= new Set<string>());
 
 /**
  * Whether a same-host owner is demonstrably gone. `kill(pid, 0)` answers that for another process,
  * but for this process's own id it always answers "alive", so a record left by an earlier process
  * that had this id (a container entry point that is PID 1 again after a restart) would hold its
- * lock forever. Such a record is gone only when no claim of this module carries its token and it
- * was written before this process started: a claim by another copy of this module in the same
- * process is younger than the process, so it stays live.
+ * lock forever. Such a record is gone only when no claim in this process carries its token and it
+ * was written before this process started.
  */
 function ownerIsGone(owner: FilesystemMutationLockOwner): boolean {
   if (owner.pid !== process.pid) return !processExists(owner.pid);
