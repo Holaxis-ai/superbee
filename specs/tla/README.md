@@ -13,25 +13,28 @@ so a change to one of those functions should be mirrored in the spec.
 | `intent-journal/` | `IntentLifecycle.tla` | The lifecycle of one document's intents: compose, claim, uncertain delivery, settle, reclaim, resume and resolve |
 | `identified-write/` | `IdentifiedWrite.tla` | At-most-once delivery of an identified guarded write across lost answers, outcome expiry and store restarts (`packages/core/src/uncertain-write.ts`, `packages/server/src/router.ts`) |
 
-## Status: the fixed configs describe intended behavior
+## Status: fixes on `main` and design targets
 
 Each spec has one `*.fixed.cfg` whose invariants and properties must all hold, and a set of
 variant configs that must each produce one named counterexample. The fixed configs turn on knobs
-that model fixes, and not all of those fixes are on `main` yet:
+that model fixes. Some of those fixes are on `main`; the others are design targets that `main`
+does not implement:
 
-- `FsLock.fixed.cfg` models the owner re-checks in open PR #310.
-- `WorkingCopy.fixed.cfg` models pull consistency from open PR #314 and one sync at a time from
-  open PR #311. It also turns on `AckInvalidates` (an acknowledgement drops the recorded heads
-  digest), which no PR implements yet.
-- `IntentLifecycle.fixed.cfg` turns on `ReclaimBeforePush` and `AdmitRefused`. The CLI hosted sync
-  already reclaims before every push; exact-mode `pushWithRole` does not, and no PR changes either
-  behavior yet.
+- `FsLock.fixed.cfg` models the owner re-checks before quarantine and before a "stale" diagnosis,
+  which are on `main` (#310).
+- `WorkingCopy.fixed.cfg` models pull consistency (#314) and one `sync()` at a time per runtime
+  (#311), which are on `main`. It also turns on `AckInvalidates` (an acknowledgement drops the
+  recorded heads digest), a design target that `main` does not implement.
+- `IntentLifecycle.fixed.cfg` turns on `ReclaimBeforePush` and `AdmitRefused`, both design
+  targets. The CLI hosted sync already reclaims before every push; exact-mode `pushWithRole` does
+  not.
 - `IdentifiedWrite.fixed.cfg` models a proposed protocol (a client read-back rule plus a server
-  stale-identity guard) that no PR implements. Open PR #312 corrects the documented at-most-once
-  claims instead.
+  stale-identity guard) that `main` does not implement. The documented at-most-once claims on
+  `main` describe the current behavior instead (#312).
 
-Until those changes merge, the fixed configs describe the intended behavior, not the code on
-`main`. A config marked "open" below describes a defect that is still present.
+A fixed config therefore describes `main` only where every knob it turns on is a fix on `main`.
+A variant config that turns off a fix on `main` reproduces the behavior before that fix, not the
+current code. A config marked "open" below describes a defect that is still present on `main`.
 
 ## Running the models
 
@@ -92,8 +95,8 @@ contending one-shot processes that each claim, mutate and release. Callers are s
 | Config | Checks | Expected |
 | --- | --- | --- |
 | `FsLock.fixed.cfg` | Mutual exclusion (`M1`), a holder's record stays at the lock path (`M2`), quarantine destinations hold only their dead owner's directory (`Fence`), rollback never meets a foreign record (`NoImpossible`), and honest "retry" and "stale" diagnoses; three contenders, plain and `ifAvailable` callers, crashes | pass |
-| `FsLock.bug-quarantine-aba.cfg` | Without the quarantine re-check, a lock released and reclaimed after the owner snapshot is moved aside while held (fixed by #310) | `M1` violated |
-| `FsLock.bug-stale-diagnosis.cfg` | Without the diagnosis re-check, a live replacement lock is reported as stale (fixed by #310) | `StaleDiagAccurate` violated |
+| `FsLock.bug-quarantine-aba.cfg` | Before the quarantine re-check was added (#310), a lock released and reclaimed after the owner snapshot is moved aside while held | `M1` violated |
+| `FsLock.bug-stale-diagnosis.cfg` | Before the diagnosis re-check was added (#310), a live replacement lock is reported as stale | `StaleDiagAccurate` violated |
 | `FsLock.bug-pid-reuse-diagnosis.cfg` | Open: a crashed holder's reused pid keeps plain and waiting callers on a "retry" diagnosis | `RetryDiagAccurate` violated |
 | `FsLock.bug-hostname-change-diagnosis.cfg` | Open: after a hostname change, a crashed holder's lock is diagnosed as "retry" forever | `RetryDiagAccurate` violated |
 | `FsLock.assumption-pid-namespace.cfg` | Contenders that share the lock root from different PID namespaces break exclusion even with both re-checks | `M1` violated |
@@ -122,13 +125,14 @@ authority state.
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `WorkingCopy.fixed.cfg` | `TruthfulDigest` and `NoRegress` with two runs serialized (#311), pull consistency (#314) and `AckInvalidates` (no PR yet) | pass |
+| `WorkingCopy.fixed.cfg` | `TruthfulDigest` and `NoRegress` with two runs serialized (#311) and pull consistency (#314), both on `main`, and `AckInvalidates` (design target) | pass |
 | `WorkingCopy.bug-ack-keeps-digest.cfg` | Open: an acknowledgement keeps the recorded heads digest, so a later return to that digest answers 304 over a stale copy, in a single realm | `TruthfulDigest` violated |
-| `WorkingCopy.bug-pull-inconsistent-digest.cfg` | Pull records the listing's digest after a document changed between the heads answer and its fetch (fixed by #314) | `TruthfulDigest` violated |
+| `WorkingCopy.bug-pull-inconsistent-digest.cfg` | Before pull consistency was added (#314), pull records the listing's digest after a document changed between the heads answer and its fetch | `TruthfulDigest` violated |
 | `WorkingCopy.bug-overlapping-sync.cfg` | Two unserialized runs: a pull whose listing predates a push acknowledgement deletes the acknowledged create | `NoRegress` violated |
 
-#311 serializes `sync()` calls within one runtime. Two tabs over one store are two runtimes and are
-not serialized by it, so `WorkingCopy.bug-overlapping-sync.cfg` still describes them.
+`main` serializes `sync()` calls within one runtime (#311). Two tabs over one store are two
+runtimes and are not serialized by it, so `WorkingCopy.bug-overlapping-sync.cfg` still describes
+them.
 
 `IntentLifecycle.tla` models one document's journal with crashes, lost requests and answers,
 authority conflicts, content and authorization refusals, and an authority that records each
@@ -139,7 +143,7 @@ been applied is never superseded or resolved away, and chained intents are submi
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `IntentLifecycle.fixed.cfg` | All invariants and `EventuallyAllSettled` with `ReclaimBeforePush` and `AdmitRefused` (no PR yet), every fault kind | pass |
+| `IntentLifecycle.fixed.cfg` | All invariants and `EventuallyAllSettled` with `ReclaimBeforePush` and `AdmitRefused` (design targets), every fault kind | pass |
 | `IntentLifecycle.bug-never-reclaim.cfg` | Open: exact-mode `pushWithRole` never reclaims, so a crash after the claim leaves the intent in flight forever | `EventuallyAllSettled` violated |
 | `IntentLifecycle.bug-refused-head-wedge.cfg` | Open: a content-refused head with a chained successor has no exit in exact mode | `EventuallyAllSettled` violated |
 | `IntentLifecycle.bug-claim-aba.cfg` | Open: `push` called outside the push role; the claim compares state only, so an intent claimed before can skip its lookup | `NoBlindResubmit` violated |
@@ -158,7 +162,7 @@ proposed rule trusts absence only when the store provably saw the first send.
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `IdentifiedWrite.fixed.cfg` | `AtMostOnce`, `NoLostUpdate`, `NoMisleadingConflict`, `AckHonest` and `EventuallySettles` for the proposed client rule plus server guard (no PR yet) | pass |
+| `IdentifiedWrite.fixed.cfg` | `AtMostOnce`, `NoLostUpdate`, `NoMisleadingConflict`, `AckHonest` and `EventuallySettles` for the proposed client rule plus server guard (design target) | pass |
 | `IdentifiedWrite.bug-ref-expiry.cfg` | Open: on the reference wire, a write whose answer was lost is applied again after its record expires and a third party reverted | `AtMostOnce` violated |
 | `IdentifiedWrite.bug-ref-restart.cfg` | Open: the same through a memory outcome store restart, with no expiry | `AtMostOnce` violated |
 | `IdentifiedWrite.bug-ref-misleading-conflict.cfg` | Open: a write that already landed is shown as a conflict | `NoMisleadingConflict` violated |
