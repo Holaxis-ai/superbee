@@ -30,7 +30,7 @@ import path from "node:path";
 import { hostname } from "node:os";
 
 import type { FilesystemHostPolicy } from "./filesystem-host.js";
-import { acquireFilesystemIdentityLock, filesystemLockAgeMs as lockAgeMs, FilesystemMutationLockError, type FilesystemMutationLockOptions, type FilesystemMutationLockOwner } from "./filesystem-lock.js";
+import { acquireFilesystemIdentityLock, filesystemLockAgeMs as lockAgeMs, filesystemLockHeldBy as lockHeldBy, FilesystemMutationLockError, type FilesystemMutationLockOptions, type FilesystemMutationLockOwner } from "./filesystem-lock.js";
 
 /** The Web Locks `LockManager` subset the push role uses; `withPushRole` accepts any value of this shape. */
 export interface PushRoleLockManager {
@@ -158,7 +158,12 @@ export function filesystemPushRoleLocks(options: FilesystemPushRoleOptions = {})
           const owner = error.owner!;
           if (owner.hostname === hostname()) {
             const started = await startedAt(owner.pid);
-            if (started !== null && started > owner.created_at_ms + START_TIME_RESOLUTION_MS) throw new PushRoleStaleOwnerError(error.lockPath, owner, started);
+            // The named owner is a snapshot. Its PID answering for a younger process proves it gone
+            // only while the lock still carries its record after that answer; a holder that released
+            // since, whose PID was then reused, would otherwise be blamed for its live replacement.
+            if (started !== null && started > owner.created_at_ms + START_TIME_RESOLUTION_MS && (await lockHeldBy(error.lockPath, owner.token)) === true) {
+              throw new PushRoleStaleOwnerError(error.lockPath, owner, started);
+            }
           }
           return callback(null);
         }

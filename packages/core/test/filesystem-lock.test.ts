@@ -586,13 +586,18 @@ test("a reclaimer whose dead-owner snapshot changed hands never quarantines the 
 });
 
 test("a timeout reports stale only while the lock still carries the dead owner's record", async () => {
-  const { harness, lockPath, holderToken, options, state, cleanup } = await handOffAfterOwnerRead(2);
+  const { harness, lockPath, options, state, cleanup } = await handOffAfterOwnerRead(2);
   try {
     await assert.rejects(acquireFilesystemMutationLock(harness.target, options), (err: unknown) => {
       assert.ok(err instanceof FilesystemMutationLockError);
-      assert.equal(err.owner?.token, holderToken);
+      // The lock changed hands after the snapshot: the diagnosis names the holder there now, never
+      // the released owner whose PID no longer holds anything.
+      assert.ok(state.replacementToken);
+      assert.equal(err.owner?.token, state.replacementToken);
+      assert.equal(err.owner?.pid, process.pid);
       assert.equal(err.stale, false);
       assert.equal(err.malformed, false);
+      assert.match(err.message, new RegExp(`held by PID ${process.pid} `));
       assert.doesNotMatch(err.message, /stale filesystem mutation lock|Inspect and remove/);
       return true;
     });
