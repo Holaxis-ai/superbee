@@ -1,0 +1,23 @@
+{
+  "name": "whoami-200",
+  "description": "Who the bearer is on the sync surface.",
+  "route": "/sync/v1/whoami",
+  "rows": [
+    "whoami 200"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"principalId\":\"person:both\",\"credentialId\":\"credential:cli\",\"tenantIds\":[\"tenant:a\"],\"surface\":\"sync\"}",
+    "truncated": false
+  }
+}

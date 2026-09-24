@@ -1709,7 +1709,7 @@ test("a heads answer with the first 100 of 197 rows, count 100 and the real dige
     const shortened = countingRemote(fixture, rewritingHeads(fixture, (heads) => ({ heads: heads.slice(0, 100), digest: realDigest })));
     await assert.rejects(pull(local, shortened.remote), (error: unknown) => {
       assert.equal((error as RemoteError).name, "RemoteError");
-      assert.equal((error as RemoteError).code, "RUNTIME");
+      assert.equal((error as RemoteError).code, "MALFORMED_ANSWER");
       assert.equal((error as RemoteError).status, 502);
       assert.match((error as RemoteError).message, /digest/);
       return true;

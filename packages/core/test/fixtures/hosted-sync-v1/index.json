@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 1,
+  "description": "Golden /sync/v1 exchanges captured from the real hosted gateway app (createApp through test/support/sync-v1-fixture.ts: real bearer admission, tenant selection, kernel operations and D1/R2 storage; only the identity issuer is a fixture). Each file is one request and the exact answer bytes; response headers are limited to the grammar headers. The CLI fake and the core decoders are checked against these; see capture-sync-v1-exchanges.hosted.txt for the capture script.",
+  "source": "Holaxis-ai/superbee-hosted e9e40a7547417e3083ab473afdcbd84a311be439",
+  "exchanges": [
+    {
+      "name": "whoami-200",
+      "file": "whoami-200.json",
+      "route": "/sync/v1/whoami",
+      "rows": [
+        "whoami 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundles-200",
+      "file": "bundles-200.json",
+      "route": "/sync/v1/bundles",
+      "rows": [
+        "bundles 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "capabilities-200",
+      "file": "capabilities-200.json",
+      "route": "/sync/v1/capabilities",
+      "rows": [
+        "capabilities 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "heads-200",
+      "file": "heads-200.json",
+      "route": "/sync/v1/heads",
+      "rows": [
+        "heads 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "heads-304",
+      "file": "heads-304.json",
+      "route": "/sync/v1/heads",
+      "rows": [
+        "heads 304"
+      ],
+      "status": 304
+    },
+    {
+      "name": "snapshot-200",
+      "file": "snapshot-200.json",
+      "route": "/sync/v1/snapshot",
+      "rows": [
+        "snapshot 200 complete"
+      ],
+      "status": 200
+    },
+    {
+      "name": "read-200-ok",
+      "file": "read-200-ok.json",
+      "route": "/sync/v1/read",
+      "rows": [
+        "read 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "read-200-document-not-found",
+      "file": "read-200-document-not-found.json",
+      "route": "/sync/v1/read",
+      "rows": [
+        "read 200 document_not_found"
+      ],
+      "status": 200
+    },
+    {
+      "name": "read-200-bundle-not-found",
+      "file": "read-200-bundle-not-found.json",
+      "route": "/sync/v1/read",
+      "rows": [
+        "read 200 bundle_not_found"
+      ],
+      "status": 200
+    },
+    {
+      "name": "read-400-invalid-input",
+      "file": "read-400-invalid-input.json",
+      "route": "/sync/v1/read",
+      "rows": [
+        "refusal 400 invalid_input"
+      ],
+      "status": 400
+    },
+    {
+      "name": "read-401-unauthenticated",
+      "file": "read-401-unauthenticated.json",
+      "route": "/sync/v1/read",
+      "rows": [
+        "refusal 401 unauthenticated"
+      ],
+      "status": 401
+    },
+    {
+      "name": "create-200-ok",
+      "file": "create-200-ok.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "outcome-200-committed-create",
+      "file": "outcome-200-committed-create.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "200 committed"
+      ],
+      "status": 200
+    },
+    {
+      "name": "create-200-document-exists",
+      "file": "create-200-document-exists.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "200 document_exists"
+      ],
+      "status": 200
+    },
+    {
+      "name": "replace-200-ok",
+      "file": "replace-200-ok.json",
+      "route": "/sync/v1/replace",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "replace-200-version-conflict",
+      "file": "replace-200-version-conflict.json",
+      "route": "/sync/v1/replace",
+      "rows": [
+        "200 version_conflict"
+      ],
+      "status": 200
+    },
+    {
+      "name": "outcome-200-refused-replace",
+      "file": "outcome-200-refused-replace.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "200 refused"
+      ],
+      "status": 200
+    },
+    {
+      "name": "delete-200-ok",
+      "file": "delete-200-ok.json",
+      "route": "/sync/v1/delete",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "outcome-200-committed-delete",
+      "file": "outcome-200-committed-delete.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "200 committed"
+      ],
+      "status": 200
+    },
+    {
+      "name": "delete-200-unchanged",
+      "file": "delete-200-unchanged.json",
+      "route": "/sync/v1/delete",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "create-200-version-conflict-tombstone",
+      "file": "create-200-version-conflict-tombstone.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "200 version_conflict"
+      ],
+      "status": 200
+    },
+    {
+      "name": "outcome-200-absent",
+      "file": "outcome-200-absent.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "200 absent"
+      ],
+      "status": 200
+    },
+    {
+      "name": "write-400-invalid-input",
+      "file": "write-400-invalid-input.json",
+      "route": "/sync/v1/replace",
+      "rows": [
+        "400"
+      ],
+      "status": 400
+    },
+    {
+      "name": "write-400-missing-identity",
+      "file": "write-400-missing-identity.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "400"
+      ],
+      "status": 400
+    },
+    {
+      "name": "create-429-request-capacity",
+      "file": "create-429-request-capacity.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "429 request_capacity"
+      ],
+      "status": 429
+    }
+  ]
+}

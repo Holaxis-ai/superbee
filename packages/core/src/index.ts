@@ -151,7 +151,7 @@ export type {
 // tests. No CF/D1/production deployment is implied by its presence.
 export { RemoteBackend } from "./remote-backend.js";
 export type { FetchLike, HeadsOptions, RemoteBackendOptions, WireCapabilities } from "./remote-backend.js";
-export { RemoteError } from "./remote-error.js";
+export { RemoteError, MalformedAnswer, MALFORMED_ANSWER, isMalformedAnswer } from "./remote-error.js";
 export { SNAPSHOT_DIGEST_MISMATCH, SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream } from "./remote-parsers.js";
 export type { HeadsResult, ReadSnapshotStreamOptions, RemoteSnapshot, SnapshotDocument, SnapshotHeader } from "./remote-parsers.js";
 export { headsDigest, isHeadsDigest, sortHeads } from "./heads-digest.js";

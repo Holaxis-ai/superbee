@@ -1,0 +1,24 @@
+{
+  "name": "write-400-missing-identity",
+  "description": "A write without its request identity.",
+  "route": "/sync/v1/create",
+  "rows": [
+    "400"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/x\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"new\"}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "capabilities-200",
+  "description": "The working copy's capabilities for a writable bundle.",
+  "route": "/sync/v1/capabilities",
+  "rows": [
+    "capabilities 200"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"heads\":true,\"snapshot\":true,\"operations\":true,\"operationsRetentionMs\":2592000000,\"bound\":{\"documents\":1000,\"bytes\":1048576},\"paged\":{\"documents\":10000},\"root\":{\"content\":\"---\\nokf_version: \\\"0.2\\\"\\n---\\n# notes.a\\n\",\"version\":\"sha256:7cc1f9e472341f8bdf54f668a9ab98655055e36a9ad41f8bfcc8d5977aaa59d0\"}}",
+    "truncated": false
+  }
+}

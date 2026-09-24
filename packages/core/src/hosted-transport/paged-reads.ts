@@ -12,7 +12,7 @@
  */
 
 import { isHeadsDigest, type DocumentHead } from "../heads-digest.js";
-import { RemoteError } from "../remote-error.js";
+import { malformed, RemoteError } from "../remote-error.js";
 import { SNAPSHOT_TRUNCATED } from "../remote-parsers.js";
 
 /** The refusal a page answers when the bundle moved since the first page pinned it. */
@@ -50,7 +50,6 @@ export function pause(ms: number, signal: AbortSignal): Promise<void> {
 /** The longest cursor a reader passes back; the host's are far shorter. */
 export const MAXIMUM_CURSOR_LENGTH = 4096;
 
-const malformed = (message: string) => new RemoteError(message, "RUNTIME", 502);
 
 /** True when `error` is the host's refusal of a page because the bundle moved since the first. */
 export function isPageRestart(error: unknown): boolean {

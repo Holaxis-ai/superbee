@@ -20,7 +20,7 @@
  * the verbs the same whole listing and the same one snapshot body.
  */
 
-import { RemoteError } from "../remote-error.js";
+import { malformed, onRoute, RemoteError } from "../remote-error.js";
 import { parseHeadsAnswer, readSnapshotStream, type HeadsResult, type RemoteSnapshot } from "../remote-parsers.js";
 import type { HeadsOptions, WireCapabilities } from "../remote-backend.js";
 import type { ConceptId, ReadResult, ReservedFilename, ReservedReadResult, StorageBackend } from "../types.js";
@@ -129,8 +129,6 @@ export interface HostedReadAdapter extends StorageBackend {
   readonly signal: AbortSignal;
 }
 
-const malformed = (message: string) => new RemoteError(message, "RUNTIME", 502);
-
 function notFound(id: ConceptId): Error & { code: string } {
   const error = new Error(`no concept document '${id}'`) as Error & { code: string };
   error.code = "ENOENT";
@@ -228,16 +226,30 @@ function boundedLines(body: ReadableStream<Uint8Array>, maximum: number): Readab
 
 const TRANSIENT_READ_CODES = new Set(["backend_unavailable", "cancelled", "deadline_exceeded", "internal_error", "synchronization_pending"]);
 
-/** A `documents.read.v1` success: the document's authored frontmatter and body at its version. */
-function decodeDocumentRead(id: ConceptId, bundleId: string, body: unknown): ReadResult {
-  const envelope = body as { ok?: unknown; operationId?: unknown; data?: { bundleId?: unknown; documentId?: unknown; version?: unknown; document?: { frontmatter?: unknown; body?: unknown } } } | undefined;
+/**
+ * A `documents.read.v1` success, decoded against hosted's result schema
+ * (`{ ok: true, operationId, data: { document: { id, frontmatter, body }, version } }`, with an
+ * optional `viewActionContext` and `readSnapshot` this reader does not use): the document it names
+ * must be the one asked for, at a content version.
+ */
+export function decodeDocumentRead(id: ConceptId, body: unknown, route?: string): ReadResult {
+  const envelope = body as { ok?: unknown; operationId?: unknown; data?: { version?: unknown; document?: { id?: unknown; frontmatter?: unknown; body?: unknown } } } | undefined;
   const data = envelope?.data;
   const document = data?.document;
-  if (envelope?.operationId !== "documents.read.v1" || envelope.ok !== true || !data || data.documentId !== id || data.bundleId !== bundleId ||
-      !isContentVersion(data.version) || !document || typeof document.frontmatter !== "object" || document.frontmatter === null ||
+  if (envelope?.operationId !== "documents.read.v1" || envelope.ok !== true || typeof data !== "object" || data === null || !isContentVersion(data.version) ||
+      typeof document !== "object" || document === null || document.id !== id || typeof document.frontmatter !== "object" || document.frontmatter === null ||
       Array.isArray(document.frontmatter) || typeof document.body !== "string")
-    throw malformed("document read answered a malformed envelope");
+    throw malformed("document read answered an envelope that is not documents.read.v1's result for this document", route);
   return { doc: { id, frontmatter: document.frontmatter as ReadResult["doc"]["frontmatter"], body: document.body }, version: data.version };
+}
+
+/** `documents`, naming `route` on a malformed answer the iteration rejects with. */
+async function* namingRoute<T>(route: string, documents: AsyncIterable<T>): AsyncGenerator<T> {
+  try {
+    yield* documents;
+  } catch (error) {
+    await onRoute(route, () => Promise.reject(error));
+  }
 }
 
 export function createHostedReadAdapter(options: HostedReadAdapterOptions): HostedReadAdapter {
@@ -283,7 +295,7 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
       .catch(carrierFailure)
       .then((answer) => {
         if (answer.status !== 200) refused(answer);
-        return decodeHostedCapabilities(answer.body);
+        return onRoute(routes.capabilities, async () => decodeHostedCapabilities(answer.body));
       });
     reading = pending;
     // A failed read is not held: the next call asks again. A read superseded by a `forget` is not held either.
@@ -318,7 +330,7 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
         if (TRANSIENT_READ_CODES.has(code)) throw new HostedCarrierError("unavailable");
         throw new RemoteError(message, code, 422);
       }
-      return decodeDocumentRead(id, bundleId, answer.body);
+      return decodeDocumentRead(id, answer.body, routes.read);
     } finally {
       release();
     }
@@ -386,7 +398,7 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
       assertOpen();
       for (let attempt = 1; ; attempt += 1) {
         try {
-          return await readHeads(headsOptions.ifNoneMatch);
+          return await onRoute(routes.heads, () => readHeads(headsOptions.ifNoneMatch));
         } catch (error) {
           // The documents changed between two pages: after a pause, the listing starts again
           // from the first page.
@@ -402,8 +414,11 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
       // host refused or the carrier failed) ends the stitched body before its terminator, which
       // the parser reports as truncation, so the caller re-requests the snapshot from the start.
       // A body that names no next page passes through the stitch unchanged.
-      const first = await snapshotPage(undefined);
-      return readSnapshotStream(stitchSnapshotPages(first, snapshotPage), { status: 200 });
+      return onRoute(routes.snapshot, async () => {
+        const first = await snapshotPage(undefined);
+        const { header, docs } = await readSnapshotStream(stitchSnapshotPages(first, snapshotPage), { status: 200 });
+        return { header, docs: namingRoute(routes.snapshot, docs) };
+      });
     },
     abort() {
       controller.abort();
