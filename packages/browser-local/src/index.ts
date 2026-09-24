@@ -58,6 +58,7 @@ export {
   createRequestDrivenRuntime,
   createBrowserLocalRuntime,
   UnconfirmedWorkingCopyError,
+  PushRoleHeldError,
   kindWarningsFor,
   type RequestDrivenRuntimeOptions,
   type BrowserLocalRuntimeOptions,
