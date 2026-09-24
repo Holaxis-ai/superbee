@@ -37,6 +37,11 @@ and write through a small command-line tool.
   needs a network. The document schemas, called kinds, live inside the bundle, so it describes
   its own structure.
 
+Bees build comb one cell at a time. The comb holds what the colony gathers, and its shape shows
+the next bee where to build and what belongs where. Superbee works the same way: people and
+agents record what they learn in a structure that fits their domain, and that structure guides
+whoever works next. Each session builds on the last instead of starting over.
+
 The npm package is one self-contained executable with zero runtime dependencies, plus an Agent
 Skill, an instruction file your agent loads, that teaches it how to use the tool.
 
