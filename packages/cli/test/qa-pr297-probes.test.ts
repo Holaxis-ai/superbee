@@ -16,6 +16,7 @@ import { sync } from "../src/commands/sync.js";
 import { doc as docCommand } from "../src/commands/doc.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
+import { personAtTerminal, type FakeTerminal } from "./support/fake-terminal.js";
 
 interface H {
   home: string;
@@ -25,6 +26,8 @@ interface H {
   host: FakeHost;
   out: string[];
   before?: (route: string, body: Record<string, unknown>) => Promise<void> | void;
+  /** The person's terminal; by default one where the person confirms what they are asked. */
+  terminal?: FakeTerminal;
 }
 
 async function harness(host = new FakeHost()): Promise<H> {
@@ -53,7 +56,7 @@ type Outcome = { ok: true; receipt: Record<string, unknown> } | { ok: false; err
 async function attempt(h: H, argv: string[] = [], lockWaitMs = 200): Promise<Outcome> {
   const out: string[] = [];
   try {
-    await sync(["--dir", h.folder, ...argv], { stdout: (t: string) => void out.push(t), auth: h.auth, cwd: h.cwd, fetch: fetchFor(h), write: { sleep: instant, lookupDelayMs: 0 }, sleep: instant, lockWaitMs });
+    await sync(["--dir", h.folder, ...argv], { stdout: (t: string) => void out.push(t), auth: h.auth, cwd: h.cwd, fetch: fetchFor(h), write: { sleep: instant, lookupDelayMs: 0 }, sleep: instant, lockWaitMs, terminal: h.terminal ?? personAtTerminal() });
     h.out = out;
     return { ok: true, receipt: decode(out.at(-1)!.trim()) as Record<string, unknown> };
   } catch (error) {
@@ -609,11 +612,11 @@ test("MD1c a held mass delete is released only by --accept-deletes naming the ex
   const h = await harness(bulkHost(9));
   for (const id of bulkIds(9)) await unlink(fileOf(h, id));
   const held = await fails(h);
-  const hold = held.receipt?.deletions_held as { count: number; restore: string; confirmation_required: { token: string; agent_instruction: string; command_after_confirmation: string } };
+  const hold = held.receipt?.deletions_held as { count: number; restore: string; confirmation_required: { token: string; agent_instruction: string; command_for_person: string } };
   assert.equal(hold.count, 9);
   assert.match(hold.confirmation_required.token, /^9:[0-9a-f]{12}$/);
   assert.match(hold.confirmation_required.agent_instruction, /Do not run this yourself/);
-  assert.match(hold.confirmation_required.command_after_confirmation, new RegExp(`--accept-deletes ${hold.confirmation_required.token}`));
+  assert.match(hold.confirmation_required.command_for_person, new RegExp(`--accept-deletes ${hold.confirmation_required.token}`));
   assert.ok(!("accept" in hold), "the accept is never offered as a ready next step");
   const wrong = await fails(h, ["--accept-deletes", `8:${hold.confirmation_required.token.split(":")[1]}`]);
   assert.match(String((wrong.receipt?.deletions_held as { accept_mismatch?: string }).accept_mismatch), /does not name the held set/);

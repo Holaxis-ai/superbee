@@ -47,6 +47,12 @@ superbee sync --resolve revise --doc <id>     # edit the file to the combined re
 superbee sync                                 # sends what keep or revise decided
 ```
 
+- `--resolve` only records the decision in the checkout. It never sends anything: its receipt
+  says `sent: false`, and after `keep` or `revise` its `next` and `help` name the `superbee sync`
+  that sends it. `take` has nothing to send.
+- Resolving a document again before that sync answers `already_resolved: true` ("waiting to
+  send"). The first decision stands; run `superbee sync`.
+
 - `keep` and `revise` need an `--inspect` first (`not_inspected` otherwise). If the host changes
   after the inspection, they refuse with `stale_review`: inspect again, and decide again.
 - `--inspect <id>` is an alias of `--inspect --doc <id>`.
@@ -62,21 +68,37 @@ Deleting a file (or running `superbee doc delete`) sends a delete of the version
 next sync. The host keeps the document's history.
 
 Deleting many files at once is held instead. The rule: when the deletes of the last day are more
-than half the checkout and at least 3, the new ones are not sent. The sync receipt then carries
-`deletions_held`, which names the held documents. The hold stays in place across syncs until the
-person decides. Never accept it yourself:
+than half the checkout and at least 3, the new ones are not sent. The same rule is applied to the
+documents this checkout did not create itself, so documents it added earlier never dilute the
+count. The sync receipt then carries `deletions_held`, which names the held documents. The hold
+stays in place across syncs until the person decides. Accepting it is the person's step, never
+yours:
 
-1. Name the held documents to the person and ask whether they should be removed from the bundle.
-   (A typed confirmation in the terminal is planned; until then, ask in the conversation.)
-2. Only after an explicit yes, run `deletions_held.confirmation_required.command_after_confirmation`.
-   That is `superbee sync --accept-deletes <count>:<digest>`, and the token covers exactly that set.
-   If the set changes, the token no longer matches and nothing is accepted.
-3. Otherwise run `superbee sync --restore-deletes`, which puts the files back. `--resolve take --doc
-   <id>` restores a single file.
+1. Name the held documents to the person, and ask whether they should be removed from the bundle.
+2. If they want them removed, give them `deletions_held.confirmation_required.command_for_person`
+   (`superbee sync --accept-deletes <count>:<digest>`) to run in their own terminal. It lists the
+   documents and asks them to type the count. The token covers exactly that set; if the set
+   changes, nothing is accepted.
+3. Do not run it yourself. In a shell without a terminal it is refused with `FORBIDDEN`
+   `needs_person_at_terminal` (exit 2), and nothing is accepted. Do not retry it or work around it.
+4. Otherwise run `superbee sync --restore-deletes`, which puts the files back. `--resolve take --doc
+   <id>` restores a single file. Both work from your shell.
 
 If the host deleted a document you edited, `--resolve keep` re-creates it, after an `--inspect`
 that shows the deletion. If you deleted a document the host changed, `keep` deletes the host's
 version (after `--inspect`), and `take` brings it back.
+
+When the host no longer lists most of the documents the folder holds (8 or more, and more than
+half, or all of them), the pull removes none of them and the receipt carries
+`pulled.refused_deletions`: a bundle emptied or replaced by mistake looks the same. Tell the person.
+Once they confirm, in the Superbee app, that the bundle really shrank, run its `take` command
+(`superbee sync --take-host-deletions <count>:<digest>`). It removes the files of exactly that set
+and keeps any file you edited. Nothing is sent to the host.
+
+A host document whose id cannot be a file in the folder (a path-like id such as `a/../b`) is held
+with a `held` row, reason `unsafe_id`, and the rest of the bundle syncs. A host document whose id
+differs only in letter case from another is held as `case_collision`. Both are renamed in the
+Superbee app, by the person.
 
 ## Refusals that belong to the person
 
