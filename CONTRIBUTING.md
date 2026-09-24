@@ -111,13 +111,19 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 <!-- contributing-ci-lanes:start -->
 | Lane | Local command | CI job | Node |
 | --- | --- | --- | --- |
-| runtime | `npm run ci:runtime` | `runtime` | 22, 26 |
+| runtime | `npm run ci:runtime` | `runtime` | 22, 26 (2 shards each) |
 | aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 26 |
 | distribution | `npm run ci:distribution` | `distribution` | 26 |
 | browser | `npm run ci:browser` | `browser` | 26 |
 | scripts | `npm run ci:scripts` | `scripts` | 26 |
 | smoke-node-20 | workflow only | `smoke-node-20` | 20 |
 <!-- contributing-ci-lanes:end -->
+
+The `runtime` job runs two shards per Node version so it stays well inside its 20-minute timeout.
+Each shard builds and typechecks; the CLI suite, the dominant cost, is divided by file through
+Node's `--test-shard`, and the smaller workspace suites run in both shards. Reproduce one shard
+locally with `SUPERBEE_TEST_SHARD=1/2 npm run ci:runtime`; without the variable, `ci:runtime` runs
+everything.
 
 CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, a weekly
 schedule, and manual dispatch. Its JavaScript/TypeScript configuration is

@@ -208,6 +208,23 @@ function assertHostExpectations(jobs, candidate) {
   assert.deepEqual(expectations, { runtime: "0", "aliasing-host": "1" }, "both host classes must be pinned");
 }
 
+// The runtime lane splits each Node version into shards. Every shard index must be a matrix leg and
+// must reach the tests through the declared variable, or files would silently go unrun.
+function assertRuntimeShards(job, lane) {
+  assert.ok(Number.isInteger(lane.shards) && lane.shards >= 1, "runtime must declare an integer shard count");
+  assert.equal(typeof lane.shard_variable, "string", "runtime must name its shard variable");
+  const indexes = Array.from({ length: lane.shards }, (_, index) => index + 1).join(", ");
+  assert.match(
+    job,
+    new RegExp(`^ {8}shard: \\[${indexes}\\]\\s*$`, "m"),
+    "runtime matrix must run every declared shard",
+  );
+  assert.ok(
+    job.includes(`\n      ${lane.shard_variable}: \${{ matrix.shard }}/${lane.shards}\n`),
+    "runtime must export its shard to the tests",
+  );
+}
+
 function validateBrowserScripts(packages) {
   const rootCommand = packages.root.scripts["ci:browser"];
   const mcpCommand = packages.mcpApp.scripts["test:browser"];
@@ -371,6 +388,7 @@ function validateCiTopology(
   }
   assert.match(jobs.runtime, /node-version: \[22, 26\]/);
   assert.match(jobs.runtime, /run: npm run ci:runtime/);
+  assertRuntimeShards(jobs.runtime, candidate.lanes.runtime);
   assert.match(jobs["aliasing-host"], /node-version: 26/);
   assert.match(text, /^permissions:\n {2}contents: read$/m, "required CI must retain read-only contents permission");
   assertHostExpectations(jobs, candidate);
@@ -522,6 +540,9 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
     ["          node-version: 20", "          node-version: 22", /second setup-node|deep-equal/],
     ["          node --version | grep -q '^v20\\.'", "          node --version", /self-check/],
     ["          node \"$CLI\" status --dir \"$DIR\"", "          node --version", /command surface/],
+    ["        shard: [1, 2]", "        shard: [1]", /every declared shard/],
+    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2\n", "", /export its shard/],
+    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2", "      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/3", /export its shard/],
   ]) {
     assert.throws(() => validateCiTopology(workflow.replace(from, to)), error);
   }
