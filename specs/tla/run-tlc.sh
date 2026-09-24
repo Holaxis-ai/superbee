@@ -38,7 +38,7 @@ for cfg in "$@"; do
   (cd "$dir" && java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto -deadlock \
     -metadir "$work/$name.states" -config "$name.cfg" "$spec") > "$log" 2>&1 || status=$?
   elapsed=$(( $(date +%s) - started ))
-  states=$(grep -E 'distinct states found' "$log" | tail -n 1 | sed -E 's/.* ([0-9]+) distinct states found.*/\1/')
+  states=$(grep -E 'distinct states found' "$log" | tail -n 1 | sed -E 's/.* ([0-9]+) distinct states found.*/\1/' || true)
 
   if [ "$expect" = pass ]; then
     if [ "$status" -eq 0 ] && grep -q '^Model checking completed. No error has been found.' "$log"; then
@@ -50,6 +50,7 @@ for cfg in "$@"; do
     continue
   fi
   echo "FAIL $name: expected '$expect', TLC exited $status after ${elapsed}s"
+  grep -E '^Error: ' "$log" || true
   tail -n 80 "$log"
   failures=$((failures + 1))
 done
