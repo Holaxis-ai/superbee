@@ -35,6 +35,7 @@ import {
   queryEdges,
   relativeHref,
   resolveConceptId,
+  extractMarkdownLinks,
   isReservedFile,
   pathFromConceptId,
   loadKinds,
@@ -410,6 +411,29 @@ export async function addLink(
     throw new CliError(
       "USAGE",
       `'${to}' names a reserved OKF file (index.md/log.md), which is never a concept document and cannot be a link target`,
+      { help: `${cliInvocation()} list` },
+    );
+  }
+
+  // Link text is written verbatim. Core's link extractor does not honor backslash escapes (an
+  // escaped `\]` still closes the text and `\[` would be stored literally), so escaping cannot
+  // round-trip through the graph; brackets, backslashes and line breaks are refused instead.
+  if (/[[\]\\\r\n]/.test(text)) {
+    throw new CliError(
+      "USAGE",
+      `link text ${commandQuoted(text)} must not contain '[', ']', '\\' or a line break`,
+      { help: `${cliInvocation()} link add ${commandToken(from)} ${commandToken(to)} --text <text>` },
+    );
+  }
+
+  // The same idempotency hazard applies to any target whose emitted link the parser cannot read
+  // back as this exact edge: ids containing `#`, `?`, `)` or whitespace, or ones that read as
+  // external/in-page hrefs (`mailto:`, `#`). Refuse instead of writing a link the graph can't see.
+  const readBack = extractMarkdownLinks(`[${text}](${href})`);
+  if (readBack.length !== 1 || readBack[0]!.href !== href || resolveConceptId(from, href) !== to) {
+    throw new CliError(
+      "USAGE",
+      `'${to}' cannot be written as a markdown link from '${from}' that resolves back to it (href '${href}')`,
       { help: `${cliInvocation()} list` },
     );
   }

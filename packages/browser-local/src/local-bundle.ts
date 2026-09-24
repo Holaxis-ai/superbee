@@ -1691,7 +1691,10 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<string | unde
  *
  * Batches travel concurrently (see {@link FetchOptions}) and each is written as it arrives; the
  * pull marker records completion, and the digest now matched, only after every batch has been
- * written.
+ * written. A listed document the authority no longer holds when it is fetched is answered as
+ * absent and reconciled like an unlisted one, and the digest is recorded only when every
+ * fetched document read back at the version the listing named: otherwise the working copy is
+ * not that listing's state, and the next pull asks unconditionally.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
   const concurrency = concurrencyOf(options);
@@ -1747,10 +1750,29 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       throw error;
     }
   };
-  const fetchAndApply = (candidates: ConceptId[]): Promise<void> =>
+  let consistent = true;
+  /**
+   * Fetch and apply `candidates`. Given the listing, a document gone since it was listed is
+   * dropped from the listed ids and answered as absent, and `consistent` is cleared when
+   * any document did not read back at its listed version: the working copy is then not that
+   * listing's state, so its digest must not be recorded.
+   */
+  const fetchAndApply = (candidates: ConceptId[], listing?: { listed: Set<ConceptId>; versions: Map<ConceptId, Version> }): Promise<void> =>
     forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
       const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
-      for (const head of await remote.readMany(batch)) await apply(head, premises);
+      if (!listing) {
+        for (const head of await remote.readMany(batch)) await apply(head, premises);
+        return;
+      }
+      const { found, absent } = await readPresent(remote, batch);
+      for (const id of absent) {
+        listing.listed.delete(id);
+        consistent = false;
+      }
+      for (const head of found) {
+        if (head.version !== listing.versions.get(head.doc.id)) consistent = false;
+        await apply(head, premises);
+      }
     });
 
   const wire = await wireFor(remote, local, "heads", options);
@@ -1774,6 +1796,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   }
   const candidates: ConceptId[] = [];
   const listed = new Set<ConceptId>();
+  const versions = new Map<ConceptId, Version>();
   for (const head of answer.heads) {
     listed.add(head.id);
     if (heldTargets.has(head.id)) {
@@ -1782,9 +1805,12 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     }
     const base = await backend.readMeta<SharedBase>(baseKey(head.id));
     if (base?.version === head.version) report.unchanged.push(head.id);
-    else candidates.push(head.id);
+    else {
+      candidates.push(head.id);
+      versions.set(head.id, head.version);
+    }
   }
-  await fetchAndApply(candidates);
+  await fetchAndApply(candidates, { listed, versions });
   await validateReadSide?.();
   const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions, premises, validateReadSide);
   report.deleted = reconciled.deleted;
@@ -1793,7 +1819,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     report.refused = reconciled.refused;
     return complete(undefined, false);
   }
-  return complete(answer.digest, false);
+  return complete(consistent ? answer.digest : undefined, false);
 }
 
 // ── status and control ─────────────────────────────────────────────────────────────────────

@@ -296,6 +296,52 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     };
   };
 
+  /**
+   * One push-then-pull. When another realm holds the push role, this realm neither pushes nor
+   * pulls: a pull listed while the holder's push is in flight can predate an acknowledgement the
+   * holder is about to record, and would then remove the acknowledged document from the shared
+   * working copy. The holder's own sync pulls into that same store, so this call returns the
+   * current status and leaves `online` and this runtime's recorded outcome unchanged.
+   */
+  const syncOnce = async (syncOptions: PlatformSyncOptions): Promise<PlatformSyncStatus> => {
+    const readSide: StorageBackend = remote;
+    let pushed: Awaited<ReturnType<typeof pushWithRole>>;
+    try {
+      pushed = await pushWithRole(local, await exactTransport(), { remote: readSide, bodyTransport: options.bodyTransport, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
+    } catch (error) {
+      lastOutcome = { ok: false, error: describeFailure(error) };
+      throw error;
+    }
+    if (!pushed.held) return status();
+    try {
+      // The opened bundle, not its backend: the pull keeps the authority's capabilities on it.
+      await pull(local, readSide, syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions });
+      online = true;
+      if (await admitBodyMode(backend)) {
+        const remaining = await localSyncStatus(local);
+        lastOutcome = { ok: remaining.counts.pending + remaining.counts.in_flight + remaining.counts.unknown + remaining.counts.refused + remaining.counts.conflict === 0 && !remaining.paused };
+      } else lastOutcome = { ok: true };
+    } catch (error) {
+      lastOutcome = { ok: false, error: describeFailure(error) };
+      if (isInputError(error) || isAuthorityAnswer(error)) throw error;
+      online = false;
+    }
+    return status();
+  };
+
+  /** The sync this runtime is running, and the one follow-up that calls arriving meanwhile share. */
+  let running: Promise<PlatformSyncStatus> | null = null;
+  let rerun: Promise<PlatformSyncStatus> | null = null;
+  let rerunOptions: PlatformSyncOptions = {};
+
+  const start = (syncOptions: PlatformSyncOptions): Promise<PlatformSyncStatus> => {
+    const run = syncOnce(syncOptions).finally(() => {
+      if (running === run) running = null;
+    });
+    running = run;
+    return run;
+  };
+
   return {
     capabilities,
 
@@ -340,29 +386,26 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
      * carrier or authority, records `ok: false` with the error's text before it propagates or
      * is absorbed, so a presentation can show that the sync failed even when the authority
      * answered.
+     *
+     * Syncs on one runtime never overlap. A call made while one is running waits for it and
+     * shares a single follow-up run with every other call made meanwhile, resolving with that
+     * run's result; the follow-up carries the latest `acceptRefusedDeletions` any of them passed.
+     * When another realm holds the push role, a sync neither pushes nor pulls and resolves with
+     * the current status.
      */
-    sync: async (syncOptions: PlatformSyncOptions = {}): Promise<PlatformSyncStatus> => {
-      const readSide: StorageBackend = remote;
-      try {
-        await pushWithRole(local, await exactTransport(), { remote: readSide, bodyTransport: options.bodyTransport, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
-      } catch (error) {
-        lastOutcome = { ok: false, error: describeFailure(error) };
-        throw error;
+    sync: (syncOptions: PlatformSyncOptions = {}): Promise<PlatformSyncStatus> => {
+      if (rerun !== null) {
+        if (syncOptions.acceptRefusedDeletions !== undefined) rerunOptions = { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions };
+        return rerun;
       }
-      try {
-        // The opened bundle, not its backend: the pull keeps the authority's capabilities on it.
-        await pull(local, readSide, syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions });
-        online = true;
-        if (await admitBodyMode(backend)) {
-          const remaining = await localSyncStatus(local);
-          lastOutcome = { ok: remaining.counts.pending + remaining.counts.in_flight + remaining.counts.unknown + remaining.counts.refused + remaining.counts.conflict === 0 && !remaining.paused };
-        } else lastOutcome = { ok: true };
-      } catch (error) {
-        lastOutcome = { ok: false, error: describeFailure(error) };
-        if (isInputError(error) || isAuthorityAnswer(error)) throw error;
-        online = false;
-      }
-      return status();
+      if (running === null) return start(syncOptions);
+      rerunOptions = syncOptions;
+      const settled = (): void => {};
+      rerun = running.then(settled, settled).then(() => {
+        rerun = null;
+        return start(rerunOptions);
+      });
+      return rerun;
     },
   };
 }
