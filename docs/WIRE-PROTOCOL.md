@@ -326,7 +326,9 @@ failed or interrupted claim to apply again. The reference memory store has no re
   write are true replays. `RemoteBackend.lookupOperation(requestId)` reads the outcome route and
   maps `404` to `null`. `createRemoteOperationTransport` in `@superbee/core/remote-operations`
   is the uncertain-write transport over those two calls: a `document.write` intent becomes an
-  identified guarded `PUT`, and a lost answer is resolved by lookup before any resubmission.
+  identified guarded `PUT`, and a lost answer is resolved by lookup before any resubmission. An
+  intent it cannot send (any other kind, or content that does not parse) is refused `USAGE`
+  before any request leaves, never left unknown.
 
 ## Behavior evidence
 

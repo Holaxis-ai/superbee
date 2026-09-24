@@ -32,7 +32,7 @@ import { headsDigest, sortHeads } from "../src/heads-digest.js";
 import { stringifyDoc } from "../src/frontmatter.js";
 import { RemoteBackend, RemoteError } from "../src/remote-backend.js";
 import { createRemoteOperationTransport, openRemoteOperationTransport, OperationsUnsupportedError } from "../src/remote-operations.js";
-import type { OperationIntent } from "../src/uncertain-write.js";
+import { performUncertainWrite, type OperationIntent } from "../src/uncertain-write.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import {
   writeDocVersioned,
@@ -1164,7 +1164,11 @@ test("wire: createRemoteOperationTransport delivers a document.write intent as a
   assert.equal(refused.kind, "refused");
   assert.equal(refused.kind === "refused" && refused.code, "USAGE");
   assert.deepEqual(await transport.lookup("op-3"), refused, "a content rejection is a recorded outcome");
-  await assert.rejects(transport.submit({ ...intent("op-4", "concepts/op", null, "x"), kind: "document.delete" }), /unsupported intent kind/);
+  const unsupported = await transport.submit({ ...intent("op-4", "concepts/op", null, "x"), kind: "document.delete" });
+  assert.equal(unsupported.kind, "refused");
+  assert.equal(unsupported.kind === "refused" && unsupported.code, "USAGE");
+  assert.match(unsupported.kind === "refused" ? unsupported.message : "", /unsupported intent kind 'document\.delete'/);
+  assert.equal(await transport.lookup("op-4"), null, "a local refusal sends nothing, so nothing is recorded");
 });
 
 test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the primitive classifies it as unknown and looks up, while a 4xx refusal stays refused", async () => {
@@ -1204,6 +1208,34 @@ test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the pri
   // authorization pause fires instead of an unknown loop.
   const gated = createRemoteOperationTransport(new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: async () => envelope(401, "AUTH_REQUIRED"), maxRetries: 0 }));
   assert.deepEqual(await gated.submit(intent), { kind: "refused", code: "AUTH_REQUIRED", message: "AUTH_REQUIRED from the wire" });
+});
+
+test("wire: createRemoteOperationTransport refuses an intent it cannot send, so the primitive settles it as refused instead of unknown", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-remote-unsendable", backend: serverBackend };
+  const router = createRouter(bundle);
+  const methods: string[] = [];
+  const fetchImpl = async (request: Request) => {
+    methods.push(`${request.method} ${new URL(request.url).pathname}`);
+    return router(request);
+  };
+  const transport = createRemoteOperationTransport(new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl, maxRetries: 0 }));
+  const { version: base } = await writeDocVersioned(bundle, { id: "concepts/kept", frontmatter: { type: "T", timestamp: T_DOC }, body: "kept" });
+  const unsendable: Array<[string, OperationIntent]> = [
+    ["a delete", { requestId: "op-delete", kind: "document.delete", target: "concepts/kept", base, local: base, content: "", createdAt: T_DOC, attempts: 0, state: "pending" }],
+    ["unparseable content", { requestId: "op-malformed", kind: "document.write", target: "concepts/kept", base, local: "sha256:local", content: "---\ntype: [unclosed\n---\nbody\n", createdAt: T_DOC, attempts: 0, state: "pending" }],
+  ];
+  for (const [name, intent] of unsendable) {
+    for (const attempts of [0, 2]) {
+      methods.length = 0;
+      const result = await performUncertainWrite(transport, { ...intent, attempts }, { sleep: async () => {}, lookupDelayMs: 0 });
+      assert.equal(result.outcome.kind, "refused", `${name} after ${attempts} attempt(s)`);
+      assert.equal(result.outcome.kind === "refused" && result.outcome.code, "USAGE");
+      assert.equal(result.intent.state, "refused");
+      assert.ok(methods.every((method) => method.startsWith("GET ")), `${name} sends nothing that writes: ${methods.join(", ")}`);
+    }
+  }
+  assert.equal((await serverBackend.read("concepts/kept")).version, base);
 });
 
 // ── heads and snapshot (WIRE-PROOF-11, WIRE-PROOF-12) ────────────────────────
