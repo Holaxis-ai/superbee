@@ -603,6 +603,58 @@ test("a timeout reports stale only while the lock still carries the dead owner's
   }
 });
 
+test("a reclaimer never quarantines an owner-less claim that replaced its dead-owner snapshot", async () => {
+  const harness = await isolatedLockPaths();
+  await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+  const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+  const ownerFile = path.join(lockPath, "owner.json");
+  await fs.mkdir(lockPath, { mode: 0o700 });
+  await fs.writeFile(
+    ownerFile,
+    JSON.stringify({
+      pid: 999_999,
+      hostname: hostname(),
+      created_at_ms: Date.now() - 60_000,
+      token: "replaced-dead-owner",
+      target: harness.target,
+    }),
+  );
+
+  // After the claimer's first owner read, the dead lock is gone and a competitor has made the
+  // directory but not yet written its owner record.
+  const originalReadFile = fs.readFile;
+  let reads = 0;
+  const restoreReadFile = replaceFsMethod("readFile", async (...args) => {
+    const content = await originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    if (String(args[0]) === ownerFile && ++reads === 1) {
+      await fs.rm(lockPath, { recursive: true, force: true });
+      await fs.mkdir(lockPath, { mode: 0o700 });
+    }
+    return content;
+  });
+  try {
+    await assert.rejects(
+      acquireFilesystemMutationLock(harness.target, {
+        portableRoot: harness.portableRoot,
+        lockRoot: harness.lockRoot,
+        waitMs: 0,
+        pollMs: 2,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.equal(err.malformed, true);
+        assert.equal(err.stale, false);
+        return true;
+      },
+    );
+    assert.equal((await fs.lstat(lockPath)).isDirectory(), true, "the in-progress claim must stay in place");
+    assert.deepEqual((await fs.readdir(harness.lockRoot)).filter((entry) => entry.includes(".stale-")), []);
+  } finally {
+    restoreReadFile();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("competing stale-lock reclaimers serialize without stealing one another's live claim", async () => {
   const harness = await isolatedLockPaths();
   await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
