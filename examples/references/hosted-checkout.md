@@ -112,6 +112,11 @@ editing Kinds or recipes, artifacts, and `doc verify`. Tell the person what to d
 not work around a refusal by editing files, using another command, or copying the bundle
 somewhere else.
 
+`checkout` adds the folder to the workspace catalog, where `catalog list` shows it with
+`home: hosted`. The local MCP app (`superbee mcp`) can read it by that label, but refuses every
+write there with the same "do this in the Superbee app": Views and documents written through it
+could not sync.
+
 `sync_busy` means another command is working, or is just taking or releasing the lock: wait,
 then retry, and never remove that lock. Only `lock_orphaned` means the lock's holder is gone:
 confirm that no superbee command is still running, then remove the lock named in the help.
