@@ -1048,6 +1048,112 @@ test("pin: timeout diagnosis distinguishes held vs foreign-host vs malformed in 
   assert.match(malformed.message, /only after confirming no process is mutating the target/);
 });
 
+/** A live process of this user that is not this one: a holder id that exists but did not claim the lock. */
+function liveProcess(): { pid: number; stop(): Promise<void> } {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  return {
+    pid: child.pid!,
+    stop: async () => {
+      child.kill("SIGKILL");
+      await exited;
+    },
+  };
+}
+
+/** Plant a well-formed owner record in the harness target's lock, as a holder that never released it leaves it. */
+async function plantLockOwner(
+  harness: Awaited<ReturnType<typeof isolatedLockPaths>>,
+  owner: { pid: number; hostname: string; created_at_ms: number; token: string },
+): Promise<string> {
+  const release = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot });
+  const entry = (await fs.readdir(harness.lockRoot)).find((name) => name.endsWith(".lock"));
+  await release();
+  const lockPath = path.join(harness.lockRoot, entry!);
+  await fs.mkdir(lockPath);
+  await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ ...owner, target: harness.target }));
+  return lockPath;
+}
+
+async function plantedToken(lockPath: string): Promise<string> {
+  return (JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as { token: string }).token;
+}
+
+test("a same-host holder whose process id is live is diagnosed as possibly reused, naming the lock, and is never reclaimed", async () => {
+  const harness = await isolatedLockPaths();
+  const reuser = liveProcess();
+  try {
+    const lockPath = await plantLockOwner(harness, { pid: reuser.pid, hostname: hostname(), created_at_ms: Date.now() - 10 * 24 * 60 * 60 * 1000, token: "reused" });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 20, pollMs: 5 }),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.equal(err.lockPath, lockPath);
+        assert.equal(err.stale, false);
+        assert.equal(err.malformed, false);
+        assert.ok(err.message.includes(`'${lockPath}' held by PID ${reuser.pid} `), err.message);
+        assert.match(err.message, new RegExp(`PID ${reuser.pid} may no longer be the process that claimed it`));
+        assert.match(err.message, /remove the lock only after confirming no process is mutating the target/);
+        return true;
+      },
+    );
+    assert.equal(await plantedToken(lockPath), "reused");
+  } finally {
+    await reuser.stop();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a holder recorded on another host is diagnosed as needing a person, naming the lock, and is never reclaimed", async () => {
+  const harness = await isolatedLockPaths();
+  try {
+    const lockPath = await plantLockOwner(harness, { pid: 999_999, hostname: "renamed-host", created_at_ms: Date.now() - 60_000, token: "renamed" });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 20, pollMs: 5 }),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.equal(err.lockPath, lockPath);
+        assert.equal(err.stale, false);
+        assert.equal(err.malformed, false);
+        assert.ok(err.message.includes(`'${lockPath}' is held by PID 999999 on renamed-host, which is not this host (${hostname()})`), err.message);
+        assert.match(err.message, /never reclaimed automatically\. A person must check it/);
+        assert.doesNotMatch(err.message, /retry the mutation/);
+        return true;
+      },
+    );
+    assert.equal(await plantedToken(lockPath), "renamed");
+  } finally {
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a record naming this process's own id is reclaimed only when an earlier process wrote it", async () => {
+  const harness = await isolatedLockPaths();
+  const options = { lockRoot: harness.lockRoot, waitMs: 20, pollMs: 5 };
+  const held = (err: unknown) => err instanceof FilesystemMutationLockError && !err.stale && !err.malformed && err.owner?.pid === process.pid;
+  try {
+    // Left by an earlier process that had this id (a container entry point after a restart): reclaimed.
+    const lockPath = await plantLockOwner(harness, { pid: process.pid, hostname: hostname(), created_at_ms: Date.now() - 10 * 24 * 60 * 60 * 1000, token: "earlier-process" });
+    const release = await acquireFilesystemMutationLock(harness.target, options);
+    assert.ok((await fs.readdir(harness.lockRoot)).some((entry) => entry.startsWith(`${path.basename(lockPath)}.stale-`)), "the earlier process's lock is quarantined");
+    assert.notEqual(await plantedToken(lockPath), "earlier-process");
+
+    // This process's own claim stays held even when its record looks older than this process.
+    const record = JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as Record<string, unknown>;
+    await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ ...record, created_at_ms: Date.now() - 10 * 24 * 60 * 60 * 1000 }));
+    await assert.rejects(() => acquireFilesystemMutationLock(harness.target, options), held);
+    await release();
+
+    // A record this process did not write but that is younger than this process is not provably an
+    // earlier process's, so it stays held.
+    const younger = await plantLockOwner(harness, { pid: process.pid, hostname: hostname(), created_at_ms: Date.now(), token: "younger" });
+    await assert.rejects(() => acquireFilesystemMutationLock(harness.target, options), held);
+    assert.equal(await plantedToken(younger), "younger");
+  } finally {
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("an explicit lock root isolates runtime state while preserving the portable-root boundary", async () => {
   const harness = await isolatedLockPaths();
   try {

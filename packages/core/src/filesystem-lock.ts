@@ -213,6 +213,22 @@ function processExists(pid: number): boolean {
   }
 }
 
+/** Tokens of the claims this module holds, from just before each owner record is written until its release. */
+const heldTokens = new Set<string>();
+
+/**
+ * Whether a same-host owner is demonstrably gone. `kill(pid, 0)` answers that for another process,
+ * but for this process's own id it always answers "alive", so a record left by an earlier process
+ * that had this id (a container entry point that is PID 1 again after a restart) would hold its
+ * lock forever. Such a record is gone only when no claim of this module carries its token and it
+ * was written before this process started: a claim by another copy of this module in the same
+ * process is younger than the process, so it stays live.
+ */
+function ownerIsGone(owner: FilesystemMutationLockOwner): boolean {
+  if (owner.pid !== process.pid) return !processExists(owner.pid);
+  return !heldTokens.has(owner.token) && owner.created_at_ms < Date.now() - process.uptime() * 1000;
+}
+
 function staleLockQuarantinePath(lockPath: string, owner: FilesystemMutationLockOwner): string {
   const tokenHash = createHash("sha256").update(owner.token).digest("hex");
   return `${lockPath}.stale-${tokenHash}`;
@@ -238,7 +254,7 @@ async function quarantineStaleLock(
   owner: FilesystemMutationLockOwner,
   policy: FilesystemHostPolicy,
 ): Promise<boolean> {
-  if (owner.hostname !== hostname() || processExists(owner.pid)) return false;
+  if (owner.hostname !== hostname() || !ownerIsGone(owner)) return false;
   // Death was established for this owner's snapshot. If the path no longer carries that owner's
   // record, the lock changed hands after the snapshot and the rename would move a live lock.
   const current = await readOwner(lockPath);
@@ -355,13 +371,14 @@ async function timeoutError(
   // live replacement by a process that no longer holds anything.
   let diagnosed = snapshot;
   let stale = false;
-  if (snapshot !== null && snapshot.hostname === hostname() && !processExists(snapshot.pid)) {
+  if (snapshot !== null && snapshot.hostname === hostname() && ownerIsGone(snapshot)) {
     const current = await readOwner(lockPath);
     if (current?.token === snapshot.token) stale = true;
     else diagnosed = current;
   }
   const owner = diagnosed;
   const malformed = owner === null;
+  const sameHost = owner?.hostname === hostname();
   let message: string;
   if (malformed) {
     message =
@@ -371,9 +388,20 @@ async function timeoutError(
     message =
       `stale filesystem mutation lock '${lockPath}' belongs to absent PID ${owner.pid} on ${owner.hostname}. ` +
       `Inspect and remove the lock, then retry.`;
-  } else {
+  } else if (!sameHost) {
+    // Another host's process ids cannot be probed from here, and a holder that crashed before this
+    // host was renamed looks exactly like a live holder elsewhere, so no retry can clear it.
     message =
-      `timed out waiting for filesystem mutation lock '${lockPath}' held by PID ${owner.pid} on ${owner.hostname}; retry the mutation.`;
+      `filesystem mutation lock '${lockPath}' is held by PID ${owner.pid} on ${owner.hostname}, which is not this host (${hostname()}); ` +
+      `whether its holder is alive cannot be checked from here, so the lock is never reclaimed automatically. ` +
+      `A person must check it: once no process on ${owner.hostname} is mutating the target (this host may have been renamed since the lock was taken), remove the lock, then retry.`;
+  } else {
+    // A live process id is not proof of the holder: the holder may have exited and its id been
+    // reused, which this module cannot tell apart from a long mutation.
+    message =
+      `timed out waiting for filesystem mutation lock '${lockPath}' held by PID ${owner.pid} on ${owner.hostname}; retry the mutation. ` +
+      `If it stays held, PID ${owner.pid} may no longer be the process that claimed it, because a process id is reused after its process exits: ` +
+      `remove the lock only after confirming no process is mutating the target.`;
   }
   const heldFor =
     owner !== null && owner.target !== guarded
@@ -471,6 +499,7 @@ async function claimLockPath(
     // failures are not claim contention, even when the host reports a contention-shaped error, and
     // must propagate unchanged. A lost claim is contention: a record this claim never wrote
     // (EEXIST), or no directory to write into (ENOENT, ENOTDIR).
+    heldTokens.add(owner.token);
     try {
       await fs.writeFile(path.join(lockPath, OWNER_FILE), `${JSON.stringify(owner)}\n`, {
         encoding: "utf8",
@@ -482,8 +511,12 @@ async function claimLockPath(
       // `wx` fails with EEXIST only when another claimer's owner.json was already there, possibly
       // opened but not yet written. The directory is that claimer's now: never roll it back.
       // A lost claim re-enters the loop, whose next `mkdir` either claims or reaches the timeout check.
-      if (code === "EEXIST") continue;
+      if (code === "EEXIST") {
+        heldTokens.delete(owner.token);
+        continue;
+      }
       await rollBackOwnClaim(lockPath, owner, claimed, waitMs, pollMs, policy).catch(() => {});
+      heldTokens.delete(owner.token);
       if (code === "ENOENT" || code === "ENOTDIR") continue;
       throw err;
     }
@@ -504,6 +537,7 @@ async function claimLockPath(
           throw changedOwnerRefusal(lockPath, current.state === "record" ? current.owner : null);
         }
         await removeReleasedLock(lockPath, owner, started, waitMs, pollMs, policy);
+        heldTokens.delete(owner.token);
       })();
       return inFlight.finally(() => {
         inFlight = undefined;
