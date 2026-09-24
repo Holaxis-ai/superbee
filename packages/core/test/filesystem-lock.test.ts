@@ -510,6 +510,99 @@ test("a zero-wait delayed reclaimer diagnoses the live replacement, not its stal
   }
 });
 
+/**
+ * Seeds a same-host lock owned by a live `sleep` process and arranges that, right after the
+ * claimer under test reads that owner's record for the `triggerRead`-th time, the owner releases
+ * and exits and a replacement claimer in this process takes the free key.
+ */
+async function handOffAfterOwnerRead(triggerRead: number) {
+  const harness = await isolatedLockPaths();
+  await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+  const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+  const ownerFile = path.join(lockPath, "owner.json");
+  const holder = spawn("sleep", ["30"], { stdio: "ignore" });
+  const holderExited = new Promise<void>((resolve) => holder.once("exit", () => resolve()));
+  const holderToken = "released-live-holder";
+  await fs.mkdir(lockPath, { mode: 0o700 });
+  await fs.writeFile(
+    ownerFile,
+    JSON.stringify({
+      pid: holder.pid,
+      hostname: hostname(),
+      created_at_ms: Date.now(),
+      token: holderToken,
+      target: harness.target,
+    }),
+  );
+
+  const options = { portableRoot: harness.portableRoot, lockRoot: harness.lockRoot, waitMs: 0, pollMs: 2 };
+  const state: { releaseReplacement?: () => Promise<void>; replacementToken?: string } = {};
+  const originalReadFile = fs.readFile;
+  let reads = 0;
+  const restoreReadFile = replaceFsMethod("readFile", async (...args) => {
+    const content = await originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    if (String(args[0]) === ownerFile && ++reads === triggerRead) {
+      await fs.rm(lockPath, { recursive: true, force: true });
+      holder.kill("SIGKILL");
+      await holderExited;
+      state.releaseReplacement = await acquireFilesystemMutationLock(harness.target, options);
+      state.replacementToken = parseFilesystemMutationLockOwner(
+        JSON.parse(await originalReadFile(ownerFile, "utf8")),
+      )?.token;
+    }
+    return content;
+  });
+  const cleanup = async () => {
+    restoreReadFile();
+    holder.kill("SIGKILL");
+    await state.releaseReplacement?.().catch(() => {});
+    await fs.rm(harness.root, { recursive: true, force: true });
+  };
+  return { harness, lockPath, ownerFile, holderToken, options, state, cleanup };
+}
+
+test("a reclaimer whose dead-owner snapshot changed hands never quarantines the new live lock", async () => {
+  const { harness, ownerFile, options, state, cleanup } = await handOffAfterOwnerRead(1);
+  let releaseReclaimer: (() => Promise<void>) | undefined;
+  try {
+    const reclaim = acquireFilesystemMutationLock(harness.target, options).then((release) => {
+      releaseReclaimer = release;
+      return release;
+    });
+    await assert.rejects(reclaim, (err: unknown) => {
+      assert.ok(err instanceof FilesystemMutationLockError);
+      assert.equal(err.stale, false);
+      assert.equal(err.owner?.token, state.replacementToken);
+      return true;
+    });
+    assert.ok(state.replacementToken);
+    const current = parseFilesystemMutationLockOwner(JSON.parse(await fs.readFile(ownerFile, "utf8")));
+    assert.equal(current?.token, state.replacementToken, "the replacement must still hold its lock");
+    assert.deepEqual((await fs.readdir(harness.lockRoot)).filter((entry) => entry.includes(".stale-")), []);
+  } finally {
+    await releaseReclaimer?.().catch(() => {});
+    await cleanup();
+  }
+});
+
+test("a timeout reports stale only while the lock still carries the dead owner's record", async () => {
+  const { harness, lockPath, holderToken, options, state, cleanup } = await handOffAfterOwnerRead(2);
+  try {
+    await assert.rejects(acquireFilesystemMutationLock(harness.target, options), (err: unknown) => {
+      assert.ok(err instanceof FilesystemMutationLockError);
+      assert.equal(err.owner?.token, holderToken);
+      assert.equal(err.stale, false);
+      assert.equal(err.malformed, false);
+      assert.doesNotMatch(err.message, /stale filesystem mutation lock|Inspect and remove/);
+      return true;
+    });
+    assert.ok(state.replacementToken);
+    assert.ok(await fs.lstat(lockPath));
+  } finally {
+    await cleanup();
+  }
+});
+
 test("competing stale-lock reclaimers serialize without stealing one another's live claim", async () => {
   const harness = await isolatedLockPaths();
   await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
