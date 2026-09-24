@@ -301,7 +301,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
    * pulls: a pull listed while the holder's push is in flight can predate an acknowledgement the
    * holder is about to record, and would then remove the acknowledged document from the shared
    * working copy. The holder's own sync pulls into that same store, so this call returns the
-   * current status and leaves `online` and `lastSync` as its last completed sync left them.
+   * current status and leaves `online` and this runtime's recorded outcome unchanged.
    */
   const syncOnce = async (syncOptions: PlatformSyncOptions): Promise<PlatformSyncStatus> => {
     const readSide: StorageBackend = remote;
@@ -390,6 +390,8 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
      * Syncs on one runtime never overlap. A call made while one is running waits for it and
      * shares a single follow-up run with every other call made meanwhile, resolving with that
      * run's result; the follow-up carries the latest `acceptRefusedDeletions` any of them passed.
+     * When another realm holds the push role, a sync neither pushes nor pulls and resolves with
+     * the current status.
      */
     sync: (syncOptions: PlatformSyncOptions = {}): Promise<PlatformSyncStatus> => {
       if (rerun !== null) {
