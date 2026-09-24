@@ -65,6 +65,9 @@ import {
 import { cliInvocation } from "../invocation.js";
 import { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE } from "../bundle-name.js";
 import { homedir } from "node:os";
+import { realpath } from "node:fs/promises";
+import { bundleHomeAt, gitBoardSyncBlock } from "../bundle-home.js";
+import { commandFragment, commandToken } from "../command-text.js";
 
 export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
 
@@ -183,8 +186,20 @@ Category semantics (one line each):
                       prefixes — those LOCATIONS remain recognized; relocation is a separate
                       open decision. Omitted when the bundle carries none of the above.
 
-In a hosted checkout (a folder made by 'checkout'), a 'sync' block leads the report, read from
-local state only (no request to the host, and no automatic pull):
+The report leads with the bundle's 'home' (local, git or hosted) and a 'sync' block for it, read
+from local state only: no request, no fetch, and no automatic pull for a hosted checkout. A local
+bundle reports 'sync: none (local only)'.
+
+For a Git board, the 'sync' block reads local Git (what the last fetch saw, never a new fetch):
+  channel            branch (the provisioned 'board' worktree) | in-tree (committed with the code)
+  branch, upstream   The checked-out branch and its tracking ref (null when there is none)
+  state              clean | unsent_changes | behind | diverged | not_shared (no upstream yet)
+  ahead              Board commits not yet pushed (null without an upstream)
+  behind             Upstream board commits not yet pulled, as of the last fetch
+  uncommitted        Changed files not yet committed to the board
+  last_fetch         When this clone last fetched (null when it never has)
+
+In a hosted checkout (a folder made by 'checkout'), the 'sync' block reads:
   state              clean | unsent_changes | needs_decision (a conflict or a held item) | busy
                       (another command, such as a running sync, holds the checkout)
   unsent             Documents with a change the next sync would send (edited, new or deleted
@@ -820,10 +835,29 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   }
 
   if (hostedReport) {
-    const record: Record<string, unknown> = { sync: hostedReport.sync, ...out };
+    const record: Record<string, unknown> = { home: "hosted", sync: hostedReport.sync, ...out };
     if (hostedReport.help.length > 0) record.help = hostedReport.help;
     stdout(render(record, resolveMode(values)));
     return;
   }
-  stdout(render(out, resolveMode(values)));
+  if (remote) {
+    stdout(render(out, resolveMode(values)));
+    return;
+  }
+  // Where this bundle lives, and for a Git board what the next sync would move: local Git only, no fetch.
+  const facts = await bundleHomeAt(await realpath(bundle.root), { home });
+  if (facts.home === "git") {
+    const block = await gitBoardSyncBlock(facts.board);
+    const record: Record<string, unknown> = { home: "git", sync: block, ...out };
+    if (block.state !== "clean") {
+      record.help = [
+        values.dir === undefined
+          ? `${cliInvocation()} sync`
+          : commandFragment`${cliInvocation()} sync --dir ${commandToken(values.dir)}`,
+      ];
+    }
+    stdout(render(record, resolveMode(values)));
+    return;
+  }
+  stdout(render({ home: "local", sync: "none (local only)", ...out }, resolveMode(values)));
 }

@@ -545,6 +545,8 @@ test("A1.6 offline/directory-scoped: default deps, real bundle dir -> dashboard;
       let out1 = "";
       await home([], { stdout: (s) => (out1 += s) });
       assert.ok(out1.includes("bundle"), "expected a dashboard inside a real bundle dir");
+      // Where the bundle lives is the bundle block's first line.
+      assert.match(out1, /^bundle:\n {2}home: local\n/m);
       assert.ok(out1.includes("notes/hello") || out1.includes("hello"));
 
       process.chdir(plainDir);
