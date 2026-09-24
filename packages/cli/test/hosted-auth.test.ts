@@ -1387,8 +1387,8 @@ test("a session lock held far past any refresh is orphaned though its PID is ali
         const error = await sessionLockError(h);
         assert.equal(error.code, "CONFLICT", host);
         assert.deepEqual(error.details, { reason: "session_lock_orphaned", host: h.host, lock, retryable: false });
-        // The same holder inside the bound may still finish: busy.
-        const recent = new Date();
+        // The same holder inside the bound may still finish, even well past the claim grace: busy.
+        const recent = new Date(Date.now() - 60_000);
         await utimes(lock, recent, recent);
         assert.equal((await sessionLockError(h)).details?.reason, "session_busy", host);
       } finally {
