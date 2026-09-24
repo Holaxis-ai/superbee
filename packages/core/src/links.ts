@@ -22,7 +22,7 @@
  * These functions are pure and dependency-free — INCLUDING free of `node:path`:
  * this module is the ONE link resolver and it now also runs in
  * the BROWSER (the shell's doc reader routes links through it), where `node:path`
- * does not bundle. The posix join/relative/basename logic is implemented as pure
+ * does not bundle. The posix join/relative logic is implemented as pure
  * string helpers below, parity-pinned against `node:path.posix` by
  * `links-path-parity.test.ts` and against browser bundling by `browser-bundle.test.ts` (the
  * isomorphic-boundary gate over every browser-consumed core subpath).
@@ -61,12 +61,6 @@ function relativePosix(from: string, to: string): string {
   }
   const ups = fromSegments.length - common;
   return [...Array<string>(ups).fill(".."), ...toSegments.slice(common)].join("/");
-}
-
-/** Pure `path.posix.basename` (no extension handling — this module never needs it). */
-function basenamePosix(p: string): string {
-  const slash = p.lastIndexOf("/");
-  return slash >= 0 ? p.slice(slash + 1) : p;
 }
 
 /** A raw markdown link as written in the body, before resolution. */
@@ -193,9 +187,10 @@ export function relativeHref(fromId: ConceptId, target: string): string {
   const targetId = t;
   const slash = fromId.lastIndexOf("/");
   const fromDir = slash >= 0 ? fromId.slice(0, slash) : "";
-  let rel = relativePosix(fromDir, targetId);
-  if (rel === "") rel = basenamePosix(targetId); // link to a concept in one's own dir
-  return `${rel}.md`;
+  // Relativize to the target's FILE path, not its id: a hub id that equals or prefixes the
+  // source's directory (`projects` from `projects/a`) must emit `../projects.md`, never an empty
+  // or `..` path. Non-final id segments cannot end in `.md`, so the result is never empty.
+  return relativePosix(fromDir, `${targetId}.md`);
 }
 
 /**
