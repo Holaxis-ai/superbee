@@ -384,6 +384,8 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   await assertAllowedInHostedCheckout("delete", ["--doc-key", "notes/Alpha.MD", "--dir", folder], context);
   // index without generate (navigation help) is not a write.
   await assertAllowedInHostedCheckout("index", ["--dir", folder], context);
+  // The read-only check writes nothing, so it runs.
+  await assertAllowedInHostedCheckout("index", ["generate", "--check", "--dir", folder], context);
   await assertAllowedInHostedCheckout("doc", ["delete", "--help", "--dir", folder], context);
   await assertAllowedInHostedCheckout("doc", ["delete", "x", "--remote", "http://127.0.0.1:9"], context);
   const elsewhere = await mkdtemp(path.join(tmpdir(), "sb-local-"));

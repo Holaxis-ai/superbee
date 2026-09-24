@@ -68,6 +68,8 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     words: ["index", "generate"],
     reason: "not_syncable",
     why: "index.md files are reserved navigation the host keeps; generated ones would be held by sync",
+    // --check only reports whether the indexes are current; it writes nothing.
+    when: (args) => !args.some((token) => token === "--check" || token.startsWith("--check=")),
   },
   { words: ["serve"], reason: "not_syncable", why: "the served bundle accepts writes and deletes that do not sync" },
   { words: ["ui"], reason: "not_syncable", why: "the local app writes Views and conventions, which do not sync" },
