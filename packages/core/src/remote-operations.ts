@@ -15,7 +15,7 @@
  * the identity exists. A 4xx is final because the authority answered and declined. A local
  * refusal is also final because no PUT was sent, not because the authority recorded an outcome:
  * an intent kind other than `document.write`, content that does not parse, or metadata the wire
- * cannot encode is refused `USAGE` before anything leaves.
+ * cannot encode is refused `USAGE` without a PUT.
  *
  * The transport is only sound against an authority that implements identity. A host that
  * predates it ignores the header, applies every retry as a fresh write, and answers the lookup
