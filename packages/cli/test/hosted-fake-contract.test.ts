@@ -1,9 +1,11 @@
 // The CLI's fake hosted sync family (`support/fake-hosted-sync.ts`) against the `/sync/v1` golden
 // exchanges captured from the real hosted gateway (core's `test/fixtures/hosted-sync-v1/`). For
 // every exchange the fake is driven into the same situation and must answer with the same status,
-// the same grammar headers and the same body shape: the same keys at every level, the same value
-// types, and content versions where the host sends versions. Values (ids, versions, messages) are
-// the fake's own. A fake that drifts from what the host emits fails here, not on staging.
+// the same grammar headers and the same body: the same keys at every level and the same value
+// types, and the same VALUES wherever a value selects a row or an outcome (every boolean, and the
+// discriminator strings in DISCRIMINATORS: operation, error code, write state, outcome status and
+// the like). Only values that name the fixture's own data (ids, versions, messages, timestamps)
+// may differ. A fake that drifts from what the host emits fails here, not on staging.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -28,9 +30,18 @@ const NOT_MODELED: Readonly<Record<string, string>> = Object.freeze({
 
 const VERSION = /^sha256:[a-f0-9]{64}$/;
 
-/** A value's shape: keys and types all the way down; frontmatter is authored content, so only its kind. */
+/** String keys whose value selects a row or an outcome, and so must equal the host's. */
+const DISCRIMINATORS: ReadonlySet<string> = new Set(["operationId", "code", "writeState", "status", "kind", "surface", "scope", "encoding", "consistency", "error"]);
+
+/**
+ * A value's shape: keys and types all the way down, with the value itself wherever it is a
+ * boolean, a discriminator string or `schemaVersion`; frontmatter is authored content, so only its kind.
+ */
 function shape(value: unknown, key?: string): unknown {
   if (value === null) return "null";
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string" && key !== undefined && DISCRIMINATORS.has(key)) return `=${value}`;
+  if (key === "schemaVersion") return value;
   if (Array.isArray(value)) return ["array", ...[...new Set(value.map((item) => JSON.stringify(shape(item))))].sort()];
   if (typeof value === "object") {
     if (key === "frontmatter") return "frontmatter";
@@ -129,9 +140,16 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   for (const name of observed.keys()) assert.ok(golden.has(name), `${name} has no golden exchange`);
 });
 
-test("the contract's shape check catches the read answer the fake used to give", async () => {
+test("the contract catches the read answer the fake used to give, and a wrong error code or outcome", async () => {
   const host = new FakeHost();
   const [id, doc] = [...host.docs][0]!;
   const drifted = { ok: true, operationId: "documents.read.v1", data: { bundleId: BUNDLE, documentId: id, version: doc.version, document: { frontmatter: doc.frontmatter, body: doc.body } } };
   assert.notDeepEqual(shape(drifted), bodyShape(golden.get("read-200-ok")!.response.body));
+  // Same keys and types, another row: a create over a present document answered as a version conflict.
+  const exists = golden.get("create-200-document-exists")!.response.body;
+  assert.notDeepEqual(bodyShape(exists.replace('"document_exists"', '"version_conflict"')), bodyShape(exists));
+  const refused = golden.get("outcome-200-refused-replace")!.response.body;
+  assert.notDeepEqual(bodyShape(refused.replace('"status":"refused"', '"status":"committed"')), bodyShape(refused));
+  const changed = golden.get("delete-200-unchanged")!.response.body;
+  assert.notDeepEqual(bodyShape(changed.replace('"changed":false', '"changed":true')), bodyShape(changed));
 });
