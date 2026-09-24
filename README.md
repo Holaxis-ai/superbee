@@ -15,7 +15,7 @@ under test. The honest breakdown is below — read it before depending on anythi
 
 ## Install
 
-**Requirements: macOS or Linux, and Node.js 20 or newer.**
+**Requirements: macOS or Linux, and a supported Node.js 22, 24, or 26 release (22.14.0 minimum).**
 
 The current test release is on npm's `next` prerelease channel; `latest` provides the stable
 release. Install the prerelease with:

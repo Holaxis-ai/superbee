@@ -15,7 +15,8 @@ answer.
    decision, make it explicit and order it first.
 4. Build from the repository root. Use the root `./superbee` shim when exercising the freshly built
    CLI.
-5. Develop with Node.js 20 or newer on macOS or Linux. Windows-specific adapters, installation,
+5. Develop with Node.js 24.21.0 by default on macOS or Linux. Published packages run on supported
+   Node.js 22, 24, or 26 releases, with 22.14.0 as the minimum. Windows-specific adapters, installation,
    and native runtime checks belong to the separate Windows distribution repository. Shared
    engine and CLI protocols remain here; changing them does not promise Windows compatibility.
 
@@ -112,11 +113,11 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 | Lane | Local command | CI job | Node |
 | --- | --- | --- | --- |
 | runtime | `npm run ci:runtime` | `runtime` | 22, 26 |
-| aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 26 |
-| distribution | `npm run ci:distribution` | `distribution` | 26 |
-| browser | `npm run ci:browser` | `browser` | 26 |
-| scripts | `npm run ci:scripts` | `scripts` | 26 |
-| smoke-node-20 | workflow only | `smoke-node-20` | 20 |
+| aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 24.21.0 |
+| distribution | `npm run ci:distribution` | `distribution` | 24.21.0 |
+| browser | `npm run ci:browser` | `browser` | 24.21.0 |
+| scripts | `npm run ci:scripts` | `scripts` | 24.21.0 |
+| smoke-node-22 | workflow only | `smoke-node-22` | 22.14.0 |
 <!-- contributing-ci-lanes:end -->
 
 CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, a weekly

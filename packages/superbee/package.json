@@ -49,7 +49,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^22.14.0 || ^24.0.0 || ^26.0.0"
   },
   "scripts": {
     "build": "node build.mjs local-dev",

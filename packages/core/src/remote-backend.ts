@@ -7,7 +7,7 @@
  * produce. Tri-backend contract tests pin that invariant.
  *
  * Zero new dependencies: it calls an injectable {@link FetchLike} transport
- * (defaulting to the global `fetch`, available on Node >= 20) with a constructed
+ * (defaulting to the global `fetch`, available in every supported Node runtime) with a constructed
  * `Request`. That means the SAME adapter runs against a real HTTP server, or — in
  * tests — directly against an in-process `createRouter(bundle)` function with no
  * sockets: `createRouter` returns exactly the `(req: Request) => Promise<Response>`
@@ -89,7 +89,7 @@ export interface RemoteBackendOptions {
   baseUrl: string;
   /** Bundle name segment in the `/v0/bundles/{bundle}/…` path. */
   bundle: string;
-  /** Transport override; defaults to the global `fetch` (Node >= 20). Tests inject a router directly. */
+  /** Transport override; defaults to the global `fetch` in supported Node runtimes. Tests inject a router directly. */
   fetchImpl?: FetchLike;
   /**
    * Optional bearer token sent as `Authorization: Bearer <token>` on EVERY request. The

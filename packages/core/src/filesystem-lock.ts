@@ -589,7 +589,7 @@ function removalFailure(
  * class the stale-lock quarantine rename accepts.
  *
  * A host may report a contention-shaped error while another claimer still holds a handle inside
- * the directory: Windows unlink through Node 20's libuv only marks a file delete-on-close, so a
+ * the directory: Windows unlink through older libuv-backed Node releases marks a file delete-on-close, so a
  * competitor's poll of `owner.json` briefly blocks both the directory rename and the removal of
  * its unlinked record. Retry only what the host policy classifies as directory contention, inside
  * the budget `started` at release entry and bounded by the claim's `waitMs`, polling every

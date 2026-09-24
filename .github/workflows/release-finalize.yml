@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.14.0
+          node-version: 24.21.0
       - name: Prove npm serves this version on its dist-tag
         id: registry
         env:
@@ -95,7 +95,7 @@ jobs:
           assert.deepEqual(registry.os, manifest.os, "registry platform metadata differs from the installed manifest");
           assert.deepEqual(manifest.os, ["darwin", "linux"], "the executable must declare its supported hosts");
           assert.match(readme, /^## Install$/m);
-          assert.match(readme, /Node\.js 20 or newer on macOS and Linux/);
+          assert.match(readme, /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\) on macOS or Linux/);
           assert.match(readme, /installed by your agent,\s+not by hand/);
           assert.match(readme, /Run `superbee setup` and follow its instructions/);
           assert.match(readme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);

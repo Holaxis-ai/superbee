@@ -2,11 +2,37 @@
   "schema": "superbee.ci-lanes.v1",
   "path_skipping": false,
   "source_preflight": "npm run check:package-versions",
+  "node_policy": {
+    "compatibility_floor": "22.14.0",
+    "supported_majors": [
+      22,
+      24,
+      26
+    ],
+    "engine_range": "^22.14.0 || ^24.0.0 || ^26.0.0",
+    "build_target": "node22",
+    "default_runtime": "24.21.0",
+    "forward_probe": 26,
+    "release_pin_owner": "process:release-preflight",
+    "release_pin_reviewed_at": "2026-09-24",
+    "release_pin_refresh_by": "2026-10-24",
+    "forward_review": {
+      "review_after": "2026-10-28",
+      "disposition": "pending",
+      "decided_at": null,
+      "decided_by": null,
+      "evidence": null,
+      "revisit_by": null
+    },
+    "floor_retirement": {
+      "retire_by": "2027-04-30"
+    }
+  },
   "runtime_nodes": [
     22,
     26
   ],
-  "singleton_node": 26,
+  "singleton_node": "24.21.0",
   "host_expectation_variable": "SUPERBEE_TEST_EXPECT_ALIASING_HOST",
   "merge_queue": {
     "enabled": false,
@@ -95,7 +121,7 @@
   "required_jobs": [
     "runtime",
     "aliasing-host",
-    "smoke-node-20",
+    "smoke-node-22",
     "distribution",
     "browser",
     "scripts"
@@ -165,11 +191,11 @@
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
     },
     "aliasing-host": {
-      "display_name": "host-class proofs on an aliasing host (macos, node 26)",
+      "display_name": "host-class proofs on an aliasing host (macos, node 24.21.0)",
       "script": "ci:aliasing-host",
       "components": [],
       "nodes": [
-        26
+        "24.21.0"
       ],
       "runs_on": "macos-latest",
       "expect_aliasing_host": "1",
@@ -183,7 +209,7 @@
         "skill-drift-proof"
       ],
       "nodes": [
-        26
+        "24.21.0"
       ]
     },
     "browser": {
@@ -198,7 +224,7 @@
         "build"
       ],
       "nodes": [
-        26
+        "24.21.0"
       ]
     },
     "scripts": {
@@ -211,28 +237,21 @@
         "build"
       ],
       "nodes": [
-        26
+        "24.21.0"
       ]
     },
-    "smoke-node-20": {
-      "display_name": "built-CLI smoke on the engines floor (node 20)",
+    "smoke-node-22": {
+      "display_name": "installed-package smoke on the engines floor (node 22.14.0)",
       "workflow_only": true,
       "components": [],
       "nodes": [
-        20
+        "22.14.0"
       ],
-      "runtime_setup_node": 20,
-      "version_guard": "node --version | grep -q '^v20\\.'",
-      "built_cli": "packages/superbee/dist/superbee.mjs",
-      "built_cli_commands": [
-        "init",
-        "doc write",
-        "doc read",
-        "link add",
-        "link show",
-        "list",
-        "status"
-      ]
+      "build_runtime": "24.21.0",
+      "runtime_setup_node": "22.14.0",
+      "version_guard": "test \"$(node --version)\" = \"v22.14.0\"",
+      "superbee_tarball": "out/node-floor/superbee.tgz",
+      "cli_tarball": "out/node-floor/superbee-cli.tgz"
     }
   }
 }

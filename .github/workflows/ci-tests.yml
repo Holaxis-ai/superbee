@@ -1,6 +1,6 @@
 name: CI tests
 
-# Runtime-sensitive suites run identically on Node 22 and 26, then once more on macOS so that
+# Runtime-sensitive suites run identically on Node 22 and 26, then once more on Node 24.21.0/macOS so that
 # tests whose native branch only executes on a case-aliasing filesystem actually run. Distribution,
 # browser/UI, local release policy, and exhaustive target proofs are platform-independent lanes on
 # one supported runtime. Windows adapters and their native installed-package proof live in the
@@ -56,7 +56,7 @@ jobs:
         run: npm run ci:runtime
 
   aliasing-host:
-    name: host-class proofs on an aliasing host (macos, node 26)
+    name: host-class proofs on an aliasing host (macos, node 24.21.0)
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -67,7 +67,7 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
@@ -87,7 +87,7 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
@@ -109,7 +109,7 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
@@ -161,15 +161,15 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
       - run: npm ci
       - run: npm run ci:scripts
 
-  smoke-node-20:
-    name: built-CLI smoke on the engines floor (node 20)
+  smoke-node-22:
+    name: installed-package smoke on the engines floor (node 22.14.0)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -178,32 +178,38 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
       - run: npm ci
       - run: npm run build
+      - name: Pack both public artifacts once on the default runtime
+        run: |
+          set -euo pipefail
+          npm run build:npm-package -w superbee
+          mkdir -p out/node-floor
+          npm run --silent pack:npm-package -- --pack-destination out/node-floor > out/node-floor/superbee-pack.json
+          SUPERBEE_PACKED="$(node -p 'require("./out/node-floor/superbee-pack.json")[0].filename')"
+          mv -- "out/node-floor/$SUPERBEE_PACKED" out/node-floor/superbee.tgz
+          npm pack -w @superbee/cli --ignore-scripts --json --pack-destination out/node-floor > out/node-floor/cli-pack.json
+          CLI_PACKED="$(node -p 'require("./out/node-floor/cli-pack.json")[0].filename')"
+          mv -- "out/node-floor/$CLI_PACKED" out/node-floor/superbee-cli.tgz
+          sha256sum out/node-floor/superbee.tgz out/node-floor/superbee-cli.tgz > out/node-floor/before.sha256
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - name: Drive the built bundle on Node 20
+          node-version: 22.14.0
+      - name: Prove both installed artifacts on exact Node 22.14.0
         run: |
-          node --version | grep -q '^v20\.'
-          CLI=packages/superbee/dist/superbee.mjs
-          DIR="$RUNNER_TEMP/smoke-bundle"
-          node "$CLI" init --dir "$DIR"
-          node "$CLI" doc write specs/auth --type Spec --title "Auth" --body "smoke body" --dir "$DIR"
-          node "$CLI" doc read specs/auth --dir "$DIR"
-          node "$CLI" doc write notes/one --type Note --title "One" --body "x" --dir "$DIR"
-          node "$CLI" link add specs/auth notes/one --dir "$DIR"
-          node "$CLI" link show specs/auth --dir "$DIR"
-          node "$CLI" list --dir "$DIR"
-          node "$CLI" status --dir "$DIR"
+          set -euo pipefail
+          test "$(node --version)" = "v22.14.0"
+          npm run verify:npm-package:tarball -- out/node-floor/superbee.tgz --json
+          npm run verify:cli-tarball -- out/node-floor/superbee-cli.tgz
+          sha256sum --check out/node-floor/before.sha256
 
   required:
     name: CI required lanes
-    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -213,7 +219,7 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 24.21.0
       - name: Reject every non-success or missing required result
         env:
           REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
@@ -221,7 +227,7 @@ jobs:
 
   compatibility-gate-node-22:
     name: gate (node 22)
-    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -231,7 +237,7 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 24.21.0
       - name: Preserve the legacy context without weakening its coverage
         env:
           REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
@@ -239,7 +245,7 @@ jobs:
 
   compatibility-gate-node-26:
     name: gate (node 26)
-    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -249,7 +255,7 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 24.21.0
       - name: Preserve the legacy context without weakening its coverage
         env:
           REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}

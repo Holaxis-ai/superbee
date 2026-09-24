@@ -10,7 +10,7 @@
     "directory": "packages/cli"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^22.14.0 || ^24.0.0 || ^26.0.0"
   },
   "files": [
     "dist"

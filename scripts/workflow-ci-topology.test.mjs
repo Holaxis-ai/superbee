@@ -4,6 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { extractJobs, requiredUnconditionalStep, stepsOf } from "./workflow-step-test-helper.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workflow = readFileSync(path.join(root, ".github", "workflows", "ci-tests.yml"), "utf8");
 const packageLock = JSON.parse(readFileSync(path.join(root, "package-lock.json"), "utf8"));
@@ -55,93 +57,6 @@ const BROWSER_PREFLIGHT = `      - name: Verify baked Playwright browser artifac
           for (const [artifact, mode] of required) await access(artifact, mode);
           NODE`;
 
-function extractJobs(text) {
-  const lines = text.split("\n");
-  const at = lines.indexOf("jobs:");
-  assert.notEqual(at, -1, "workflow must declare jobs");
-  const jobs = {};
-  let current = null;
-  for (let index = at + 1; index < lines.length; index += 1) {
-    const header = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(lines[index]);
-    if (header) {
-      current = header[1];
-      jobs[current] = [];
-      continue;
-    }
-    if (lines[index] && !/^ {3,}/.test(lines[index]) && !/^ {0,2}#/.test(lines[index])) break;
-    if (current) jobs[current].push(lines[index]);
-  }
-  return Object.fromEntries(Object.entries(jobs).map(([name, lines]) => [name, lines.join("\n")]));
-}
-
-function parseStepField(step, source) {
-  const field = /^([A-Za-z0-9_-]+):(?:\s(.*))?$/.exec(source);
-  assert.ok(field, `unsupported workflow step field: ${source}`);
-  assert.equal(
-    Object.hasOwn(step.fields, field[1]),
-    false,
-    `workflow step ${step.position + 1} must not repeat field ${field[1]}`,
-  );
-  step.fields[field[1]] = field[2] ?? "";
-}
-
-// This intentionally parses only the job-level step sequence used by these topology assertions.
-// Nested `with`, `env`, and block-scalar bodies are opaque; required gates use exact scalar fields.
-// Unknown sequence-item shapes fail closed instead of being guessed as YAML semantics.
-function stepsOf(job) {
-  const lines = job.split("\n");
-  const stepsAt = lines.indexOf("    steps:");
-  assert.notEqual(stepsAt, -1, "workflow job must declare steps");
-  const steps = [];
-  let current = null;
-  for (let index = stepsAt + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (/^ {4}[A-Za-z0-9_-]+:/.test(line)) break;
-    if (!line.trim() || /^\s*#/.test(line)) continue;
-    const item = /^ {6}- (.+)$/.exec(line);
-    if (item) {
-      current = { position: steps.length, fields: Object.create(null) };
-      parseStepField(current, item[1]);
-      steps.push(current);
-      continue;
-    }
-    assert.doesNotMatch(line, /^ {6}-/, "workflow step sequence items must declare one field inline");
-    const field = /^ {8}(\S.*)$/.exec(line);
-    if (field && current) {
-      parseStepField(current, field[1]);
-      continue;
-    }
-    if (/^ {10}/.test(line)) continue;
-    assert.fail(`unsupported workflow step line: ${line}`);
-  }
-  assert.ok(steps.length > 0, "workflow job must declare at least one step");
-  return steps;
-}
-
-function requiredUnconditionalStep(steps, expected) {
-  const named = steps.filter((step) => step.fields.name === expected.name);
-  assert.equal(named.length, 1, `${expected.label} must be declared exactly once by name`);
-  const step = named[0];
-  assert.equal(step.fields.run, expected.run, `${expected.label} command drifted`);
-  assert.equal(
-    step.fields["working-directory"],
-    expected.workingDirectory,
-    `${expected.label} must run directly from its reviewed working directory`,
-  );
-  assert.equal(step.fields.if, undefined, `${expected.label} must be unconditional`);
-  assert.equal(
-    step.fields["continue-on-error"],
-    undefined,
-    `${expected.label} must fail closed rather than continue on error`,
-  );
-  assert.equal(
-    steps.filter((candidate) => candidate.fields.run === expected.run).length,
-    1,
-    `${expected.label} command must execute exactly once`,
-  );
-  return step;
-}
-
 function needsOf(job) {
   const list = /^ {4}needs: \[([^\]]*)\]\s*$/m.exec(job);
   if (list) return list[1].split(",").map((name) => name.trim()).filter(Boolean);
@@ -170,18 +85,26 @@ function assertSmokeJob(job, lane) {
   assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2, "floor smoke needs build and floor runtimes");
   assert.deepEqual(
     [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => match[1]),
-    [String(manifest.singleton_node), String(lane.runtime_setup_node)],
+    [lane.build_runtime, lane.runtime_setup_node],
     "the second setup-node invocation must select the declared engine floor",
   );
   assert.ok(job.includes(lane.version_guard), "floor smoke must self-check the active Node major");
-  assert.match(job, new RegExp(`CLI=${lane.built_cli.replaceAll("/", "\\/")}`));
-  const commands = [...job.matchAll(/^ {10}node "\$CLI" (.+)$/gm)].map((match) => match[1]);
-  const surface = [...new Set(commands.map((argv) => {
-    return [...lane.built_cli_commands]
-      .sort((left, right) => right.length - left.length)
-      .find((command) => argv === command || argv.startsWith(`${command} `)) ?? `<unknown:${argv}>`;
-  }))].sort();
-  assert.deepEqual(surface, [...lane.built_cli_commands].sort(), "floor smoke built-CLI command surface drifted");
+  assert.match(job, /npm run --silent pack:npm-package -- --pack-destination out\/node-floor/);
+  assert.doesNotMatch(job, /npm run pack:npm-package -- --pack-destination out\/node-floor/);
+  assert.match(job, /npm run build:npm-package -w superbee/);
+  assert.match(job, /npm pack -w @superbee\/cli --ignore-scripts --json --pack-destination out\/node-floor/);
+  assert.ok(job.includes(lane.superbee_tarball));
+  assert.ok(job.includes(lane.cli_tarball));
+  assert.match(job, /npm run verify:npm-package:tarball -- out\/node-floor\/superbee\.tgz --json/);
+  assert.match(job, /npm run verify:cli-tarball -- out\/node-floor\/superbee-cli\.tgz/);
+  assert.match(job, /sha256sum --check out\/node-floor\/before\.sha256/);
+  const buildAt = job.indexOf("run: npm run build");
+  const packageBuildAt = job.indexOf("npm run build:npm-package -w superbee");
+  const packAt = job.indexOf("npm run --silent pack:npm-package");
+  const floorAt = job.indexOf(`node-version: ${lane.runtime_setup_node}`);
+  const proofAt = job.indexOf("npm run verify:npm-package:tarball");
+  assert.ok(buildAt >= 0 && buildAt < packageBuildAt && packageBuildAt < packAt && packAt < floorAt && floorAt < proofAt, "build and pack must finish before the exact-floor proof");
+  assert.doesNotMatch(job.slice(floorAt), /npm run build|npm pack|pack:npm-package/, "the floor runtime must consume retained artifacts without rebuilding or repacking");
 }
 
 // Every lane that declares a host-class expectation must run on the pinned runner, export the
@@ -369,9 +292,9 @@ function validateCiTopology(
     const install = steps.find(step => step.fields.run === 'npm ci');
     assert.ok(install && preflight.position < install.position, `${required} source preflight must precede installation`);
   }
-  assert.match(jobs.runtime, /node-version: \[22, 26\]/);
+  assert.match(jobs.runtime, new RegExp(`node-version: \\[${candidate.runtime_nodes.join(", ")}\\]`));
   assert.match(jobs.runtime, /run: npm run ci:runtime/);
-  assert.match(jobs["aliasing-host"], /node-version: 26/);
+  assert.match(jobs["aliasing-host"], new RegExp(`node-version: ${candidate.singleton_node.replaceAll(".", "\\.")}`));
   assert.match(text, /^permissions:\n {2}contents: read$/m, "required CI must retain read-only contents permission");
   assertHostExpectations(jobs, candidate);
   for (const [job, script] of [
@@ -379,11 +302,11 @@ function validateCiTopology(
     ["browser", "ci:browser"],
     ["scripts", "ci:scripts"],
   ]) {
-    assert.match(jobs[job], /node-version: 26/);
+    assert.match(jobs[job], new RegExp(`node-version: ${candidate.singleton_node.replaceAll(".", "\\.")}`));
     assert.match(jobs[job], new RegExp(`run: npm run ${script.replace(":", "\\:")}`));
   }
   validateBrowserJob(jobs.browser, browserPackages);
-  assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
+  assertSmokeJob(jobs["smoke-node-22"], candidate.lanes["smoke-node-22"]);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
   assert.equal(
     /^ {2}merge_group:/m.test(text),
@@ -519,9 +442,9 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
     ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', /runtime must pin the host-class expectation/],
     ['test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /aliasing-host must self-check its host class/],
     ['test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /runtime must self-check its host class/],
-    ["          node-version: 20", "          node-version: 22", /second setup-node|deep-equal/],
-    ["          node --version | grep -q '^v20\\.'", "          node --version", /self-check/],
-    ["          node \"$CLI\" status --dir \"$DIR\"", "          node --version", /command surface/],
+    ["          node-version: 22.14.0", "          node-version: 22.15.0", /second setup-node|deep-equal/],
+    ["          test \"$(node --version)\" = \"v22.14.0\"", "          node --version", /self-check/],
+    ["          npm run verify:cli-tarball -- out/node-floor/superbee-cli.tgz", "          node --version", /cli-tarball/],
   ]) {
     assert.throws(() => validateCiTopology(workflow.replace(from, to)), error);
   }

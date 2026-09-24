@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +8,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { evaluateRequiredResults, REQUIRED_JOBS } from "./ci-aggregate.mjs";
+import { validateNodeRuntimeManifest, validateNodeRuntimePolicy } from "./node-runtime-policy.mjs";
+import { requiredTrustedReleasePrefix } from "./workflow-step-test-helper.mjs";
 const clockModule = new URL("../packages/core/dist/meaningful-change-time.js", import.meta.url);
 let meaningfulChangeTimeValue;
 try {
@@ -24,6 +26,10 @@ const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const cliPkg = JSON.parse(readFileSync(path.join(root, "packages", "superbee", "package.json"), "utf8"));
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
 const contributing = readFileSync(path.join(root, "CONTRIBUTING.md"), "utf8");
+const rootReadme = readFileSync(path.join(root, "README.md"), "utf8");
+const npmReadme = readFileSync(path.join(root, "packages", "superbee", "README.md"), "utf8");
+const cliLibraryPkg = JSON.parse(readFileSync(path.join(root, "packages", "cli", "package.json"), "utf8"));
+const packageLock = JSON.parse(readFileSync(path.join(root, "package-lock.json"), "utf8"));
 const okfBundleSource = readFileSync(path.join(root, "packages", "core", "src", "bundle.ts"), "utf8");
 const linkSource = readFileSync(path.join(root, "packages", "core", "src", "links.ts"), "utf8");
 const sampleOkfReference = readFileSync(
@@ -35,12 +41,434 @@ const wrapperSources = Object.fromEntries(
     .filter((lane) => lane.wrapper)
     .map((lane) => [lane.wrapper, readFileSync(path.join(root, lane.wrapper), "utf8")]),
 );
+const REVIEW_EVIDENCE = `reviews/node-26-promotion@sha256:${"a".repeat(64)}`;
+const RELEASE_PREFLIGHT_NAME = "Check Node runtime policy before installation";
+const RELEASE_PREFLIGHT_RUN = "node scripts/node-runtime-policy.mjs";
+const CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+const SETUP_NODE_ACTION = "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020";
+const RELEASE_CHECKOUT_INPUTS = {
+  ".github/workflows/release.yml": {},
+  ".github/workflows/release-libraries.yml": { "fetch-depth": 0 },
+  ".github/workflows/release-cli-library.yml": { "fetch-depth": 0, "persist-credentials": false },
+};
 
 function requiredLaneNames(candidate) {
   return Object.entries(candidate.lanes)
     .filter(([, lane]) => lane.required !== false)
     .map(([name]) => name);
 }
+
+function count(text, pattern) {
+  return text.match(pattern)?.length ?? 0;
+}
+
+function assertReleasePreflightOrder(text, relative) {
+  const { steps, preflightPosition } = requiredTrustedReleasePrefix(text, {
+    label: relative,
+    checkoutInputs: RELEASE_CHECKOUT_INPUTS[relative],
+    checkoutAction: CHECKOUT_ACTION,
+    setupNodeAction: SETUP_NODE_ACTION,
+    nodeVersion: "24.21.0",
+    preflightName: RELEASE_PREFLIGHT_NAME,
+    preflightRun: RELEASE_PREFLIGHT_RUN,
+    runsOn: "ubuntu-latest",
+  });
+  const protectedWork = [
+    /npm ci\b/,
+    /npm install\b/,
+    /npm view\b/,
+    /npm run build(?:\s|:|-|$)/,
+    /npm pack\b/,
+    /npm publish\b/,
+    /npm stage\b/,
+  ];
+  const firstProtectedAt = steps.findIndex(
+    (step) => typeof step?.run === "string" && protectedWork.some((pattern) => pattern.test(step.run)),
+  );
+  assert.ok(
+    firstProtectedAt >= 0 && preflightPosition < firstProtectedAt,
+    `${relative} must run the Node policy preflight before dependency, build, registry, pack, or publish work`,
+  );
+}
+
+function validateNodePolicyAgreement({
+  candidate = manifest,
+  cliManifest = cliLibraryPkg,
+  executableManifest = cliPkg,
+  lock = packageLock,
+  files = {},
+  now = new Date(),
+} = {}) {
+  const policy = validateNodeRuntimeManifest(candidate, { now });
+  const read = (relative) => files[relative] ?? readFileSync(path.join(root, relative), "utf8");
+  assert.equal(pkg.scripts["check:node-policy"], "node scripts/node-runtime-policy.mjs");
+  for (const [name, packageManifest] of [["@superbee/cli", cliManifest], ["superbee", executableManifest]]) {
+    assert.equal(packageManifest.engines?.node, policy.engine_range, `${name} engine policy drifted`);
+  }
+  assert.equal(lock.packages["packages/cli"].engines.node, policy.engine_range);
+  assert.equal(lock.packages["packages/superbee"].engines.node, policy.engine_range);
+  for (const [, workspace] of Object.entries(lock.packages).filter(([location, entry]) => location.startsWith("packages/") && entry?.devDependencies?.["@types/node"])) {
+    assert.match(workspace.devDependencies["@types/node"], /^\^22\./, "@types/node must remain on the compatibility-floor major");
+  }
+
+  assert.equal(count(read("packages/cli/build.mjs"), new RegExp(`target:\\s*["']${policy.build_target}["']`, "g")), 2);
+  assert.equal(count(read("packages/superbee/scripts/build-bundle.mjs"), new RegExp(`target:\\s*["']${policy.build_target}["']`, "g")), 3);
+  assert.equal(read(".node-version").trim(), policy.default_runtime);
+  assert.deepEqual(candidate.runtime_nodes, [Number(policy.compatibility_floor.split(".")[0]), policy.forward_probe]);
+  assert.equal(candidate.singleton_node, policy.default_runtime);
+  assert.deepEqual(candidate.lanes.runtime.nodes, candidate.runtime_nodes);
+  assert.deepEqual(candidate.lanes[`smoke-node-${policy.compatibility_floor.split(".")[0]}`].nodes, [policy.compatibility_floor]);
+
+  const ci = read(".github/workflows/ci-tests.yml");
+  assert.match(ci, new RegExp(`node-version: \\[${candidate.runtime_nodes.join(", ")}\\]`));
+  assert.equal(count(ci, new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 8);
+  assert.equal(count(ci, new RegExp(`node-version: ${policy.compatibility_floor.replaceAll(".", "\\.")}`, "g")), 1);
+  assert.equal(count(read(".github/workflows/mutation-tests.yml"), new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), 1);
+
+  const releaseWorkflows = {
+    ".github/workflows/release.yml": 2,
+    ".github/workflows/release-finalize.yml": 1,
+    ".github/workflows/release-cli-library.yml": 2,
+    ".github/workflows/release-cli-library-finalize.yml": 1,
+    ".github/workflows/release-libraries.yml": 3,
+    ".github/workflows/release-libraries-finalize.yml": 1,
+  };
+  for (const [relative, expected] of Object.entries(releaseWorkflows)) {
+    assert.equal(count(read(relative), new RegExp(`node-version: ${policy.default_runtime.replaceAll(".", "\\.")}`, "g")), expected, `${relative} release runtime drifted`);
+  }
+  for (const relative of [
+    ".github/workflows/release.yml",
+    ".github/workflows/release-cli-library.yml",
+    ".github/workflows/release-libraries.yml",
+  ]) {
+    assertReleasePreflightOrder(read(relative), relative);
+  }
+
+  const supported = /supported\s+Node\.js 22, 24, or 26 release(?:s)?/;
+  for (const [name, text] of [["README.md", rootReadme], ["packages/superbee/README.md", npmReadme], ["CONTRIBUTING.md", contributing]]) {
+    assert.match(text, supported, `${name} must name the finite supported Node lines`);
+    assert.match(text, /22\.14\.0/, `${name} must name the exact minimum patch`);
+    assert.doesNotMatch(text, /Node\.js 22 or newer/, `${name} must not advertise an unbounded Node range`);
+  }
+}
+
+test("the Node runtime policy agrees across every first-party projection", () => {
+  validateNodePolicyAgreement();
+});
+
+test("Node runtime lifecycle boundaries fail closed", () => {
+  const pending = structuredClone(manifest);
+  assert.doesNotThrow(() => validateNodeRuntimeManifest(pending, { now: new Date("2026-10-24T23:59:59Z") }));
+  assert.throws(
+    () => validateNodeRuntimeManifest(pending, { now: new Date("2026-10-25T00:00:00Z") }),
+    /release pin expired/,
+  );
+
+  const futurePinReview = structuredClone(manifest.node_policy);
+  futurePinReview.release_pin_reviewed_at = "2099-01-01";
+  assert.throws(
+    () => validateNodeRuntimePolicy(futurePinReview, { now: new Date("2026-09-24T00:00:00Z") }),
+    /release pin review cannot be in the future/,
+  );
+  const longPinWindow = structuredClone(manifest.node_policy);
+  longPinWindow.release_pin_refresh_by = "2026-10-25";
+  assert.throws(
+    () => validateNodeRuntimePolicy(longPinWindow, { now: new Date("2026-09-24T00:00:00Z") }),
+    /within 30 days/,
+  );
+  longPinWindow.release_pin_refresh_by = "2099-12-31";
+  assert.throws(
+    () => validateNodeRuntimePolicy(longPinWindow, { now: new Date("2026-09-24T00:00:00Z") }),
+    /within 30 days/,
+  );
+
+  const movableBoundaries = structuredClone(manifest.node_policy);
+  movableBoundaries.forward_review.review_after = "2099-12-31";
+  assert.throws(
+    () => validateNodeRuntimePolicy(movableBoundaries, { now: new Date("2026-09-24T00:00:00Z") }),
+    /fixed at 2026-10-28/,
+  );
+  movableBoundaries.forward_review.review_after = "2026-10-28";
+  movableBoundaries.floor_retirement.retire_by = "2099-12-31";
+  assert.throws(
+    () => validateNodeRuntimePolicy(movableBoundaries, { now: new Date("2026-09-24T00:00:00Z") }),
+    /fixed at 2027-04-30/,
+  );
+
+  const forwardDue = structuredClone(manifest);
+  forwardDue.node_policy.release_pin_reviewed_at = "2026-10-28";
+  forwardDue.node_policy.release_pin_refresh_by = "2026-11-27";
+  assert.throws(
+    () => validateNodeRuntimeManifest(forwardDue, { now: new Date("2026-10-28T00:00:00Z") }),
+    /forward review is due/,
+  );
+
+  const retain = structuredClone(forwardDue);
+  retain.node_policy.forward_review = {
+    review_after: "2026-10-28",
+    disposition: "retain_probe",
+    decided_at: "2026-10-28",
+    decided_by: "human:maintainer",
+    evidence: REVIEW_EVIDENCE,
+    revisit_by: "2027-04-26",
+  };
+  assert.doesNotThrow(() => validateNodeRuntimeManifest(retain, { now: new Date("2026-10-28T00:00:00Z") }));
+  retain.node_policy.forward_review.revisit_by = "2027-04-27";
+  assert.throws(
+    () => validateNodeRuntimeManifest(retain, { now: new Date("2026-10-28T00:00:00Z") }),
+    /within 180 days/,
+  );
+
+  const repeatedRetain = structuredClone(retain.node_policy);
+  repeatedRetain.release_pin_reviewed_at = "2027-04-26";
+  repeatedRetain.release_pin_refresh_by = "2027-05-26";
+  repeatedRetain.forward_review.decided_at = "2027-04-26";
+  repeatedRetain.forward_review.revisit_by = "2027-10-23";
+  assert.throws(
+    () => validateNodeRuntimePolicy(repeatedRetain, { now: new Date("2027-04-26T00:00:00Z") }),
+    /one-cycle cap of 2027-04-26/,
+  );
+
+  const pendingWithDecision = structuredClone(manifest.node_policy);
+  pendingWithDecision.forward_review.decided_at = "2026-10-28";
+  assert.throws(
+    () => validateNodeRuntimePolicy(pendingWithDecision, { now: new Date("2026-09-24T00:00:00Z") }),
+    /pending forward review cannot set a decision date/,
+  );
+
+  const decided = structuredClone(retain.node_policy);
+  decided.forward_review.decided_at = "2026-10-27";
+  assert.throws(
+    () => validateNodeRuntimePolicy(decided, { now: new Date("2026-10-28T00:00:00Z") }),
+    /cannot predate the review boundary/,
+  );
+  decided.forward_review.decided_at = "2026-10-29";
+  assert.throws(
+    () => validateNodeRuntimePolicy(decided, { now: new Date("2026-10-28T00:00:00Z") }),
+    /cannot be in the future/,
+  );
+
+  const weakEvidence = structuredClone(retain.node_policy);
+  weakEvidence.forward_review.evidence = "reviews/node-26-promotion";
+  assert.throws(
+    () => validateNodeRuntimePolicy(weakEvidence, { now: new Date("2026-10-28T00:00:00Z") }),
+    /structured Review evidence/,
+  );
+
+  const inertPromote = structuredClone(forwardDue);
+  inertPromote.node_policy.forward_review = {
+    ...retain.node_policy.forward_review,
+    disposition: "promote_default",
+    revisit_by: null,
+  };
+  assert.throws(
+    () => validateNodeRuntimeManifest(inertPromote, { now: new Date("2026-10-28T00:00:00Z") }),
+    /promote_default must make Node 26 the default runtime/,
+  );
+  const promoted = structuredClone(inertPromote);
+  promoted.node_policy.default_runtime = "26.0.0";
+  promoted.singleton_node = "26.0.0";
+  assert.doesNotThrow(() => validateNodeRuntimeManifest(promoted, { now: new Date("2026-10-28T00:00:00Z") }));
+
+  const inertRetire = structuredClone(forwardDue);
+  inertRetire.node_policy.forward_review = {
+    ...retain.node_policy.forward_review,
+    disposition: "retire_probe",
+    revisit_by: null,
+  };
+  assert.throws(
+    () => validateNodeRuntimeManifest(inertRetire, { now: new Date("2026-10-28T00:00:00Z") }),
+    /retire_probe must remove Node 26 from supported majors/,
+  );
+  const retired = structuredClone(inertRetire);
+  retired.node_policy.supported_majors = [22, 24];
+  retired.node_policy.engine_range = "^22.14.0 || ^24.0.0";
+  retired.runtime_nodes = [22];
+  assert.doesNotThrow(() => validateNodeRuntimeManifest(retired, { now: new Date("2026-10-28T00:00:00Z") }));
+
+  const missingPendingProbe = structuredClone(manifest);
+  missingPendingProbe.runtime_nodes = [22];
+  assert.throws(
+    () => validateNodeRuntimeManifest(missingPendingProbe, { now: new Date("2026-09-24T00:00:00Z") }),
+    /pending runtime_nodes must equal \[22,26\]/,
+  );
+
+  const demotedPending = structuredClone(manifest);
+  demotedPending.node_policy.default_runtime = "22.14.0";
+  demotedPending.node_policy.supported_majors = [22, 26];
+  demotedPending.node_policy.engine_range = "^22.14.0 || ^26.0.0";
+  demotedPending.singleton_node = "22.14.0";
+  assert.throws(
+    () => validateNodeRuntimeManifest(demotedPending, { now: new Date("2026-09-24T00:00:00Z") }),
+    /pending must use Node 24 as the default major/,
+  );
+
+  const leapfroggedPending = structuredClone(manifest);
+  leapfroggedPending.node_policy.default_runtime = "28.0.0";
+  leapfroggedPending.node_policy.supported_majors = [22, 26, 28];
+  leapfroggedPending.node_policy.engine_range = "^22.14.0 || ^26.0.0 || ^28.0.0";
+  leapfroggedPending.singleton_node = "28.0.0";
+  assert.throws(
+    () => validateNodeRuntimeManifest(leapfroggedPending, { now: new Date("2026-09-24T00:00:00Z") }),
+    /pending must use Node 24 as the default major/,
+  );
+
+  const expandedPending = structuredClone(manifest);
+  expandedPending.node_policy.supported_majors = [22, 24, 26, 28];
+  expandedPending.node_policy.engine_range = "^22.14.0 || ^24.0.0 || ^26.0.0 || ^28.0.0";
+  assert.throws(
+    () => validateNodeRuntimeManifest(expandedPending, { now: new Date("2026-09-24T00:00:00Z") }),
+    /pending supported_majors must equal \[22,24,26\]/,
+  );
+
+  const unexpectedPendingRuntime = structuredClone(manifest);
+  unexpectedPendingRuntime.runtime_nodes = [22, 24, 26];
+  assert.throws(
+    () => validateNodeRuntimeManifest(unexpectedPendingRuntime, { now: new Date("2026-09-24T00:00:00Z") }),
+    /pending runtime_nodes must equal \[22,26\]/,
+  );
+
+  const refreshedNode24 = structuredClone(manifest);
+  refreshedNode24.node_policy.default_runtime = "24.22.0";
+  refreshedNode24.singleton_node = "24.22.0";
+  assert.doesNotThrow(
+    () => validateNodeRuntimeManifest(refreshedNode24, { now: new Date("2026-09-24T00:00:00Z") }),
+  );
+
+  const floorDue = structuredClone(retired);
+  floorDue.node_policy.release_pin_reviewed_at = "2027-04-30";
+  floorDue.node_policy.release_pin_refresh_by = "2027-05-30";
+  assert.throws(
+    () => validateNodeRuntimeManifest(floorDue, { now: new Date("2027-04-30T00:00:00Z") }),
+    /support retires/,
+  );
+});
+
+test("release build jobs have one closed checkout, runtime, and policy trust prefix", () => {
+  const preflight = `      - name: ${RELEASE_PREFLIGHT_NAME}\n        run: ${RELEASE_PREFLIGHT_RUN}`;
+  const shim = `      - name: Prepend fake Node and npm shims
+        run: |
+          mkdir -p /tmp/fake-bin
+          for executable in node npm; do
+            printf '#!/bin/sh\\nexit 0\\n' > "/tmp/fake-bin/$executable"
+            chmod +x "/tmp/fake-bin/$executable"
+          done
+          echo "/tmp/fake-bin" >> "$GITHUB_PATH"`;
+
+  for (const relative of Object.keys(RELEASE_CHECKOUT_INPUTS)) {
+    const workflow = readFileSync(path.join(root, relative), "utf8");
+    const mutations = new Map([
+      ["fake shim before checkout", workflow.replace("    steps:\n", `    steps:\n${shim}\n`)],
+      ["fake shim between runtime setup and policy", workflow.replace(preflight, `${shim}\n${preflight}`)],
+      ["workflow env", workflow.replace("permissions: {}", "permissions: {}\n\nenv:\n  PATH: /tmp/fake-bin")],
+      ["workflow defaults", workflow.replace("permissions: {}", "permissions: {}\n\ndefaults:\n  run:\n    shell: bash")],
+      ["job env", workflow.replace("  build:\n", "  build:\n    env:\n      PATH: /tmp/fake-bin\n")],
+      ["job defaults", workflow.replace("  build:\n", "  build:\n    defaults:\n      run:\n        working-directory: /tmp\n")],
+      ["job container", workflow.replace("  build:\n", "  build:\n    container: node:24\n")],
+      ["job services", workflow.replace("  build:\n", "  build:\n    services:\n      fake:\n        image: node:24\n")],
+      ["job continue-on-error", workflow.replace("  build:\n", "  build:\n    continue-on-error: true\n")],
+      ["changed runs-on", workflow.replace("    runs-on: ubuntu-latest", "    runs-on: macos-latest")],
+      ["changed checkout action", workflow.replace(CHECKOUT_ACTION, "actions/checkout@main")],
+      ["checkout condition", workflow.replace(`      - uses: ${CHECKOUT_ACTION}`, `      - uses: ${CHECKOUT_ACTION}\n        if: true`)],
+      ["changed setup-node action", workflow.replace(SETUP_NODE_ACTION, "actions/setup-node@main")],
+      ["changed setup-node version", workflow.replace("          node-version: 24.21.0", "          node-version: 24.20.0")],
+      ["changed setup-node inputs", workflow.replace("          cache: npm", "          cache: yarn")],
+      ["unknown setup-node input", workflow.replace("          cache: npm", "          cache: npm\n          registry-url: https://registry.npmjs.org")],
+      ["setup-node condition", workflow.replace(`      - uses: ${SETUP_NODE_ACTION}`, `      - uses: ${SETUP_NODE_ACTION}\n        if: true`)],
+      ["commented preflight", workflow.replace(preflight, preflight.split("\n").map((line) => `${line.slice(0, 6)}# ${line.slice(6)}`).join("\n"))],
+      ["late preflight", workflow.replace(`${preflight}\n      - run: npm ci --ignore-scripts`, `      - run: npm ci --ignore-scripts\n${preflight}`)],
+    ]);
+    for (const [field, addition] of [
+      ["if", "        if: false"],
+      ["continue-on-error", "        continue-on-error: true"],
+      ["working-directory", "        working-directory: /tmp"],
+      ["env", "        env:\n          NODE_OPTIONS: --require /dev/null"],
+      ["shell", "        shell: bash {0}"],
+      ["unknown", "        timeout-minutes: 1"],
+    ]) {
+      mutations.set(
+        `preflight ${field}`,
+        workflow.replace(`        run: ${RELEASE_PREFLIGHT_RUN}`, `        run: ${RELEASE_PREFLIGHT_RUN}\n${addition}`),
+      );
+    }
+    for (const [name, mutated] of mutations) {
+      assert.notEqual(mutated, workflow, `${relative} ${name} mutation must apply`);
+      assert.throws(
+        () => validateNodePolicyAgreement({ files: { [relative]: mutated } }),
+        undefined,
+        `${relative} must reject ${name}`,
+      );
+    }
+  }
+});
+
+test("release trust validation follows resolved YAML mappings", () => {
+  const preflight = `      - name: ${RELEASE_PREFLIGHT_NAME}\n        run: ${RELEASE_PREFLIGHT_RUN}`;
+  const selectiveNodeOptions = `--import=data:text/javascript,if(process.argv%5B1%5D%3F.endsWith(%22node-runtime-policy.mjs%22))process.exit(0)`;
+  for (const relative of Object.keys(RELEASE_CHECKOUT_INPUTS)) {
+    const workflow = readFileSync(path.join(root, relative), "utf8");
+    const mutations = new Map([
+      ["quoted workflow env", workflow.replace("permissions: {}", `permissions: {}\n\n"env":\n  NODE_OPTIONS: '${selectiveNodeOptions}'`)],
+      ["quoted workflow defaults", workflow.replace("permissions: {}", "permissions: {}\n\n\"defaults\":\n  run:\n    shell: bash")],
+      ["quoted job env", workflow.replace("  build:\n", `  build:\n    "env":\n      NODE_OPTIONS: '${selectiveNodeOptions}'\n`)],
+      ["quoted job defaults", workflow.replace("  build:\n", "  build:\n    \"defaults\":\n      run:\n        shell: bash\n")],
+      ["quoted job container", workflow.replace("  build:\n", "  build:\n    \"container\": node:24\n")],
+      ["quoted job services", workflow.replace("  build:\n", "  build:\n    \"services\":\n      fake:\n        image: node:24\n")],
+      ["quoted job continue-on-error", workflow.replace("  build:\n", "  build:\n    \"continue-on-error\": true\n")],
+      ["quoted step env", workflow.replace(`        run: ${RELEASE_PREFLIGHT_RUN}`, `        run: ${RELEASE_PREFLIGHT_RUN}\n        \"env\":\n          NODE_OPTIONS: '${selectiveNodeOptions}'`)],
+      ["workflow merge alias", workflow.replace(
+        "permissions: {}",
+        `permissions: {}\n\nx-workflow-modifiers: &workflow-modifiers\n  env:\n    NODE_OPTIONS: '${selectiveNodeOptions}'\n<<: *workflow-modifiers`,
+      )],
+      ["job merge alias", workflow
+        .replace("permissions: {}", "permissions: {}\n\nx-job-modifiers: &job-modifiers\n  defaults:\n    run:\n      shell: bash")
+        .replace("  build:\n", "  build:\n    <<: *job-modifiers\n")],
+      ["step merge alias", workflow
+        .replace("permissions: {}", `permissions: {}\n\nx-step-modifiers: &step-modifiers\n  env:\n    NODE_OPTIONS: '${selectiveNodeOptions}'`)
+        .replace(`        run: ${RELEASE_PREFLIGHT_RUN}`, `        run: ${RELEASE_PREFLIGHT_RUN}\n        <<: *step-modifiers`)],
+      ["duplicate mapping key", workflow.replace("permissions: {}", "permissions: {}\npermissions: {}")],
+      ["YAML parser failure", workflow.replace("permissions: {}", "permissions: [")],
+    ]);
+    for (const [name, mutated] of mutations) {
+      assert.notEqual(mutated, workflow, `${relative} ${name} mutation must apply`);
+      assert.throws(
+        () => validateNodePolicyAgreement({ files: { [relative]: mutated } }),
+        undefined,
+        `${relative} must reject ${name}`,
+      );
+    }
+
+    const quotedButEquivalent = workflow.replace(
+      preflight,
+      `      - "name": ${RELEASE_PREFLIGHT_NAME}\n        "run": ${RELEASE_PREFLIGHT_RUN}`,
+    );
+    assert.notEqual(quotedButEquivalent, workflow, `${relative} quoted step-key mutation must apply`);
+    assert.doesNotThrow(
+      () => validateNodePolicyAgreement({ files: { [relative]: quotedButEquivalent } }),
+      `${relative} must accept semantically identical quoted prefix keys`,
+    );
+  }
+});
+
+test("the reviewed NODE_OPTIONS bypass is selective and must remain forbidden", () => {
+  const args = [path.join(root, "scripts", "node-runtime-policy.mjs"), "--date", "2026-10-25"];
+  const expired = spawnSync(process.execPath, args, { cwd: root, encoding: "utf8" });
+  assert.notEqual(expired.status, 0, "the expired-date policy baseline must fail");
+  assert.match(expired.stderr, /release pin expired/);
+
+  const source = 'if(process.argv[1]?.endsWith("node-runtime-policy.mjs"))process.exit(0)';
+  const env = { ...process.env, NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(source)}` };
+  const bypassed = spawnSync(process.execPath, args, { cwd: root, env, encoding: "utf8" });
+  assert.equal(bypassed.status, 0, "the forbidden modifier can selectively neutralize the policy process");
+  const unrelated = spawnSync(process.execPath, ["-e", "process.exit(0)"], { cwd: root, env, encoding: "utf8" });
+  assert.equal(unrelated.status, 0, "the selective modifier leaves later Node work available");
+});
+
+test("the Node policy agreement fails red when a projection drifts", () => {
+  const cliManifest = structuredClone(cliLibraryPkg);
+  cliManifest.engines.node = ">=22";
+  assert.throws(() => validateNodePolicyAgreement({ cliManifest }), /@superbee\/cli engine policy drifted/);
+});
 
 function projectionRows(text, name) {
   const start = `<!-- contributing-${name}:start -->`;
@@ -250,7 +678,7 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and platform lane
   assert.equal(cliPkg.scripts.pretest, "node build.mjs local-dev", "ordinary npm test must keep its build prerequisite");
   assert.doesNotMatch(cliPkg.scripts.test, /build\.mjs/, "the CI runtime lane must be able to skip the pretest rebuild");
   for (const [name, lane] of Object.entries(manifest.lanes)) {
-    if (name === "runtime" || name === "smoke-node-20") continue;
+    if (name === "runtime" || name === "smoke-node-22") continue;
     assert.deepEqual(lane.nodes, [manifest.singleton_node], `${name} must not amplify across runtime versions`);
   }
   assert.deepEqual(cliPkg.os, ["darwin", "linux"], "the maintained executable admits only its supported hosts");
@@ -292,7 +720,15 @@ test("a missing core build gives local scripts callers an actionable message", a
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-script-build-"));
   try {
     await mkdir(path.join(scratch, "scripts"));
-    for (const name of ["ci-lanes.test.mjs", "ci-aggregate.mjs", "ci-lanes.json", "is-main-module.mjs"]) {
+    await symlink(path.join(root, "node_modules"), path.join(scratch, "node_modules"), "dir");
+    for (const name of [
+      "ci-lanes.test.mjs",
+      "ci-aggregate.mjs",
+      "ci-lanes.json",
+      "is-main-module.mjs",
+      "node-runtime-policy.mjs",
+      "workflow-step-test-helper.mjs",
+    ]) {
       await copyFile(path.join(root, "scripts", name), path.join(scratch, "scripts", name));
     }
     const result = spawnSync(process.execPath, [path.join(scratch, "scripts", "ci-lanes.test.mjs")], { encoding: "utf8" });

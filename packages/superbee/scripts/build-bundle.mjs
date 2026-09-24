@@ -103,7 +103,7 @@ export async function buildCliBundle(outfile, options) {
     bundle: true,
     platform: "node",
     format: "esm",
-    target: "node20",
+    target: "node22",
     // One compile-time authority read by build-identity.ts. The artifact hash is deliberately NOT
     // embedded (that would be recursive); runtime hashes the actual executing bytes lazily.
     define: {
@@ -136,7 +136,7 @@ export async function buildPublicationBundle(outfile, surface = "full") {
     bundle: true,
     platform: "node",
     format: "esm",
-    target: "node20",
+    target: "node22",
     alias: {
       "@superbee/core/page": r("../core/src/page.ts"),
       "@superbee/core/view-admission": r("../core/src/view-admission.ts"),
@@ -171,7 +171,7 @@ export async function buildBundleDescriptorBundle(outfile) {
     bundle: true,
     platform: "node",
     format: "esm",
-    target: "node20",
+    target: "node22",
     logLevel: "info",
   });
 }
