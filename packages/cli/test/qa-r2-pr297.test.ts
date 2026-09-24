@@ -16,6 +16,7 @@ import { sync } from "../src/commands/sync.js";
 import { doc as docCommand } from "../src/commands/doc.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
+import { personAtTerminal, type FakeTerminal } from "./support/fake-terminal.js";
 
 interface H {
   home: string;
@@ -25,6 +26,8 @@ interface H {
   host: FakeHost;
   out: string[];
   before?: (route: string, body: Record<string, unknown>) => Promise<void> | void;
+  /** The person's terminal; by default one where the person confirms what they are asked. */
+  terminal?: FakeTerminal;
 }
 
 async function harness(host = new FakeHost()): Promise<H> {
@@ -53,7 +56,7 @@ type Outcome = { ok: true; receipt: Record<string, unknown> } | { ok: false; err
 async function attempt(h: H, argv: string[] = [], lockWaitMs = 200): Promise<Outcome> {
   const out: string[] = [];
   try {
-    await sync(["--dir", h.folder, ...argv], { stdout: (t: string) => void out.push(t), auth: h.auth, cwd: h.cwd, fetch: fetchFor(h), write: { sleep: instant, lookupDelayMs: 0 }, sleep: instant, lockWaitMs });
+    await sync(["--dir", h.folder, ...argv], { stdout: (t: string) => void out.push(t), auth: h.auth, cwd: h.cwd, fetch: fetchFor(h), write: { sleep: instant, lookupDelayMs: 0 }, sleep: instant, lockWaitMs, terminal: h.terminal ?? personAtTerminal() });
     h.out = out;
     return { ok: true, receipt: decode(out.at(-1)!.trim()) as Record<string, unknown> };
   } catch (error) {
@@ -101,7 +104,7 @@ let skew = 0;
 const realNow = Date.now;
 Date.now = () => realNow() + skew;
 const held = (r: Outcome) => rowsOf(r.receipt).filter((row) => row.reason === "bulk_deletion").map((row) => row.id);
-const hold = (r: Outcome) => r.receipt?.deletions_held as { count: number; accept_mismatch?: string; confirmation_required: { token: string; agent_instruction: string; command_after_confirmation: string } } | undefined;
+const hold = (r: Outcome) => r.receipt?.deletions_held as { count: number; accept_mismatch?: string; confirmation_required: { token: string; agent_instruction: string; command_for_person: string } } | undefined;
 /** The token the hold printed: what an agent runs only after the person confirms. */
 const tokenOf = (r: Outcome) => hold(r)!.confirmation_required.token;
 const all23 = () => ["notes/alpha", "notes/beta", "projects/2026/plan", ...bulkIds(20)];

@@ -72,7 +72,8 @@ export type HeldReason =
   | "type_change"
   | "too_large"
   | "not_sendable"
-  | "case_collision";
+  | "case_collision"
+  | "unsafe_id";
 
 export interface HeldFile {
   /** The document id, or the folder-relative path when the file is not a document. */
@@ -97,16 +98,18 @@ export interface ScannedDeletion {
  *   D = this scan's new deletions
  *     + delete intents not yet settled
  *     + delete intents the host acknowledged in the last {@link DELETION_WINDOW_MS}
- *     (only those recorded after the last explicit `--accept-deletes`)
+ *     (only those journaled after the last explicit `--accept-deletes`, by journal order)
  *   B = the documents the checkout held when the window opened (its first counted delete), frozen
  *       for the window, so files created meanwhile never dilute it; before that, the projection's
  *       documents at the start of the scan (never files new in this scan) + the counted deletes
  *
- * This scan's new deletions are held, as a whole, when `2·D > B` and `D ≥ min(3, B)`. A held set
- * is recorded, keyed by its documents: while any of them is still deleted, every deletion stays
- * held whatever the counts do, until the person accepts exactly that set (`--accept-deletes
- * <n>:<digest>`, printed with the hold, for an agent to run only on the person's confirmation) or
- * restores the files (`--restore-deletes`). An acceptance closes the window.
+ * This scan's new deletions are held, as a whole, when `2·D > B` and `D ≥ min(3, B)`. The same
+ * rule is applied again to the documents this checkout did not create itself since the last
+ * acceptance, whatever their age, so adding documents, waiting a day and then deleting the
+ * originals is held too. A held set is recorded, keyed by its documents: while any of them is
+ * still deleted, every deletion stays held whatever the counts do, until the person accepts
+ * exactly that set (`--accept-deletes <n>:<digest>`, confirmed by typing its count in their own
+ * terminal) or restores the files (`--restore-deletes`). An acceptance closes the window.
  */
 export const MIN_HELD_DELETIONS = 3;
 export const DELETION_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -114,8 +117,13 @@ export const DELETION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DELETION_WINDOW_KEY = "cli-deletion-window";
 
 export interface DeletionWindow {
-  /** Deletes recorded before this instant were admitted by an explicit acceptance and never count. */
+  /** When the last explicit acceptance was made; shown only, never compared (a clock can be wrong). */
   acceptedAt: string | null;
+  /**
+   * The journal sequence at the last explicit acceptance: intents journaled up to it were admitted
+   * by it and never count. Journal order, not the wall clock, decides. Null before any acceptance.
+   */
+  acceptedSequence?: number | null;
   /** The baseline frozen when the window opened, or null while it is closed. */
   baseline: number | null;
   /** The deletions held and not yet accepted or restored, with the token that accepts them. */
@@ -127,36 +135,60 @@ export async function readDeletionWindow(store: JournaledBackend): Promise<Delet
   const hold = raw?.hold && Array.isArray(raw.hold.ids) && typeof raw.hold.token === "string" ? { ids: raw.hold.ids.filter((id): id is string => typeof id === "string"), token: raw.hold.token } : null;
   return {
     acceptedAt: typeof raw?.acceptedAt === "string" ? raw.acceptedAt : null,
+    acceptedSequence: typeof raw?.acceptedSequence === "number" && Number.isSafeInteger(raw.acceptedSequence) ? raw.acceptedSequence : null,
     baseline: typeof raw?.baseline === "number" && Number.isSafeInteger(raw.baseline) ? raw.baseline : null,
     hold,
   };
 }
 
+/** What the window holds, read from the journal; see {@link deletionWindowStats}. */
+export interface DeletionWindowStats {
+  /** The counted deletions (see below), by target. */
+  readonly counted: string[];
+  /** Documents this checkout created within the window, to the journal sequence of that create. */
+  readonly created: Map<string, number>;
+  /** Documents this checkout created since the last acceptance, whatever their age. */
+  readonly owned: Set<string>;
+}
+
 /**
  * What the window holds, read from the journal:
  * - `counted`: delete intents unsettled, or acknowledged within the window (a clock set back keeps
- *   counting them), recorded after the last acceptance, and not of a document this checkout
- *   itself created within the window;
+ *   counting them), journaled after the last acceptance, and not of a document this checkout
+ *   itself created within the window before deleting it;
  * - `created`: documents this checkout created within the window (an acknowledged create). They
  *   never join the baseline, and deleting them again never counts: removing what the checkout
- *   added today takes nothing that was in the bundle before.
+ *   added today takes nothing that was in the bundle before;
+ * - `owned`: documents this checkout created since the last acceptance, at any age: the second
+ *   rule of the hold counts only the other documents.
+ * Every "before" and "after" is journal order (the intent's sequence), never a timestamp.
  */
-export async function deletionWindowStats(store: JournaledBackend, window: DeletionWindow, now = Date.now()): Promise<{ counted: number; created: Map<string, string> }> {
+export async function deletionWindowStats(store: JournaledBackend, window: DeletionWindow, now = Date.now()): Promise<DeletionWindowStats> {
   const rows = await store.listIntents([...UNSETTLED_STATES, "acknowledged"]);
   const recent = (row: (typeof rows)[number]) => row.state !== "acknowledged" || now - Date.parse(row.updatedAt) < DELETION_WINDOW_MS;
-  const created = new Map<string, string>();
+  // A window written before acceptances were sequenced still compares its timestamp.
+  const afterAcceptance = (row: (typeof rows)[number]) =>
+    typeof window.acceptedSequence === "number" ? row.sequence > window.acceptedSequence : window.acceptedAt === null || row.createdAt > window.acceptedAt;
+  const created = new Map<string, number>();
+  const owned = new Set<string>();
   for (const row of rows) {
-    if (row.state === "acknowledged" && row.kind !== DOCUMENT_DELETE_KIND && row.base === null && recent(row)) {
-      if (!created.has(row.target) || created.get(row.target)! > row.createdAt) created.set(row.target, row.createdAt);
-    }
+    if (row.state !== "acknowledged" || row.kind === DOCUMENT_DELETE_KIND || row.base !== null) continue;
+    if (afterAcceptance(row)) owned.add(row.target);
+    if (recent(row) && (!created.has(row.target) || created.get(row.target)! > row.sequence)) created.set(row.target, row.sequence);
   }
-  const counted = rows.filter((row) => {
-    if (row.kind !== DOCUMENT_DELETE_KIND || !recent(row)) return false;
-    if (window.acceptedAt !== null && row.createdAt <= window.acceptedAt) return false;
-    const since = created.get(row.target);
-    return !(since !== undefined && since < row.createdAt);
-  }).length;
-  return { counted, created };
+  const counted = rows
+    .filter((row) => {
+      if (row.kind !== DOCUMENT_DELETE_KIND || !recent(row) || !afterAcceptance(row)) return false;
+      const since = created.get(row.target);
+      return !(since !== undefined && since < row.sequence);
+    })
+    .map((row) => row.target);
+  return { counted, created, owned };
+}
+
+/** The journal's latest sequence: an acceptance admits everything journaled up to it. */
+async function latestSequence(store: JournaledBackend): Promise<number> {
+  return (await store.listIntents()).reduce((max, row) => Math.max(max, row.sequence), 0);
 }
 
 /** The token that accepts exactly this set of held deletions: its count and a digest of its sorted ids. */
@@ -183,8 +215,12 @@ export interface DeletionHold {
   /** Deletions in the window, this scan's included, and the baseline they are counted against. */
   readonly deletions: number;
   readonly baseline: number;
+  /** `all` when the count over every document held it; `originals` when the count over the documents this checkout did not create did. */
+  readonly basis: "all" | "originals";
   /** Set when `--accept-deletes` named another set. */
   readonly acceptMismatch?: string;
+  /** Set when `--accept-deletes` named this set but the person did not confirm it in a terminal. */
+  readonly acceptDeclined?: true;
 }
 
 export interface ScanReport {
@@ -353,8 +389,13 @@ export interface ScanContext {
   readonly projection: ProjectionRecord;
   /** Scan only these document ids (the resolve path); every file otherwise. */
   readonly only?: ReadonlySet<string>;
-  /** The person's `--accept-deletes <n>:<digest>`: admits held deletions when it names exactly their set. */
+  /** The person's `--accept-deletes <n>:<digest>`: admits held deletions when it names exactly their set and {@link confirmAccept} confirms. */
   readonly acceptDeletes?: string;
+  /**
+   * Asks the person, at their terminal, to confirm removing exactly this held set; true only on
+   * their typed confirmation. Without it, `acceptDeletes` never admits anything.
+   */
+  readonly confirmAccept?: (hold: { count: number; ids: readonly string[]; token: string }) => Promise<boolean>;
   /**
    * Classify without writing anything (`status`): no edit or deletion is journaled, no hold is
    * recorded, and each one that would be is listed in `pending`. The caller passes a projection
@@ -533,21 +574,48 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     deletions.push({ id, rel, version: entry.version });
   }
   const window = await readDeletionWindow(local.backend);
-  const { counted, created } = await deletionWindowStats(local.backend, window);
+  const stats = await deletionWindowStats(local.backend, window);
+  const { created, owned } = stats;
+  const counted = stats.counted.length;
   const baseline = baselineIds.filter((id) => !created.has(id)).length;
   // Deleting what this checkout created within the window never counts, and is never held.
   const counting = deletions.filter(({ id }) => !created.has(id));
-  const decision = deletionHold(counting.length, baseline, counted, window.baseline);
+  const overall = deletionHold(counting.length, baseline, counted, window.baseline);
+  // The same rule over the documents this checkout did not create since the last acceptance: its
+  // own older additions never dilute the count of the documents it found in the bundle.
+  const originals = deletionHold(
+    counting.filter(({ id }) => !owned.has(id)).length,
+    baselineIds.filter((id) => !created.has(id) && !owned.has(id)).length,
+    stats.counted.filter((id) => !owned.has(id)).length,
+  );
+  const decision = overall.held || !originals.held ? { ...overall, basis: "all" as const } : { ...originals, basis: "originals" as const };
   const pendingHold = window.hold !== null && counting.some(({ id }) => window.hold!.ids.includes(id));
   const token = acceptToken(counting.map(({ id }) => id));
   const holding = counting.length > 0 && (pendingHold || decision.held);
-  const accepting = holding && context.acceptDeletes === token;
+  let accepting = false;
+  let declined = false;
+  if (holding && context.acceptDeletes === token) {
+    // The token names this set; only the person's typed confirmation in a terminal admits it.
+    accepting = context.confirmAccept !== undefined && (await context.confirmAccept({ count: counting.length, ids: counting.map(({ id }) => id).sort(), token }));
+    declined = !accepting;
+  }
   if (holding && !accepting) {
     const ids = counting.map(({ id }) => id).sort();
     if (!context.preview) await local.backend.writeMeta(DELETION_WINDOW_KEY, { ...window, hold: { ids, token } } satisfies DeletionWindow);
-    report.hold = { count: counting.length, ids, token, pending: pendingHold && !decision.held, deletions: decision.deletions, baseline: decision.baseline, ...(context.acceptDeletes !== undefined ? { acceptMismatch: context.acceptDeletes } : {}) };
+    report.hold = {
+      count: counting.length,
+      ids,
+      token,
+      pending: pendingHold && !decision.held,
+      deletions: decision.deletions,
+      baseline: decision.baseline,
+      basis: decision.basis,
+      ...(context.acceptDeletes !== undefined && !declined ? { acceptMismatch: context.acceptDeletes } : {}),
+      ...(declined ? { acceptDeclined: true as const } : {}),
+    };
+    const counts = decision.basis === "originals" ? `${decision.deletions} of the ${decision.baseline} documents this checkout did not create itself` : `${decision.deletions} of the ${decision.baseline} documents`;
     for (const { id, rel } of counting) {
-      report.held.push(held(id, rel, "bulk_deletion", `${rel} is one of ${counting.length} files deleted and held: with the deletes of the last day that is ${decision.deletions} of the ${decision.baseline} documents${pendingHold && !decision.held ? " (held since an earlier sync)" : ""}, so none is sent. Put the files back with sync --restore-deletes; removing them from the bundle needs the person's explicit confirmation (see deletions_held)`));
+      report.held.push(held(id, rel, "bulk_deletion", `${rel} is one of ${counting.length} files deleted and held: with the deletes of the last day that is ${counts}${pendingHold && !decision.held ? " (held since an earlier sync)" : ""}, so none is sent. Put the files back with sync --restore-deletes; removing them from the bundle needs the person to confirm it in their own terminal (see deletions_held)`));
     }
     // Deleting what the checkout created today is not part of the hold; it goes out as usual.
     const heldIds = new Set(ids);
@@ -556,7 +624,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   if (!context.preview && !report.hold && (counting.length > 0 || window.hold !== null)) {
     // Opening the window freezes its baseline; an acceptance, or a hold whose files came back, closes it.
     const opening = counted === 0 && counting.length > 0 && !accepting;
-    const next: DeletionWindow = { acceptedAt: window.acceptedAt, baseline: accepting ? null : opening ? baseline : window.baseline, hold: null };
+    const next: DeletionWindow = { acceptedAt: window.acceptedAt, acceptedSequence: window.acceptedSequence ?? null, baseline: accepting ? null : opening ? baseline : window.baseline, hold: null };
     await local.backend.writeMeta(DELETION_WINDOW_KEY, next satisfies DeletionWindow);
   }
   if (context.preview) {
@@ -581,7 +649,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   if (accepting) {
     // An explicit acceptance admits the whole window and starts a new one. It is written after the
     // deletes are journaled: a crash in between leaves them counted, which only holds more.
-    await local.backend.writeMeta(DELETION_WINDOW_KEY, { acceptedAt: new Date().toISOString(), baseline: null, hold: null } satisfies DeletionWindow);
+    await local.backend.writeMeta(DELETION_WINDOW_KEY, { acceptedAt: new Date().toISOString(), acceptedSequence: await latestSequence(local.backend), baseline: null, hold: null } satisfies DeletionWindow);
     report.accepted = admitted.length;
   }
   const inbound = await inboundLinks(local.backend, report.deleted.map((row) => row.id), context.okfVersion);
