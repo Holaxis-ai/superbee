@@ -9,11 +9,13 @@ import { CliError } from "../errors.js";
 /** The default resource path on a hosted origin: the Superbee API audience is `<origin>/mcp`. */
 export const DEFAULT_RESOURCE_PATH = "/mcp";
 
+/** The protected-resource metadata member naming the host's Superbee CLI client. */
+export const PUBLISHED_CLIENT_ID_FIELD = "superbee_cli_client_id";
+
 /**
- * Built-in CLI client ids by hosted origin, used only when the host does not yet publish
- * `superbee_cli_client_id`. Provisional: empty until the native client is provisioned. The
- * protected-resource metadata is the intended source, and `--client-id` or
- * SUPERBEE_OAUTH_CLIENT_ID override both.
+ * Built-in CLI client ids by hosted origin, used only when the host does not publish
+ * `superbee_cli_client_id`. Empty: the host's metadata is the source, and `--client-id` or
+ * SUPERBEE_OAUTH_CLIENT_ID override it.
  */
 export const BUILT_IN_CLIENT_IDS: Readonly<Record<string, string>> = Object.freeze({});
 
@@ -21,6 +23,8 @@ export const BUILT_IN_CLIENT_IDS: Readonly<Record<string, string>> = Object.free
 export const REQUESTED_SCOPE = "openid offline_access bundles:discover documents:read documents:write";
 
 const HTTP_TIMEOUT_MS = 10_000;
+/** An OAuth client id as the CLI accepts it from a host: visible ASCII, no spaces, bounded. */
+const CLIENT_ID = /^[\x21-\x7e]{1,256}$/;
 const MAX_METADATA_BYTES = 256 * 1024;
 
 export interface HostedTarget {
@@ -44,6 +48,8 @@ export interface Discovery extends IssuerEndpoints {
   readonly target: HostedTarget;
   /** The client id the host publishes, when it publishes one. */
   readonly publishedClientId?: string;
+  /** The host published `superbee_cli_client_id`, but not as a plausible client id. */
+  readonly publishedClientIdMalformed?: true;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -205,15 +211,26 @@ export async function discoverHosted(fetchImpl: FetchLike, target: HostedTarget)
     throw new CliError("RUNTIME", `protected-resource metadata at ${target.metadataUrl} names no authorization server`);
   }
   const endpoints = await discoverIssuer(fetchImpl, issuer);
-  const published = optionalString(prm.superbee_cli_client_id);
-  return { ...endpoints, target, ...(published ? { publishedClientId: published } : {}) };
+  return { ...endpoints, target, ...publishedClientId(prm) };
+}
+
+/** The host's published CLI client id: absent, a plausible client id, or malformed. */
+function publishedClientId(prm: Record<string, unknown>): { publishedClientId?: string; publishedClientIdMalformed?: true } {
+  const value = prm[PUBLISHED_CLIENT_ID_FIELD];
+  if (value === undefined || value === null) return {};
+  if (typeof value === "string" && CLIENT_ID.test(value)) return { publishedClientId: value };
+  return { publishedClientIdMalformed: true };
 }
 
 export interface ClientIdSources {
   readonly flag?: string;
   readonly env?: string;
   readonly published?: string;
+  /** The host published a malformed id: refused unless the flag or env names one. */
+  readonly publishedMalformed?: boolean;
   readonly origin: string;
+  /** Where the host's metadata was read, for the refusal when it publishes no id. */
+  readonly metadataUrl?: string;
 }
 
 /** Flag, then env, then the host's published id, then the provisional built-in table. */
@@ -221,10 +238,22 @@ export function resolveClientId(sources: ClientIdSources): { clientId: string; s
   if (sources.flag) return { clientId: sources.flag, source: "flag" };
   if (sources.env) return { clientId: sources.env, source: "env" };
   if (sources.published) return { clientId: sources.published, source: "host-metadata" };
+  const details = {
+    host: sources.origin,
+    field: PUBLISHED_CLIENT_ID_FIELD,
+    ...(sources.metadataUrl ? { metadata_url: sources.metadataUrl } : {}),
+  };
+  if (sources.publishedMalformed) {
+    // The host meant to name a client; a built-in id must not silently stand in for it.
+    throw new CliError("RUNTIME", `${sources.origin} publishes a malformed ${PUBLISHED_CLIENT_ID_FIELD} in its protected-resource metadata`, {
+      help: "report this to the host's operator; meanwhile pass --client-id <id> or set SUPERBEE_OAUTH_CLIENT_ID if you were given one",
+      details,
+    });
+  }
   const builtIn = BUILT_IN_CLIENT_IDS[sources.origin];
   if (builtIn) return { clientId: builtIn, source: "built-in" };
-  throw new CliError("USAGE", `${sources.origin} does not publish a Superbee CLI client id yet`, {
-    help: "pass --client-id <id> (or set SUPERBEE_OAUTH_CLIENT_ID) with the CLI client id for this host",
-    details: { host: sources.origin },
+  throw new CliError("USAGE", `${sources.origin} publishes no Superbee CLI client id (no ${PUBLISHED_CLIENT_ID_FIELD} in its protected-resource metadata)`, {
+    help: "this host has no Superbee CLI client yet; if its operator gave you one, pass --client-id <id> or set SUPERBEE_OAUTH_CLIENT_ID",
+    details,
   });
 }

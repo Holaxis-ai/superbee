@@ -1,0 +1,17 @@
+{
+  "name": "protected-resource-metadata-200",
+  "description": "The gateway's RFC 9728 protected-resource metadata for /mcp, from the real gateway app (createApp) with the staging configuration record config/gateway-configurations/staging-cli-sync-20260923.json (superbee-hosted fd271ff8). superbee_cli_client_id is the one enabled client binding listing the sync surface.",
+  "route": "/.well-known/oauth-protected-resource/mcp",
+  "request": {
+    "method": "GET",
+    "headers": {},
+    "body": ""
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"resource\":\"https://superbee-mcp-staging.superbee-site.workers.dev/mcp\",\"authorization_servers\":[\"https://dev-e04cjdp72nw4o4l0.us.auth0.com/\"],\"scopes_supported\":[\"openid\",\"profile\",\"email\",\"offline_access\",\"bundles:discover\",\"documents:read\",\"documents:write\",\"relationships:write\",\"administration:manage\"],\"bearer_methods_supported\":[\"header\"],\"resource_name\":\"Superbee gateway\",\"superbee_cli_client_id\":\"BC9Yw7kxuHH9TGQmhlSTEghoN6UXWF2r\"}"
+  }
+}

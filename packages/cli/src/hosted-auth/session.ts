@@ -553,7 +553,9 @@ export async function prepareSignIn(target: HostedTarget, options: SignInOptions
     ...(options.clientIdFlag ? { flag: options.clientIdFlag } : {}),
     ...(deps.env[CLIENT_ID_ENV] ? { env: deps.env[CLIENT_ID_ENV] } : {}),
     ...(discovery.publishedClientId ? { published: discovery.publishedClientId } : {}),
+    ...(discovery.publishedClientIdMalformed ? { publishedMalformed: true } : {}),
     origin: target.origin,
+    metadataUrl: target.metadataUrl,
   });
   return { discovery, clientId, store };
 }

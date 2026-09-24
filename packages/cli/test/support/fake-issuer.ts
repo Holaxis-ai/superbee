@@ -138,6 +138,8 @@ export class FakeIssuer {
         resource: `${this.base}${resourcePath}`,
         authorization_servers: [this.issuer],
         scopes_supported: ["bundles:discover", "documents:read", "documents:write"],
+        bearer_methods_supported: ["header"],
+        resource_name: "Superbee gateway",
         ...(this.opts.publishedClientId ? { superbee_cli_client_id: this.opts.publishedClientId } : {}),
         ...this.prmOverride,
       });
