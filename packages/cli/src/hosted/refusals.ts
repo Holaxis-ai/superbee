@@ -150,3 +150,12 @@ export async function assertAllowedInHostedCheckout(command: string, args: reado
   const sub = row.words.length > 1 ? args.find((token) => !token.startsWith("-")) : undefined;
   throw hostedCheckoutRefusal(row, sub ? `${command} ${sub}` : command, binding);
 }
+
+/** The refusal for a write the local MCP app tries in a cataloged hosted checkout. */
+export function hostedMcpWriteRefusal(binding: CheckoutBinding, operation: string): CliError {
+  return hostedCheckoutRefusal(
+    { words: ["mcp"], reason: "not_syncable", why: "the local MCP app writes Views, blobs and documents the app owns for a checkout" },
+    `mcp ${operation}`,
+    binding,
+  );
+}

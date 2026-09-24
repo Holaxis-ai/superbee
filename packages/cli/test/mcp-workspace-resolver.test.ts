@@ -16,6 +16,7 @@ const availableEntry = {
   label: "planning",
   locator: { kind: "local-path" as const, path: "/private/catalog/planning" },
   available: true,
+  home: "local" as const,
 };
 
 test("catalog MCP resolver exposes only path-free summaries and derives display names", async () => {
@@ -29,6 +30,7 @@ test("catalog MCP resolver exposes only path-free summaries and derives display 
         label: "missing",
         locator: { kind: "local-path", path: "/private/catalog/missing" },
         available: false,
+        home: "local" as const,
       },
     ],
     open: async (dir) => {
@@ -113,6 +115,7 @@ test("catalog MCP resolver bounds display-name bundle reads to the visible page"
         label: `workspace-${index.toString().padStart(2, "0")}`,
         locator: { kind: "local-path" as const, path: `/private/catalog/${index}` },
         available: true,
+        home: "local" as const,
       }),
     ),
     open: async (dir) => {

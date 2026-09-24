@@ -13,6 +13,9 @@ import {
   type CatalogEntryView,
 } from "./catalog.js";
 import { LocalViewAuthorizationStore } from "./ui/view-authorizations.js";
+import { bindingForPath } from "./hosted/binding.js";
+import { readOnlyHostedBundle } from "./hosted/read-only-bundle.js";
+import { homedir } from "node:os";
 
 export interface CatalogMcpWorkspaceResolverOptions {
   actor?: string;
@@ -82,9 +85,13 @@ export function createCatalogMcpWorkspaceResolver(
       ) {
         throw new Error("workspace catalog target changed during selection");
       }
-      const bundleName = (await deriveName(bundle)).name;
+      // A hosted checkout in the catalog is served read-only: its writes cannot sync (see
+      // hosted/read-only-bundle.ts). The binding is read fresh, never taken from the catalog.
+      const binding = await bindingForPath(options.home ?? homedir(), target.canonicalRoot);
+      const served = binding ? readOnlyHostedBundle(bundle, binding) : bundle;
+      const bundleName = (await deriveName(served)).name;
       return createMcpBundleContext({
-        bundle,
+        bundle: served,
         bundleName,
         ...(options.actor !== undefined ? { actor: options.actor } : {}),
         viewAuthorization: new LocalViewAuthorizationStore(bundle.root, options.home),
