@@ -418,7 +418,9 @@ test("a deleted file syncs as a CAS-bound delete; the checkout's own later re-cr
 
 test("`doc delete` in a checkout is no longer refused; the next sync sends the delete", async () => {
   const h = await harness();
-  assert.equal(HOSTED_CHECKOUT_REFUSALS.some((row) => row.words.join(" ") === "doc delete" || row.words.join(" ") === "delete"), false);
+  assert.equal(HOSTED_CHECKOUT_REFUSALS.some((row) => row.words.join(" ") === "doc delete"), false);
+  // `delete` is refused only for a blob key (it cannot sync); a document key syncs as a delete.
+  assert.ok(HOSTED_CHECKOUT_REFUSALS.find((row) => row.words.join(" ") === "delete")?.when !== undefined);
   const context = { home: h.home, cwd: h.cwd };
   await assertAllowedInHostedCheckout("doc", ["delete", "notes/alpha", "--dir", h.folder], context);
   await assertAllowedInHostedCheckout("delete", ["notes/alpha", "--dir", h.folder], context);

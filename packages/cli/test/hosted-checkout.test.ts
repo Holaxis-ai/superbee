@@ -351,6 +351,10 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     ["recipe", ["add", "core", "--dir", folder]],
     ["recipe", ["evolve", "core", "--dir", folder]],
     ["artifact", ["create", "x.pdf", "--title", "x", "--dir", folder]],
+    // Both succeeded locally and were then held by sync forever: refuse them up front instead.
+    ["index", ["generate", "--dir", folder]],
+    ["delete", ["--doc-key", "assets/logo.png", "--dir", folder]],
+    ["delete", ["--doc-key=views/board/index.html", "--dir", folder]],
   ];
   for (const [command, args] of refused) {
     const error = await rejects(assertAllowedInHostedCheckout(command, args, context));
@@ -377,6 +381,11 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   // A deletion syncs as a delete now (documents.delete.v1), so neither spelling is refused.
   await assertAllowedInHostedCheckout("doc", ["delete", "notes/alpha", "--dir", folder], context);
   await assertAllowedInHostedCheckout("delete", ["--doc-key", "notes/alpha.md", "--dir", folder], context);
+  await assertAllowedInHostedCheckout("delete", ["--doc-key", "notes/Alpha.MD", "--dir", folder], context);
+  // index without generate (navigation help) is not a write.
+  await assertAllowedInHostedCheckout("index", ["--dir", folder], context);
+  // The read-only check writes nothing, so it runs.
+  await assertAllowedInHostedCheckout("index", ["generate", "--check", "--dir", folder], context);
   await assertAllowedInHostedCheckout("doc", ["delete", "--help", "--dir", folder], context);
   await assertAllowedInHostedCheckout("doc", ["delete", "x", "--remote", "http://127.0.0.1:9"], context);
   const elsewhere = await mkdtemp(path.join(tmpdir(), "sb-local-"));
@@ -388,7 +397,7 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   const serve = await rejects(assertAllowedInHostedCheckout("serve", ["--dir", folder, "--port", "0"], context));
   assert.equal(serve.details?.do_this_in, "app");
   await assertAllowedInHostedCheckout("promote", ["x.md", "--doc-key", "notes/x.md", "--dir", folder], context);
-  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 10);
+  assert.equal(HOSTED_CHECKOUT_REFUSALS.length, 12);
 });
 
 test("projection placement never overwrites: new files are exclusive, replacements are pre-image guarded", async () => {

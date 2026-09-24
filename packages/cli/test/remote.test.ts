@@ -313,6 +313,73 @@ test("--remote: an unreachable server maps to exit 1 RUNTIME with a serve hint, 
   );
 });
 
+/** A stand-in for a hosted Superbee host: it serves its MCP resource metadata and nothing on /v0. */
+async function bootHostedLookalike(): Promise<{ url: string; paths: string[]; close: () => Promise<void> }> {
+  const { createServer } = await import("node:http");
+  const paths: string[] = [];
+  const server = createServer((request, response) => {
+    paths.push(request.url ?? "");
+    if (request.url === "/.well-known/oauth-protected-resource/mcp") {
+      const origin = `http://${request.headers.host}`;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ resource: `${origin}/mcp`, authorization_servers: ["https://auth.example.invalid/"] }));
+      return;
+    }
+    response.writeHead(404, { "content-type": "text/plain" });
+    response.end("not found");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  return { url: `http://127.0.0.1:${port}`, paths, close: () => new Promise((resolve) => server.close(() => resolve())) };
+}
+
+test("--remote with a hosted Superbee URL: one probe, then 'use checkout' instead of a wire error or a serve hint", async () => {
+  const hosted = await bootHostedLookalike();
+  try {
+    await assert.rejects(
+      () => list(["--remote", hosted.url, "--json"], {}),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError, `expected a CliError, got ${String(err)}`);
+        assert.equal(err.code, "USAGE");
+        assert.match(err.message, /is a hosted Superbee URL/);
+        assert.match(err.help ?? "", /checkout <bundle-id> --host/);
+        assert.doesNotMatch(err.help ?? "", /serve/);
+        assert.equal((err.details as { reason?: string }).reason, "hosted_url");
+        return true;
+      },
+    );
+    // One wire request and one probe: the backend's retries never reach the network again.
+    assert.deepEqual(
+      hosted.paths.map((p) => (p.startsWith("/v0/") ? "/v0" : p)),
+      ["/v0", "/.well-known/oauth-protected-resource/mcp"],
+    );
+  } finally {
+    await hosted.close();
+  }
+});
+
+test("--remote against the reference server is never mistaken for a hosted host, even on a 404", async () => {
+  const dir = await tempDir();
+  try {
+    await initBundle(dir);
+    const server = await bootServer(dir);
+    try {
+      await assert.rejects(() => doc(["read", "missing/doc", "--remote", server.url, "--json"], { stdout: () => {} }), (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.notEqual(err.code, "USAGE");
+        assert.doesNotMatch(err.message, /hosted Superbee URL/);
+        return true;
+      });
+      const listed = await runJson(list, ["--remote", server.url]);
+      assert.equal(listed.count, 0);
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("--remote + --dir together: USAGE (exit 2)", async () => {
   await assert.rejects(
     () => list(["--remote", "http://127.0.0.1:4818", "--dir", "/nonexistent", "--json"], {}),
