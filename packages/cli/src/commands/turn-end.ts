@@ -100,6 +100,9 @@ function continuingForHook(stdin: string | null): boolean {
   }
 }
 
+/** Locks that never clear on their own: the conflict-resolution steps cannot help with them. */
+const ORPHANED_LOCK_REASONS = new Set(["lock_orphaned", "session_lock_orphaned"]);
+
 function reasonFor(binding: CheckoutBinding, error: CliError, receipt: string): string {
   const sync = commandFragment`${cliInvocation()} sync --dir ${commandToken(binding.path)}`;
   const lines = [`Superbee: the end-of-turn sync of ${binding.path} needs you before this turn ends: ${error.message}.`];
@@ -110,6 +113,8 @@ function reasonFor(binding: CheckoutBinding, error: CliError, receipt: string): 
         ? `Relay this sign-in link to the person: ${link}. After they confirm, run: ${sync}`
         : `Sign in (${error.help ?? `${cliInvocation()} login`}), relay the link it returns, then run: ${sync}`,
     );
+  } else if (ORPHANED_LOCK_REASONS.has(String((error.details as { reason?: unknown } | undefined)?.reason)) && error.help) {
+    lines.push(`Tell the person: ${error.help}: ${sync}`);
   } else {
     lines.push(
       `Resolve each conflict with ${cliInvocation()} sync --inspect --doc <id>, then --resolve keep|take|revise --doc <id>; fix held files; then run: ${sync}`,

@@ -17,7 +17,7 @@
 // device authorization, persists it, and returns AUTH_REQUIRED carrying one link to relay. Running
 // the same command again polls once and, when the person has confirmed, completes sign-in and
 // carries on.
-import { mkdir, unlink } from "node:fs/promises";
+import { mkdir, stat, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
@@ -69,6 +69,16 @@ export const REFRESH_REUSE_LEEWAY_MS = 30_000;
  * past this still get a retryable TRANSIENT.
  */
 export const SESSION_LOCK_WAIT_MS = 65_000;
+/**
+ * A session lock that has stood this long is far past any hold SESSION_LOCK_WAIT_MS allows for, so
+ * its holder is gone even when its PID now names another process or it was taken on another host.
+ */
+export const SESSION_LOCK_ORPHAN_MS = 10 * 60_000;
+/**
+ * An owner-less session lock younger than this may be a claim caught between its directory and its
+ * owner record; older, it was left by a process killed while taking it.
+ */
+const SESSION_LOCK_CLAIM_GRACE_MS = 5_000;
 const HTTP_TIMEOUT_MS = 10_000;
 const MAX_RECORD_BYTES = 64 * 1024;
 const SESSION_FILE = "session.json";
@@ -283,19 +293,49 @@ export async function withSessionLock<T>(target: HostedTarget, deps: HostedAuthD
   await ensureUserStateRoot(deps.home);
   const dir = sessionDirFor(deps.home, sessionAccount(target));
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  let entered = false;
+  let bodyError: { readonly error: unknown } | undefined;
   try {
-    return await withCliFilesystemMutationLock(join(dir, "session"), body, {
-      waitMs: deps.lockWaitMs ?? SESSION_LOCK_WAIT_MS,
-    });
+    return await withCliFilesystemMutationLock(
+      join(dir, "session"),
+      async () => {
+        entered = true;
+        try {
+          return await body();
+        } catch (error) {
+          bodyError = { error };
+          throw error;
+        }
+      },
+      { waitMs: deps.lockWaitMs ?? SESSION_LOCK_WAIT_MS },
+    );
   } catch (error) {
-    if (error instanceof FilesystemMutationLockError) {
-      throw new CliError("TRANSIENT", `another Superbee process is refreshing the ${target.origin} session`, {
-        details: { reason: "session_busy", retryable: true, host: target.origin },
-        help: "retry the same command",
-      });
-    }
-    throw error;
+    if (!(error instanceof FilesystemMutationLockError) || bodyError?.error === error) throw error;
+    throw entered ? sessionLockReleaseFailure(error, target) : await sessionLockFailure(error, target);
   }
+}
+
+/** Why the session lock could not be taken: busy while its holder may still finish, else orphaned. */
+async function sessionLockFailure(error: FilesystemMutationLockError, target: HostedTarget): Promise<CliError> {
+  const changed = await stat(error.lockPath).then((info) => info.mtimeMs, () => null);
+  if (changed !== null && Date.now() - changed >= (error.malformed ? SESSION_LOCK_CLAIM_GRACE_MS : SESSION_LOCK_ORPHAN_MS)) {
+    return new CliError("CONFLICT", `the ${target.origin} sign-in session lock was left by a command that is gone`, {
+      details: { reason: "session_lock_orphaned", host: target.origin, lock: error.lockPath, retryable: false },
+      help: `confirm no superbee command is using the ${target.origin} sign-in session, remove ${error.lockPath}, then retry the same command`,
+    });
+  }
+  return new CliError("TRANSIENT", `another Superbee process is refreshing the ${target.origin} session`, {
+    details: { reason: "session_busy", retryable: true, host: target.origin },
+    help: "retry the same command",
+  });
+}
+
+/** The session work finished but its lock was not released as its own: a person must look. */
+function sessionLockReleaseFailure(error: FilesystemMutationLockError, target: HostedTarget): CliError {
+  return new CliError("RUNTIME", `the ${target.origin} sign-in session lock could not be released: ${error.message}`, {
+    details: { reason: "session_lock_release_failed", host: target.origin, lock: error.lockPath, retryable: false },
+    help: `inspect ${error.lockPath} before retrying the same command`,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
