@@ -928,7 +928,7 @@ test("wire: a recorded outcome expires after the retention window; a resubmissio
   now += 1;
   assert.equal((await outcomeAt(router, "ttl-1")).status, 404);
 
-  // The premise makes expiry safe: the write's own commit is what the resubmission conflicts with.
+  // Nothing was written since, so the resubmission conflicts with the write's own commit.
   const resubmitted = await router(identifiedPut("concepts/ttl", "v2", { "Idempotency-Key": "ttl-1", "If-Match": base }));
   assert.equal(resubmitted.status, 412);
   const conflict = (await resubmitted.json()) as { error: { details: { expected: string; actual: string } } };
@@ -937,6 +937,31 @@ test("wire: a recorded outcome expires after the retention window; a resubmissio
   assert.deepEqual(await outcomeAt(router, "ttl-1"), { status: 200, body: { kind: "conflict", actual: committed.version } });
   assert.equal((await serverBackend.versions("concepts/ttl")).length, 2);
   assert.equal(store.size, 1, "recording pruned the expired record");
+});
+
+test("wire: after expiry, a byte-identical revert to the premise's content lets a resubmission apply a second time", async () => {
+  let now = 1_000_000;
+  const store = new MemoryOperationOutcomeStore({ retentionMs: 60_000, now: () => now });
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-retention-aba", backend: serverBackend };
+  const router = createRouter(bundle, { outcomes: store });
+  const { version: base } = await writeDocVersioned(bundle, { id: "concepts/aba", frontmatter: { type: "T", timestamp: T_DOC }, body: "v1" });
+
+  const committed = await answer(await router(identifiedPut("concepts/aba", "v2", { "Idempotency-Key": "aba-1", "If-Match": base })));
+  assert.equal(committed.status, 200);
+  // A third party restores the exact base bytes; versions are content hashes, so the head is `base` again.
+  const reverted = await answer(await router(identifiedPut("concepts/aba", "v1", { "If-Match": committed.version! })));
+  assert.equal(reverted.status, 200);
+  assert.equal(reverted.version, base);
+  now += 60_000;
+  assert.equal((await outcomeAt(router, "aba-1")).status, 404);
+
+  // The premise holds again, so nothing distinguishes the resubmission from a first delivery.
+  const resubmitted = await answer(await router(identifiedPut("concepts/aba", "v2", { "Idempotency-Key": "aba-1", "If-Match": base })));
+  assert.equal(resubmitted.status, 200);
+  assert.equal(resubmitted.version, committed.version);
+  assert.equal((await serverBackend.read("concepts/aba")).version, committed.version, "the revert is overwritten");
+  assert.equal((await serverBackend.versions("concepts/aba")).length, 4);
 });
 
 test("wire: MemoryOperationOutcomeStore releases the claim and settles waiters with null when the clock throws inside record", async () => {

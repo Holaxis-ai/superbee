@@ -190,10 +190,12 @@ const UNKNOWN: Outcome = { kind: "unknown" };
  * at that version. This is the wire's post-expiry compare-and-swap property: a committed write
  * whose acknowledgement was lost and whose recorded outcome expired from the authority's
  * retention window is resubmitted with its original `base`, which no longer matches, and the
- * authority answers a conflict against the version the client itself committed. The mapping
- * depends only on the outcome and the intent, so the primitive owns it and every consumer
- * settles such a write as acknowledged rather than presenting it as a concurrent edit. Every
- * other conflict, including one against an absent head (`actual: null`), is returned unchanged.
+ * authority answers a conflict against the version the client itself committed. If the head
+ * has meanwhile returned to `base` exactly, the premise matches and the resubmission is applied
+ * again instead (see {@link performUncertainWrite}). The mapping depends only on the outcome and
+ * the intent, so the primitive owns it and every consumer settles such a write as acknowledged
+ * rather than presenting it as a concurrent edit. Every other conflict, including one against
+ * an absent head (`actual: null`), is returned unchanged.
  */
 export function settleAgainstIntent(outcome: Outcome, intent: OperationIntent): Outcome {
   if (outcome.kind === "conflict" && outcome.actual !== null && outcome.actual === intent.local) {
@@ -229,15 +231,23 @@ async function submitOnce(transport: OperationTransport, intent: OperationIntent
  *
  * Flow: when the intent has never been submitted, submit it; when it has (`attempts > 0`), or
  * when a submission's outcome is unknown, look the request identity up. A positive lookup
- * settles the intent. A `null` lookup proves the authority never recorded the request, so a
- * resubmission with the same `requestId` is the first delivery and is allowed, up to
- * `maxSubmissions`. A lookup that fails leaves the outcome unknown and the intent for a later
+ * settles the intent. A `null` lookup is taken as proof that the authority never recorded the
+ * request, so a resubmission with the same `requestId` is the first delivery and is allowed, up
+ * to `maxSubmissions`. A lookup that fails leaves the outcome unknown and the intent for a later
  * call.
  *
  * No resubmission happens without a `null` lookup because a blind retry after an unknown
  * outcome is unsound: on an authority without request identity the retry applies the write
  * twice, and even on one with it the retry can only ever learn what the lookup already knew.
  * The lookup is what turns "unknown" into a fact before any second delivery.
+ *
+ * That fact is only as good as the transport's `null`. An authority that has expired or lost a
+ * record answers as if it never recorded it, and the reference wire transport returns `null`
+ * then. The resubmission is guarded only by its `base`, and versions are content hashes: if the
+ * write had landed and a third party has since restored `base` exactly, the premise matches, the
+ * write is applied a second time over that revert, and the outcome is `committed`. The hosted
+ * transport never answers `null` for an absent record once the intent is older than the host's
+ * stated retention window, less a skew margin, so it does not resubmit there.
  *
  * By default every outcome passes through {@link settleAgainstIntent}, so a conflict naming the
  * intent's own version is committed. `recorded-only` preserves the recorded outcome instead.

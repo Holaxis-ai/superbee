@@ -32,8 +32,8 @@
  * the verdict visible uses {@link openRemoteOperationTransport} or reads `wireCapabilities()`
  * itself. And the check is memoized on success: a host downgraded afterwards is not detected,
  * so one unidentified resubmission can reach it. Because every identified write is guarded by
- * its base, that exposure is bounded to a spurious conflict at a moved head, never a double
- * application.
+ * its base, that exposure is bounded to a spurious conflict at a moved head, or a second
+ * application when the head has returned to the base's exact content.
  *
  * This module imports nothing from Node so a browser working copy and a Node consumer share
  * one transport over one client adapter.
