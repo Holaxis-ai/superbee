@@ -215,6 +215,8 @@ test("wire contract pins the complete implemented route/method table and every p
   assert.match(contract, /accepts\s+any syntactically valid `\{bundle\}` segment but does not use it to select/);
   assert.match(contract, /canonical OKF serialization/);
   assert.match(contract, /external formatting, YAML key order, quoting, or whitespace may not survive/);
+  assert.match(contract, /The premise does not make expiry safe\. Versions are content hashes/);
+  assert.doesNotMatch(contract, /makes expiry safe, and|resubmission after expiry is safe/);
 
   const distributionAuthority = readProjectFile("packages/cli/src/distribution-resources.ts");
   assert.match(distributionAuthority, /repository-owned wire-protocol contract lives at docs\/WIRE-PROTOCOL\.md/);
