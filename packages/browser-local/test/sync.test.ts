@@ -40,6 +40,7 @@ import {
   baseKey,
   bootstrap,
   commitLocal,
+  deleteLocal,
   isComplete,
   openLocalBundle,
   pull,
@@ -1687,6 +1688,65 @@ test("pull removes documents the authority deleted, with their base, and retains
     assert.deepEqual(conflict?.remote, { version: null, content: null });
     assert.equal((await local.backend.read(editedId)).doc.body, "edited before the authority deleted it\n");
     assert.equal(await fixture.authority.exists(editedId), false);
+  } finally {
+    local.close();
+  }
+});
+
+test("an acknowledgement moves the working copy past the digest it last matched: another writer returning the authority to that digest is still brought in, whichever marker recorded it and whatever the acknowledged change", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    const bootstrapped = await bootstrap(fixture.remote, local);
+    const alpha = await fixture.authority.read("notes/alpha");
+
+    // An edit acknowledged against the bootstrap's digest, then reverted by another writer.
+    await commitLocal(local, "notes/alpha", edit("alpha v2 mine\n"));
+    assert.deepEqual((await push(local, fixture.transport, { remote: fixture.remote, write: immediate })).settled.map((row) => row.state), ["acknowledged"]);
+    await fixture.authority.write("notes/alpha", alpha.doc);
+    assert.equal(await authorityDigest(fixture), bootstrapped.headsDigest, "the authority is back at the digest the bootstrap recorded");
+    const reverted = countingRemote(fixture);
+    const first = await pull(local, reverted.remote);
+    assert.deepEqual(reverted.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200]]);
+    assert.equal(reverted.ifNoneMatch[0], null, "no digest describes the working copy after the acknowledgement");
+    assert.deepEqual(first.refreshed, ["notes/alpha"]);
+    assert.equal((await local.backend.read("notes/alpha")).doc.body, alpha.doc.body);
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, bootstrapped.headsDigest);
+
+    // A create acknowledged against that pull's digest, then deleted by another writer.
+    await commitLocal(local, "notes/delta", create("delta mine\n"));
+    assert.deepEqual((await push(local, fixture.transport, { remote: fixture.remote, write: immediate })).settled.map((row) => row.state), ["acknowledged"]);
+    assert.equal(await fixture.authority.delete("notes/delta"), true);
+    assert.equal(await authorityDigest(fixture), bootstrapped.headsDigest);
+    const second = await pull(local, fixture.remote);
+    assert.deepEqual(second.deleted, ["notes/delta"]);
+    assert.deepEqual((await local.backend.list()).sort(), ["notes/alpha", "notes/beta", "notes/gamma"]);
+
+    // A deletion acknowledged, then the same document written back by another writer. The
+    // fixture's transport carries writes only, so this one applies the deletion itself.
+    const beta = await fixture.authority.read("notes/beta");
+    assert.equal((await deleteLocal(local, "notes/beta")).deleted, true);
+    const deleting: OperationTransport = {
+      async submit(intent) {
+        assert.equal(await fixture.authority.delete(intent.target), true);
+        return { kind: "committed", version: "sha256:" + "7".repeat(64) };
+      },
+      async lookup() { return null; },
+    };
+    assert.deepEqual((await push(local, deleting, { remote: fixture.remote, write: immediate })).settled.map((row) => row.state), ["acknowledged"]);
+    await fixture.authority.write("notes/beta", beta.doc);
+    assert.equal(await authorityDigest(fixture), bootstrapped.headsDigest);
+    // An acknowledgement and a pull's start compare as millisecond timestamps; the last check
+    // needs this pull to start strictly after the acknowledgement.
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const third = await pull(local, fixture.remote);
+    assert.deepEqual(third.refreshed, ["notes/beta"]);
+    assert.equal((await local.backend.read("notes/beta")).version, beta.version);
+
+    // A pull that starts after the acknowledgements records a digest the next pull offers again.
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
   } finally {
     local.close();
   }
