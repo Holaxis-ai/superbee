@@ -1089,13 +1089,38 @@ function resolvedKey(id: string): string {
   return `cli-resolved:${id}`;
 }
 
+interface ResolutionRecord {
+  choice?: string;
+  /** The journal's latest sequence before the resolution journaled anything: its intents come after it. */
+  after?: number;
+  /** The intents the resolution journaled, once it completed. */
+  requestIds?: string[];
+}
+
+/**
+ * Record a keep or revise before it journals anything, so a crash between its journal write and
+ * the record's completion still recognizes the pending change as this resolution.
+ */
+async function beginResolution(store: JournaledBackend, id: string, choice: "keep" | "take" | "revise"): Promise<void> {
+  if (choice === "take") return;
+  const after = (await store.listIntents()).reduce((max, row) => Math.max(max, row.sequence), 0);
+  await store.writeMeta(resolvedKey(id), { choice, after } satisfies ResolutionRecord);
+}
+
 async function recordResolution(store: JournaledBackend, id: string, choice: "keep" | "take" | "revise"): Promise<void> {
   if (choice === "take") {
     await store.writeMeta(resolvedKey(id), null);
     return;
   }
   const requestIds = (await store.readWithJournal(id)).intents.filter((row) => row.state !== "acknowledged").map((row) => row.requestId);
-  await store.writeMeta(resolvedKey(id), { choice, requestIds });
+  await store.writeMeta(resolvedKey(id), { choice, requestIds } satisfies ResolutionRecord);
+}
+
+/** True when `row` is the change the recorded resolution journaled. */
+function isResolution(record: ResolutionRecord | null | undefined, row: { requestId: string; sequence: number }): boolean {
+  if (!record?.choice) return false;
+  if (Array.isArray(record.requestIds)) return record.requestIds.includes(row.requestId);
+  return typeof record.after === "number" && row.sequence > record.after;
 }
 
 /**
@@ -1109,10 +1134,10 @@ async function recordResolution(store: JournaledBackend, id: string, choice: "ke
 async function resolveAgain(session: Session, id: string, choice: "keep" | "take" | "revise", resumeCommand: CommandText): Promise<Record<string, unknown>> {
   const { binding, store, projection } = session;
   const file = path.join(binding.path, `${id}.md`);
-  const earlier = await store.readMeta<{ choice?: string; requestIds?: string[] } | null>(resolvedKey(id));
+  const earlier = await store.readMeta<ResolutionRecord | null>(resolvedKey(id));
   const rows = (await store.readWithJournal(id)).intents.filter((row) => row.state !== "acknowledged");
   const sync = syncCommand(binding);
-  if (!earlier?.choice || !Array.isArray(earlier.requestIds) || rows.length === 0 || !earlier.requestIds.includes(rows[0]!.requestId)) {
+  if (!earlier?.choice || rows.length === 0 || !isResolution(earlier, rows[0]!)) {
     throw new CliError("CONFLICT", `'${id}' has an unsent change but no conflict to resolve; the next sync sends it`, {
       details: { reason: "unsent_change", id, states: rows.map((row) => row.state) },
       help: sync,
@@ -1360,6 +1385,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       throw error;
     }
     await assertInspectedCurrent(session, id, conflict, choice);
+    await beginResolution(store, id, choice);
     let fileState: string;
     if (conflict.kind === "folder") {
       // A folder conflict knows no tombstone; its re-create still waits for an inspection of the deletion.
