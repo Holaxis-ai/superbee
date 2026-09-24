@@ -3,7 +3,7 @@
 // and no automatic pull. The checkout is made against the stateful fake of the hosted sync routes.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,6 +18,7 @@ import { sync } from "../src/commands/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { readFreshness } from "../src/hosted/freshness.js";
 import { hostedCheckoutAt } from "../src/autopull.js";
+import { checkoutStoreDir } from "../src/hosted/binding.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 
 interface Harness {
@@ -184,4 +185,30 @@ test("the last pull's age and staleness follow the freshness threshold; --json c
 
   const json = await runStatus(h, new Date(pulledAt + 3 * 60 * 60_000), ["--json"]);
   assert.deepEqual(json.sync, old.sync);
+});
+
+/** Every file under `root` with its exact bytes, by relative path. */
+async function tree(root: string): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const entry of await readdir(root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const file = path.join(entry.parentPath, entry.name);
+    out[path.relative(root, file)] = (await readFile(file)).toString("base64");
+  }
+  return out;
+}
+
+test("status writes nothing: with unsent edits, a pending delete and a torn store log, every file stays byte-identical", async () => {
+  const h = await harness();
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Edited, not sent.\n"));
+  await writeFile(path.join(h.folder, "notes", "gamma.md"), '---\ntype: "Note"\ntitle: "Gamma"\n---\nNew.\n');
+  await unlink(path.join(h.folder, "notes", "beta.md"));
+  const binding = (await hostedCheckoutAt(h.folder, h.home))!;
+  // A torn tail: a read-write open would truncate it (and could compact); a read-only one ignores it.
+  await appendFile(path.join(checkoutStoreDir(h.home, binding.checkout_id), "store.log"), Buffer.from([0x53, 0x42, 0x4a, 0x00, 0x01]));
+  const before = { home: await tree(h.home), folder: await tree(h.folder) };
+  const { sync: block } = await runStatus(h);
+  assert.equal(block.state, "unsent_changes");
+  assert.equal(block.unsent, 3);
+  assert.deepEqual({ home: await tree(h.home), folder: await tree(h.folder) }, before);
 });

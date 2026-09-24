@@ -90,7 +90,7 @@ export async function hostedStatus(binding: CheckoutBinding, home: string, now: 
   const stale = age === null || age > HOSTED_STALE_WARNING_MS;
   const classified = await filesystemPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {
     if (!lock) return null;
-    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id) });
+    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id), readOnly: true });
     try {
       return await classify(binding, home, store);
     } finally {
