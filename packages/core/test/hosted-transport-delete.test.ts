@@ -291,3 +291,44 @@ test("fetch carrier: the acknowledgement rides X-Superbee-Recreate, and a malfor
   await assert.rejects(carrier.json("/sync/v1/create", {}, new AbortController().signal, { maximum: 1024, recreate: "bad" }));
   assert.equal(seen.length, 2);
 });
+
+// ── canonical document ids on create (superbee-hosted tasks/canonical-document-ids-across-surfaces) ──
+
+const ID_REFUSALS = {
+  document_id_not_canonical:
+    "The document id is not canonical: a path segment starts or ends with whitespace, or the id is not in Unicode NFC. Nothing was saved; create it under its canonical spelling.",
+  document_id_collision:
+    "Another document's id differs from this one only by letter case or Unicode form, so the two would be one file on a case-insensitive filesystem. Nothing was saved; use that document or choose a distinct id.",
+} as const;
+
+const idRefusal = (code: keyof typeof ID_REFUSALS, settled: boolean) => (): HostedAnswer => ({
+  status: 200,
+  headers: new Headers(settled ? { "content-type": "application/json; charset=utf-8", "x-superbee-write-settled": REQUEST_ID } : { "content-type": "application/json; charset=utf-8" }),
+  body: { ok: false, operationId: "documents.create.v1", error: { code, message: ID_REFUSALS[code], retryable: false, writeState: "not_applied" } },
+});
+
+test("document ids: a create refused as a non-canonical or colliding id is a definitive refusal on its own row, never unknown", async () => {
+  const create = { operationIds: ["documents.create.v1"], documentId: "notes/alpha", bundleId: "team.knowledge" };
+  for (const code of Object.keys(ID_REFUSALS) as (keyof typeof ID_REFUSALS)[]) {
+    assert.equal(classifyWriteAnswer(idRefusal(code, true)(), create).row.answer, `200 ${code}`);
+    const { deliver, requests, reads } = over({ "/sync/v1/create": [idRefusal(code, true)] }, createIntent());
+    const result = await deliver();
+    assert.deepEqual(result.outcome, { kind: "refused", code, message: ID_REFUSALS[code] }, code);
+    assert.equal(requests.length, 1, `${code}: never resent`);
+    assert.deepEqual(reads, [], `${code}: no served head is consulted`);
+  }
+});
+
+test("document ids: unsettled, the refusal is confirmed by one lookup of the recorded result", async () => {
+  const outcome = (code: keyof typeof ID_REFUSALS) => (): HostedAnswer => ({
+    status: 200,
+    headers: new Headers(),
+    body: { schemaVersion: 1, requestId: REQUEST_ID, binding: BINDING, status: "refused", result: idRefusal(code, true)().body },
+  });
+  for (const code of Object.keys(ID_REFUSALS) as (keyof typeof ID_REFUSALS)[]) {
+    const { deliver, requests } = over({ "/sync/v1/create": [idRefusal(code, false)], "/sync/v1/outcome": [outcome(code)] }, createIntent());
+    const result = await deliver();
+    assert.deepEqual(result.outcome, { kind: "refused", code, message: ID_REFUSALS[code] }, code);
+    assert.deepEqual(requests.map((request) => request.path), ["/sync/v1/create", "/sync/v1/outcome"]);
+  }
+});
