@@ -334,8 +334,10 @@ async function sessionLockFailure(error: FilesystemMutationLockError, target: Ho
     (error.malformed
       ? now - changed >= SESSION_LOCK_CLAIM_GRACE_MS
       : // A directory's mtime can be old while its holder is live (a restored or skewed filesystem),
-        // so the holder's own claim time must agree before a person is told to remove the lock.
-        now - changed >= SESSION_LOCK_ORPHAN_MS && (error.owner === null || now - error.owner.created_at_ms >= SESSION_LOCK_ORPHAN_MS));
+        // so the holder's own claim time must agree before a person is told to remove the lock. A
+        // claim time far ahead of this clock is skew, not a recent claim, and must not keep a lock
+        // whose holder is gone reading as busy until this clock catches up.
+        now - changed >= SESSION_LOCK_ORPHAN_MS && (error.owner === null || Math.abs(now - error.owner.created_at_ms) >= SESSION_LOCK_ORPHAN_MS));
   if (orphaned) {
     return new CliError("CONFLICT", `the ${target.origin} sign-in session lock was left by a command that is gone`, {
       details: { reason: "session_lock_orphaned", host: target.origin, lock: error.lockPath, retryable: false },

@@ -1429,6 +1429,32 @@ test("a session lock whose directory and owner claim are both old is session_loc
   }
 });
 
+test("a session lock whose owner claim time is far ahead of this clock is session_lock_orphaned, not busy until the clock catches up", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, claimedAt(Date.now() + 100 * SESSION_LOCK_ORPHAN_MS), SESSION_LOCK_ORPHAN_MS + 60_000);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "CONFLICT");
+    assert.deepEqual(error.details, { reason: "session_lock_orphaned", host: h.host, lock, retryable: false });
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
+test("a session lock claimed just now by a holder whose clock runs slightly ahead is session_busy", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, claimedAt(Date.now() + 30_000), SESSION_LOCK_ORPHAN_MS + 60_000);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "TRANSIENT");
+    assert.deepEqual(error.details, { reason: "session_busy", retryable: true, host: h.host });
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
 test("a session lock that cannot be released after its work is reported as such, never as session_busy", async () => {
   const h = await harness();
   const lock = await sessionLockPath(h);
