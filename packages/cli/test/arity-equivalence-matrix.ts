@@ -145,6 +145,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("sync", 0),
   ordinary("version", 0),
   ordinary("sessionStart", 0),
+  ordinary("turnEnd", 0),
   selector("hookInstall", "leading-required", 0),
   selector("hookStatus", "leading-required", 0),
   selector("hookUninstall", "leading-required", 0),
@@ -155,6 +156,11 @@ export const BEHAVIOR_ASSIGNMENTS = [
   selector("setupMigrateState", "leading-navigation", 0),
   selector("setupHardenState", "leading-navigation", 0),
   selector("setupQuarantineState", "leading-navigation", 0),
+  ordinary("setupHosted", 0),
+  ordinary("login", 0),
+  ordinary("whoami", 0),
+  ordinary("logout", 0),
+  ordinary("checkout", 1),
 ] as const satisfies readonly BehaviorAssignment[];
 
 /** Exactly one built subprocess owner for every real key above. */

@@ -1,0 +1,17 @@
+{
+  "name": "refusal-validation-failed",
+  "description": "A head id the wire cannot serve (a control character) refuses the listing.",
+  "rows": ["refusal 422 validation_failed"],
+  "route": "/reader/heads",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 422,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"error\":{\"code\":\"validation_failed\",\"message\":\"The bundle holds a document id the working copy routes cannot serve.\",\"retryable\":false}}",
+    "truncated": false
+  }
+}

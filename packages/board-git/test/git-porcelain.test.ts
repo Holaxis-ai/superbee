@@ -22,7 +22,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile, readFile, rename, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -62,6 +62,9 @@ import {
   committedBundleAtHead,
   folderPresentInCodeIndex,
   isProvisioned,
+  boardWindowGuidance,
+  linkedWorktree,
+  trackedBoardDirPaths,
   probeRepoTopLevel,
   repoTopLevel,
   provisionBoardWorktree,
@@ -569,15 +572,191 @@ test("provision: pre-existing NON-EMPTY non-worktree .superbee is REFUSED with g
   }
 });
 
-test("provision: board branch checked out at a NON-conventional path = idempotent success (already)", async () => {
+test("provision: board branch checked out at another path is refused with that checkout, never a phantom success", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
   try {
-    // Check the board branch out somewhere else, so the conventional add hits git's
-    // "already checked out" refusal.
+    // Git checks a branch out in one worktree at a time, so the conventional add can never
+    // succeed; reporting "already" would hand later phases a board path that does not exist.
     git(topo.a.root, ["fetch", "origin"]);
-    git(topo.a.root, ["worktree", "add", "--no-track", "-b", BOARD_BRANCH, path.join(topo.a.root, "elsewhere"), `origin/${BOARD_BRANCH}`]);
-    const r = provisionBoardWorktree(topo.a.root);
-    assert.equal(r.kind, "already");
+    const elsewhere = path.join(topo.a.root, "else where");
+    git(topo.a.root, ["worktree", "add", "--no-track", "-b", BOARD_BRANCH, elsewhere, `origin/${BOARD_BRANCH}`]);
+    const err = capture(() => provisionBoardWorktree(topo.a.root));
+    assert.ok(isBoardGitError(err));
+    assert.equal(err.code, "CONFLICT");
+    assert.equal(err.details?.board_checkout, elsewhere);
+    assert.equal(err.details?.board_checkout_missing, false);
+    assert.equal(err.help, `pass --dir '${elsewhere}'`, "the path is shell-quoted");
+    assert.equal(existsSync(topo.a.board), false, "nothing was created at the conventional path");
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+for (const state of ["unprovisioned", "provisioned"] as const) {
+  test(`provision: a linked worktree of an ${state} clone is refused and gets no board checkout`, async () => {
+    const topo = await makeTwoCloneTopology({ provision: state === "provisioned" });
+    try {
+      const linked = path.join(topo.dir, "linked");
+      git(topo.a.root, ["worktree", "add", "-b", "feature", linked]);
+      const linkedBoard = path.join(linked, ".superbee");
+      for (const shape of ["absent", "empty"] as const) {
+        if (shape === "empty") mkdirSync(linkedBoard);
+        const err = capture(() => provisionBoardWorktree(linked));
+        assert.ok(isBoardGitError(err), shape);
+        assert.equal(err.code, "CONFLICT");
+        assert.equal(err.message, "Superbee boards are not supported inside a linked git worktree");
+        assert.equal(err.help, `run superbee from the main checkout at ${topo.a.root}, or pass --dir ${topo.a.board}`);
+        assert.equal(existsSync(path.join(linkedBoard, ".git")), false, `${shape}: no checkout inside the linked worktree`);
+        assert.equal(existsSync(linkedBoard), shape === "empty", `${shape}: the path is left alone`);
+      }
+      // The main checkout is unchanged: it provisions (or already has) the board.
+      assert.ok(["provisioned", "already"].includes(provisionBoardWorktree(topo.a.root).kind));
+    } finally {
+      await topo.cleanup();
+    }
+  });
+}
+
+test("provision: a submodule is not a linked worktree and provisions normally", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const superRoot = path.join(topo.dir, "super");
+    git(topo.dir, ["init", "-b", "main", "super"]);
+    git(superRoot, ["-c", "protocol.file.allow=always", "submodule", "add", topo.origin, "sub"]);
+    const sub = path.join(superRoot, "sub");
+    assert.equal(linkedWorktree(sub), null);
+    assert.equal(provisionBoardWorktree(sub).kind, "provisioned");
+    assert.equal(git(path.join(sub, ".superbee"), ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), BOARD_BRANCH);
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("window guidance: only zero-byte tracked placeholders take the untrack arm; a tracked .gitkeep with content keeps the remnant arm", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    mkdirSync(topo.a.board);
+    writeFileSync(path.join(topo.a.board, ".gitkeep"), "");
+    git(topo.a.root, ["add", "-f", ".superbee/.gitkeep"]);
+    git(topo.a.root, ["commit", "-m", "track a placeholder"]);
+    const placeholder = boardWindowGuidance(topo.a.root);
+    assert.equal(placeholder.state, "tracked-placeholder");
+    // Following the recovery verbatim clears the state and commits only the placeholder.
+    writeFileSync(path.join(topo.a.root, "staged.txt"), "other work\n");
+    git(topo.a.root, ["add", "staged.txt"]);
+    execFileSync("sh", ["-c", placeholder.help.replace(/, then re-run sync$/, "")], { cwd: topo.a.root });
+    assert.deepEqual(trackedBoardDirPaths(topo.a.root, ".superbee"), []);
+    assert.equal(git(topo.a.root, ["diff", "--cached", "--name-only"]).trim(), "staged.txt", "other staged work stays staged");
+
+    mkdirSync(topo.a.board, { recursive: true });
+    writeFileSync(path.join(topo.a.board, ".gitkeep"), "kept content\n");
+    git(topo.a.root, ["add", "-f", ".superbee/.gitkeep"]);
+    git(topo.a.root, ["commit", "-m", "track a real file"]);
+    assert.equal(boardWindowGuidance(topo.a.root).state, "window-remnant");
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("trackedBoardDirPaths fails closed when Git cannot answer", async () => {
+  const notRepo = await mkdtemp(path.join(tmpdir(), "board-git-not-repo-"));
+  try {
+    assert.throws(() => trackedBoardDirPaths(notRepo, ".superbee"), (err: unknown) => isBoardGitError(err));
+  } finally {
+    await rm(notRepo, { recursive: true, force: true });
+  }
+});
+
+test("provision: a .gitkeep with content is not a placeholder", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    mkdirSync(topo.a.board);
+    writeFileSync(path.join(topo.a.board, ".gitkeep"), "notes someone kept here\n");
+    const err = capture(() => provisionBoardWorktree(topo.a.root));
+    assert.ok(isBoardGitError(err));
+    assert.match(err.message, /move it aside/);
+    assert.equal(readFileSync(path.join(topo.a.board, ".gitkeep"), "utf8"), "notes someone kept here\n");
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("provision: a file created after the emptiness check survives and provisioning fails closed", async () => {
+  const { topo } = await makeAncestorBranchFixture();
+  const shimDir = await mkdtemp(path.join(tmpdir(), "board-git-shim-"));
+  const savedPath = process.env.PATH;
+  try {
+    mkdirSync(topo.b.board);
+    writeFileSync(path.join(topo.b.board, ".DS_Store"), "");
+    // The adopt probe (`merge-base`) runs between the emptiness check and the cleanup; a file
+    // written then must never be deleted.
+    const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const draft = path.join(topo.b.board, "draft.md");
+    writeFileSync(
+      path.join(shimDir, "git"),
+      `#!/bin/sh\ncase " $* " in *" merge-base "*) printf 'draft\\n' > '${draft}';; esac\nexec '${realGit}' "$@"\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${shimDir}${path.delimiter}${savedPath ?? ""}`;
+    const err = capture(() => provisionBoardWorktree(topo.b.root, { allowLocalBranch: false }));
+    process.env.PATH = savedPath;
+    assert.ok(isBoardGitError(err), String(err));
+    assert.match(err.message, /move it aside/);
+    assert.equal(readFileSync(draft, "utf8"), "draft\n", "the concurrently written file survives");
+  } finally {
+    process.env.PATH = savedPath;
+    await rm(shimDir, { recursive: true, force: true });
+    await topo.cleanup();
+  }
+});
+
+test("provision: a board worktree registered at this missing path is pruned first", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    await rm(topo.a.board, { recursive: true, force: true });
+    const missing = capture(() => provisionBoardWorktree(topo.a.root));
+    assert.ok(isBoardGitError(missing));
+    assert.equal(missing.details?.board_checkout, topo.a.board);
+    assert.equal(missing.details?.board_checkout_missing, true);
+    assert.match(missing.help ?? "", /^git worktree prune, then re-run sync$/);
+    git(topo.a.root, ["worktree", "prune"]);
+    assert.equal(provisionBoardWorktree(topo.a.root).kind, "provisioned");
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("provision: an untracked placeholder-only .superbee is empty; a tracked placeholder is never deleted", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    mkdirSync(topo.a.board);
+    writeFileSync(path.join(topo.a.board, ".DS_Store"), "");
+    writeFileSync(path.join(topo.a.board, ".gitkeep"), "");
+    assert.equal(provisionBoardWorktree(topo.a.root).kind, "provisioned");
+    assert.ok(existsSync(path.join(topo.a.board, "index.md")));
+
+    mkdirSync(topo.b.board);
+    writeFileSync(path.join(topo.b.board, ".gitkeep"), "");
+    git(topo.b.root, ["add", "-f", ".superbee/.gitkeep"]);
+    // Staged only, then committed: both are tracked, and both get the untrack recovery.
+    for (const stage of ["staged", "committed"] as const) {
+      if (stage === "committed") git(topo.b.root, ["commit", "-m", "track a placeholder"]);
+      const err = capture(() => provisionBoardWorktree(topo.b.root));
+      assert.ok(isBoardGitError(err), stage);
+      assert.equal(err.code, "CONFLICT", stage);
+      assert.match(err.message, /1 path under '\.superbee' at \S+ is tracked on this branch \(\.superbee\/\.gitkeep\)/, stage);
+      assert.doesNotMatch(err.message, /re-added|cleanup/, stage);
+      assert.match(
+        err.help ?? "",
+        stage === "staged"
+          ? /^git rm -r --cached -- \.superbee, then re-run sync$/
+          : /^git rm -r -- \.superbee && git commit -m '[^']+' -- \.superbee, then re-run sync$/,
+        stage,
+      );
+      assert.ok(existsSync(path.join(topo.b.board, ".gitkeep")), `${stage}: the tracked placeholder is untouched`);
+      assert.equal(git(topo.b.root, ["ls-files", "--", ".superbee"]).trim(), ".superbee/.gitkeep", `${stage}: still tracked`);
+      assert.equal(gitTry(topo.b.root, ["diff", "--quiet"]).status, 0, `${stage}: the code worktree shows no deletion`);
+    }
   } finally {
     await topo.cleanup();
   }
@@ -1598,9 +1777,18 @@ test("F2 root checkout: a checked-out board branch without upstream provenance i
 test("F2 refusal: the branch checked out in ANOTHER worktree is refused", async () => {
   const { topo, oldSha } = await makeAncestorBranchFixture();
   try {
-    git(topo.b.root, ["worktree", "add", path.join(topo.dir, "elsewhere"), BOARD_BRANCH]);
-    const outcome = provisionBoardWorktree(topo.b.root, { allowLocalBranch: false });
-    assertRefused(topo, oldSha, outcome);
+    const elsewhere = path.join(topo.dir, "elsewhere");
+    git(topo.b.root, ["worktree", "add", elsewhere, BOARD_BRANCH]);
+    // Refused before any adopt: the refusal names the worktree that holds the branch.
+    const err = capture(() => provisionBoardWorktree(topo.b.root, { allowLocalBranch: false }));
+    assert.ok(isBoardGitError(err));
+    assert.equal(err.code, "CONFLICT");
+    assert.equal(err.details?.board_checkout, elsewhere);
+    assert.equal(
+      git(topo.b.root, ["rev-parse", `refs/heads/${BOARD_BRANCH}`]).trim(),
+      oldSha,
+      "the local branch ref is untouched by a refusal",
+    );
   } finally {
     await topo.cleanup();
   }

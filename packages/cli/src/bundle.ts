@@ -57,12 +57,18 @@ import {
   BUNDLE_DIR,
   BUNDLE_DIRS,
   LEGACY_BUNDLE_DIR,
+  boardWorktreeBlock,
   bundleDirNameForProject,
+  isIgnorableBoardDirEntry,
+  linkedWorktree,
+  linkedWorktreeGuidance,
+  trackedBoardDirPaths,
+  trackedPlaceholderGuidance,
   repoTopLevel,
   resolveBundleKey,
   runGit,
 } from "@superbee/board-git";
-import { constants, promises as fs, type Stats } from "node:fs";
+import { constants, promises as fs, type Dir, type Stats } from "node:fs";
 import path from "node:path";
 import {
   FilesystemMutationLockError,
@@ -430,6 +436,39 @@ export async function resolveProjectBinding(startDir: string = process.cwd()): P
   }
 }
 
+/** Statuses a hosted Superbee host answers to a wire-protocol route it does not serve. */
+const HOSTED_PROBE_STATUSES = new Set([401, 403, 404, 405]);
+/** The hosted MCP resource's protected-resource metadata (RFC 9728): what a hosted host serves. */
+export const HOSTED_PROBE_PATH = "/.well-known/oauth-protected-resource/mcp";
+const HOSTED_PROBE_TIMEOUT_MS = 3_000;
+
+/** True when `origin` answers the hosted MCP resource's metadata: a hosted Superbee host. */
+async function isHostedSuperbee(origin: string): Promise<boolean> {
+  try {
+    const response = await globalThis.fetch(`${origin}${HOSTED_PROBE_PATH}`, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(HOSTED_PROBE_TIMEOUT_MS),
+    });
+    if (!response.ok) return false;
+    const body = (await response.json()) as { resource?: unknown };
+    return typeof body.resource === "string";
+  } catch {
+    return false;
+  }
+}
+
+function hostedRemoteRefusal(remote: string, origin: string): CliError {
+  return new CliError(
+    "USAGE",
+    `${remote} is a hosted Superbee URL, not a wire-protocol server: --remote reaches only 'superbee serve'; use 'superbee checkout' for a hosted bundle`,
+    {
+      details: { reason: "hosted_url", remote, host: origin },
+      help: `${cliInvocation()} checkout <bundle-id> --host ${commandToken(origin)}`,
+    },
+  );
+}
+
 /**
  * Wrap a fetch-like transport so a transport-level failure (ECONNREFUSED, DNS, timeout — `fetch`
  * rejects with a plain `TypeError` for all of these) surfaces as a `CliError("RUNTIME", …)` with a
@@ -438,11 +477,19 @@ export async function resolveProjectBinding(startDir: string = process.cwd()): P
  * retryable RUNTIME fault (exit 1) — wrong-but-plausible, since both look like "a plain Error" to
  * a generic catch. HTTP-level failures (404/412/5xx) are UNCHANGED: they still resolve to a normal
  * `Response` that `RemoteBackend` maps itself (see `core/src/remote-backend.ts`).
+ *
+ * One exception: when the FIRST response is a 401, 403, 404 or 405, the origin is probed once for
+ * the hosted MCP resource's metadata. A hosted Superbee host answers it, and then every request
+ * fails at once with "use checkout" instead of a wire-protocol error or a `serve` hint. The probe
+ * runs at most once per invocation and never against a server that answered the first request.
  */
-function wrapTransportErrors(remote: string): FetchLike {
+function wrapTransportErrors(remote: string, origin: string): FetchLike {
+  let hosted: boolean | undefined;
   return captureRuntimeCallback(async (request: Request): Promise<Response> => {
+    if (hosted) throw hostedRemoteRefusal(remote, origin);
+    let response: Response;
     try {
-      return await globalThis.fetch(request);
+      response = await globalThis.fetch(request);
     } catch (err) {
       throw new CliError(
         "RUNTIME",
@@ -450,6 +497,11 @@ function wrapTransportErrors(remote: string): FetchLike {
         { help: `${cliInvocation()} serve --dir <path>` },
       );
     }
+    if (hosted === undefined) {
+      hosted = HOSTED_PROBE_STATUSES.has(response.status) ? await isHostedSuperbee(origin) : false;
+      if (hosted) throw hostedRemoteRefusal(remote, origin);
+    }
+    return response;
   });
 }
 
@@ -496,7 +548,7 @@ async function openRemoteBundle(remoteFlag: string): Promise<Bundle> {
   const backend = new RemoteBackend({
     baseUrl: base,
     bundle: "default",
-    fetchImpl: wrapTransportErrors(base),
+    fetchImpl: wrapTransportErrors(base, origin),
     authToken,
   });
   return { root: base, backend };
@@ -542,7 +594,7 @@ export async function resolveRemoteFlag(
 async function canonicalDirectoryRoot(
   root: string,
   notFoundMessage: string,
-  help: string | (() => Promise<string>),
+  help: string | (() => Promise<BindingRecovery>),
 ): Promise<string> {
   try {
     const [canonicalRoot, info] = await Promise.all([fs.realpath(root), fs.stat(root)]);
@@ -551,7 +603,8 @@ async function canonicalDirectoryRoot(
   } catch {
     // The target may have disappeared between selection and canonicalization. Keep that race in
     // the same user-facing class as an initially missing target rather than leaking a raw fs error.
-    throw new CliError("NOT_FOUND", notFoundMessage, { help: typeof help === "string" ? help : await help() });
+    const recovery = typeof help === "string" ? { help } : await help();
+    throw new CliError("NOT_FOUND", notFoundMessage, recovery);
   }
 }
 
@@ -1365,6 +1418,51 @@ export async function resolveLocalBundleTarget(
       () => absentBindingTargetHelp(binding),
     );
     assertBundleOutsidePrivateState(canonicalRoot);
+    const contents = await directoryContents(binding.target);
+    if (contents === "unreadable") {
+      const help = `restore read access to ${commandToken(binding.target)} (for example: chmod u+rwx ${commandToken(binding.target)}), then retry`;
+      throw new CliError(
+        "RUNTIME",
+        `the bound bundle directory ${binding.target} is not readable — from project binding ${binding.file}; ${help}`,
+        { help },
+      );
+    }
+    // An empty directory at the checkout's own board path is not a bundle yet. Opening it would let
+    // home, status, init, and writes treat it as a new local bundle diverging from the shared board.
+    if (contents === "empty" || contents === "placeholders") {
+      const top = await ownConventionalBoardRoot(binding);
+      const known = top ? knownBoardRef(top) : null;
+      const blocked = top ? boardWorktreeRecovery(top) : null;
+      if (blocked) {
+        throw new CliError(
+          "NOT_FOUND",
+          `the bound board directory ${binding.target} is empty — from project binding ${binding.file}; ${blocked.reason}`,
+          blocked.recovery,
+        );
+      }
+      if (known && contents === "placeholders") {
+        // Provisioning cannot remove a placeholder the code branch tracks; give its recovery here.
+        const bundleDir = path.basename(binding.target);
+        const tracked = trackedBoardDirPaths(top!, bundleDir);
+        if (tracked.length > 0) {
+          const guidance = trackedPlaceholderGuidance(top!, binding.target, bundleDir, tracked);
+          throw new CliError("NOT_FOUND", `${guidance.message} — from project binding ${binding.file}`, {
+            help: guidance.help,
+            details: { binding_target_blocked: "tracked_placeholder" },
+          });
+        }
+      }
+      if (known) {
+        throw new CliError(
+          "NOT_FOUND",
+          `the bound board directory ${binding.target} is empty — from project binding ${binding.file}; ` +
+            (known === "shared"
+              ? "this checkout shares a board that is not provisioned there yet"
+              : `this checkout has a local '${BOARD_BRANCH}' branch that is not checked out there yet`),
+          { help: `${cliInvocation()} sync` },
+        );
+      }
+    }
     return {
       root: binding.target,
       canonicalRoot,
@@ -1402,8 +1500,67 @@ export async function ownConventionalBoardRoot(binding: ProjectBinding): Promise
   return top;
 }
 
-/** Prove the binding names a direct conventional child, without choosing a creation path. */
+/** What occupies a binding target path; "other" is any entry sync cannot provision over, such as a regular file. */
+type BindingTargetEntry = "absent" | "directory" | "symlink" | "other" | "unreadable";
+
+async function bindingTargetEntry(target: string): Promise<BindingTargetEntry> {
+  try {
+    const info = await fs.lstat(target);
+    if (info.isSymbolicLink()) return "symlink";
+    return info.isDirectory() ? "directory" : "other";
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable";
+  }
+}
+
+/**
+ * How a real directory (never a symlink) at a bound path is populated; null for anything else.
+ * "placeholders" holds only the placeholder files provisioning also ignores, so both agree on
+ * emptiness.
+ */
+async function directoryContents(target: string): Promise<"empty" | "placeholders" | "occupied" | "unreadable" | null> {
+  if ((await bindingTargetEntry(target)) !== "directory") return null;
+  let dir: Dir;
+  try {
+    dir = await fs.opendir(target);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "EACCES" || code === "EPERM" ? "unreadable" : null;
+  }
+  try {
+    // Stop at the first meaningful entry: bound bundles are opened on every command.
+    let placeholders = false;
+    for (let entry = await dir.read(); entry !== null; entry = await dir.read()) {
+      if (!isIgnorableBoardDirEntry(target, entry.name)) return "occupied";
+      placeholders = true;
+    }
+    return placeholders ? "placeholders" : "empty";
+  } catch {
+    return null;
+  } finally {
+    await dir.close().catch(() => {});
+  }
+}
+
+/** True only for an existing, readable directory holding no meaningful entry (never a symlink). */
+export async function emptyDirectory(target: string): Promise<boolean> {
+  const contents = await directoryContents(target);
+  return contents === "empty" || contents === "placeholders";
+}
+
+/**
+ * Prove the binding names a direct conventional child, without choosing a creation path. Only an
+ * absent path (a fresh clone) or a real directory can be the checkout's own board path: a symlink
+ * is a redirect, and any other entry must be moved aside before sync can provision there.
+ */
 async function ownConventionalBindingRoot(binding: ProjectBinding): Promise<string | null> {
+  const entry = await bindingTargetEntry(path.resolve(binding.target));
+  if (entry !== "absent" && entry !== "directory") return null;
+  return conventionalBindingParentTop(binding);
+}
+
+/** The repository top when the binding's target sits directly in the checkout carrying the binding. */
+async function conventionalBindingParentTop(binding: ProjectBinding): Promise<string | null> {
   const target = path.resolve(binding.target);
   if (!BUNDLE_DIRS.includes(path.basename(target) as (typeof BUNDLE_DIRS)[number])) return null;
   const lexicalParent = path.dirname(target);
@@ -1419,13 +1576,6 @@ async function ownConventionalBindingRoot(binding: ProjectBinding): Promise<stri
     return null;
   }
   if (!samePhysicalPath(parent, bindingDir)) return null;
-  try {
-    // A symlinked conventional target is a redirect, never the checkout's own board path.
-    if ((await fs.lstat(target)).isSymbolicLink()) return null;
-  } catch (err) {
-    // Only absence is a fresh clone; unreadable or invalid entries do not establish ownership.
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null;
-  }
   const top = repoTopLevel(bindingDir);
   if (!top) return null;
   let physicalTop: string;
@@ -1438,30 +1588,128 @@ async function ownConventionalBindingRoot(binding: ProjectBinding): Promise<stri
   return top;
 }
 
-/** A board this checkout already shares (or fetched) exists locally as a board ref; sync provisions it. */
-function hasKnownBoardRef(top: string): boolean {
-  return [`refs/remotes/${BOARD_REF}`, `refs/heads/${BOARD_BRANCH}`].some(
-    (ref) => runGit(top, ["rev-parse", "--verify", "--quiet", ref]).status === 0,
+/**
+ * Which board ref this checkout knows locally: "shared" when a fetched origin board exists, "local"
+ * for only a local, never-fetched board branch. Either way sync owns the next step.
+ */
+function knownBoardRef(top: string): "shared" | "local" | null {
+  if (runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status === 0) return "shared";
+  return runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]).status === 0 ? "local" : null;
+}
+
+/** The NOT_FOUND help, plus a marker when the bound path itself must change before sync can help. */
+export interface BindingRecovery {
+  readonly help: string;
+  readonly details?: { readonly binding_target_blocked: BindingTargetBlock };
+}
+
+/**
+ * Why a bound path blocks every ordinary recovery: something that is not a directory occupies it,
+ * the code branch tracks a placeholder there, or Git's board registration (checked out in another
+ * worktree, or registered to a missing one) prevents a checkout at this path.
+ */
+export type BindingTargetBlock =
+  | "not_a_directory"
+  | "unresolved_symlink"
+  | "tracked_placeholder"
+  | "board_checked_out_elsewhere"
+  | "board_worktree_missing"
+  | "linked_worktree";
+
+/**
+ * Recovery for a checkout whose own board path cannot be provisioned: boards are unsupported in a
+ * linked git worktree, and Git's board registration may name another worktree or a missing one.
+ * `sync` alone could only fail. Runs local Git only, and only for an absent or empty bound path.
+ */
+function boardWorktreeRecovery(top: string): { reason: string; recovery: BindingRecovery } | null {
+  const bundleDir = bundleDirNameForProject(top);
+  const linked = linkedWorktree(top);
+  if (linked) {
+    const guidance = linkedWorktreeGuidance(linked, bundleDir, cliInvocation());
+    return { reason: guidance.message, recovery: { help: guidance.help, details: { binding_target_blocked: "linked_worktree" } } };
+  }
+  const block = boardWorktreeBlock(top, path.join(top, bundleDir));
+  if (!block) return null;
+  const at = commandToken(block.path);
+  if (block.kind === "missing") {
+    return {
+      reason: `this repository's '${BOARD_BRANCH}' branch is registered to a worktree that no longer exists`,
+      recovery: {
+        help: `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${at} that no longer exists — run git worktree prune, then ${cliInvocation()} sync`,
+        details: { binding_target_blocked: "board_worktree_missing" },
+      },
+    };
+  }
+  return {
+    reason: `this repository's '${BOARD_BRANCH}' branch is checked out at ${block.path}`,
+    recovery: { help: `pass --dir ${at}`, details: { binding_target_blocked: "board_checked_out_elsewhere" } },
+  };
+}
+
+/**
+ * The resolver's refusal for a bound path that is the checkout's own board path but that Git's
+ * board registration blocks; null when that does not apply. Sync consults it before provisioning
+ * so its refusal is the same recovery every other command gives.
+ */
+export async function boundBoardWorktreeError(binding: ProjectBinding): Promise<CliError | null> {
+  const entry = await bindingTargetEntry(path.resolve(binding.target));
+  if (entry !== "absent" && !(entry === "directory" && (await emptyDirectory(binding.target)))) return null;
+  const top = await ownConventionalBoardRoot(binding);
+  const blocked = top ? boardWorktreeRecovery(top) : null;
+  if (!blocked) return null;
+  return new CliError(
+    "NOT_FOUND",
+    `the bound board path ${binding.target} — from project binding ${binding.file} — cannot hold a board checkout: ${blocked.reason}`,
+    blocked.recovery,
   );
 }
 
 /**
  * Recovery for a binding whose target is missing. A fresh clone of a project that already shares
  * its board is the common case, and `init --create-only` there would create a divergent bundle;
- * point at `sync`, which materializes the existing board at exactly the bound path.
+ * point at `sync`, which materializes the existing board at exactly the bound path. A non-directory
+ * occupying the path blocks every recovery, so it must be moved aside first.
  */
-async function absentBindingTargetHelp(binding: ProjectBinding): Promise<string> {
-  const top = await ownConventionalBindingRoot(binding);
+async function absentBindingTargetHelp(binding: ProjectBinding): Promise<BindingRecovery> {
+  const entry = await bindingTargetEntry(path.resolve(binding.target));
+  // Reached only when the path does not resolve to a directory, so a symlink here is dangling or
+  // names a non-directory; `init --create-only` refuses a symlink, so it is moved aside like a file.
+  if (entry === "other" || entry === "symlink") {
+    const next = clearedBindingTargetHelp(binding, await conventionalBindingParentTop(binding));
+    // A blocked-worktree recovery already names its own complete next step.
+    if (next.details) return next;
+    const what = entry === "symlink" ? "is a symlink that does not resolve to a directory" : "is not a directory";
+    return {
+      help: `${commandToken(binding.target)} ${what} — move it aside, then run ${next.help}`,
+      details: { binding_target_blocked: entry === "symlink" ? "unresolved_symlink" : "not_a_directory" },
+    };
+  }
+  return clearedBindingTargetHelp(binding, await ownConventionalBindingRoot(binding));
+}
+
+/** The recovery once nothing occupies the bound path; `top` is the checkout owning that path, if any. */
+function clearedBindingTargetHelp(binding: ProjectBinding, top: string | null): BindingRecovery {
+  if (top && path.basename(binding.target) === bundleDirNameForProject(top)) {
+    const blocked = boardWorktreeRecovery(top);
+    if (blocked) return blocked.recovery;
+  }
   // An origin without a cached board ref may be offline or fetched with a restricted refspec.
   // Reads stay offline; sync owns determining whether that remote already shares a board.
-  if (top && (hasKnownBoardRef(top) || runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0)) {
+  if (top && (knownBoardRef(top) || runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0)) {
     const bundleDir = bundleDirNameForProject(top);
-    if (path.basename(binding.target) === bundleDir) return `${cliInvocation()} sync`;
+    if (path.basename(binding.target) === bundleDir) return { help: `${cliInvocation()} sync` };
     // Fresh checkouts use the canonical name; legacy creation is reserved for establish recovery.
     // Keep the exact binding authoritative until the user explicitly corrects its absent target.
-    return `set "bundle" in ${commandToken(binding.file)} to "${bundleDir}", then run ${cliInvocation()} sync`;
+    return { help: `set "bundle" in ${commandToken(binding.file)} to "${bundleDir}", then run ${cliInvocation()} sync` };
   }
-  return `${cliInvocation()} init --create-only --dir ${commandToken(binding.target)}`;
+  // Bare, like home's first-contact advice: recipes stay withheld until the binding resolves, and
+  // `recipe add` applies the chosen one to the recreated bundle afterwards.
+  return { help: bindingInitRecovery(binding.target, cliInvocation()) };
+}
+
+/** The scoped, create-only, recipe-free init that recreates a genuinely new bound bundle. */
+export function bindingInitRecovery(target: string, invocation: string): string {
+  return `${invocation} init --create-only --recipe none --dir ${commandToken(target)}`;
 }
 
 function bindingPathConflict(target: LocalBundleTarget, message: string): CliError {

@@ -4,6 +4,8 @@ export {
   isComplete,
   commitLocal,
   commitBodyLocal,
+  deleteLocal,
+  type DeleteLocalResult,
   type BodyLocalMutation,
   inspectConflict,
   resolveConflict,

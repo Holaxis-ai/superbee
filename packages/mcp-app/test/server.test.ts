@@ -2170,6 +2170,16 @@ test("one bundle-propose action works from transient bytes and their exact saved
     arguments: { launchId: transient.launch.launchId },
   });
 
+  const bodyTarget = await readDocVersioned(bundle, "tasks/alpha");
+  const bodyProposal = await client.callTool({
+    name: PREPARE_VIEW_ACTION_TOOL_NAME,
+    arguments: { launchId: transient.launch.launchId, requestId: "body-rejected", action: {
+      kind: "document.set-body", docId: "tasks/alpha", field: "body", value: bodyTarget.doc.body + "New text.\n", expectedVersion: bodyTarget.version,
+    } },
+  });
+  assert.equal((bodyProposal.structuredContent as { result: { status: string } }).result.status, "rejected");
+  assert.equal((await readDocVersioned(bundle, "tasks/alpha")).version, bodyTarget.version);
+
   const runAction = async (launchId: string, value: "todo" | "done") => {
     const target = await readDocVersioned(bundle, "tasks/alpha");
     const prepared = await client.callTool({

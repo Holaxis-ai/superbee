@@ -471,6 +471,15 @@ test("hello declares the host descriptor and the reserved host request is refuse
     limits: { query: 500, edges: 1000, graphDocuments: 1000, graphRelationships: 10_000, replyBytes: 2 * 1024 * 1024 },
   });
   assert.equal(hello.reply.result.grant, "read");
+  assert.equal(hello.reply.result.actionProtocol, undefined);
+  const writable = new BridgeService({ ...base, host: TEST_HOST,
+    config: async () => ({ root: null, name: "Test", mode: "dir" }),
+    launches: { async resolve(launchId) { return { launchId, capability: "bundle-propose" }; }, revoke() {} },
+  });
+  const writableHello = await writable.handle("launch", { bridge: "v0", type: "hello", id: "write" });
+  assert.equal(writableHello.reply.result.actionProtocol, "v1");
+  assert.deepEqual(writableHello.reply.result.actions, ["document.set-field", "document.set-body", "document.update"]);
+
   for (const name of ["query.kind-projection", "query.field-or", "query.open", "query.count", "edges", "graph", "render-document"]) {
     assert.ok(hello.reply.result.host.capabilities.includes(name), name);
   }

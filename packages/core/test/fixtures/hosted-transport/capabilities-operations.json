@@ -1,0 +1,17 @@
+{
+  "name": "capabilities-operations",
+  "description": "Capabilities on a composition with identified writes and a root index.",
+  "rows": ["capabilities 200"],
+  "route": "/reader/capabilities",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "content-type": "application/json; charset=utf-8" },
+    "body": "{\"heads\":true,\"snapshot\":true,\"operations\":true,\"operationsRetentionMs\":2592000000,\"bound\":{\"documents\":1000,\"bytes\":1048576},\"paged\":{\"documents\":10000},\"root\":{\"content\":\"---\\nokf_version: \\\"0.2\\\"\\ntitle: Team knowledge\\n---\\n# Team knowledge\\n\",\"version\":\"sha256:2d4238b1970c24a72552dc8e00a8ec0afa9a66d5f56418f8ac2fe5498945b107\"}}",
+    "truncated": false
+  }
+}

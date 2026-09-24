@@ -57,6 +57,7 @@ import { render } from "../output.js";
 import {
   CONVENTIONAL_BUNDLE_DIR_NAME,
   assertResolvedLocalRouteIdentity,
+  bindingInitRecovery,
   findBundleRoot,
   openBundle,
   resolveLocalBundleRoute,
@@ -76,6 +77,8 @@ import { describeResolvedActor } from "../actor-guidance.js";
 import { deriveOffers, OFFERS_HELP, type OfferRow } from "../offers.js";
 import { parseArgs } from "node:util";
 import path from "node:path";
+import { realpath } from "node:fs/promises";
+import { bundleHomeAt, type BundleHome } from "../bundle-home.js";
 import {
   BOARD_BRANCH,
   BOARD_REF,
@@ -121,6 +124,9 @@ Default TOON output may display a previously validated latest-track release noti
 detached refresh at most once per 24-hour attempt window. Rendering never waits for npm. The fixed
 public npm request names only superbee; it sends no installed version, cwd, bundle, actor, or
 usage data beyond ordinary network metadata.
+
+The bundle block leads with 'home': local, git (a Git board) or hosted (a hosted checkout), read
+from local Git and private state only. 'bundle locate' and 'status' give the details.
 
 Home also checks managed Agent Skill bytes locally. A stale install that passes the installer's
 complete read-only preflight is reported with its exact scope-specific refresh command and restart
@@ -189,6 +195,8 @@ export interface BundleSummary {
   trust?: TrustCountsRow;
   /** The bundle's declared OKF edition, when the summarizer read it (drives the actor orientation line). */
   okfVersion?: string | null;
+  /** Where the bundle lives (`bundle-home.ts`); injected test fakes may omit it (the block omits the field then). */
+  home?: BundleHome;
 }
 
 /**
@@ -217,6 +225,11 @@ export interface ConflictedBundle {
 export interface HomeBindingNote {
   file: string;
   target: string;
+  /**
+   * The shared resolver's recovery for an absent binding target (the NOT_FOUND `help`), so home
+   * gives the same next step as every other command instead of composing its own.
+   */
+  recovery?: string;
 }
 
 /** The deliberately small user-scoped catalog projection shown during agent orientation. */
@@ -390,7 +403,9 @@ export async function defaultSummarizeBundle(
     // One reserved read (index.md) so the trust fold knows the edition; a missing declaration reads
     // as the v0.1 compatibility fallback, exactly as the mutation service resolves it.
     const okfVersion = await readBundleOkfVersion(bundle);
-    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }) };
+    // Local Git and private state only, like the rest of this render; unreadable evidence reads as local.
+    const bundleHome = (await bundleHomeAt(await realpath(bundle.root).catch(() => bundle.root))).home;
+    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }), home: bundleHome };
   } catch {
     // A bundle root exists but could not be read — DISTINCT from "no bundle" (see UnreadableBundle).
     return { root: collapseHomeDirectory(bundle.root), unreadable: true };
@@ -896,7 +911,9 @@ export function buildHomeView(
     view.bundle = bundleBlock;
   } else if (summary) {
     const bundleBlock: Record<string, unknown> = {};
-    // Identity first: the derived project name, so a conventional
+    // Where it lives comes first: every later line (sync, refusals, conflicts) depends on it.
+    if (summary.home) bundleBlock.home = summary.home;
+    // Identity: the derived project name, so a conventional
     // conventional bundle reads as ITS project, not as the folder name every project shares.
     if (summary.name) {
       bundleBlock.name = summary.name;
@@ -948,14 +965,16 @@ export function buildHomeView(
     // with a provisioned/detected board HAS its bundle — "run init" there is the divergent-
     // second-bundle footgun.
     if (binding) {
-      // A reached binding is always local. Its target may have disappeared, but it remains the
-      // committed selection: never suggest an unscoped init that would mint a divergent cwd bundle,
-      // and do not advertise recipes until the broken binding is repaired (recipes fails closed).
-      const target = commandFragment` --dir ${commandQuoted(binding.target)}`;
+      // A reached binding is always local and remains the committed selection. A target the
+      // resolver refused renders its own recovery (sync when the checkout already shares a board,
+      // so home never mints a divergent bundle). A resolved target whose summary is unavailable
+      // (it vanished mid-render, or an injected summarizer) gets the same scoped, create-only,
+      // recipe-free init the resolver gives a genuinely new target, which refuses to overwrite.
+      // Never suggest an unscoped init, and do not advertise recipes until the binding resolves.
+      const recovery = binding.recovery ?? bindingInitRecovery(binding.target, deps.invocation());
       view.getting_started =
         `project binding ${binding.file} -> ${binding.target} did not resolve to a bundle — ` +
-        `run \`${deps.invocation()} init --recipe none${target}\` to recreate that bound bundle, ` +
-        `or fix/remove the binding before browsing recipes`;
+        `recipes stay withheld until the binding resolves; recover with: ${recovery}`;
     } else {
       const createTarget = path.join(deps.targetDir ?? ".", CONVENTIONAL_BUNDLE_DIR_NAME);
       const target = commandFragment` --dir ${commandQuoted(createTarget)}`;
@@ -1061,10 +1080,12 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
           summaryDir = localRoute.target.root;
         } catch (err) {
           if (!(err instanceof CliError) || err.code !== "NOT_FOUND") throw err;
-          // A missing ordinary target remains a recoverable binding: preserve its exact path so
-          // home can offer the scoped init command rather than an unsafe cwd fallback.
+          // A missing target remains the committed selection: keep its exact path (never a cwd
+          // fallback) and the resolver's recovery, which is `sync` when the checkout already shares
+          // a board and a scoped init only for a genuinely new local target.
           localRoutingFailure = true;
           summaryDir = found.target;
+          if (err.help) binding = { ...binding, recovery: err.help };
         }
       }
     } catch (err) {

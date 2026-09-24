@@ -517,9 +517,9 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "sync",
         leaves: [publicLeaf("sync", "sync", zero, 22, DIR_SYNC_SURFACE)],
-        usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file> | --body-out <file>]] [--dir <path>] [--limit <n>]",
+        usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file> | --body-out <file>] | --inspect --doc <id> [--out <file>] | --resolve keep|take|revise --doc <id> | --restore-deletes | --accept-deletes <token> | --take-host-deletions <token>] [--dir <path>] [--limit <n>]",
         summary:
-          "Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). The remote repository must already exist: Superbee does not create it. After confirming the repository exists and origin/board does not, --establish is the separate explicit act that creates/pushes the board branch; it needs repository-specific push capability and branch-create policy clearance. If origin/board exists, plain `sync` joins it. Works both from a project's conventional bundle worktree and from a standalone clone whose tracked OKF root is attached to the shared board branch. A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; SUPERBEE_NO_AUTOPULL=<any value, even 0> disables it",
+          "Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). The remote repository must already exist: Superbee does not create it. After confirming the repository exists and origin/board does not, --establish is the separate explicit act that creates/pushes the board branch; it needs repository-specific push capability and branch-create policy clearance. If origin/board exists, plain `sync` joins it. Works both from a project's conventional bundle worktree and from a standalone clone whose tracked OKF root is attached to the shared board branch. A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; SUPERBEE_NO_AUTOPULL=<any value, even 0> disables it. Hosted checkout (a folder made by `checkout`): sync instead sends each edited file as one whole document under your own access and refreshes documents changed on the host, with one row per document (committed, conflict, held, refused, unknown, paused; non-zero exit until all are committed). A change to one document and a host change to another both land; a document changed on both sides is never merged but comes back as a conflict, resolved with --inspect --doc <id> then --resolve keep|take|revise --doc <id> (a resolution is recorded, then sent by the next plain sync). A held mass delete is accepted only by the person, typing the count in their own terminal (--accept-deletes); --restore-deletes puts the files back; --take-host-deletions takes a mass deletion the pull refused.",
       },
     ],
   },
@@ -539,14 +539,20 @@ export const CLI_COMMAND_GROUPS = [
         summary: "The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or SUPERBEE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh (legacy ASLITE_NO_UPDATE_CHECK remains supported); npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data",
       },
       {
+        id: "turnEnd",
+        leaves: [publicLeaf("turnEnd", "turn-end", zero, 33, DIR_SURFACE)],
+        usage: "turn-end [--dir <path>]",
+        summary: "The end-of-turn hook payload: in a hosted checkout, sync once and hand a conflict or a sign-in link back to the agent; does nothing anywhere else; SUPERBEE_NO_TURN_SYNC=<any value> turns it off",
+      },
+      {
         id: "hook",
         leaves: [
           publicLeaf("hookInstall", "hook install", zero, 23),
           publicLeaf("hookStatus", "hook status", zero),
           publicLeaf("hookUninstall", "hook uninstall", zero),
         ],
-        usage: "hook install|status|uninstall [--scope project|user]",
-        summary: "Install the SessionStart hook (runs session-start: pull the board, then render) for Claude Code, Codex, OpenCode",
+        usage: "hook install|status|uninstall [--scope project|user] [--turn-end-sync]",
+        summary: "Install the SessionStart hook (runs session-start: pull the board or hosted checkout, then render) for Claude Code, Codex, OpenCode; --turn-end-sync opts in to (or, with uninstall, out of) the Stop hook that syncs a hosted checkout at the end of each turn (Claude Code, Codex)",
       },
       {
         id: "skill",
@@ -565,9 +571,41 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("setupMigrateState", "setup migrate-state", zero),
           publicLeaf("setupHardenState", "setup harden-state", zero),
           publicLeaf("setupQuarantineState", "setup quarantine-state", zero),
+          publicLeaf("setupHosted", "setup hosted", zero),
         ],
-        usage: "setup [migrate-state|harden-state|quarantine-state] [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]",
-        summary: "Agent-driven setup: inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then return one deterministic action for the calling agent to execute",
+        usage: "setup [migrate-state|harden-state|quarantine-state] [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json] | setup hosted [--url <hosted-url>] [--workspace <id>] [--json]",
+        summary: "Agent-driven setup: inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then return one deterministic action for the calling agent to execute; `setup hosted` signs in to hosted Superbee (relay the AUTH_REQUIRED link, then re-run) and records the default hosted workspace in one step",
+      },
+    ],
+  },
+  {
+    group: "Hosted",
+    commands: [
+      {
+        id: "login",
+        leaves: [publicLeaf("login", "login", zero, 29)],
+        usage: "login [--host <url>] [--client-id <id>] [--wait [--timeout <s>] | --loopback [--port <n>] [--timeout <s>]] [--json]",
+        summary:
+          "Sign in to hosted Superbee: device sign-in by default, never blocking — without a session it returns AUTH_REQUIRED (exit 4) with one link to relay, and re-running completes it; --wait polls within a bound, --loopback uses a bounded PKCE browser redirect; the refresh token goes to the OS credential store",
+      },
+      {
+        id: "whoami",
+        leaves: [publicLeaf("whoami", "whoami", zero, 30)],
+        usage: "whoami [--host <url>] [--json]",
+        summary: "Show the local hosted session (host, issuer, subject from unverified claims, expiry, credential store, pending sign-in); never prints a token",
+      },
+      {
+        id: "logout",
+        leaves: [publicLeaf("logout", "logout", zero, 31)],
+        usage: "logout [--host <url>] [--json]",
+        summary: "Revoke the hosted refresh token, delete the local session, and cancel a pending sign-in (idempotent)",
+      },
+      {
+        id: "checkout",
+        leaves: [publicLeaf("checkout", "checkout", one, 32, DIR_SURFACE)],
+        usage: "checkout (<bundle-id> [--host <url>] [--dir <folder>] [--workspace <id>] | --release <folder>) [--json]",
+        summary:
+          "Mirror a hosted bundle into a new local folder you edit and then sync (sync sends your edits and brings in the host's): signs in if needed (AUTH_REQUIRED carries the link), the host defaults to your last sign-in, the binding stays in private state, and every command then runs on the folder; commands sync cannot send are refused there with 'do this in the app'; --release forgets a checkout and keeps its files",
       },
     ],
   },

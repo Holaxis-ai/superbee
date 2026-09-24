@@ -210,7 +210,9 @@ test("N4: only the identity and lock modules import node:fs, and the backend rea
     const specifiers = importSpecifiers(await parse(file));
     if (specifiers.some((specifier) => FS_SPECIFIERS.has(specifier))) fsImporters.push(file);
   }
-  assert.deepEqual(fsImporters, ["filesystem-identity.ts", "filesystem-lock.ts"]);
+  // The Node log store persists to its own private directory, never to a bundle path, so it is
+  // the one storage module beside the identity and lock modules that owns file I/O.
+  assert.deepEqual(fsImporters, ["file-journaled-backend.ts", "filesystem-identity.ts", "filesystem-lock.ts"]);
 
   const backend = importSpecifiers(await parse("backend.ts"));
   for (const banned of [...FS_SPECIFIERS, "node:crypto", "crypto", "./filesystem-lock.js"]) {
@@ -244,7 +246,9 @@ test("N4: only the lock module reads an ambient host input", async () => {
   // `hostname`, `userInfo`, or `networkInterfaces` would false-positive (none does today). It covers
   // imports only: `process.platform`, `process.getuid()`, `require("os")`, and a computed
   // dynamic specifier are outside it, and outside the sibling `process.env` guard as well.
-  assert.deepEqual(ambientImporters, ["filesystem-lock.ts"]);
+  // The push role compares a lock holder's recorded host with this one before it asks when the
+  // process now carrying the holder's id started (PID reuse), so it takes the host name too.
+  assert.deepEqual(ambientImporters, ["filesystem-lock.ts", "filesystem-push-role.ts"]);
   for (const file of ["backend.ts", "filesystem-identity.ts"]) {
     assert.deepEqual(ambientImports(await parse(file)), [], `${file} imports an ambient host input; identity keys must stay pure`);
   }

@@ -622,6 +622,15 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   },
   { leaf: "viewList", surface: "--dir", argv: (t) => ["view", "list", "--dir", t, "--json"] },
   {
+    // checkout's --dir is the folder a hosted checkout becomes; the guard runs before sign-in or any
+    // request. The benign control target is the fixture's own bundle, so the run passes the guard
+    // and stops at checkout's own folder check (not empty: ALREADY_EXISTS, exit 5).
+    leaf: "checkout",
+    surface: "--dir",
+    argv: (t) => ["checkout", "team.knowledge", "--host", "http://127.0.0.1:9", "--dir", t, "--json"],
+    controlExit: 5,
+  },
+  {
     // Sync never resolves a bundle through `resolveLocalBundleTarget`, so its run directory answers
     // to the relation at sync's own resolution point (orchestrate.ts, before retargeting or any git
     // probe). It used to exit 0 with `nothing to sync` — absence where the answer is the conflict.
@@ -638,6 +647,14 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     surface: "--dir",
     argv: (t) => ["session-start", "--dir", t, "--no-update-check"],
     expect: 0,
+  },
+  {
+    // turn-end is the Stop hook payload: it acts only in a hosted checkout, whose binding lives in
+    // private state and is found by folder path; a guarded root is never one, so it does nothing.
+    leaf: "turnEnd",
+    surface: "--dir",
+    argv: (t) => ["turn-end", "--dir", t],
+    expect: "no-refusal",
   },
   {
     // `home` is the session render: it consults the guard, reports `bundle.status: conflict` with the

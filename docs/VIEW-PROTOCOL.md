@@ -287,8 +287,8 @@ resolving the target, so a View running there should send `open-page` last.
 `{ bridge: "v1", type: "action.propose", requestId, action: { kind: "document.set-field", docId,
 field, value, expectedVersion } }` proposes changing one declared scalar field on one governed
 document. The whole message is at most 8 KiB; `field` at most 128 bytes; `value` a string of at
-most 4 KiB, a finite number or a boolean. Only the OSS web shell and the OSS MCP app, with a
-`bundle-propose` View and an actor, perform it: the shell re-reads the registry, exact entry
+most 4 KiB, a finite number or a boolean. An admitted host with a
+`bundle-propose` View and a trusted actor performs it: the shell re-reads the registry, exact entry
 version, target document and Kind, shows canonical before and after values outside the frame, and
 commits only after the human chooses Apply. The reply is `{ bridge: "v1", requestId, type: "action.result", result: { status,
 ... } }` with `status` one of `prepared`, `committed`, `unchanged`, `cancelled`, `conflict`,
@@ -296,9 +296,24 @@ commits only after the human chooses Apply. The reply is `{ bridge: "v1", reques
 service itself when a proposal reaches it, answers `{ bridge: "v1", id: requestId, type: "error",
 error: { code: "FORBIDDEN" } }`.
 
-Write shapes are not yet converged across hosts (OSS proposes scalar fields, hosted proposes body
-replacement, Portal proposes nothing). Until a human decision picks one, a View that must run
-everywhere treats writes as optional and feature-detects `grant`.
+The cross-host action contract is explicitly advertised by `hello.actionProtocol: "v1"`,
+`grant: "propose"`, and `actions`, a list of supported action kinds. Consumers require all three;
+neither `host.kind` nor `mode` grants write authority. Existing pinned OSS consumers may retain
+their legacy scalar negotiation, but a hosted adapter without this marker is not action-capable.
+The host advertises only admitted operations with trusted confirmation available. Hosting or
+installing a View does not itself enable writes. The MCP App remains scalar-only.
+
+`action-bridge.ts` owns message parsing; `action-preparation.ts` owns pure proposal policy and
+confirmation values, delegating candidate construction and validation to core. Local and hosted
+adapters must consume that source, not recreate its policy. A pinned generated copy carries exact
+source identity and a byte-agreement check until it can consume a released package. The shared
+conformance vectors run against each adapter's installed core. Hosts separately own authenticated
+identity or local actor selection, admission, confirmation lifetime, permission rechecks, and CAS.
+
+After dispatch, a lost acknowledgement is an unknown outcome, never cancellation or proof that
+nothing was written. A host may return `status: "failed", writeState: "unknown"`; consumers lock
+further proposals until authoritative recovery and never blindly replay. A successful receipt
+binds `action`, `docId`, `field`, `version`, `changed`, and `confirmed` to the actual result.
 
 ## Capability registry
 
@@ -343,7 +358,7 @@ what it observed so the declaration can be checked against behavior.
 | `render-document` | yes | yes | yes, pre-rendered from the snapshot | its `hello` says |
 | `open-page` | yes | yes, consumes the source launch | yes when the embedding client navigates | its `hello` says |
 | `subscribe-deltas` | yes | yes | no; `subscribe` is acknowledged, nothing is pushed | its `hello` says |
-| `grant: "propose"` | with `bundle-propose` and an actor | with `bundle-propose` and an actor | no | no |
+| `grant: "propose"` | with `bundle-propose` and an actor | with `bundle-propose` and an actor | no | its explicit action contract says |
 
 ## Errors
 
@@ -506,3 +521,42 @@ service over a fixture bundle and asserts every row.
 are compatible with every existing v0 View: new reply fields (`host`), new request types (`graph`,
 `host`) and new error semantics for requests that were never valid before. A change that alters an
 existing reply or request shape needs a new envelope value and a change here first.
+
+### Body proposals
+
+A host may advertise `document.set-body` through the explicit action contract above when the
+launch has admitted proposal access. A consumer requires that advertisement before offering body
+saves. The OSS directory host advertises it; the MCP App does not. Hosted activation additionally
+requires its own authenticated operation admission and qualified implementation.
+
+The new action uses the same v1 confirmation envelope with
+`{ kind: "document.set-body", docId, field: "body", value, expectedVersion }`.
+`value` is the complete replacement Markdown body, at most 64 KiB of UTF-8. The existing
+body must also fit that limit so the trusted confirmation can show all before/after text.
+Body envelopes allow up to 512 KiB of JSON to accommodate escaping; scalar and other v1
+messages retain their 8 KiB limit. The local action HTTP transport is bounded to 512 KiB.
+
+The host renders before/after text literally, never as executable markup. It uses the
+same named actor, launch, target-version, edition, Kind-version and one-use confirmation
+checks as scalar actions, and commits through core's strict document mutation service.
+Only the body is assigned; core owns normal metadata changes. Existing concept cross-links
+must remain present with their relation text; relationship changes use canonical link tools.
+No partial body, automatic merge or retry is implied. A cancellation is not a save;
+a missing or failed receipt requires inspection before a new proposal.
+
+### Atomic document updates
+
+A host implementing the shared action contract may additionally advertise `document.update`. It accepts the exact action
+shape `{kind:"document.update", docId, field:"document", value:{fields,body}, expectedVersion}`.
+`fields` contains one to eight distinct declared scalar fields, each within the existing
+scalar action bounds; aliases resolving to the same storage key are refused. Shell-managed
+and collection fields remain unavailable. `body` has the same 64 KiB UTF-8 limit and
+cross-link preservation rule as `document.set-body`.
+
+The trusted confirmation shows all requested fields and the full body before/after as
+literal JSON text. Field mapping uses canonical core operations. Kind validation and one
+expected-version mutation govern the entire update: cancellation, invalid input, conflict
+or revocation cannot leave only some fields committed. Existing View, Kind, edition, TTL,
+one-use confirmation and actor checks apply. MCP remains scalar-only. Hosted identities and
+permissions come from the trusted authenticated host, never from the View proposal. Protocol
+compatibility is not evidence that a particular hosted installation has been activated.

@@ -519,6 +519,40 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
     }
   }
 
+  test(`${name} journal contract: a journaled deletion records its delete intent, supersedes, and a failed CAS records nothing`, async () => {
+    await withFixture(create, async (backend) => {
+      const id = "journal/deleted";
+      const EMPTY = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+      const written = await backend.writeJournaled(id, doc(id, "v1"), { expectedVersion: null, intent: newIntent("req-w", id, STALE) });
+      const deletion = (requestId: string, base: Version): NewIntentRecord => ({ requestId, kind: "document.delete", target: id, base, baseContent: null, createdAt: TIMESTAMP });
+      // A stale CAS deletes nothing, supersedes nothing and records no intent.
+      await assert.rejects(backend.deleteJournaled(id, { expectedVersion: STALE, intent: deletion("req-stale", STALE), supersede: { requestId: "req-w", expectedState: "pending", expectedAttempts: 0 } }), (error: unknown) => error instanceof seam.VersionConflict);
+      assert.equal(await backend.readIntent("req-stale"), undefined);
+      assert.ok(await backend.readIntent("req-w"));
+      // A superseded intent that moved fails the whole deletion.
+      await assert.rejects(backend.deleteJournaled(id, { expectedVersion: written.version, intent: deletion("req-moved", STALE), supersede: { requestId: "req-w", expectedState: "pending", expectedAttempts: 1 } }), (error: unknown) => error instanceof seam.IntentStateConflict);
+      assert.equal((await backend.read(id)).version, written.version);
+      // Another kind or target is refused before anything happens.
+      await assert.rejects(backend.deleteJournaled(id, { expectedVersion: written.version, intent: { ...deletion("req-kind", STALE), kind: "document.write" } }), { name: "JournalSnapshotConflict" });
+      await assert.rejects(backend.deleteJournaled(id, { expectedVersion: written.version, intent: { ...deletion("req-target", STALE), target: "journal/other" } }), { name: "JournalSnapshotConflict" });
+      const result = await backend.deleteJournaled(id, { expectedVersion: written.version, intent: deletion("req-d", STALE), supersede: { requestId: "req-w", expectedState: "pending", expectedAttempts: 0 }, meta: [{ key: "deleted", value: true }] });
+      assert.equal(result.outcome, "deleted");
+      assert.ok(result.outcome !== "held" && result.intent);
+      assert.deepEqual(
+        [result.intent.kind, result.intent.base, result.intent.local, result.intent.content, result.intent.state, result.intent.attempts, result.intent.sequence],
+        ["document.delete", STALE, EMPTY, "", "pending", 0, 2],
+      );
+      assert.equal((await backend.readWithJournal(id)).document, null);
+      assert.deepEqual((await backend.listIntents("pending")).map((row) => row.requestId), ["req-d"], "the superseded write is gone");
+      assert.equal(await backend.readMeta("deleted"), true);
+      // Over an absent record the intent is still recorded (a resolution re-deleting); a taken identity is refused.
+      const absent = await backend.deleteJournaled(id, { intent: deletion("req-again", STALE) });
+      assert.equal(absent.outcome, "absent");
+      assert.equal(absent.outcome !== "held" && absent.intent?.sequence, 3);
+      await assert.rejects(backend.deleteJournaled(id, { intent: deletion("req-again", STALE) }), { name: "JournalSnapshotConflict" });
+    });
+  });
+
   test(`${name} journal contract: a journaled write records the document, its intent, and its meta rows together, and a failed document CAS records none of them`, async () => {
     await withFixture(create, async (backend) => {
       const id = "journal/atomic";

@@ -12,7 +12,7 @@
 import { getDoc, parseErrorEnvelope } from "./client.js";
 import type { Edge, EdgesResponse, Frontmatter } from "./types.js";
 import type { KindConvention } from "@superbee/core/kinds";
-import type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentSetFieldAction, SharingSummary, WorkspaceSummaryEntry } from "@superbee/ui-server";
+import type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentAction, SharingSummary, WorkspaceSummaryEntry } from "@superbee/ui-server";
 import { parseRegisteredPage, type BridgeCapability } from "../pages/registry.js";
 
 /** `/__ui/config` shape (server `configResponse`). `sharing`/`workspaces` are ui-server's plain data shapes (type-only import — no runtime dependency), CLI-injected in dir mode. */
@@ -225,7 +225,7 @@ async function postTrustedShell<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
-export function prepareTrustedAction(launchId: string, action: DocumentSetFieldAction): Promise<ActionPrepareResult> {
+export function prepareTrustedAction(launchId: string, action: DocumentAction): Promise<ActionPrepareResult> {
   return postTrustedShell("/__ui/actions/prepare", { launchId, action });
 }
 
@@ -253,4 +253,4 @@ export function sendViewBridge(launchId: string, request: unknown): Promise<View
   return postTrustedShell("/__ui/views/bridge", { launchId, request });
 }
 
-export type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentSetFieldAction, SharingSummary, WorkspaceSummaryEntry };
+export type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentAction, SharingSummary, WorkspaceSummaryEntry };

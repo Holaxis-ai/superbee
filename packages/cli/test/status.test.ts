@@ -179,6 +179,10 @@ test("status: a conventions-free freshly-initialized bundle is equally clean", a
     assert.equal(result.missing_expected_links, 0);
     assert.equal("link_type_violations_rows" in result, false);
     assert.equal("missing_expected_links_rows" in result, false);
+    // Where it lives leads the report: a local bundle has nothing to sync.
+    assert.deepEqual(Object.keys(result).slice(0, 2), ["home", "sync"]);
+    assert.equal(result.home, "local");
+    assert.equal(result.sync, "none (local only)");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -503,7 +507,9 @@ test("status BYTE-IDENTITY PIN: examples/sample-bundle (conventions-free), TOON 
   const toon = await runToon(["--dir", SAMPLE_BUNDLE]);
   assert.equal(
     toon,
-    "docs: 4\n" +
+    "home: local\n" +
+      "sync: none (local only)\n" +
+      "docs: 4\n" +
       "kinds: 0\n" +
       "malformed: 0\n" +
       "kind_warnings: 0\n" +
@@ -522,7 +528,7 @@ test("status BYTE-IDENTITY PIN: examples/sample-bundle (conventions-free), JSON 
   await status(["--dir", SAMPLE_BUNDLE, "--json"], { stdout: (s) => (raw += s) });
   assert.equal(
     raw,
-    '{"docs":4,"kinds":0,"malformed":0,"kind_warnings":0,"unresolved_links":0,"orphans":0,"stale":0,' +
+    '{"home":"local","sync":"none (local only)","docs":4,"kinds":0,"malformed":0,"kind_warnings":0,"unresolved_links":0,"orphans":0,"stale":0,' +
       '"no_timestamp":0,"registry_warnings":0,"link_type_violations":0,"missing_expected_links":0}\n',
   );
 });
@@ -534,7 +540,9 @@ test("status BYTE-IDENTITY PIN: a fresh conventions-free bundle (initBundle — 
     const toon = await runToon(["--dir", dir]);
     assert.equal(
       toon,
-      "docs: 0\n" +
+      "home: local\n" +
+        "sync: none (local only)\n" +
+        "docs: 0\n" +
         "kinds: 0\n" +
         "malformed: 0\n" +
         "kind_warnings: 0\n" +
@@ -551,7 +559,7 @@ test("status BYTE-IDENTITY PIN: a fresh conventions-free bundle (initBundle — 
     await status(["--dir", dir, "--json"], { stdout: (s) => (raw += s) });
     assert.equal(
       raw,
-      '{"docs":0,"kinds":0,"malformed":0,"kind_warnings":0,"unresolved_links":0,"orphans":0,"stale":0,' +
+      '{"home":"local","sync":"none (local only)","docs":0,"kinds":0,"malformed":0,"kind_warnings":0,"unresolved_links":0,"orphans":0,"stale":0,' +
         '"no_timestamp":0,"registry_warnings":0,"link_type_violations":0,"missing_expected_links":0}\n',
     );
   } finally {
@@ -1582,7 +1590,8 @@ test("status: TOON (agent-facing default, no --json) renders the summary keys", 
 test("--remote: status against a served bundle is identical to the same bundle read locally", async () => {
   const { dir, cleanup } = await makeFixtureBundle();
   try {
-    const local = await runJson(["--dir", dir]);
+    // A served bundle has no home of its own; the rest of the report must be identical.
+    const { home: _home, sync: _sync, ...local } = await runJson(["--dir", dir]);
     const handle: ServerHandle = await serve({ bundle: { root: dir } as Bundle, port: 0 });
     try {
       const url = `http://${handle.host}:${handle.port}`;

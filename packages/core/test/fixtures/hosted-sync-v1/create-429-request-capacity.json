@@ -1,0 +1,25 @@
+{
+  "name": "create-429-request-capacity",
+  "description": "A create the bundle's sync capacity refuses before dispatch (after earlier creates used the bound).",
+  "route": "/sync/v1/create",
+  "rows": [
+    "429 request_capacity"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-100000000009",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"n/9\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"new\"}"
+  },
+  "response": {
+    "status": 429,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"request_capacity\",\"scope\":\"bundle\",\"message\":\"This bundle's sync capacity is used up. Nothing was written.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

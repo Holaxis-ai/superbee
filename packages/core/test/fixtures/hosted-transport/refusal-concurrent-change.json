@@ -1,0 +1,17 @@
+{
+  "name": "refusal-concurrent-change",
+  "description": "The bundle moved since the first page pinned it: the next page is refused, and the reader starts again from the first page.",
+  "rows": ["refusal 409 concurrent_change"],
+  "route": "/reader/heads",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\",\"cursor\":\"e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14.bm90ZXMvYmV0YQ\"}"
+  },
+  "response": {
+    "status": 409,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"error\":{\"code\":\"concurrent_change\",\"message\":\"The bundle changed since the first page. Start again from the first page.\",\"retryable\":true}}",
+    "truncated": false
+  }
+}

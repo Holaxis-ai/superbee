@@ -31,6 +31,7 @@ import {
   pageLaunchAuthorizationSubject,
   saveTransientView,
   type ActionTerminalResult,
+  parseDocumentSetFieldAction,
   type DocumentSetFieldAction,
   type PageLaunch,
   type RegisteredPageLaunch,
@@ -1481,10 +1482,12 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
           content: [{ type: "text", text: "The active View is unknown or expired." }],
         };
       }
-      const result = await runtime.actions.prepare(
-        launchId,
-        input.action as DocumentSetFieldAction,
-      );
+      let action: DocumentSetFieldAction;
+      try { action = parseDocumentSetFieldAction(input.action); }
+      catch {
+        return { content: [{ type: "text", text: "This host accepts scalar View actions only." }], structuredContent: { result: { status: "rejected", action: "document.set-field", message: "this host accepts scalar View actions only" } } };
+      }
+      const result = await runtime.actions.prepare(launchId, action);
       return {
         content: [
           {

@@ -1,5 +1,5 @@
 import { promises as fs, realpathSync } from "node:fs";
-import type { Stats } from "node:fs";
+import type { BigIntStats, Stats } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
 import path from "node:path";
@@ -448,8 +448,14 @@ async function claimLockPath(
       continue;
     }
 
-    // The claim is ours now. Owner initialization and rollback failures are not claim
-    // contention, even when the host reports a contention-shaped error, and must propagate unchanged.
+    // The directory this claim made, to recognize it later even if the owner record never lands.
+    const claimed = await fs.lstat(lockPath, { bigint: true }).catch(() => null);
+
+    // The claim is ours now, unless this claimer was suspended long enough for the owner-less
+    // directory to be removed as orphaned and claimed again. Owner initialization and rollback
+    // failures are not claim contention, even when the host reports a contention-shaped error, and
+    // must propagate unchanged. A lost claim is contention: a record this claim never wrote
+    // (EEXIST), or no directory to write into (ENOENT, ENOTDIR).
     try {
       await fs.writeFile(path.join(lockPath, OWNER_FILE), `${JSON.stringify(owner)}\n`, {
         encoding: "utf8",
@@ -457,7 +463,13 @@ async function claimLockPath(
         mode: 0o600,
       });
     } catch (err) {
-      await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {});
+      const code = (err as NodeJS.ErrnoException).code;
+      // `wx` fails with EEXIST only when another claimer's owner.json was already there, possibly
+      // opened but not yet written. The directory is that claimer's now: never roll it back.
+      // A lost claim re-enters the loop, whose next `mkdir` either claims or reaches the timeout check.
+      if (code === "EEXIST") continue;
+      await rollBackOwnClaim(lockPath, owner, claimed, waitMs, pollMs, policy).catch(() => {});
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
       throw err;
     }
 
@@ -483,6 +495,44 @@ async function claimLockPath(
       });
     };
   }
+}
+
+/**
+ * Undo a claim whose owner record could not be written, removing the lock directory only when it
+ * is provably this claim's: a compare-and-release. The directory is this claim's when it carries
+ * this claim's owner record, or when it carries no record and is still the very directory this
+ * claim made (same device, inode and birth time). Any other record is another process's lock, and
+ * a directory that is not the one this claim made may be another claim in progress; both are left
+ * alone. So is a record this process still cannot read once the wait budget is spent (a transient
+ * read failure is polled out first), and a host that reports no birth time (Linux on NFS, say), where the
+ * directory cannot be told from a successor that reused its inode: an owner-less lock left behind
+ * is reported as orphaned once the claim grace passes, while a deleted live lock breaks exclusion.
+ */
+async function rollBackOwnClaim(
+  lockPath: string,
+  owner: FilesystemMutationLockOwner,
+  claimed: BigIntStats | null,
+  waitMs: number,
+  pollMs: number,
+  policy: FilesystemHostPolicy,
+): Promise<void> {
+  const started = Date.now();
+  const record = await resolveOwnerRecord(lockPath, started, waitMs, pollMs);
+  if (record.state === "record") {
+    if (record.owner.token === owner.token) await removeReleasedLock(lockPath, owner, started, waitMs, pollMs, policy);
+    return;
+  }
+  if (record.state === "unreadable" || !(await isClaimedDirectory(lockPath, claimed))) return;
+  // Move exactly the verified directory aside, under a name only this claim can produce, then remove it.
+  const remnant = releasedLockRemnantPath(lockPath, owner);
+  await fs.rename(lockPath, remnant);
+  await fs.rm(remnant, { recursive: true, force: true });
+}
+
+async function isClaimedDirectory(lockPath: string, claimed: BigIntStats | null): Promise<boolean> {
+  if (claimed === null || claimed.birthtimeNs <= 0n) return false;
+  const current = await fs.lstat(lockPath, { bigint: true }).catch(() => null);
+  return current !== null && current.isDirectory() && current.dev === claimed.dev && current.ino === claimed.ino && current.birthtimeNs === claimed.birthtimeNs;
 }
 
 function changedOwnerRefusal(lockPath: string, current: FilesystemMutationLockOwner | null): FilesystemMutationLockError {
@@ -700,5 +750,18 @@ export async function withFilesystemMutationLock<T>(
     return await fn();
   } finally {
     await release();
+  }
+}
+
+/**
+ * How long ago a lock directory last changed (its owner record written or removed), or null when
+ * it is gone. Lets a caller tell a claim or release in progress from an orphaned lock.
+ */
+export async function filesystemLockAgeMs(lockPath: string): Promise<number | null> {
+  try {
+    const info = await fs.stat(lockPath);
+    return Math.max(0, Date.now() - info.mtimeMs);
+  } catch {
+    return null;
   }
 }

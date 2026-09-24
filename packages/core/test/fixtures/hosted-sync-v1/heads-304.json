@@ -1,0 +1,24 @@
+{
+  "name": "heads-304",
+  "description": "The heads listing unchanged since the digest sent.",
+  "route": "/sync/v1/heads",
+  "rows": [
+    "heads 304"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"ifNoneMatch\":\"sha256:92bd771dd86f71d602cca33d4d133788360101e583d68445187bf56a81899689\"}"
+  },
+  "response": {
+    "status": 304,
+    "headers": {
+      "etag": "\"sha256:92bd771dd86f71d602cca33d4d133788360101e583d68445187bf56a81899689\"",
+      "x-superbee-root-version": "sha256:7cc1f9e472341f8bdf54f668a9ab98655055e36a9ad41f8bfcc8d5977aaa59d0"
+    },
+    "body": "",
+    "truncated": false
+  }
+}

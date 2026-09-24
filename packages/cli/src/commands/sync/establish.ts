@@ -20,6 +20,8 @@ import {
   ESTABLISH_MARKER_KEY,
   assertBundleBytesMatchCommit,
   bundleDirNameForProject,
+  linkedWorktree,
+  linkedWorktreeGuidance,
   boardNamespaceConflicts,
   clearGitDirMarker,
   currentHead,
@@ -332,12 +334,29 @@ function resumeProvisionedEstablishment(top: string, st: GreenfieldState, remote
 }
 
 /**
+ * Boards are unsupported inside a linked git worktree. Establishment publishes `board` and then
+ * provisions its checkout here, so refuse BEFORE anything is pushed or converted. A checkout
+ * already provisioned here keeps working.
+ */
+function assertNotLinkedWorktree(top: string, inv: CommandPrefix): void {
+  if (isProvisioned(top)) return;
+  const linked = linkedWorktree(top);
+  if (!linked) return;
+  const guidance = linkedWorktreeGuidance(linked, bundleDirNameForProject(top), inv);
+  throw new CliError("CONFLICT", `${guidance.message}; nothing was published or moved`, {
+    details: linked.main ? { main_checkout: linked.main } : {},
+    help: guidance.help,
+  });
+}
+
+/**
  * Explicit publication of a local-only board, including a legacy branch that has not yet been
  * materialized at the conventional path. Bare sync and SessionStart never take this path.
  */
 async function publishLocalBoardBranch(
   top: string, boardPath: string, inv: CommandPrefix, mode: OutputMode, stdout: (s: string) => void, deps: Partial<SyncCliDeps>,
 ): Promise<EstablishOutcome> {
+  assertNotLinkedWorktree(top, inv);
   if (!isProvisioned(top)) {
     const provisioned = provisionBoardWorktree(top);
     if (provisioned.kind !== "provisioned" && provisioned.kind !== "already") {
@@ -446,6 +465,7 @@ export async function establishBoard(
   if (runGit(top, ["remote", "get-url", BOARD_REMOTE]).status !== 0) {
     throw syncOutcomeError("establish.origin-unconfigured", { inv });
   }
+  assertNotLinkedWorktree(top, inv);
 
   // The COMMITTED-FOLDER case routes structurally, before any network op: a selected conventional
   // tree committed at HEAD means the greenfield safety model (rename + convert the folder) must

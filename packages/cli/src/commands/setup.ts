@@ -26,6 +26,7 @@ import {
   type SetupWorkspaceState,
 } from "../setup-plan.js";
 import { inspectHookStatus, type HookStatusInspection } from "./hook.js";
+import { setupHosted } from "./setup-hosted.js";
 import { inspectSkillStatus, type SkillStatusInspection } from "./skill.js";
 import {
   hardenUserState,
@@ -47,6 +48,7 @@ Usage:
   superbee setup migrate-state [--json]
   superbee setup harden-state [--json]
   superbee setup quarantine-state [--json]
+  superbee setup hosted [--url <hosted-url>] [--workspace <id>] [--json]
 
 Setup is an agent-driven workflow. The calling agent selects its exact host, executes the returned
 next action, reports what it is doing, requests approval when \`approval.required\` is true, and
@@ -68,6 +70,9 @@ A catalog entry preserves a workspace for explicit MCP selection; it never selec
 as the current project's context. Do not read, write, orient from, or sync a cataloged workspace
 unless the current checkout resolves to it or the user explicitly selects it. If this checkout has
 no bundle, setup reports that state without borrowing one from another project.
+
+\`setup hosted\` signs in to hosted Superbee and records the default hosted workspace in one step:
+relay the AUTH_REQUIRED link it returns to the person, then re-run it (see setup hosted --help).
 
 Options:
   --host <id>           Exact host: codex, claude-code, claude-desktop, or opencode
@@ -171,11 +176,18 @@ export async function inspectSetupBoard(startDir: string): Promise<ChannelDetect
 async function inspectWorkspace(deps: SetupDeps): Promise<SetupWorkspaceState> {
   let selected: LocalBundleTarget | undefined;
   let bundle: SetupWorkspaceState["bundle"] = "absent";
+  let recovery: string | undefined;
   try {
     selected = await deps.resolveBundle(deps.cwd());
     bundle = "selected";
   } catch (error) {
     bundle = error instanceof CliError && error.code === "NOT_FOUND" ? "absent" : "unreadable";
+    // A bound path that must change before any bundle can be created or provisioned there is
+    // blocked, not absent: board detection would otherwise recommend a sync that cannot succeed.
+    if (error instanceof CliError && (bundle === "unreadable" || error.details?.binding_target_blocked !== undefined)) {
+      bundle = "unreadable";
+      if (error.help) recovery = error.help;
+    }
   }
   let board: ChannelDetection | undefined;
   if (bundle === "absent") {
@@ -191,13 +203,14 @@ async function inspectWorkspace(deps: SetupDeps): Promise<SetupWorkspaceState> {
     const available = entries.filter((entry) => entry.available);
     return {
       bundle,
+      ...(recovery ? { recovery } : {}),
       ...(board ? { board } : {}),
       catalog: available.length > 0 ? "ready" : "empty",
       selected_registered: selected !== undefined
         && available.some((entry) => samePhysicalPath(entry.locator.path, selected!.canonicalRoot)),
     };
   } catch {
-    return { bundle, ...(board ? { board } : {}), catalog: "unreadable", selected_registered: false };
+    return { bundle, ...(recovery ? { recovery } : {}), ...(board ? { board } : {}), catalog: "unreadable", selected_registered: false };
   }
 }
 
@@ -251,6 +264,11 @@ async function inspectAll(
 
 export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): Promise<void> {
   const stdout = injected.stdout ?? ((text: string) => void process.stdout.write(text));
+  // The one setup leaf that signs in: its own flags (a hosted URL, not an agent host id).
+  if (argv[0] === "hosted") {
+    await setupHosted(argv.slice(1), { stdout });
+    return;
+  }
   const parsed = parseSelectorOrUsage(
     () => parseArgs({
       args: argv,

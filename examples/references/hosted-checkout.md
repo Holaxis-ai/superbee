@@ -1,0 +1,135 @@
+# Working in a hosted checkout
+
+Read this when you work in a folder made by `superbee checkout`, or when `superbee sync` reports a
+conflict there. The hosted bundle is the authority. The folder is a working copy. `superbee sync`
+applies changes directly under the signed-in person's own access, and nobody has to approve them.
+
+## Sign-in: relay the link, then retry
+
+Hosted commands start sign-in by themselves. When a command returns `AUTH_REQUIRED` (exit 4):
+
+1. Give the person `details.sign_in_url` and `details.user_code` exactly as returned.
+2. Wait until they say they have confirmed.
+3. Run the same command again (`details.resume`). It finishes sign-in and continues.
+
+Never ask for a password, token or code the person did not see in their browser.
+`superbee setup hosted` signs in and records the default hosted workspace in one step. If the
+receipt says `choose_workspace`, ask the person which workspace to use, then run the command it
+lists for that workspace.
+
+## Sync at the end of a batch of edits
+
+Edit files as usual, then run `superbee sync` once when a batch of related edits is done, not after
+every file. Sync always pulls before it sends. Its receipt has one row per document:
+`committed`, `conflict`, `held`, `refused`, `unknown` or `paused`. It exits 0 only when every row is
+committed.
+
+Reads keep the folder current on their own:
+- `list`, `doc read`, `status`, `home`, `link show` and `view list` pull first when the last pull
+  is more than five minutes old. They wait at most two seconds and never send anything.
+- These pulls never start a sign-in. When you are signed out, they print a note on stderr and skip
+  the pull. Run `superbee sync`, which returns the sign-in link to relay.
+- When the last pull is more than thirty minutes old, they print a warning on stderr. Run sync
+  then.
+- `SUPERBEE_NO_AUTOPULL=<any value>` turns these pulls off.
+
+## Conflicts: inspect, then keep, take or revise
+
+Changes to different documents merge automatically. Any concurrent change to the same document,
+even to different frontmatter keys, comes back as a `conflict` row, and nothing is sent for that
+document until you resolve it:
+
+```sh
+superbee sync --inspect --doc <id>            # base, your version, the host's version
+superbee sync --resolve take --doc <id>       # use the host's version
+superbee sync --resolve keep --doc <id>       # send yours over the inspected host version
+superbee sync --resolve revise --doc <id>     # edit the file to the combined result first, then send it
+superbee sync                                 # sends what keep or revise decided
+```
+
+- `--resolve` only records the decision in the checkout. It never sends anything: its receipt
+  says `sent: false`, and after `keep` or `revise` its `next` and `help` name the `superbee sync`
+  that sends it. `take` has nothing to send.
+- `keep` or `revise` again before that sync answers `already_resolved: true` ("waiting to send");
+  the first decision stands. `take` after an unsent `keep` or `revise` replaces it (`replaces`),
+  and nothing is sent. When the change may already have been sent, `take` is refused
+  (`resolution_not_replaceable`): run `superbee sync`, then resolve any conflict it reports.
+
+- `keep` and `revise` need an `--inspect` first (`not_inspected` otherwise). If the host changes
+  after the inspection, they refuse with `stale_review`: inspect again, and decide again.
+- `--inspect <id>` is an alias of `--inspect --doc <id>`.
+- `keep` refuses a file edited since the conflict (`file_edited`). Use `revise` to send the file as
+  it is now.
+- To discard your edits with `take`, remove the file first if the command says it would discard
+  them.
+- If you cannot tell which version is right, ask the person. Do not merge by guessing.
+
+## Deleting documents
+
+Deleting a file (or running `superbee doc delete`) sends a delete of the version you had at the
+next sync. The host keeps the document's history.
+
+Deleting many files at once is held instead. The rule: when the deletes of the last day are more
+than half the checkout and at least 3, the new ones are not sent. The same rule is applied to the
+documents this checkout did not create itself, so documents it added earlier never dilute the
+count. The sync receipt then carries `deletions_held`, which names the held documents. The hold
+stays in place across syncs until the person decides. Accepting it is the person's step, never
+yours:
+
+1. Name the held documents to the person, and ask whether they should be removed from the bundle.
+2. If they want them removed, give them `deletions_held.confirmation_required.command_for_person`
+   (`superbee sync --accept-deletes <count>:<digest>`) to run in their own terminal. It lists the
+   documents and asks them to type the count. The token covers exactly that set; if the set
+   changes, nothing is accepted.
+3. Do not run it yourself. In a shell without a terminal it is refused with `FORBIDDEN`
+   `needs_person_at_terminal` (exit 2), and nothing is accepted. Do not retry it or work around it.
+   The check keeps the person in the loop; it is not a security boundary. A pseudo-terminal
+   (`script`, `expect`), typing into their terminal (`tmux send-keys`) or importing the CLI with
+   another terminal would get past it, and each of those is a violation of this rule.
+4. Otherwise run `superbee sync --restore-deletes`, which puts the files back. `--resolve take --doc
+   <id>` restores a single file. Both work from your shell.
+
+If the host deleted a document you edited, `--resolve keep` re-creates it, after an `--inspect`
+that shows the deletion. If you deleted a document the host changed, `keep` deletes the host's
+version (after `--inspect`), and `take` brings it back.
+
+When the host no longer lists most of the documents the folder holds (8 or more, and more than
+half, or all of them), the pull removes none of them and the receipt carries
+`pulled.refused_deletions`: a bundle emptied or replaced by mistake looks the same. Tell the person.
+Once they confirm, in the Superbee app, that the bundle really shrank, run its `take` command
+(`superbee sync --take-host-deletions <count>:<digest>`). It removes the files of exactly that set
+and keeps any file you edited. Nothing is sent to the host.
+
+A host document whose id cannot be a file in the folder (a path-like id such as `a/../b`) is held
+with a `held` row, reason `unsafe_id`, and the rest of the bundle syncs. A host document whose id
+differs only in letter case from another is held as `case_collision`. Both are renamed in the
+Superbee app, by the person.
+
+## Refusals that belong to the person
+
+Some commands are refused in a hosted checkout with "do this in the Superbee app". Examples:
+editing Kinds or recipes, artifacts, and `doc verify`. Tell the person what to do in the app. Do
+not work around a refusal by editing files, using another command, or copying the bundle
+somewhere else.
+
+`checkout` adds the folder to the workspace catalog, where `catalog list` shows it with
+`home: hosted`. The local MCP app (`superbee mcp`) can read it by that label, but refuses every
+write there with the same "do this in the Superbee app": Views and documents written through it
+could not sync.
+
+`sync_busy` means another command is working, or is just taking or releasing the lock: wait,
+then retry, and never remove that lock. Only `lock_orphaned` means the lock's holder is gone:
+confirm that no superbee command is still running, then remove the lock named in the help.
+
+## Session hooks (opt-in)
+
+- `superbee hook install` installs the SessionStart hook. In a hosted checkout, it pulls from the
+  host at the start of each session.
+- `superbee hook install --turn-end-sync` also installs a Stop hook for Claude Code and Codex. It
+  syncs the checkout when each turn ends, and skips the network when nothing changed and the last
+  pull is recent. If that sync finds a conflict, a held file or a sign-in link, the hook hands it
+  back to you before the turn ends: handle it as above. It reports each condition once; the same
+  unresolved condition is not reported on later turns, so check `superbee sync` yourself.
+- Offer the Stop hook, but install it only when the person agrees.
+  `superbee hook uninstall --turn-end-sync` removes it, and `SUPERBEE_NO_TURN_SYNC=<any value>`
+  turns it off for a shell.

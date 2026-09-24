@@ -86,6 +86,11 @@ asks to see it, invoke `show_document` or `show_view` in an MCP Apps host; other
 `superbee doc open <id>`.
 When the tone fits, a single 🐝 may mark a successful Superbee outcome.
 
+## Hosted checkouts
+
+- In a folder made by `superbee checkout` the host is the authority. On `AUTH_REQUIRED` (exit 4), relay `details.sign_in_url` to the person, then re-run the same command; `superbee setup hosted` signs in and picks the default workspace in one step.
+- Run `superbee sync` once at the end of a batch of edits. Any concurrent change to one document, even to different frontmatter keys, is a conflict: read `$REFS/hosted-checkout.md`, then `sync --inspect --doc <id>` and `--resolve keep|take|revise --doc <id>`. `--resolve` records a decision and never sends: run `superbee sync` after keep or revise. Deleted files sync as deletes; when sync reports `deletions_held`, never accept it yourself: name the documents and ask the person to run its `--accept-deletes` command in their own terminal (it asks them to type the count, and refuses your shell), else run `--restore-deletes`. A refusal that says to do something in the Superbee app is for the person: tell them, and never work around it.
+
 ## Host setup
 
 Persistent integrations require `npm install -g superbee` followed by `superbee setup`.

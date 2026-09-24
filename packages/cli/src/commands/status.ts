@@ -49,7 +49,7 @@ import {
   VIEW_ENTRY_PREFIX,
 } from "@superbee/core/page";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
-import { maybeAutoPull } from "../autopull.js";
+import { hostedCheckoutAt, maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -64,6 +64,10 @@ import {
 } from "../legacy-page.js";
 import { cliInvocation } from "../invocation.js";
 import { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE } from "../bundle-name.js";
+import { homedir } from "node:os";
+import { realpath } from "node:fs/promises";
+import { bundleHomeAt, gitBoardSyncBlock } from "../bundle-home.js";
+import { commandFragment, commandToken } from "../command-text.js";
 
 export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
 
@@ -182,6 +186,32 @@ Category semantics (one line each):
                       prefixes — those LOCATIONS remain recognized; relocation is a separate
                       open decision. Omitted when the bundle carries none of the above.
 
+The report leads with the bundle's 'home' (local, git or hosted) and a 'sync' block for it, read
+from local state only: no request, no fetch, and no automatic pull for a hosted checkout. A local
+bundle reports 'sync: none (local only)'.
+
+For a Git board, the 'sync' block reads local Git (what the last fetch saw, never a new fetch):
+  channel            branch (the provisioned 'board' worktree) | in-tree (committed with the code)
+  branch, upstream   The checked-out branch and its tracking ref (null when there is none)
+  state              clean | unsent_changes | behind | diverged | not_shared (no upstream yet)
+  ahead              Board commits not yet pushed (null without an upstream)
+  behind             Upstream board commits not yet pulled, as of the last fetch
+  uncommitted        Changed files not yet committed to the board
+  last_fetch         When this clone last fetched (null when it never has)
+
+In a hosted checkout (a folder made by 'checkout'), the 'sync' block reads:
+  state              clean | unsent_changes | needs_decision (a conflict or a held item) | busy
+                      (another command, such as a running sync, holds the checkout)
+  unsent             Documents with a change the next sync would send (edited, new or deleted
+                      files, and changes recorded but not yet sent); 'unsent_ids' lists the first 5.
+  conflicts          Documents changed both here and on the host; 'conflict_ids' lists the first 5.
+                      Inspect one with 'sync --inspect --doc <id>'.
+  held_files         Files sync cannot send as they stand ('held_rows' names id and reason).
+  held_deletions     Deleted files held as a mass delete; the next sync names the release token.
+  last_pull          When the last pull completed (null when none has); 'since_pull' is its age.
+  stale              True once the last pull is over 30 minutes old, or when there is none.
+A 'help' list names 'sync' when there is something to send, resolve or pull.
+
 This is a whole-bundle read (one registry load + one query + one root-index read + two
 prefix-scoped blob listings, batched) — acceptable for an explicitly batch-analysis command;
 over --remote it remains a bounded set of requests, not a per-doc round trip.
@@ -202,6 +232,10 @@ export interface StatusCliDeps {
   stdout: (s: string) => void;
   /** The opportunistic board-freshness trigger (default {@link maybeAutoPull} — autopull.ts). */
   autoPull: (dir?: string) => Promise<unknown>;
+  /** The home whose private state holds hosted checkout bindings (default: the OS home). */
+  home: string;
+  /** The clock the hosted checkout's staleness is judged by (default: now). */
+  now: () => Date;
 }
 
 /** AXI list-cap default: 20 rows per finding category unless `--limit` overrides it (0 = unlimited). */
@@ -329,8 +363,16 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   }
 
   const remote = await resolveRemoteFlag(values.remote, values.dir);
+  // A hosted checkout reports its sync state from local state only: no automatic pull, so the
+  // report never waits on the network and its staleness is the checkout's own.
+  const home = deps.home ?? homedir();
+  const hosted = remote ? null : await hostedCheckoutAt(values.dir, home).catch(() => null);
   // Opportunistic board freshness (autopull.ts): silent, fail-soft, detection-gated — see list.ts.
-  if (!remote) await (deps.autoPull ?? maybeAutoPull)(values.dir);
+  if (!remote && !hosted) await (deps.autoPull ?? maybeAutoPull)(values.dir);
+  // Loaded only in a hosted checkout, so an ordinary status never loads the sync engine.
+  const hostedReport = hosted
+    ? await (await import("../hosted/status.js")).hostedStatus(hosted, home, (deps.now ?? (() => new Date()))())
+    : null;
   const bundle = await openBundle(values.dir, remote);
 
   // ONE registry load, ONE query — every finding below derives from these two results in memory.
@@ -792,5 +834,30 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     out.legacy_naming = legacy;
   }
 
-  stdout(render(out, resolveMode(values)));
+  if (hostedReport) {
+    const record: Record<string, unknown> = { home: "hosted", sync: hostedReport.sync, ...out };
+    if (hostedReport.help.length > 0) record.help = hostedReport.help;
+    stdout(render(record, resolveMode(values)));
+    return;
+  }
+  if (remote) {
+    stdout(render(out, resolveMode(values)));
+    return;
+  }
+  // Where this bundle lives, and for a Git board what the next sync would move: local Git only, no fetch.
+  const facts = await bundleHomeAt(await realpath(bundle.root), { home });
+  if (facts.home === "git") {
+    const block = await gitBoardSyncBlock(facts.board);
+    const record: Record<string, unknown> = { home: "git", sync: block, ...out };
+    if (block.state !== "clean") {
+      record.help = [
+        values.dir === undefined
+          ? `${cliInvocation()} sync`
+          : commandFragment`${cliInvocation()} sync --dir ${commandToken(values.dir)}`,
+      ];
+    }
+    stdout(render(record, resolveMode(values)));
+    return;
+  }
+  stdout(render({ home: "local", sync: "none (local only)", ...out }, resolveMode(values)));
 }

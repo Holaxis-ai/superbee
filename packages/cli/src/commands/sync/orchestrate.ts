@@ -74,6 +74,8 @@ import {
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
 import {
+  boundBoardWorktreeError,
+  emptyDirectory,
   ownConventionalBoardRoot,
   resolveLocalBundleRoute,
   resolveProjectBinding,
@@ -377,12 +379,24 @@ function requestsShowIncomingStdoutByteChannel(argv: string[]): boolean {
   return false;
 }
 
-/** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
-async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
-  const { values } = parseLeafOrUsage(
+/**
+ * `--inspect` names its document with `--doc <id>`, like `--resolve`; `--inspect <id>` is kept
+ * as an alias. A bare `--inspect` (last, or followed by another flag) is read as an empty value,
+ * which the hosted parse replaces with `--doc`.
+ */
+function bareInspect(argv: string[]): string[] {
+  return argv.map((token, index) => (token === "--inspect" && (index + 1 === argv.length || argv[index + 1]!.startsWith("-")) ? "--inspect=" : token));
+}
+
+/**
+ * The one parse of `sync` argv, for both kinds of target: a Git board (below) and a hosted
+ * checkout (`../../hosted/sync.ts`, which owns `--inspect`, `--resolve` and `--doc`).
+ */
+export function parseSyncArgs(argv: string[]) {
+  return parseLeafOrUsage(
     () =>
       parseArgs({
-        args: argv,
+        args: bareInspect(argv),
         options: {
           "pull-only": { type: "boolean" },
           establish: { type: "boolean" },
@@ -395,12 +409,28 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
           limit: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
+          inspect: { type: "string" },
+          resolve: { type: "string" },
+          doc: { type: "string" },
+          "accept-deletes": { type: "string" },
+          "restore-deletes": { type: "boolean" },
+          "take-host-deletions": { type: "string" },
         },
         allowPositionals: true,
       }),
     CLI_LEAVES.sync,
   );
+}
+
+/** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
+async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
+  const { values } = parseSyncArgs(argv);
   if (values.help) return { kind: "help" };
+  if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined || values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined) {
+    throw new CliError("USAGE", "--inspect, --resolve, --doc, --accept-deletes, --restore-deletes and --take-host-deletions apply to a hosted checkout; this folder is not one", {
+      help: `for a Git board, see incoming changes with: ${inv} sync --show-incoming <id>`,
+    });
+  }
 
   // `--migrate` is a RETIRED spelling: `--establish` subsumed the committed-folder case. The flag
   // stays recognized so old muscle memory gets a pointer instead of a generic unknown-option error.
@@ -512,7 +542,16 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
     const binding = await resolveProjectBinding(process.cwd());
     if (binding) {
       ownBoardRoot = (await ownConventionalBoardRoot(binding)) ?? undefined;
-      if (ownBoardRoot === undefined || existsSync(binding.target)) {
+      // A linked worktree cannot provision the repository's one board checkout a second time, and
+      // a board registered to a missing worktree must be pruned first; give the resolver's recovery
+      // instead of a provisioning attempt that can only fail.
+      if (ownBoardRoot !== undefined) {
+        const blocked = await boundBoardWorktreeError(binding);
+        if (blocked) throw blocked;
+      }
+      // An absent or empty own board path is exactly what provisioning fills; the resolver refuses
+      // to open it (its recovery is this very sync), so only an occupied path routes through it.
+      if (ownBoardRoot === undefined || (existsSync(binding.target) && !(await emptyDirectory(binding.target)))) {
         route = await resolveLocalBundleRoute(undefined);
       }
       if (ownBoardRoot !== undefined && route?.kind === "bound-local") route = undefined;

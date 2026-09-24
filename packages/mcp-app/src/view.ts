@@ -986,6 +986,10 @@ window.addEventListener("message", (event) => {
       return;
     }
     if (actionMessage.message.type === "action.propose") {
+      if (actionMessage.message.action.kind !== "document.set-field") {
+        postActiveActionResult(payload.launch.launchId, frameEpoch, actionMessage.message.requestId, { status: "rejected", action: actionMessage.message.action.kind, message: "this host supports scalar actions only" });
+        return;
+      }
       void prepareActiveAction(
         payload.launch.launchId,
         frameEpoch,

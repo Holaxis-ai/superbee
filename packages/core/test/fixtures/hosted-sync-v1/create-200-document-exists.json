@@ -1,0 +1,26 @@
+{
+  "name": "create-200-document-exists",
+  "description": "A create of a present document.",
+  "route": "/sync/v1/create",
+  "rows": [
+    "200 document_exists"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000002",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"dup\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000002"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"document_exists\",\"message\":\"The document already exists; read it before making changes.\",\"retryable\":false,\"writeState\":\"not_applied\",\"currentVersion\":\"sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4\"}}",
+    "truncated": false
+  }
+}
