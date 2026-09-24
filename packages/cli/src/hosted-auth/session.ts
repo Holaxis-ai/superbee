@@ -328,7 +328,15 @@ async function namesSessionLock(lockPath: string, sessionDir: string): Promise<b
 /** Why the session lock could not be taken: busy while its holder may still finish, else orphaned. */
 async function sessionLockFailure(error: FilesystemMutationLockError, target: HostedTarget): Promise<CliError> {
   const changed = await stat(error.lockPath).then((info) => info.mtimeMs, () => null);
-  if (changed !== null && Date.now() - changed >= (error.malformed ? SESSION_LOCK_CLAIM_GRACE_MS : SESSION_LOCK_ORPHAN_MS)) {
+  const now = Date.now();
+  const orphaned =
+    changed !== null &&
+    (error.malformed
+      ? now - changed >= SESSION_LOCK_CLAIM_GRACE_MS
+      : // A directory's mtime can be old while its holder is live (a restored or skewed filesystem),
+        // so the holder's own claim time must agree before a person is told to remove the lock.
+        now - changed >= SESSION_LOCK_ORPHAN_MS && (error.owner === null || now - error.owner.created_at_ms >= SESSION_LOCK_ORPHAN_MS));
+  if (orphaned) {
     return new CliError("CONFLICT", `the ${target.origin} sign-in session lock was left by a command that is gone`, {
       details: { reason: "session_lock_orphaned", host: target.origin, lock: error.lockPath, retryable: false },
       help: `confirm no superbee command is using the ${target.origin} sign-in session, remove ${error.lockPath}, then retry the same command`,

@@ -1400,6 +1400,35 @@ test("a session lock held far past any refresh is orphaned though its PID is ali
   }
 });
 
+/** An owner record for a session lock another host claimed at `createdAtMs`. */
+const claimedAt = (createdAtMs: number) => ({ pid: process.pid, hostname: "another-host.example", created_at_ms: createdAtMs, token: "held", target: "session" });
+
+test("a session lock whose directory is old but whose owner claimed it just now is session_busy, not orphaned", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, claimedAt(Date.now()), SESSION_LOCK_ORPHAN_MS + 60_000);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "TRANSIENT");
+    assert.deepEqual(error.details, { reason: "session_busy", retryable: true, host: h.host });
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
+test("a session lock whose directory and owner claim are both old is session_lock_orphaned", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, claimedAt(Date.now() - SESSION_LOCK_ORPHAN_MS - 60_000), SESSION_LOCK_ORPHAN_MS + 60_000);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "CONFLICT");
+    assert.deepEqual(error.details, { reason: "session_lock_orphaned", host: h.host, lock, retryable: false });
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
 test("a session lock that cannot be released after its work is reported as such, never as session_busy", async () => {
   const h = await harness();
   const lock = await sessionLockPath(h);
