@@ -50,8 +50,10 @@ superbee sync                                 # sends what keep or revise decide
 - `--resolve` only records the decision in the checkout. It never sends anything: its receipt
   says `sent: false`, and after `keep` or `revise` its `next` and `help` name the `superbee sync`
   that sends it. `take` has nothing to send.
-- Resolving a document again before that sync answers `already_resolved: true` ("waiting to
-  send"). The first decision stands; run `superbee sync`.
+- `keep` or `revise` again before that sync answers `already_resolved: true` ("waiting to send");
+  the first decision stands. `take` after an unsent `keep` or `revise` replaces it (`replaces`),
+  and nothing is sent. When the change may already have been sent, `take` is refused
+  (`resolution_not_replaceable`): run `superbee sync`, then resolve any conflict it reports.
 
 - `keep` and `revise` need an `--inspect` first (`not_inspected` otherwise). If the host changes
   after the inspection, they refuse with `stale_review`: inspect again, and decide again.
@@ -81,6 +83,9 @@ yours:
    changes, nothing is accepted.
 3. Do not run it yourself. In a shell without a terminal it is refused with `FORBIDDEN`
    `needs_person_at_terminal` (exit 2), and nothing is accepted. Do not retry it or work around it.
+   The check keeps the person in the loop; it is not a security boundary. A pseudo-terminal
+   (`script`, `expect`), typing into their terminal (`tmux send-keys`) or importing the CLI with
+   another terminal would get past it, and each of those is a violation of this rule.
 4. Otherwise run `superbee sync --restore-deletes`, which puts the files back. `--resolve take --doc
    <id>` restores a single file. Both work from your shell.
 

@@ -17,6 +17,7 @@ import { decode } from "@toon-format/toon";
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { sync } from "../src/commands/sync.js";
+import { withoutUnsafeIds } from "../src/hosted/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 import { noTerminal, personAtTerminal, type FakeTerminal } from "./support/fake-terminal.js";
@@ -45,6 +46,7 @@ interface H {
   auth: HostedAuthDeps;
   host: FakeHost;
   terminal: FakeTerminal;
+  idRule?: (id: string) => void;
 }
 
 async function harness(host = new FakeHost()): Promise<H> {
@@ -68,7 +70,7 @@ async function attempt(h: H, argv: string[] = []): Promise<Outcome> {
   const out: string[] = [];
   const instant = async () => {};
   try {
-    await sync(["--dir", h.folder, ...argv], { stdout: (t: string) => void out.push(t), auth: h.auth, cwd: h.cwd, fetch: h.host.fetch, write: { sleep: instant, lookupDelayMs: 0 }, sleep: instant, lockWaitMs: 200, terminal: h.terminal });
+    await sync(["--dir", h.folder, ...argv], { stdout: (t: string) => void out.push(t), auth: h.auth, cwd: h.cwd, fetch: h.host.fetch, write: { sleep: instant, lookupDelayMs: 0 }, sleep: instant, lockWaitMs: 200, terminal: h.terminal, ...(h.idRule ? { idRule: h.idRule } : {}) });
     return { ok: true, receipt: decode(out.at(-1)!.trim()) as Record<string, unknown> };
   } catch (error) {
     assert.ok(error instanceof CliError, String((error as Error).stack));
@@ -380,8 +382,8 @@ for (const choice of ["keep", "revise"] as const) {
 
     const inspect = await fails(h, ["--inspect", "--doc", "notes/alpha"]);
     assert.equal(inspect.error.code, "NOT_FOUND");
-    assert.equal((inspect.error.details as { reason: string }).reason, "already_resolved");
-    assert.match(inspect.error.message, /already resolved and waiting to send/);
+    assert.equal((inspect.error.details as { reason: string }).reason, "waiting_to_send");
+    assert.match(inspect.error.message, /its change is waiting to send/);
 
     const sent = await ok(h);
     assert.equal(rowFor(sent, "notes/alpha")!.state, "committed");
@@ -403,4 +405,106 @@ test("--resolve take says there is nothing to send, in the same shape", async ()
   const again = await fails(h, ["--resolve", "take", "--doc", "notes/alpha"]);
   assert.equal(again.error.code, "NOT_FOUND");
   assert.match(again.error.message, /has no conflict to resolve/);
+});
+
+// ── a later resolution replaces the earlier one, or is refused (review F1) ─────────────────
+
+for (const first of ["keep", "revise"] as const) {
+  test(`${first} then take: take replaces the unsent ${first}, and the next sync sends nothing`, async () => {
+    skew = 0;
+    const h = await harness();
+    await conflicted(h);
+    await ok(h, ["--inspect", "--doc", "notes/alpha"]);
+    await ok(h, ["--resolve", first, "--doc", "notes/alpha"]);
+    const again = await ok(h, ["--resolve", first, "--doc", "notes/alpha"]);
+    assert.equal(again.already_resolved, true);
+    h.host.writes.length = 0;
+    const taken = await ok(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+    assert.equal(taken.choice, "take");
+    assert.equal(taken.replaces, first);
+    assert.equal(taken.file_state, "replaced");
+    assert.equal(taken.next, "resolved: nothing to send for this document");
+    const file = await readFile(fileOf(h, "notes/alpha"), "utf8");
+    assert.match(file, /host line/);
+    assert.doesNotMatch(file, /local line/);
+    const after = await ok(h);
+    assert.equal(after.status, "up_to_date");
+    assert.equal(h.host.writes.filter((call) => call.route !== "outcome").length, 0, "the discarded keep is never sent");
+    assert.doesNotMatch(h.host.docs.get("notes/alpha")!.body, /local line/);
+  });
+}
+
+test("take then keep: keep is refused (there is no conflict left), and the host's version stands", async () => {
+  skew = 0;
+  const h = await harness();
+  await conflicted(h);
+  await ok(h, ["--inspect", "--doc", "notes/alpha"]);
+  await ok(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+  const keep = await fails(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  assert.equal(keep.error.code, "NOT_FOUND");
+  assert.match(keep.error.message, /has no conflict to resolve/);
+  h.host.writes.length = 0;
+  assert.equal((await ok(h)).status, "up_to_date");
+  assert.equal(h.host.writes.length, 0);
+  assert.match(h.host.docs.get("notes/alpha")!.body, /host line/);
+});
+
+test("take over a keep that may already have been sent is refused with the way forward, never ignored", async () => {
+  skew = 0;
+  const h = await harness();
+  await conflicted(h);
+  await ok(h, ["--inspect", "--doc", "notes/alpha"]);
+  await ok(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  h.host.hook = (call) => (call.route === "outcome" ? undefined : { kind: "drop" });
+  await fails(h);
+  h.host.hook = () => ({ kind: "drop" });
+  const take = await fails(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+  assert.equal(take.error.code, "CONFLICT");
+  assert.equal((take.error.details as { reason: string }).reason, "resolution_not_replaceable");
+  assert.match(take.error.message, /may already have been sent/);
+});
+
+test("a second resolve on a plain unsent edit (never a conflict) is refused as unsent_change", async () => {
+  skew = 0;
+  const h = await harness();
+  await writeDoc(h, "notes/delta", "Delta\n");
+  h.host.hook = () => ({ kind: "drop" });
+  await fails(h);
+  const take = await fails(h, ["--resolve", "take", "--doc", "notes/delta"]);
+  assert.equal(take.error.code, "CONFLICT");
+  assert.equal((take.error.details as { reason: string }).reason, "unsent_change");
+});
+
+// ── unsafe ids: no 304 hide, no removal under a stricter rule (review F2, F3) ──────────────
+
+test("a filtered listing never carries the host's digest, so a recorded digest cannot hide the row", async () => {
+  const listing = { digest: "sha256:host", heads: [{ id: "notes/alpha", version: "v1" }, { id: "a/../b", version: "v2" }] };
+  const reader = { heads: async () => listing } as unknown as Parameters<typeof withoutUnsafeIds>[0];
+  const store = { readMeta: async () => undefined } as unknown as Parameters<typeof withoutUnsafeIds>[2];
+  const unsafe = new Map<string, string>();
+  const answer = (await withoutUnsafeIds(reader, unsafe, store).heads())!;
+  assert.notEqual(answer.digest, listing.digest);
+  assert.deepEqual(answer.heads.map((head) => head.id), ["notes/alpha"]);
+  assert.deepEqual([...unsafe.keys()], ["a/../b"]);
+  const clean = { digest: "sha256:host", heads: [{ id: "notes/alpha", version: "v1" }] };
+  const plain = (await withoutUnsafeIds({ heads: async () => clean } as unknown as Parameters<typeof withoutUnsafeIds>[0], new Map(), store).heads())!;
+  assert.equal(plain.digest, clean.digest);
+});
+
+test("a document the checkout holds that a stricter id rule refuses is held as it is, never removed", async () => {
+  skew = 0;
+  const h = await harness();
+  const before = await readFile(fileOf(h, "notes/beta"), "utf8");
+  const doc = h.host.docs.get("notes/beta")!;
+  h.host.put("notes/beta", doc.frontmatter, `${doc.body}host change\n`);
+  h.idRule = (id) => {
+    if (id === "notes/beta") throw new Error("refused by a stricter rule");
+  };
+  const r = await fails(h);
+  const row = rowFor(r.receipt, "notes/beta")!;
+  assert.equal(row.state, "held");
+  assert.equal(row.reason, "unsafe_id");
+  assert.equal(await readFile(fileOf(h, "notes/beta"), "utf8"), before, "neither removed nor refreshed");
+  assert.equal((r.receipt!.pulled as { removed: number }).removed, 0);
+  assert.equal(deletes(h).length, 0);
 });

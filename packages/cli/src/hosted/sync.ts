@@ -149,9 +149,17 @@ export interface HostedSyncDeps {
   lockWaitMs?: number;
   /** The person's terminal, for the typed confirmation `--accept-deletes` needs; tests supply one. */
   terminal?: HostedTerminal;
+  /** The rule a host document id must pass to be pulled; a test seam for a stricter future rule. */
+  idRule?: (id: string) => void;
 }
 
-/** Where a person can confirm, by typing, what an agent must not decide alone. */
+/**
+ * Where a person can confirm, by typing, what an agent must not decide alone. The check keeps a
+ * person in the loop on the ordinary agent path (an agent's shell has no terminal); it is not a
+ * security boundary. Known ways past it: a pseudo-terminal wrapper (`script`, `expect`, a pty
+ * module), typing into a person's terminal (`tmux send-keys`), and importing the CLI with another
+ * `HostedTerminal`. The refusal and the skill text make each of these an explicit violation.
+ */
 export interface HostedTerminal {
   /** True only when a person can answer here: standard input and standard error are both a terminal. */
   readonly interactive: boolean;
@@ -183,6 +191,7 @@ function hostedDeps(partial: Partial<HostedSyncDeps>): HostedSyncDeps {
     ...(partial.sleep ? { sleep: partial.sleep } : {}),
     ...(partial.lockWaitMs !== undefined ? { lockWaitMs: partial.lockWaitMs } : {}),
     terminal: partial.terminal ?? processTerminal(),
+    ...(partial.idRule ? { idRule: partial.idRule } : {}),
   };
 }
 
@@ -336,13 +345,17 @@ interface Session {
  * (a path-like id such as `a/../b`, or a folder segment ending in `.md`). The private store and the
  * folder refuse such an id, so pulling it would stop the whole sync; left out, it is never
  * pulled, placed or deleted, and the run holds it with a row. The listing's digest was verified
- * over every row by the adapter before this filter, and the caller forgets it after the pull, so
- * the next sync lists again and reports the document again until it is renamed on the host.
+ * over every row by the adapter before this filter; a filtered listing answers a derived digest
+ * the host never sends, so no later conditional request is answered 304 while the document is
+ * still there, and the next sync reports it again until it is renamed on the host.
+ *
+ * An id the checkout already holds (one a stricter rule refuses later) is kept in the listing at
+ * the version it was pulled at, so its file is held as it is rather than removed.
  */
-function withoutUnsafeIds(reader: HostedReadAdapter, unsafe: Map<string, string>): HostedReadAdapter {
+export function withoutUnsafeIds(reader: HostedReadAdapter, unsafe: Map<string, string>, store: JournaledBackend, idRule: (id: string) => void = assertSafeConceptId): HostedReadAdapter {
   const safe = (id: string): boolean => {
     try {
-      assertSafeConceptId(id);
+      idRule(id);
       return true;
     } catch (error) {
       unsafe.set(id, (error as Error).message);
@@ -355,11 +368,23 @@ function withoutUnsafeIds(reader: HostedReadAdapter, unsafe: Map<string, string>
         return async (options?: Parameters<HostedReadAdapter["heads"]>[0]) => {
           const answer = await inner.heads(options);
           if (!answer) return answer;
-          const heads = answer.heads.filter((head) => safe(head.id));
-          return heads.length === answer.heads.length ? answer : { ...answer, heads };
+          const heads: typeof answer.heads = [];
+          for (const head of answer.heads) {
+            if (safe(head.id)) {
+              heads.push(head);
+              continue;
+            }
+            // A document the checkout already holds stays listed at the version it was pulled at:
+            // it is never refreshed, and never read as a host deletion that removes its file.
+            const base = (await store.readMeta<{ version?: unknown }>(baseKey(head.id)))?.version;
+            if (typeof base === "string") heads.push({ ...head, version: base });
+          }
+          // A filtered listing never carries the host's digest: recorded by a pull that a crash
+          // stopped before the digest was forgotten, it would be answered 304 and hide the row.
+          return unsafe.size === 0 ? answer : { ...answer, heads, digest: `${answer.digest}~held-unsafe-ids` };
         };
       }
-      if (prop === "list") return async () => (await inner.list()).filter(safe);
+      if (prop === "list") return async () => (await inner.list()).filter((id) => safe(id));
       const value = Reflect.get(inner, prop, inner);
       return typeof value === "function" ? value.bind(inner) : value;
     },
@@ -456,8 +481,8 @@ async function withSession<T>(
         });
       }
       const unsafeIds = new Map<string, string>();
-      const reader = withoutUnsafeIds(client.reader(binding.bundle_id), unsafeIds);
       const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) });
+      const reader = withoutUnsafeIds(client.reader(binding.bundle_id), unsafeIds, store, deps.idRule);
       let projection: ProjectionRecord | undefined;
       try {
         const local = openLocalBundle(binding.checkout_id, { backend: store });
@@ -1016,8 +1041,8 @@ async function conflictFor(session: Session, id: string, resumeCommand: CommandT
       const intents = (await session.store.readWithJournal(id)).intents.filter((row) => row.state !== "acknowledged");
       const states = intents.map((row) => row.state);
       if (waitingToSend(states)) {
-        throw new CliError("NOT_FOUND", `'${id}' has no conflict: it is already resolved and waiting to send; run sync to send it`, {
-          details: { id, folder: session.binding.path, reason: "already_resolved", states },
+        throw new CliError("NOT_FOUND", `'${id}' has no conflict: its change is waiting to send; run sync to send it`, {
+          details: { id, folder: session.binding.path, reason: "waiting_to_send", states },
           help: syncCommand(session.binding),
         });
       }
@@ -1040,12 +1065,13 @@ function waitingToSend(states: readonly string[]): boolean {
  * and never sent by `--resolve` itself. keep and revise are sent by the next plain sync, which
  * the help names; take sends nothing.
  */
-function resolvedRecord(binding: CheckoutBinding, id: string, choice: string, fileState: string, sends: boolean, already = false): Record<string, unknown> {
+function resolvedRecord(binding: CheckoutBinding, id: string, choice: string, fileState: string, sends: boolean, already = false, replaces?: string): Record<string, unknown> {
   const sync = syncCommand(binding);
   return {
     resolved: id,
-    // Resolving again changes nothing: the earlier decision stands until the sync sends it.
+    // keep or revise again changes nothing: the earlier decision stands until the sync sends it.
     ...(already ? { already_resolved: true, requested: choice } : { choice }),
+    ...(replaces !== undefined ? { replaces } : {}),
     file: path.join(binding.path, `${id}.md`),
     file_state: fileState,
     sent: false,
@@ -1056,6 +1082,73 @@ function resolvedRecord(binding: CheckoutBinding, id: string, choice: string, fi
       : "resolved: nothing to send for this document",
     help: sends ? [sync] : [],
   };
+}
+
+/** The meta row that records a keep or revise resolution waiting to send: its choice and the intents it journaled. */
+function resolvedKey(id: string): string {
+  return `cli-resolved:${id}`;
+}
+
+async function recordResolution(store: JournaledBackend, id: string, choice: "keep" | "take" | "revise"): Promise<void> {
+  if (choice === "take") {
+    await store.writeMeta(resolvedKey(id), null);
+    return;
+  }
+  const requestIds = (await store.readWithJournal(id)).intents.filter((row) => row.state !== "acknowledged").map((row) => row.requestId);
+  await store.writeMeta(resolvedKey(id), { choice, requestIds });
+}
+
+/**
+ * A second `--resolve` on a document whose earlier keep or revise is waiting to send. keep or
+ * revise again changes nothing: the next sync sends the file as it is (a later edit to it is sent
+ * as well). take replaces the earlier decision while it was never sent: the pending change is
+ * dropped and the host's version it was resolved against is placed back. A change that may
+ * already have left, a re-create, or a file edited since is refused with the way forward; a later
+ * resolution is never silently ignored.
+ */
+async function resolveAgain(session: Session, id: string, choice: "keep" | "take" | "revise", resumeCommand: CommandText): Promise<Record<string, unknown>> {
+  const { binding, store, projection } = session;
+  const file = path.join(binding.path, `${id}.md`);
+  const earlier = await store.readMeta<{ choice?: string; requestIds?: string[] } | null>(resolvedKey(id));
+  const rows = (await store.readWithJournal(id)).intents.filter((row) => row.state !== "acknowledged");
+  const sync = syncCommand(binding);
+  if (!earlier?.choice || !Array.isArray(earlier.requestIds) || rows.length === 0 || !earlier.requestIds.includes(rows[0]!.requestId)) {
+    throw new CliError("CONFLICT", `'${id}' has an unsent change but no conflict to resolve; the next sync sends it`, {
+      details: { reason: "unsent_change", id, states: rows.map((row) => row.state) },
+      help: sync,
+    });
+  }
+  if (choice !== "take") return resolvedRecord(binding, id, choice, "unchanged", true, true);
+  const row = rows[0]!;
+  const refuse = (why: string) =>
+    new CliError("CONFLICT", `'${id}' was resolved with ${earlier.choice}, and take cannot replace it: ${why}`, {
+      details: { reason: "resolution_not_replaceable", id, earlier: earlier.choice, requested: choice, states: rows.map((r) => r.state) },
+      help: `run ${sync}; if it reports a conflict on '${id}', resolve that one`,
+    });
+  if (rows.length !== 1) throw refuse("the file was edited again after it, and that edit is waiting to send too");
+  if (row.state !== "pending" || row.attempts !== 0) throw refuse("it may already have been sent");
+  if (row.base === null || row.baseContent === null) throw refuse("it re-creates a document the host deleted");
+  const bytes = await readIfPresent(file);
+  const entry = projection.files[id];
+  if (bytes !== null && digestOf(bytes) !== entry?.digest) {
+    throw new CliError("CONFLICT", `${file} has edits made since the resolution, which take would discard`, {
+      details: { reason: "file_edited", id, file },
+      help: `remove ${file} to discard your edits, then re-run: ${resumeCommand}`,
+    });
+  }
+  const current = await store.readWithJournal(id);
+  const parsed = parseMarkdown(row.baseContent, id, { okfVersion: session.okfVersion });
+  await store.writeJournaled(id, { id, frontmatter: parsed.frontmatter, body: parsed.body }, {
+    expectedVersion: current.document?.version ?? null,
+    supersede: { requestId: row.requestId, expectedState: "pending", expectedAttempts: 0 },
+    meta: [{ key: baseKey(id), value: { version: row.base, content: row.baseContent } }],
+  });
+  // A missing file (a kept deletion) is placed back; a file still holding its recorded bytes is replaced.
+  if (bytes === null) delete projection.files[id];
+  const exported = await exportCheckout(binding.path, store, projection, { only: new Set([id]), placeMissing: true });
+  await store.writeMeta(resolvedKey(id), null);
+  await session.persist();
+  return resolvedRecord(binding, id, choice, exported.placed.length > 0 ? (bytes === null ? "restored" : "replaced") : "unchanged", false, false, earlier.choice);
 }
 
 /** The meta row that records the host's version a person was shown by `--inspect`. */
@@ -1260,9 +1353,9 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
     try {
       conflict = await conflictFor(session, id, resumeCommand);
     } catch (error) {
-      // Resolving again what is already resolved is not an error: the decision stands until sent.
-      if (error instanceof CliError && (error.details as { reason?: unknown } | undefined)?.reason === "already_resolved") {
-        return resolvedRecord(binding, id, choice, "unchanged", true, true);
+      // A document whose change is waiting to send: a later resolution replaces or keeps the earlier one, or is refused.
+      if (error instanceof CliError && (error.details as { reason?: unknown } | undefined)?.reason === "waiting_to_send") {
+        return resolveAgain(session, id, choice, resumeCommand);
       }
       throw error;
     }
@@ -1331,6 +1424,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       }
     }
     await store.writeMeta(inspectedKey(id), null);
+    await recordResolution(store, id, choice);
     await session.persist();
     return resolvedRecord(binding, id, choice, fileState, choice !== "take");
   });
