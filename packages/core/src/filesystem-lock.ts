@@ -780,3 +780,13 @@ export async function filesystemLockAgeMs(lockPath: string): Promise<number | nu
     return null;
   }
 }
+
+/**
+ * Whether the lock at `lockPath` still carries the owner record with `token`: a definite answer
+ * when a record or its absence was read, `null` when this process could not read it.
+ */
+export async function filesystemLockHeldBy(lockPath: string, token: string): Promise<boolean | null> {
+  const record = await readOwnerRecord(lockPath);
+  if (record.state === "unreadable") return null;
+  return record.state === "record" && record.owner.token === token;
+}

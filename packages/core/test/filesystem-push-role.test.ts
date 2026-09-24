@@ -235,6 +235,45 @@ test("a holder that released and exited before the timeout is never judged in pl
   }
 });
 
+test("a holder that released while its process id stayed occupied is never judged in place of the live replacement", async () => {
+  const { root, cleanup } = await lockRoot();
+  // PID reuse leaves the released holder's id occupied when the timeout is diagnosed. Keeping the
+  // released holder's process alive occupies it; the start-time seam reports a younger process.
+  const released = spawn("sleep", ["30"], { stdio: "ignore" });
+  const releasedPid = released.pid!;
+  let releaseReplacement: (() => Promise<void>) | undefined;
+  const mutable = fs as unknown as Record<string, unknown>;
+  const originalReadFile = fs.readFile;
+  try {
+    const key = pushRoleLockKey(ROLE);
+    await plantOwner(root, releasedPid, Date.now());
+    const lock = path.join(root, `${key}.lock`);
+    const ownerFile = path.join(lock, "owner.json");
+    let reads = 0;
+    mutable.readFile = async (...args: unknown[]) => {
+      const content = await (originalReadFile as (...a: unknown[]) => Promise<unknown>)(...args);
+      if (String(args[0]) === ownerFile && ++reads === 2) {
+        await fs.rm(lock, { recursive: true, force: true });
+        releaseReplacement = await acquireFilesystemIdentityLock(key, ROLE, { lockRoot: root, waitMs: 0, pollMs: 2 });
+      }
+      return content;
+    };
+    const locks = filesystemPushRoleLocks({
+      lockRoot: root,
+      contentionWaitMs: 0,
+      pollMs: 2,
+      processStartedAt: async (pid) => (pid === releasedPid ? Date.now() + 60_000 : null),
+    });
+    assert.deepEqual(await withRole(locks, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+    assert.ok(releaseReplacement, "the replacement claimed the role inside the window");
+  } finally {
+    mutable.readFile = originalReadFile;
+    released.kill("SIGKILL");
+    await releaseReplacement?.().catch(() => {});
+    await cleanup();
+  }
+});
+
 test("the host reports this process's start time no later than now and no earlier than its uptime allows", async () => {
   const started = await processStartedAtFromPs(process.pid);
   assert.ok(started !== null);
