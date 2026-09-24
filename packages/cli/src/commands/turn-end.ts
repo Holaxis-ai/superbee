@@ -112,7 +112,7 @@ function reasonFor(binding: CheckoutBinding, error: CliError, receipt: string): 
     );
   } else {
     lines.push(
-      `Resolve each conflict with ${cliInvocation()} sync --inspect <id>, then --resolve keep|take|revise --doc <id>; fix held files; then run: ${sync}`,
+      `Resolve each conflict with ${cliInvocation()} sync --inspect --doc <id>, then --resolve keep|take|revise --doc <id>; fix held files; then run: ${sync}`,
     );
     lines.push("Anything the receipt says to do in the Superbee app is for the person: tell them, do not work around it.");
   }

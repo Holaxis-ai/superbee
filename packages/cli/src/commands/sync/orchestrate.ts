@@ -380,6 +380,15 @@ function requestsShowIncomingStdoutByteChannel(argv: string[]): boolean {
 }
 
 /**
+ * `--inspect` names its document with `--doc <id>`, like `--resolve`; `--inspect <id>` is kept
+ * as an alias. A bare `--inspect` (last, or followed by another flag) is read as an empty value,
+ * which the hosted parse replaces with `--doc`.
+ */
+function bareInspect(argv: string[]): string[] {
+  return argv.map((token, index) => (token === "--inspect" && (index + 1 === argv.length || argv[index + 1]!.startsWith("-")) ? "--inspect=" : token));
+}
+
+/**
  * The one parse of `sync` argv, for both kinds of target: a Git board (below) and a hosted
  * checkout (`../../hosted/sync.ts`, which owns `--inspect`, `--resolve` and `--doc`).
  */
@@ -387,7 +396,7 @@ export function parseSyncArgs(argv: string[]) {
   return parseLeafOrUsage(
     () =>
       parseArgs({
-        args: argv,
+        args: bareInspect(argv),
         options: {
           "pull-only": { type: "boolean" },
           establish: { type: "boolean" },
