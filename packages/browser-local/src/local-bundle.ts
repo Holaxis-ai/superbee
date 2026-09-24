@@ -181,6 +181,8 @@ function bundleOf(target: LocalTarget): Bundle {
 const BOOTSTRAP_KEY = "bootstrap";
 const SYNC_KEY = "sync";
 const PULL_KEY = "pull";
+/** When the latest acknowledgement settled; see {@link lastKnownDigest}. */
+const ACKNOWLEDGED_KEY = "acknowledged";
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
 /** Meta key for the shared base of one document. */
@@ -249,6 +251,10 @@ export interface SyncControl {
   paused: boolean;
   reason?: string;
   since?: string;
+}
+
+interface AcknowledgedMarker {
+  at: string;
 }
 
 export interface PullMarker {
@@ -1413,6 +1419,8 @@ export async function settleIntent(
   outcome = settleAgainstIntent(outcome, current);
   switch (outcome.kind) {
     case "committed": {
+      // Recorded with the acknowledgement itself, so no pull can offer an older digest after it.
+      const acknowledged: MetaRecord = { key: ACKNOWLEDGED_KEY, value: { at: new Date().toISOString() } satisfies AcknowledgedMarker };
       if (current.kind === DOCUMENT_DELETE_KIND) {
         // The document left the authority. Its version is the deletion's tombstone, which a
         // create recorded later acknowledges; the deletion version itself says none is known.
@@ -1421,7 +1429,7 @@ export async function settleIntent(
           requestId,
           "in_flight",
           { state: "acknowledged", attempts, acknowledgedVersion: outcome.version },
-          { meta: [baseRow(current.target, { version: null, content: null, ...(tombstone !== undefined ? { tombstone } : {}) })] },
+          { meta: [baseRow(current.target, { version: null, content: null, ...(tombstone !== undefined ? { tombstone } : {}) }), acknowledged] },
         );
       }
       const finding = outcome.version === current.local ? undefined : `acknowledged version ${outcome.version} differs from local version ${current.local}`;
@@ -1429,7 +1437,7 @@ export async function settleIntent(
         requestId,
         "in_flight",
         { state: "acknowledged", attempts, acknowledgedVersion: outcome.version, ...(finding ? { finding } : {}) },
-        { meta: [baseRow(current.target, { version: outcome.version, content: current.content })] },
+        { meta: [baseRow(current.target, { version: outcome.version, content: current.content }), acknowledged] },
       );
     }
     case "conflict": {
@@ -1652,7 +1660,9 @@ export interface PullReport {
  * without a digest (a refused listing, a pull by list, or an interrupted pull) means the
  * working copy no longer matches any digest the authority could be asked about. Falling back
  * to the bootstrap's digest there would let the authority answer `304` to a copy that has
- * moved past it.
+ * moved past it. An acknowledgement settled at or after the start of the pull or bootstrap that
+ * recorded the digest moves the copy past it too: the authority took the change, and another
+ * writer returning it to exactly that digest would otherwise draw a `304` forever.
  */
 async function lastKnownDigest(backend: JournaledBackend): Promise<string | undefined> {
   const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
@@ -1660,7 +1670,12 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<string | unde
   // no conditional request until a bootstrap completes again.
   if (marker?.complete !== true || marker.completedAt === undefined) return undefined;
   const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
-  if (lastPull !== undefined && lastPull.startedAt >= marker.completedAt) return lastPull.completedAt === null ? undefined : lastPull.headsDigest;
+  const acknowledged = await backend.readMeta<AcknowledgedMarker>(ACKNOWLEDGED_KEY);
+  if (lastPull !== undefined && lastPull.startedAt >= marker.completedAt) {
+    if (lastPull.completedAt === null || (acknowledged !== undefined && acknowledged.at >= lastPull.startedAt)) return undefined;
+    return lastPull.headsDigest;
+  }
+  if (acknowledged !== undefined && acknowledged.at >= marker.startedAt) return undefined;
   return marker.headsDigest;
 }
 
