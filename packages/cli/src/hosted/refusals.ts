@@ -55,6 +55,20 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     why: "a key that is not a .md document is stored as a blob, and blobs do not sync",
     when: (args) => !(docKey(args) ?? "").toLowerCase().endsWith(".md"),
   },
+  {
+    words: ["delete"],
+    reason: "not_syncable",
+    why: "a key that is not a .md document is a blob, and blobs do not sync (delete a document with doc delete)",
+    when: (args) => {
+      const key = docKey(args);
+      return key !== undefined && !key.toLowerCase().endsWith(".md");
+    },
+  },
+  {
+    words: ["index", "generate"],
+    reason: "not_syncable",
+    why: "index.md files are reserved navigation the host keeps; generated ones would be held by sync",
+  },
   { words: ["serve"], reason: "not_syncable", why: "the served bundle accepts writes and deletes that do not sync" },
   { words: ["ui"], reason: "not_syncable", why: "the local app writes Views and conventions, which do not sync" },
   {

@@ -79,8 +79,9 @@ sent yet; a checkout emptied in place is refused, because removing every file is
 and the folder's files are left as they are. Releasing a folder that is not a checkout is a no-op.
 
 'superbee sync --dir <folder>' sends your edits and brings in the host's. Commands whose effect
-sync cannot send (doc delete, delete, doc verify, kind, recipe add/evolve, artifact, promote to a
-non-.md key, serve, ui, mcp) are refused in it with "do this in the app". Bundles over ${CHECKOUT_DOCUMENT_LIMIT} documents, bundles the host does not
+sync cannot send (doc verify, kind, recipe add/evolve, artifact, promote or delete of a non-.md
+key, index generate, serve, ui, mcp) are refused in it with "do this in the app". Deleting a
+document file, by hand or with doc delete or delete --doc-key <id>.md, syncs as a delete. Bundles over ${CHECKOUT_DOCUMENT_LIMIT} documents, bundles the host does not
 serve to a checkout (such as one with a Git source), and ids in two of your workspaces are refused.
 
 Options:
@@ -579,7 +580,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
 const REFUSED_SUMMARY: readonly string[] = Object.freeze(
   HOSTED_CHECKOUT_REFUSALS.filter((row) => row.reason !== "checkout_target").map((row) => {
     const words = row.words.join(" ");
-    return row.words[0] === "promote" ? "promote (non-.md key)" : words;
+    return row.words[0] === "promote" || row.words[0] === "delete" ? `${words} (non-.md key)` : words;
   }),
 );
 

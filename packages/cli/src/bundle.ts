@@ -436,6 +436,39 @@ export async function resolveProjectBinding(startDir: string = process.cwd()): P
   }
 }
 
+/** Statuses a hosted Superbee host answers to a wire-protocol route it does not serve. */
+const HOSTED_PROBE_STATUSES = new Set([401, 403, 404, 405]);
+/** The hosted MCP resource's protected-resource metadata (RFC 9728): what a hosted host serves. */
+export const HOSTED_PROBE_PATH = "/.well-known/oauth-protected-resource/mcp";
+const HOSTED_PROBE_TIMEOUT_MS = 3_000;
+
+/** True when `origin` answers the hosted MCP resource's metadata: a hosted Superbee host. */
+async function isHostedSuperbee(origin: string): Promise<boolean> {
+  try {
+    const response = await globalThis.fetch(`${origin}${HOSTED_PROBE_PATH}`, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(HOSTED_PROBE_TIMEOUT_MS),
+    });
+    if (!response.ok) return false;
+    const body = (await response.json()) as { resource?: unknown };
+    return typeof body.resource === "string";
+  } catch {
+    return false;
+  }
+}
+
+function hostedRemoteRefusal(remote: string, origin: string): CliError {
+  return new CliError(
+    "USAGE",
+    `${remote} is a hosted Superbee URL, not a wire-protocol server: --remote reaches only 'superbee serve'; use 'superbee checkout' for a hosted bundle`,
+    {
+      details: { reason: "hosted_url", remote, host: origin },
+      help: `${cliInvocation()} checkout <bundle-id> --host ${commandToken(origin)}`,
+    },
+  );
+}
+
 /**
  * Wrap a fetch-like transport so a transport-level failure (ECONNREFUSED, DNS, timeout — `fetch`
  * rejects with a plain `TypeError` for all of these) surfaces as a `CliError("RUNTIME", …)` with a
@@ -444,11 +477,19 @@ export async function resolveProjectBinding(startDir: string = process.cwd()): P
  * retryable RUNTIME fault (exit 1) — wrong-but-plausible, since both look like "a plain Error" to
  * a generic catch. HTTP-level failures (404/412/5xx) are UNCHANGED: they still resolve to a normal
  * `Response` that `RemoteBackend` maps itself (see `core/src/remote-backend.ts`).
+ *
+ * One exception: when the FIRST response is a 401, 403, 404 or 405, the origin is probed once for
+ * the hosted MCP resource's metadata. A hosted Superbee host answers it, and then every request
+ * fails at once with "use checkout" instead of a wire-protocol error or a `serve` hint. The probe
+ * runs at most once per invocation and never against a server that answered the first request.
  */
-function wrapTransportErrors(remote: string): FetchLike {
+function wrapTransportErrors(remote: string, origin: string): FetchLike {
+  let hosted: boolean | undefined;
   return captureRuntimeCallback(async (request: Request): Promise<Response> => {
+    if (hosted) throw hostedRemoteRefusal(remote, origin);
+    let response: Response;
     try {
-      return await globalThis.fetch(request);
+      response = await globalThis.fetch(request);
     } catch (err) {
       throw new CliError(
         "RUNTIME",
@@ -456,6 +497,11 @@ function wrapTransportErrors(remote: string): FetchLike {
         { help: `${cliInvocation()} serve --dir <path>` },
       );
     }
+    if (hosted === undefined) {
+      hosted = HOSTED_PROBE_STATUSES.has(response.status) ? await isHostedSuperbee(origin) : false;
+      if (hosted) throw hostedRemoteRefusal(remote, origin);
+    }
+    return response;
   });
 }
 
@@ -502,7 +548,7 @@ async function openRemoteBundle(remoteFlag: string): Promise<Bundle> {
   const backend = new RemoteBackend({
     baseUrl: base,
     bundle: "default",
-    fetchImpl: wrapTransportErrors(base),
+    fetchImpl: wrapTransportErrors(base, origin),
     authToken,
   });
   return { root: base, backend };
