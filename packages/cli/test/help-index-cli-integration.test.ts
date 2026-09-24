@@ -87,12 +87,14 @@ test("built CLI: bundle locate is dispatched and returns the canonical explicit 
   const receipt = JSON.parse(run(["bundle", "locate", "--dir", fixture, "--json"])) as {
     schema_version: number;
     locator: { kind: string; path: string };
+    home: string;
     selected_by: string;
     available: boolean;
   };
   assert.deepEqual(receipt, {
     schema_version: 1,
     locator: { kind: "local-path", path: realpathSync(fixture) },
+    home: "local",
     selected_by: "explicit-dir",
     available: true,
   });

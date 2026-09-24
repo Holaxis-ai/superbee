@@ -77,6 +77,8 @@ import { describeResolvedActor } from "../actor-guidance.js";
 import { deriveOffers, OFFERS_HELP, type OfferRow } from "../offers.js";
 import { parseArgs } from "node:util";
 import path from "node:path";
+import { realpath } from "node:fs/promises";
+import { bundleHomeAt, type BundleHome } from "../bundle-home.js";
 import {
   BOARD_BRANCH,
   BOARD_REF,
@@ -122,6 +124,9 @@ Default TOON output may display a previously validated latest-track release noti
 detached refresh at most once per 24-hour attempt window. Rendering never waits for npm. The fixed
 public npm request names only superbee; it sends no installed version, cwd, bundle, actor, or
 usage data beyond ordinary network metadata.
+
+The bundle block leads with 'home': local, git (a Git board) or hosted (a hosted checkout), read
+from local Git and private state only. 'bundle locate' and 'status' give the details.
 
 Home also checks managed Agent Skill bytes locally. A stale install that passes the installer's
 complete read-only preflight is reported with its exact scope-specific refresh command and restart
@@ -190,6 +195,8 @@ export interface BundleSummary {
   trust?: TrustCountsRow;
   /** The bundle's declared OKF edition, when the summarizer read it (drives the actor orientation line). */
   okfVersion?: string | null;
+  /** Where the bundle lives (`bundle-home.ts`); injected test fakes may omit it (the block omits the field then). */
+  home?: BundleHome;
 }
 
 /**
@@ -396,7 +403,9 @@ export async function defaultSummarizeBundle(
     // One reserved read (index.md) so the trust fold knows the edition; a missing declaration reads
     // as the v0.1 compatibility fallback, exactly as the mutation service resolves it.
     const okfVersion = await readBundleOkfVersion(bundle);
-    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }) };
+    // Local Git and private state only, like the rest of this render; unreadable evidence reads as local.
+    const bundleHome = (await bundleHomeAt(await realpath(bundle.root).catch(() => bundle.root))).home;
+    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }), home: bundleHome };
   } catch {
     // A bundle root exists but could not be read — DISTINCT from "no bundle" (see UnreadableBundle).
     return { root: collapseHomeDirectory(bundle.root), unreadable: true };
@@ -902,7 +911,9 @@ export function buildHomeView(
     view.bundle = bundleBlock;
   } else if (summary) {
     const bundleBlock: Record<string, unknown> = {};
-    // Identity first: the derived project name, so a conventional
+    // Where it lives comes first: every later line (sync, refusals, conflicts) depends on it.
+    if (summary.home) bundleBlock.home = summary.home;
+    // Identity: the derived project name, so a conventional
     // conventional bundle reads as ITS project, not as the folder name every project shares.
     if (summary.name) {
       bundleBlock.name = summary.name;
