@@ -33,7 +33,7 @@ function requestsHelp(argv: readonly string[]): boolean {
  */
 export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<void> {
   if (requestsHelp(argv)) {
-    (deps.stdout ?? ((text: string) => void process.stdout.write(text)))(renderUsage(`${SYNC_USAGE}\n${HOSTED_SYNC_USAGE}`));
+    (deps.stdout ?? ((text: string) => void process.stdout.write(text)))(renderUsage(`${SYNC_USAGE}\nHosted checkouts (the target decides; there is no flag):\n\n${HOSTED_SYNC_USAGE}`));
     return;
   }
   const home = deps.auth?.home ?? homedir();
