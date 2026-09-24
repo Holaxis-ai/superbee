@@ -1,3 +1,5 @@
+// Shared by the qa-r2-crash-*.test.ts files, which each register a subset of these cases so the
+// suite's slowest sweeps run in parallel test processes (and CI shards) instead of one serial file.
 // Adversarial QA round 2 (18466ef1): the adopted sweep plus a window case. Adversarial QA for PR 297 (head 2163424d): SIGKILL just before every side effect of the delete
 // and re-create paths (a scan-journaled delete, keep and take on a deletion in conflict, the
 // checkout's own re-create after its delete, and keep on "deleted remotely"), then recover and
@@ -13,13 +15,13 @@ import { fileURLToPath } from "node:url";
 
 import { decode } from "@toon-format/toon";
 
-import { CliError } from "../src/errors.js";
-import { checkout } from "../src/commands/checkout.js";
-import { sync } from "../src/commands/sync.js";
-import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
-import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
+import { CliError } from "../../src/errors.js";
+import { checkout } from "../../src/commands/checkout.js";
+import { sync } from "../../src/commands/sync.js";
+import { defaultHostedAuthDeps, type HostedAuthDeps } from "../../src/hosted-auth/session.js";
+import { BUNDLE, FakeHost, HOST, TOKEN } from "./fake-hosted-sync.js";
 
-const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 let current: FakeHost;
 async function bridge(): Promise<{ server: Server; url: string }> {
@@ -172,7 +174,10 @@ const settle = async (s: S, argv: string[]): Promise<string | null> => {
   return `never settles: ${last!.ok ? JSON.stringify(last!.receipt.rows) : `${last!.error.code} ${last!.error.message} ${JSON.stringify(last!.receipt?.rows ?? [])}`}`;
 };
 
+export type CrashCaseKey = "bulk-window" | "scan-delete" | "conflict-keep" | "conflict-take" | "own-recreate" | "remote-recreate";
+
 interface Case {
+  key: CrashCaseKey;
   name: string;
   setup: () => Promise<S>;
   argv: string[];
@@ -189,6 +194,7 @@ const gone = async (s: S, expectTombs: number) => {
 
 const CASES: Case[] = [
   {
+    key: "bulk-window",
     name: "7 of 23 deleted, sync; afterwards 7 more must still be held (the window survives the crash)",
     setup: sevenOf23,
     argv: [],
@@ -203,9 +209,10 @@ const CASES: Case[] = [
       return p;
     },
   },
-  { name: "scan-journaled delete, sync", setup: plainDelete, argv: [], check: (s) => gone(s, 1) },
-  { name: "deletion in conflict, --resolve keep", setup: deletionInConflict, argv: ["--resolve", "keep", "--doc", "notes/alpha"], check: (s) => gone(s, 1) },
+  { key: "scan-delete", name: "scan-journaled delete, sync", setup: plainDelete, argv: [], check: (s) => gone(s, 1) },
+  { key: "conflict-keep", name: "deletion in conflict, --resolve keep", setup: deletionInConflict, argv: ["--resolve", "keep", "--doc", "notes/alpha"], check: (s) => gone(s, 1) },
   {
+    key: "conflict-take",
     name: "deletion in conflict, --resolve take",
     setup: deletionInConflict,
     argv: ["--resolve", "take", "--doc", "notes/alpha"],
@@ -218,6 +225,7 @@ const CASES: Case[] = [
     },
   },
   {
+    key: "own-recreate",
     name: "own delete then re-create, sync",
     setup: ownRecreate,
     argv: [],
@@ -232,6 +240,7 @@ const CASES: Case[] = [
     },
   },
   {
+    key: "remote-recreate",
     name: "deleted remotely, inspected, --resolve keep (re-create)",
     setup: deletedRemotelyInspected,
     argv: ["--resolve", "keep", "--doc", "notes/alpha"],
@@ -246,7 +255,28 @@ const CASES: Case[] = [
   },
 ];
 
-for (const c of CASES.filter((c) => !process.env.QA_ONLY || c.name.startsWith(process.env.QA_ONLY))) {
+// Each group runs as its own test file (qa-r2-crash-<group>.test.ts); the groups are balanced by
+// measured duration. Every case belongs to exactly one group, checked when this module loads.
+export const CRASH_CASE_GROUPS = {
+  delete: ["bulk-window", "scan-delete"],
+  conflict: ["conflict-keep", "conflict-take"],
+  recreate: ["own-recreate", "remote-recreate"],
+} as const satisfies Record<string, readonly CrashCaseKey[]>;
+
+assert.deepEqual(
+  Object.values(CRASH_CASE_GROUPS).flat().sort(),
+  CASES.map((c) => c.key).sort(),
+  "every crash case must belong to exactly one group",
+);
+
+export function registerCrashCases(group: keyof typeof CRASH_CASE_GROUPS): void {
+  const keys: readonly CrashCaseKey[] = CRASH_CASE_GROUPS[group];
+  for (const c of CASES.filter((c) => keys.includes(c.key) && (!process.env.QA_ONLY || c.name.startsWith(process.env.QA_ONLY)))) {
+    registerCase(c);
+  }
+}
+
+function registerCase(c: Case): void {
   test(`SIGKILL at every step: ${c.name}`, { timeout: 1_800_000 }, async () => {
     const { server, url } = await bridge();
     const failures: string[] = [];

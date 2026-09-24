@@ -149,7 +149,7 @@
   ],
   "lanes": {
     "runtime": {
-      "display_name": "runtime compatibility (node ${{ matrix.node-version }})",
+      "display_name": "runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/2)",
       "script": "ci:runtime",
       "components": [
         "build",
@@ -160,6 +160,8 @@
         22,
         26
       ],
+      "shards": 2,
+      "shard_variable": "SUPERBEE_TEST_SHARD",
       "runs_on": "ubuntu-latest",
       "expect_aliasing_host": "0",
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""

@@ -1,11 +1,12 @@
 name: CI tests
 
-# Runtime-sensitive suites run identically on Node 22 and 26, then once more on macOS so that
-# tests whose native branch only executes on a case-aliasing filesystem actually run. Distribution,
-# browser/UI, local release policy, and exhaustive target proofs are platform-independent lanes on
-# one supported runtime. Windows adapters and their native installed-package proof live in the
-# separate Windows distribution repository. Required lanes remain unconditional: path
-# classification and skip receipts require a separate fail-closed classifier contract.
+# Runtime-sensitive suites run identically on Node 22 and 26 (two shards each), then once more on
+# macOS so that tests whose native branch only executes on a case-aliasing filesystem actually run.
+# Distribution, browser/UI, local release policy, and exhaustive target proofs are
+# platform-independent lanes on one supported runtime. Windows adapters and their native
+# installed-package proof live in the separate Windows distribution repository. Required lanes
+# remain unconditional: path classification and skip receipts require a separate fail-closed
+# classifier contract.
 #
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
 # app-bound context, then remove the two legacy `gate (node N)` requirements. Roll back by restoring
@@ -29,16 +30,21 @@ env:
   AGENTSTATE_LITE_NO_AUTOPULL: 1
 
 jobs:
+  # Each runtime is split into two shards so the lane stays well inside its timeout as tests grow.
+  # Both shards build and typecheck; the CLI suite (the dominant cost) is divided by file through
+  # SUPERBEE_TEST_SHARD, and the smaller workspace suites run in both shards.
   runtime:
-    name: runtime compatibility (node ${{ matrix.node-version }})
+    name: runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/2)
     strategy:
       fail-fast: false
       matrix:
         node-version: [22, 26]
+        shard: [1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"
+      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2
     steps:
       - uses: actions/checkout@v4
         with:

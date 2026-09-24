@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -82,7 +82,8 @@ function validateContributorAuthority(
       assert.ok(packageJson.scripts[lane.script], `contributor lane ${name} references missing package script`);
     }
     const command = lane.script ? `npm run ${lane.script}` : lane.trigger ? `${lane.trigger} only` : "workflow only";
-    return [name, command, name, lane.nodes.join(", ")];
+    const shards = lane.shards > 1 ? ` (${lane.shards} shards each)` : "";
+    return [name, command, name, `${lane.nodes.join(", ")}${shards}`];
   });
   assert.deepEqual(
     projectionRows(text, "ci-lanes"),
@@ -254,6 +255,43 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and platform lane
     assert.deepEqual(lane.nodes, [manifest.singleton_node], `${name} must not amplify across runtime versions`);
   }
   assert.deepEqual(cliPkg.os, ["darwin", "linux"], "the maintained executable admits only its supported hosts");
+});
+
+test("the runtime shard variable partitions the CLI suite by file and rejects malformed shards", async () => {
+  const lane = manifest.lanes.runtime;
+  assert.equal(lane.shards, 2);
+  assert.equal(lane.shard_variable, "SUPERBEE_TEST_SHARD");
+  const cliTest = JSON.parse(readFileSync(path.join(root, "packages", "cli", "package.json"), "utf8")).scripts.test;
+  assert.match(cliTest, /^node scripts\/run-test-command\.mjs node --test /, "the CLI suite must run through the sharding wrapper");
+  const wrapper = path.join(root, "packages", "cli", "scripts", "run-test-command.mjs");
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-shard-"));
+  try {
+    const names = ["a", "b", "c", "d", "e"].map((name) => `${name}.test.mjs`);
+    for (const name of names) {
+      await writeFile(path.join(scratch, name), `import test from "node:test";\ntest(${JSON.stringify(`ran ${name}`)}, () => {});\n`);
+    }
+    // The nested runner must not inherit this runner's child-process protocol.
+    const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
+    const run = (shard) => spawnSync(
+      process.execPath,
+      [wrapper, "node", "--test", "--test-reporter=tap", ...names],
+      { cwd: scratch, encoding: "utf8", env: { ...env, [lane.shard_variable]: shard } },
+    );
+    const ran = [];
+    for (let index = 1; index <= lane.shards; index += 1) {
+      const result = run(`${index}/${lane.shards}`);
+      assert.equal(result.status, 0, result.stderr);
+      const files = [...result.stdout.matchAll(/^ok \d+ - ran (\S+)$/gm)].map((match) => match[1]);
+      assert.ok(files.length > 0, `shard ${index} must run at least one file`);
+      ran.push(...files);
+    }
+    assert.deepEqual(ran.sort(), names, "the shards together run every file exactly once");
+    for (const malformed of ["0/2", "3/2", "1", "1/2x"]) {
+      const result = run(malformed);
+      assert.notEqual(result.status, 0, `${malformed} must fail closed`);
+      assert.match(result.stderr, /SUPERBEE_TEST_SHARD must be/);
+    }
+  } finally { await rm(scratch, { recursive: true, force: true }); }
 });
 
 test("the aliasing-host lane pins a fail-closed host expectation on both host classes", () => {
