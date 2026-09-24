@@ -1692,6 +1692,92 @@ test("pull removes documents the authority deleted, with their base, and retains
   }
 });
 
+/** `remote` with `between` run once, after the heads listing and before the first document fetch. */
+function beforeFirstReadMany(remote: StorageBackend, between: () => Promise<void>): StorageBackend {
+  let first = true;
+  return new Proxy(remote, {
+    get(target, prop) {
+      if (prop === "readMany") {
+        return async (ids: ConceptId[]) => {
+          if (first) {
+            first = false;
+            await between();
+          }
+          return target.readMany(ids);
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as StorageBackend;
+}
+
+test("a document that moves between the heads listing and its fetch leaves no digest recorded, so a return to the listed state is fetched rather than answered 304", async () => {
+  // "moved on": fetched past the listing, refreshed. "back to base": fetched at the local base, unchanged.
+  for (const [shape, during] of [["moved on", "gamma v3\n"], ["back to base", "gamma v1\n"]] as const) {
+    const fixture = await seededFixture();
+    const local = openLocal(new IDBFactory());
+    try {
+      await bootstrap(fixture.remote, local);
+      await fixture.authority.write("notes/gamma", doc("notes/gamma", "gamma v2\n"));
+      const listedVersion = (await fixture.authority.read("notes/gamma")).version;
+      const counted = countingRemote(fixture);
+      await pull(local, beforeFirstReadMany(counted.remote, async () => {
+        await fixture.authority.write("notes/gamma", doc("notes/gamma", during));
+      }));
+      assert.deepEqual(counted.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200]], shape);
+      assert.equal((await local.backend.read("notes/gamma")).doc.body, during, shape);
+      const status = await syncStatus(local);
+      assert.notEqual(status.lastPull?.completedAt, null, shape);
+      assert.equal(status.lastPull?.headsDigest, undefined, shape);
+
+      // The authority returns to exactly the listed state; the next pull asks unconditionally.
+      await fixture.authority.write("notes/gamma", doc("notes/gamma", "gamma v2\n"));
+      assert.equal((await fixture.authority.read("notes/gamma")).version, listedVersion, shape);
+      const again = countingRemote(fixture);
+      const second = await pull(local, again.remote);
+      assert.deepEqual(again.ifNoneMatch, [null, null], shape);
+      assert.deepEqual(second.refreshed, ["notes/gamma"], shape);
+      assert.equal((await local.backend.read("notes/gamma")).doc.body, "gamma v2\n", shape);
+      assert.equal((await syncStatus(local)).lastPull?.headsDigest, await authorityDigest(fixture), shape);
+    } finally {
+      local.close();
+    }
+  }
+});
+
+test("a listed document deleted before its fetch is answered as absent: the pull completes, refreshes the rest and removes it, with no digest recorded", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    await bootstrap(fixture.remote, local);
+    const ids = ["notes/alpha", "notes/beta", "notes/gamma"];
+    for (const id of ids) await fixture.authority.write(id, doc(id, `${id} v2\n`));
+    const counted = countingRemote(fixture);
+    const report = await pull(local, beforeFirstReadMany(counted.remote, async () => {
+      assert.equal(await fixture.authority.delete("notes/beta"), true);
+    }));
+    assert.deepEqual([...report.refreshed].sort(), ["notes/alpha", "notes/gamma"]);
+    assert.deepEqual(report.deleted, ["notes/beta"]);
+    await assert.rejects(local.backend.read("notes/beta"), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
+    assert.equal(await local.backend.readMeta(baseKey("notes/beta")), undefined);
+    for (const id of ["notes/alpha", "notes/gamma"]) assert.equal((await local.backend.read(id)).doc.body, `${id} v2\n`);
+    const status = await syncStatus(local);
+    assert.notEqual(status.lastPull?.completedAt, null);
+    assert.equal(status.lastPull?.headsDigest, undefined, "the listing still named the deleted document");
+
+    // The next pull asks unconditionally, finds nothing to fetch, and records the digest it now matches.
+    const again = countingRemote(fixture);
+    const second = await pull(local, again.remote);
+    assert.deepEqual(again.requests.map((row) => [row.path, row.status]), [[HEADS, 200]]);
+    assert.deepEqual(again.ifNoneMatch, [null]);
+    assert.deepEqual(second.refreshed, []);
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, await authorityDigest(fixture));
+  } finally {
+    local.close();
+  }
+});
+
 test("a heads answer with the first 100 of 197 rows, count 100 and the real digest is rejected before anything is diffed: nothing deleted, no digest recorded; the untampered answer then yields the normal outcome and a 304", async () => {
   const fixture = await createRemoteFixture();
   const ids = await seedMany(fixture, 200);
