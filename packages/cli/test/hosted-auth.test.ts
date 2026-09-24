@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import { CliError, EXIT, toExit } from "../src/errors.js";
 import {
+  PUBLISHED_CLIENT_ID_FIELD,
   discoverHosted,
   resolveClientId,
   resolveHostedTarget,
@@ -157,12 +158,115 @@ test("discovery reads the issuer and the published client id from protected-reso
   }
 });
 
-test("client id is provisional configuration: flag, then env, then host metadata, else a clear USAGE refusal", () => {
+test("client id: flag, then env, then host metadata, else a clear USAGE refusal naming the missing field", () => {
   const origin = "https://staging.example";
+  const metadataUrl = `${origin}/.well-known/oauth-protected-resource/mcp`;
   assert.equal(resolveClientId({ flag: "f", env: "e", published: "p", origin }).clientId, "f");
   assert.equal(resolveClientId({ env: "e", published: "p", origin }).clientId, "e");
-  assert.equal(resolveClientId({ published: "p", origin }).clientId, "p");
-  assert.throws(() => resolveClientId({ origin }), (e: CliError) => e.code === "USAGE" && /--client-id/.test(e.help ?? ""));
+  assert.deepEqual(resolveClientId({ published: "p", origin }), { clientId: "p", source: "host-metadata" });
+  assert.throws(
+    () => resolveClientId({ origin, metadataUrl }),
+    (e: CliError) =>
+      e.code === "USAGE" &&
+      e.message === `${origin} publishes no Superbee CLI client id (no superbee_cli_client_id in its protected-resource metadata)` &&
+      /--client-id <id>/.test(e.help ?? "") &&
+      /SUPERBEE_OAUTH_CLIENT_ID/.test(e.help ?? "") &&
+      (e.details as Record<string, unknown>).metadata_url === metadataUrl &&
+      (e.details as Record<string, unknown>).field === "superbee_cli_client_id",
+  );
+  // A malformed published id is the host's defect: refused as RUNTIME, but the overrides still win.
+  assert.throws(() => resolveClientId({ origin, publishedMalformed: true }), (e: CliError) => e.code === "RUNTIME" && /malformed superbee_cli_client_id/.test(e.message));
+  assert.equal(resolveClientId({ env: "e", publishedMalformed: true, origin }).clientId, "e");
+});
+
+// The gateway's protected-resource metadata as the real gateway app answers it with the reviewed
+// staging configuration record, captured from superbee-hosted (see the fixture's description).
+const CAPTURED_PRM = JSON.parse(readFileSync(path.join(here, "fixtures", "hosted-auth", "protected-resource-metadata-200.json"), "utf8")) as {
+  route: string;
+  response: { status: number; headers: Record<string, string>; body: string };
+};
+
+/** Keys and value types all the way down: the contract the fake's metadata must keep with the host's. */
+function prmShape(value: unknown): unknown {
+  if (Array.isArray(value)) return ["array", ...new Set(value.map((item) => JSON.stringify(prmShape(item))))];
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, prmShape((value as Record<string, unknown>)[key])]));
+  }
+  return value === null ? "null" : typeof value;
+}
+
+test("captured contract: the fake's protected-resource metadata has the host's shape, including superbee_cli_client_id", async () => {
+  assert.equal(CAPTURED_PRM.route, "/.well-known/oauth-protected-resource/mcp");
+  assert.equal(CAPTURED_PRM.response.status, 200);
+  const captured = JSON.parse(CAPTURED_PRM.response.body) as Record<string, unknown>;
+  assert.equal(typeof captured[PUBLISHED_CLIENT_ID_FIELD], "string", "the host publishes the CLI client id under this field");
+  const h = await harness();
+  try {
+    const response = await h.deps.fetch(`${h.host}${CAPTURED_PRM.route}`);
+    assert.equal(response.status, CAPTURED_PRM.response.status);
+    assert.deepEqual(prmShape(await response.json()), prmShape(captured));
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("discovery takes the client id from the captured host metadata", async () => {
+  const captured = JSON.parse(CAPTURED_PRM.response.body) as { resource: string; authorization_servers: string[] };
+  const target = resolveHostedTarget(new URL(captured.resource).origin);
+  const issuer = captured.authorization_servers[0]!;
+  const fetchCaptured = async (url: string): Promise<Response> => {
+    if (url === target.metadataUrl) return new Response(CAPTURED_PRM.response.body, { status: 200, headers: CAPTURED_PRM.response.headers });
+    if (url === `${issuer}.well-known/openid-configuration`)
+      return Response.json({ issuer, token_endpoint: `${issuer}oauth/token`, device_authorization_endpoint: `${issuer}oauth/device/code` });
+    return new Response("not found", { status: 404 });
+  };
+  const d = await discoverHosted(fetchCaptured, target);
+  assert.equal(d.publishedClientId, "BC9Yw7kxuHH9TGQmhlSTEghoN6UXWF2r");
+  assert.deepEqual(resolveClientId({ ...(d.publishedClientId ? { published: d.publishedClientId } : {}), origin: target.origin }), {
+    clientId: "BC9Yw7kxuHH9TGQmhlSTEghoN6UXWF2r",
+    source: "host-metadata",
+  });
+});
+
+test("discovery flags a malformed published client id instead of using it", async () => {
+  const h = await harness();
+  try {
+    for (const bad of ["", "has space", 42, "x".repeat(257), "caf\u00e9"]) {
+      h.issuer.prmOverride = { [PUBLISHED_CLIENT_ID_FIELD]: bad };
+      const d = await discoverHosted(h.deps.fetch, resolveHostedTarget(h.host));
+      assert.equal(d.publishedClientId, undefined, String(bad));
+      assert.equal(d.publishedClientIdMalformed, true, String(bad));
+    }
+    h.issuer.prmOverride = { [PUBLISHED_CLIENT_ID_FIELD]: null };
+    const d = await discoverHosted(h.deps.fetch, resolveHostedTarget(h.host));
+    assert.equal(d.publishedClientIdMalformed, undefined);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("login signs in with the host's published client id when SUPERBEE_OAUTH_CLIENT_ID is unset", async () => {
+  const h = await harness();
+  try {
+    assert.equal(h.deps.env.SUPERBEE_OAUTH_CLIENT_ID, undefined);
+    const io = { stdout: () => {}, stderr: () => {}, auth: h.deps };
+    await authRequired(login(["--host", h.host], io));
+    assert.equal([...h.issuer.devices.values()][0]?.clientId, "cli-client");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("login refuses a host that publishes a malformed client id, naming the field", async () => {
+  const h = await harness();
+  try {
+    h.issuer.prmOverride = { [PUBLISHED_CLIENT_ID_FIELD]: "has space" };
+    const io = { stdout: () => {}, stderr: () => {}, auth: h.deps };
+    await assert.rejects(login(["--host", h.host], io), (e: CliError) => e.code === "RUNTIME" && /malformed superbee_cli_client_id/.test(e.message));
+    assert.equal(h.issuer.counts.deviceCode, 0);
+  } finally {
+    await h.cleanup();
+  }
 });
 
 // ---------------------------------------------------------------------------------------------
