@@ -651,6 +651,108 @@ test("a missing keychain refuses sign-in before anyone is asked to open a link",
   }
 });
 
+test("a keychain that reads but cannot write refuses sign-in before a device code is issued", async () => {
+  // The shape `security` gives under a HOME with no default keychain: reads say not found (44), writes fail.
+  const h = await harness();
+  try {
+    const run = fakeRunner((_command, args) => {
+      if (args[0] === "find-generic-password") return { code: 44, stdout: "", stderr: "security: The specified item could not be found in the keychain." };
+      if (args[0] === "-i") {
+        return { code: 154, stdout: "", stderr: "security: SecKeychainItemCreateFromContent (<default>): The authorization was canceled by the user.\nadd-generic-password: returned -60006" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    });
+    const deps: HostedAuthDeps = { ...h.deps, env: {}, platform: "darwin", run };
+    const target = resolveHostedTarget(h.host);
+    await assert.rejects(ensureHostedAccessToken(target, {}, deps), (e: CliError) => {
+      assert.equal(e.code, "CREDENTIAL_STORE_UNAVAILABLE");
+      assert.match(e.message, /keychain write failed/);
+      assert.match(e.help ?? "", /SUPERBEE_CREDENTIAL_STORE=file/);
+      return true;
+    });
+    assert.equal(h.issuer.counts.deviceCode, 0, "no device code is issued, so none can be spent");
+    assert.ok(run.calls.some((c) => c.args[0] === "-i" && c.stdin.includes(`-a "${sessionAccount(target)} probe"`)), "the probe writes a throwaway account");
+    assert.ok(!run.calls.some((c) => c.stdin.includes(`-a "${sessionAccount(target)}" `)), "the session's own account is never written by the probe");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a store write failing after the device code is redeemed is a store error; the next run starts a fresh sign-in", async () => {
+  const h = await harness();
+  try {
+    const target = resolveHostedTarget(h.host);
+    const first = await authRequired(ensureHostedAccessToken(target, {}, h.deps));
+    h.issuer.approve();
+    h.clock.advance(1_000);
+    const file = fileSecretStore(h.home, (account) => sessionDirFor(h.home, account));
+    const refusing = {
+      kind: "file" as const,
+      get: (a: string) => file.get(a),
+      delete: (a: string) => file.delete(a),
+      set: async () => {
+        throw new CliError("CREDENTIAL_STORE_UNAVAILABLE", "cannot use the OS credential store: keychain write failed", {
+          help: `unlock or install the OS credential store and retry, or opt in with ${CREDENTIAL_STORE_ENV}=file`,
+        });
+      },
+    };
+    await assert.rejects(ensureHostedAccessToken(target, {}, { ...h.deps, store: refusing }), (e: CliError) => {
+      assert.equal(e.code, "CREDENTIAL_STORE_UNAVAILABLE");
+      assert.match(e.message, /confirmed but could not be saved/);
+      assert.equal(e.details?.reason, "store_write_failed_after_sign_in");
+      assert.equal(e.details?.sign_in_discarded, true);
+      assert.match(e.help ?? "", /SUPERBEE_CREDENTIAL_STORE=file/);
+      assert.match(e.help ?? "", /starts a fresh sign-in/);
+      return true;
+    });
+    assert.equal(h.issuer.counts.devicePoll, 1);
+    assert.equal(h.issuer.revokedFamilies.size, 1, "the unsaved refresh token is revoked, not left live");
+    assert.equal(await readSession(h.home, target), null);
+    const dir = sessionDirFor(h.home, sessionAccount(target));
+    assert.ok(!(await readdir(dir)).includes("pending.json"), "the spent device code is dropped");
+
+    // Once the store works, re-running relays a fresh link instead of polling the spent code.
+    const next = await authRequired(ensureHostedAccessToken(target, {}, h.deps));
+    assert.equal(h.issuer.counts.devicePoll, 1, "the spent code is never polled again");
+    assert.equal(h.issuer.counts.deviceCode, 2);
+    assert.notEqual((next.details as Record<string, unknown>).sign_in_url, (first.details as Record<string, unknown>).sign_in_url);
+    h.issuer.approve();
+    h.clock.advance(1_000);
+    assert.equal((await ensureHostedAccessToken(target, {}, h.deps)).source, "sign-in");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a persisted device code the issuer answers invalid_grant is dropped for a fresh link (AUTH_REQUIRED, not RUNTIME)", async () => {
+  const h = await harness();
+  try {
+    const target = resolveHostedTarget(h.host);
+    const first = await authRequired(ensureHostedAccessToken(target, {}, h.deps));
+    const dir = sessionDirFor(h.home, sessionAccount(target));
+    const spentCode = (JSON.parse(await readFile(path.join(dir, "pending.json"), "utf8")) as { device_code: string }).device_code;
+    h.issuer.devices.clear(); // The issuer no longer knows the code, as after a redemption whose save was lost.
+    h.clock.advance(1_000);
+    const fresh = await authRequired(ensureHostedAccessToken(target, {}, h.deps));
+    const details = fresh.details as Record<string, unknown>;
+    assert.equal(fresh.exitCode, EXIT.AUTH);
+    assert.equal(details.reason, "previous_code_rejected");
+    assert.notEqual(details.sign_in_url, (first.details as Record<string, unknown>).sign_in_url);
+    assert.notEqual(details.user_code, (first.details as Record<string, unknown>).user_code);
+    assert.match(String(details.resume), /login --host/);
+    assert.equal(h.issuer.counts.devicePoll, 1);
+    assert.equal(h.issuer.counts.deviceCode, 2);
+    const pending = JSON.parse(await readFile(path.join(dir, "pending.json"), "utf8")) as { device_code: string };
+    assert.notEqual(pending.device_code, spentCode, "the rejected code is replaced");
+
+    h.issuer.approve();
+    h.clock.advance(1_000);
+    assert.equal((await ensureHostedAccessToken(target, {}, h.deps)).source, "sign-in");
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test("the file store keeps the refresh token 0600 inside the private state root", async () => {
   const h = await harness();
   try {
@@ -1090,7 +1192,7 @@ test("signIn:false: no session at all is signed_out without any request", async 
   }
 });
 
-test("a busy session lock is session_busy inside the caller's lock wait, not the 50-second default", async () => {
+test("a busy session lock is session_busy inside the caller's lock wait, not the 65-second default", async () => {
   const h = await harness();
   try {
     await signIn(h);
