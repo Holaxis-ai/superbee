@@ -77,6 +77,10 @@ export const UPDATE_ANSWER_ROWS: readonly UpdateAnswerRow[] = Object.freeze([
   { answer: "200 document_exists", recorded: "settled-only", outcome: "refused" },
   { answer: "200 candidate_unavailable", recorded: "settled-only", outcome: "refused" },
   { answer: "200 candidate_recovery_unavailable", recorded: "settled-only", outcome: "refused" },
+  // A create whose id is not canonical, or folds onto a stored document's id (hosted kernel,
+  // tasks/canonical-document-ids-across-surfaces): definitive, like the rows above.
+  { answer: "200 document_id_not_canonical", recorded: "settled-only", outcome: "refused" },
+  { answer: "200 document_id_collision", recorded: "settled-only", outcome: "refused" },
   // The sync quota, refused before dispatch; the row's outcome code is chosen by the scope the answer names.
   { answer: "200 request_capacity", recorded: "no", outcome: "refused" },
   { answer: "429 request_capacity", recorded: "no", outcome: "refused" },
@@ -175,6 +179,8 @@ export const WRITE_ERROR_CODES = Object.freeze([
   "internal_error",
   "candidate_unavailable",
   "candidate_recovery_unavailable",
+  "document_id_not_canonical",
+  "document_id_collision",
   "request_capacity",
 ] as const);
 export type WriteErrorCode = (typeof WRITE_ERROR_CODES)[number];
