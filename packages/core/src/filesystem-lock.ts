@@ -239,6 +239,10 @@ async function quarantineStaleLock(
   policy: FilesystemHostPolicy,
 ): Promise<boolean> {
   if (owner.hostname !== hostname() || processExists(owner.pid)) return false;
+  // Death was established for this owner's snapshot. If the path no longer carries that owner's
+  // record, the lock changed hands after the snapshot and the rename would move a live lock.
+  const current = await readOwner(lockPath);
+  if (current === null || current.token !== owner.token) return false;
   const quarantinePath = staleLockQuarantinePath(lockPath, owner);
   try {
     await fs.rename(lockPath, quarantinePath);
@@ -339,14 +343,17 @@ async function canonicalTargetInDirectory(directory: string, requestedBasename: 
  * a lock reached through its own fold key holds the same identity by construction, but nothing
  * here re-derives that from an arbitrary `owner.json`, so it must not assert the equivalence.
  */
-function timeoutError(
+async function timeoutError(
   lockPath: string,
   owner: FilesystemMutationLockOwner | null,
   guarded: string,
-): FilesystemMutationLockError {
+): Promise<FilesystemMutationLockError> {
   const malformed = owner === null;
   const sameHost = owner?.hostname === hostname();
-  const stale = owner !== null && sameHost && !processExists(owner.pid);
+  // A dead-owner answer is only about the snapshot; report it as stale only while the path still
+  // carries that owner's record, because the lock may have been released and claimed since.
+  const stale = owner !== null && sameHost && !processExists(owner.pid) &&
+    (await readOwner(lockPath))?.token === owner.token;
   let message: string;
   if (malformed) {
     message =
@@ -443,7 +450,7 @@ async function claimLockPath(
         existingOwner = await readOwner(lockPath);
       }
 
-      if (Date.now() - started >= waitMs) throw timeoutError(lockPath, existingOwner, owner.target);
+      if (Date.now() - started >= waitMs) throw await timeoutError(lockPath, existingOwner, owner.target);
       await delay(pollMs);
       continue;
     }
