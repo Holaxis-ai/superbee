@@ -157,7 +157,10 @@ export function filesystemPushRoleLocks(options: FilesystemPushRoleOptions = {})
       } catch (error) {
         if (!(error instanceof FilesystemMutationLockError) || !heldByLiveClaim(error)) throw error;
         const owner = error.owner;
-        if (owner !== null && owner.hostname === hostname()) {
+        // This process's own id is never asked: the lock already reports as stale a record under it
+        // that an earlier process left, so a younger start here could only be a forward clock step
+        // past a claim this process still holds.
+        if (owner !== null && owner.hostname === hostname() && owner.pid !== process.pid) {
           const started = await startedAt(owner.pid);
           // The named owner is a snapshot. Its PID answering for a younger process proves it gone
           // only while the lock still carries its record after that answer; a holder that released

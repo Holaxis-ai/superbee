@@ -209,6 +209,30 @@ test("a holder whose process id now belongs to a younger process is reported as 
   }
 });
 
+test("this process's own held role is never reported as a stale owner, even when its start time reads younger than the claim", async () => {
+  const { root, cleanup } = await lockRoot();
+  try {
+    const locks = filesystemPushRoleLocks({ lockRoot: root, waitMs: 40, contentionWaitMs: 40, pollMs: 5 });
+    let releaseHold!: () => void;
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => (entered = resolve));
+    const holding = locks.request(ROLE, {}, async () => {
+      entered();
+      await new Promise<void>((resolve) => (releaseHold = resolve));
+    });
+    await inside;
+    // What `ps` reports for this process after the wall clock steps forward an hour past its claim.
+    const stepped = filesystemPushRoleLocks({ lockRoot: root, waitMs: 40, contentionWaitMs: 40, pollMs: 5, processStartedAt: async () => Date.now() + 60 * 60 * 1000 });
+    await assert.rejects(stepped.request(ROLE, {}, async () => "never"), (error: unknown) =>
+      error instanceof FilesystemMutationLockError && !(error instanceof PushRoleStaleOwnerError) && error.owner?.pid === process.pid);
+    assert.deepEqual(await withRole(stepped, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+    releaseHold();
+    await holding;
+  } finally {
+    await cleanup();
+  }
+});
+
 test("a waiting request whose holder's process id now belongs to a younger process rejects as a stale owner, not as held", async () => {
   const { root, cleanup } = await lockRoot();
   const reuser = liveProcess();
