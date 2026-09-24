@@ -17,16 +17,16 @@
 // device authorization, persists it, and returns AUTH_REQUIRED carrying one link to relay. Running
 // the same command again polls once and, when the person has confirmed, completes sign-in and
 // carries on.
-import { mkdir, stat, unlink } from "node:fs/promises";
+import { mkdir, realpath, stat, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { FilesystemMutationLockError } from "@superbee/core";
 
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
-import { withCliFilesystemMutationLock } from "../filesystem-runtime.js";
+import { cliFilesystemRuntime, withCliFilesystemMutationLock } from "../filesystem-runtime.js";
 import { ensureUserStateRoot, readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
 import {
   REQUESTED_SCOPE,
@@ -311,8 +311,18 @@ export async function withSessionLock<T>(target: HostedTarget, deps: HostedAuthD
     );
   } catch (error) {
     if (!(error instanceof FilesystemMutationLockError) || bodyError?.error === error) throw error;
-    throw entered ? sessionLockReleaseFailure(error, target) : await sessionLockFailure(error, target);
+    if (entered) throw sessionLockReleaseFailure(error, target);
+    // A refused lock root (not a private directory of this user) is not the session lock being
+    // held, and its age says nothing about a holder: pass the refusal through unchanged.
+    if (!(await namesSessionLock(error.lockPath, dir))) throw error;
+    throw await sessionLockFailure(error, target);
   }
+}
+
+/** Whether a claim failure names the session lock itself rather than the lock root around it. */
+async function namesSessionLock(lockPath: string, sessionDir: string): Promise<boolean> {
+  const canonical = await realpath(sessionDir).then((real) => join(real, "session"), () => null);
+  return canonical !== null && basename(cliFilesystemRuntime().mutationLockPath(canonical)) === basename(lockPath);
 }
 
 /** Why the session lock could not be taken: busy while its holder may still finish, else orphaned. */
