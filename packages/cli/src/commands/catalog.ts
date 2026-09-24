@@ -30,7 +30,7 @@ is explicit: the catalog never crawls for or silently enrolls workspaces.
 
 Commands:
   add       Register the resolved local bundle under a unique label (idempotent for the same pair)
-  list      List registered workspaces and their currently derived availability
+  list      List registered workspaces with their currently derived availability and home
   resolve   Revalidate and return exactly one registered workspace
 
 Options:
@@ -38,6 +38,11 @@ Options:
   --field path   resolve: print only the canonical path plus a newline
   --json         Emit compact JSON instead of TOON
   -h, --help     Show this help
+
+Each entry reports its home, derived from the folder now and never stored: local, git (a Git
+board) or hosted (a hosted checkout, with its host, bundle id and checked_out_at). The local MCP
+app serves a hosted entry read-only: its writes cannot sync, so they are refused with 'do this in
+the Superbee app'.
 
 The catalog only selects a target. Pass a resolved path explicitly to ordinary commands with
 --dir; there is no process-global active workspace and no implicit cross-bundle operation.
@@ -58,6 +63,8 @@ function entryReceipt(entry: CatalogEntryView): Record<string, unknown> {
     label: entry.label,
     locator: entry.locator,
     available: entry.available,
+    home: entry.home,
+    ...(entry.hosted ? { hosted: entry.hosted } : {}),
   };
 }
 
@@ -138,7 +145,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
         {
           catalog: result.changed ? "added" : "unchanged",
           changed: result.changed,
-          ...entryReceipt({ ...result.entry, available: true }),
+          ...entryReceipt(await resolveCatalogEntry(result.entry.id, home())),
           help: [`${cliInvocation()} catalog resolve ${commandToken(result.entry.label)} --field path`],
         },
         resolveMode(parsed.values),

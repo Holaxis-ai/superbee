@@ -50,6 +50,7 @@ import { createHostedSyncClient, hostedFailure, syncRoutePrefix, WORKSPACE_HEADE
 import { HOSTED_CHECKOUT_REFUSALS } from "../hosted/refusals.js";
 import { digestOf, exportFresh, findPathCollision, ROOT_INDEX } from "../hosted/projection.js";
 import { writeProjection } from "../hosted/sync-scan.js";
+import { addCatalogEntry, assertCatalogLabel, loadCatalog } from "../catalog.js";
 
 /**
  * Checkout refuses a bundle over this many documents until paged heads and snapshot land: the
@@ -74,6 +75,10 @@ with --dir <folder>. The link to the host is kept in private state, keyed by the
 never in the folder. Re-running for the same folder and bundle is a no-op. A checkout whose folder
 was deleted, or replaced by a new empty folder, is replaced, unless it holds changes sync has not
 sent yet; a checkout emptied in place is refused, because removing every file is a pending edit.
+
+A new checkout is added to your workspace catalog under its bundle id (or the id with -2 to -9
+when that label is taken), so other sessions and the local MCP app can find it; 'catalog list'
+shows it with home: hosted. The local MCP app serves it read-only.
 
 --release <folder> forgets the checkout at that folder: its private binding and store are removed
 and the folder's files are left as they are. Releasing a folder that is not a checkout is a no-op.
@@ -558,11 +563,13 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
     });
 
   const replacedBinding = replaced as CheckoutBinding | null;
+  const cataloged = await registerInCatalog(deps.auth.home, result.binding);
   deps.stdout(
     render(
       {
         checkout: "created",
         ...bindingView(result.binding),
+        catalog: cataloged,
         documents: result.documents,
         root_index: result.root,
         heads_digest: result.digest,
@@ -574,6 +581,37 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       mode,
     ),
   );
+}
+
+/** Catalog labels tried for a checkout: the bundle id, then `-2` to `-9` when another entry holds it. */
+function catalogLabels(bundleId: string): string[] {
+  const base = bundleId.slice(0, 60).replace(/[._-]+$/, "");
+  return [base, ...Array.from({ length: 8 }, (_, index) => `${base}-${index + 2}`)].filter((label) => {
+    try {
+      assertCatalogLabel(label);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Register a new checkout in the person's workspace catalog, so other sessions and the local MCP
+ * app can find it; the catalog derives its home (hosted) from the binding. Registration never
+ * fails the checkout: the receipt says what happened and how to do it by hand.
+ */
+async function registerInCatalog(home: string, binding: CheckoutBinding): Promise<Record<string, unknown>> {
+  const byHand = `${cliInvocation()} catalog add <label> --dir ${commandToken(binding.path)}`;
+  try {
+    const taken = new Set((await loadCatalog(home)).entries.map((entry) => entry.label));
+    const label = catalogLabels(binding.bundle_id).find((candidate) => !taken.has(candidate));
+    if (label === undefined) return { registered: false, note: "every catalog label for this bundle id is taken", help: byHand };
+    const { entry } = await addCatalogEntry(label, binding.path, { home });
+    return { registered: true, label: entry.label, id: entry.id, home: "hosted" };
+  } catch (error) {
+    return { registered: false, note: error instanceof Error ? error.message : String(error), help: byHand };
+  }
 }
 
 /** The refused command families, as the receipt lists them. */

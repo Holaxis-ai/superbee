@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { resolveLocalBundleTarget, samePhysicalPath } from "./bundle.js";
+import { bundleHomeAt, type BundleHome } from "./bundle-home.js";
 import { credentialsDir } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
@@ -38,8 +39,17 @@ export interface CatalogFile {
   entries: CatalogEntry[];
 }
 
+/**
+ * An entry as a command shows it: the stored entry plus what is true of its folder now. `home` is
+ * derived on every read (bundle-home.ts), never stored: the catalog file stays schema version 1,
+ * which earlier CLIs read with an exact-keys check, and a stored hint would go stale the moment a
+ * checkout is released or a board is established.
+ */
 export interface CatalogEntryView extends CatalogEntry {
   available: boolean;
+  home: BundleHome;
+  /** For a hosted checkout: where it is from, and when it was checked out. */
+  hosted?: { host: string; bundle_id: string; checked_out_at: string };
 }
 
 export interface CatalogOptions {
@@ -377,12 +387,21 @@ async function entryAvailable(entry: CatalogEntry): Promise<boolean> {
   }
 }
 
+/** The entry's home now: an unavailable folder reads as local, since nothing there can be synced. */
+async function entryView(entry: CatalogEntry, available: boolean, home: string): Promise<CatalogEntryView> {
+  if (!available) return { ...entry, available, home: "local" };
+  const facts = await bundleHomeAt(entry.locator.path, { home });
+  if (facts.home !== "hosted") return { ...entry, available, home: facts.home };
+  const { binding } = facts;
+  return { ...entry, available, home: "hosted", hosted: { host: binding.origin, bundle_id: binding.bundle_id, checked_out_at: binding.created_at } };
+}
+
 export async function listCatalogEntries(home: string = homedir()): Promise<CatalogEntryView[]> {
   const catalog = await loadCatalog(home);
   return Promise.all(
     [...catalog.entries]
       .sort((a, b) => a.label.localeCompare(b.label))
-      .map(async (entry) => ({ ...entry, available: await entryAvailable(entry) })),
+      .map(async (entry) => entryView(entry, await entryAvailable(entry), home)),
   );
 }
 
@@ -415,5 +434,5 @@ export async function resolveCatalogEntry(
       help: `restore the bundle at ${entry.locator.path}, then retry`,
     });
   }
-  return { ...entry, available: true };
+  return entryView(entry, true, home);
 }
