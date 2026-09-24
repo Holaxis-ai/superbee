@@ -41,7 +41,7 @@ async function sandbox(): Promise<Sandbox> {
   const env = isolatedUserEnv(home, {
     SUPERBEE_TEST_NETWORK_LOG: log,
     SUPERBEE_NO_UPDATE_CHECK: "1",
-    SUPERBEE_ACTOR: "agent:zero-network",
+    SUPERBEE_ACTOR: "process:zero-network",
     NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
   });
   for (const key of Object.keys(env)) {
@@ -70,7 +70,23 @@ async function networkLog(box: Sandbox): Promise<string[]> {
   }
 }
 
-/** Every read, write and sync verb a persona-A session uses, in one bundle. */
+/**
+ * Every read, write and sync verb a persona-A session uses, in one bundle, and the exit code each
+ * must return: 0, except `whoami` with no hosted host selected (USAGE, 2).
+ */
+function expectedCode(args: string[]): number {
+  return args[0] === "whoami" ? 2 : 0;
+}
+
+/** Run one command and require its expected exit code and no refused network call. */
+async function runExpecting(box: Sandbox, args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  const result = await run(box, args, cwd);
+  const transcript = `${args.join(" ")} (exit ${result.code}): ${result.stdout}${result.stderr}`;
+  assert.doesNotMatch(result.stdout + result.stderr, /network access refused/, transcript);
+  assert.equal(result.code, expectedCode(args), transcript);
+  return result;
+}
+
 function localCommands(): string[][] {
   return [
     ["doc", "write", "notes/first", "--type", "Note", "--title", "First", "--body", "One."],
@@ -119,6 +135,25 @@ test("the deny-network preload catches fetch, http and net from a child process"
   }
 });
 
+test("a network call injected into the built CLI is recorded, so the zero-network assertions can fail", async () => {
+  const box = await sandbox();
+  try {
+    const project = path.join(box.root, "project");
+    await mkdir(project);
+    await runExpecting(box, ["init", "--recipe", "none"], project);
+    const inject = pathToFileURL(path.join(here, "fixtures", "inject-fetch.mjs")).href;
+    const injected: Sandbox = { ...box, env: { ...box.env, NODE_OPTIONS: `${box.env.NODE_OPTIONS} --import=${inject}` } };
+    await run(injected, ["list"], project);
+    const calls = (await networkLog(box)).map((line) => JSON.parse(line) as { api: string; target: string; argv: string[] });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.api, "fetch");
+    assert.equal(calls[0]!.target, "http://example.invalid/injected");
+    assert.deepEqual(calls[0]!.argv.slice(-1), ["list"]);
+  } finally {
+    await rm(box.root, { recursive: true, force: true });
+  }
+});
+
 test("a local bundle makes zero network calls across every read, write and sync", async () => {
   const box = await sandbox();
   try {
@@ -126,10 +161,10 @@ test("a local bundle makes zero network calls across every read, write and sync"
     await mkdir(project);
     const init = await run(box, ["init", "--recipe", "none"], project);
     assert.equal(init.code, 0, init.stderr || init.stdout);
-    for (const args of localCommands()) {
-      const result = await run(box, args, project);
-      assert.doesNotMatch(result.stdout + result.stderr, /network access refused/, `${args.join(" ")}: ${result.stdout}${result.stderr}`);
-    }
+    for (const args of localCommands()) await runExpecting(box, args, project);
+    // The writes really ran: the documents and the link are there.
+    const listed = JSON.parse((await runExpecting(box, ["list", "--json"], project)).stdout) as { count: number };
+    assert.equal(listed.count, 2);
     const locate = await run(box, ["bundle", "locate", "--json"], project);
     assert.equal((JSON.parse(locate.stdout) as { home: string }).home, "local");
     assert.deepEqual(await networkLog(box), []);
@@ -157,15 +192,12 @@ test("a Git board makes zero network calls across establish, join, sync, pull an
       [founder, ["sync", "--establish"]],
       ...localCommands().map((args): [string, string[]] => [founder, args]),
     ];
-    for (const [cwd, args] of steps) {
-      const result = await run(box, args, cwd);
-      assert.doesNotMatch(result.stdout + result.stderr, /network access refused/, `${args.join(" ")}: ${result.stdout}${result.stderr}`);
-    }
+    for (const [cwd, args] of steps) await runExpecting(box, args, cwd);
     execFileSync("git", ["clone", "-q", origin, teammate], { env: { ...box.env, NODE_OPTIONS: "" } });
-    for (const args of [["sync"], ["list"], ["session-start"], ["status"], ["sync", "--pull-only"]]) {
-      const result = await run(box, args, teammate);
-      assert.doesNotMatch(result.stdout + result.stderr, /network access refused/, `${args.join(" ")}: ${result.stdout}${result.stderr}`);
-    }
+    // The founder's final sync pushed the documents; the teammate's clone joins and sees them.
+    for (const args of [["sync"], ["list"], ["session-start"], ["status"], ["sync", "--pull-only"]]) await runExpecting(box, args, teammate);
+    const joined = JSON.parse((await runExpecting(box, ["list", "--json"], teammate)).stdout) as { count: number };
+    assert.equal(joined.count, 2);
 
     const locate = JSON.parse((await run(box, ["bundle", "locate", "--json"], founder)).stdout) as { home: string; board: { shared: boolean } };
     assert.equal(locate.home, "git");
