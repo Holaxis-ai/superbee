@@ -40,6 +40,7 @@ import {
   baseKey,
   bootstrap,
   commitLocal,
+  deleteLocal,
   isComplete,
   openLocalBundle,
   pull,
@@ -1687,6 +1688,151 @@ test("pull removes documents the authority deleted, with their base, and retains
     assert.deepEqual(conflict?.remote, { version: null, content: null });
     assert.equal((await local.backend.read(editedId)).doc.body, "edited before the authority deleted it\n");
     assert.equal(await fixture.authority.exists(editedId), false);
+  } finally {
+    local.close();
+  }
+});
+
+test("an acknowledgement moves the working copy past the digest it last matched: another writer returning the authority to that digest is still brought in, whichever marker recorded it and whatever the acknowledged change", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    const bootstrapped = await bootstrap(fixture.remote, local);
+    const alpha = await fixture.authority.read("notes/alpha");
+
+    // An edit acknowledged against the bootstrap's digest, then reverted by another writer.
+    await commitLocal(local, "notes/alpha", edit("alpha v2 mine\n"));
+    assert.deepEqual((await push(local, fixture.transport, { remote: fixture.remote, write: immediate })).settled.map((row) => row.state), ["acknowledged"]);
+    await fixture.authority.write("notes/alpha", alpha.doc);
+    assert.equal(await authorityDigest(fixture), bootstrapped.headsDigest, "the authority is back at the digest the bootstrap recorded");
+    const reverted = countingRemote(fixture);
+    const first = await pull(local, reverted.remote);
+    assert.deepEqual(reverted.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200]]);
+    assert.equal(reverted.ifNoneMatch[0], null, "no digest describes the working copy after the acknowledgement");
+    assert.deepEqual(first.refreshed, ["notes/alpha"]);
+    assert.equal((await local.backend.read("notes/alpha")).doc.body, alpha.doc.body);
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, bootstrapped.headsDigest);
+
+    // A create acknowledged against that pull's digest, then deleted by another writer.
+    await commitLocal(local, "notes/delta", create("delta mine\n"));
+    assert.deepEqual((await push(local, fixture.transport, { remote: fixture.remote, write: immediate })).settled.map((row) => row.state), ["acknowledged"]);
+    assert.equal(await fixture.authority.delete("notes/delta"), true);
+    assert.equal(await authorityDigest(fixture), bootstrapped.headsDigest);
+    const second = await pull(local, fixture.remote);
+    assert.deepEqual(second.deleted, ["notes/delta"]);
+    assert.deepEqual((await local.backend.list()).sort(), ["notes/alpha", "notes/beta", "notes/gamma"]);
+
+    // A deletion acknowledged, then the same document written back by another writer. The
+    // fixture's transport carries writes only, so this one applies the deletion itself.
+    const beta = await fixture.authority.read("notes/beta");
+    assert.equal((await deleteLocal(local, "notes/beta")).deleted, true);
+    const deleting: OperationTransport = {
+      async submit(intent) {
+        assert.equal(await fixture.authority.delete(intent.target), true);
+        return { kind: "committed", version: "sha256:" + "7".repeat(64) };
+      },
+      async lookup() { return null; },
+    };
+    assert.deepEqual((await push(local, deleting, { remote: fixture.remote, write: immediate })).settled.map((row) => row.state), ["acknowledged"]);
+    await fixture.authority.write("notes/beta", beta.doc);
+    assert.equal(await authorityDigest(fixture), bootstrapped.headsDigest);
+    // An acknowledgement and a pull's start compare as millisecond timestamps; the last check
+    // needs this pull to start strictly after the acknowledgement.
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const third = await pull(local, fixture.remote);
+    assert.deepEqual(third.refreshed, ["notes/beta"]);
+    assert.equal((await local.backend.read("notes/beta")).version, beta.version);
+
+    // A pull that starts after the acknowledgements records a digest the next pull offers again.
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+  } finally {
+    local.close();
+  }
+});
+
+/** `remote` with `between` run once, after the heads listing and before the first document fetch. */
+function beforeFirstReadMany(remote: StorageBackend, between: () => Promise<void>): StorageBackend {
+  let first = true;
+  return new Proxy(remote, {
+    get(target, prop) {
+      if (prop === "readMany") {
+        return async (ids: ConceptId[]) => {
+          if (first) {
+            first = false;
+            await between();
+          }
+          return target.readMany(ids);
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as StorageBackend;
+}
+
+test("a document that moves between the heads listing and its fetch leaves no digest recorded, so a return to the listed state is fetched rather than answered 304", async () => {
+  // "moved on": fetched past the listing, refreshed. "back to base": fetched at the local base, unchanged.
+  for (const [shape, during] of [["moved on", "gamma v3\n"], ["back to base", "gamma v1\n"]] as const) {
+    const fixture = await seededFixture();
+    const local = openLocal(new IDBFactory());
+    try {
+      await bootstrap(fixture.remote, local);
+      await fixture.authority.write("notes/gamma", doc("notes/gamma", "gamma v2\n"));
+      const listedVersion = (await fixture.authority.read("notes/gamma")).version;
+      const counted = countingRemote(fixture);
+      await pull(local, beforeFirstReadMany(counted.remote, async () => {
+        await fixture.authority.write("notes/gamma", doc("notes/gamma", during));
+      }));
+      assert.deepEqual(counted.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200]], shape);
+      assert.equal((await local.backend.read("notes/gamma")).doc.body, during, shape);
+      const status = await syncStatus(local);
+      assert.notEqual(status.lastPull?.completedAt, null, shape);
+      assert.equal(status.lastPull?.headsDigest, undefined, shape);
+
+      // The authority returns to exactly the listed state; the next pull asks unconditionally.
+      await fixture.authority.write("notes/gamma", doc("notes/gamma", "gamma v2\n"));
+      assert.equal((await fixture.authority.read("notes/gamma")).version, listedVersion, shape);
+      const again = countingRemote(fixture);
+      const second = await pull(local, again.remote);
+      assert.deepEqual(again.ifNoneMatch, [null, null], shape);
+      assert.deepEqual(second.refreshed, ["notes/gamma"], shape);
+      assert.equal((await local.backend.read("notes/gamma")).doc.body, "gamma v2\n", shape);
+      assert.equal((await syncStatus(local)).lastPull?.headsDigest, await authorityDigest(fixture), shape);
+    } finally {
+      local.close();
+    }
+  }
+});
+
+test("a listed document deleted before its fetch is answered as absent: the pull completes, refreshes the rest and removes it, with no digest recorded", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    await bootstrap(fixture.remote, local);
+    const ids = ["notes/alpha", "notes/beta", "notes/gamma"];
+    for (const id of ids) await fixture.authority.write(id, doc(id, `${id} v2\n`));
+    const counted = countingRemote(fixture);
+    const report = await pull(local, beforeFirstReadMany(counted.remote, async () => {
+      assert.equal(await fixture.authority.delete("notes/beta"), true);
+    }));
+    assert.deepEqual([...report.refreshed].sort(), ["notes/alpha", "notes/gamma"]);
+    assert.deepEqual(report.deleted, ["notes/beta"]);
+    await assert.rejects(local.backend.read("notes/beta"), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
+    assert.equal(await local.backend.readMeta(baseKey("notes/beta")), undefined);
+    for (const id of ["notes/alpha", "notes/gamma"]) assert.equal((await local.backend.read(id)).doc.body, `${id} v2\n`);
+    const status = await syncStatus(local);
+    assert.notEqual(status.lastPull?.completedAt, null);
+    assert.equal(status.lastPull?.headsDigest, undefined, "the listing still named the deleted document");
+
+    // The next pull asks unconditionally, finds nothing to fetch, and records the digest it now matches.
+    const again = countingRemote(fixture);
+    const second = await pull(local, again.remote);
+    assert.deepEqual(again.requests.map((row) => [row.path, row.status]), [[HEADS, 200]]);
+    assert.deepEqual(again.ifNoneMatch, [null]);
+    assert.deepEqual(second.refreshed, []);
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, await authorityDigest(fixture));
   } finally {
     local.close();
   }

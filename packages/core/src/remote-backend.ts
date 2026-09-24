@@ -103,9 +103,13 @@ export interface RemoteBackendOptions {
    * e.g. a Cloudflare D1 cold-start's 500 "storage caused object to be reset" when a hibernated
    * database is first hit) or a network/transport error. Each retry backs off exponentially with
    * jitter. A 4xx (incl. 412 VersionConflict), 401, or any 2xx is a REAL result, never retried.
-   * Default 3; set 0 to disable. Safe because every op is content-addressed + CAS: a retried write
-   * lands the same version or a conflict — possibly SPURIOUS, if a prior attempt actually committed
-   * before its response was lost — but never silent data loss; and a retried read is idempotent.
+   * Default 3; set 0 to disable. A retried read is idempotent. A retried guarded write lands the
+   * same version or a conflict — possibly SPURIOUS, if a prior attempt actually committed before
+   * its response was lost. It is not free of lost updates: versions are content hashes, so if
+   * another writer returns the document to the exact state the premise names before a retry
+   * arrives, the retry applies the write again over that change and reports success. An
+   * unconditional write can simply be repeated. A write with `requestId` against a host with
+   * `operations` is answered from the recorded outcome instead.
    */
   maxRetries?: number;
 }
@@ -302,15 +306,17 @@ export class RemoteBackend implements StorageBackend {
     // object reset" when a hibernated database is first hit; also 502/503/504 from the edge) or a
     // network/transport error — with exponential backoff + jitter, so a hibernated-backend hiccup is
     // transparent instead of a hard failure. A REAL result (2xx, or 4xx incl. 412 VersionConflict,
-    // or 401) returns/throws immediately, never retried. Safe because every op is content-addressed
-    // + CAS: a retried write lands the same version or a conflict (possibly SPURIOUS — a prior
-    // attempt may have committed before its response was lost — but never silent data loss); a
-    // retried read is idempotent. `send` rebuilds the Request per attempt from `init` (bodies are
-    // strings/bytes, so reusable — no consumed-stream hazard).
+    // or 401) returns/throws immediately, never retried. A retried read is idempotent. A retried
+    // guarded write lands the same version or a conflict (possibly SPURIOUS — a prior attempt may
+    // have committed before its response was lost), except that a document returned in between
+    // to exactly the state its premise names (the same bytes hash to the same version) lets the
+    // retry apply again over that change; see `maxRetries`. `send` rebuilds the Request per
+    // attempt from `init` (bodies are strings/bytes, so reusable — no consumed-stream hazard).
     //
     // A write that carries `Idempotency-Key` is different again: its transient retries are true
-    // replays, answered from the authority's recorded outcome, so a retry after a lost response
-    // can neither apply twice nor surface a spurious conflict against its own earlier application.
+    // replays, answered from the authority's recorded outcome while it keeps that record, so a
+    // retry after a lost response can neither apply twice nor surface a spurious conflict against
+    // its own earlier application.
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await this.fetchImpl(new Request(url, init));

@@ -5,13 +5,13 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fork, spawnSync, type ChildProcess } from "node:child_process";
+import { fork, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { FilesystemMutationLockError } from "../src/filesystem-lock.js";
+import { acquireFilesystemIdentityLock, FilesystemMutationLockError } from "../src/filesystem-lock.js";
 import { filesystemPushRoleLocks, processStartedAtFromPs, psEnvironment, PushRoleStaleOwnerError, pushRoleLockKey, type PushRoleLockManager } from "../src/filesystem-push-role.js";
 import { hostname } from "node:os";
 
@@ -189,6 +189,87 @@ test("a holder whose process id now belongs to a younger process is reported as 
     const silent = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10, processStartedAt: async () => null });
     assert.deepEqual(await withRole(silent, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
   } finally {
+    await cleanup();
+  }
+});
+
+test("a holder that released and exited before the timeout is never judged in place of the live replacement", async () => {
+  const { root, cleanup } = await lockRoot();
+  const released = spawn("sleep", ["30"], { stdio: "ignore" });
+  const releasedExited = new Promise<void>((resolve) => released.once("exit", () => resolve()));
+  const releasedPid = released.pid!;
+  let releaseReplacement: (() => Promise<void>) | undefined;
+  const mutable = fs as unknown as Record<string, unknown>;
+  const originalReadFile = fs.readFile;
+  try {
+    const key = pushRoleLockKey(ROLE);
+    await plantOwner(root, releasedPid, Date.now());
+    const lock = path.join(root, `${key}.lock`);
+    const ownerFile = path.join(lock, "owner.json");
+    // Right after the claimer's last owner read, the planted holder releases and exits and a live
+    // replacement claims the role. The released holder's PID then belongs to a younger process.
+    let reads = 0;
+    mutable.readFile = async (...args: unknown[]) => {
+      const content = await (originalReadFile as (...a: unknown[]) => Promise<unknown>)(...args);
+      if (String(args[0]) === ownerFile && ++reads === 2) {
+        await fs.rm(lock, { recursive: true, force: true });
+        released.kill("SIGKILL");
+        await releasedExited;
+        releaseReplacement = await acquireFilesystemIdentityLock(key, ROLE, { lockRoot: root, waitMs: 0, pollMs: 2 });
+      }
+      return content;
+    };
+    const locks = filesystemPushRoleLocks({
+      lockRoot: root,
+      contentionWaitMs: 0,
+      pollMs: 2,
+      processStartedAt: async (pid) => (pid === releasedPid ? Date.now() + 60_000 : null),
+    });
+    assert.deepEqual(await withRole(locks, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+    assert.ok(releaseReplacement, "the replacement claimed the role inside the window");
+  } finally {
+    mutable.readFile = originalReadFile;
+    released.kill("SIGKILL");
+    await releaseReplacement?.().catch(() => {});
+    await cleanup();
+  }
+});
+
+test("a holder that released while its process id stayed occupied is never judged in place of the live replacement", async () => {
+  const { root, cleanup } = await lockRoot();
+  // PID reuse leaves the released holder's id occupied when the timeout is diagnosed. Keeping the
+  // released holder's process alive occupies it; the start-time seam reports a younger process.
+  const released = spawn("sleep", ["30"], { stdio: "ignore" });
+  const releasedPid = released.pid!;
+  let releaseReplacement: (() => Promise<void>) | undefined;
+  const mutable = fs as unknown as Record<string, unknown>;
+  const originalReadFile = fs.readFile;
+  try {
+    const key = pushRoleLockKey(ROLE);
+    await plantOwner(root, releasedPid, Date.now());
+    const lock = path.join(root, `${key}.lock`);
+    const ownerFile = path.join(lock, "owner.json");
+    let reads = 0;
+    mutable.readFile = async (...args: unknown[]) => {
+      const content = await (originalReadFile as (...a: unknown[]) => Promise<unknown>)(...args);
+      if (String(args[0]) === ownerFile && ++reads === 2) {
+        await fs.rm(lock, { recursive: true, force: true });
+        releaseReplacement = await acquireFilesystemIdentityLock(key, ROLE, { lockRoot: root, waitMs: 0, pollMs: 2 });
+      }
+      return content;
+    };
+    const locks = filesystemPushRoleLocks({
+      lockRoot: root,
+      contentionWaitMs: 0,
+      pollMs: 2,
+      processStartedAt: async (pid) => (pid === releasedPid ? Date.now() + 60_000 : null),
+    });
+    assert.deepEqual(await withRole(locks, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+    assert.ok(releaseReplacement, "the replacement claimed the role inside the window");
+  } finally {
+    mutable.readFile = originalReadFile;
+    released.kill("SIGKILL");
+    await releaseReplacement?.().catch(() => {});
     await cleanup();
   }
 });

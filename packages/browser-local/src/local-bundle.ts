@@ -181,6 +181,8 @@ function bundleOf(target: LocalTarget): Bundle {
 const BOOTSTRAP_KEY = "bootstrap";
 const SYNC_KEY = "sync";
 const PULL_KEY = "pull";
+/** When the latest acknowledgement settled; see {@link lastKnownDigest}. */
+const ACKNOWLEDGED_KEY = "acknowledged";
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
 /** Meta key for the shared base of one document. */
@@ -249,6 +251,10 @@ export interface SyncControl {
   paused: boolean;
   reason?: string;
   since?: string;
+}
+
+interface AcknowledgedMarker {
+  at: string;
 }
 
 export interface PullMarker {
@@ -1413,6 +1419,8 @@ export async function settleIntent(
   outcome = settleAgainstIntent(outcome, current);
   switch (outcome.kind) {
     case "committed": {
+      // Recorded with the acknowledgement itself, so no pull can offer an older digest after it.
+      const acknowledged: MetaRecord = { key: ACKNOWLEDGED_KEY, value: { at: new Date().toISOString() } satisfies AcknowledgedMarker };
       if (current.kind === DOCUMENT_DELETE_KIND) {
         // The document left the authority. Its version is the deletion's tombstone, which a
         // create recorded later acknowledges; the deletion version itself says none is known.
@@ -1421,7 +1429,7 @@ export async function settleIntent(
           requestId,
           "in_flight",
           { state: "acknowledged", attempts, acknowledgedVersion: outcome.version },
-          { meta: [baseRow(current.target, { version: null, content: null, ...(tombstone !== undefined ? { tombstone } : {}) })] },
+          { meta: [baseRow(current.target, { version: null, content: null, ...(tombstone !== undefined ? { tombstone } : {}) }), acknowledged] },
         );
       }
       const finding = outcome.version === current.local ? undefined : `acknowledged version ${outcome.version} differs from local version ${current.local}`;
@@ -1429,7 +1437,7 @@ export async function settleIntent(
         requestId,
         "in_flight",
         { state: "acknowledged", attempts, acknowledgedVersion: outcome.version, ...(finding ? { finding } : {}) },
-        { meta: [baseRow(current.target, { version: outcome.version, content: current.content })] },
+        { meta: [baseRow(current.target, { version: outcome.version, content: current.content }), acknowledged] },
       );
     }
     case "conflict": {
@@ -1652,7 +1660,9 @@ export interface PullReport {
  * without a digest (a refused listing, a pull by list, or an interrupted pull) means the
  * working copy no longer matches any digest the authority could be asked about. Falling back
  * to the bootstrap's digest there would let the authority answer `304` to a copy that has
- * moved past it.
+ * moved past it. An acknowledgement settled at or after the start of the pull or bootstrap that
+ * recorded the digest moves the copy past it too: the authority took the change, and another
+ * writer returning it to exactly that digest would otherwise draw a `304` forever.
  */
 async function lastKnownDigest(backend: JournaledBackend): Promise<string | undefined> {
   const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
@@ -1660,7 +1670,12 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<string | unde
   // no conditional request until a bootstrap completes again.
   if (marker?.complete !== true || marker.completedAt === undefined) return undefined;
   const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
-  if (lastPull !== undefined && lastPull.startedAt >= marker.completedAt) return lastPull.completedAt === null ? undefined : lastPull.headsDigest;
+  const acknowledged = await backend.readMeta<AcknowledgedMarker>(ACKNOWLEDGED_KEY);
+  if (lastPull !== undefined && lastPull.startedAt >= marker.completedAt) {
+    if (lastPull.completedAt === null || (acknowledged !== undefined && acknowledged.at >= lastPull.startedAt)) return undefined;
+    return lastPull.headsDigest;
+  }
+  if (acknowledged !== undefined && acknowledged.at >= marker.startedAt) return undefined;
   return marker.headsDigest;
 }
 
@@ -1691,7 +1706,10 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<string | unde
  *
  * Batches travel concurrently (see {@link FetchOptions}) and each is written as it arrives; the
  * pull marker records completion, and the digest now matched, only after every batch has been
- * written.
+ * written. A listed document the authority no longer holds when it is fetched is answered as
+ * absent and reconciled like an unlisted one, and the digest is recorded only when every
+ * fetched document read back at the version the listing named: otherwise the working copy is
+ * not that listing's state, and the next pull asks unconditionally.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
   const concurrency = concurrencyOf(options);
@@ -1747,10 +1765,29 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       throw error;
     }
   };
-  const fetchAndApply = (candidates: ConceptId[]): Promise<void> =>
+  let consistent = true;
+  /**
+   * Fetch and apply `candidates`. Given the listing, a document gone since it was listed is
+   * dropped from the listed ids and answered as absent, and `consistent` is cleared when
+   * any document did not read back at its listed version: the working copy is then not that
+   * listing's state, so its digest must not be recorded.
+   */
+  const fetchAndApply = (candidates: ConceptId[], listing?: { listed: Set<ConceptId>; versions: Map<ConceptId, Version> }): Promise<void> =>
     forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
       const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
-      for (const head of await remote.readMany(batch)) await apply(head, premises);
+      if (!listing) {
+        for (const head of await remote.readMany(batch)) await apply(head, premises);
+        return;
+      }
+      const { found, absent } = await readPresent(remote, batch);
+      for (const id of absent) {
+        listing.listed.delete(id);
+        consistent = false;
+      }
+      for (const head of found) {
+        if (head.version !== listing.versions.get(head.doc.id)) consistent = false;
+        await apply(head, premises);
+      }
     });
 
   const wire = await wireFor(remote, local, "heads", options);
@@ -1774,6 +1811,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   }
   const candidates: ConceptId[] = [];
   const listed = new Set<ConceptId>();
+  const versions = new Map<ConceptId, Version>();
   for (const head of answer.heads) {
     listed.add(head.id);
     if (heldTargets.has(head.id)) {
@@ -1782,9 +1820,12 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     }
     const base = await backend.readMeta<SharedBase>(baseKey(head.id));
     if (base?.version === head.version) report.unchanged.push(head.id);
-    else candidates.push(head.id);
+    else {
+      candidates.push(head.id);
+      versions.set(head.id, head.version);
+    }
   }
-  await fetchAndApply(candidates);
+  await fetchAndApply(candidates, { listed, versions });
   await validateReadSide?.();
   const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions, premises, validateReadSide);
   report.deleted = reconciled.deleted;
@@ -1793,7 +1834,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     report.refused = reconciled.refused;
     return complete(undefined, false);
   }
-  return complete(answer.digest, false);
+  return complete(consistent ? answer.digest : undefined, false);
 }
 
 // ── status and control ─────────────────────────────────────────────────────────────────────
