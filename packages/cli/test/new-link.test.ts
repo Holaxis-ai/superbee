@@ -529,6 +529,32 @@ test("new --link: a link that FAILS after the doc was already created — the do
   }
 });
 
+test("new --link: a link type containing ']' is refused through link add's text guard — the doc is created with no injected edge", async () => {
+  const { dir, bundle, cleanup } = await makeTaskBundle();
+  try {
+    let out = "";
+    await assert.rejects(
+      () =>
+        newCommand(
+          ["Task", "t1", "--title", "T1", "--link", "x](../evil.md) [y=tasks/t0", "--dir", dir, "--json"],
+          { stdout: (s) => (out += s) },
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        return true;
+      },
+    );
+    const links = (JSON.parse(out) as Record<string, unknown>).links as Array<Record<string, unknown>>;
+    assert.equal(links.length, 1);
+    assert.equal((links[0]!.error as Record<string, unknown>).code, "USAGE");
+    const written = await readDoc(bundle, "tasks/t1");
+    assert.doesNotMatch(written.body, /evil/);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("new --link: receipt shape — a success entry carries exactly {type, target, changed, href}, no stray keys", async () => {
   const { dir, bundle, cleanup } = await makeTaskBundle();
   try {
