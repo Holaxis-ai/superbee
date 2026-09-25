@@ -422,8 +422,69 @@ for (const adapter of ADAPTERS) {
 
       assert.equal(status.online, true);
       assert.deepEqual(status.lastSync, { ok: true });
-      assert.deepEqual(await lastPull(a), marker);
+      // QA: the superseded pull ran once more and completed its own marker.
+      const rerun = await lastPull(a);
+      assert.ok(rerun?.run !== undefined && rerun.run !== marker?.run);
+      assert.notEqual(rerun?.completedAt, null);
       assert.equal(await body(a, "notes/x"), "x v1\n");
+    } finally {
+      close();
+    }
+  });
+
+  test(`${adapter}: QA: a runtime sync superseded by a realm that never finishes pulls once more, so that one sync leaves the copy current`, async () => {
+    const fixture = await createRemoteFixture();
+    await fixture.authority.write("notes/x", doc("notes/x", "x v0\n"));
+    const { a, b, close } = twoRealms(adapter);
+    try {
+      await bootstrap(fixture.remote, b);
+      await fixture.authority.write("notes/x", doc("notes/x", "x v1\n"));
+      const held = holdAfter(fixture.remote, "readMany");
+      const runtime = createBrowserLocalRuntime({ local: b, remote: held.remote, transport: fixture.transport, write: immediate, locks: null });
+      const syncing = runtime.sync();
+      await held.entered; // b holds x at v1
+      const dead = holdAfter(fixture.remote, "heads");
+      void pull(a, dead.remote); // a marks, then its tab is closed: this pull never finishes
+      await dead.entered;
+      held.release();
+      const status = await syncing;
+
+      assert.deepEqual(status.lastSync, { ok: true });
+      assert.equal(await body(b, "notes/x"), "x v1\n");
+      assert.notEqual((await lastPull(b))?.completedAt, null);
+    } finally {
+      close();
+    }
+  });
+
+  test(`${adapter}: QA: a runtime sync accepting refused deletions whose pull is superseded pulls once more, and never reports ok with the refusal gone and nothing applied`, async () => {
+    const fixture = await createRemoteFixture();
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const id = `seed/d${String(i).padStart(2, "0")}`;
+      await fixture.authority.write(id, doc(id, "s\n"));
+      ids.push(id);
+    }
+    const { a, b, close } = twoRealms(adapter);
+    try {
+      await bootstrap(fixture.remote, b);
+      for (const id of ids.slice(0, 12)) await fixture.authority.delete(id);
+      const refused = (await pull(b, fixture.remote)).refused;
+      assert.ok(refused);
+      const held = holdAfter(fixture.remote, "heads");
+      const runtime = createBrowserLocalRuntime({ local: b, remote: held.remote, transport: fixture.transport, write: immediate, locks: null });
+      const accepting = runtime.sync({ acceptRefusedDeletions: refused });
+      await held.entered; // b's listing is the refused one
+      // Another realm's acknowledged edit supersedes b's pull and moves the listing.
+      await commitLocal(a, "seed/d15", edit("edited elsewhere\n"));
+      assert.deepEqual((await pushWithRole(a, fixture.transport, { write: immediate })).result?.settled.map((row) => row.state), ["acknowledged"]);
+      held.release();
+      const status = await accepting;
+
+      assert.equal(status.lastSync?.ok, true);
+      assert.equal((await b.backend.list()).length, 20, "the moved listing is refused afresh, as for any sync");
+      assert.equal(status.lastSync?.refusedDeletions?.deletions, 12);
+      assert.notEqual(status.lastSync?.refusedDeletions?.digest, refused.digest);
     } finally {
       close();
     }

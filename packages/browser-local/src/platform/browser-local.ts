@@ -309,7 +309,9 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
   };
 
   /**
-   * One push-then-pull. When another realm holds the push role, this realm neither pushes nor
+   * One push-then-pull; a pull another realm supersedes runs once more, so one sync still
+   * pulls to completion when the superseding realm never finishes, unless that second pull is
+   * superseded too. When another realm holds the push role, this realm neither pushes nor
    * pulls: a pull listed while the holder's push is in flight can predate an acknowledgement the
    * holder is about to record, and would then remove the acknowledged document from the shared
    * working copy. The holder's own sync pulls into that same store, so this call returns the
@@ -334,7 +336,11 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     }
     try {
       // The opened bundle, not its backend: the pull keeps the authority's capabilities on it.
-      await pull(local, readSide, syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions });
+      const pullOptions = syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions };
+      // A superseded pull stopped writing and dropped any acceptance it carried; the realm that
+      // superseded it may never finish (a closed tab), so pull once more, itself fenced, before
+      // reporting this sync.
+      if ((await pull(local, readSide, pullOptions)).superseded) await pull(local, readSide, pullOptions);
       online = true;
       if (await admitBodyMode(backend)) {
         const remaining = await localSyncStatus(local);
