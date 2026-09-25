@@ -14,14 +14,16 @@
  * claimer's `mkdir` and its owner record. A lock whose owner record stays missing or malformed is
  * not "held elsewhere" but an unknown holder, and rejects with the lock's own error so it is
  * diagnosed rather than skipped forever. A dead same-host holder's lock is reclaimed, as every
- * filesystem lock is.
+ * filesystem lock is. A holder recorded on another host cannot be checked from here, and one that
+ * crashed before this host was renamed never clears, so `ifAvailable` rejects with the lock's own
+ * error, which says a person must check it, rather than answering `null` forever.
  *
  * A dead holder whose process id now belongs to another process would otherwise read as live
- * forever. So before answering "held elsewhere" for a same-host holder, the role asks the host
- * when the process now carrying that id started: a process that started after the lock was
- * claimed cannot be the claimer, and the request rejects with {@link PushRoleStaleOwnerError}
- * naming the lock, instead of skipping every sync in silence. The role is released when the
- * callback settles.
+ * forever. So before answering "held elsewhere" for a same-host holder, or rejecting a waiting
+ * request as held, the role asks the host when the process now carrying that id started: a
+ * process that started after the lock was claimed cannot be the claimer, and the request rejects
+ * with {@link PushRoleStaleOwnerError} naming the lock, instead of skipping every sync in silence
+ * or asking for a retry that cannot succeed. The role is released when the callback settles.
  */
 
 import { execFile } from "node:child_process";
@@ -153,21 +155,22 @@ export function filesystemPushRoleLocks(options: FilesystemPushRoleOptions = {})
       try {
         release = await acquireSettled(name, request.ifAvailable ? contentionWaitMs : waitMs);
       } catch (error) {
-        if (request.ifAvailable && error instanceof FilesystemMutationLockError && heldByLiveClaim(error)) {
-          if (error.owner === null) return callback(null);
-          const owner = error.owner!;
-          if (owner.hostname === hostname()) {
-            const started = await startedAt(owner.pid);
-            // The named owner is a snapshot. Its PID answering for a younger process proves it gone
-            // only while the lock still carries its record after that answer; a holder that released
-            // since, whose PID was then reused, would otherwise be blamed for its live replacement.
-            if (started !== null && started > owner.created_at_ms + START_TIME_RESOLUTION_MS && (await lockHeldBy(error.lockPath, owner.token)) === true) {
-              throw new PushRoleStaleOwnerError(error.lockPath, owner, started);
-            }
+        if (!(error instanceof FilesystemMutationLockError) || !heldByLiveClaim(error)) throw error;
+        const owner = error.owner;
+        // This process's own id is never asked: the lock already reports as stale a record under it
+        // that an earlier process left, so a younger start here could only be a forward clock step
+        // past a claim this process still holds.
+        if (owner !== null && owner.hostname === hostname() && owner.pid !== process.pid) {
+          const started = await startedAt(owner.pid);
+          // The named owner is a snapshot. Its PID answering for a younger process proves it gone
+          // only while the lock still carries its record after that answer; a holder that released
+          // since, whose PID was then reused, would otherwise be blamed for its live replacement.
+          if (started !== null && started > owner.created_at_ms + START_TIME_RESOLUTION_MS && (await lockHeldBy(error.lockPath, owner.token)) === true) {
+            throw new PushRoleStaleOwnerError(error.lockPath, owner, started);
           }
-          return callback(null);
         }
-        throw error;
+        if (!request.ifAvailable || (owner !== null && owner.hostname !== hostname())) throw error;
+        return callback(null);
       }
       let result: T;
       try {
