@@ -196,7 +196,7 @@ function hostedDeps(partial: Partial<HostedSyncDeps>): HostedSyncDeps {
 }
 
 /** The `--dir` value in raw argv, in either spelling; malformed argv is left to the parser. */
-function dirArgument(argv: readonly string[]): string | undefined {
+export function dirArgument(argv: readonly string[]): string | undefined {
   let dir: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]!;
@@ -436,7 +436,7 @@ function lockFailure(error: unknown, folder: string): unknown {
   return error;
 }
 
-async function storeOkfVersion(store: JournaledBackend): Promise<"0.1" | "0.2" | undefined> {
+export async function storeOkfVersion(store: JournaledBackend): Promise<"0.1" | "0.2" | undefined> {
   const root = await store.readReserved("", "index.md");
   if (!root) return undefined;
   try {

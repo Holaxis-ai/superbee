@@ -4,6 +4,24 @@ Read this when you work in a folder made by `superbee checkout`, or when `superb
 conflict there. The hosted bundle is the authority. The folder is a working copy. `superbee sync`
 applies changes directly under the signed-in person's own access, and nobody has to approve them.
 
+## The folder marker, and adopting a moved or copied checkout
+
+A checkout folder carries a read-only `.superbee/checkout.json` naming its host and bundle. It is a
+note for you and the person, never an authority: nothing reads it to decide where a command goes.
+The checkout is bound by private state, keyed by the folder's path.
+
+When `status`, `home`, `bundle locate` or `session-start` report `copy_of_checkout` (and `home:
+local`), the folder was moved, copied or restored, and it is not bound here. It behaves as a plain
+local bundle, and `sync` refuses it (`unbound_copy`). Tell the person, then:
+
+- `superbee checkout --adopt <folder>` binds a folder moved on the same disk back to its own
+  checkout, with no network. Unsent edits and conflicts carry over.
+- For a copy or a restore, the same command only previews. Adopting it needs `--host <url>`, and
+  the person should confirm the host: never take the marker's host on its own. Adopt adds the
+  documents the folder lacks and never overwrites a file. A file that differs from the host's
+  version becomes a conflict (below), and a document only in the folder is sent as new by the next
+  sync, so check its `local_only` list with the person first.
+
 ## Sign-in: relay the link, then retry
 
 Hosted commands start sign-in by themselves. When a command returns `AUTH_REQUIRED` (exit 4):

@@ -313,7 +313,7 @@ export async function writeProjection(home: string, checkoutId: string, record: 
 }
 
 /** Every file under the folder, relative and POSIX-spelled; dot-files and dot-folders are skipped. */
-async function walk(folder: string, prefix = ""): Promise<{ rel: string; symlink: boolean }[]> {
+export async function walk(folder: string, prefix = ""): Promise<{ rel: string; symlink: boolean }[]> {
   const out: { rel: string; symlink: boolean }[] = [];
   let entries;
   try {
@@ -365,7 +365,7 @@ export function utf8(bytes: Uint8Array): string | null {
 }
 
 /** True when the file says exactly what the store's document says (managed fields aside). */
-function sameAsStored(bytes: Uint8Array, id: string, doc: { frontmatter: Frontmatter; body?: string } | undefined, okfVersion?: "0.1" | "0.2"): boolean {
+export function sameAsStored(bytes: Uint8Array, id: string, doc: { frontmatter: Frontmatter; body?: string } | undefined, okfVersion?: "0.1" | "0.2"): boolean {
   if (!doc) return false;
   const text = utf8(bytes);
   if (text === null) return false;

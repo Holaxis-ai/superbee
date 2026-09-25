@@ -893,6 +893,7 @@ test("only the sign-in commands, the hosted checkout and hosted sync import the 
       const allowed = [
         path.join("commands", "hosted-auth.ts"),
         path.join("commands", "checkout.ts"),
+        path.join("commands", "checkout-adopt.ts"),
         path.join("hosted", "client.ts"),
         path.join("hosted", "sync.ts"),
         // Hosted-checkout triggers: each reaches the session only for a folder bound as a hosted checkout.
