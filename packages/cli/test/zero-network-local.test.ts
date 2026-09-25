@@ -110,6 +110,8 @@ function localCommands(): string[][] {
     ["session-start"],
     ["turn-end"],
     ["whoami"],
+    // Not a hosted checkout: nothing to convert, and nothing is fetched.
+    ["export", "--in-place"],
     ["sync"],
     ["sync", "--pull-only"],
   ];

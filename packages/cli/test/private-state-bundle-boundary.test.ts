@@ -631,6 +631,20 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     controlExit: 5,
   },
   {
+    // export's --to is the folder the exported bundle becomes; the guard runs before sign-in or any
+    // request. The benign control is the fixture's own bundle, which is not empty (ALREADY_EXISTS, 5).
+    leaf: "export",
+    surface: "--to",
+    argv: (t) => ["export", "team.knowledge", "--host", "http://127.0.0.1:9", "--to", t, "--json"],
+    controlExit: 5,
+  },
+  {
+    // export's --dir names the checkout it reads or converts; a plain bundle is a no-op for --in-place.
+    leaf: "export",
+    surface: "--dir",
+    argv: (t) => ["export", "--dir", t, "--in-place", "--json"],
+  },
+  {
     // Sync never resolves a bundle through `resolveLocalBundleTarget`, so its run directory answers
     // to the relation at sync's own resolution point (orchestrate.ts, before retargeting or any git
     // probe). It used to exit 0 with `nothing to sync` — absence where the answer is the conflict.

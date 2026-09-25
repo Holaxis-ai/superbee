@@ -48,6 +48,7 @@ import { view } from "./commands/view.js";
 import { setup } from "./commands/setup.js";
 import { login, logout, whoami } from "./commands/hosted-auth.js";
 import { checkout } from "./commands/checkout.js";
+import { exportCommand } from "./commands/export.js";
 import { assertAllowedInHostedCheckout } from "./hosted/refusals.js";
 import { cliVersion, isBareVersionFlag } from "./build-identity.js";
 import { CliError, toEnvelope, toExit } from "./errors.js";
@@ -134,6 +135,7 @@ export const PUBLIC_HANDLERS = Object.freeze({
   logout,
   checkout,
   "turn-end": turnEnd,
+  export: exportCommand,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;

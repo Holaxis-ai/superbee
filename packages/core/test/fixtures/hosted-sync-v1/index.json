@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "Golden /sync/v1 exchanges captured from the real hosted gateway app (createApp through test/support/sync-v1-fixture.ts: real bearer admission, tenant selection, kernel operations and D1/R2 storage; only the identity issuer is a fixture). Each file is one request and the exact answer bytes; response headers are limited to the grammar headers. The CLI fake and the core decoders are checked against these; see capture-sync-v1-exchanges.hosted.txt for the capture script.",
+  "description": "Golden /sync/v1 exchanges captured from the real hosted gateway app (createApp through test/support/sync-v1-fixture.ts: real bearer admission, tenant selection, kernel operations and D1/R2 storage; only the identity issuer is a fixture). Each file is one request and the exact answer bytes; response headers are limited to the grammar headers. The CLI fake and the core decoders are checked against these; see capture-sync-v1-exchanges.hosted.txt for the capture script. The four /sync/v1/export exchanges were captured later, from the route's own branch (each names its source); the 200 answer's zip is recorded as bodyBase64.",
   "source": "Holaxis-ai/superbee-hosted e9e40a7547417e3083ab473afdcbd84a311be439",
   "exchanges": [
     {
@@ -227,6 +227,46 @@
         "429 request_capacity"
       ],
       "status": 429
+    },
+    {
+      "name": "export-200",
+      "file": "export-200.json",
+      "route": "/sync/v1/export",
+      "rows": [
+        "export 200"
+      ],
+      "status": 200,
+      "source": "Holaxis-ai/superbee-hosted d728d47135119dcc4f4979e417c569bb7a79c628"
+    },
+    {
+      "name": "export-404-bundle-not-found",
+      "file": "export-404-bundle-not-found.json",
+      "route": "/sync/v1/export",
+      "rows": [
+        "refusal 404 bundle_not_found"
+      ],
+      "status": 404,
+      "source": "Holaxis-ai/superbee-hosted d728d47135119dcc4f4979e417c569bb7a79c628"
+    },
+    {
+      "name": "export-400-invalid-input",
+      "file": "export-400-invalid-input.json",
+      "route": "/sync/v1/export",
+      "rows": [
+        "refusal 400 invalid_input"
+      ],
+      "status": 400,
+      "source": "Holaxis-ai/superbee-hosted d728d47135119dcc4f4979e417c569bb7a79c628"
+    },
+    {
+      "name": "export-401-unauthenticated",
+      "file": "export-401-unauthenticated.json",
+      "route": "/sync/v1/export",
+      "rows": [
+        "refusal 401 unauthenticated"
+      ],
+      "status": 401,
+      "source": "Holaxis-ai/superbee-hosted d728d47135119dcc4f4979e417c569bb7a79c628"
     }
   ]
 }

@@ -127,3 +127,49 @@ test("capture the capacity refusal", async (t) => {
   };
   writeFileSync(path.join(OUT, "create-429-request-capacity.json"), `${JSON.stringify(exchange, null, 2)}\n`);
 });
+
+// ---- /sync/v1/export, captured from superbee-hosted d728d471 (PR 650) with the same fixture. ----
+// TEMPORARY capture (not committed): /sync/v1/export golden exchanges in the hosted-sync-v1 format.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import path from "node:path";
+import { fixture } from "./support/sync-v1-fixture.js";
+import { GRAMMAR_HEADERS } from "./support/hosted-transport-exchanges.js";
+
+const OUT = process.env.CAPTURE_OUT!;
+test("capture /sync/v1/export exchanges", async (t) => {
+  assert.ok(OUT);
+  const f = await fixture(t);
+  const index: any[] = [];
+  const record = async (name: string, description: string, rows: string[], body: unknown, options: any = {}) => {
+    const response = await f.sync("export", body, { requestId: null, binding: null, ...options });
+    const headers: Record<string, string> = {};
+    for (const header of [...GRAMMAR_HEADERS, "content-disposition"]) {
+      const value = response.headers.get(header);
+      if (value !== null) headers[header] = value;
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const binary = headers["content-type"] === "application/zip";
+    const exchange = {
+      name,
+      description,
+      route: "/sync/v1/export",
+      rows,
+      request: { method: "POST", headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) },
+      response: {
+        status: response.status,
+        headers,
+        ...(binary ? { bodyBase64: Buffer.from(bytes).toString("base64") } : { body: new TextDecoder().decode(bytes) }),
+        truncated: false,
+      },
+    };
+    writeFileSync(path.join(OUT, `${name}.json`), `${JSON.stringify(exchange, null, 2)}\n`);
+    index.push({ name, file: `${name}.json`, route: exchange.route, rows, status: response.status });
+  };
+  await record("export-200", "The portable export of a readable bundle: a store-only zip (body base64; exportedAt varies per run).", ["export 200"], { bundleId: "notes.a" });
+  await record("export-404-bundle-not-found", "An export of a bundle the bearer cannot reach.", ["refusal 404 bundle_not_found"], { bundleId: "nope.a" });
+  await record("export-400-invalid-input", "An export input the schema refuses.", ["refusal 400 invalid_input"], { bundleId: "notes.a", extra: true });
+  await record("export-401-unauthenticated", "An export without a valid bearer.", ["refusal 401 unauthenticated"], { bundleId: "notes.a" }, { bearer: "not-a-token" });
+  writeFileSync(path.join(OUT, "export-index.json"), `${JSON.stringify(index, null, 2)}\n`);
+});
