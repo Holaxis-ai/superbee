@@ -365,8 +365,8 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
   let notCarried: string[] = [];
   if (choice === "keep") {
     if (divergence.claim?.only === true) {
-      throw new CliError("CONFLICT", `'${args.id}' differs only by a claim that was not arbitrated, so there is nothing of yours to keep`, {
-        details: { id: args.id, ...claimFields(divergence) },
+      throw new CliError("CONFLICT", `'${args.id}' differs only by a claim the teammate's version won, so there is nothing of yours to keep`, {
+        details: { id: args.id, claim_only: true, ...claimFields(divergence) },
         help: commandFor(args, "take"),
       });
     }
