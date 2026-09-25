@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -18,6 +18,7 @@ import { bundleHomeAt } from "../src/bundle-home.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { bindingForPath, releaseCheckout } from "../src/hosted/binding.js";
 import { hostedStatus } from "../src/hosted/status.js";
+import { readCheckoutMarker, unboundCopyDetail } from "../src/hosted/marker.js";
 import { ExportArchiveError, readStoredZip, verifyExport } from "../src/hosted/export-archive.js";
 import { exportEntries, storedZip, type ZipEntryInput } from "./support/fake-export-archive.js";
 import { BUNDLE, FakeHost, HOST, jwt, SYNC_FIXTURES, TOKEN } from "./support/fake-hosted-sync.js";
@@ -374,7 +375,8 @@ test("export --in-place refuses unsent changes, and --keep-unsent keeps them in 
   const refused = await rejects(h, ["--dir", folder, "--in-place"]);
   assert.equal(refused.code, "CONFLICT");
   assert.equal(refused.details?.reason, "unsent_changes");
-  assert.match(String(refused.help), /sync --dir .*--keep-unsent/);
+  assert.match(String(refused.help), /sync --dir /);
+  assert.match(String(refused.details?.keep_them_here_only), /export --in-place --dir .* --keep-unsent$/);
   assert.ok(await bindingForPath(h.home, folder), "still a checkout");
   assert.equal(h.host.requests.length, 0);
 
@@ -427,9 +429,12 @@ test("an in-place export interrupted after unbinding is finished by re-running i
   await writeFile(path.join(staging, "files", "assets", "logo.png"), LOGO);
   await writeFile(
     path.join(staging, "journal.json"),
-    JSON.stringify({ schema: 1, bundle_id: BUNDLE, host: HOST, audience: `${HOST}/mcp`, revision: 7, exported_at: "2026-09-25T00:00:00.000Z", git: true, adds: ["assets/logo.png"], same: 4, kept_local: [], unsent_kept: 0 }),
+    JSON.stringify({ schema: 1, bundle_id: BUNDLE, host: HOST, audience: `${HOST}/mcp`, revision: 7, exported_at: "2026-09-25T00:00:00.000Z", git: true, adds: ["assets/logo.png"], same: 4, kept_local: [], deleted_locally: [], unsent_kept: 0 }),
   );
   await releaseCheckout(h.home, binding);
+  // Status and the other readers point at finishing the export, not at adopting a copy.
+  const marker = readCheckoutMarker(folder)!;
+  assert.match(String((unboundCopyDetail(folder, marker).copy_of_checkout as { help: string }).help), /export --in-place --dir /);
 
   const receipt = await run(h, ["--dir", folder, "--in-place"]);
   assert.equal(receipt.export, "converted");
@@ -490,4 +495,63 @@ test("export --in-place on an unbound copy of a checkout removes its marker and 
   // The original checkout is untouched.
   assert.ok(await bindingForPath(h.home, folder));
   assert.ok(await exists(path.join(folder, ".superbee", "checkout.json")));
+});
+
+test("export --in-place --keep-unsent never puts back a document deleted in the folder and not sent", async () => {
+  const h = await harness();
+  const folder = await realpath(await checkedOut(h));
+  await rm(path.join(folder, "notes", "alpha.md"));
+  const receipt = await run(h, ["--dir", folder, "--in-place", "--keep-unsent"]);
+  assert.equal(receipt.export, "converted");
+  assert.equal(receipt.deleted_locally, 1);
+  assert.deepEqual(receipt.deleted_locally_paths, ["notes/alpha.md"]);
+  assert.equal(receipt.added, 0);
+  assert.equal(await exists(path.join(folder, "notes", "alpha.md")), false);
+});
+
+test("a change made while the export is fetched is refused under the lock, and nothing is converted", async () => {
+  const h = await harness();
+  const folder = await realpath(await checkedOut(h));
+  h.host.exportHook = (archive) => {
+    // The person deletes one file and edits another while the archive is on its way.
+    spawnSync("rm", [path.join(folder, "notes", "alpha.md")]);
+    spawnSync("sh", ["-c", `printf 'more\\n' >> '${path.join(folder, "notes", "beta.md")}'`]);
+    return archive;
+  };
+  const refused = await rejects(h, ["--dir", folder, "--in-place"]);
+  assert.equal(refused.code, "CONFLICT");
+  assert.equal(refused.details?.reason, "unsent_changes");
+  assert.ok(await bindingForPath(h.home, folder), "still a checkout");
+  assert.equal(await exists(path.join(folder, IN_PLACE_STAGING)), false);
+  assert.equal(await exists(path.join(folder, "notes", "alpha.md")), false);
+});
+
+test("a staging folder that is a link, or a journal the folder's marker does not name, is never resumed", async () => {
+  const h = await harness();
+  const outside = path.join(h.cwd, "outside");
+  await mkdir(path.join(outside, "files", "notes"), { recursive: true });
+  await writeFile(path.join(outside, "files", "notes", "victim.md"), "victim\n");
+  const journal = { schema: 1, bundle_id: BUNDLE, host: HOST, audience: `${HOST}/mcp`, revision: 1, exported_at: "2026-09-25T00:00:00.000Z", git: true, adds: ["notes/victim.md"], same: 0, kept_local: [], deleted_locally: [], unsent_kept: 0 };
+  await writeFile(path.join(outside, "journal.json"), JSON.stringify(journal));
+
+  // A plain folder whose staging name links out: not resumed, nothing moved, no repository made.
+  const plain = path.join(h.cwd, "plain");
+  await mkdir(plain);
+  await writeFile(path.join(plain, "index.md"), "# plain\n");
+  await symlink(outside, path.join(plain, IN_PLACE_STAGING));
+  const receipt = await run(h, ["--dir", plain, "--in-place"]);
+  assert.equal(receipt.export, "unchanged");
+  assert.equal(await readFile(path.join(outside, "files", "notes", "victim.md"), "utf8"), "victim\n");
+  assert.equal(await exists(path.join(plain, "notes", "victim.md")), false);
+  assert.equal(await exists(path.join(plain, ".git")), false);
+
+  // A real staging folder whose journal names a bundle the marker does not: not resumed either.
+  const folder = await realpath(await checkedOut(h, "team"));
+  await releaseCheckout(h.home, (await bindingForPath(h.home, folder))!);
+  await mkdir(path.join(folder, IN_PLACE_STAGING, "files", "notes"), { recursive: true });
+  await writeFile(path.join(folder, IN_PLACE_STAGING, "files", "notes", "planted.md"), "planted\n");
+  await writeFile(path.join(folder, IN_PLACE_STAGING, "journal.json"), JSON.stringify({ ...journal, bundle_id: "other.bundle", adds: ["notes/planted.md"] }));
+  const copy = await run(h, ["--dir", folder, "--in-place"]);
+  assert.equal(copy.from, "an unbound copy of a hosted checkout");
+  assert.equal(await exists(path.join(folder, "notes", "planted.md")), false);
 });

@@ -19,7 +19,7 @@ import { readProjection, scanCheckout, type HeldReason } from "./sync-scan.js";
 /** Ids shown per category; the counts are always the totals. */
 export const STATUS_IDS_SHOWN = 5;
 
-interface Classified {
+export interface Classified {
   readonly unsent: Set<string>;
   readonly conflicts: Set<string>;
   readonly held: Map<string, HeldReason>;
@@ -37,7 +37,11 @@ async function storeOkfVersion(store: JournaledBackend): Promise<"0.1" | "0.2" |
   }
 }
 
-async function classify(binding: CheckoutBinding, home: string, store: JournaledBackend): Promise<Classified> {
+/**
+ * Every document with local state the host does not have, by category, read from the store and a
+ * preview scan. The caller holds the checkout lock (or accepts a racing sync).
+ */
+export async function classifyCheckout(binding: CheckoutBinding, home: string, store: JournaledBackend): Promise<Classified> {
   const result: Classified = { unsent: new Set(), conflicts: new Set(), held: new Map(), heldDeletions: new Set() };
 
   // Changes already journaled: the first unsettled intent per document says what it is (as sync's rows do).
@@ -92,7 +96,7 @@ export async function hostedStatus(binding: CheckoutBinding, home: string, now: 
     if (!lock) return null;
     const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id), readOnly: true });
     try {
-      return await classify(binding, home, store);
+      return await classifyCheckout(binding, home, store);
     } finally {
       await store.close();
     }

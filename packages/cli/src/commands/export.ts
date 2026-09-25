@@ -21,7 +21,7 @@
 // The hosted bundle is never changed. History is not exported: only the current revision travels.
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, unlink } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -38,15 +38,28 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode, type OutputMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
+import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 import { hostedCheckoutAt } from "../autopull.js";
 import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, readDefaultHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
-import { bindingForPath, checkoutLockName, releaseCheckout, type CheckoutBinding } from "../hosted/binding.js";
+import { bindingForPath, checkoutLockName, checkoutStoreDir, releaseCheckout, type CheckoutBinding } from "../hosted/binding.js";
 import { createHostedSyncClient, hostedFailure } from "../hosted/client.js";
 import { hostedCheckoutFor } from "../hosted/sync.js";
-import { hostedStatus } from "../hosted/status.js";
-import { readCheckoutMarker, removeCheckoutMarker } from "../hosted/marker.js";
-import { classifyEntryPath, ExportArchiveError, MAX_EXPORT_BYTES, verifyExport, type ArchiveEntry, type VerifiedExport } from "../hosted/export-archive.js";
+import { classifyCheckout, hostedStatus } from "../hosted/status.js";
+import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
+import { bindingHostArgument, CHECKOUT_MARKER_DIR, readCheckoutMarker, removeCheckoutMarker } from "../hosted/marker.js";
+import {
+  classifyEntryPath,
+  ExportArchiveError,
+  IN_PLACE_JOURNAL,
+  IN_PLACE_STAGING,
+  MAX_EXPORT_BYTES,
+  verifyExport,
+  type ArchiveEntry,
+  type VerifiedExport,
+} from "../hosted/export-archive.js";
+
+export { IN_PLACE_STAGING } from "../hosted/export-archive.js";
 
 export const EXPORT_USAGE = `superbee export — copy a hosted bundle out of hosted Superbee
 
@@ -114,8 +127,7 @@ const EXPORT_DEADLINE_MS = 60_000;
 const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 /** Paths shown per list in a receipt; the counts are always the totals. */
 const SHOWN = 20;
-export const IN_PLACE_STAGING = ".superbee-export-partial";
-const JOURNAL = "journal.json";
+const JOURNAL = IN_PLACE_JOURNAL;
 const JOURNAL_SCHEMA = 1;
 const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
 
@@ -192,14 +204,14 @@ async function fetchArchive(source: Source, deps: ExportDeps, resume: CommandTex
     }
     if (code === "result_too_large") {
       throw new CliError("FORBIDDEN", `hosted bundle '${bundleId}' is larger than an export carries`, {
-        details: { reason: "bundle_too_large", bundle_id: bundleId, host: target.origin },
-        help: "use Export bundle in the Superbee app",
+        details: { reason: "bundle_too_large", bundle_id: bundleId, host: target.origin, next: "the person exports it with Export bundle in the Superbee app" },
+        help: `${cliInvocation()} whoami --host ${commandToken(hostArgument(target))}`,
       });
     }
     if (code === "validation_failed") {
       throw new CliError("FORBIDDEN", `hosted bundle '${bundleId}' holds a path an export cannot carry`, {
-        details: { reason: "unexportable_path", bundle_id: bundleId, host: target.origin },
-        help: "rename the document or file in the Superbee app, then retry the same command",
+        details: { reason: "unexportable_path", bundle_id: bundleId, host: target.origin, next: "the person renames the document or file in the Superbee app, then the same command is retried" },
+        help: `${cliInvocation()} whoami --host ${commandToken(hostArgument(target))}`,
       });
     }
     throw hostedFailure(new RemoteError(`hosted export answered ${answer.status}`, code, answer.status), target, resume);
@@ -214,7 +226,8 @@ async function fetchArchive(source: Source, deps: ExportDeps, resume: CommandTex
       size += part.value.byteLength;
       if (size > MAX_EXPORT_BYTES) {
         throw new CliError("RUNTIME", `${target.origin} answered an export larger than ${MAX_EXPORT_BYTES} bytes`, {
-          details: { host: target.origin, bundle_id: bundleId, retryable: false },
+          details: { reason: "export_too_large", host: target.origin, bundle_id: bundleId, retryable: false, next: "the person exports it with Export bundle in the Superbee app" },
+          help: `${cliInvocation()} whoami --host ${commandToken(hostArgument(target))}`,
         });
       }
       chunks.push(part.value);
@@ -283,8 +296,9 @@ function gitRun(dir: string, args: string[]): string {
   try {
     result = runGit(dir, args);
   } catch (error) {
-    throw new CliError("RUNTIME", `git could not run (${error instanceof Error ? error.message : String(error)})`, {
-      details: { reason: "git_unavailable" },
+    const missing = (error as { code?: unknown }).code === "GIT_MISSING";
+    throw new CliError(missing ? "GIT_MISSING" : "RUNTIME", `git could not run (${error instanceof Error ? error.message : String(error)})`, {
+      details: { reason: missing ? "git_missing" : "git_unavailable" },
       help: "install git, or export without --git",
     });
   }
@@ -297,13 +311,28 @@ function gitRun(dir: string, args: string[]): string {
   return result.stdout.trim();
 }
 
-/** Initialize a repository on the board branch in `dir` and commit its files. */
-function commitExport(dir: string, message: string, options: { force: boolean }): { branch: string; commit: string } {
-  gitRun(dir, ["init", "-q"]);
+interface Committed {
+  readonly branch: string;
+  readonly commit: string;
+  /** Files the person's own ignore rules kept out of the commit (in place only; a new folder commits everything). */
+  readonly ignored?: { readonly count: number; readonly paths: string[] };
+}
+
+/**
+ * Initialize a repository on the board branch in `dir` and commit its files, with no hook of any
+ * kind and no signing prompt. The in-place staging folder and the checkout marker never enter it.
+ */
+function commitExport(dir: string, message: string, options: { force: boolean }): Committed {
+  const quiet = ["-c", "core.hooksPath=/dev/null"];
+  gitRun(dir, [...quiet, "init", "-q"]);
   gitRun(dir, ["symbolic-ref", "HEAD", `refs/heads/${BOARD_BRANCH}`]);
-  gitRun(dir, ["add", "-A", ...(options.force ? ["--force"] : []), "--", ".", `:(exclude)${IN_PLACE_STAGING}`]);
-  gitRun(dir, [...identityFlags(dir), "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "--allow-empty", "-m", message]);
-  return { branch: BOARD_BRANCH, commit: gitRun(dir, ["rev-parse", "HEAD"]) };
+  const excluded = ["--", ".", `:(exclude)${IN_PLACE_STAGING}`, `:(exclude)${CHECKOUT_MARKER_DIR}`];
+  gitRun(dir, ["add", "-A", ...(options.force ? ["--force"] : []), ...excluded]);
+  gitRun(dir, [...quiet, ...identityFlags(dir), "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "--allow-empty", "-m", message]);
+  const committed: Committed = { branch: BOARD_BRANCH, commit: gitRun(dir, ["rev-parse", "HEAD"]) };
+  if (options.force) return committed;
+  const ignored = gitRun(dir, ["ls-files", "--others", "--ignored", "--exclude-standard", ...excluded]).split("\n").filter(Boolean);
+  return ignored.length === 0 ? committed : { ...committed, ignored: { count: ignored.length, paths: shown(ignored) } };
 }
 
 function commitMessage(source: Source, exported: VerifiedExport): string {
@@ -326,6 +355,9 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/** A staging sibling this old is abandoned even if its process id now names a live process. */
+const ABANDONED_AFTER_MS = 60 * 60 * 1000;
+
 /** Remove what an earlier export to `target` left when its process died. Returns how many. */
 async function removeAbandonedStaging(target: string): Promise<number> {
   const prefix = `.${path.basename(target)}.superbee-export-`;
@@ -339,7 +371,9 @@ async function removeAbandonedStaging(target: string): Promise<number> {
   for (const name of names) {
     if (!name.startsWith(prefix)) continue;
     const match = /^(\d+)-[0-9a-f]{12}\.partial$/.exec(name.slice(prefix.length));
-    if (!match || processAlive(Number(match[1]))) continue;
+    if (!match) continue;
+    const age = await lstat(path.join(path.dirname(target), name)).then((info) => Date.now() - info.mtimeMs, () => 0);
+    if (processAlive(Number(match[1])) && age < ABANDONED_AFTER_MS) continue;
     await rm(path.join(path.dirname(target), name), { recursive: true, force: true });
     removed += 1;
   }
@@ -380,7 +414,7 @@ async function exportToFolder(source: Source, toArg: string, git: boolean, deps:
   const abandoned = await removeAbandonedStaging(target);
   const staging = stagingName(target);
   await mkdir(staging);
-  let gitResult: { branch: string; commit: string } | null = null;
+  let gitResult: Committed | null = null;
   try {
     await writeEntries(staging, exported.entries);
     if (git) gitResult = commitExport(staging, commitMessage(source, exported), { force: true });
@@ -451,6 +485,8 @@ interface Journal {
   readonly adds: readonly string[];
   readonly same: number;
   readonly kept_local: readonly string[];
+  /** Documents deleted in the folder and not sent: the host's copies are not put back. */
+  readonly deleted_locally: readonly string[];
   readonly unsent_kept: number;
 }
 
@@ -471,20 +507,44 @@ function isJournal(value: unknown): value is Journal {
     Number.isSafeInteger(record.same) &&
     Array.isArray(record.kept_local) &&
     record.kept_local.every((entry) => typeof entry === "string") &&
+    Array.isArray(record.deleted_locally) &&
+    record.deleted_locally.every((entry) => typeof entry === "string") &&
     Number.isSafeInteger(record.unsent_kept)
   );
 }
 
-async function readJournal(folder: string): Promise<Journal | null> {
-  const file = path.join(folder, IN_PLACE_STAGING, JOURNAL);
+/** The staging folder, when it is a real directory inside `folder` (never a link out of it). */
+async function stagingDir(folder: string): Promise<string | null> {
+  const staging = path.join(folder, IN_PLACE_STAGING);
   try {
-    const info = await lstat(file);
-    if (!info.isFile() || info.size > MAX_JOURNAL_BYTES) return null;
-    const value = JSON.parse(await readFile(file, "utf8")) as unknown;
-    return isJournal(value) ? value : null;
+    if (!(await lstat(staging)).isDirectory()) return null;
+    return (await realpath(staging)) === path.join(await realpath(folder), IN_PLACE_STAGING) ? staging : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * The journal of an in-place export this folder is part way through, or null. It is trusted only
+ * inside a real staging directory and only while the folder's checkout marker names the same
+ * bundle on the same host: the marker is removed last, so every interrupted conversion keeps it.
+ */
+async function readJournal(folder: string): Promise<Journal | null> {
+  const staging = await stagingDir(folder);
+  if (!staging) return null;
+  let journal: Journal;
+  const read = readRegularFileNoFollowSync(path.join(staging, JOURNAL));
+  if (read.state !== "present" || read.bytes.byteLength > MAX_JOURNAL_BYTES) return null;
+  try {
+    const value = JSON.parse(read.bytes.toString("utf8")) as unknown;
+    if (!isJournal(value)) return null;
+    journal = value;
+  } catch {
+    return null;
+  }
+  const marker = readCheckoutMarker(folder);
+  if (!marker || marker.bundle_id !== journal.bundle_id || marker.host !== bindingHostArgument({ origin: journal.host, audience: journal.audience })) return null;
+  return journal;
 }
 
 async function sameBytes(file: string, bytes: Uint8Array): Promise<boolean> {
@@ -512,8 +572,20 @@ async function placementOf(folder: string, entry: ArchiveEntry): Promise<"add" |
 }
 
 /** Link one staged file into the folder, never over an existing file and never through a link out of it. */
-async function placeStaged(folder: string, staged: string, relative: string): Promise<"added" | "same" | "kept"> {
+async function placeStaged(folder: string, staging: string, relative: string): Promise<"added" | "same" | "kept"> {
   const final = path.join(folder, ...relative.split("/"));
+  const staged = path.join(staging, "files", ...relative.split("/"));
+  try {
+    // The staged file must be a plain file under the real staging directory.
+    if ((await lstat(staged)).isFile()) {
+      const stagedParent = await realpath(path.dirname(staged));
+      if (!stagedParent.startsWith(`${await realpath(staging)}${path.sep}`)) return "kept";
+    } else return "kept";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "kept";
+    // Already moved by an earlier run of this conversion.
+    return (await lstat(final).then((info) => info.isFile(), () => false)) ? "same" : "kept";
+  }
   try {
     await mkdir(path.dirname(final), { recursive: true });
     const parent = await realpath(path.dirname(final));
@@ -527,10 +599,6 @@ async function placeStaged(folder: string, staged: string, relative: string): Pr
     outcome = "added";
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      // Already moved by an earlier run of this conversion.
-      return (await stat(final).then((info) => info.isFile(), () => false)) ? "same" : "kept";
-    }
     if (code !== "EEXIST") throw error;
     outcome = (await sameBytes(final, await readFile(staged))) ? "same" : "kept";
   }
@@ -548,28 +616,28 @@ interface Finished {
   readonly added: string[];
   readonly kept: string[];
   readonly same: number;
-  readonly git: { branch: string; commit: string } | null;
+  readonly git: Committed | null;
   readonly marker: "removed" | "none";
 }
 
 /**
  * Finish a conversion whose binding is already gone: link the staged files in, commit when asked,
- * and remove the staging folder last, so a crash anywhere here is finished by re-running.
+ * remove the staging folder (the journal last), and remove the checkout marker after everything
+ * else, so a crash anywhere here leaves a marker and a journal that a re-run trusts and finishes.
  */
 async function finishInPlace(folder: string, journal: Journal): Promise<Finished> {
-  const staging = path.join(folder, IN_PLACE_STAGING);
+  const staging = await stagingDir(folder);
+  if (!staging) throw new CliError("RUNTIME", `the in-place export's staging folder in ${folder} is gone`, { help: `${cliInvocation()} export --in-place --dir ${commandToken(folder)}` });
   const added: string[] = [];
   const kept = [...journal.kept_local];
   let same = journal.same;
   for (const relative of journal.adds) {
     classifyEntryPath(relative);
-    const outcome = await placeStaged(folder, path.join(staging, "files", ...relative.split("/")), relative);
+    const outcome = await placeStaged(folder, staging, relative);
     if (outcome === "added") added.push(relative);
     else if (outcome === "same") same += 1;
     else kept.push(relative);
   }
-  // The read-only `.superbee/checkout.json` names the host; a local bundle carries none.
-  const marker = (await removeCheckoutMarker(folder, { origin: journal.host, audience: journal.audience, bundle_id: journal.bundle_id }).catch(() => false)) ? "removed" : "none";
   let git: Finished["git"] = null;
   if (journal.git) {
     const head = runGit(folder, ["rev-parse", "--verify", "--quiet", "HEAD"]);
@@ -580,7 +648,11 @@ async function finishInPlace(folder: string, journal: Journal): Promise<Finished
         ? { branch: runGit(folder, ["symbolic-ref", "-q", "--short", "HEAD"]).stdout.trim() || BOARD_BRANCH, commit: head.stdout.trim() }
         : commitExport(folder, `Export ${journal.bundle_id} from ${journal.host} at revision ${journal.revision}\n\nsuperbee export --in-place, ${journal.exported_at}. History is not included.\n`, { force: false });
   }
+  await rm(path.join(staging, "files"), { recursive: true, force: true });
+  await unlink(path.join(staging, JOURNAL)).catch(() => {});
   await rm(staging, { recursive: true, force: true });
+  // The read-only `.superbee/checkout.json` names the host; a local bundle carries none.
+  const marker = (await removeCheckoutMarker(folder, { origin: journal.host, audience: journal.audience, bundle_id: journal.bundle_id }).catch(() => false)) ? "removed" : "none";
   return { added, kept, same, git, marker };
 }
 
@@ -602,6 +674,9 @@ function inPlaceReceipt(folder: string, journal: Journal, finished: Finished, ho
     kept_local: finished.kept.length,
     ...(finished.kept.length > 0
       ? { kept_local_paths: shown(finished.kept), kept_local_note: "these files differ from the host's (or block its path); the folder's own were kept" }
+      : {}),
+    ...(journal.deleted_locally.length > 0
+      ? { deleted_locally: journal.deleted_locally.length, deleted_locally_paths: shown(journal.deleted_locally), deleted_locally_note: "deleted in this folder and not sent; the host's copies were not put back" }
       : {}),
     ...(journal.unsent_kept > 0 ? { unsent_kept: journal.unsent_kept, unsent_note: "changes sync had not sent stay in this folder only" } : {}),
     ...(finished.git ? { git: finished.git } : {}),
@@ -641,6 +716,9 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
       // already a local bundle, and only the marker still says hosted. Its host is never trusted
       // on its own, so nothing is fetched: adopt it first to fill what it lacks from the host.
       if (git) await assertNoRepository(folder);
+      // A staging folder whose journal is already gone is the tail of a finished conversion.
+      const staging = await stagingDir(folder);
+      if (staging && !(await lstat(path.join(staging, JOURNAL)).then(() => true, () => false))) await rm(staging, { recursive: true, force: true });
       await removeCheckoutMarker(folder, { origin: marker.host, audience: `${marker.host}/mcp`, bundle_id: marker.bundle_id });
       const committed = git
         ? commitExport(folder, `Export ${marker.bundle_id} (an unbound copy of a hosted checkout)\n\nsuperbee export --in-place. Nothing was fetched from the host; history is not included.\n`, { force: false })
@@ -678,13 +756,19 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
   if (status.sync.state === "busy") {
     throw new CliError("CONFLICT", `another command holds the checkout lock for ${folder}`, { details: { reason: "checkout_busy", folder }, help: "wait for it to finish, then retry the same command" });
   }
-  const pending = Number(status.sync.unsent ?? 0) + Number(status.sync.conflicts ?? 0) + Number(status.sync.held_files ?? 0) + Number(status.sync.held_deletions ?? 0);
-  if (pending > 0 && !keepUnsent) {
-    throw new CliError("CONFLICT", `the checkout of '${binding.bundle_id}' at ${folder} has ${pending} change(s) not on the host`, {
-      details: { reason: "unsent_changes", folder, ...status.sync },
-      help: commandFragment`${cliInvocation()} sync --dir ${commandToken(folder)} (or, to keep them in this folder only: ${cliInvocation()} export --in-place --dir ${commandToken(folder)} --keep-unsent${git ? commandFragment` --git` : commandFragment``})`,
+  const unsentRefusal = (count: number, sync: Record<string, unknown>) =>
+    new CliError("CONFLICT", `the checkout of '${binding.bundle_id}' at ${folder} has ${count} change(s) not on the host`, {
+      details: {
+        reason: "unsent_changes",
+        folder,
+        ...sync,
+        keep_them_here_only: commandFragment`${cliInvocation()} export --in-place --dir ${commandToken(folder)} --keep-unsent${git ? commandFragment` --git` : commandFragment``}`,
+      },
+      help: commandFragment`${cliInvocation()} sync --dir ${commandToken(folder)}`,
     });
-  }
+  // A first look before the network; the decision is made again under the checkout lock.
+  const early = Number(status.sync.unsent ?? 0) + Number(status.sync.conflicts ?? 0) + Number(status.sync.held_files ?? 0) + Number(status.sync.held_deletions ?? 0);
+  if (early > 0 && !keepUnsent) throw unsentRefusal(early, status.sync);
 
   const source: Source = { target: resolveHostedTarget(binding.audience), bundleId: binding.bundle_id, workspace: binding.workspace, binding };
   const exported = verified(await fetchArchive(source, deps, resume), source);
@@ -698,15 +782,32 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
       if (!current || current.checkout_id !== binding.checkout_id) {
         throw new CliError("CONFLICT", `the checkout at ${folder} changed while it was exported`, { details: { reason: "checkout_changed", folder }, help: "retry the same command" });
       }
+      // Under the lock no sync or edit through Superbee can move the folder's state: decide here.
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly: true });
+      let pending: Set<string>;
+      try {
+        const classified = await classifyCheckout(binding, deps.auth.home, store);
+        pending = new Set([...classified.unsent, ...classified.conflicts, ...classified.held.keys(), ...classified.heldDeletions]);
+      } finally {
+        await store.close();
+      }
+      if (pending.size > 0 && !keepUnsent) throw unsentRefusal(pending.size, { unsent_ids: shown([...pending]) });
       const staging = path.join(folder, IN_PLACE_STAGING);
       // A staging folder under a live binding is from a run that stopped before unbinding: redo it.
       await rm(staging, { recursive: true, force: true });
       await mkdir(path.join(staging, "files"), { recursive: true });
       const adds: string[] = [];
       const kept: string[] = [];
+      const deletedLocally: string[] = [];
       let same = 0;
       for (const entry of exported.entries) {
+        const id = entry.kind === "document" ? entry.path.slice(0, -3) : entry.path;
         const placement = await placementOf(folder, entry);
+        if (placement === "add" && pending.has(id)) {
+          // Deleted here and not sent: putting the host's copy back would undo the person's delete.
+          deletedLocally.push(entry.path);
+          continue;
+        }
         if (placement === "same") same += 1;
         else if (placement === "kept") kept.push(entry.path);
         else {
@@ -727,7 +828,8 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
         adds,
         same,
         kept_local: kept,
-        unsent_kept: pending,
+        deleted_locally: deletedLocally,
+        unsent_kept: pending.size,
       };
       await writeJournal(staging, journal);
       // The binding goes before any file lands, so no sync ever sees a half-converted folder.

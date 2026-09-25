@@ -11,6 +11,7 @@
 //
 // It sits in a dot-folder, which the bundle walk and the sync scan skip, so it is never a document,
 // never synced and never held.
+import { existsSync } from "node:fs";
 import { chmod, lstat, rmdir, unlink } from "node:fs/promises";
 import path from "node:path";
 
@@ -18,6 +19,7 @@ import { commandToken } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
 import { readRegularFileTextNoFollowSync } from "../nofollow-read.js";
 import type { CheckoutBinding } from "./binding.js";
+import { IN_PLACE_JOURNAL, IN_PLACE_STAGING } from "./export-archive.js";
 import { placeNew } from "./projection.js";
 
 export const CHECKOUT_MARKER_DIR = ".superbee";
@@ -156,6 +158,18 @@ export async function removeCheckoutMarker(folder: string, binding: Pick<Checkou
 
 /** The `copy_of_checkout` detail a receipt carries for a folder with a marker and no binding. */
 export function unboundCopyDetail(folder: string, marker: CheckoutMarker): Record<string, unknown> {
+  if (existsSync(path.join(folder, IN_PLACE_STAGING, IN_PLACE_JOURNAL))) {
+    // Not a copy: `export --in-place` removed the binding and stopped before it finished.
+    return {
+      copy_of_checkout: {
+        bound: false,
+        host: marker.host,
+        bundle_id: marker.bundle_id,
+        note: "an in-place export of this checkout stopped part way; re-running it finishes it without the network",
+        help: `${cliInvocation()} export --in-place --dir ${commandToken(folder)}`,
+      },
+    };
+  }
   return {
     copy_of_checkout: {
       bound: false,

@@ -21,11 +21,18 @@ import {
 } from "@superbee/core";
 
 export const EXPORT_MANIFEST = "superbee-export.json";
+
+/**
+ * Where `export --in-place` stages the files it adds, with its journal, inside the checkout folder:
+ * a dot-folder, so the sync scan and the bundle walk never read it.
+ */
+export const IN_PLACE_STAGING = ".superbee-export-partial";
+export const IN_PLACE_JOURNAL = "journal.json";
 export const EXPORT_FORMAT = "superbee-export/1";
 
 /** The host's own bounds (20,000 objects, 64 MiB stored), plus room for headers and the manifest. */
 export const MAX_EXPORT_ENTRIES = 20_001;
-export const MAX_EXPORT_BYTES = 96 * 1024 * 1024;
+export const MAX_EXPORT_BYTES = 128 * 1024 * 1024;
 
 const LOCAL = 0x04034b50;
 const CENTRAL = 0x02014b50;
@@ -134,6 +141,7 @@ export function readStoredZip(archive: Uint8Array): RawEntry[] {
     const commentLength = view.getUint16(central + 32, true);
     const localOffset = view.getUint32(central + 42, true);
     if ((flags & ~UTF8_NAMES) !== 0) throw malformed("an entry with flags a stored export never sets");
+    if (extraLength !== 0 || commentLength !== 0) throw malformed("an entry with extra fields or a comment");
     if (method !== 0 || compressed !== size) throw malformed("a compressed entry");
     const nameEnd = central + 46 + nameLength;
     if (nameEnd + extraLength + commentLength > end) throw malformed("a truncated central directory");
@@ -152,7 +160,8 @@ export function readStoredZip(archive: Uint8Array): RawEntry[] {
       view.getUint32(localOffset + 14, true) !== crc ||
       view.getUint32(localOffset + 18, true) !== size ||
       view.getUint32(localOffset + 22, true) !== size ||
-      localNameLength !== nameLength
+      localNameLength !== nameLength ||
+      localExtraLength !== 0
     ) {
       throw malformed("a local header that disagrees with the central directory");
     }
