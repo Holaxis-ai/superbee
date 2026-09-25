@@ -6,19 +6,28 @@
 // discriminator strings in DISCRIMINATORS: operation, error code, write state, outcome status and
 // the like). Only values that name the fixture's own data (ids, versions, messages, timestamps)
 // may differ. A fake that drifts from what the host emits fails here, not on staging.
+//
+// The export exchanges are held to more than a shape: the fake is loaded with the bundle the
+// captured archive holds, at the captured instant, and must answer the same status, the same
+// header values and the same bytes, the zip included. The CLI's archive reader is held to the
+// captured archive's values in `hosted-export.test.ts`.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
+import { verifyExport } from "../src/hosted/export-archive.js";
 import { BUNDLE, FakeHost, SYNC_FIXTURES } from "./support/fake-hosted-sync.js";
 
 interface Exchange {
   name: string;
   route: string;
   request: { headers: Record<string, string>; body: string };
-  response: { status: number; headers: Record<string, string>; body: string };
+  response: { status: number; headers: Record<string, string>; body: string; bodyBase64?: string };
 }
+
+/** Exchanges compared by value in the export test below, not by shape. */
+const isExport = (exchange: Exchange) => exchange.route === "/sync/v1/export";
 
 const index = JSON.parse(readFileSync(path.join(SYNC_FIXTURES, "index.json"), "utf8")) as { exchanges: { name: string; file: string }[] };
 const golden = new Map<string, Exchange>(index.exchanges.map((entry) => [entry.name, JSON.parse(readFileSync(path.join(SYNC_FIXTURES, entry.file), "utf8")) as Exchange]));
@@ -129,6 +138,7 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("write-400-missing-identity", send("create", create("notes/x"), { requestId: null }));
 
   for (const [name, exchange] of golden) {
+    if (isExport(exchange)) continue;
     if (NOT_MODELED[name]) {
       assert.ok(!observed.has(name), `${name} is marked not modeled but was driven`);
       continue;
@@ -152,4 +162,60 @@ test("the contract catches the read answer the fake used to give, and a wrong er
   assert.notDeepEqual(bodyShape(refused.replace('"status":"refused"', '"status":"committed"')), bodyShape(refused));
   const changed = golden.get("delete-200-unchanged")!.response.body;
   assert.notDeepEqual(bodyShape(changed.replace('"changed":false', '"changed":true')), bodyShape(changed));
+});
+
+test("the fake answers every golden /sync/v1/export exchange with the host's exact values and bytes", async () => {
+  const exchanges = [...golden.values()].filter(isExport);
+  assert.deepEqual(exchanges.map((exchange) => exchange.name).sort(), ["export-200", "export-400-invalid-input", "export-401-unauthenticated", "export-404-bundle-not-found"]);
+  const captured = golden.get("export-200")!;
+  const archive = Buffer.from(captured.response.bodyBase64!, "base64");
+  // The bundle the captured archive holds, as the fake's storage: the files are the input, and
+  // every byte the fake adds around them (order, headers, manifest, directory) is compared.
+  const exported = verifyExport(archive, "notes.a");
+  const host = new FakeHost({ bundles: ["notes.a"] });
+  host.exportState = {
+    tenantId: exported.source.tenantId,
+    bundleId: exported.source.bundleId,
+    revision: exported.source.revision,
+    files: new Map([...exported.entries].reverse().map((entry) => [entry.path, entry.bytes])),
+  };
+  host.exportedAt = () => new Date(exported.exportedAt);
+
+  for (const exchange of exchanges) {
+    const bearer = exchange.name === "export-401-unauthenticated" ? "not-a-token" : host.token;
+    const response = await host.fetch(`${host.origin}/sync/v1/export`, {
+      method: "POST",
+      headers: { ...exchange.request.headers, Authorization: `Bearer ${bearer}` },
+      body: exchange.request.body,
+    });
+    assert.equal(response.status, exchange.response.status, exchange.name);
+    const headers = Object.fromEntries(Object.keys(exchange.response.headers).map((name) => [name, response.headers.get(name)]));
+    assert.deepEqual(headers, exchange.response.headers, `${exchange.name}: header values`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (exchange.response.bodyBase64 !== undefined) {
+      assert.equal(bytes.toString("base64"), exchange.response.bodyBase64, `${exchange.name}: the archive bytes`);
+    } else {
+      assert.equal(bytes.toString("utf8"), exchange.response.body, `${exchange.name}: the body bytes`);
+    }
+  }
+});
+
+test("the export value check catches a manifest, order or header the host does not emit", async () => {
+  const captured = golden.get("export-200")!;
+  const archive = Buffer.from(captured.response.bodyBase64!, "base64");
+  const exported = verifyExport(archive, "notes.a");
+  const answer = async (mutate: (host: FakeHost) => void) => {
+    const host = new FakeHost({ bundles: ["notes.a"] });
+    host.exportState = { tenantId: exported.source.tenantId, bundleId: "notes.a", revision: exported.source.revision, files: new Map(exported.entries.map((entry) => [entry.path, entry.bytes])) };
+    host.exportedAt = () => new Date(exported.exportedAt);
+    mutate(host);
+    const response = await host.fetch(`${host.origin}/sync/v1/export`, { method: "POST", headers: { Authorization: `Bearer ${host.token}` }, body: JSON.stringify({ bundleId: "notes.a" }) });
+    return { disposition: response.headers.get("content-disposition"), base64: Buffer.from(await response.arrayBuffer()).toString("base64") };
+  };
+  assert.equal((await answer(() => {})).base64, captured.response.bodyBase64);
+  // Another revision changes the manifest and the file name; another instant changes every header.
+  const revised = await answer((host) => void (host.exportState = { ...host.exportState!, revision: 3 }));
+  assert.notEqual(revised.base64, captured.response.bodyBase64);
+  assert.notEqual(revised.disposition, captured.response.headers["content-disposition"]);
+  assert.notEqual((await answer((host) => void (host.exportedAt = () => new Date(Date.parse(exported.exportedAt) + 60_000)))).base64, captured.response.bodyBase64);
 });

@@ -1,0 +1,24 @@
+{
+  "name": "export-200",
+  "description": "The portable export of a readable bundle: a store-only zip (body base64; exportedAt varies per run).",
+  "route": "/sync/v1/export",
+  "rows": [
+    "export 200"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/zip",
+      "content-disposition": "attachment; filename=\"notes.a-2.zip\""
+    },
+    "bodyBase64": "UEsDBBQAAAgAAOtuOF1+REuHJQAAACUAAAAIAAAAaW5kZXgubWQtLS0Kb2tmX3ZlcnNpb246ICIwLjIiCi0tLQojIG5vdGVzLmEKUEsDBBQAAAgAAOtuOF0vLlkNFwAAABcAAAAMAAAAbm90ZXMvb25lLm1kLS0tCnR5cGU6IE5vdGUKLS0tCm9uZQpQSwMEFAAACAAA6244XQCBdbQ/AgAAPwIAABQAAABzdXBlcmJlZS1leHBvcnQuanNvbnsKICAiZm9ybWF0IjogInN1cGVyYmVlLWV4cG9ydC8xIiwKICAic291cmNlIjogewogICAgInRlbmFudElkIjogInRlbmFudDphIiwKICAgICJidW5kbGVJZCI6ICJub3Rlcy5hIiwKICAgICJyZXZpc2lvbiI6IDIsCiAgICAib2tmRWRpdGlvbiI6ICIwLjIiCiAgfSwKICAiZXhwb3J0ZWRBdCI6ICIyMDI2LTA5LTI0VDEzOjU1OjIzLjY1NloiLAogICJjb3VudHMiOiB7CiAgICAiZG9jdW1lbnRzIjogMSwKICAgICJyZXNlcnZlZCI6IDEsCiAgICAiYmxvYnMiOiAwCiAgfSwKICAiZW50cmllcyI6IFsKICAgIHsKICAgICAgInBhdGgiOiAiaW5kZXgubWQiLAogICAgICAiYnl0ZXMiOiAzNywKICAgICAgInNoYTI1NiI6ICI3Y2MxZjllNDcyMzQxZjhiZGY1NGY2NjhhOWFiOTg2NTUwNTVlMzZhOWFkNDFmOGJmY2M4ZDU5NzdhYWE1OWQwIgogICAgfSwKICAgIHsKICAgICAgInBhdGgiOiAibm90ZXMvb25lLm1kIiwKICAgICAgImJ5dGVzIjogMjMsCiAgICAgICJzaGEyNTYiOiAiZGZjMDVjZjMzNmJmMmVhYTJiZjRhMzMxOTYwOWY1OTY1MTRjMmVjMGY1YWJmM2U3YTE3M2FhZmU3YmFhYzVjNCIKICAgIH0KICBdCn0KUEsBAhQAFAAACAAA6244XX5ES4clAAAAJQAAAAgAAAAAAAAAAAAAAAAAAAAAAGluZGV4Lm1kUEsBAhQAFAAACAAA6244XS8uWQ0XAAAAFwAAAAwAAAAAAAAAAAAAAAAASwAAAG5vdGVzL29uZS5tZFBLAQIUABQAAAgAAOtuOF0AgXW0PwIAAD8CAAAUAAAAAAAAAAAAAAAAAIwAAABzdXBlcmJlZS1leHBvcnQuanNvblBLBQYAAAAAAwADALIAAAD9AgAAAAA=",
+    "truncated": false
+  }
+}

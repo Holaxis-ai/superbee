@@ -36,6 +36,11 @@ interface Exchange {
   response: { status: number; headers: Record<string, string>; body: string; truncated: boolean };
 }
 
+/** The export route's 200 answer is a zip, recorded as base64 in place of `body`. */
+interface BinaryExchange {
+  response: { status: number; headers: Record<string, string>; bodyBase64: string };
+}
+
 const index = JSON.parse(readFileSync(path.join(FIXTURES, "index.json"), "utf8")) as {
   source: string;
   exchanges: { name: string; file: string; route: string; rows: string[]; status: number }[];
@@ -65,13 +70,31 @@ function answerOf(exchange: Exchange): HostedAnswer {
 }
 
 test(`golden /sync/v1 exchanges (${index.source}) are indexed as recorded`, () => {
-  assert.equal(index.exchanges.length, 25);
+  assert.equal(index.exchanges.length, 29);
   for (const entry of index.exchanges) {
     const exchange = fixture(entry.name);
     assert.equal(exchange.route, entry.route);
     assert.equal(exchange.response.status, entry.status);
     assert.deepEqual(exchange.rows, entry.rows);
   }
+});
+
+test("export 200 is a complete store-only zip whose last entry is the manifest", () => {
+  const { response } = fixture("export-200") as unknown as BinaryExchange;
+  assert.equal(response.headers["content-type"], "application/zip");
+  assert.equal(response.headers["content-disposition"], 'attachment; filename="notes.a-2.zip"');
+  const bytes = Buffer.from(response.bodyBase64, "base64");
+  // The end record closes the archive (a stopped export has none) and names the entries.
+  assert.equal(bytes.readUInt32LE(bytes.length - 22), 0x06054b50);
+  assert.equal(bytes.readUInt16LE(bytes.length - 12), 3);
+  assert.equal(bytes.readUInt32LE(0), 0x04034b50);
+  assert.equal(bytes.readUInt16LE(8), 0, "stored, not compressed");
+});
+
+test("export refusals carry the working copy routes' bytes", () => {
+  assert.deepEqual(JSON.parse(fixture("export-404-bundle-not-found").response.body).error.code, "bundle_not_found");
+  assert.deepEqual(JSON.parse(fixture("export-400-invalid-input").response.body), { error: { code: "invalid_input" } });
+  assert.equal(fixture("export-401-unauthenticated").response.body, fixture("read-401-unauthenticated").response.body);
 });
 
 // ── reads ──────────────────────────────────────────────────────────────────────────────────

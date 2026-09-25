@@ -104,6 +104,7 @@ const zero = exactPositionalArity(0);
 const one = exactPositionalArity(1);
 const two = exactPositionalArity(2);
 const fieldValueArity: BoundedPositionalArity = Object.freeze({ kind: "bounded", count: 2, max: 3 });
+const zeroOrOne: BoundedPositionalArity = Object.freeze({ kind: "bounded", count: 0, max: 1 });
 
 function pathFlags(...flags: readonly CliPathFlag[]): readonly CliPathFlag[] {
   return Object.freeze(flags.map((entry) => Object.freeze({ ...entry })));
@@ -132,6 +133,10 @@ const DIR_FIELD_FILE_SURFACE: LeafPathSurface = Object.freeze({
   flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "from-file", role: "ingress" }),
 });
 const DIR_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR });
+/** `--dir` names a checkout to read; `--to` names the folder that becomes the exported bundle. */
+const DIR_TO_SURFACE: LeafPathSurface = Object.freeze({
+  flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "to", role: "bundle-root" }),
+});
 const DIR_REJECTED_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR_REJECTED });
 const DIR_BODY_FILE_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR_AND_BODY_FILE });
 const DIR_BODY_FILE_DYNAMIC_SURFACE: LeafPathSurface = Object.freeze({
@@ -606,6 +611,13 @@ export const CLI_COMMAND_GROUPS = [
         usage: "checkout (<bundle-id> [--host <url>] [--dir <folder>] [--workspace <id>] | --adopt <folder> [--host <url>] [--workspace <id>] | --release <folder>) [--json]",
         summary:
           "Mirror a hosted bundle into a new local folder you edit and then sync (sync sends your edits and brings in the host's): signs in if needed (AUTH_REQUIRED carries the link), the host defaults to your last sign-in, the binding stays in private state, and every command then runs on the folder; commands sync cannot send are refused there with 'do this in the app'; the folder carries a read-only .superbee/checkout.json marker that never routes; --adopt binds a moved, copied or restored checkout folder again; --release forgets a checkout and keeps its files",
+      },
+      {
+        id: "export",
+        leaves: [publicLeaf("export", "export", zeroOrOne, 34, DIR_TO_SURFACE)],
+        usage: "export (<bundle-id> [--host <url>] [--workspace <id>] | [--dir <checkout>]) (--to <folder> | --in-place [--keep-unsent]) [--git] [--json]",
+        summary:
+          "Copy a hosted bundle out of hosted Superbee: every document, reserved file and blob at its latest revision, verified against the host's digest manifest before any file is written; --to writes a new local bundle into a new or empty folder (complete or not at all); --in-place converts a hosted checkout into a local bundle, adds what it lacks without overwriting a file, and forgets its binding; --git commits the result on a board branch; the hosted bundle is unchanged and history is not exported",
       },
     ],
   },

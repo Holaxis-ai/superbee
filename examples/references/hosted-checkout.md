@@ -128,7 +128,8 @@ Superbee app, by the person.
 Some commands are refused in a hosted checkout with "do this in the Superbee app". Examples:
 editing Kinds or recipes, artifacts, and `doc verify`. Tell the person what to do in the app. Do
 not work around a refusal by editing files, using another command, or copying the bundle
-somewhere else.
+somewhere else. Taking a bundle out of hosted is `superbee export` (below), and only when the
+person asks for it.
 
 `checkout` adds the folder to the workspace catalog, where `catalog list` shows it with
 `home: hosted`. The local MCP app (`superbee mcp`) can read it by that label, but refuses every
@@ -158,3 +159,22 @@ confirm that no superbee command is still running, then remove the lock named in
 - Offer the Stop hook, but install it only when the person agrees.
   `superbee hook uninstall --turn-end-sync` removes it, and `SUPERBEE_NO_TURN_SYNC=<any value>`
   turns it off for a shell.
+
+## Export: taking a bundle out of hosted
+
+Run `superbee export` only when the person asks for a copy outside hosted, or to stop using a
+checkout. It never changes the hosted bundle, and it carries the current revision only, never
+history.
+
+- `superbee export <bundle-id> --to <folder>` (or `--dir <checkout> --to <folder>`) writes every
+  document, reserved file and blob into a new or empty folder, which becomes an ordinary local
+  bundle. The archive is verified against the host's digests first, and the folder appears
+  complete or not at all. `export_incomplete` (TRANSIENT) means the host stopped the export:
+  retry the same command.
+- `superbee export --dir <checkout> --in-place` turns the checkout into a local bundle: it adds
+  the files the checkout lacks, never overwrites one (`kept_local` lists files that differ from
+  the host's), and forgets the binding. It refuses `unsent_changes`: run `superbee sync` first. Pass
+  `--keep-unsent` only when the person agrees that those changes stay in this folder and never
+  reach the host. If it stops part way, re-run the same command: it finishes without the network.
+- `--git` makes the result a Git board on branch `board`. To share it, the person adds a remote
+  (`git remote add origin <url>`), then `superbee sync --establish`.

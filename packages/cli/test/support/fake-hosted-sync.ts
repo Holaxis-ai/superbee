@@ -20,8 +20,13 @@
 //   and without `currentVersion` when it acknowledges a tombstone the id does not have;
 // - `/outcome`: the `encodeIdentifiedOutcome` answer (`schemaVersion` 1, `absent`, `committed`
 //   with the committed bytes as base64, or none for a delete, or `refused`).
+// - `/export` (superbee-hosted PR 650, `src/sync-v1-export.ts`): the portable export of the fake's
+//   bundle as the host writes it (`fake-export-archive.ts`): the documents' stored bytes, the root
+//   index, and any reserved files or blobs a test adds to `exportExtras`; a 404 `bundle_not_found`
+//   for another bundle and a 400 `invalid_input` for any body but `{ bundleId }`.
 // Every answer shape is held to the `/sync/v1` golden exchanges captured from the real hosted
-// gateway (core's `test/fixtures/hosted-sync-v1/`) by `hosted-fake-contract.test.ts`.
+// gateway (core's `test/fixtures/hosted-sync-v1/`) by `hosted-fake-contract.test.ts`; the export
+// answers are held to them byte for byte.
 // The host stores its own serialization (the managed `superbee_updated_by` field added), so a
 // committed version is never the client's local version, as on the real host.
 import assert from "node:assert/strict";
@@ -31,6 +36,8 @@ import { fileURLToPath } from "node:url";
 
 import { headsDigest, stringifyDoc } from "@superbee/core";
 import { versionOfBytes } from "@superbee/core/versioning";
+
+import { exportArchive, type ExportState } from "./fake-export-archive.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.resolve(here, "../../../core/test/fixtures/hosted-transport");
@@ -116,6 +123,14 @@ export class FakeHost {
   /** Documents applied by the write routes, in order. */
   readonly applied: string[] = [];
   hook: WriteHook | undefined;
+  /** Reserved files and blobs the export carries beside the documents and the root index. */
+  readonly exportExtras = new Map<string, Uint8Array>();
+  /** The whole bundle the export serves, when a test sets it; otherwise the fake's own state. */
+  exportState: ExportState | undefined;
+  /** The export instant. */
+  exportedAt: () => Date = () => new Date();
+  /** What a test does to the archive bytes before they are answered (truncate, tamper). */
+  exportHook: ((archive: Uint8Array) => Uint8Array | Response) | undefined;
   capabilities: string;
   principal: string;
   readonly origin: string;
@@ -228,6 +243,8 @@ export class FakeHost {
         }
         return Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version } });
       }
+      case "export":
+        return this.export(body);
       case "create":
       case "replace":
       case "delete":
@@ -237,6 +254,39 @@ export class FakeHost {
         return Response.json({ error: { code: "not_found" } }, { status: 404 });
     }
   }) as typeof fetch;
+
+  /** The root index the host serves: the capabilities answer's `root.content`. */
+  rootIndex(): string {
+    const { response } = fixture(this.capabilities);
+    return (JSON.parse(response.body) as { root: { content: string } }).root.content;
+  }
+
+  /** The bundle as the export route reads it from storage. */
+  currentExportState(): ExportState {
+    if (this.exportState) return this.exportState;
+    const files = new Map<string, Uint8Array>([["index.md", Buffer.from(this.rootIndex(), "utf8")]]);
+    for (const [id, doc] of this.docs) files.set(`${id}.md`, Buffer.from(doc.raw, "utf8"));
+    for (const [file, bytes] of this.exportExtras) files.set(file, bytes);
+    return { tenantId: (this.options.tenants ?? ["tenant-a"])[0]!, bundleId: BUNDLE, revision: this.revision, files };
+  }
+
+  private export(body: Record<string, unknown>): Response {
+    if (!onlyKeys(body, ["bundleId"]) || typeof body.bundleId !== "string") return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    const state = this.currentExportState();
+    if (body.bundleId !== state.bundleId) {
+      return Response.json(
+        { error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation. Check your bundle access with a workspace administrator.", retryable: false } },
+        { status: 404 },
+      );
+    }
+    const archive = exportArchive(state, this.exportedAt());
+    const answered = this.exportHook ? this.exportHook(archive) : archive;
+    if (answered instanceof Response) return answered;
+    return new Response(answered, {
+      status: 200,
+      headers: { "content-type": "application/zip", "content-disposition": `attachment; filename="${state.bundleId}-${state.revision}.zip"` },
+    });
+  }
 
   private write(route: "create" | "replace" | "delete" | "outcome", body: Record<string, unknown>, headers: Headers): Response {
     const requestId = headers.get("x-superbee-write-request");
