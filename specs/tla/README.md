@@ -9,7 +9,7 @@ one of those functions should be mirrored in the spec.
 | Spec | Code it models | Invariants and properties | CI job: configs |
 | --- | --- | --- | --- |
 | `filesystem-lock/FsLock.tla` | The cross-process mkdir lock (`packages/core/src/filesystem-lock.ts`), the filesystem push role (`packages/core/src/filesystem-push-role.ts`) and the default host policy (`packages/core/src/filesystem-host.ts`) | `M1`, `M2`, `Fence`, `NoImpossible`, `RetryDiagAccurate`, `StaleDiagAccurate` | `filesystem-lock`: every `filesystem-lock/*.cfg` |
-| `intent-journal/WorkingCopy.tla` | Browser-local sync data flow: push, pull by heads, digest recording, deletion reconciliation and the pull fence (`packages/browser-local/src/local-bundle.ts`, `packages/browser-local/src/platform/browser-local.ts`, `packages/browser-local/src/push-role.ts`, the journaled seam in `packages/core/src/journaled-backend.ts` and `packages/core/src/indexeddb-backend.ts`) | `TruthfulDigest`, `NoRegress`, `OwnedWrites`, `DigestByOwner` | `working-copy`: every `intent-journal/WorkingCopy.*.cfg` |
+| `intent-journal/WorkingCopy.tla` | Browser-local sync data flow: push, pull by heads, digest recording, deletion reconciliation and the pull fence (`packages/browser-local/src/local-bundle.ts`, `packages/browser-local/src/platform/browser-local.ts`, `packages/browser-local/src/push-role.ts`, the journaled seam in `packages/core/src/journaled-backend.ts`, `packages/core/src/indexeddb-backend.ts` and the CLI checkout's `packages/core/src/file-journaled-backend.ts`) | `TruthfulDigest`, `NoRegress`, `OwnedWrites`, `DigestByOwner` | `working-copy`: every `intent-journal/WorkingCopy.*.cfg` |
 | `intent-journal/IntentLifecycle.tla` | The lifecycle of one document's intents: compose, claim, uncertain delivery, settle, reclaim, resume, resolve and the fold of a refused chain (`packages/browser-local/src/local-bundle.ts`, `packages/core/src/uncertain-write.ts`, the CLI hosted sync in `packages/cli/src/hosted/sync.ts` and `sync-rows.ts`) | `NoBlindResubmit`, `DurablyPossiblyDelivered`, `NoRetireOfApplied`, `ChainOrder`, `FoldRetiresOnlyUnapplied`, `NoDanglingAfter`, `OneUnsentIntent`, `EditKept`, `NoResendOfContentRefusal`, `EventuallyAllSettled`, `PendingProgress` | `intent-lifecycle`: every `intent-journal/IntentLifecycle.*.cfg` |
 | `identified-write/IdentifiedWrite.tla` | At-most-once delivery of an identified guarded write across lost answers, outcome expiry and store restarts (`packages/core/src/uncertain-write.ts`, `packages/core/src/remote-backend.ts`, `packages/core/src/hosted-transport/`, `packages/core/src/versioning.ts`, `packages/server/src/router.ts`, `packages/server/src/operation-outcomes.ts`) | `AtMostOnce`, `NoLostUpdate`, `NoMisleadingConflict`, `AckHonest`, `EventuallySettles` | `identified-write`: every `identified-write/*.cfg` |
 
@@ -111,7 +111,6 @@ When you change a source file in the table above, check the spec that models it:
 2. Run the area's configs with `run-tlc.sh`. A pass config must still pass, and every variant and
    mutant config must still produce its counterexample. A mutant that starts passing means the
    model no longer catches the regression it names; fix the model before merging.
-3. Keep the path lists in `.github/workflows/tla-specs.yml` equal to the files in the table.
 
 ## filesystem-lock
 
@@ -201,7 +200,7 @@ person's recovery edit, says a pending change is eventually claimed or retired.
 | `IntentLifecycle.bug-refused-head-wedge.cfg` | Before the fold (#324): a content-refused head with a chained successor has no exit in exact mode | `EventuallyAllSettled` violated |
 | `IntentLifecycle.bug-claim-aba.cfg` | Open: `push` called outside the push role; the claim compares state only, so an intent claimed before can skip its lookup | `NoBlindResubmit` violated |
 | `IntentLifecycle.mutant-fold-drops-edit.cfg` | Mutant: the fold retires the refused chain without journaling the successor's edit | `EditKept` violated |
-| `IntentLifecycle.mutant-fold-auth.cfg` | Mutant: the fold also takes an authorization refusal, whose exit is resume; reached by a push outside the push role | `FoldRetiresOnlyUnapplied` violated |
+| `IntentLifecycle.mutant-fold-auth.cfg` | Mutant: the fold also takes an authorization refusal, whose exit is resume. Caught only with `RoleDiscipline = FALSE`, that is, pushes outside the push role: under the push role an authorization refusal pauses the bundle, so an auth fold cannot occur and the pass configs do not catch this mutant | `FoldRetiresOnlyUnapplied` violated |
 
 Abstractions: a pull or push step is one IndexedDB transaction or one await; the push role is a
 mutex; the lookup rounds are collapsed to one lookup that may fail; retention expiry is left to
