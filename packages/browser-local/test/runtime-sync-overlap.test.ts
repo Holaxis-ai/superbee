@@ -13,7 +13,7 @@ import { RemoteBackend } from "@superbee/core";
 import { openRemoteOperationTransport } from "@superbee/core/remote-operations";
 
 import { bootstrap, commitLocal, openLocalBundle } from "../src/local-bundle.ts";
-import { createBrowserLocalRuntime } from "../src/platform/browser-local.ts";
+import { createBrowserLocalRuntime, PushRoleHeldError } from "../src/platform/browser-local.ts";
 import type { LockManagerLike } from "../src/push-role.ts";
 import { BASE_URL, BUNDLE, createRemoteFixture } from "./fixtures/remote-fixture.ts";
 
@@ -120,5 +120,42 @@ test("a sync that finds the push role held by another realm neither pushes nor p
     assert.equal(status.pending, 1);
     assert.equal(status.online, null, "no exchange with the authority is reported");
     assert.ok((await local.backend.list()).includes("notes/new"));
+  } finally { local.close(); }
+});
+
+test("a sync accepting refused deletions while another realm holds the push role rejects and applies nothing; the same call applies them once the role is free", async () => {
+  const fixture = await createRemoteFixture();
+  const seeded: string[] = [];
+  for (let i = 0; i < 20; i += 1) {
+    const id = `seed/d${String(i).padStart(2, "0")}`;
+    await fixture.authority.write(id, { id, frontmatter: { type: "Note", title: id }, body: "s\n" });
+    seeded.push(id);
+  }
+  const remote = new RemoteBackend({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl: fixture.hosted, maxRetries: 0 });
+  const transport = await openRemoteOperationTransport(remote);
+  const local = openLocalBundle("accept-refusal-held-elsewhere", { indexedDB: new IDBFactory() });
+  try {
+    await bootstrap(remote, local);
+    let heldElsewhere = false;
+    const locks: LockManagerLike = { request: async (name, _options, callback) => callback(heldElsewhere ? null : { name }) };
+    const runtime = createBrowserLocalRuntime({ local, remote, transport, write: immediate, locks });
+    for (const id of seeded.slice(0, 12)) assert.equal(await fixture.authority.delete(id), true);
+    const refused = (await runtime.sync()).lastSync?.refusedDeletions;
+    assert.ok(refused, "the shrink was refused and recorded");
+    assert.equal((await local.backend.list()).length, 20);
+
+    heldElsewhere = true;
+    await assert.rejects(runtime.sync({ acceptRefusedDeletions: refused }), PushRoleHeldError);
+    assert.equal((await local.backend.list()).length, 20, "nothing was applied");
+    const held = await runtime.syncStatus();
+    assert.equal(held.lastSync?.ok, false);
+    assert.match(held.lastSync?.error ?? "", /^PushRoleHeldError: /);
+    assert.deepEqual(held.lastSync?.refusedDeletions, refused, "the refusal stays recorded for a retry");
+
+    heldElsewhere = false;
+    const applied = await runtime.sync({ acceptRefusedDeletions: refused });
+    assert.equal((await local.backend.list()).length, 8, "the accepted deletions were applied");
+    assert.equal(applied.lastSync?.ok, true);
+    assert.equal(applied.lastSync?.refusedDeletions, undefined);
   } finally { local.close(); }
 });

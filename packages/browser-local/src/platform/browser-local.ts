@@ -110,6 +110,18 @@ export class UnconfirmedWorkingCopyError extends Error {
   }
 }
 
+/**
+ * A sync passed `acceptRefusedDeletions` found the push role held by another realm, so it
+ * neither pushed nor pulled and the accepted deletions were not applied. The refusal stays
+ * recorded; the same call applies it once the role is free.
+ */
+export class PushRoleHeldError extends Error {
+  constructor() {
+    super("another realm holds this working copy's push role, so the accepted deletions were not applied");
+    this.name = "PushRoleHeldError";
+  }
+}
+
 /** An ENOENT-shaped rejection, the shape every backend's read uses for an absent document. */
 function notFound(id: ConceptId): Error & { code: string } {
   const err = new Error(`no concept document '${id}'`) as Error & { code: string };
@@ -301,7 +313,9 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
    * pulls: a pull listed while the holder's push is in flight can predate an acknowledgement the
    * holder is about to record, and would then remove the acknowledged document from the shared
    * working copy. The holder's own sync pulls into that same store, so this call returns the
-   * current status and leaves `online` and this runtime's recorded outcome unchanged.
+   * current status and leaves `online` and this runtime's recorded outcome unchanged. An
+   * acceptance of refused deletions is the exception: dropping it would look like success, so the
+   * call records `ok: false` and rejects with {@link PushRoleHeldError}.
    */
   const syncOnce = async (syncOptions: PlatformSyncOptions): Promise<PlatformSyncStatus> => {
     const readSide: StorageBackend = remote;
@@ -312,7 +326,12 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
       lastOutcome = { ok: false, error: describeFailure(error) };
       throw error;
     }
-    if (!pushed.held) return status();
+    if (!pushed.held) {
+      if (syncOptions.acceptRefusedDeletions === undefined) return status();
+      const error = new PushRoleHeldError();
+      lastOutcome = { ok: false, error: describeFailure(error) };
+      throw error;
+    }
     try {
       // The opened bundle, not its backend: the pull keeps the authority's capabilities on it.
       await pull(local, readSide, syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions });
@@ -391,7 +410,8 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
      * shares a single follow-up run with every other call made meanwhile, resolving with that
      * run's result; the follow-up carries the latest `acceptRefusedDeletions` any of them passed.
      * When another realm holds the push role, a sync neither pushes nor pulls and resolves with
-     * the current status.
+     * the current status, except that one passing `acceptRefusedDeletions` records `ok: false`
+     * and rejects with {@link PushRoleHeldError}, leaving the refusal recorded for a retry.
      */
     sync: (syncOptions: PlatformSyncOptions = {}): Promise<PlatformSyncStatus> => {
       if (rerun !== null) {
