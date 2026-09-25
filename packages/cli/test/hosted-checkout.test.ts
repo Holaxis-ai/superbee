@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,7 +19,12 @@ import { checkout, CHECKOUT_DOCUMENT_LIMIT } from "../src/commands/checkout.js";
 import { list } from "../src/commands/list.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
-import { bindingForPath, checkoutLockName, folderIdentity, hostedCheckoutsRoot, sameFolder, writeBinding } from "../src/hosted/binding.js";
+import { bindingForPath, checkoutLockName, checkoutStoreDir, folderIdentity, hostedCheckoutsRoot, sameFolder, writeBinding } from "../src/hosted/binding.js";
+import { bundleHomeAt, homeDetail } from "../src/bundle-home.js";
+import { sync } from "../src/commands/sync.js";
+import { readCheckoutMarker } from "../src/hosted/marker.js";
+import { folderConflicts, readProjection } from "../src/hosted/sync-scan.js";
+import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { WORKSPACE_HEADER } from "../src/hosted/client.js";
 import { hostedAuthRoot } from "../src/hosted-auth/session.js";
 import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
@@ -165,7 +170,7 @@ test("checkout mirrors the bundle into a new folder and binds it privately", asy
   assert.equal(receipt.root_index, true);
   assert.equal(receipt.heads_digest, "sha256:e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14");
 
-  assert.deepEqual(await filesUnder(folder), ["index.md", "notes/alpha.md", "notes/beta.md", "projects/2026/plan.md"]);
+  assert.deepEqual(await filesUnder(folder), [".superbee/checkout.json", "index.md", "notes/alpha.md", "notes/beta.md", "projects/2026/plan.md"]);
   const root = await readFile(path.join(folder, "index.md"), "utf8");
   assert.equal(root, '---\nokf_version: "0.2"\ntitle: Team knowledge\n---\n# Team knowledge\n');
   const alpha = await readFile(path.join(folder, "notes/alpha.md"), "utf8");
@@ -174,10 +179,18 @@ test("checkout mirrors the bundle into a new folder and binds it privately", asy
   // CRLF bodies stay byte-exact.
   assert.match(await readFile(path.join(folder, "notes/beta.md"), "utf8"), /Line one\r\nLine two\r\n$/);
 
-  // No URL and no binding file in the folder: the link lives in private state only.
+  // No binding in the folder: the link lives in private state only. The one file that names the
+  // host is the read-only marker, which never routes (D3).
   for (const file of await filesUnder(folder)) {
+    if (file === path.join(".superbee", "checkout.json")) continue;
     assert.doesNotMatch(await readFile(path.join(folder, file), "utf8"), /hosted\.example/);
   }
+  const marker = JSON.parse(await readFile(path.join(folder, ".superbee", "checkout.json"), "utf8")) as Record<string, unknown>;
+  assert.equal(marker.superbee_checkout, 1);
+  assert.equal(marker.home, "hosted");
+  assert.equal(marker.host, HOST);
+  assert.equal(marker.bundle_id, BUNDLE);
+  assert.equal((await stat(path.join(folder, ".superbee", "checkout.json"))).mode & 0o222, 0, "the marker is read-only");
   const binding = await bindingForPath(h.home, await import("node:fs/promises").then((fs) => fs.realpath(folder)));
   assert.ok(binding);
   assert.equal(binding.origin, HOST);
@@ -504,6 +517,8 @@ test("checkout --release forgets the binding, keeps the files, and is idempotent
   const folder = path.join(h.cwd, "team");
   const released = await run(h, ["--release", folder]);
   assert.equal(released.released, true);
+  assert.equal(released.marker, "removed");
+  assert.deepEqual((await readdir(folder)).filter((name) => name.startsWith(".")), [], "the marker and its folder are gone");
   assert.ok((await stat(path.join(folder, "notes/alpha.md"))).isFile());
   assert.equal(await bindingForPath(h.home, await realpath(folder)), null);
   assert.deepEqual((await readdir(hostedCheckoutsRoot(h.home))).filter((name) => name !== "paths"), []);
@@ -584,4 +599,106 @@ test("a folder that reuses the checkout folder's inode (Linux) is told apart by 
   // A filesystem without birth times falls back to device and inode.
   assert.ok(sameFolder({ dev: 1, ino: 2 }, { dev: 1, ino: 2, birth: 5 }));
   assert.ok(!sameFolder({ dev: 1, ino: 2, birth: 4 }, { dev: 1, ino: 2, birth: 5 }));
+});
+
+test("a moved checkout reads as an unbound copy, and --adopt binds it back with no network", async () => {
+  const h = await harness();
+  const fake = fakeSyncFamily();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"], fake);
+  const before = await bindingForPath(h.home, await realpath(path.join(h.cwd, "team")));
+  assert.ok(before);
+  await rename(path.join(h.cwd, "team"), path.join(h.cwd, "moved"));
+  const moved = await realpath(path.join(h.cwd, "moved"));
+
+  // The marker never routes: the moved folder is local, and says it is a copy of a checkout.
+  const facts = await bundleHomeAt(moved, { home: h.home });
+  assert.equal(facts.home, "local");
+  const detail = homeDetail(facts).copy_of_checkout as Record<string, unknown>;
+  assert.equal(detail.bound, false);
+  assert.equal(detail.bundle_id, BUNDLE);
+  assert.equal(detail.host, HOST);
+  assert.match(String(detail.help), /checkout --adopt .*moved --host https:\/\/hosted\.example/);
+
+  // sync refuses it with the adopt command, instead of treating it as a Git board.
+  const refused = await rejects(sync(["--dir", moved], { auth: h.auth, cwd: h.cwd }));
+  assert.equal(refused.code, "USAGE");
+  assert.equal(refused.details?.reason, "unbound_copy");
+  assert.match(refused.help ?? "", /checkout --adopt/);
+
+  const requests = fake.requests.length;
+  const adopted = await run(h, ["--adopt", moved], fake);
+  assert.equal(adopted.adopted, "moved");
+  assert.equal(adopted.from, before.path);
+  assert.equal(fake.requests.length, requests, "moving back is local: no request");
+  const after = await bindingForPath(h.home, moved);
+  assert.ok(after);
+  assert.equal(after.checkout_id, before.checkout_id, "the same private store carries over");
+  assert.equal(await bindingForPath(h.home, before.path), null);
+  assert.equal((await bundleHomeAt(moved, { home: h.home })).home, "hosted");
+
+  // Adopting a bound folder is a no-op, and restores a missing marker.
+  await unlink(path.join(moved, ".superbee", "checkout.json"));
+  const again = await run(h, ["--adopt", moved], fake);
+  assert.equal(again.adopted, "unchanged");
+  assert.equal(again.marker, "written");
+  assert.equal(readCheckoutMarker(moved)?.bundle_id, BUNDLE);
+});
+
+test("a copied checkout is adopted only for a host the person names, and never overwrites a file", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const original = await realpath(path.join(h.cwd, "team"));
+  await cp(original, path.join(h.cwd, "copy"), { recursive: true });
+  const copy = await realpath(path.join(h.cwd, "copy"));
+  const alpha = path.join(copy, "notes/alpha.md");
+  await chmod(alpha, 0o644);
+  const edited = (await readFile(alpha, "utf8")).replace("Alpha body", "Alpha edited in the copy");
+  await writeFile(alpha, edited);
+  await rm(path.join(copy, "notes/beta.md"));
+  await writeFile(path.join(copy, "notes/gamma.md"), "---\ntype: Note\ntitle: Gamma\n---\nOnly in the copy.\n");
+
+  // A plain checkout into it names the adopt command.
+  const occupied = await rejects(run(h, [BUNDLE, "--host", HOST, "--dir", copy]));
+  assert.equal(occupied.details?.reason, "unbound_copy");
+  assert.match(occupied.help ?? "", /checkout --adopt/);
+
+  // Without --host, adopt only previews: the marker's host is shown, never contacted.
+  const fake = fakeSyncFamily();
+  const preview = await run(h, ["--adopt", copy], fake);
+  assert.equal(preview.adopt, "preview");
+  assert.equal(fake.requests.length, 0);
+  assert.match(String((preview.help as string[])[0]), /--adopt .* --host https:\/\/hosted\.example/);
+  // A host other than the marker's is refused before any request.
+  const other = await rejects(run(h, ["--adopt", copy, "--host", "https://other.example"], fake));
+  assert.equal(other.details?.reason, "marker_host_mismatch");
+  assert.equal(fake.requests.length, 0);
+
+  const adopted = await run(h, ["--adopt", copy, "--host", HOST], fake);
+  assert.equal(adopted.adopted, "copy");
+  assert.deepEqual(adopted.documents, { placed: 1, matched: 1, conflicts: 1, local_only: 1 });
+  assert.deepEqual((adopted.conflicts as { ids: string[] }).ids, ["notes/alpha"]);
+  assert.deepEqual((adopted.local_only as { ids: string[] }).ids, ["notes/gamma"]);
+  assert.equal(await readFile(alpha, "utf8"), edited, "the differing file is kept as it is");
+  assert.ok((await stat(path.join(copy, "notes/beta.md"))).isFile(), "the missing document is placed");
+
+  const binding = await bindingForPath(h.home, copy);
+  assert.ok(binding);
+  assert.notEqual(binding.checkout_id, (await bindingForPath(h.home, original))?.checkout_id, "a copy gets its own store");
+  // The differing file is a conflict for sync --inspect/--resolve, never a silent send.
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try {
+    const projection = await readProjection(h.home, binding.checkout_id, store);
+    assert.deepEqual(await folderConflicts(copy, store, projection), [{ id: "notes/alpha", reason: "changed_remotely" }]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("--adopt refuses a folder with no marker and no moved checkout", async () => {
+  const h = await harness();
+  await mkdir(path.join(h.cwd, "plain"));
+  await writeFile(path.join(h.cwd, "plain", "index.md"), '---\nokf_version: "0.2"\n---\n');
+  const error = await rejects(run(h, ["--adopt", path.join(h.cwd, "plain"), "--host", HOST]));
+  assert.equal(error.code, "NOT_FOUND");
+  assert.equal(error.details?.reason, "not_a_checkout_copy");
 });

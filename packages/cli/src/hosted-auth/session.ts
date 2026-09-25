@@ -24,6 +24,7 @@ import { basename, join } from "node:path";
 import { FilesystemMutationLockError } from "@superbee/core";
 
 import { CliError } from "../errors.js";
+import { bindingHostArgument } from "../hosted/marker.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { cliFilesystemRuntime, withCliFilesystemMutationLock } from "../filesystem-runtime.js";
@@ -189,8 +190,8 @@ export function sessionDirFor(home: string, account: string): string {
 }
 
 /** The shortest `--host` value that selects this target. */
-export function hostArgument(target: HostedTarget): string {
-  return target.audience === `${target.origin}/mcp` ? target.origin : target.audience;
+export function hostArgument(target: Pick<HostedTarget, "origin" | "audience">): string {
+  return bindingHostArgument(target);
 }
 
 async function readRecord<T>(home: string, file: string): Promise<T | null> {
