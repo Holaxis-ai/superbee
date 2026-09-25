@@ -18,7 +18,7 @@ import { IndexedDbBackend } from "@superbee/core/indexeddb-backend";
 import type { JournaledBackend, MetaWriteOptions } from "@superbee/core/journaled-backend";
 
 import { baseKey, bootstrap, commitLocal, openLocalBundle, pull, pushWithRole, syncStatus, type LocalBundle, type PullMarker, type SharedBase } from "../src/local-bundle.ts";
-import { createBrowserLocalRuntime } from "../src/platform/browser-local.ts";
+import { createBrowserLocalRuntime, PullSupersededError } from "../src/platform/browser-local.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
 import { BASE_URL, BUNDLE, createRemoteFixture, type RemoteFixture } from "./fixtures/remote-fixture.ts";
 
@@ -81,6 +81,25 @@ function holdAfter(remote: StorageBackend, verb: "readMany" | "heads"): { remote
     },
   }) as StorageBackend;
   return { remote: proxy, entered: entered.promise, release: () => gate.resolve() };
+}
+
+/**
+ * The read side with `hook` run after each of the first `times` heads answers, before the
+ * answer is returned: the pull asking has marked and listed, and writes nothing yet.
+ */
+function afterEachHeads(remote: StorageBackend, times: number, hook: () => Promise<void>): StorageBackend {
+  let calls = 0;
+  return new Proxy(remote, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop !== "heads" || typeof value !== "function") return typeof value === "function" ? value.bind(target) : value;
+      return async (...args: unknown[]) => {
+        const answer = await value.apply(target, args);
+        if (calls++ < times) await hook();
+        return answer;
+      };
+    },
+  }) as StorageBackend;
 }
 
 /** A fresh wire adapter over the fixture recording each request, its status, and the `If-None-Match` it carried. */
@@ -485,6 +504,70 @@ for (const adapter of ADAPTERS) {
       assert.equal((await b.backend.list()).length, 20, "the moved listing is refused afresh, as for any sync");
       assert.equal(status.lastSync?.refusedDeletions?.deletions, 12);
       assert.notEqual(status.lastSync?.refusedDeletions?.digest, refused.digest);
+    } finally {
+      close();
+    }
+  });
+
+  test(`${adapter}: review: a runtime sync accepting refused deletions whose pull is superseded twice rejects, applies nothing, and keeps the refusal for a retry that applies it`, async () => {
+    const fixture = await createRemoteFixture();
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const id = `seed/d${String(i).padStart(2, "0")}`;
+      await fixture.authority.write(id, doc(id, "s\n"));
+      ids.push(id);
+    }
+    const { a, b, close } = twoRealms(adapter);
+    try {
+      await bootstrap(fixture.remote, b);
+      for (const id of ids.slice(0, 12)) await fixture.authority.delete(id);
+      const refused = (await pull(b, fixture.remote)).refused;
+      assert.ok(refused);
+      // Each of b's two pulls lists, then another realm marks a pull whose tab is then closed.
+      const superseding = afterEachHeads(fixture.remote, 2, async () => {
+        const dead = holdAfter(fixture.remote, "heads");
+        void pull(a, dead.remote);
+        await dead.entered;
+      });
+      const runtime = createBrowserLocalRuntime({ local: b, remote: superseding, transport: fixture.transport, write: immediate, locks: null });
+      await assert.rejects(runtime.sync({ acceptRefusedDeletions: refused }), PullSupersededError);
+
+      assert.equal((await b.backend.list()).length, 20, "nothing was applied");
+      const status = await runtime.syncStatus();
+      assert.equal(status.online, true);
+      assert.equal(status.lastSync?.ok, false);
+      assert.match(status.lastSync?.error ?? "", /^PullSupersededError: /);
+      assert.deepEqual(status.lastSync?.refusedDeletions, refused, "the refusal stays reported for a retry");
+      assert.equal((await lastPull(b))?.completedAt, null, "the marker is the closed tab's unfinished one");
+
+      const applied = await runtime.sync({ acceptRefusedDeletions: status.lastSync!.refusedDeletions! });
+      assert.equal((await b.backend.list()).length, 8, "the retry applied the accepted deletions");
+      assert.equal(applied.lastSync?.ok, true);
+      assert.equal(applied.lastSync?.refusedDeletions, undefined);
+    } finally {
+      close();
+    }
+  });
+
+  test(`${adapter}: review: a plain runtime sync whose pull is superseded twice still resolves online and ok`, async () => {
+    const fixture = await createRemoteFixture();
+    await fixture.authority.write("notes/x", doc("notes/x", "x v0\n"));
+    const { a, b, close } = twoRealms(adapter);
+    try {
+      await bootstrap(fixture.remote, b);
+      await fixture.authority.write("notes/x", doc("notes/x", "x v1\n"));
+      const superseding = afterEachHeads(fixture.remote, 2, async () => {
+        const dead = holdAfter(fixture.remote, "heads");
+        void pull(a, dead.remote);
+        await dead.entered;
+      });
+      const runtime = createBrowserLocalRuntime({ local: b, remote: superseding, transport: fixture.transport, write: immediate, locks: null });
+      const status = await runtime.sync();
+
+      assert.equal(status.online, true);
+      assert.deepEqual(status.lastSync, { ok: true });
+      assert.equal(await body(b, "notes/x"), "x v0\n", "neither superseded pull wrote the stale-fenced refresh");
+      assert.equal((await lastPull(b))?.completedAt, null);
     } finally {
       close();
     }
