@@ -151,8 +151,9 @@ export interface PlatformSyncOptions {
    * The refusal the last sync reported (`lastSync.refusedDeletions`), passed back to say the
    * shrink it describes is genuine. Browser-local applies the deletions only when the
    * authority's current listing still carries the same digest, count and reason; a listing
-   * that has moved since is refused afresh. Request-driven ignores it: nothing is ever
-   * refused there.
+   * that has moved since is refused afresh. When another realm holds the push role, a sync
+   * passing it applies nothing, records `lastSync.ok` false and rejects, so the caller can retry.
+   * Request-driven ignores it: nothing is ever refused there.
    */
   acceptRefusedDeletions?: RefusedDeletions;
 }

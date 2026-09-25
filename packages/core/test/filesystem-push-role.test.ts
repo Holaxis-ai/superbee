@@ -5,13 +5,13 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fork, spawnSync, type ChildProcess } from "node:child_process";
+import { fork, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { FilesystemMutationLockError } from "../src/filesystem-lock.js";
+import { acquireFilesystemIdentityLock, FilesystemMutationLockError } from "../src/filesystem-lock.js";
 import { filesystemPushRoleLocks, processStartedAtFromPs, psEnvironment, PushRoleStaleOwnerError, pushRoleLockKey, type PushRoleLockManager } from "../src/filesystem-push-role.js";
 import { hostname } from "node:os";
 
@@ -162,24 +162,39 @@ test("a role lock with no owner record past the claim grace is an unknown holder
 });
 
 /** Plant a well-formed owner record for `pid`, claimed at `claimedAt`, as a crashed holder leaves it. */
-async function plantOwner(root: string, pid: number, claimedAt: number): Promise<void> {
+async function plantOwner(root: string, pid: number, claimedAt: number, host = hostname()): Promise<string> {
   const seed = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 0 });
   assert.deepEqual(await withRole(seed, `${ROLE}-seed`, async () => "seed"), { held: true, result: "seed" });
   const lock = path.join(root, `${pushRoleLockKey(ROLE)}.lock`);
   await fs.mkdir(lock);
-  await fs.writeFile(path.join(lock, "owner.json"), JSON.stringify({ pid, hostname: hostname(), created_at_ms: claimedAt, token: "planted", target: ROLE }));
+  await fs.writeFile(path.join(lock, "owner.json"), JSON.stringify({ pid, hostname: host, created_at_ms: claimedAt, token: "planted", target: ROLE }));
+  return lock;
+}
+
+/** A live process of this user that is not this one, started now: a holder id that exists but did not claim the role. */
+function liveProcess(): { pid: number; stop(): Promise<void> } {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  return {
+    pid: child.pid!,
+    stop: async () => {
+      child.kill("SIGKILL");
+      await exited;
+    },
+  };
 }
 
 test("a holder whose process id now belongs to a younger process is reported as a stale owner, not held elsewhere", async () => {
   const { root, cleanup } = await lockRoot();
+  const reuser = liveProcess();
   try {
-    // This test process is live, and it started long after this planted claim: its id was reused.
+    // The reusing process is live, and it started long after this planted claim: its id was reused.
     const claimedAt = Date.now() - 10 * 24 * 60 * 60 * 1000;
-    await plantOwner(root, process.pid, claimedAt);
+    await plantOwner(root, reuser.pid, claimedAt);
     const locks = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10 });
     let ran = false;
     await assert.rejects(withRole(locks, ROLE, async () => (ran = true)), (error: unknown) =>
-      error instanceof PushRoleStaleOwnerError && error.owner.pid === process.pid && error.owner.created_at_ms === claimedAt && error.processStartedAt > claimedAt);
+      error instanceof PushRoleStaleOwnerError && error.owner.pid === reuser.pid && error.owner.created_at_ms === claimedAt && error.processStartedAt > claimedAt);
     assert.equal(ran, false);
 
     // A holder whose process started before its claim is the claimer: held elsewhere.
@@ -189,6 +204,153 @@ test("a holder whose process id now belongs to a younger process is reported as 
     const silent = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10, processStartedAt: async () => null });
     assert.deepEqual(await withRole(silent, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
   } finally {
+    await reuser.stop();
+    await cleanup();
+  }
+});
+
+test("this process's own held role is never reported as a stale owner, even when its start time reads younger than the claim", async () => {
+  const { root, cleanup } = await lockRoot();
+  try {
+    const locks = filesystemPushRoleLocks({ lockRoot: root, waitMs: 40, contentionWaitMs: 40, pollMs: 5 });
+    let releaseHold!: () => void;
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => (entered = resolve));
+    const holding = locks.request(ROLE, {}, async () => {
+      entered();
+      await new Promise<void>((resolve) => (releaseHold = resolve));
+    });
+    await inside;
+    // What `ps` reports for this process after the wall clock steps forward an hour past its claim.
+    const stepped = filesystemPushRoleLocks({ lockRoot: root, waitMs: 40, contentionWaitMs: 40, pollMs: 5, processStartedAt: async () => Date.now() + 60 * 60 * 1000 });
+    await assert.rejects(stepped.request(ROLE, {}, async () => "never"), (error: unknown) =>
+      error instanceof FilesystemMutationLockError && !(error instanceof PushRoleStaleOwnerError) && error.owner?.pid === process.pid);
+    assert.deepEqual(await withRole(stepped, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+    releaseHold();
+    await holding;
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a waiting request whose holder's process id now belongs to a younger process rejects as a stale owner, not as held", async () => {
+  const { root, cleanup } = await lockRoot();
+  const reuser = liveProcess();
+  try {
+    const claimedAt = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    const lock = await plantOwner(root, reuser.pid, claimedAt);
+    let ran = false;
+    const reused = filesystemPushRoleLocks({ lockRoot: root, waitMs: 50, pollMs: 10, processStartedAt: async () => claimedAt + 60_000 });
+    await assert.rejects(reused.request(ROLE, {}, async () => (ran = true)), (error: unknown) =>
+      error instanceof PushRoleStaleOwnerError && error.lockPath === lock && error.owner.pid === reuser.pid && error.processStartedAt === claimedAt + 60_000);
+    // A holder whose process started before its claim is the claimer: the lock's own "held" error.
+    const genuine = filesystemPushRoleLocks({ lockRoot: root, waitMs: 50, pollMs: 10, processStartedAt: async () => claimedAt - 5_000 });
+    await assert.rejects(genuine.request(ROLE, {}, async () => (ran = true)), (error: unknown) =>
+      error instanceof FilesystemMutationLockError && !(error instanceof PushRoleStaleOwnerError) && error.message.includes(`held by PID ${reuser.pid} `));
+    assert.equal(ran, false);
+  } finally {
+    await reuser.stop();
+    await cleanup();
+  }
+});
+
+test("a role held under another host name rejects with the lock's error for a person to check, instead of reporting held elsewhere forever", async () => {
+  const { root, cleanup } = await lockRoot();
+  try {
+    const lock = await plantOwner(root, 999_999, Date.now() - 60_000, "renamed-host");
+    let asked = false;
+    const locks = filesystemPushRoleLocks({ lockRoot: root, contentionWaitMs: 50, pollMs: 10, processStartedAt: async () => ((asked = true), null) });
+    let ran = false;
+    for (const request of [{ ifAvailable: true }, {}]) {
+      await assert.rejects(locks.request(ROLE, request, async () => (ran = true)), (error: unknown) =>
+        error instanceof FilesystemMutationLockError && error.lockPath === lock && error.owner?.hostname === "renamed-host" && /A person must check it/.test(error.message));
+    }
+    assert.equal(ran, false);
+    assert.equal(asked, false, "another host's process ids are never looked up here");
+    // The lock is left for the person: never reclaimed.
+    assert.equal((JSON.parse(await fs.readFile(path.join(lock, "owner.json"), "utf8")) as { token: string }).token, "planted");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a holder that released and exited before the timeout is never judged in place of the live replacement", async () => {
+  const { root, cleanup } = await lockRoot();
+  const released = spawn("sleep", ["30"], { stdio: "ignore" });
+  const releasedExited = new Promise<void>((resolve) => released.once("exit", () => resolve()));
+  const releasedPid = released.pid!;
+  let releaseReplacement: (() => Promise<void>) | undefined;
+  const mutable = fs as unknown as Record<string, unknown>;
+  const originalReadFile = fs.readFile;
+  try {
+    const key = pushRoleLockKey(ROLE);
+    await plantOwner(root, releasedPid, Date.now());
+    const lock = path.join(root, `${key}.lock`);
+    const ownerFile = path.join(lock, "owner.json");
+    // Right after the claimer's last owner read, the planted holder releases and exits and a live
+    // replacement claims the role. The released holder's PID then belongs to a younger process.
+    let reads = 0;
+    mutable.readFile = async (...args: unknown[]) => {
+      const content = await (originalReadFile as (...a: unknown[]) => Promise<unknown>)(...args);
+      if (String(args[0]) === ownerFile && ++reads === 2) {
+        await fs.rm(lock, { recursive: true, force: true });
+        released.kill("SIGKILL");
+        await releasedExited;
+        releaseReplacement = await acquireFilesystemIdentityLock(key, ROLE, { lockRoot: root, waitMs: 0, pollMs: 2 });
+      }
+      return content;
+    };
+    const locks = filesystemPushRoleLocks({
+      lockRoot: root,
+      contentionWaitMs: 0,
+      pollMs: 2,
+      processStartedAt: async (pid) => (pid === releasedPid ? Date.now() + 60_000 : null),
+    });
+    assert.deepEqual(await withRole(locks, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+    assert.ok(releaseReplacement, "the replacement claimed the role inside the window");
+  } finally {
+    mutable.readFile = originalReadFile;
+    released.kill("SIGKILL");
+    await releaseReplacement?.().catch(() => {});
+    await cleanup();
+  }
+});
+
+test("a holder that released while its process id stayed occupied is never judged in place of the live replacement", async () => {
+  const { root, cleanup } = await lockRoot();
+  // PID reuse leaves the released holder's id occupied when the timeout is diagnosed. Keeping the
+  // released holder's process alive occupies it; the start-time seam reports a younger process.
+  const released = spawn("sleep", ["30"], { stdio: "ignore" });
+  const releasedPid = released.pid!;
+  let releaseReplacement: (() => Promise<void>) | undefined;
+  const mutable = fs as unknown as Record<string, unknown>;
+  const originalReadFile = fs.readFile;
+  try {
+    const key = pushRoleLockKey(ROLE);
+    await plantOwner(root, releasedPid, Date.now());
+    const lock = path.join(root, `${key}.lock`);
+    const ownerFile = path.join(lock, "owner.json");
+    let reads = 0;
+    mutable.readFile = async (...args: unknown[]) => {
+      const content = await (originalReadFile as (...a: unknown[]) => Promise<unknown>)(...args);
+      if (String(args[0]) === ownerFile && ++reads === 2) {
+        await fs.rm(lock, { recursive: true, force: true });
+        releaseReplacement = await acquireFilesystemIdentityLock(key, ROLE, { lockRoot: root, waitMs: 0, pollMs: 2 });
+      }
+      return content;
+    };
+    const locks = filesystemPushRoleLocks({
+      lockRoot: root,
+      contentionWaitMs: 0,
+      pollMs: 2,
+      processStartedAt: async (pid) => (pid === releasedPid ? Date.now() + 60_000 : null),
+    });
+    assert.deepEqual(await withRole(locks, ROLE, async () => "never"), { held: false, reason: "held-elsewhere" });
+    assert.ok(releaseReplacement, "the replacement claimed the role inside the window");
+  } finally {
+    mutable.readFile = originalReadFile;
+    released.kill("SIGKILL");
+    await releaseReplacement?.().catch(() => {});
     await cleanup();
   }
 });
