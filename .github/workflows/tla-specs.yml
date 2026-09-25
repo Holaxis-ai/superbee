@@ -1,0 +1,48 @@
+name: TLA+ specs
+
+# Model-checks the TLA+ specs under specs/tla with TLC. Every config states its expected result:
+# a fixed config must hold all of its invariants and properties, and a variant config must produce
+# the one counterexample it names (specs/tla/README.md). The TLA+ tools jar is a pinned release
+# whose SHA-256 is checked before use. This workflow is not one of the `CI required lanes`.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tla-specs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TLA2TOOLS_URL: https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+  TLA2TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+
+jobs:
+  model-check:
+    name: model check (${{ matrix.area }})
+    strategy:
+      fail-fast: false
+      matrix:
+        area: [filesystem-lock, intent-journal, identified-write]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Download and verify the TLA+ tools
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/tla2tools.jar" "$TLA2TOOLS_URL"
+          echo "$TLA2TOOLS_SHA256  $RUNNER_TEMP/tla2tools.jar" | sha256sum --check --strict
+      - name: Check every config against its expected result
+        env:
+          AREA: ${{ matrix.area }}
+        run: TLA2TOOLS="$RUNNER_TEMP/tla2tools.jar" specs/tla/run-tlc.sh specs/tla/"$AREA"/*.cfg
