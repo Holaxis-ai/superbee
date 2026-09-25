@@ -1,6 +1,7 @@
 // Exact mode's fold of a refused chain: a never-sent edit that waits on a predecessor the
-// authority refused on its content is folded into it by push. The pair retires and one fresh
-// intent on the refused head's premise carries the working document, delivered in the same run.
+// authority refused on its content, or because it was busy, is folded into it by push. The pair
+// retires and one fresh intent on the refused head's premise carries the working document,
+// delivered in the same run.
 // Every case runs over the IndexedDB adapter and the in-memory seam adapter.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -8,7 +9,7 @@ import { IDBFactory } from "fake-indexeddb";
 import type { OkfDocument } from "@superbee/core";
 import type { IntentRecord, JournaledBackend } from "@superbee/core/journaled-backend";
 import type { OperationIntent, OperationTransport, Outcome } from "@superbee/core/uncertain-write";
-import { baseKey, bootstrap, commitLocal, deleteLocal, openLocalBundle, push, resume, syncStatus, type LocalBundle } from "../src/local-bundle.ts";
+import { BUSY_REFUSAL_CODES, baseKey, bootstrap, commitLocal, deleteLocal, openLocalBundle, push, resume, syncStatus, type LocalBundle } from "../src/local-bundle.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
 import { createRemoteFixture } from "./fixtures/remote-fixture.ts";
 
@@ -169,7 +170,7 @@ for (const adapter of ["indexeddb", "memory"] as const) {
     }
   });
 
-  test(`${adapter}: a head refused for lost permission, or by a busy authority, is not folded`, async () => {
+  test(`${adapter}: a head refused for lost permission or a spent quota is not folded`, async () => {
     // Lost permission: the pause stops push, and resume requeues P by its own identity.
     {
       const { remote, local, p, s } = await wedged("AUTH_REQUIRED");
@@ -186,8 +187,8 @@ for (const adapter of ["indexeddb", "memory"] as const) {
         assert.equal((await remote.authority.read(id)).doc.body, "s\n");
       } finally { local.close(); }
     }
-    // Unpaused and refused for lost permission, or refused busy: blocked, nothing written.
-    for (const code of ["PERMISSION_DENIED", "concurrent_change"]) {
+    // Unpaused and refused for lost permission or a spent quota: blocked, nothing written.
+    for (const code of ["PERMISSION_DENIED", "REQUEST_CAPACITY_PRINCIPAL", "REQUEST_CAPACITY_BUNDLE"]) {
       const { remote, local, s } = await wedged(code);
       try {
         await local.backend.writeMeta("sync", { paused: false });
@@ -197,6 +198,29 @@ for (const adapter of ["indexeddb", "memory"] as const) {
         assert.deepEqual([report.rebased, report.settled, report.skipped], [undefined, [], [{ requestId: s.requestId, target: id, reason: "blocked" }]], code);
         assert.deepEqual(transport.sent, []);
         assert.deepEqual(await local.backend.readWithJournal(id), before, `${code}: nothing was written`);
+      } finally { local.close(); }
+    }
+  });
+
+  test(`${adapter}: a head refused by a busy authority is folded: every busy code, P is never sent again, the authority ends at the edit`, async () => {
+    assert.deepEqual([...BUSY_REFUSAL_CODES].sort(), ["backend_unavailable", "cancelled", "concurrent_change", "deadline_exceeded", "internal_error"]);
+    for (const code of BUSY_REFUSAL_CODES) {
+      const { remote, local, p, s } = await wedged(code);
+      try {
+        const before = await local.backend.readWithJournal(id);
+        const transport = counting(remote.transport);
+        const report = await push(local, transport, { remote: remote.remote, write: immediate });
+        assert.equal(report.rebased?.length, 1, code);
+        const [rebase] = report.rebased!;
+        assert.deepEqual([rebase!.retired, rebase!.refusal.code], [[p.requestId, s.requestId], code]);
+        assert.deepEqual(report.settled, [{ requestId: rebase!.requestId, target: id, state: "acknowledged" }], code);
+        assert.deepEqual(report.skipped, []);
+        assert.deepEqual(transport.sent, [rebase!.requestId], `${code}: one new identity; P's is never submitted again`);
+        const fresh = (await local.backend.readIntent(rebase!.requestId))!;
+        assert.deepEqual([fresh.base, fresh.baseContent, fresh.after, fresh.kind], [p.base, p.baseContent, undefined, "document.write"], code);
+        assert.deepEqual([fresh.local, fresh.content], [before.document!.version, before.raw], `${code}: the working document's bytes are what was sent`);
+        assert.equal((await remote.authority.read(id)).doc.body, "s\n", code);
+        assert.deepEqual(await unsettled(local), [], code);
       } finally { local.close(); }
     }
   });

@@ -1056,7 +1056,12 @@ async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promis
   }
 }
 
-/** A refused head is resolvable only when the refusal was about the content; lost permission keeps the resume path. */
+/**
+ * A refused head is resolvable, and push folds a never-sent successor into it, only when the
+ * refusal is outside the authorization codes: the content was refused, or the authority was busy
+ * ({@link BUSY_REFUSAL_CODES}). Either way the authority recorded it as not applied. Lost
+ * permission and a spent quota keep the resume path.
+ */
 function isContentRefusal(row: IntentRecord): boolean {
   return row.state === "refused" && row.refusal !== undefined && !AUTHORIZATION_REFUSAL_CODES.has(row.refusal.code);
 }
@@ -1395,7 +1400,7 @@ export interface PushReport {
   rebased?: PushRebase[];
 }
 
-/** One chain push folded: a content refusal and the never-sent edit that waited on it. */
+/** One chain push folded: a content or busy refusal and the never-sent edit that waited on it. */
 export interface PushRebase {
   target: ConceptId;
   /** The retired identities, the refused head first. Neither is ever sent again. */
@@ -1566,21 +1571,19 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
 }
 
 /**
- * Refusal codes that say the authority was busy, not that the content is wrong: the identity
- * can only answer that refusal again, so a caller resends the unchanged change under a fresh
- * identity (the CLI's hosted sync does), and push never folds a successor into one.
+ * Refusal codes that say the authority was busy, not that the content is wrong. The host
+ * records each as not applied, but the identity can only answer that refusal again, so a caller
+ * resends a lone refused change under a fresh identity (the CLI's hosted sync does). A busy head
+ * with a never-sent successor is folded by push like a content refusal: the fresh intent is that
+ * resend, carrying the later edit.
  */
 export const BUSY_REFUSAL_CODES: ReadonlySet<string> = new Set(["concurrent_change", "backend_unavailable", "internal_error", "deadline_exceeded", "cancelled"]);
 
-/** A head push may fold a successor into: refused on its content, neither for lost permission nor by a busy authority. */
-function isFoldableRefusal(row: IntentRecord): boolean {
-  return isContentRefusal(row) && !BUSY_REFUSAL_CODES.has(row.refusal!.code);
-}
-
 /**
- * Fold a never-sent intent into the content refusal it waits on. The authority recorded the
- * head as refused, so it never applied it, and it never saw the successor; the pair is the state
- * a later edit over a refused latest intent composes away, reached instead because the edit
+ * Fold a never-sent intent into the refusal it waits on (a content or busy refusal, see
+ * {@link isContentRefusal}). The authority recorded the head as refused, so it never applied it,
+ * and it never saw the successor; the pair is the state a later edit over a refused latest
+ * intent composes away, reached instead because the edit
  * landed while the head was in flight (or, in a checkout, after its answer was lost). Retires
  * exactly that complete unsettled journal, `[head refused, successor pending with no attempt]`,
  * and journals one fresh intent of the successor's kind on the head's premise
@@ -1598,7 +1601,7 @@ async function foldRefusedChain(backend: JournaledBackend, listed: IntentRecord)
   const snapshot = await backend.readWithJournal(listed.target);
   const chain = snapshot.intents.filter(row => row.state !== "acknowledged");
   const [head, successor] = chain;
-  if (chain.length !== 2 || !head || !successor || !isFoldableRefusal(head) || successor.requestId !== listed.requestId ||
+  if (chain.length !== 2 || !head || !successor || !isContentRefusal(head) || successor.requestId !== listed.requestId ||
       successor.state !== "pending" || successor.attempts !== 0 || successor.after !== head.requestId) return null;
   const deleting = successor.kind === DOCUMENT_DELETE_KIND;
   if (deleting ? snapshot.document !== null : !snapshot.document || successor.local !== snapshot.document.version || successor.content !== snapshot.raw) return null;
@@ -1630,13 +1633,13 @@ async function foldRefusedChain(backend: JournaledBackend, listed: IntentRecord)
  * The primitive itself receives the count of attempts completed before this claim, so a first
  * delivery is a submission and a repeated one starts with a lookup.
  *
- * A never-sent intent whose predecessor the authority refused on its content (a refusal
- * outside {@link AUTHORIZATION_REFUSAL_CODES} and {@link BUSY_REFUSAL_CODES}) would otherwise
- * wait forever, so push folds the two, as a later edit supersedes a refused latest intent: see
+ * A never-sent intent whose predecessor the authority refused on its content or because it was
+ * busy (a refusal outside {@link AUTHORIZATION_REFUSAL_CODES}) would otherwise wait forever, so
+ * push folds the two, as a later edit supersedes a refused latest intent: see
  * {@link foldRefusedChain}. The fresh intent is delivered in the same run and the fold is
- * listed in {@link PushReport.rebased}. A head refused for lost permission keeps the resume
- * path, a busy refusal keeps its caller's requeue, and a conflict keeps resolution; none of
- * them is folded, nor is a successor that was ever claimed for delivery. Body delivery has no
+ * listed in {@link PushReport.rebased}. A head refused for lost permission or a spent quota
+ * keeps the resume path and a conflict keeps resolution; neither is folded, nor is a successor
+ * that was ever claimed for delivery. Body delivery has no
  * fold: its refused head is resolved.
  */
 export async function push(local: LocalTarget, transport: OperationTransport, options: PushOptions = {}): Promise<PushReport> {
@@ -1664,7 +1667,7 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
     if (intent.after !== undefined) {
       const predecessor = await backend.readIntent(intent.after);
       if (predecessor && predecessor.state !== "acknowledged") {
-        const folded = intent.attempts === 0 && isFoldableRefusal(predecessor) ? await foldRefusedChain(backend, intent) : null;
+        const folded = intent.attempts === 0 && isContentRefusal(predecessor) ? await foldRefusedChain(backend, intent) : null;
         if (!folded) {
           report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" });
           continue;
