@@ -787,6 +787,38 @@ test("a change recorded as busy (concurrent_change) is resent under a fresh iden
   assert.notEqual(replaces[0]!.requestId, replaces[1]!.requestId);
 });
 
+test("a lost answer, then an edit, then a content refusal of the first change: the edit is sent in its place in the same run", async () => {
+  const h = await harness();
+  const original = hostDoc(h, "notes/alpha").version;
+  let lost = true;
+  let first: string | null = null;
+  h.host.hook = (call) => {
+    if (call.route === "outcome") return lost ? { kind: "drop" } : undefined;
+    if (call.route !== "replace") return undefined;
+    first ??= call.requestId;
+    if (lost) return { kind: "drop" };
+    return call.requestId === first ? { kind: "record", code: "validation_failed" } : undefined;
+  };
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "First.\n"));
+  const unknown = await failingSync(h);
+  assert.equal(rowFor(unknown.receipt, "notes/alpha")?.state, "unknown");
+
+  // The next edit chains behind the possibly delivered change; the host then refuses that change.
+  lost = false;
+  h.host.writes.length = 0;
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Second.\n"));
+  const receipt = await runSync(h);
+  assert.equal(receipt.status, "synced");
+  assert.equal(rowFor(receipt, "notes/alpha")?.state, "committed");
+  assert.equal(hostDoc(h, "notes/alpha").body, "Second.\n");
+  const replaces = h.host.writes.filter((call) => call.route === "replace");
+  assert.deepEqual(replaces.map((call) => [call.requestId === first, call.body.body, call.body.expectedVersion]), [
+    [true, "First.\n", original],
+    [false, "Second.\n", original],
+  ], "the refused change once, then the edit alone against the version the host still holds");
+  assert.deepEqual(h.host.applied, ["notes/alpha"]);
+});
+
 test("held files stay as they are and nothing is sent for them", async () => {
   const h = await harness();
   await edit(h, "notes/alpha", (doc) => void (doc.frontmatter.type = "Decision"));
