@@ -321,15 +321,27 @@ failed or interrupted claim to apply again. The reference memory store has no re
 - Other non-2xx responses become `RemoteError` with the wire code and HTTP status. A missing or
   malformed envelope uses a status-derived fallback.
 - Network failures and only `500`, `502`, `503`, and `504` are retried by default, with bounded
-  exponential backoff and jitter. A real 4xx, including `401` and `412`, is never retried. A guarded
-  write whose response was lost may surface a conservative conflict after retry. If another writer
-  returns the document to exactly the state the premise names before a retry arrives (the same
-  bytes, so the same version), the retry is applied again and silently overwrites that change.
-  `RemoteBackend` also permits unconditional writes; because a retry after an ambiguous transport
-  failure can repeat one, callers that require lost-update safety must supply
-  `If-Match`/expect-absent semantics. A write that also carries a `requestId` (sent as
-  `Idempotency-Key`) to a host with `operations` is not re-applied by these retries: while the host
-  keeps the record, each one is answered from it.
+  exponential backoff and jitter. A real 4xx, including `401` and `412`, is never retried. Every
+  attempt of one call carries the same headers.
+- A guarded document write (a `PUT` with `If-Match` or `If-None-Match: *`, or a `DELETE` with a
+  content-version `If-Match`) sent to a host whose capabilities report `operations` always carries
+  an `Idempotency-Key`: the caller's `requestId`, or else one `RemoteBackend` mints for that call.
+  `RemoteBackend` asks `GET /v0/capabilities` before its first such write and keeps the answer for
+  the backend's lifetime. Any answer other than a `2xx` reporting `operations: true` sends the write
+  without a key; a transport failure rejects the write before it is sent. Neither a transport
+  failure nor a transient status still returned after retries is kept. While the host keeps the
+  record, each retry is answered from it, so a retry after a lost response neither applies the
+  write again nor surfaces a conflict against its own first application. A host that loses the
+  record between attempts, as the reference memory store does across a restart, treats the retry
+  as a first delivery.
+- Every other guarded write is retried as a plain resubmission: a guarded document write to a host
+  without `operations`, and every guarded reserved-file or blob write, since neither accepts
+  identity. One whose response was lost may surface a conservative conflict after retry. If another
+  writer returns the document to exactly the state the premise names before a retry arrives (the
+  same bytes, so the same version), the retry is applied again and silently overwrites that change.
+  `RemoteBackend` also permits unconditional writes, and mints no key for them; because a retry
+  after an ambiguous transport failure can repeat one, callers that require lost-update safety must
+  supply `If-Match`/expect-absent semantics.
 - Full-frontmatter list pagination supplies the optional `queryHeads` push-down. Core re-applies
   query semantics, so a foreign backend may over-return but cannot redefine matches.
 - `RemoteBackend.heads()` and `RemoteBackend.snapshot()` are the client half of "Heads and
@@ -376,7 +388,7 @@ suites exercise the semantics through the router, `RemoteBackend`, and a real so
 | WIRE-PROOF-07 | Reference server is loopback by default and unauthenticated. | `packages/server/src/serve.ts::NO AUTH in v0` | `packages/core/test/wire-protocol.test.ts::serve() boots a real node:http listener` |
 | WIRE-PROOF-08 | Remote canonical export differs from an original-byte guarantee. | `packages/cli/src/commands/doc/common.ts::canonical OKF re-serialization` | `packages/cli/test/remote.test.ts::canonical re-serialization is byte-identical` |
 | WIRE-PROOF-09 | Missing version transport fails closed. | `packages/core/src/remote-backend.ts::VERSION_MISSING` | `packages/cli/test/remote-auth.test.ts::response stripped of BOTH version headers` |
-| WIRE-PROOF-10 | Identified writes apply once while their record is kept, replay it, and are looked up by key; past retention a premise that matches again is applied again. | `packages/server/src/router.ts::id: "operation-lookup"`; `packages/server/src/operation-outcomes.ts::class MemoryOperationOutcomeStore` | `packages/core/test/wire-protocol.test.ts::identified PUT is applied once`; `packages/browser-local/test/sync.test.ts::lost acknowledgement: the fixture applies then drops the response`; `packages/core/test/wire-protocol.test.ts::a byte-identical revert to the premise's content lets a resubmission apply a second time` |
+| WIRE-PROOF-10 | Identified writes apply once while their record is kept, replay it, and are looked up by key; past retention a premise that matches again is applied again. | `packages/server/src/router.ts::id: "operation-lookup"`; `packages/server/src/operation-outcomes.ts::class MemoryOperationOutcomeStore` | `packages/core/test/wire-protocol.test.ts::identified PUT is applied once`; `packages/browser-local/test/sync.test.ts::lost acknowledgement: the fixture applies then drops the response`; `packages/core/test/wire-protocol.test.ts::a byte-identical revert to the premise's content lets a resubmission apply a second time`; `packages/core/test/wire-protocol.test.ts::a guarded write whose answer is lost is retried under the same minted Idempotency-Key` |
 | WIRE-PROOF-11 | Heads digest, `304` on `If-None-Match`, and deletions visible as missing ids. | `packages/server/src/router.ts::id: "docs-heads"`; `packages/core/src/heads-digest.ts::export function headsDigest` | `packages/core/test/wire-protocol.test.ts::GET /heads lists every id and version under the documented digest`; `packages/core/test/wire-protocol.test.ts::RemoteBackend.heads maps 304 to null` |
 | WIRE-PROOF-12 | Snapshot streams terminated NDJSON; a cut body or count mismatch is truncation. | `packages/server/src/router.ts::id: "docs-snapshot"`; `packages/server/src/serve.ts::pipeline(Readable.fromWeb` | `packages/core/test/wire-protocol.test.ts::GET /snapshot streams header, docs in id order, and end`; `packages/core/test/wire-protocol.test.ts::a snapshot cut after 40 lines`; `packages/core/test/wire-protocol.test.ts::serve() streams a 500-document snapshot` |
 
@@ -400,8 +412,10 @@ These are current limitations, not promises that a client may paper over:
 8. `backlinks` is reported false and has no wire endpoint; clients derive graph results from reads.
 9. Transient retry applies at the transport boundary, including unconditional writes. The storage
    seam permits those writes, so a caller that needs lost-update protection must provide a CAS premise.
-   Only an identified write turns a retry into a replay; an unidentified guarded write retried
-   after a lost response may still surface a conservative conflict.
+   Only an identified write turns a retry into a replay. `RemoteBackend` identifies guarded document
+   writes on a host with `operations`; a guarded write to a host without it, and a guarded
+   reserved-file or blob write, retried after a lost response may still surface a conservative
+   conflict or apply again over a byte-identical revert.
 10. Request identity covers document `PUT` and `DELETE` only. Reserved-file and blob writes carry
     no identity yet, and the reference outcome store is in-memory: a restarted reference server
     holds no records, which a client observes as `404` on lookup.
