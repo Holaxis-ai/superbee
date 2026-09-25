@@ -9,7 +9,7 @@
 //   --resolve revise   the document as it is now (edited to the result first) is the resolution
 //
 // Nothing here fetches, commits or pushes: the next plain `sync` shares keep and revise.
-import { existsSync, promises as fs } from "node:fs";
+import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { assertSafeConceptId, conceptIdFromPath, isReservedFile, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
 import { BOARD_REF, bundleDirNameForProject, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit } from "@superbee/board-git";
@@ -280,9 +280,6 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
       throw new CliError("USAGE", "--out takes a file path; the teammate's version is not streamed to stdout here", { help: outHelp });
     }
     const out = path.resolve(cwd, args.out);
-    // A link at the target itself would carry the write wherever it points, so it is refused.
-    const existing = await fs.lstat(out).catch(() => null);
-    if (existing?.isSymbolicLink()) throw new CliError("USAGE", "--out must not be a symbolic link", { help: outHelp });
     let landing = out;
     try {
       landing = path.join(await fs.realpath(path.dirname(out)), path.basename(out));
@@ -295,7 +292,20 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
     if (landing === root || landing.startsWith(`${root}${path.sep}`)) {
       throw new CliError("USAGE", "--out must be outside the bundle, or the file would be synced as a document", { help: outHelp });
     }
-    await fs.writeFile(out, remote);
+    // A link at the target itself would carry the write wherever it points, so the open refuses one
+    // (O_NOFOLLOW) in the same step that creates or truncates the file.
+    let handle: fs.FileHandle;
+    try {
+      handle = await fs.open(out, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new CliError("USAGE", "--out must not be a symbolic link", { help: outHelp });
+      throw error;
+    }
+    try {
+      await handle.writeFile(remote);
+    } finally {
+      await handle.close();
+    }
   }
   const localText = local.toString("utf8");
   const remoteText = remote === null ? null : remote.toString("utf8");
