@@ -282,6 +282,8 @@ test("d: a conflicting remote edit becomes an explicit conflict with base, local
   expect(pulled.held).toEqual(["notes/alpha"]);
   expect(ok(await call(page, "readSync", "notes/alpha"), "readSync").shared.baseVersion).toBe(base);
 
+  // The out-of-band write above is itself recorded when its client identifies it, so count from here.
+  const recordedBeforePush = served.fixture.history.length;
   const pushed = ok(await call(page, "push"), "push");
   expect(pushed.held && pushed.result.settled.map((row) => row.state)).toEqual(["conflict"]);
   const conflict = ok(await call(page, "intent", committed.intent!.requestId), "intent");
@@ -290,10 +292,10 @@ test("d: a conflicting remote edit becomes an explicit conflict with base, local
   expect(conflict!.content).toMatch(/notes\/alpha local edit/);
   expect(conflict!.remote).toMatchObject({ version: remoteVersion });
   expect(conflict!.remote!.content).toMatch(/notes\/alpha remote edit/);
-  // Local content untouched, remote untouched, one 412 in the history, nothing acknowledged.
+  // Local content untouched, remote untouched, the push added one 412 to the history, nothing acknowledged.
   expect(ok(await call(page, "read", "notes/alpha"), "read").doc.body).toBe("notes/alpha local edit\n");
   expect((await served.fixture.authority.read("notes/alpha")).version).toBe(remoteVersion);
-  expect(served.fixture.history.map((row) => row.status)).toEqual([412]);
+  expect(served.fixture.history.slice(recordedBeforePush).map((row) => row.status)).toEqual([412]);
   const status = ok(await call(page, "syncStatus"), "syncStatus");
   expect(status.counts).toMatchObject({ conflict: 1, acknowledged: 0, pending: 0 });
   expect(ok(await call(page, "readSync", "notes/alpha"), "readSync").shared.acknowledged).toBe(false);
