@@ -91,6 +91,8 @@ Usage:
   superbee sync [--pull-only] [--dir <path>] [--limit <n>] [--json]
   superbee sync --establish [--yes] [--dir <path>] [--json]
   superbee sync --show-incoming <id> [--out <file> | --body-out <file>] [--dir <path>] [--json]
+  superbee sync --inspect --doc <id> [--out <file>] [--dir <path>] [--json]
+  superbee sync --resolve keep|take|revise --doc <id> [--dir <path>] [--json]
 
 Before first publication, check whether the intended remote repository exists, then whether
 origin/board exists. Superbee does not create the remote repository. If the repository is
@@ -143,6 +145,14 @@ board is never left mid-state; non-conflicted local changes still land). The run
 one row per conflicted doc and the reconcile chain: \`sync --show-incoming <id>\` to view the kept
 incoming version, \`doc update <id> --body-file <export-file>\` to write your merged version on
 top, then \`sync\` again to share it.
+
+A hosted checkout's conflict verbs work on a saved conflict too, over the same flow (sync still
+keeps the teammate's version first): \`--inspect --doc <id>\` shows your saved version and the
+teammate's (\`--out <file>\` writes theirs whole); \`--resolve take\` keeps theirs and discards your
+saved copy; \`--resolve keep\` writes your saved body over theirs with \`doc update\` (frontmatter
+that differs is listed, not carried); \`--resolve revise\` records the document as it is now, so
+edit it to the result you want first. Each removes the saved copy; none commits or pushes: the
+next \`sync\` shares keep and revise.
 
 \`sync --show-incoming <id>\` prints the board's incoming (upstream) version of one doc — the
 state of \`origin/board\` as of the last fetch (it never fetches). Full doc-read semantics: large
@@ -207,6 +217,11 @@ Options:
   --show-incoming <id> Print the upstream (origin/board) version of one doc, as of the last fetch
   --out <file>         With --show-incoming: write the raw bytes to <file> ('-' = raw to stdout)
   --body-out <file>    With --show-incoming: write only a parsed doc body ('-' = body to stdout)
+  --inspect --doc <id> Show a saved conflict: your saved version and the teammate's
+                       (--inspect <id> is an alias; --out <file> writes theirs whole)
+  --resolve keep|take|revise --doc <id>
+                       Settle a saved conflict: keep writes yours with doc update, take keeps
+                       theirs, revise keeps the document as you edited it; sync then pushes it
   --dir <path>         Directory to run sync from (default: the cwd) — must be inside a git repo
   --limit <n>          Cap the incoming-delta row list to <n> rows (default: 20; 0 = unlimited)
   --json               Emit compact JSON instead of TOON

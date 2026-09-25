@@ -246,3 +246,40 @@ test("session-start's other-bundle listing and the opt-in Git turn end make zero
     await rm(box.root, { recursive: true, force: true });
   }
 });
+
+test("a Git board conflict makes zero network calls across --inspect and --resolve", async () => {
+  const box = await sandbox();
+  try {
+    const origin = path.join(box.root, "origin.git");
+    const founder = path.join(box.root, "founder");
+    const teammate = path.join(box.root, "teammate");
+    execFileSync("git", ["init", "-q", "--bare", origin], { env: { ...box.env, NODE_OPTIONS: "" } });
+    await mkdir(founder);
+    git(founder, box, "init", "-q");
+    git(founder, box, "remote", "add", "origin", origin);
+    git(founder, box, "commit", "-q", "--allow-empty", "-m", "init");
+    git(founder, box, "push", "-q", "origin", "HEAD:main");
+    for (const args of [
+      ["init", "--dir", ".superbee", "--recipe", "none"],
+      ["sync", "--establish"],
+      ["doc", "write", "notes/shared", "--type", "Note", "--title", "Shared", "--body", "Base."],
+      ["sync"],
+    ]) await runExpecting(box, args, founder);
+    execFileSync("git", ["clone", "-q", origin, teammate], { env: { ...box.env, NODE_OPTIONS: "" } });
+    await runExpecting(box, ["sync"], teammate);
+    await runExpecting(box, ["doc", "update", "notes/shared", "--body", "Teammate's."], teammate);
+    await runExpecting(box, ["sync"], teammate);
+    await runExpecting(box, ["doc", "update", "notes/shared", "--body", "Founder's."], founder);
+
+    const converged = await run(box, ["sync"], founder);
+    assert.equal(converged.code, 5, converged.stdout + converged.stderr);
+    const inspected = await run(box, ["sync", "--inspect", "--doc", "notes/shared", "--json"], founder);
+    assert.equal(inspected.code, 0, inspected.stdout + inspected.stderr);
+    assert.equal((JSON.parse(inspected.stdout) as { reason: string }).reason, "changed_remotely");
+    await runExpecting(box, ["sync", "--resolve", "keep", "--doc", "notes/shared"], founder);
+    await runExpecting(box, ["sync"], founder);
+    assert.deepEqual(await networkLog(box), []);
+  } finally {
+    await rm(box.root, { recursive: true, force: true });
+  }
+});

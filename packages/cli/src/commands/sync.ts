@@ -14,7 +14,8 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { renderUsage } from "../output.js";
 import type { SyncCliDeps } from "../sync-cli.js";
-import { dirArgument, hostedCheckoutFor, hostedSync, HOSTED_SYNC_USAGE, requestsHostedVerb, type HostedSyncDeps } from "../hosted/sync.js";
+import { dirArgument, hostedCheckoutFor, hostedSync, HOSTED_SYNC_USAGE, type HostedSyncDeps } from "../hosted/sync.js";
+import { gitConflictVerb, hostedOnlyVerbError, requestsConflictVerb, requestsHostedOnlyVerb } from "./sync/git-conflict.js";
 import { sync as gitSync, SYNC_USAGE } from "./sync/orchestrate.js";
 import { bundleHomeAt, type UnboundCopy } from "../bundle-home.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
@@ -63,10 +64,12 @@ export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<
       help: `${cliInvocation()} checkout --adopt ${commandToken(copy.folder)} --host ${commandToken(copy.marker.host)}`,
     });
   }
-  if (requestsHostedVerb(argv)) {
-    throw new CliError("USAGE", "--inspect, --resolve and --doc apply to a hosted checkout; this folder is not one", {
-      help: `for a Git board, see incoming changes with: ${cliInvocation()} sync --show-incoming <id>`,
-    });
+  // The conflict verbs are one grammar for both homes: on a Git board they read the copy a
+  // converged sync saved and finish its reconcile chain. The deletion verbs stay hosted-only.
+  if (requestsHostedOnlyVerb(argv)) throw hostedOnlyVerbError();
+  if (requestsConflictVerb(argv)) {
+    await gitConflictVerb(argv, deps);
+    return;
   }
   await gitSync(argv, deps);
 }
