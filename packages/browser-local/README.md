@@ -24,8 +24,10 @@ applied the change, so a later edit supersedes the refused request. An edit made
 while that request was in flight waits on it instead; the next `push` folds the two.
 Both retire, and one fresh intent carries the working document against the refused
 request's base. It is delivered in the same run and listed in `PushReport.rebased`.
-A refusal for lost permission, a busy refusal (`BUSY_REFUSAL_CODES`), a conflict and
-an edit that was ever sent are never folded.
+A deletion of a create that never landed retires both and journals nothing, since
+there is nothing to delete. A refusal for lost permission or an exhausted request
+quota (core's `AUTHORIZATION_REFUSAL_CODES`), a busy refusal (`BUSY_REFUSAL_CODES`),
+a conflict and an edit that was ever sent are never folded.
 
 ## Opt-in body delivery
 

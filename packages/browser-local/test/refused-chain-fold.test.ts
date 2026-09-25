@@ -261,6 +261,26 @@ for (const adapter of ["indexeddb", "memory"] as const) {
     } finally { local.close(); }
   });
 
+  test(`${adapter}: QA: a working document that is not the successor's bytes (or, for a deletion, present) is not folded`, async () => {
+    for (const shape of ["write", "delete"] as const) {
+      const { remote, local } = await synced();
+      try {
+        const p = (await commitLocal(local, id, edit("p\n"))).intent!;
+        await inFlight(local.backend, p.requestId);
+        if (shape === "write") await commitLocal(local, id, edit("s\n")); else await deleteLocal(local, id);
+        await local.backend.updateIntent(p.requestId, "in_flight", { state: "refused", attempts: 1, refusal: { code: CONTENT.code, message: CONTENT.message } });
+        // A write that journals nothing moves the document under the chain: the fold must not send those bytes.
+        const moved = await local.backend.readWithJournal(id);
+        await local.backend.writeJournaled(id, doc("stray\n"), { expectedVersion: moved.document?.version ?? (null as unknown as string) });
+        const before = await local.backend.readWithJournal(id);
+        const transport = counting(remote.transport);
+        const report = await push(local, transport, { remote: remote.remote, write: immediate });
+        assert.deepEqual([report.rebased, report.settled, report.skipped.map(row => row.reason), transport.sent], [undefined, [], ["blocked"], []], shape);
+        assert.deepEqual(await local.backend.readWithJournal(id), before, `${shape}: nothing was written`);
+      } finally { local.close(); }
+    }
+  });
+
   test(`${adapter}: a folded intent refused again is a lone refused latest, which the next edit supersedes`, async () => {
     const { remote, local, p } = await wedged();
     try {
