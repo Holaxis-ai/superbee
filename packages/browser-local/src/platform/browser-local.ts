@@ -72,7 +72,7 @@ import type { OperationTransport, UncertainWriteOptions } from "@superbee/core/u
 import type { BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { admitBodyMode, assertBodyEdition, BODY_MODE_KEY, bodyEvidenceKeys, bodySnapshot, validateBodyEvidence } from "../body-journal.js";
 
-import { baseKey, commitLocal, commitBodyLocal, pull, pushWithRole, syncStatus as localSyncStatus, UNSETTLED_STATES, type LocalBundle, type SharedBase } from "../local-bundle.js";
+import { baseKey, commitLocal, commitBodyLocal, pull, pushWithRole, syncStatus as localSyncStatus, UNSETTLED_STATES, type DeletionRefusal, type LocalBundle, type PullMarker, type SharedBase } from "../local-bundle.js";
 import type { LockManagerLike } from "../push-role.js";
 import { isAuthorityAnswer, isInputError, kindWarningsFor } from "./shared.js";
 
@@ -119,6 +119,20 @@ export class PushRoleHeldError extends Error {
   constructor() {
     super("another realm holds this working copy's push role, so the accepted deletions were not applied");
     this.name = "PushRoleHeldError";
+  }
+}
+
+/**
+ * A sync passed `acceptRefusedDeletions` had its pull superseded by another realm, and the one
+ * further pull it runs was superseded too, so the accepted deletions were not all applied. The
+ * refusal stays reported in `lastSync.refusedDeletions` while the superseding pull's marker is
+ * unfinished. It is a fresh refusal when the listing moved, so a retry passes that reported
+ * refusal back rather than repeating the original acceptance.
+ */
+export class PullSupersededError extends Error {
+  constructor() {
+    super("another realm superseded this sync's pull twice, so the accepted deletions were not all applied");
+    this.name = "PullSupersededError";
   }
 }
 
@@ -211,6 +225,14 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
   let online: boolean | null = null;
   /** How this runtime's last sync ended; `null` until one has run here. */
   let lastOutcome: { ok: boolean; error?: string } | null = null;
+  /**
+   * The refusal an accepting sync left unapplied when both its pulls were superseded, with the
+   * pull marker in place when it gave up. Neither superseded pull completed a marker, so that
+   * marker may carry no refusal; this one is reported only while that same marker is in place
+   * and unfinished, since any other marker belongs to a later pull that may have applied or
+   * refused the deletions itself. Dropped once a pull here runs unsuperseded.
+   */
+  let keptRefusal: { refusal: DeletionRefusal; marker: Pick<PullMarker, "startedAt" | "run"> } | undefined;
 
   const capabilities = (): PlatformCapabilities => ({ mode: "browser-local", offlineCommits: true, localPersistence: true });
 
@@ -282,13 +304,16 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
   /**
    * The last sync as the contract reports it: this runtime's own outcome when it has synced,
    * otherwise what the pull marker says about the last pull over this store (complete or
-   * interrupted), and in either case the deletions that marker still refuses. Absent when no
-   * pull has ever run here.
+   * interrupted), and in either case the deletions that marker still refuses, or, while it is
+   * the marker a superseded accepting sync left in place and still unfinished, the refusal that
+   * sync kept. Absent when no pull has ever run here.
    */
   const lastSyncOf = (marker: Awaited<ReturnType<typeof localSyncStatus>>["lastPull"]): PlatformSyncOutcome | undefined => {
     const outcome = lastOutcome ?? (marker === null ? undefined : { ok: marker.completedAt !== null });
     if (outcome === undefined) return undefined;
-    return { ...outcome, ...(marker?.refused === undefined ? {} : { refusedDeletions: marker.refused }) };
+    const kept = keptRefusal !== undefined && marker !== null && marker.completedAt === null && marker.run === keptRefusal.marker.run && marker.startedAt === keptRefusal.marker.startedAt ? keptRefusal.refusal : undefined;
+    const refused = marker?.refused ?? kept;
+    return { ...outcome, ...(refused === undefined ? {} : { refusedDeletions: refused }) };
   };
 
   const status = async (): Promise<PlatformSyncStatus> => {
@@ -309,7 +334,10 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
   };
 
   /**
-   * One push-then-pull. When another realm holds the push role, this realm neither pushes nor
+   * One push-then-pull; a pull another realm supersedes runs once more, so one sync still
+   * pulls to completion when the superseding realm never finishes, unless that second pull is
+   * superseded too; an accepting sync whose second pull is superseded records `ok: false` and
+   * rejects with {@link PullSupersededError}, keeping the refusal reported. When another realm holds the push role, this realm neither pushes nor
    * pulls: a pull listed while the holder's push is in flight can predate an acknowledgement the
    * holder is about to record, and would then remove the acknowledged document from the shared
    * working copy. The holder's own sync pulls into that same store, so this call returns the
@@ -332,11 +360,26 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
       lastOutcome = { ok: false, error: describeFailure(error) };
       throw error;
     }
+    let unapplied: PullSupersededError | undefined;
     try {
       // The opened bundle, not its backend: the pull keeps the authority's capabilities on it.
-      await pull(local, readSide, syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions });
+      const pullOptions = syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions };
+      // A superseded pull stopped writing and dropped any acceptance it carried; the realm that
+      // superseded it may never finish (a closed tab), so pull once more, itself fenced, before
+      // reporting this sync.
+      let report = await pull(local, readSide, pullOptions);
+      if (report.superseded) report = await pull(local, readSide, pullOptions);
       online = true;
-      if (await admitBodyMode(backend)) {
+      if (!report.superseded) keptRefusal = undefined;
+      else if (syncOptions.acceptRefusedDeletions !== undefined) {
+        // The fresh refusal a moved listing drew, else the one accepted: a retry passes it back.
+        const refusal = report.refused ?? syncOptions.acceptRefusedDeletions;
+        const marker = (await localSyncStatus(backend)).lastPull;
+        keptRefusal = marker === null ? undefined : { refusal, marker: { startedAt: marker.startedAt, ...(marker.run === undefined ? {} : { run: marker.run }) } };
+        unapplied = new PullSupersededError();
+      }
+      if (unapplied !== undefined) lastOutcome = { ok: false, error: describeFailure(unapplied) };
+      else if (await admitBodyMode(backend)) {
         const remaining = await localSyncStatus(local);
         lastOutcome = { ok: remaining.counts.pending + remaining.counts.in_flight + remaining.counts.unknown + remaining.counts.refused + remaining.counts.conflict === 0 && !remaining.paused };
       } else lastOutcome = { ok: true };
@@ -345,6 +388,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
       if (isInputError(error) || isAuthorityAnswer(error)) throw error;
       online = false;
     }
+    if (unapplied !== undefined) throw unapplied;
     return status();
   };
 
@@ -411,7 +455,9 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
      * run's result; the follow-up carries the latest `acceptRefusedDeletions` any of them passed.
      * When another realm holds the push role, a sync neither pushes nor pulls and resolves with
      * the current status, except that one passing `acceptRefusedDeletions` records `ok: false`
-     * and rejects with {@link PushRoleHeldError}, leaving the refusal recorded for a retry.
+     * and rejects with {@link PushRoleHeldError}, leaving the refusal recorded for a retry. One
+     * passing it whose pull is superseded, and then superseded again on its one further pull,
+     * records `ok: false` and rejects with {@link PullSupersededError}, keeping the refusal reported.
      */
     sync: (syncOptions: PlatformSyncOptions = {}): Promise<PlatformSyncStatus> => {
       if (rerun !== null) {

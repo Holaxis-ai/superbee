@@ -153,6 +153,12 @@ export interface PlatformSyncOptions {
    * authority's current listing still carries the same digest, count and reason; a listing
    * that has moved since is refused afresh. When another realm holds the push role, a sync
    * passing it applies nothing, records `lastSync.ok` false and rejects, so the caller can retry.
+   * One whose pull another realm supersedes twice also records `lastSync.ok` false and rejects,
+   * possibly with some deletions applied, and reports a refusal in `lastSync.refusedDeletions`
+   * for the retry to pass back: a fresh one when the listing moved, not necessarily the one
+   * passed. It is shown only while the superseding pull's marker is unfinished, and is held in
+   * memory only, so a page reload loses it; a later plain pull that refuses records it on its
+   * marker again.
    * Request-driven ignores it: nothing is ever refused there.
    */
   acceptRefusedDeletions?: RefusedDeletions;
