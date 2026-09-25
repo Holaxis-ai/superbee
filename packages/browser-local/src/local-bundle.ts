@@ -1678,9 +1678,10 @@ export interface PullReport {
   /**
    * Present when another realm's pull marked, or an acknowledgement settled, after this pull
    * marked, so this exact-mode pull stopped writing: what it lists is what it wrote before
-   * then, each write under its own fence, and it recorded no marker, since the pull that
-   * superseded it owns the marker now. Not a failure; nothing it wrote is stale. The next pull
-   * asks unconditionally unless the superseding pull completed with a digest. Never set in body
+   * then, each write under its own fence, and it did not complete its marker: the marker is the
+   * superseding pull's, or, after an acknowledgement, still this pull's unfinished one, which
+   * offers no digest. Not a failure; nothing it wrote is stale. The next pull asks
+   * unconditionally unless a later pull completed with a digest. Never set in body
    * mode or over an adapter without `journalSnapshotCas`, where pull runs unfenced.
    */
   superseded?: true;
