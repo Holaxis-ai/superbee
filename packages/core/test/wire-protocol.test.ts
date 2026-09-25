@@ -1190,6 +1190,47 @@ test("RemoteBackend: a delete whose premise is not a content version is sent uni
   );
 });
 
+test("RemoteBackend: a guarded write sends the document as it stood when write() was called, and refuses an unencodable one before asking capabilities", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-capture", backend: serverBackend });
+  let answerProbe!: () => void;
+  const probeAnswered = new Promise<void>((resolve) => (answerProbe = resolve));
+  const sent: string[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    maxRetries: 0,
+    fetchImpl: async (req) => {
+      const path = new URL(req.url).pathname;
+      sent.push(`${req.method} ${path}`);
+      if (path === "/v0/capabilities") await probeAnswered;
+      return router(req);
+    },
+  });
+  const doc: OkfDocument = { id: "concepts/cap", frontmatter: { type: "T", timestamp: T_DOC }, body: "as called" };
+
+  const pending = remote.write("concepts/cap", doc, { expectedVersion: null });
+  doc.body = "changed while the capability question was pending";
+  doc.frontmatter.title = "changed";
+  answerProbe();
+  await pending;
+  const head = await serverBackend.read("concepts/cap");
+  assert.equal(head.doc.body?.trim(), "as called");
+  assert.equal(head.doc.frontmatter.title, undefined);
+
+  const unencodable: OkfDocument = { id: "concepts/nan", frontmatter: { type: "T", n: Number.NaN }, body: "x" };
+  const fresh = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      throw new TypeError("fetch failed");
+    },
+  });
+  await assert.rejects(() => fresh.write("concepts/nan", unencodable, { expectedVersion: null }), InvalidInputError);
+  assert.deepEqual(sent, ["GET /v0/capabilities", "PUT /v0/bundles/test/docs/concepts/cap"]);
+});
+
 test("wire: MemoryOperationOutcomeStore releases the claim and settles waiters with null when the clock throws inside record", async () => {
   let clockFails = false;
   const store = new MemoryOperationOutcomeStore({

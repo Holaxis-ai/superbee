@@ -426,6 +426,9 @@ export class RemoteBackend implements StorageBackend {
     if (options.expectedVersion === null) headers["If-None-Match"] = "*";
     else if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
     if (options.actor) headers["X-Actor"] = options.actor;
+    // Captured before the capability question can yield, so the payload is the document as it
+    // stood when `write` was called and an unencodable one is refused before any request.
+    const body = encodeRemoteDocument(doc.frontmatter, doc.body ?? "");
     if (options.requestId !== undefined) {
       assertRequestIdentity(options.requestId);
       headers[IDENTITY_HEADER] = options.requestId;
@@ -433,11 +436,7 @@ export class RemoteBackend implements StorageBackend {
       headers[IDENTITY_HEADER] = mintRequestId();
     }
 
-    const res = await this.send(`/docs/${encodeId(id)}`, {
-      method: "PUT",
-      headers,
-      body: encodeRemoteDocument(doc.frontmatter, doc.body ?? ""),
-    });
+    const res = await this.send(`/docs/${encodeId(id)}`, { method: "PUT", headers, body });
     if (!res.ok) throw await this.toError(res, id);
     const payload = (await res.json()) as { version: Version };
     return payload.version;
