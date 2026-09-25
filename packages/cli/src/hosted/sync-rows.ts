@@ -11,9 +11,13 @@
 // The exit code is non-zero while any row is not committed.
 import type { IntentRecord } from "@superbee/core/journaled-backend";
 import { CAPACITY_REFUSAL_CODES } from "@superbee/core/hosted-transport";
+import { BUSY_REFUSAL_CODES } from "@superbee/browser-local";
 
 import { CliError, type CliErrorCode } from "../errors.js";
 import type { FolderConflict, HeldFile } from "./sync-scan.js";
+
+/** Recorded refusals that say the bundle was busy, not that the content is wrong: requeued under a fresh identity. The working copy owns the set. */
+export { BUSY_REFUSAL_CODES };
 
 export const ROW_STATES = ["committed", "conflict", "held", "refused", "unknown", "paused"] as const;
 export type RowState = (typeof ROW_STATES)[number];
@@ -28,8 +32,6 @@ export interface SyncRow {
   readonly message: string;
 }
 
-/** Recorded refusals that say the bundle was busy, not that the content is wrong: requeued under a fresh identity. */
-export const BUSY_REFUSAL_CODES: ReadonlySet<string> = new Set(["concurrent_change", "backend_unavailable", "internal_error", "deadline_exceeded", "cancelled"]);
 const SIGN_IN_CODES: ReadonlySet<string> = new Set(["AUTH_REQUIRED", "UNAUTHORIZED", "FORBIDDEN"]);
 
 /** Why nothing was sent for a document that was never attempted, when the whole push did not run. */
