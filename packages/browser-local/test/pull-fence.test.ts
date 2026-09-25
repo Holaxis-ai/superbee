@@ -549,6 +549,48 @@ for (const adapter of ADAPTERS) {
     }
   });
 
+  test(`${adapter}: review: the refusal a doubly superseded accepting sync keeps is not reported again once another realm has applied it and a later pull is unfinished`, async () => {
+    const fixture = await createRemoteFixture();
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const id = `seed/d${String(i).padStart(2, "0")}`;
+      await fixture.authority.write(id, doc(id, "s\n"));
+      ids.push(id);
+    }
+    const { a, b, close } = twoRealms(adapter);
+    try {
+      await bootstrap(fixture.remote, b);
+      for (const id of ids.slice(0, 12)) await fixture.authority.delete(id);
+      const refused = (await pull(b, fixture.remote)).refused;
+      assert.ok(refused);
+      const superseding = afterEachHeads(fixture.remote, 2, async () => {
+        const dead = holdAfter(fixture.remote, "heads");
+        void pull(a, dead.remote);
+        await dead.entered;
+      });
+      const runtime = createBrowserLocalRuntime({ local: b, remote: superseding, transport: fixture.transport, write: immediate, locks: null });
+      await assert.rejects(runtime.sync({ acceptRefusedDeletions: refused }), PullSupersededError);
+      assert.deepEqual((await runtime.syncStatus()).lastSync?.refusedDeletions, refused);
+
+      // Realm a applies the same acceptance to completion.
+      const applied = await pull(a, fixture.remote, { acceptRefusedDeletions: refused });
+      assert.equal(applied.deleted.length, 12);
+      assert.equal((await b.backend.list()).length, 8);
+      assert.equal((await runtime.syncStatus()).lastSync?.refusedDeletions, undefined);
+
+      // A later pull marks and its tab is closed: its unfinished marker is not the one b's sync left.
+      const dead = holdAfter(fixture.remote, "heads");
+      void pull(a, dead.remote);
+      await dead.entered;
+      assert.equal((await lastPull(b))?.completedAt, null);
+      const status = await runtime.syncStatus();
+      assert.equal(status.lastSync?.ok, false);
+      assert.equal(status.lastSync?.refusedDeletions, undefined, "the applied refusal is not reported again");
+    } finally {
+      close();
+    }
+  });
+
   test(`${adapter}: review: a plain runtime sync whose pull is superseded twice still resolves online and ok`, async () => {
     const fixture = await createRemoteFixture();
     await fixture.authority.write("notes/x", doc("notes/x", "x v0\n"));

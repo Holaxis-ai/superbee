@@ -72,7 +72,7 @@ import type { OperationTransport, UncertainWriteOptions } from "@superbee/core/u
 import type { BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { admitBodyMode, assertBodyEdition, BODY_MODE_KEY, bodyEvidenceKeys, bodySnapshot, validateBodyEvidence } from "../body-journal.js";
 
-import { baseKey, commitLocal, commitBodyLocal, pull, pushWithRole, syncStatus as localSyncStatus, UNSETTLED_STATES, type DeletionRefusal, type LocalBundle, type SharedBase } from "../local-bundle.js";
+import { baseKey, commitLocal, commitBodyLocal, pull, pushWithRole, syncStatus as localSyncStatus, UNSETTLED_STATES, type DeletionRefusal, type LocalBundle, type PullMarker, type SharedBase } from "../local-bundle.js";
 import type { LockManagerLike } from "../push-role.js";
 import { isAuthorityAnswer, isInputError, kindWarningsFor } from "./shared.js";
 
@@ -125,7 +125,9 @@ export class PushRoleHeldError extends Error {
 /**
  * A sync passed `acceptRefusedDeletions` had its pull superseded by another realm, and the one
  * further pull it runs was superseded too, so the accepted deletions were not all applied. The
- * refusal stays reported; the same call applies it once a pull runs to completion.
+ * refusal stays reported in `lastSync.refusedDeletions` while the superseding pull's marker is
+ * unfinished. It is a fresh refusal when the listing moved, so a retry passes that reported
+ * refusal back rather than repeating the original acceptance.
  */
 export class PullSupersededError extends Error {
   constructor() {
@@ -224,11 +226,13 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
   /** How this runtime's last sync ended; `null` until one has run here. */
   let lastOutcome: { ok: boolean; error?: string } | null = null;
   /**
-   * The refusal an accepting sync left unapplied when both its pulls were superseded. Neither
-   * superseded pull completed a marker, so the one in place may carry no refusal; this one is
-   * reported while that marker stays unfinished, and dropped once a pull here completes.
+   * The refusal an accepting sync left unapplied when both its pulls were superseded, with the
+   * pull marker in place when it gave up. Neither superseded pull completed a marker, so that
+   * marker may carry no refusal; this one is reported only while that same marker is in place
+   * and unfinished, since any other marker belongs to a later pull that may have applied or
+   * refused the deletions itself. Dropped once a pull here runs unsuperseded.
    */
-  let keptRefusal: DeletionRefusal | undefined;
+  let keptRefusal: { refusal: DeletionRefusal; marker: Pick<PullMarker, "startedAt" | "run"> } | undefined;
 
   const capabilities = (): PlatformCapabilities => ({ mode: "browser-local", offlineCommits: true, localPersistence: true });
 
@@ -301,12 +305,14 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
    * The last sync as the contract reports it: this runtime's own outcome when it has synced,
    * otherwise what the pull marker says about the last pull over this store (complete or
    * interrupted), and in either case the deletions that marker still refuses, or, while it is
-   * unfinished, the refusal a superseded accepting sync kept. Absent when no pull has ever run here.
+   * the marker a superseded accepting sync left in place and still unfinished, the refusal that
+   * sync kept. Absent when no pull has ever run here.
    */
   const lastSyncOf = (marker: Awaited<ReturnType<typeof localSyncStatus>>["lastPull"]): PlatformSyncOutcome | undefined => {
     const outcome = lastOutcome ?? (marker === null ? undefined : { ok: marker.completedAt !== null });
     if (outcome === undefined) return undefined;
-    const refused = marker?.refused ?? (marker !== null && marker.completedAt === null ? keptRefusal : undefined);
+    const kept = keptRefusal !== undefined && marker !== null && marker.completedAt === null && marker.run === keptRefusal.marker.run && marker.startedAt === keptRefusal.marker.startedAt ? keptRefusal.refusal : undefined;
+    const refused = marker?.refused ?? kept;
     return { ...outcome, ...(refused === undefined ? {} : { refusedDeletions: refused }) };
   };
 
@@ -367,7 +373,9 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
       if (!report.superseded) keptRefusal = undefined;
       else if (syncOptions.acceptRefusedDeletions !== undefined) {
         // The fresh refusal a moved listing drew, else the one accepted: a retry passes it back.
-        keptRefusal = report.refused ?? syncOptions.acceptRefusedDeletions;
+        const refusal = report.refused ?? syncOptions.acceptRefusedDeletions;
+        const marker = (await localSyncStatus(backend)).lastPull;
+        keptRefusal = marker === null ? undefined : { refusal, marker: { startedAt: marker.startedAt, ...(marker.run === undefined ? {} : { run: marker.run }) } };
         unapplied = new PullSupersededError();
       }
       if (unapplied !== undefined) lastOutcome = { ok: false, error: describeFailure(unapplied) };
