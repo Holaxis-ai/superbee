@@ -16,7 +16,7 @@
 //     (`sync --inspect/--resolve`), because the version it was edited against is unknown;
 //   * a document only in the folder has no record either, so the next sync sends it as new.
 import path from "node:path";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 
 import { bootstrap, openLocalBundle } from "@superbee/browser-local";
 import { conceptIdFromPath, isReservedFile, pathFromConceptId } from "@superbee/core";
@@ -27,6 +27,7 @@ import { commandFragment, commandToken, type CommandText } from "../command-text
 import { CliError } from "../errors.js";
 import { resolveHostedTarget } from "../hosted-auth/discovery.js";
 import { cliInvocation } from "../invocation.js";
+import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 import { render, type resolveMode } from "../output.js";
 import {
   bindingForPath,
@@ -72,15 +73,11 @@ interface AdoptOptions {
   readonly json: boolean;
 }
 
-async function readIfPresent(file: string): Promise<Buffer | null> {
-  try {
-    if (!(await lstat(file)).isFile()) return null;
-    return await readFile(file);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return null;
-    throw error;
-  }
+/** The file's bytes, `unsafe` for a link or anything but a regular file, or null when absent. */
+function readLeaf(file: string): Buffer | "unsafe" | null {
+  const read = readRegularFileNoFollowSync(file);
+  if (read.state === "missing") return null;
+  return read.state === "present" ? read.bytes : "unsafe";
 }
 
 function listed(ids: readonly string[]): { ids: string[]; total: number } {
@@ -284,20 +281,13 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
           conflicts.push(head.id);
           continue;
         }
-        const bytes = await readIfPresent(file);
+        const bytes = readLeaf(file);
+        if (bytes === "unsafe") {
+          // A symbolic link or a folder in the document's place: left alone, reported.
+          conflicts.push(head.id);
+          continue;
+        }
         if (bytes === null) {
-          let exists = false;
-          try {
-            await lstat(file);
-            exists = true;
-          } catch {
-            // Absent: place the host's bytes.
-          }
-          if (exists) {
-            // A symbolic link or a folder in the document's place: left alone, reported.
-            conflicts.push(head.id);
-            continue;
-          }
           const hostBytes = Buffer.from(head.raw, "utf8");
           await ensureParentInside(canonical, file);
           const outcome = await placeNew(file, hostBytes);
@@ -321,8 +311,9 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
       if (index) {
         const hostRoot = Buffer.from(index.content, "utf8");
         root = digestOf(hostRoot);
-        const current = await readIfPresent(path.join(canonical, ROOT_INDEX));
-        if (current === null) {
+        const current = readLeaf(path.join(canonical, ROOT_INDEX));
+        if (current === "unsafe") rootIndex = "kept (not a plain file; sync holds it)";
+        else if (current === null) {
           const placedRoot = (await placeNew(path.join(canonical, ROOT_INDEX), hostRoot)).placed;
           if (placedRoot) placedFiles.set(path.join(canonical, ROOT_INDEX), root);
           rootIndex = placedRoot ? "placed" : "kept";
