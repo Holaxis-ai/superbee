@@ -1379,7 +1379,11 @@ test("an owner-less session lock inside the claim grace is a claim in progress: 
 
 test("a session lock held far past any refresh is orphaned though its PID is alive or its host is another", async () => {
   const h = await harness();
-  const record = (host: string) => ({ pid: process.pid, hostname: host, created_at_ms: Date.now() - SESSION_LOCK_ORPHAN_MS, token: "gone", target: "session" });
+  // A live process other than this one: a record naming this process's own id and claimed before
+  // it started is a prior incarnation's, which the filesystem lock reclaims by itself.
+  const livePid = process.ppid;
+  process.kill(livePid, 0);
+  const record = (host: string) => ({ pid: livePid, hostname: host, created_at_ms: Date.now() - SESSION_LOCK_ORPHAN_MS, token: "gone", target: "session" });
   try {
     for (const host of [hostname(), "another-host.example"]) {
       const lock = await plantSessionLock(h, record(host), SESSION_LOCK_ORPHAN_MS + 60_000);
