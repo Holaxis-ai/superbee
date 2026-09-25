@@ -1,0 +1,83 @@
+// TEMPORARY capture script (not committed to superbee-hosted): records the `bundles.create.v1`
+// golden exchanges (`POST /sync/v1/bundle-create`) the superbee OSS CLI fake is checked against.
+// To run it, copy lines 1-291 of superbee-hosted `test/sync-v1-bundle-create.test.ts` (its imports
+// and its `fixture`, `bundle` and `json` helpers) into `test/zz-capture.test.ts`, append this file,
+// and run `CAPTURE_OUT=<dir> npx tsx --test --test-name-pattern "capture bundles.create.v1" test/zz-capture.test.ts`.
+// It drives the real gateway app (`createApp`) with real token verification and Miniflare D1 and
+// R2; only the identity issuer is a fixture. Delete the copy afterwards.
+import { mkdirSync, writeFileSync } from "node:fs";
+
+const OUT = process.env.CAPTURE_OUT!;
+const GRAMMAR = ["content-type", "x-superbee-write-settled"];
+const ids = {
+  created: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c1",
+  taken: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c2",
+  history: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c3",
+  collision: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c4",
+  tooMany: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c5",
+  noWorkspace: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c6",
+  limit: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c7",
+  unavailable: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c8",
+  unknown: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c9",
+  conflict: "4a2f9c1e-8b3d-4e6f-9a1b-0000000000ca",
+};
+
+test("capture bundles.create.v1 golden exchanges", async (t) => {
+  mkdirSync(OUT, { recursive: true });
+  const index: any[] = [];
+  const record = async (f: any, name: string, description: string, rows: string[], body: unknown, requestId: string | null, extra: Record<string, unknown> = {}) => {
+    const requestHeaders: Record<string, string> = { "content-type": "application/json" };
+    if (requestId !== null) requestHeaders["x-superbee-write-request"] = requestId;
+    const text = JSON.stringify(body);
+    const response: Response = await f.sync("bundle-create", text, { requestId, ...extra });
+    const responseBody = await response.text();
+    const headers: Record<string, string> = {};
+    for (const h of GRAMMAR) {
+      const v = response.headers.get(h);
+      if (v !== null) headers[h] = v;
+    }
+    writeFileSync(
+      `${OUT}/${name}.json`,
+      `${JSON.stringify({ name, description, route: "/sync/v1/bundle-create", rows, request: { method: "POST", headers: requestHeaders, body: text }, response: { status: response.status, headers, body: responseBody, truncated: false } }, null, 2)}\n`,
+    );
+    index.push({ name, file: `${name}.json`, route: "/sync/v1/bundle-create", rows, status: response.status });
+  };
+  const f = await fixture(t);
+  const created = bundle("mine.notes");
+  await record(f, "bundle-create-200-created", "A person creates a bundle in their own workspace.", ["200 ok"], created, ids.created);
+  await record(f, "bundle-create-200-replay", "The same request again confirms the creation.", ["200 ok"], created, ids.created);
+  await record(f, "bundle-create-200-request-conflict", "The same request id with other contents.", ["200 request_conflict"], bundle("mine.notes", { name: "Other" }), ids.created);
+  await record(f, "bundle-create-200-bundle-exists", "Another request for an id that is held.", ["200 bundle_exists"], bundle("mine.notes"), ids.taken);
+  const history = bundle("hist.notes", {
+    history: [
+      { documentId: "notes/alpha", label: `imported:git/${"a".repeat(40)}`, author: "Ada <ada@example.com>", authoredAt: "2026-01-02T03:04:05.000Z", frontmatter: { type: "Note", title: "Alpha" }, body: "Alpha v0.\n" },
+    ],
+  });
+  await record(f, "bundle-create-200-history", "Created with one imported, unverified history row.", ["200 ok"], history, ids.history);
+  const collision = bundle("coll.notes", { documents: [{ id: "notes/A", frontmatter: { type: "Note" }, body: "a" }, { id: "notes/a", frontmatter: { type: "Note" }, body: "b" }] });
+  await record(f, "bundle-create-200-document-id-collision", "Two paths that fold to one file.", ["200 document_id_collision"], collision, ids.collision);
+  const tooMany = bundle("big.notes", { documents: Array.from({ length: 1001 }, (_, i) => ({ id: `n/d${i}`, frontmatter: { type: "Note" }, body: "x" })) });
+  await record(f, "bundle-create-400-invalid-input", "Over the 1,000 document bound: the request schema refuses it.", ["400 invalid_input"], tooMany, ids.tooMany);
+  await record(f, "bundle-create-200-workspace-not-found", "A workspace the person is not a member of.", ["200 workspace_not_found"], bundle("ws.notes", { workspace: "tenant:c" }), ids.noWorkspace);
+  const limited = await fixture(t, { limit: 1 });
+  await limited.sync("bundle-create", bundle("lim.one"));
+  await record(limited, "bundle-create-429-limit", "The person's configured create limit is used up.", ["429 bundle_create_limit"], bundle("lim.two"), ids.limit);
+  const readOnly = await fixture(t, { sync: '{"version":1}' });
+  await record(readOnly, "bundle-create-200-unavailable", "Creation is off: sync writes are not enabled.", ["200 bundle_create_unavailable"], bundle("ro.notes"), ids.unavailable);
+  let hook: ((sql: string) => Promise<void>) | undefined;
+  const gated = await fixture(t, { storageGate: () => hook });
+  let failed = 0;
+  hook = async (sql) => {
+    if (sql.includes("INSERT INTO sb_doc_heads") && failed === 0) {
+      failed += 1;
+      throw new Error("injected storage failure");
+    }
+  };
+  await record(gated, "bundle-create-503-write-outcome-unknown", "A failure after the reservation: the outcome is unknown.", ["503 write_outcome_unknown"], bundle("resume.notes"), ids.unknown);
+  hook = undefined;
+  await record(gated, "bundle-create-200-resumed", "The same request again resumes and completes the creation.", ["200 ok"], bundle("resume.notes"), ids.unknown);
+  writeFileSync(
+    `${OUT}/index.json`,
+    `${JSON.stringify({ schemaVersion: 1, description: "Golden bundles.create.v1 exchanges (POST /sync/v1/bundle-create) captured from the real hosted gateway app (createApp with the test/sync-v1-bundle-create.test.ts fixture: real bearer admission, the creation ledger, Miniflare D1 and R2; only the identity issuer is a fixture). Each file is one request and the exact answer bytes; response headers are limited to content-type and x-superbee-write-settled. See capture-bundle-create-exchanges.hosted.txt.", source: "Holaxis-ai/superbee-hosted 09e577e6", exchanges: index }, null, 2)}\n`,
+  );
+});

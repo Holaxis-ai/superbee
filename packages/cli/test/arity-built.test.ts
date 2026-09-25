@@ -135,6 +135,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     logout: simple(CLI_LEAVES.logout, ["logout"], [], ["--host", "http://127.0.0.1:9"]),
     checkout: simple(CLI_LEAVES.checkout, ["checkout"], ["team.knowledge"], ["--host", "http://127.0.0.1:9"]),
     export: simple(CLI_LEAVES.export, ["export"], ["team.knowledge"], ["--host", "http://127.0.0.1:9", "--to", "exported"]),
+    publish: simple(CLI_LEAVES.publish, ["publish"], [], ["--to", "hosted", "--host", "http://127.0.0.1:9", ...dir]),
     turnEnd: simple(CLI_LEAVES.turnEnd, ["turn-end"], [], dir),
     setupHosted: simple(CLI_LEAVES.setupHosted, ["setup", "hosted"], [], ["--url", "http://127.0.0.1:9"]),
   };

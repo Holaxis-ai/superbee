@@ -619,6 +619,13 @@ export const CLI_COMMAND_GROUPS = [
         summary:
           "Copy a hosted bundle out of hosted Superbee: every document, reserved file and blob at its latest revision, verified against the host's digest manifest before any file is written; --to writes a new local bundle into a new or empty folder (complete or not at all); --in-place converts a hosted checkout into a local bundle, adds what it lacks without overwriting a file, and forgets its binding; --git commits the result on a board branch; the hosted bundle is unchanged and history is not exported",
       },
+      {
+        id: "publish",
+        leaves: [publicLeaf("publish", "publish", zero, 35, DIR_SURFACE)],
+        usage: "publish --to hosted [--dir <bundle>] [--host <url>] [--workspace <id>] [--bundle-id <id>] [--name <name>] [--with-history] [--yes] [--json]",
+        summary:
+          "Move a local bundle or Git board to hosted Superbee: previews with no network (what travels, what stays, every host bound, the history plan); --yes signs in if needed, creates the bundle in your workspace (only you reach it until you share it) and converts the folder in place into a hosted checkout, unbinding a Git board (its branch stays); --with-history imports a board's Git history as labeled, unverified rows",
+      },
     ],
   },
 ] as const satisfies readonly CommandSpecGroup[];

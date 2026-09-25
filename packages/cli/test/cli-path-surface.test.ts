@@ -57,6 +57,7 @@ const PATH_FLAG_CANDIDATES = [
  */
 const NOT_A_PATH_ON_LEAF: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   linkList: { to: "a link-target concept id or prefix filter; export's --to is the folder" },
+  publish: { to: "the destination kind (only 'hosted'); publish moves the --dir bundle in place" },
 };
 
 /** Positionals a leaf needs before its own parser is reached. Default: `arity.count` placeholders. */

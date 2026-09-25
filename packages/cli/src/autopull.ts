@@ -51,7 +51,8 @@ export {
 
 /**
  * The hosted checkout a read targets: the folder (`--dir`, else the cwd) or its nearest ancestor
- * that is a live checkout. Filesystem reads only, no process spawns; null for everything else.
+ * that is a live checkout, else the bundle discovery finds from there (a project's conventional
+ * `.superbee/` that is a checkout). Filesystem reads only, no process spawns; null for everything else.
  */
 export async function hostedCheckoutAt(dir: string | undefined, home: string = homedir()): Promise<CheckoutBinding | null> {
   let current: string;
@@ -60,13 +61,18 @@ export async function hostedCheckoutAt(dir: string | undefined, home: string = h
   } catch {
     return null;
   }
+  const start = current;
   for (;;) {
     const binding = await bindingForPath(home, current).catch(() => null);
     if (binding) return binding;
     const parent = path.dirname(current);
-    if (parent === current) return null;
+    if (parent === current) break;
     current = parent;
   }
+  // A project whose conventional bundle (`.superbee/`) is itself a hosted checkout, as `publish`
+  // leaves a published project board: the bundle every command here resolves to.
+  const discovered = await findBundleRoot(start).catch(() => null);
+  return discovered ? bindingForPath(home, discovered).catch(() => null) : null;
 }
 
 /** What the automatic pull did in a hosted checkout. Diagnostic only, like {@link AutoPullOutcome}. */
