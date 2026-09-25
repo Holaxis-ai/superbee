@@ -148,8 +148,8 @@ top, then \`sync\` again to share it.
 
 A hosted checkout's conflict verbs work on a saved conflict too, over the same flow (sync still
 keeps the teammate's version first): \`--inspect --doc <id>\` shows your saved version and the
-teammate's (\`--out <file>\` writes theirs whole); \`--resolve take\` keeps theirs and discards your
-saved copy; \`--resolve keep\` writes your saved body over theirs with \`doc update\` (frontmatter
+teammate's (\`--out <file>\` writes theirs whole); \`--resolve take\` restores theirs (undoing any
+later edit) and discards your saved copy; \`--resolve keep\` writes your saved body over theirs with \`doc update\` (frontmatter
 that differs is listed, not carried); \`--resolve revise\` records the document as it is now, so
 edit it to the result you want first. Each removes the saved copy; none commits or pushes: the
 next \`sync\` shares keep and revise.
