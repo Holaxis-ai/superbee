@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "description": "Golden bundles.create.v1 exchanges (POST /sync/v1/bundle-create) captured from the real hosted gateway app (createApp with the test/sync-v1-bundle-create.test.ts fixture: real bearer admission, the creation ledger, Miniflare D1 and R2; only the identity issuer is a fixture). Each file is one request and the exact answer bytes; response headers are limited to content-type and x-superbee-write-settled. See capture-bundle-create-exchanges.hosted.txt.",
+  "source": "Holaxis-ai/superbee-hosted 09e577e6",
+  "exchanges": [
+    {
+      "name": "bundle-create-200-created",
+      "file": "bundle-create-200-created.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-200-replay",
+      "file": "bundle-create-200-replay.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-200-request-conflict",
+      "file": "bundle-create-200-request-conflict.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 request_conflict"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-200-bundle-exists",
+      "file": "bundle-create-200-bundle-exists.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 bundle_exists"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-200-history",
+      "file": "bundle-create-200-history.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-200-document-id-collision",
+      "file": "bundle-create-200-document-id-collision.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 document_id_collision"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-400-invalid-input",
+      "file": "bundle-create-400-invalid-input.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "400 invalid_input"
+      ],
+      "status": 400
+    },
+    {
+      "name": "bundle-create-200-workspace-not-found",
+      "file": "bundle-create-200-workspace-not-found.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 workspace_not_found"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-429-limit",
+      "file": "bundle-create-429-limit.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "429 bundle_create_limit"
+      ],
+      "status": 429
+    },
+    {
+      "name": "bundle-create-200-unavailable",
+      "file": "bundle-create-200-unavailable.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 bundle_create_unavailable"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-503-write-outcome-unknown",
+      "file": "bundle-create-503-write-outcome-unknown.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "503 write_outcome_unknown"
+      ],
+      "status": 503
+    },
+    {
+      "name": "bundle-create-200-resumed",
+      "file": "bundle-create-200-resumed.json",
+      "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    }
+  ]
+}

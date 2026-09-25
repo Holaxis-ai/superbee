@@ -59,7 +59,7 @@ import { adopt } from "./checkout-adopt.js";
  * host's working copy routes answer one unpaged listing, bounded at this size.
  */
 export const CHECKOUT_DOCUMENT_LIMIT = 1000;
-const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+export const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 /** The bundle list the host answers is capped at this many rows. */
 const BUNDLE_LIST_CAP = 100;
 

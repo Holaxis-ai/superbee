@@ -50,7 +50,10 @@ export function bindingHostArgument(binding: { readonly origin: string; readonly
   return binding.audience === `${binding.origin}/mcp` ? binding.origin : binding.audience;
 }
 
-export function markerFor(binding: CheckoutBinding): CheckoutMarker {
+/** The binding fields a marker is made from. */
+export type MarkerSource = Pick<CheckoutBinding, "origin" | "audience" | "bundle_id" | "workspace">;
+
+export function markerFor(binding: MarkerSource): CheckoutMarker {
   return { home: "hosted", host: bindingHostArgument(binding), bundle_id: binding.bundle_id, workspace: binding.workspace };
 }
 
@@ -107,7 +110,7 @@ function sameMarker(a: CheckoutMarker, b: CheckoutMarker): boolean {
  * is created only when absent; a symbolic link or file in its place is left alone and nothing is
  * written. Returns the path written, or null when nothing changed.
  */
-export async function writeCheckoutMarker(folder: string, binding: CheckoutBinding): Promise<string | null> {
+export async function writeCheckoutMarker(folder: string, binding: MarkerSource): Promise<string | null> {
   const marker = markerFor(binding);
   const current = readCheckoutMarker(folder);
   if (current && sameMarker(current, marker)) return null;
@@ -134,7 +137,7 @@ export async function writeCheckoutMarker(folder: string, binding: CheckoutBindi
 }
 
 /** The bytes a marker for this binding holds, for callers that track what they placed. */
-export function checkoutMarkerBytes(binding: CheckoutBinding): Buffer {
+export function checkoutMarkerBytes(binding: MarkerSource): Buffer {
   return markerBytes(markerFor(binding));
 }
 

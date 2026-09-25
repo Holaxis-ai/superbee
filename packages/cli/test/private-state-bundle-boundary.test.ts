@@ -645,6 +645,13 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     argv: (t) => ["export", "--dir", t, "--in-place", "--json"],
   },
   {
+    // publish's --dir is the bundle to move; the preview (no --yes) is offline, so the benign
+    // control target, the fixture's own bundle, previews and exits 0.
+    leaf: "publish",
+    surface: "--dir",
+    argv: (t) => ["publish", "--to", "hosted", "--host", "http://127.0.0.1:9", "--dir", t, "--json"],
+  },
+  {
     // Sync never resolves a bundle through `resolveLocalBundleTarget`, so its run directory answers
     // to the relation at sync's own resolution point (orchestrate.ts, before retargeting or any git
     // probe). It used to exit 0 with `nothing to sync` — absence where the answer is the conflict.

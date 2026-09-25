@@ -62,7 +62,9 @@ import {
   registerInCatalog,
   removePlaced,
   type CheckoutDeps,
+  type HostedBundleConnection,
 } from "./checkout.js";
+import type { HostedTarget } from "../hosted-auth/discovery.js";
 
 /** How many ids a receipt lists per group before it only counts. */
 const LISTED = 20;
@@ -230,13 +232,68 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   }${options.json ? commandFragment` --json` : commandFragment``}`;
   const { identity, reader, listed: isListed, workspace } = await connectHostedBundle(bundleId, target, options.workspace ?? marker.workspace ?? undefined, deps, resume);
 
+  const result = await bindFolderInPlace({ canonical, target, bundleId, connection: { identity, reader, listed: isListed, workspace }, deps, resume });
+  const cataloged = await registerInCatalog(home, result.binding);
+  const syncHelp = `${cliInvocation()} sync --dir ${commandToken(canonical)}`;
+  deps.stdout(
+    render(
+      {
+        adopted: "copy",
+        ...bindingView(result.binding),
+        catalog: cataloged,
+        documents: { placed: result.placed.length, matched: result.matched.length, conflicts: result.conflicts.length, local_only: result.localOnly.length },
+        ...(result.conflicts.length > 0 ? { conflicts: listed(result.conflicts) } : {}),
+        ...(result.localOnly.length > 0 ? { local_only: listed(result.localOnly), local_only_note: "the next sync sends these as new documents, which re-creates any the host deleted since the copy was made; delete any you do not want first" } : {}),
+        root_index: result.rootIndex,
+        ...(result.markerWritten ? { marker: "written" } : {}),
+        help:
+          result.conflicts.length > 0
+            ? [`${cliInvocation()} sync --dir ${commandToken(canonical)} --inspect --doc ${commandToken(result.conflicts[0]!)}`, syncHelp]
+            : [syncHelp, ...nextSteps(canonical)],
+      },
+      mode,
+    ),
+  );
+}
+
+/** What {@link bindFolderInPlace} did to the folder. */
+export interface BindResult {
+  readonly binding: CheckoutBinding;
+  readonly placed: string[];
+  readonly matched: string[];
+  readonly conflicts: string[];
+  readonly localOnly: string[];
+  readonly rootIndex: string;
+  readonly markerWritten: string | null;
+}
+
+/**
+ * Bind an existing folder, in place, as a checkout of a hosted bundle: hydrate a new private
+ * store from the host, place the documents the folder lacks, record the files that already say
+ * what the host says, and leave every other file as it is (a differing file becomes a sync
+ * conflict; a folder-only document is sent as new by the next sync). `extras` are folder files
+ * the host already has but a checkout does not hold as documents (see `ProjectionRecord.extras`).
+ * Used by `checkout --adopt` for a copy, and by `publish` after the host created the bundle.
+ */
+export async function bindFolderInPlace(input: {
+  readonly canonical: string;
+  readonly target: HostedTarget;
+  readonly bundleId: string;
+  readonly connection: HostedBundleConnection;
+  readonly deps: CheckoutDeps;
+  readonly resume: CommandText;
+  readonly extras?: Readonly<Record<string, string>>;
+}): Promise<BindResult> {
+  const { canonical, target, bundleId, deps, resume } = input;
+  const { identity, reader, listed: isListed, workspace } = input.connection;
+  const home = deps.auth.home;
   const placedFiles = new Map<string, string>();
-  const result = await withCheckoutLock(canonical, async () => {
+  return withCheckoutLock(canonical, async () => {
     if (await bindingForPath(home, canonical)) {
       throw new CliError("CONFLICT", `${canonical} was bound by another command meanwhile`, { details: { reason: "checkout_busy", folder: canonical }, help: "retry the same command" });
     }
     const identityNow = await folderIdentity(canonical);
-    if (!identityNow) throw new CliError("RUNTIME", `${canonical} disappeared during adopt`, { help: "retry the same command" });
+    if (!identityNow) throw new CliError("RUNTIME", `${canonical} disappeared while binding it`, { help: "retry the same command" });
     const binding: CheckoutBinding = {
       schema: 1,
       checkout_id: newCheckoutId(),
@@ -325,7 +382,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
         const id = conceptIdFromPath(rel);
         if (!hostIds.has(id)) localOnly.push(id);
       }
-      await writeProjection(home, binding.checkout_id, { files, root });
+      await writeProjection(home, binding.checkout_id, { files, root, ...(input.extras && Object.keys(input.extras).length > 0 ? { extras: { ...input.extras } } : {}) });
       const ready: CheckoutBinding = { ...binding, state: "ready" };
       await writeBinding(home, ready);
       await recordPulled(home, ready.checkout_id);
@@ -344,25 +401,4 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
     }
   });
 
-  const cataloged = await registerInCatalog(home, result.binding);
-  const syncHelp = `${cliInvocation()} sync --dir ${commandToken(canonical)}`;
-  deps.stdout(
-    render(
-      {
-        adopted: "copy",
-        ...bindingView(result.binding),
-        catalog: cataloged,
-        documents: { placed: result.placed.length, matched: result.matched.length, conflicts: result.conflicts.length, local_only: result.localOnly.length },
-        ...(result.conflicts.length > 0 ? { conflicts: listed(result.conflicts) } : {}),
-        ...(result.localOnly.length > 0 ? { local_only: listed(result.localOnly), local_only_note: "the next sync sends these as new documents, which re-creates any the host deleted since the copy was made; delete any you do not want first" } : {}),
-        root_index: result.rootIndex,
-        ...(result.markerWritten ? { marker: "written" } : {}),
-        help:
-          result.conflicts.length > 0
-            ? [`${cliInvocation()} sync --dir ${commandToken(canonical)} --inspect --doc ${commandToken(result.conflicts[0]!)}`, syncHelp]
-            : [syncHelp, ...nextSteps(canonical)],
-      },
-      mode,
-    ),
-  );
 }

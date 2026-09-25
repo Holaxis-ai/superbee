@@ -22,6 +22,25 @@ local bundle, and `sync` refuses it (`unbound_copy`). Tell the person, then:
   version becomes a conflict (below), and a document only in the folder is sent as new by the next
   sync, so check its `local_only` list with the person first.
 
+## Moving a local bundle or Git board to hosted
+
+`superbee publish --to hosted` moves a bundle to hosted Superbee in the person's own workspace.
+Only run it when the person asks for the move.
+
+1. Run it without `--yes` first. It makes no request. It lists what travels (documents, reserved
+   files, other files), what stays (dot-files, links), anything that blocks the move, and the
+   bundle id and host it will use. Show the person the preview.
+2. When they agree, run the `--yes` command the preview names. It signs in if needed (relay the
+   link, as below), creates the bundle, and converts the folder in place into a hosted checkout.
+   No file is rewritten.
+3. A Git board is unbound from its `board` branch, but the branch stays, locally and on origin.
+   Tell the person their teammates keep using the Git board until they check out the hosted bundle
+   instead. A board that is behind its upstream is refused until `superbee sync` brings it current.
+4. `--with-history` imports a Git board's earlier versions as labeled, unverified history. Use it
+   only when the person asks for history.
+5. `TRANSIENT` with `write_outcome_unknown` means the creation may be partial: re-run the same
+   command, which finishes or confirms the same creation.
+
 ## Sign-in: relay the link, then retry
 
 Hosted commands start sign-in by themselves. When a command returns `AUTH_REQUIRED` (exit 4):

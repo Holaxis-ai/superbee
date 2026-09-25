@@ -58,6 +58,12 @@ export interface ProjectionRecord {
    * because the person already chose to discard them. Cleared by the next recovery.
    */
   discarded?: Record<string, string>;
+  /**
+   * Folder-relative path to digest of files a checkout does not hold as documents but that the
+   * host already has: the blobs and reserved files `publish` sent with the bundle. Sync leaves such
+   * a file be while it holds those bytes; once changed, it is held like any other.
+   */
+  extras?: Record<string, string>;
 }
 
 /** Why a file is held: it stays in the folder and nothing is sent for it. */
@@ -271,7 +277,17 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
     if (typeof rawDiscarded === "object" && rawDiscarded !== null) {
       for (const [id, digest] of Object.entries(rawDiscarded as Record<string, unknown>)) if (typeof digest === "string") discarded[id] = digest;
     }
-    return { files, root: typeof value.root === "string" ? value.root : null, ...(Object.keys(discarded).length > 0 ? { discarded } : {}) };
+    const extras: Record<string, string> = {};
+    const rawExtras = (value as { extras?: unknown }).extras;
+    if (typeof rawExtras === "object" && rawExtras !== null) {
+      for (const [rel, digest] of Object.entries(rawExtras as Record<string, unknown>)) if (typeof digest === "string") extras[rel] = digest;
+    }
+    return {
+      files,
+      root: typeof value.root === "string" ? value.root : null,
+      ...(Object.keys(discarded).length > 0 ? { discarded } : {}),
+      ...(Object.keys(extras).length > 0 ? { extras } : {}),
+    };
   }
   const exported = value && value.schema === 1 && typeof value.exported === "object" && value.exported !== null ? (value.exported as Record<string, unknown>) : {};
   const versions = new Map((await store.readHeads({ project: (head) => [head.id, head.version] as const })).map(([id, version]) => [id, version]));
@@ -299,6 +315,7 @@ export async function folderMatchesProjection(folder: string, projection: Projec
       if (digestOf(bytes) !== projection.root) return false;
       continue;
     }
+    if (projection.extras?.[entry.rel] !== undefined && digestOf(bytes) === projection.extras[entry.rel]) continue;
     const id = conceptIdFromPath(entry.rel);
     seen.add(id);
     const recorded = projection.files[id];
@@ -309,7 +326,7 @@ export async function folderMatchesProjection(folder: string, projection: Projec
 
 export async function writeProjection(home: string, checkoutId: string, record: ProjectionRecord): Promise<void> {
   const sorted = Object.fromEntries(Object.entries(record.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}) })}\n`);
+  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
 }
 
 /** Every file under the folder, relative and POSIX-spelled; dot-files and dot-folders are skipped. */
@@ -473,6 +490,8 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
       if (digestOf(bytes) !== projection.root) report.held.push(held(rel, rel, "reserved_file", "the bundle's root index is edited in the Superbee app"));
       continue;
     }
+    // A file publish already sent with the bundle, still as it was sent: nothing to do.
+    if (projection.extras?.[rel] !== undefined && digestOf(await fs.readFile(path.join(folder, rel))) === projection.extras[rel]) continue;
     if (isReservedFile(rel)) {
       report.held.push(held(rel, rel, "reserved_file", `${rel} is a reserved OKF file, which sync does not send`));
       continue;

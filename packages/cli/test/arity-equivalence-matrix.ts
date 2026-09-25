@@ -162,6 +162,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("logout", 0),
   ordinary("checkout", 1),
   ordinary("export", 0, { arityKind: "bounded" }),
+  ordinary("publish", 0),
 ] as const satisfies readonly BehaviorAssignment[];
 
 /** Exactly one built subprocess owner for every real key above. */
