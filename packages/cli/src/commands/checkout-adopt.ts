@@ -36,11 +36,14 @@ import {
   folderIdentity,
   indexCheckoutPath,
   movedBindingFor,
+  readBinding,
+  sameFolder,
   newCheckoutId,
   rebindCheckout,
   writeBinding,
   type CheckoutBinding,
 } from "../hosted/binding.js";
+import { relocateCatalogEntry } from "../catalog.js";
 import { syncRoutePrefix } from "../hosted/client.js";
 import { recordPulled } from "../hosted/freshness.js";
 import { bindingHostArgument, readCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
@@ -56,6 +59,7 @@ import {
   lockFailure,
   nextSteps,
   registerInCatalog,
+  removePlaced,
   type CheckoutDeps,
 } from "./checkout.js";
 
@@ -124,8 +128,12 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
     return;
   }
 
-  // Moved on the same disk: private state already knows this folder under its old path.
-  const moved = await movedBindingFor(home, canonical);
+  // Moved on the same disk: private state already knows this folder under its old path, and the
+  // folder's own marker names that same checkout. Anything less is treated as a copy.
+  const folderMarker = readCheckoutMarker(canonical);
+  const candidate = await movedBindingFor(home, canonical);
+  const moved =
+    candidate && folderMarker && folderMarker.bundle_id === candidate.bundle_id && folderMarker.host === bindingHostArgument(candidate) ? candidate : null;
   if (moved) {
     if (options.host !== undefined && resolveHostedTarget(options.host).audience !== moved.audience) {
       throw new CliError("CONFLICT", `${canonical} was moved from the checkout of '${moved.bundle_id}' on ${moved.origin}, not ${options.host}`, {
@@ -133,8 +141,31 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
         help: `${cliInvocation()} checkout --adopt ${commandToken(canonical)}`,
       });
     }
-    const rebound = await withCheckoutLock(moved.path, () => withCheckoutLock(canonical, () => rebindCheckout(home, moved, canonical)));
+    const rebound = await withCheckoutLock(moved.path, () =>
+      withCheckoutLock(canonical, async () => {
+        // Re-checked under both locks: another adopt, checkout or release may have run meanwhile.
+        const current = await readBinding(home, moved.checkout_id);
+        const identityNow = await folderIdentity(canonical);
+        const stillThere = await folderIdentity(moved.path);
+        if (
+          !current ||
+          current.state !== "ready" ||
+          current.path !== moved.path ||
+          !identityNow ||
+          !sameFolder(identityNow, current.folder_identity) ||
+          (stillThere && sameFolder(stillThere, current.folder_identity)) ||
+          (await bindingForPath(home, canonical))
+        ) {
+          throw new CliError("CONFLICT", `the checkout moved to ${canonical} changed while adopting it`, {
+            details: { reason: "checkout_busy", folder: canonical, from: moved.path },
+            help: `${cliInvocation()} checkout --adopt ${commandToken(canonical)}`,
+          });
+        }
+        return rebindCheckout(home, current, canonical);
+      }),
+    );
     const marker = await writeCheckoutMarker(canonical, rebound).catch(() => null);
+    const relocated = await relocateCatalogEntry(moved.path, canonical, { home }).catch(() => null);
     deps.stdout(
       render(
         {
@@ -143,6 +174,8 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
           ...bindingView(rebound),
           network: "none (the folder's own checkout, found in private state)",
           ...(marker ? { marker: "written" } : {}),
+          catalog: relocated ? { relocated: true, label: relocated.label, id: relocated.id } : { relocated: false, note: "no catalog entry named the old folder" },
+          ...(options.workspace !== undefined ? { workspace_flag: "ignored: a moved checkout keeps the workspace it was bound with" } : {}),
           help: [...nextSteps(canonical), `${cliInvocation()} sync --dir ${commandToken(canonical)}`],
         },
         mode,
@@ -151,7 +184,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
     return;
   }
 
-  const marker = readCheckoutMarker(canonical);
+  const marker = folderMarker;
   if (!marker) {
     throw new CliError("NOT_FOUND", `${canonical} has no hosted checkout marker (.superbee/checkout.json) and no checkout in private state was moved here`, {
       details: { reason: "not_a_checkout_copy", folder: canonical },
@@ -163,7 +196,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
     deps.stdout(
       render(
         {
-          adopt: "preview",
+          adopted: "preview",
           folder: canonical,
           marker: { host: marker.host, bundle_id: marker.bundle_id, ...(marker.workspace ? { workspace: marker.workspace } : {}) },
           plan: [
@@ -200,6 +233,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   }${options.json ? commandFragment` --json` : commandFragment``}`;
   const { identity, reader, listed: isListed, workspace } = await connectHostedBundle(bundleId, target, options.workspace ?? marker.workspace ?? undefined, deps, resume);
 
+  const placedFiles = new Map<string, string>();
   const result = await withCheckoutLock(canonical, async () => {
     if (await bindingForPath(home, canonical)) {
       throw new CliError("CONFLICT", `${canonical} was bound by another command meanwhile`, { details: { reason: "checkout_busy", folder: canonical }, help: "retry the same command" });
@@ -268,6 +302,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
           await ensureParentInside(canonical, file);
           const outcome = await placeNew(file, hostBytes);
           if (outcome.placed) {
+            placedFiles.set(file, digestOf(hostBytes));
             files[head.id] = { digest: digestOf(hostBytes), version: head.version };
             placed.push(head.id);
           } else conflicts.push(head.id);
@@ -288,7 +323,9 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
         root = digestOf(hostRoot);
         const current = await readIfPresent(path.join(canonical, ROOT_INDEX));
         if (current === null) {
-          rootIndex = (await placeNew(path.join(canonical, ROOT_INDEX), hostRoot)).placed ? "placed" : "kept";
+          const placedRoot = (await placeNew(path.join(canonical, ROOT_INDEX), hostRoot)).placed;
+          if (placedRoot) placedFiles.set(path.join(canonical, ROOT_INDEX), root);
+          rootIndex = placedRoot ? "placed" : "kept";
         } else rootIndex = digestOf(current) === root ? "matches" : "kept (differs from the host's; sync holds it)";
       }
       const localOnly: string[] = [];
@@ -308,6 +345,8 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
       await store?.close().catch(() => {});
       store = undefined;
       await discardCheckoutState(home, binding.checkout_id).catch(() => {});
+      // Never leave the host's documents behind in a folder that did not become a checkout.
+      await removePlaced(canonical, placedFiles, false).catch(() => false);
       throw error;
     } finally {
       await store?.close();
@@ -324,7 +363,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
         catalog: cataloged,
         documents: { placed: result.placed.length, matched: result.matched.length, conflicts: result.conflicts.length, local_only: result.localOnly.length },
         ...(result.conflicts.length > 0 ? { conflicts: listed(result.conflicts) } : {}),
-        ...(result.localOnly.length > 0 ? { local_only: listed(result.localOnly), local_only_note: "the next sync sends these as new documents; delete any you do not want first" } : {}),
+        ...(result.localOnly.length > 0 ? { local_only: listed(result.localOnly), local_only_note: "the next sync sends these as new documents, which re-creates any the host deleted since the copy was made; delete any you do not want first" } : {}),
         root_index: result.rootIndex,
         ...(result.markerWritten ? { marker: "written" } : {}),
         help:

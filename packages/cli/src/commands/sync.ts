@@ -8,6 +8,7 @@ export * from "./sync/show-incoming.js";
 export { ffSwallowToError, inTreeNoBasisNote, syncInTreeRefusalMessage, upstreamHelp } from "../sync-outcomes.js";
 
 import { homedir } from "node:os";
+import path from "node:path";
 
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -48,10 +49,17 @@ export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<
     await hostedSync(argv, binding, deps);
     return;
   }
-  const copy = await unboundCheckoutCopy(argv, deps.cwd ?? process.cwd(), home);
+  // `--establish` shares the folder as a Git board: the marker does not stand in its way.
+  const copy = argv.includes("--establish") ? null : await unboundCheckoutCopy(argv, deps.cwd ?? process.cwd(), home);
   if (copy) {
     throw new CliError("USAGE", `${copy.folder} is a copy of a hosted checkout of '${copy.marker.bundle_id}' that is not bound here, so sync has nowhere to send it`, {
-      details: { reason: "unbound_copy", folder: copy.folder, marker_host: copy.marker.host, marker_bundle_id: copy.marker.bundle_id },
+      details: {
+        reason: "unbound_copy",
+        folder: copy.folder,
+        marker_host: copy.marker.host,
+        marker_bundle_id: copy.marker.bundle_id,
+        or: `to use it as a plain local bundle instead, delete ${path.join(copy.folder, ".superbee", "checkout.json")}`,
+      },
       help: `${cliInvocation()} checkout --adopt ${commandToken(copy.folder)} --host ${commandToken(copy.marker.host)}`,
     });
   }

@@ -231,12 +231,16 @@ export async function listReadyBindings(home: string): Promise<CheckoutBinding[]
  * The ready binding whose folder was moved to this canonical path: the folder here has the
  * identity the binding recorded (a rename keeps it), and the binding's own path no longer holds
  * that folder. A copy or a restore has a new identity and never matches. Null when none does.
+ *
+ * Stricter than {@link sameFolder}: both identities must carry a birth time. Device and inode
+ * alone cannot tell a moved folder from a restored one that reuses a freed inode, and a restore
+ * taken for a move would be synced against the old store as though its stale files were edits.
  */
 export async function movedBindingFor(home: string, canonicalPath: string): Promise<CheckoutBinding | null> {
   const identity = await folderIdentity(canonicalPath);
-  if (!identity) return null;
+  if (!identity?.birth) return null;
   for (const binding of await listReadyBindings(home)) {
-    if (binding.path === canonicalPath || !sameFolder(identity, binding.folder_identity)) continue;
+    if (binding.path === canonicalPath || !binding.folder_identity.birth || !sameFolder(identity, binding.folder_identity)) continue;
     const there = await folderIdentity(binding.path);
     if (there && sameFolder(there, binding.folder_identity)) continue;
     return binding;

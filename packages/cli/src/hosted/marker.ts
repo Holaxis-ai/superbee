@@ -119,7 +119,8 @@ export async function writeCheckoutMarker(folder: string, binding: CheckoutBindi
   const file = checkoutMarkerPath(folder);
   try {
     const info = await lstat(file);
-    if (!info.isFile()) return null;
+    // Only a marker (one this CLI can read) is replaced; any other file there is left alone.
+    if (!info.isFile() || !current) return null;
     await unlink(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

@@ -22,6 +22,7 @@ import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
 import { bindingForPath, checkoutLockName, checkoutStoreDir, folderIdentity, hostedCheckoutsRoot, sameFolder, writeBinding } from "../src/hosted/binding.js";
 import { bundleHomeAt, homeDetail } from "../src/bundle-home.js";
 import { sync } from "../src/commands/sync.js";
+import { loadCatalog } from "../src/catalog.js";
 import { readCheckoutMarker } from "../src/hosted/marker.js";
 import { folderConflicts, readProjection } from "../src/hosted/sync-scan.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
@@ -635,6 +636,10 @@ test("a moved checkout reads as an unbound copy, and --adopt binds it back with 
   assert.equal(after.checkout_id, before.checkout_id, "the same private store carries over");
   assert.equal(await bindingForPath(h.home, before.path), null);
   assert.equal((await bundleHomeAt(moved, { home: h.home })).home, "hosted");
+  // The catalog entry follows the folder.
+  assert.equal((adopted.catalog as Record<string, unknown>).relocated, true);
+  const entries = (await loadCatalog(h.home)).entries;
+  assert.deepEqual(entries.map((entry) => entry.locator.path), [moved]);
 
   // Adopting a bound folder is a no-op, and restores a missing marker.
   await unlink(path.join(moved, ".superbee", "checkout.json"));
@@ -665,7 +670,7 @@ test("a copied checkout is adopted only for a host the person names, and never o
   // Without --host, adopt only previews: the marker's host is shown, never contacted.
   const fake = fakeSyncFamily();
   const preview = await run(h, ["--adopt", copy], fake);
-  assert.equal(preview.adopt, "preview");
+  assert.equal(preview.adopted, "preview");
   assert.equal(fake.requests.length, 0);
   assert.match(String((preview.help as string[])[0]), /--adopt .* --host https:\/\/hosted\.example/);
   // A host other than the marker's is refused before any request.
@@ -701,4 +706,25 @@ test("--adopt refuses a folder with no marker and no moved checkout", async () =
   const error = await rejects(run(h, ["--adopt", path.join(h.cwd, "plain"), "--host", HOST]));
   assert.equal(error.code, "NOT_FOUND");
   assert.equal(error.details?.reason, "not_a_checkout_copy");
+});
+
+test("a folder matched by device and inode alone is never adopted as moved: it is treated as a copy", async () => {
+  const h = await harness();
+  const fake = fakeSyncFamily();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"], fake);
+  const original = await realpath(path.join(h.cwd, "team"));
+  const binding = await bindingForPath(h.home, original);
+  assert.ok(binding);
+  await cp(original, path.join(h.cwd, "restored"), { recursive: true });
+  const restored = await realpath(path.join(h.cwd, "restored"));
+  await rm(original, { recursive: true });
+  // A filesystem with no birth time that reused the freed inode for the restore.
+  const identity = await folderIdentity(restored);
+  assert.ok(identity);
+  await writeBinding(h.home, { ...binding, folder_identity: { dev: identity.dev, ino: identity.ino } });
+  const requests = fake.requests.length;
+  const receipt = await run(h, ["--adopt", restored], fake);
+  assert.equal(receipt.adopted, "preview", "no rebind to the old store without a birth-time match");
+  assert.equal(fake.requests.length, requests);
+  assert.equal(await bindingForPath(h.home, restored), null);
 });
