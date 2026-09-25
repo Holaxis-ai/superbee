@@ -819,6 +819,42 @@ test("a lost answer, then an edit, then a content refusal of the first change: t
   assert.deepEqual(h.host.applied, ["notes/alpha"]);
 });
 
+test("a lost answer, then an edit, then a busy refusal (concurrent_change) of the first change: the edit is sent in its place in the same run, and the first change never lands", async () => {
+  const h = await harness();
+  const original = hostDoc(h, "notes/alpha").version;
+  let lost = true;
+  let first: string | null = null;
+  h.host.hook = (call) => {
+    if (call.route === "outcome") return lost ? { kind: "drop" } : undefined;
+    if (call.route !== "replace") return undefined;
+    first ??= call.requestId;
+    if (lost) return { kind: "drop" };
+    return call.requestId === first ? { kind: "record", code: "concurrent_change" } : undefined;
+  };
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "First.\n"));
+  const unknown = await failingSync(h);
+  assert.equal(rowFor(unknown.receipt, "notes/alpha")?.state, "unknown");
+
+  // The next edit chains behind the possibly delivered change; the host then answers that change busy.
+  lost = false;
+  h.host.writes.length = 0;
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Second.\n"));
+  const receipt = await runSync(h);
+  assert.equal(receipt.status, "synced", JSON.stringify(receipt));
+  assert.equal(rowFor(receipt, "notes/alpha")?.state, "committed");
+  assert.equal(hostDoc(h, "notes/alpha").body, "Second.\n");
+  const replaces = h.host.writes.filter((call) => call.route === "replace");
+  assert.deepEqual(replaces.map((call) => [call.requestId === first, call.body.body, call.body.expectedVersion]), [
+    [true, "First.\n", original],
+    [false, "Second.\n", original],
+  ], "the busy change once, then the edit alone against the version the host still holds");
+  assert.deepEqual(h.host.applied, ["notes/alpha"], "one application: the edit, never the busy change");
+
+  const after = await runSync(h);
+  assert.ok(["synced", "up_to_date"].includes(String(after.status)), JSON.stringify(after));
+  assert.equal(h.host.writes.filter((call) => call.route === "replace").length, 2, "nothing is sent again");
+});
+
 test("held files stay as they are and nothing is sent for them", async () => {
   const h = await harness();
   await edit(h, "notes/alpha", (doc) => void (doc.frontmatter.type = "Decision"));

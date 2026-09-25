@@ -468,6 +468,33 @@ test("whole-document transport: an unsettled transient refusal is settled by one
   assert.deepEqual(requests[1]!.options, { maximum: 2 * 1024 * 1024, writeRequest: REQUEST_ID, binding: BINDING });
 });
 
+test("whole-document transport: a settled busy refusal settles from the answer only when it says not_applied; one whose write state is unknown is looked up", async () => {
+  const intent = intentOf(BASE);
+  const busy = (code: string, writeState: string) => (): HostedAnswer => ({
+    status: 200,
+    headers: new Headers({ "x-superbee-write-settled": REQUEST_ID }),
+    body: { ok: false, operationId: "documents.replace.v1", error: { code, message: "busy", retryable: false, writeState } },
+  });
+  const storedUnknown = (code: string) => (): HostedAnswer => ({
+    status: 200,
+    headers: new Headers(),
+    body: { schemaVersion: 1, requestId: REQUEST_ID, binding: BINDING, status: "refused", result: { ok: false, operationId: "documents.replace.v1", error: { code, message: "busy", retryable: false, writeState: "unknown" } } },
+  });
+  for (const code of ["concurrent_change", "backend_unavailable", "internal_error", "deadline_exceeded", "cancelled"]) {
+    const recorded = transportOver({ "/sync/v1/replace": [busy(code, "not_applied")] }, intent);
+    assert.deepEqual((await recorded.deliver()).outcome, { kind: "refused", code, message: "busy" }, code);
+    assert.deepEqual(recorded.requests.map((request) => request.path), ["/sync/v1/replace"], code);
+    // The write may have landed: the lookup decides, and a committed record is a commit, never a refusal.
+    const landed = transportOver({ "/sync/v1/replace": [busy(code, "unknown")], "/sync/v1/outcome": [fixture("outcome-200-committed")] }, intent);
+    const result = await landed.deliver();
+    assert.equal(result.outcome.kind, "committed", code);
+    assert.deepEqual(landed.requests.map((request) => request.path), ["/sync/v1/replace", "/sync/v1/outcome"], code);
+    // A stored refusal that is not definitive is no evidence: unknown, never refused.
+    const vague = transportOver({ "/sync/v1/replace": [busy(code, "unknown")], "/sync/v1/outcome": [storedUnknown(code), storedUnknown(code), storedUnknown(code)] }, intent);
+    assert.deepEqual((await vague.deliver()).outcome, { kind: "unknown" }, code);
+  }
+});
+
 for (const name of ["update-200-write-outcome-unknown", "update-401-write-outcome-unknown", "update-503-write-outcome-unknown"]) {
   test(`whole-document transport: ${name} may have applied, so the primitive looks it up and settles from the recorded result`, async () => {
     const intent = intentOf(BASE);

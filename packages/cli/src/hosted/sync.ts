@@ -558,7 +558,9 @@ function createsFirst(store: JournaledBackend, blocked: ReadonlySet<string>): Jo
  * Requeue, under a fresh identity, each change the host refused only because it was busy (a
  * recorded `concurrent_change` after its own retries, or a transient refusal). The recorded
  * identity can only ever answer that refusal again, so a new one is the only way to resend it.
- * Only a refusal that heads nothing is requeued; the document's bytes are rewritten unchanged.
+ * Only a refusal that heads nothing is requeued; the document's bytes are rewritten unchanged. A
+ * refusal that heads a never-sent edit is left to push, which folds the two into one fresh
+ * intent carrying the edit, so the refused change is never sent separately.
  */
 async function requeueBusy(store: JournaledBackend): Promise<number> {
   let requeued = 0;

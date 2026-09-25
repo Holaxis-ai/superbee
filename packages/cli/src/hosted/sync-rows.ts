@@ -16,7 +16,7 @@ import { BUSY_REFUSAL_CODES } from "@superbee/browser-local";
 import { CliError, type CliErrorCode } from "../errors.js";
 import type { FolderConflict, HeldFile } from "./sync-scan.js";
 
-/** Recorded refusals that say the bundle was busy, not that the content is wrong: requeued under a fresh identity. The working copy owns the set. */
+/** Recorded refusals that say the bundle was busy, not that the content is wrong: requeued under a fresh identity, or folded into a later edit. The working copy owns the set. */
 export { BUSY_REFUSAL_CODES };
 
 export const ROW_STATES = ["committed", "conflict", "held", "refused", "unknown", "paused"] as const;
