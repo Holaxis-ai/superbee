@@ -21,7 +21,7 @@
 // The hosted bundle is never changed. History is not exported: only the current revision travels.
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, realpath, rename, rm, unlink } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -548,11 +548,8 @@ async function readJournal(folder: string): Promise<Journal | null> {
 }
 
 async function sameBytes(file: string, bytes: Uint8Array): Promise<boolean> {
-  try {
-    return Buffer.compare(await readFile(file), Buffer.from(bytes)) === 0;
-  } catch {
-    return false;
-  }
+  const read = readRegularFileNoFollowSync(file);
+  return read.state === "present" && Buffer.compare(read.bytes, Buffer.from(bytes)) === 0;
 }
 
 /** The placement of one archive entry against the folder as it is now. */
@@ -600,7 +597,8 @@ async function placeStaged(folder: string, staging: string, relative: string): P
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "EEXIST") throw error;
-    outcome = (await sameBytes(final, await readFile(staged))) ? "same" : "kept";
+    const stagedRead = readRegularFileNoFollowSync(staged);
+    outcome = stagedRead.state === "present" && (await sameBytes(final, stagedRead.bytes)) ? "same" : "kept";
   }
   await unlink(staged).catch(() => {});
   return outcome;
@@ -640,13 +638,9 @@ async function finishInPlace(folder: string, journal: Journal): Promise<Finished
   }
   let git: Finished["git"] = null;
   if (journal.git) {
-    const head = runGit(folder, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-    const top = runGit(folder, ["rev-parse", "--show-toplevel"]);
-    const own = top.status === 0 && (await realpath(top.stdout.trim()).catch(() => "")) === folder;
     git =
-      own && head.status === 0
-        ? { branch: runGit(folder, ["symbolic-ref", "-q", "--short", "HEAD"]).stdout.trim() || BOARD_BRANCH, commit: head.stdout.trim() }
-        : commitExport(folder, `Export ${journal.bundle_id} from ${journal.host} at revision ${journal.revision}\n\nsuperbee export --in-place, ${journal.exported_at}. History is not included.\n`, { force: false });
+      (await ownCommit(folder)) ??
+      commitExport(folder, `Export ${journal.bundle_id} from ${journal.host} at revision ${journal.revision}\n\nsuperbee export --in-place, ${journal.exported_at}. History is not included.\n`, { force: false });
   }
   await rm(path.join(staging, "files"), { recursive: true, force: true });
   await unlink(path.join(staging, JOURNAL)).catch(() => {});
@@ -686,6 +680,15 @@ function inPlaceReceipt(folder: string, journal: Journal, finished: Finished, ho
   };
 }
 
+/** The commit a repository rooted at this very folder already has, from an earlier run of this conversion. */
+async function ownCommit(folder: string): Promise<Committed | null> {
+  const head = runGit(folder, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  const top = runGit(folder, ["rev-parse", "--show-toplevel"]);
+  const own = top.status === 0 && (await realpath(top.stdout.trim()).catch(() => "")) === (await realpath(folder).catch(() => folder));
+  if (!own || head.status !== 0) return null;
+  return { branch: runGit(folder, ["symbolic-ref", "-q", "--short", "HEAD"]).stdout.trim() || BOARD_BRANCH, commit: head.stdout.trim() };
+}
+
 async function assertNoRepository(folder: string): Promise<void> {
   if (await lstat(path.join(folder, ".git")).then(() => true, () => false)) {
     throw new CliError("ALREADY_EXISTS", `${folder} already holds a Git repository`, {
@@ -715,14 +718,16 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
       // A copy of a checkout that is not bound here (moved, copied or restored): its files are
       // already a local bundle, and only the marker still says hosted. Its host is never trusted
       // on its own, so nothing is fetched: adopt it first to fill what it lacks from the host.
-      if (git) await assertNoRepository(folder);
+      // A repository rooted here with a commit is this conversion's own, made before a crash.
+      const existing = git ? await ownCommit(folder) : null;
+      if (git && !existing) await assertNoRepository(folder);
       // A staging folder whose journal is already gone is the tail of a finished conversion.
       const staging = await stagingDir(folder);
       if (staging && !(await lstat(path.join(staging, JOURNAL)).then(() => true, () => false))) await rm(staging, { recursive: true, force: true });
       await removeCheckoutMarker(folder, { origin: marker.host, audience: `${marker.host}/mcp`, bundle_id: marker.bundle_id });
-      const committed = git
+      const committed = existing ?? (git
         ? commitExport(folder, `Export ${marker.bundle_id} (an unbound copy of a hosted checkout)\n\nsuperbee export --in-place. Nothing was fetched from the host; history is not included.\n`, { force: false })
-        : null;
+        : null);
       const home = await bundleHomeAt(folder, { home: deps.auth.home });
       deps.stdout(
         render(

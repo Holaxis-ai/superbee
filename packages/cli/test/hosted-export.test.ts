@@ -555,3 +555,19 @@ test("a staging folder that is a link, or a journal the folder's marker does not
   assert.equal(copy.from, "an unbound copy of a hosted checkout");
   assert.equal(await exists(path.join(folder, "notes", "planted.md")), false);
 });
+
+test("an in-place --git export that stopped after its commit and before its marker was removed finishes on re-run", async () => {
+  const h = await harness();
+  const folder = await realpath(await checkedOut(h));
+  await releaseCheckout(h.home, (await bindingForPath(h.home, folder))!);
+  // The state a crash leaves: the conversion's own commit made, the marker still there.
+  for (const args of [["init", "-q"], ["add", "-A", "--", ".", ":(exclude).superbee"], ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "export"]]) {
+    assert.equal(spawnSync("git", ["-C", folder, ...args]).status, 0, args.join(" "));
+  }
+  const head = git(folder, ["rev-parse", "HEAD"]);
+  const receipt = await run(h, ["--dir", folder, "--in-place", "--git"]);
+  assert.equal(receipt.export, "converted");
+  assert.equal((receipt.git as { commit: string }).commit, head);
+  assert.equal(await exists(path.join(folder, ".superbee")), false);
+  assert.equal(h.host.requests.length, 0);
+});
