@@ -108,18 +108,21 @@ export interface RemoteBackendOptions {
    * Default 3; set 0 to disable. A retried read is idempotent.
    *
    * A guarded document write (`write` with `expectedVersion`, or `delete` with a content-version
-   * `expectedVersion`) sent to a host whose capabilities report `operations` always travels with
-   * an `Idempotency-Key`: the caller's `requestId`, or else one minted for that call. Every retry
-   * of the call carries the same key, so while the host keeps the record a retry is answered from
-   * the recorded outcome and cannot apply the write a second time.
+   * `expectedVersion`) travels with an `Idempotency-Key`: the caller's `requestId`, or else, when
+   * the host's capabilities report `operations`, one minted for that call. Every retry of the
+   * request carries the same key, so while the host keeps the record a retry is answered from the
+   * recorded outcome and cannot apply the write a second time.
    *
-   * Other guarded writes retry as a plain resubmission: guarded document writes to a host without
-   * `operations`, and every guarded reserved-file and blob write, since the wire accepts identity
-   * on neither. Such a retry lands the same version or a conflict, possibly SPURIOUS if a prior
-   * attempt committed before its response was lost. It is not free of lost updates: versions are
-   * content hashes, so if another writer returns the document to the exact state the premise names
-   * before a retry arrives, the retry applies the write again over that change and reports
-   * success. An unconditional write carries no minted key and can simply be repeated.
+   * Other guarded writes retry as a plain resubmission: a guarded document write sent without a key
+   * (to a host without `operations`, after a capability question that ended in a transient status,
+   * or resent after the host refused a key minted under a stale answer), a `delete` whose
+   * `expectedVersion` is not a content version, and every guarded reserved-file and blob write,
+   * none of which the wire identifies. Such a retry lands the same version or a conflict, possibly
+   * SPURIOUS if a prior attempt committed before its response was lost. It is not free of lost
+   * updates: versions are content hashes, so if another writer returns the document to the exact
+   * state the premise names before a retry arrives, the retry applies the write again over that
+   * change and reports success. An unconditional write carries no minted key and can simply be
+   * repeated.
    */
   maxRetries?: number;
 }
@@ -339,11 +342,11 @@ export class RemoteBackend implements StorageBackend {
     // A write that carries `Idempotency-Key` is therefore retried as a true replay, answered from
     // the authority's recorded outcome while it keeps that record: a retry after a lost response
     // can neither apply twice nor surface a spurious conflict against its own earlier application.
-    // `write` and `delete` attach one to every guarded document write on a host with `operations`
-    // (see `maxRetries`). A guarded write without one lands the same version or a conflict (possibly
-    // SPURIOUS — a prior attempt may have committed before its response was lost), except that a
-    // document returned in between to exactly the state its premise names (the same bytes hash to
-    // the same version) lets the retry apply again over that change.
+    // `write` and `delete` attach one to guarded document writes on a host with `operations` (see
+    // `maxRetries` for which). A guarded write without one lands the same version or a conflict
+    // (possibly SPURIOUS — a prior attempt may have committed before its response was lost), except
+    // that a document returned in between to exactly the state its premise names (the same bytes
+    // hash to the same version) lets the retry apply again over that change.
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await this.fetchImpl(new Request(url, init));
@@ -459,10 +462,11 @@ export class RemoteBackend implements StorageBackend {
 
   /**
    * `GET /v0/capabilities`, deployment-scoped: what this authority implements. `operations` says
-   * whether it records outcomes by request identity. A host without it ignores `Idempotency-Key`
-   * and answers the lookup route with a route-miss `404`, which {@link lookupOperation} cannot
-   * tell from "never recorded"; a consumer that relies on identity checks this once before it
-   * sends any intent. Missing booleans read as `false`.
+   * whether it records outcomes by request identity. The reference router without it refuses any
+   * request carrying `Idempotency-Key`, and the lookup route, with `400 USAGE`; a host that lacks
+   * the lookup route altogether answers it with a route-miss `404`, which {@link lookupOperation}
+   * cannot tell from "never recorded". A consumer that relies on identity checks this once before
+   * it sends any intent. Missing booleans read as `false`.
    */
   async wireCapabilities(): Promise<WireCapabilities> {
     const res = await this.send("/v0/capabilities", { method: "GET" }, "deployment");
