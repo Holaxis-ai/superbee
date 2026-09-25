@@ -91,7 +91,7 @@ async function loseFirstAnswer(h: Harness, route: "create" | "replace" | "delete
  */
 function answerLandedAsBusy(h: Harness, identity: () => string): void {
   let mangled = false;
-  h.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  h.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const response = await h.host.fetch(input, init);
     const call = h.host.writes.at(-1);
     if (mangled || !call || call.route !== "replace" || call.requestId !== identity()) return response;
