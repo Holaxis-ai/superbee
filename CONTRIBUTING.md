@@ -155,8 +155,10 @@ non-shell option injection, containment, symbolic-link, permission, atomicity, a
 invariants.
 
 The `TLA+ specs` workflow in `.github/workflows/tla-specs.yml` model-checks the specifications under
-`specs/tla` with a pinned, checksum-verified TLC release on pull requests, pushes to `main`, and
-manual dispatch. It is not a required lane and is outside the lane projection above.
+`specs/tla` with a pinned, checksum-verified TLC release on pull requests and pushes to `main`
+that change `specs/tla`, the workflow, or a source file a spec models, and on manual dispatch. It
+is not a required lane and is outside the lane projection above, so its path filter blocks
+nothing.
 [`specs/tla/README.md`](specs/tla/README.md) owns how to run the models, what each config checks,
 and which fixed configs model changes that have not merged.
 
