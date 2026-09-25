@@ -233,7 +233,7 @@ function summary(plan: PublishPlan): Record<string, unknown> {
 }
 
 /** One refusal answer of `bundles.create.v1`, as the CLI taxonomy names it. */
-function createRefusal(code: string, message: string, context: { bundleId: string; workspace: string; target: HostedTarget; resume: CommandText }): CliError {
+function createRefusal(code: string, message: string, context: { bundleId: string; workspace: string; target: HostedTarget; resume: CommandText; folder: string }): CliError {
   const details = { reason: code, bundle_id: context.bundleId, workspace: context.workspace, host: context.target.origin, host_message: message };
   switch (code) {
     case "bundle_exists":
@@ -249,7 +249,7 @@ function createRefusal(code: string, message: string, context: { bundleId: strin
     case "request_conflict":
       return new CliError("CONFLICT", `an unfinished publish of '${context.bundleId}' from this folder carried other contents, and the host holds the id for it`, {
         details,
-        help: `put the files back as they were and re-run the same command to finish it, or publish under another id: ${cliInvocation()} publish --to hosted --bundle-id <another id>`,
+        help: `put the files back as they were and re-run the same command to finish it; if the creation already finished, bind this folder to it (your edits become sync conflicts): ${cliInvocation()} checkout --adopt ${commandToken(context.folder)} --host ${commandToken(bindingHostArgument(context.target))}`,
       });
     default:
       return new CliError("USAGE", `${context.target.origin} refused the bundle (${code}): ${message}`, { details, help: "fix the files it names, then preview again" });
@@ -409,12 +409,12 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   // An unfinished creation of the same bundle keeps its request id whatever changed since: the
   // host then finishes or confirms it, or answers request_conflict, and never holds the id for a
   // request nobody can finish.
-  const earlier = await readPendingCreate(home, canonical);
-  const resumes = earlier !== null && earlier.host === target.origin && earlier.workspace === workspace && earlier.bundle_id === bundleId;
+  const earlier = await readPendingCreate(home, canonical, bundleId);
+  const resumes = earlier !== null && earlier.host === target.origin && earlier.workspace === workspace;
   const requestId = resumes ? earlier.request_id : randomUUID();
   if (!resumes) await writePendingCreate(home, canonical, { request_id: requestId, host: target.origin, workspace, bundle_id: bundleId, digest });
 
-  const context = { bundleId, workspace, target, resume: yesCommand };
+  const context = { bundleId, workspace, target, resume: yesCommand, folder: canonical };
   let answer;
   try {
     answer = await client.carrier.json(`${client.prefix}/bundle-create`, body, client.signal, { maximum: CREATE_ANSWER_BYTES, writeRequest: requestId });
@@ -437,18 +437,18 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     });
   }
   if (answer.status === 429 && code === "bundle_create_limit") {
-    await clearPendingCreate(home, canonical);
+    await clearPendingCreate(home, canonical, bundleId);
     throw createRefusal(code, hostMessage, context);
   }
   if (answer.status === 200 && envelope.ok === false && code !== null) {
-    if (code !== "request_conflict") await clearPendingCreate(home, canonical);
+    if (code !== "request_conflict") await clearPendingCreate(home, canonical, bundleId);
     throw createRefusal(code, hostMessage, context);
   }
   if (answer.status !== 200 || envelope.ok !== true || typeof envelope.data !== "object" || envelope.data === null) {
-    if (answer.status === 400) await clearPendingCreate(home, canonical);
+    if (answer.status === 400) await clearPendingCreate(home, canonical, bundleId);
     throw hostedFailure(new RemoteError(`hosted bundle-create answered ${answer.status}`, code ?? "RUNTIME", answer.status), target, yesCommand);
   }
-  await clearPendingCreate(home, canonical);
+  await clearPendingCreate(home, canonical, bundleId);
   const created = envelope.data;
   await writePublishedExtras(home, canonical, { host: target.origin, bundle_id: bundleId, extras: plan.extras }).catch(() => {});
 

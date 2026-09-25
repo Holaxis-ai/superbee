@@ -262,7 +262,7 @@ test("a Git board is published with its history, unbound, and its branch left as
   git(board, ["add", "."]);
   git(board, ["commit", "-q", "-m", "v0"]);
   await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha v1.\n");
-  gitAs(board, ["commit", "-q", "-am", "v1"], "B".repeat(240));
+  gitAs(board, ["commit", "-q", "-am", "v1"], "😀".repeat(150));
   await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha body é.\n");
   git(board, ["commit", "-q", "-am", "v2"]);
   const head = git(board, ["rev-parse", "HEAD"]);
@@ -286,7 +286,8 @@ test("a Git board is published with its history, unbound, and its branch left as
   assert.equal(history[0]!.documentId, "notes/alpha");
   assert.match(history[0]!.label, /^imported:git\/[0-9a-f]{40}$/);
   assert.equal(history[0]!.author, "Ada <ada@example.com>");
-  assert.equal([...history[1]!.author].length, 200, "an author is cut to the host's 200 characters");
+  assert.equal(history[1]!.author.length, 200, "an author is cut to the host's 200 UTF-16 units");
+  assert.equal(history[1]!.author, "😀".repeat(100), "never half a surrogate pair");
   const unbound = receipt.git as Record<string, unknown>;
   assert.equal(unbound.unbound, true);
   assert.equal(unbound.head, head);
@@ -360,6 +361,7 @@ test("an unfinished creation keeps its request id when the files change: the hos
   assert.equal(conflict.code, "CONFLICT");
   assert.equal(conflict.details?.reason, "request_conflict");
   assert.equal(fake.creates[1]!.requestId, fake.creates[0]!.requestId, "never a second request holding the id");
+  assert.match(conflict.help ?? "", /checkout --adopt/);
   // Putting the files back finishes the one creation.
   await writeFile(path.join(folder, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha body é.\n");
   assert.equal((await run(h, argv, fake)).published, "created");

@@ -1,7 +1,10 @@
 // The private records `publish` keeps per folder, under `<private state>/hosted-publish/`:
 //
-//   <sha256 of path>.json         the creation that may be pending: its request id, so a retry
-//                                 re-sends the same one and the host finishes or confirms it
+//   <sha256 of path>-<sha256 of bundle id>.json
+//                                 a creation of that bundle id that may be pending: its request id,
+//                                 so a retry re-sends the same one and the host finishes or confirms
+//                                 it (one record per id, so publishing under another id never
+//                                 forgets an unfinished one)
 //   <sha256 of path>.extras.json  the files publish sent that a checkout does not hold as documents
 //                                 (blobs, reserved files), kept until the folder is bound, so a
 //                                 `checkout --adopt` that finishes an interrupted conversion
@@ -41,16 +44,20 @@ export interface PendingCreate {
   readonly digest: string;
 }
 
-export function readPendingCreate(home: string, canonical: string): Promise<PendingCreate | null> {
-  return readRecord<PendingCreate>(home, canonical, ".json", (value) => typeof value.request_id === "string" && typeof value.bundle_id === "string" && typeof value.host === "string");
+function pendingSuffix(bundleId: string): string {
+  return `-${createHash("sha256").update(bundleId, "utf8").digest("hex")}.json`;
+}
+
+export function readPendingCreate(home: string, canonical: string, bundleId: string): Promise<PendingCreate | null> {
+  return readRecord<PendingCreate>(home, canonical, pendingSuffix(bundleId), (value) => typeof value.request_id === "string" && typeof value.bundle_id === "string" && typeof value.host === "string");
 }
 
 export async function writePendingCreate(home: string, canonical: string, pending: PendingCreate): Promise<void> {
-  await writeUserStateFileAtomic0600(home, recordDir(home), recordName(canonical, ".json"), `${JSON.stringify(pending)}\n`);
+  await writeUserStateFileAtomic0600(home, recordDir(home), recordName(canonical, pendingSuffix(pending.bundle_id)), `${JSON.stringify(pending)}\n`);
 }
 
-export function clearPendingCreate(home: string, canonical: string): Promise<void> {
-  return clearRecord(home, canonical, ".json");
+export function clearPendingCreate(home: string, canonical: string, bundleId: string): Promise<void> {
+  return clearRecord(home, canonical, pendingSuffix(bundleId));
 }
 
 export interface PublishedExtras {

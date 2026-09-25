@@ -127,7 +127,13 @@ async function walkAll(folder: string, prefix = "", out: { rel: string; kind: "f
 
 /** The host refuses control and format characters (bidi overrides, zero-width) in an author. */
 function cleanAuthor(author: string): string {
-  return [...author.replace(/[\p{Cc}\p{Cf}]/gu, "").trim()].slice(0, 200).join("").trim() || "unknown";
+  // The host bounds it at 200 UTF-16 units; whole characters are kept, never half a surrogate pair.
+  let out = "";
+  for (const char of author.replace(/[\p{Cc}\p{Cf}]/gu, "").trim()) {
+    if (out.length + char.length > 200) break;
+    out += char;
+  }
+  return out.trim() || "unknown";
 }
 
 interface HistoryOptions {
