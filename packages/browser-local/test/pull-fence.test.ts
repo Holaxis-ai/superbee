@@ -318,6 +318,47 @@ for (const adapter of ADAPTERS) {
     }
   });
 
+  test(`${adapter}: QA: a pull that loses every marker race marks unconditionally after the bound and asks without a digest, though the marker it last read offers a current one`, async () => {
+    const fixture = await createRemoteFixture();
+    await fixture.authority.write("notes/x", doc("notes/x", "x v0\n"));
+    const { a, close } = twoRealms(adapter);
+    try {
+      await bootstrap(fixture.remote, a);
+      await pull(a, fixture.remote);
+      const settled = await lastPull(a);
+      assert.notEqual(settled?.headsDigest, undefined);
+      const rivals: string[] = [];
+      // Another realm's pull completes with the current digest just before each guarded mark.
+      const racing = new Proxy(a.backend, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop, target);
+          if (prop !== "writeMeta") return typeof value === "function" ? value.bind(target) : value;
+          return async (key: string, row: unknown, options?: MetaWriteOptions) => {
+            if (key === "pull" && options?.expected !== undefined && (row as PullMarker).completedAt === null) {
+              const run = `rival-${rivals.length}`;
+              rivals.push(run);
+              await target.writeMeta("pull", { ...settled!, startedAt: new Date().toISOString(), run } satisfies PullMarker);
+            }
+            return target.writeMeta(key, row, options);
+          };
+        },
+      }) as JournaledBackend;
+      const counted = countingRemote(fixture);
+      const report = await pull(racing, counted.remote);
+
+      assert.equal(report.superseded, undefined);
+      assert.deepEqual(rivals, ["rival-0", "rival-1", "rival-2"], "three guarded marks lost; the fourth is unconditional");
+      assert.deepEqual(counted.ifNoneMatch.filter((_, index) => counted.requests[index]!.path === HEADS), [null], "the unconditional mark offers no digest");
+      assert.deepEqual(counted.requests.filter((row) => row.path === HEADS).map((row) => row.status), [200]);
+      const marker = await lastPull(a);
+      assert.ok(marker?.run !== undefined && !rivals.includes(marker.run));
+      assert.notEqual(marker?.completedAt, null);
+      assert.equal(marker?.headsDigest, settled?.headsDigest);
+    } finally {
+      close();
+    }
+  });
+
   test(`${adapter}: a runtime sync whose pull another realm supersedes reports online and ok`, async () => {
     const fixture = await createRemoteFixture();
     await fixture.authority.write("notes/x", doc("notes/x", "x v0\n"));
