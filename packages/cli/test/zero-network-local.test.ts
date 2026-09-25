@@ -210,3 +210,37 @@ test("a Git board makes zero network calls across establish, join, sync, pull an
     await rm(box.root, { recursive: true, force: true });
   }
 });
+
+test("session-start's other-bundle listing and the opt-in Git turn end make zero network calls", async () => {
+  const box = await sandbox();
+  try {
+    const origin = path.join(box.root, "origin.git");
+    const founder = path.join(box.root, "founder");
+    const personal = path.join(box.root, "personal");
+    execFileSync("git", ["init", "-q", "--bare", origin], { env: { ...box.env, NODE_OPTIONS: "" } });
+    await mkdir(founder);
+    await mkdir(personal);
+    git(founder, box, "init", "-q");
+    git(founder, box, "remote", "add", "origin", origin);
+    git(founder, box, "commit", "-q", "--allow-empty", "-m", "init");
+    git(founder, box, "push", "-q", "origin", "HEAD:main");
+    for (const [cwd, args] of [
+      [founder, ["init", "--dir", ".superbee", "--recipe", "none"]],
+      [founder, ["sync", "--establish"]],
+      [founder, ["catalog", "add", "team"]],
+      [personal, ["init", "--recipe", "none"]],
+      [personal, ["catalog", "add", "personal"]],
+    ] as Array<[string, string[]]>) await runExpecting(box, args, cwd);
+
+    const started = JSON.parse((await runExpecting(box, ["session-start", "--json"], personal)).stdout) as { workspaces: { entries: { label: string; home: string }[] } };
+    assert.deepEqual(started.workspaces.entries.map((entry) => [entry.label, entry.home]), [["team", "git"]]);
+
+    await runExpecting(box, ["doc", "write", "notes/turn", "--type", "Note", "--title", "Turn"], founder);
+    await runExpecting(box, ["turn-end", "--git-boards"], founder);
+    const pushed = execFileSync("git", ["--git-dir", origin, "ls-tree", "-r", "--name-only", "board"], { env: { ...box.env, NODE_OPTIONS: "" }, encoding: "utf8" });
+    assert.match(pushed, /^notes\/turn\.md$/m, "the turn end committed and pushed the board");
+    assert.deepEqual(await networkLog(box), []);
+  } finally {
+    await rm(box.root, { recursive: true, force: true });
+  }
+});

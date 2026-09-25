@@ -81,7 +81,7 @@ import { integrationChangeReceipt, type IntegrationHost } from "../integration-r
 export const HOOK_USAGE = `superbee hook — manage the SessionStart board-aware hook
 
 Usage:
-  superbee hook install   [--scope project|user] [--turn-end-sync]
+  superbee hook install   [--scope project|user] [--turn-end-sync [--git-boards]]
   superbee hook status    [--scope project|user]
   superbee hook uninstall [--scope project|user] [--turn-end-sync]
 
@@ -100,12 +100,17 @@ In a hosted checkout (made by \`checkout\`), session-start pulls from the host i
 End-of-turn sync is a separate opt-in: \`hook install --turn-end-sync\` also installs a Stop hook
 that runs \`turn-end\` (one sync of a hosted checkout when the agent's turn ends; nothing anywhere
 else) for Claude Code and Codex. OpenCode has no Stop hook, so there it is not installed.
+A Git board is never synced by the Stop hook unless you also pass \`--git-boards\`: then the
+shared board the session is in is synced (committed, pulled, pushed) at turn end as well.
+\`hook install --turn-end-sync\` without it switches the Git sync back off; a plain \`hook install\`
+keeps whatever the Stop hook already does.
 \`hook uninstall --turn-end-sync\` removes only the Stop hook; plain \`hook uninstall\` removes both.
 SUPERBEE_NO_TURN_SYNC=<any value> turns the Stop hook off without uninstalling it, and
 SUPERBEE_NO_AUTOPULL=<any value> turns off the automatic hosted pulls (reads and session start).
 
 Options:
   --turn-end-sync   install: also install the end-of-turn Stop hook; uninstall: remove only it
+  --git-boards      With install --turn-end-sync: the Stop hook also syncs a shared Git board
   --scope project   Write to the CURRENT project (default): .claude/, .codex/, .config/opencode/
   --scope user      Write to each host's configured user home (environment override or default)
   --json            Emit compact JSON instead of TOON
@@ -128,6 +133,8 @@ export const HOOK_TIMEOUT_SECONDS = 10;
 export const HOOK_SUBCOMMAND = "session-start";
 /** The end-of-turn subcommand the opt-in Stop hook runs. */
 export const TURN_END_SUBCOMMAND = "turn-end";
+/** The turn-end flag that also syncs a shared Git board: Git is opt-in, never the default. */
+export const TURN_END_GIT_BOARDS_FLAG = "--git-boards";
 /** Stop hook timeout, in seconds: above turn-end's own 20-second sync budget. */
 export const TURN_END_HOOK_TIMEOUT_SECONDS = 30;
 /** The OpenCode plugin filename (SDK naming convention for this marker) and its managed-file marker. */
@@ -165,8 +172,12 @@ export function sessionStartHookCommand(
  * ours exactly when it ends in `turn-end` and the same launch ending in `session-start` is a
  * recognized generated SessionStart command, so both hooks share one ownership rule.
  */
-export function turnEndHookCommand(launch: HookLaunchSpec, platform: string = process.platform): string {
-  const args = [...launch.args.slice(0, -1), TURN_END_SUBCOMMAND];
+export function turnEndHookCommand(
+  launch: HookLaunchSpec,
+  platform: string = process.platform,
+  options: { gitBoards?: boolean } = {},
+): string {
+  const args = [...launch.args.slice(0, -1), TURN_END_SUBCOMMAND, ...(options.gitBoards ? [TURN_END_GIT_BOARDS_FLAG] : [])];
   const command = [launch.program, ...args].map((token) => renderGeneratedHookToken(token, platform)).join(" ");
   if (!isManagedTurnEndCommand(command, platform)) {
     throw new Error(`composed turn-end hook command ${JSON.stringify(command)} would not be recognized as managed`);
@@ -174,15 +185,35 @@ export function turnEndHookCommand(launch: HookLaunchSpec, platform: string = pr
   return command;
 }
 
+/** The managed turn-end command's tokens up to and including `turn-end`, and whether it opts in to Git boards. */
+function managedTurnEndTokens(command: string, platform: string): { tokens: string[]; gitBoards: boolean } | null {
+  const all = tokenizeGeneratedHookCommand(command, platform);
+  if (!all) return null;
+  const gitBoards = all.at(-1) === TURN_END_GIT_BOARDS_FLAG;
+  const tokens = gitBoards ? all.slice(0, -1) : all;
+  if (tokens.length < 2 || tokens.at(-1) !== TURN_END_SUBCOMMAND) return null;
+  return { tokens, gitBoards };
+}
+
 export function isManagedTurnEndCommand(command: string, platform: string = process.platform): boolean {
-  const tokens = tokenizeGeneratedHookCommand(command, platform);
-  if (!tokens || tokens.length < 2 || tokens.at(-1) !== TURN_END_SUBCOMMAND) return false;
-  const sessionStart = [...tokens.slice(0, -1), HOOK_SUBCOMMAND].map((token) => renderGeneratedHookToken(token, platform)).join(" ");
+  const managed = managedTurnEndTokens(command, platform);
+  if (!managed) return false;
+  const sessionStart = [...managed.tokens.slice(0, -1), HOOK_SUBCOMMAND].map((token) => renderGeneratedHookToken(token, platform)).join(" ");
   return isManagedHookCommand(sessionStart, platform);
 }
 
 function isManagedTurnEndHook(hook: HookEntry | undefined): boolean {
   return hook?.type === "command" && typeof hook.command === "string" && isManagedTurnEndCommand(hook.command);
+}
+
+/** True when an installed managed Stop hook also syncs Git boards (`turn-end --git-boards`). */
+export function turnEndHookSyncsGitBoards(settings: HookSettings, platform: string = process.platform): boolean {
+  const stop = settings.hooks?.Stop;
+  return Array.isArray(stop) && (stop as HookGroupLike[]).some(
+    (group) => Array.isArray(group?.hooks) && group.hooks.some(
+      (h) => isManagedTurnEndHook(h) && managedTurnEndTokens(h.command!, platform)?.gitBoards === true,
+    ),
+  );
 }
 
 type HookGroupLike = { matcher?: unknown; hooks?: HookEntry[] };
@@ -269,6 +300,16 @@ export function computeTurnEndHookUninstall(settings: HookSettings): [HookSettin
   if (next.length === 0) delete updated.hooks!.Stop;
   else updated.hooks!.Stop = next as NonNullable<HookSettings["hooks"]>["SessionStart"];
   return [updated, true];
+}
+
+/** `hook status`'s end-of-turn report: per host, and which hosts also sync Git boards (only when any does). */
+function turnEndStatus(claude: HookSettings, codex: HookSettings): Record<string, unknown> {
+  const git = { claude_code: turnEndHookSyncsGitBoards(claude), codex: turnEndHookSyncsGitBoards(codex) };
+  return {
+    claude_code: turnEndHookInstalled(claude),
+    codex: turnEndHookInstalled(codex),
+    ...(git.claude_code || git.codex ? { git_boards: git } : {}),
+  };
 }
 
 /** True when the managed Stop hook is installed in this settings file. */
@@ -1217,6 +1258,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         options: {
           scope: { type: "string" },
           "turn-end-sync": { type: "boolean" },
+          "git-boards": { type: "boolean" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -1270,6 +1312,12 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       help: `${cliInvocation()} hook status`,
     });
   }
+  const gitBoards = values["git-boards"] === true;
+  if (gitBoards && (sub !== "install" || !turnEndSync)) {
+    throw new CliError("USAGE", "--git-boards applies only to hook install --turn-end-sync", {
+      help: `${cliInvocation()} hook install --turn-end-sync --git-boards`,
+    });
+  }
 
   if (sub === "status") {
     const inspection = inspectHookStatus(scope, deps);
@@ -1284,10 +1332,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
             claude_code: claude.installed,
             codex: codex.installed,
             opencode: opencode.installed,
-            turn_end_sync: {
-              claude_code: turnEndHookInstalled(readSettings(inspection.targets.claudeSettings)),
-              codex: turnEndHookInstalled(readSettings(inspection.targets.codexHooks)),
-            },
+            turn_end_sync: turnEndStatus(readSettings(inspection.targets.claudeSettings), readSettings(inspection.targets.codexHooks)),
             ...(inspection.displayCommand !== undefined ? { command: inspection.displayCommand } : {}),
             hosts: {
               claude_code: {
@@ -1375,6 +1420,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     }
     const command = launch.command;
     const stopHosts: IntegrationHost[] = [];
+    const gitStopHosts: IntegrationHost[] = [];
     const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
     // Claude Code settings.json + Codex hooks.json: OUR SDK-modeled pure updater, recognizing
     // both managed command forms (see the module header for why the SDK's marker cannot).
@@ -1394,14 +1440,17 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         });
         // An installed Stop hook is kept current by every install; only the flag adds one.
         const wantsStop = turnEndSync || turnEndHookInstalled(read.settings);
+        let withGit = false;
         if (wantsStop) {
           const problem = stopShapeProblem(updated);
           if (problem) {
             refusals.push(`${collapseHomeDirectory(target)}: ${problem} — nothing was written to this file`);
             continue;
           }
+          // The flag sets the Git opt-in; a plain reinstall keeps what this file already has.
+          withGit = turnEndSync ? gitBoards : turnEndHookSyncsGitBoards(read.settings, deps.platform);
           const [withStop, stopChanged] = computeTurnEndHookInstall(updated, {
-            command: turnEndHookCommand(launch, deps.platform),
+            command: turnEndHookCommand(launch, deps.platform, { gitBoards: withGit }),
             timeoutSeconds: TURN_END_HOOK_TIMEOUT_SECONDS,
           });
           updated = withStop;
@@ -1409,6 +1458,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         }
         if (changed) writeSettings(target, updated);
         if (wantsStop) stopHosts.push(host);
+        if (wantsStop && withGit) gitStopHosts.push(host);
         changedByHost[host] = changed;
       } catch (err) {
         failTarget(target, err);
@@ -1455,7 +1505,13 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       installed: true,
       command,
       turn_end_sync: stopHosts.length > 0
-        ? { installed: true, hosts: stopHosts, command: turnEndHookCommand(launch, deps.platform), opt_out: `${cliInvocation()} hook uninstall --turn-end-sync` }
+        ? {
+            installed: true,
+            hosts: stopHosts,
+            command: turnEndHookCommand(launch, deps.platform, { gitBoards: gitStopHosts.length > 0 }),
+            ...(gitStopHosts.length > 0 ? { git_boards: gitStopHosts } : {}),
+            opt_out: `${cliInvocation()} hook uninstall --turn-end-sync`,
+          }
         : { installed: false, opt_in: `${cliInvocation()} hook install --turn-end-sync` },
       ...lifecycle,
       targets: {

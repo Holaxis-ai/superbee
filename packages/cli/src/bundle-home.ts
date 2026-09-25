@@ -155,7 +155,7 @@ function count(dir: string, args: string[]): number | null {
 }
 
 /** The newest FETCH_HEAD this working tree or its repository has: a fetch from either one counts. */
-async function lastFetch(top: string): Promise<string | null> {
+export async function lastFetch(top: string): Promise<string | null> {
   const own = gitText(top, ["rev-parse", "--path-format=absolute", "--git-path", "FETCH_HEAD"]);
   const common = gitText(top, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   let newest: Date | null = null;

@@ -234,9 +234,14 @@ export interface HomeBindingNote {
   recovery?: string;
 }
 
-/** The deliberately small user-scoped catalog projection shown during agent orientation. */
+/**
+ * The deliberately small user-scoped catalog projection shown during agent orientation. `home`
+ * reads only the label; `session-start` adds where each other bundle lives and how fresh it is.
+ */
 export interface HomeWorkspace {
   label: string;
+  home?: string;
+  freshness?: string;
 }
 
 export type HomeWorkspacesBlock =
@@ -257,7 +262,7 @@ const HOME_RECENT_LIMIT = 5;
 /** Catalog orientation must remain a cheap hint even when an entry points at a slow filesystem. */
 export const HOME_WORKSPACES_BUDGET_MS = 500;
 /** Cap the always-on workspace orientation block; the full catalog remains one explicit read away. */
-const HOME_WORKSPACES_LIMIT = 15;
+export const HOME_WORKSPACES_LIMIT = 15;
 
 /** Injectable seam so the offline view is unit-testable without real I/O. */
 export interface HomeDeps {
