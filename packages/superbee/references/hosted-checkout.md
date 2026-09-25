@@ -142,12 +142,19 @@ confirm that no superbee command is still running, then remove the lock named in
 ## Session hooks (opt-in)
 
 - `superbee hook install` installs the SessionStart hook. In a hosted checkout, it pulls from the
-  host at the start of each session.
+  host at the start of each session. Its `workspaces` block lists the other catalog bundles with
+  their `home` (local, git or hosted) and `freshness` (when each was last pulled or fetched). It
+  pulls none of them: to work in one, get its path with `superbee catalog resolve <label> --field
+  path` and pass `--dir`, and sync a stale one only when the work needs it.
 - `superbee hook install --turn-end-sync` also installs a Stop hook for Claude Code and Codex. It
   syncs the checkout when each turn ends, and skips the network when nothing changed and the last
   pull is recent. If that sync finds a conflict, a held file or a sign-in link, the hook hands it
   back to you before the turn ends: handle it as above. It reports each condition once; the same
   unresolved condition is not reported on later turns, so check `superbee sync` yourself.
+- A Git board is never synced by the Stop hook unless the person also asks for it:
+  `superbee hook install --turn-end-sync --git-boards`. Then the shared board the session is in
+  syncs at turn end under the same rules, and a conflict comes back once, in Git's form: the
+  teammate's version is kept and yours is saved to the export file the reason names.
 - Offer the Stop hook, but install it only when the person agrees.
   `superbee hook uninstall --turn-end-sync` removes it, and `SUPERBEE_NO_TURN_SYNC=<any value>`
   turns it off for a shell.

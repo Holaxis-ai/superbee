@@ -541,8 +541,8 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "turnEnd",
         leaves: [publicLeaf("turnEnd", "turn-end", zero, 33, DIR_SURFACE)],
-        usage: "turn-end [--dir <path>]",
-        summary: "The end-of-turn hook payload: in a hosted checkout, sync once and hand a conflict or a sign-in link back to the agent; does nothing anywhere else; SUPERBEE_NO_TURN_SYNC=<any value> turns it off",
+        usage: "turn-end [--dir <path>] [--git-boards]",
+        summary: "The end-of-turn hook payload: in a hosted checkout (or, with --git-boards, a shared Git board), sync once and hand a conflict or a sign-in link back to the agent; does nothing anywhere else; SUPERBEE_NO_TURN_SYNC=<any value> turns it off",
       },
       {
         id: "hook",
@@ -551,8 +551,8 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("hookStatus", "hook status", zero),
           publicLeaf("hookUninstall", "hook uninstall", zero),
         ],
-        usage: "hook install|status|uninstall [--scope project|user] [--turn-end-sync]",
-        summary: "Install the SessionStart hook (runs session-start: pull the board or hosted checkout, then render) for Claude Code, Codex, OpenCode; --turn-end-sync opts in to (or, with uninstall, out of) the Stop hook that syncs a hosted checkout at the end of each turn (Claude Code, Codex)",
+        usage: "hook install|status|uninstall [--scope project|user] [--turn-end-sync [--git-boards]]",
+        summary: "Install the SessionStart hook (runs session-start: pull the board or hosted checkout, then render) for Claude Code, Codex, OpenCode; --turn-end-sync opts in to (or, with uninstall, out of) the Stop hook that syncs a hosted checkout at the end of each turn, and --git-boards also syncs a shared Git board (Claude Code, Codex)",
       },
       {
         id: "skill",

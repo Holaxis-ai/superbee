@@ -6,13 +6,20 @@
 // a held file, or a sign-in link to relay. Then it prints the hosts' Stop-hook decision
 // (`{"decision":"block","reason":...}`), which hands the reason back to the agent once; a turn that
 // is already continuing because of this hook (`stop_hook_active`) is never blocked again.
-// Anywhere other than a hosted checkout it does nothing, so a Git board is never synced by a hook.
+// A shared Git board is synced only when the person opted in (`hook install --turn-end-sync
+// --git-boards`, recorded in private state) or `--git-boards` is passed, under the same rules;
+// otherwise, and anywhere else, it does nothing.
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { parseLeafOrUsage } from "../args.js";
-import { hostedCheckoutAt } from "../autopull.js";
+import { AUTO_PULL_STALE_MS, hostedCheckoutAt } from "../autopull.js";
+import { resolveLocalBundleRoute } from "../bundle.js";
+import { bundleHomeAt, gitBoardSyncBlock, type GitBoardFacts } from "../bundle-home.js";
+import { credentialsDir } from "../credentials.js";
+import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken } from "../command-text.js";
 import { CliError } from "../errors.js";
@@ -33,23 +40,28 @@ const STDIN_BYTES = 64 * 1024;
 export const TURN_END_USAGE = `superbee turn-end — the end-of-turn hook payload (sync a hosted checkout)
 
 Usage:
-  superbee turn-end [--dir <path>]
+  superbee turn-end [--dir <path>] [--git-boards]
 
 In a hosted checkout (made by 'superbee checkout'), runs one sync: edited files are sent and host
 changes are pulled. With nothing to send and a pull under five minutes old it does not touch the
-network. Anywhere else it does nothing. It never fails the turn (exit 0) and prints nothing unless
-the sync needs the agent: a conflict, a held file, or a sign-in link to relay. Then it prints a
-Stop-hook decision ({"decision":"block","reason":...}) whose reason is the sync receipt and the
-next command, once per condition: the same unresolved condition is not reported again until it
-changes.
+network. It never fails the turn (exit 0) and prints nothing unless the sync needs the agent: a
+conflict, a held file, or a sign-in link to relay. Then it prints a Stop-hook decision
+({"decision":"block","reason":...}) whose reason is the sync receipt and the next command, once
+per condition: the same unresolved condition is not reported again until it changes.
 
-\`hook install --turn-end-sync\` installs it as the Stop hook for Claude Code and Codex; \`hook
-uninstall --turn-end-sync\` removes only that hook. ${NO_TURN_SYNC_ENV}=<any value> turns it off
-without uninstalling.
+With --git-boards, or after \`hook install --turn-end-sync --git-boards\`, a shared Git board (the \`board\` branch checkout) gets the same treatment:
+one \`sync\` (commit, pull, push) when it has changes or its last fetch is over five minutes old,
+silent on success, and a conflict or a Git sign-in failure is reported once. Without the flag a
+Git board is never synced here, and a local bundle never is.
+
+\`hook install --turn-end-sync [--git-boards]\` installs it as the Stop hook for Claude Code and
+Codex; \`hook uninstall --turn-end-sync\` removes only that hook. ${NO_TURN_SYNC_ENV}=<any value>
+turns it off without uninstalling.
 
 Options:
-  --dir <path>   Directory to run from (default: the cwd)
-  -h, --help     Show this help
+  --dir <path>     Directory to run from (default: the cwd)
+  --git-boards     Also sync a shared Git board (off by default)
+  -h, --help       Show this help
 `;
 
 export interface TurnEndDeps {
@@ -65,6 +77,21 @@ export interface TurnEndDeps {
   budgetMs: number;
   /** Whether the checkout has anything to send (default: the private store and folder, read-only). */
   localState: (binding: CheckoutBinding) => Promise<"changed" | "clean" | "busy">;
+  /** The shared Git board the run is in, from local Git only (default: {@link sharedGitBoardAt}). */
+  gitBoard: (dir: string | undefined) => Promise<GitTurnEndBoard | null>;
+  /** The Git board sync (default: `superbee sync`). */
+  gitSync: (argv: string[], stdout: (text: string) => void) => Promise<void>;
+  now: () => Date;
+}
+
+/** A shared Git board as the end-of-turn sync sees it: local facts only, no fetch. */
+export interface GitTurnEndBoard {
+  /** The bundle root (the `board` worktree). */
+  readonly root: string;
+  /** True when the next sync has something to send or has already seen something to pull. */
+  readonly changed: boolean;
+  /** When this clone last fetched, ISO 8601, or null. */
+  readonly lastFetch: string | null;
 }
 
 async function readHookStdin(): Promise<string | null> {
@@ -129,7 +156,12 @@ function reasonFor(binding: CheckoutBinding, error: CliError, receipt: string): 
 export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}): Promise<void> {
   const stdout = partial.stdout ?? ((text: string) => void process.stdout.write(text));
   const { values } = parseLeafOrUsage(
-    () => parseArgs({ args: argv, options: { dir: { type: "string" }, help: { type: "boolean", short: "h" } }, allowPositionals: true }),
+    () =>
+      parseArgs({
+        args: argv,
+        options: { dir: { type: "string" }, "git-boards": { type: "boolean" }, help: { type: "boolean", short: "h" } },
+        allowPositionals: true,
+      }),
     CLI_LEAVES.turnEnd,
   );
   if (values.help) {
@@ -144,11 +176,14 @@ export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}
   } catch {
     return;
   }
-  if (!binding) return;
+  const home = partial.syncDeps?.auth?.home ?? homedir();
+  if (!binding) {
+    if (values["git-boards"] || (await readTurnEndGitBoards(home))) await gitTurnEnd(values.dir, home, partial, stdout);
+    return;
+  }
   const stdin = await (partial.readStdin ?? readHookStdin)().catch(() => null);
   if (continuingForHook(stdin)) return;
 
-  const home = partial.syncDeps?.auth?.home ?? homedir();
   const deadline = Date.now() + (partial.budgetMs ?? TURN_END_BUDGET_MS);
   // Nothing to send and a recent pull: no network at all. Reads pull on their own.
   const local = await (partial.localState ?? ((b: CheckoutBinding) => import("../hosted/sync.js").then((m) => m.hostedLocalState(b, home))))(binding).catch(() => "changed" as const);
@@ -201,4 +236,125 @@ function conditionDigest(error: CliError, receipt: string): string {
   return createHash("sha256")
     .update(JSON.stringify([error.code, details?.reason ?? null, details?.sign_in_url ?? null, rows]))
     .digest("hex");
+}
+
+// ── Git boards (opt-in) ─────────────────────────────────────────────────────────────────────────
+
+/** Where the Git end-of-turn sync remembers the condition it last reported, per board, and the opt-in. */
+const GIT_TURN_END_DIR = "turn-end";
+const GIT_OPT_IN_FILE = "git-boards.json";
+
+/**
+ * Whether this user opted in to the end-of-turn sync of Git boards. Kept in private state rather
+ * than in the hook command, so the installed command stays `… turn-end` and every CLI version that
+ * reads it still owns it. A missing or unreadable file means no.
+ */
+export async function readTurnEndGitBoards(home: string = homedir()): Promise<boolean> {
+  try {
+    const value = JSON.parse(await readUserStateFile(home, join(credentialsDir(home), GIT_TURN_END_DIR, GIT_OPT_IN_FILE), 1024)) as { git_boards?: unknown } | null;
+    return value?.git_boards === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function recordTurnEndGitBoards(home: string, enabled: boolean): Promise<void> {
+  await writeUserStateFileAtomic0600(home, join(credentialsDir(home), GIT_TURN_END_DIR), GIT_OPT_IN_FILE, `${JSON.stringify({ git_boards: enabled })}\n`);
+}
+
+/**
+ * The shared Git board this run is in: the `board` branch worktree with an upstream, found the way
+ * every command finds its bundle. Local Git and the filesystem only; an in-tree bundle (shared by
+ * the code branch's own push), an unshared board and a plain binding all read as none.
+ */
+export async function sharedGitBoardAt(dir: string | undefined, home: string = homedir()): Promise<GitTurnEndBoard | null> {
+  let root: string;
+  try {
+    const route = await resolveLocalBundleRoute(dir);
+    if (route.kind === "bound-local" || (route.kind === "bound-board" && route.readiness !== "ready")) return null;
+    root = route.target.canonicalRoot;
+  } catch {
+    return null;
+  }
+  const facts = await bundleHomeAt(root, { home });
+  if (facts.home !== "git") return null;
+  const board: GitBoardFacts = facts.board;
+  if (board.channel !== "branch" || !board.shared) return null;
+  const block = await gitBoardSyncBlock(board);
+  return {
+    root,
+    changed: block.state !== "clean",
+    lastFetch: typeof block.last_fetch === "string" ? block.last_fetch : null,
+  };
+}
+
+function gitStateFile(home: string, root: string): { dir: string; name: string } {
+  return { dir: join(credentialsDir(home), GIT_TURN_END_DIR), name: `${createHash("sha256").update(root).digest("hex").slice(0, 32)}.json` };
+}
+
+async function readGitBlock(home: string, root: string): Promise<string | null> {
+  const { dir, name } = gitStateFile(home, root);
+  try {
+    const value = JSON.parse(await readUserStateFile(home, join(dir, name), 4 * 1024)) as { turn_end_block?: unknown } | null;
+    return typeof value?.turn_end_block === "string" ? value.turn_end_block : null;
+  } catch {
+    return null;
+  }
+}
+
+async function recordGitBlock(home: string, root: string, digest: string | null): Promise<void> {
+  const { dir, name } = gitStateFile(home, root);
+  await writeUserStateFileAtomic0600(home, dir, name, `${JSON.stringify({ turn_end_block: digest })}\n`);
+}
+
+function gitReasonFor(root: string, error: CliError): string {
+  const sync = commandFragment`${cliInvocation()} sync --dir ${commandToken(root)}`;
+  const lines = [`Superbee: the end-of-turn sync of the Git board ${root} needs you before this turn ends: ${error.message}.`];
+  if (error.code === "AUTH_REQUIRED") {
+    lines.push(`Your changes are committed locally. Git could not sign in to the board's remote: tell the person${error.help ? ` (${error.help})` : ""}, then run: ${sync}`);
+  } else {
+    lines.push(
+      error.help
+        ? `Next: ${error.help}`
+        : `See the kept version with ${cliInvocation()} sync --show-incoming <id>, write your merged version with doc update <id> --body-file <export-file>, then run: ${sync}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The opt-in Git turn end: the hosted rules on a Git board. Nothing to send and a fetch under five
+ * minutes old means no Git network call at all. A converged conflict (the teammate's version kept,
+ * yours exported) or a Git sign-in failure is handed back to the agent once; offline, a busy
+ * repository and everything else wait for the next turn or an explicit sync. Git's own per-command
+ * timeouts bound the network; the host's Stop-hook timeout is the outer bound, and a sync cut off
+ * there is healed at the next sync's entry.
+ */
+async function gitTurnEnd(dir: string | undefined, home: string, partial: Partial<TurnEndDeps>, stdout: (text: string) => void): Promise<void> {
+  const board = await (partial.gitBoard ?? ((d) => sharedGitBoardAt(d, home)))(dir).catch(() => null);
+  if (!board) return;
+  const stdin = await (partial.readStdin ?? readHookStdin)().catch(() => null);
+  if (continuingForHook(stdin)) return;
+  if (!board.changed) {
+    const age = ageMs(board.lastFetch, (partial.now ?? (() => new Date()))());
+    if (age !== null && age <= AUTO_PULL_STALE_MS) return;
+  }
+  const run =
+    partial.gitSync ??
+    (async (args: string[], out: (text: string) => void) => (await import("./sync/orchestrate.js")).sync(args, { stdout: out, stderr: out }));
+  let blocking: CliError | null = null;
+  try {
+    // The sync a person would run here: from the same directory, so it routes exactly as they would.
+    await run([...(dir === undefined ? [] : ["--dir", dir]), "--limit", String(REASON_ROWS), "--json"], () => {});
+  } catch (error) {
+    if (error instanceof CliError && (error.code === "CONFLICT" || error.code === "AUTH_REQUIRED")) blocking = error;
+  }
+  if (!blocking) {
+    if ((await readGitBlock(home, board.root)) !== null) await recordGitBlock(home, board.root, null).catch(() => {});
+    return;
+  }
+  const condition = createHash("sha256").update(JSON.stringify([blocking.code, blocking.message])).digest("hex");
+  if (condition === (await readGitBlock(home, board.root))) return;
+  await recordGitBlock(home, board.root, condition).catch(() => {});
+  stdout(`${JSON.stringify({ decision: "block", reason: gitReasonFor(board.root, blocking) })}\n`);
 }

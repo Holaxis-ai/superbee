@@ -51,6 +51,7 @@ import { provisionBoardWorktree } from "../board-runtime.js";
 // step itself is SHARED, not owned here: autopull.ts's `pullBoardAndRecord` (extracted from this
 // command) is the ONE code path both this hook and the opportunistic read-command trigger use —
 // do not fork the state-write discipline back into either caller.
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import path from "node:path";
@@ -68,7 +69,10 @@ import {
 } from "@superbee/board-git";
 import { defaultSyncStore } from "../cursor.js";
 import { pullBoardAndRecord } from "../autopull.js";
-import { defaultSummarizeBundle, discoverSummarizeBundle, home, type BoardPullOutcome } from "./home.js";
+import { defaultSummarizeBundle, discoverSummarizeBundle, home, HOME_WORKSPACES_LIMIT, type BoardPullOutcome, type HomeWorkspace } from "./home.js";
+import { loadCatalog } from "../catalog.js";
+import { bundleHomeAt, lastFetch } from "../bundle-home.js";
+import { findBundleRoot, resolveLocalBundleTarget } from "../bundle.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandLiteral, commandQuoted } from "../command-text.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -81,7 +85,7 @@ import { CliError } from "../errors.js";
 import { commandToken } from "../command-text.js";
 import { render } from "../output.js";
 import type { CheckoutBinding } from "../hosted/binding.js";
-import { backgroundSyncDeps, readFreshness } from "../hosted/freshness.js";
+import { ageMs, backgroundSyncDeps, describeAge, readFreshness } from "../hosted/freshness.js";
 import type { HostedPullResult, HostedSyncDeps } from "../hosted/sync.js";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
@@ -127,6 +131,85 @@ Options:
   --no-update-check  Disable cached update display and refresh for this run
   -h, --help         Show this help
 `;
+
+/**
+ * What listing the other catalog bundles may add to a session start. Their homes come from private
+ * state and local Git (a few short `git rev-parse` calls per Git board), never the network.
+ */
+export const SESSION_START_WORKSPACES_BUDGET_MS = 2_000;
+/**
+ * The probes' own deadline, under that budget: a Git probe is a blocking spawn that no timer can
+ * cut short, so once this passes the remaining rows keep their label and are marked not checked,
+ * and the block never falls back to "timed out".
+ */
+export const SESSION_START_PROBE_DEADLINE_MS = 1_000;
+
+/** How current one other bundle's folder is, from its last pull or fetch. No network. */
+async function bundleFreshness(root: string, userHome: string, now: Date): Promise<Pick<HomeWorkspace, "home" | "freshness">> {
+  const facts = await bundleHomeAt(root, { home: userHome });
+  if (facts.home === "hosted") {
+    const age = ageMs((await readFreshness(userHome, facts.binding.checkout_id).catch(() => null))?.pulled_at ?? null, now);
+    return { home: "hosted", freshness: age === null ? "never pulled" : `pulled ${describeAge(age)} ago` };
+  }
+  if (facts.home === "git") {
+    if (!facts.board.shared) return { home: "git", freshness: "not shared yet" };
+    const age = ageMs(await lastFetch(facts.board.top).catch(() => null), now);
+    return { home: "git", freshness: age === null ? "never fetched" : `fetched ${describeAge(age)} ago` };
+  }
+  return { home: "local", freshness: "local only" };
+}
+
+/**
+ * The catalog bundles other than the one this session is in, each with its home and how fresh it
+ * is, so an agent knows what else exists and which copies are stale. The catalog, private state
+ * and local Git only: nothing is pulled, and no path or id is shown (`catalog resolve` gives them).
+ */
+export async function otherCatalogBundles(
+  currentRoot: string | null,
+  options: { home?: string; signal?: AbortSignal; now?: Date; deadlineMs?: number } = {},
+): Promise<HomeWorkspace[]> {
+  const userHome = options.home ?? homedir();
+  const now = options.now ?? new Date();
+  const deadline = Date.now() + (options.deadlineMs ?? SESSION_START_PROBE_DEADLINE_MS);
+  const current = currentRoot === null ? null : await realpath(currentRoot).catch(() => path.resolve(currentRoot));
+  const entries = [...(await loadCatalog(userHome, options.signal)).entries].sort((a, b) => a.label.localeCompare(b.label));
+  const others: { label: string; root: string }[] = [];
+  for (const entry of entries) {
+    const root = await realpath(entry.locator.path).catch(() => null);
+    if (root !== null && root === current) continue;
+    others.push({ label: entry.label, root: root ?? entry.locator.path });
+  }
+  const rows: HomeWorkspace[] = [];
+  for (const [index, other] of others.entries()) {
+    // Only the rows the block shows are probed; the rest are counted.
+    if (index >= HOME_WORKSPACES_LIMIT || options.signal?.aborted || Date.now() >= deadline) {
+      rows.push({ label: other.label, home: "unknown", freshness: "not checked" });
+      continue;
+    }
+    let available = false;
+    try {
+      available = (await resolveLocalBundleTarget(other.root)).canonicalRoot === other.root;
+    } catch {
+      available = false;
+    }
+    rows.push({
+      label: other.label,
+      ...(available ? await bundleFreshness(other.root, userHome, now).catch(() => ({ home: "unknown", freshness: "unreadable" })) : { home: "unknown", freshness: "folder missing" }),
+    });
+  }
+  return rows;
+}
+
+/** The bundle this session start renders, so the catalog listing can leave it out. Never throws. */
+async function sessionBundleRoot(dir: string | undefined, known: string | undefined): Promise<string | null> {
+  if (known !== undefined) return known;
+  try {
+    if (dir !== undefined) return (await findBundleRoot(path.resolve(dir))) ?? null;
+    return (await resolveLocalBundleTarget(undefined)).canonicalRoot;
+  } catch {
+    return null;
+  }
+}
 
 /** `ffPull` swallow reasons that mean "could not reach/verify the remote" → the offline note. */
 const OFFLINE_REASONS = new Set(["network", "auth", "busy", "git-missing"]);
@@ -206,6 +289,8 @@ export interface SessionStartDeps {
   hostedCheckout: (dir: string | undefined) => Promise<CheckoutBinding | null>;
   /** The hosted session-start pull (default {@link hostedSessionStartPull}). */
   hostedPull: (binding: CheckoutBinding, budgetMs: number) => Promise<Record<string, unknown>>;
+  /** The other catalog bundles (default {@link otherCatalogBundles}). */
+  otherBundles: (currentRoot: string | null, signal?: AbortSignal) => Promise<HomeWorkspace[]>;
 }
 
 /**
@@ -407,6 +492,12 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
 
   const budgetMs = deps.budgetMs ?? SESSION_START_PULL_BUDGET_MS;
   const pull = deps.pull ?? sessionStartPull;
+  const otherBundles = deps.otherBundles ?? ((root: string | null, signal?: AbortSignal) => otherCatalogBundles(root, signal ? { signal } : {}));
+  // The catalog block lists the OTHER bundles, with their homes and freshness.
+  const workspaceDeps = (currentRoot: Promise<string | null>) => ({
+    loadWorkspaces: async (signal?: AbortSignal) => otherBundles(await currentRoot, signal),
+    workspaceBudgetMs: SESSION_START_WORKSPACES_BUDGET_MS,
+  });
 
   // A hosted checkout has no Git board: pull it from the host instead, then render home with a
   // settled board outcome (so home starts no pull of its own) and the hosted block after it.
@@ -428,7 +519,11 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
     if (values.dir !== undefined) homeArgv.push("--dir", values.dir);
     if (values.json) homeArgv.push("--json");
     if (values["no-update-check"]) homeArgv.push("--no-update-check");
-    await (deps.renderHome ?? home)(homeArgv, { stdout: (text) => void captured.push(text), boardPull: { offline: false } });
+    await (deps.renderHome ?? home)(homeArgv, {
+      stdout: (text) => void captured.push(text),
+      boardPull: { offline: false },
+      ...workspaceDeps(Promise.resolve(hosted.path)),
+    });
     const rendered = captured.join("");
     if (values.json) {
       let view: unknown;
@@ -492,6 +587,7 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
     // board is probed (buildBoardBlock's own contract), so the render is unchanged — but a fresh
     // network pull outside this command's budget race is now structurally impossible.
     boardPull: outcome ?? { offline: true },
+    ...workspaceDeps(sessionBundleRoot(projectDir, boardPath)),
     ...(projectDir !== undefined
       ? {
           summarizeBundle: () =>
