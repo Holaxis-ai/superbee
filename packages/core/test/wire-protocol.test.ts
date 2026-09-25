@@ -49,6 +49,7 @@ import type {
   OkfDocument,
   ReservedFilename,
   StorageBackend,
+  Version,
   WriteOptions,
 } from "../src/types.js";
 
@@ -962,6 +963,320 @@ test("wire: after expiry, a byte-identical revert to the premise's content lets 
   assert.equal(resubmitted.version, committed.version);
   assert.equal((await serverBackend.read("concepts/aba")).version, committed.version, "the revert is overwritten");
   assert.equal((await serverBackend.versions("concepts/aba")).length, 4);
+});
+
+type WireRouter = (req: Request) => Promise<Response>;
+
+interface SentRequest {
+  method: string;
+  path: string;
+  key: string | null;
+}
+
+/**
+ * A transport over `router` that records every client request and loses the answer to the first
+ * document `PUT` or `DELETE`: the router applies it, `between` runs against the router as a third
+ * party, and the client then sees a transport failure, so `RemoteBackend` retries.
+ */
+function losingFirstWriteAnswer(router: WireRouter, between: (lost: Response) => Promise<void>): { fetchImpl: WireRouter; sent: SentRequest[] } {
+  const sent: SentRequest[] = [];
+  let lost = false;
+  const fetchImpl: WireRouter = async (req) => {
+    const path = new URL(req.url).pathname;
+    sent.push({ method: req.method, path, key: req.headers.get("Idempotency-Key") });
+    const res = await router(req);
+    if (!lost && (req.method === "PUT" || req.method === "DELETE") && path.startsWith("/v0/bundles/test/docs/")) {
+      lost = true;
+      await between(res);
+      throw new TypeError("fetch failed: connection reset after the request was delivered");
+    }
+    return res;
+  };
+  return { fetchImpl, sent };
+}
+
+test("RemoteBackend: a guarded write whose answer is lost is retried under the same minted Idempotency-Key and replayed, so a byte-identical third-party change between attempts survives", async (t) => {
+  const doc = (body: string): OkfDocument => ({ id: "concepts/lost", frontmatter: { type: "T", timestamp: T_DOC }, body });
+  const cases: Array<{
+    name: string;
+    seed: boolean;
+    act: (remote: RemoteBackend, base: Version | null) => Promise<unknown>;
+    thirdParty: (router: WireRouter, lost: Response) => Promise<Response>;
+    check: (serverBackend: ServerMemoryBackend, base: Version | null, answer: unknown) => Promise<void>;
+  }> = [
+    {
+      name: "If-Match PUT, then a revert to the base bytes",
+      seed: true,
+      act: (remote, base) => remote.write("concepts/lost", doc("v2"), { expectedVersion: base }),
+      thirdParty: (router, lost) => router(identifiedPut("concepts/lost", "v1", { "If-Match": lost.headers.get("X-Version")! })),
+      check: async (serverBackend, base, answer) => {
+        assert.match(String(answer), /^sha256:[0-9a-f]{64}$/);
+        assert.notEqual(answer, base);
+        assert.equal((await serverBackend.read("concepts/lost")).version, base, "the revert is not overwritten");
+        assert.equal((await serverBackend.versions("concepts/lost")).length, 3, "base, the write once, the revert");
+      },
+    },
+    {
+      name: "If-None-Match create, then a delete",
+      seed: false,
+      act: (remote) => remote.write("concepts/lost", doc("v1"), { expectedVersion: null }),
+      thirdParty: (router) => router(identifiedDelete("concepts/lost")),
+      check: async (serverBackend) => {
+        assert.equal(await serverBackend.exists("concepts/lost"), false, "the delete is not undone by a second create");
+      },
+    },
+    {
+      name: "If-Match DELETE, then a byte-identical re-create",
+      seed: true,
+      act: (remote, base) => remote.delete("concepts/lost", { expectedVersion: base! }),
+      thirdParty: (router) => router(identifiedPut("concepts/lost", "v1", { "If-None-Match": "*" })),
+      check: async (serverBackend, base, answer) => {
+        assert.equal(answer, true, "the recorded deleted:true is replayed");
+        assert.equal(await serverBackend.exists("concepts/lost"), true, "the re-create is not deleted again");
+        assert.equal((await serverBackend.read("concepts/lost")).version, base);
+      },
+    },
+  ];
+
+  for (const c of cases) await t.test(c.name, async () => {
+    const serverBackend = new ServerMemoryBackend();
+    const bundle: Bundle = { root: `mem://wire-lost-answer`, backend: serverBackend };
+    const router = createRouter(bundle);
+    const base = c.seed ? (await writeDocVersioned(bundle, doc("v1"))).version : null;
+    let thirdPartyStatus = 0;
+    const { fetchImpl, sent } = losingFirstWriteAnswer(router, async (lost) => {
+      const res = await c.thirdParty(router, lost);
+      thirdPartyStatus = res.status;
+      if (c.seed && res.ok && res.headers.get("X-Version")) assert.equal(res.headers.get("X-Version"), base, `${c.name}: third party restores the base bytes`);
+    });
+    const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl, maxRetries: 1 });
+
+    const answer = await c.act(remote, base);
+    assert.ok(thirdPartyStatus >= 200 && thirdPartyStatus < 300, `${c.name}: the third-party change applied`);
+    await c.check(serverBackend, base, answer);
+
+    const writes = sent.filter((r) => r.method !== "GET");
+    assert.equal(writes.length, 2, `${c.name}: one lost attempt and one retry`);
+    assert.ok(writes[0]!.key, `${c.name}: the first attempt is identified`);
+    assert.equal(writes[1]!.key, writes[0]!.key, `${c.name}: the retry reuses the key`);
+    assert.deepEqual(sent.filter((r) => r.method === "GET").map((r) => r.path), ["/v0/capabilities"]);
+  });
+});
+
+test("RemoteBackend: a host without operations is asked once and sent no Idempotency-Key on guarded writes", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouterForBackend(serverBackend, { outcomes: null });
+  const sent: SentRequest[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    fetchImpl: async (req) => {
+      sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
+      return router(req);
+    },
+  });
+  const doc: OkfDocument = { id: "concepts/plain", frontmatter: { type: "T", timestamp: T_DOC }, body: "v1" };
+
+  const created = await remote.write("concepts/plain", doc, { expectedVersion: null });
+  const updated = await remote.write("concepts/plain", { ...doc, body: "v2" }, { expectedVersion: created });
+  assert.equal(await remote.delete("concepts/plain", { expectedVersion: updated }), true);
+
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.path} ${r.key}`),
+    [
+      "GET /v0/capabilities null",
+      "PUT /v0/bundles/test/docs/concepts/plain null",
+      "PUT /v0/bundles/test/docs/concepts/plain null",
+      "DELETE /v0/bundles/test/docs/concepts/plain null",
+    ],
+  );
+});
+
+test("RemoteBackend: separate guarded writes are minted different keys; unconditional writes and a caller's requestId mint none", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-minted", backend: serverBackend });
+  const sent: SentRequest[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    fetchImpl: async (req) => {
+      sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
+      return router(req);
+    },
+  });
+  const doc = (id: string, body: string): OkfDocument => ({ id, frontmatter: { type: "T", timestamp: T_DOC }, body });
+
+  const a = await remote.write("concepts/a", doc("concepts/a", "a1"), { expectedVersion: null });
+  await remote.write("concepts/a", doc("concepts/a", "a2"), { expectedVersion: a });
+  await remote.write("concepts/b", doc("concepts/b", "b1"));
+  const c = await remote.write("concepts/c", doc("concepts/c", "c1"), { expectedVersion: null, requestId: "caller-chosen" });
+  await remote.delete("concepts/b");
+  await remote.delete("concepts/c", { expectedVersion: c });
+
+  const keys = sent.filter((r) => r.method !== "GET").map((r) => r.key);
+  assert.equal(keys.length, 6);
+  const [createA, updateA, plainB, callerC, plainDeleteB, guardedDeleteC] = keys;
+  for (const minted of [createA, updateA, guardedDeleteC]) assert.match(minted ?? "", /^[0-9a-f-]{36}$/);
+  assert.equal(new Set([createA, updateA, guardedDeleteC]).size, 3, "every guarded write gets its own key");
+  assert.equal(plainB, null, "an unconditional write is not identified");
+  assert.equal(plainDeleteB, null, "an unconditional delete is not identified");
+  assert.equal(callerC, "caller-chosen", "a caller's requestId is sent as given");
+  assert.equal(sent.filter((r) => r.path === "/v0/capabilities").length, 1, "the capability answer is kept");
+  assert.deepEqual(await outcomeAt(router, updateA!), { status: 200, body: { kind: "committed", version: (await serverBackend.read("concepts/a")).version } });
+});
+
+test("RemoteBackend: a capability question that fails in transport or with a transient status is asked again, and only a transport failure holds the write back", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-probe-retry", backend: serverBackend });
+  let probe: "throw" | "503" | "router" = "throw";
+  const sent: SentRequest[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    maxRetries: 0,
+    fetchImpl: async (req) => {
+      const path = new URL(req.url).pathname;
+      sent.push({ method: req.method, path, key: req.headers.get("Idempotency-Key") });
+      if (path === "/v0/capabilities" && probe === "throw") throw new TypeError("fetch failed");
+      if (path === "/v0/capabilities" && probe === "503") return new Response("", { status: 503 });
+      return router(req);
+    },
+  });
+  const doc = (body: string): OkfDocument => ({ id: "concepts/p", frontmatter: { type: "T", timestamp: T_DOC }, body });
+
+  await assert.rejects(() => remote.write("concepts/p", doc("p1"), { expectedVersion: null }), TypeError);
+  assert.equal(await serverBackend.exists("concepts/p"), false, "a write whose capability question failed in transport is not sent");
+  probe = "503";
+  const created = await remote.write("concepts/p", doc("p1"), { expectedVersion: null });
+  probe = "router";
+  await remote.write("concepts/p", doc("p2"), { expectedVersion: created });
+
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.path} ${r.key === null ? "unidentified" : "identified"}`),
+    [
+      "GET /v0/capabilities unidentified",
+      "GET /v0/capabilities unidentified",
+      "PUT /v0/bundles/test/docs/concepts/p unidentified",
+      "GET /v0/capabilities unidentified",
+      "PUT /v0/bundles/test/docs/concepts/p identified",
+    ],
+  );
+});
+
+test("RemoteBackend: a delete whose premise is not a content version is sent unidentified, as the wire accepts identity on no other", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-delete-premise", backend: serverBackend };
+  const router = createRouter(bundle);
+  const sent: SentRequest[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    fetchImpl: async (req) => {
+      sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
+      return router(req);
+    },
+  });
+  const { version } = await writeDocVersioned(bundle, { id: "concepts/d", frontmatter: { type: "T", timestamp: T_DOC }, body: "d1" });
+
+  await assert.rejects(() => remote.delete("concepts/d", { expectedVersion: "not-a-version" }), VersionConflict);
+  assert.equal(await remote.delete("concepts/d", { expectedVersion: `W/"${version}"` }), true);
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.path} ${r.key === null ? "unidentified" : "identified"}`),
+    [
+      "DELETE /v0/bundles/test/docs/concepts/d unidentified",
+      "GET /v0/capabilities unidentified",
+      "DELETE /v0/bundles/test/docs/concepts/d identified",
+    ],
+  );
+});
+
+test("RemoteBackend: a guarded write sends the document as it stood when write() was called, and refuses an unencodable one before asking capabilities", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-capture", backend: serverBackend });
+  let answerProbe!: () => void;
+  const probeAnswered = new Promise<void>((resolve) => (answerProbe = resolve));
+  const sent: string[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    maxRetries: 0,
+    fetchImpl: async (req) => {
+      const path = new URL(req.url).pathname;
+      sent.push(`${req.method} ${path}`);
+      if (path === "/v0/capabilities") await probeAnswered;
+      return router(req);
+    },
+  });
+  const doc: OkfDocument = { id: "concepts/cap", frontmatter: { type: "T", timestamp: T_DOC }, body: "as called" };
+
+  const pending = remote.write("concepts/cap", doc, { expectedVersion: null });
+  doc.body = "changed while the capability question was pending";
+  doc.frontmatter.title = "changed";
+  answerProbe();
+  await pending;
+  const head = await serverBackend.read("concepts/cap");
+  assert.equal(head.doc.body?.trim(), "as called");
+  assert.equal(head.doc.frontmatter.title, undefined);
+
+  const unencodable: OkfDocument = { id: "concepts/nan", frontmatter: { type: "T", n: Number.NaN }, body: "x" };
+  const fresh = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      throw new TypeError("fetch failed");
+    },
+  });
+  await assert.rejects(() => fresh.write("concepts/nan", unencodable, { expectedVersion: null }), InvalidInputError);
+  assert.deepEqual(sent, ["GET /v0/capabilities", "PUT /v0/bundles/test/docs/concepts/cap"]);
+});
+
+test("RemoteBackend: a kept operations answer that went stale is dropped on the host's identity refusal and the guarded write is sent once more without a key; a caller's requestId is not", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  let router = createRouterForBackend(serverBackend);
+  const sent: SentRequest[] = [];
+  const fetchImpl: WireRouter = async (req) => {
+    sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
+    return router(req);
+  };
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", maxRetries: 0, fetchImpl });
+  const doc = (id: string, body: string): OkfDocument => ({ id, frontmatter: { type: "T", timestamp: T_DOC }, body });
+  const a = await remote.write("concepts/a", doc("concepts/a", "a1"), { expectedVersion: null });
+  const b = await remote.write("concepts/b", doc("concepts/b", "b1"), { expectedVersion: null });
+
+  // The host restarts over the same documents without an outcome store.
+  router = createRouterForBackend(serverBackend, { outcomes: null });
+  sent.length = 0;
+  const a2 = await remote.write("concepts/a", doc("concepts/a", "a2"), { expectedVersion: a });
+  assert.equal((await serverBackend.read("concepts/a")).version, a2);
+  assert.equal((await serverBackend.versions("concepts/a")).length, 2, "the refused attempt applied nothing");
+  await assert.rejects(
+    () => remote.write("concepts/c", doc("concepts/c", "c1"), { expectedVersion: null, requestId: "caller-chosen" }),
+    (error: unknown) => error instanceof RemoteError && error.status === 400,
+  );
+  assert.equal(await remote.delete("concepts/b", { expectedVersion: b }), true);
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.path} ${r.key === null ? "unidentified" : r.key === "caller-chosen" ? "caller" : "minted"}`),
+    [
+      "PUT /v0/bundles/test/docs/concepts/a minted",
+      "PUT /v0/bundles/test/docs/concepts/a unidentified",
+      "PUT /v0/bundles/test/docs/concepts/c caller",
+      "GET /v0/capabilities unidentified",
+      "DELETE /v0/bundles/test/docs/concepts/b unidentified",
+    ],
+  );
+
+  // A stale answer met by a delete is handled the same way.
+  const staleDelete = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", maxRetries: 0, fetchImpl });
+  router = createRouterForBackend(serverBackend);
+  const d = await staleDelete.write("concepts/d", doc("concepts/d", "d1"), { expectedVersion: null });
+  router = createRouterForBackend(serverBackend, { outcomes: null });
+  sent.length = 0;
+  assert.equal(await staleDelete.delete("concepts/d", { expectedVersion: d }), true);
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.key === null ? "unidentified" : "minted"}`),
+    ["DELETE minted", "DELETE unidentified"],
+  );
 });
 
 test("wire: MemoryOperationOutcomeStore releases the claim and settles waiters with null when the clock throws inside record", async () => {
