@@ -47,6 +47,7 @@ import {
 import { relocateCatalogEntry } from "../catalog.js";
 import { syncRoutePrefix } from "../hosted/client.js";
 import { recordPulled } from "../hosted/freshness.js";
+import { clearPublishedExtras, readPublishedExtras } from "../hosted/publish-state.js";
 import { bindingHostArgument, readCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
 import { digestOf, ensureParentInside, parentUnsafe, placeNew, ROOT_INDEX } from "../hosted/projection.js";
 import { sameAsStored, walk, writeProjection, type ProjectionEntry } from "../hosted/sync-scan.js";
@@ -232,7 +233,12 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   }${options.json ? commandFragment` --json` : commandFragment``}`;
   const { identity, reader, listed: isListed, workspace } = await connectHostedBundle(bundleId, target, options.workspace ?? marker.workspace ?? undefined, deps, resume);
 
-  const result = await bindFolderInPlace({ canonical, target, bundleId, connection: { identity, reader, listed: isListed, workspace }, deps, resume });
+  // A conversion `publish` started and could not finish: the files it sent that a checkout does
+  // not hold as documents are recorded too, so sync leaves them be.
+  const published = await readPublishedExtras(home, canonical);
+  const extras = published && published.host === target.origin && published.bundle_id === bundleId ? published.extras : undefined;
+  const result = await bindFolderInPlace({ canonical, target, bundleId, connection: { identity, reader, listed: isListed, workspace }, deps, resume, ...(extras ? { extras } : {}) });
+  if (published) await clearPublishedExtras(home, canonical);
   const cataloged = await registerInCatalog(home, result.binding);
   const syncHelp = `${cliInvocation()} sync --dir ${commandToken(canonical)}`;
   deps.stdout(

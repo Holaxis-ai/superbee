@@ -6,8 +6,8 @@
 // answer shape is held to the golden exchanges captured from the real gateway (core's
 // `test/fixtures/hosted-bundle-create-v1/`) by `hosted-create-fake-contract.test.ts`:
 // - a request is identified by `X-Superbee-Write-Request` (a v4 UUID, else `400 invalid_input`);
-//   the same identity with the same contents replays its answer, with other contents is
-//   `request_conflict`;
+//   the same identity with the same contents replays its answer (or finishes a reserved one), with
+//   other contents is `request_conflict`;
 // - the request schema: at most 1,000 documents (else `400 invalid_input`), a root `index.md`;
 // - `workspace_not_found`, `bundle_create_unavailable`, `bundle_exists`, `document_id_collision`
 //   (paths that fold together), `429 bundle_create_limit`, and `503 write_outcome_unknown` once
@@ -72,8 +72,12 @@ export class FakeCreateHost {
   readonly creates: { requestId: string | null; body: Record<string, unknown> }[] = [];
   /** Answer the next creation `503 write_outcome_unknown` after reserving it. */
   failNextCreate = false;
+  /** Serve no reads of created bundles (a host that is unreachable right after the creation). */
+  hideCreated = false;
   private readonly recorded = new Map<string, { digest: string; status: number; body: string; headers: Record<string, string> }>();
   private readonly reservedIds = new Map<string, string>();
+  /** The contents digest each reserved request id was reserved with. */
+  private readonly reservedDigests = new Map<string, string>();
   private count = 0;
   private readonly options: FakeCreateHostOptions;
 
@@ -101,6 +105,7 @@ export class FakeCreateHost {
       });
     }
     if (route === "bundle-create") return this.create(text, body, headers, tenants);
+    if (this.hideCreated) return Response.json({ error: { code: "unavailable" } }, { status: 503 });
     const bundle = this.bundles.get(String(body.bundleId));
     if (!bundle) return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } });
     if (route === "capabilities") {
@@ -146,6 +151,9 @@ export class FakeCreateHost {
       if (earlier.digest !== digest) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
       return new Response(earlier.body, { status: earlier.status, headers: earlier.headers });
     }
+    // A reserved, unfinished request is identified by its contents too (the creation ledger).
+    const reservedDigest = this.reservedDigests.get(requestId);
+    if (reservedDigest !== undefined && reservedDigest !== digest) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
     if (!tenants.includes(body.workspace)) return refusal("workspace_not_found", "That workspace is not one of yours. Nothing was created.");
     if (this.options.unavailable) return refusal("bundle_create_unavailable", "This workspace does not offer bundle creation for this client. Nothing was created.");
     const bundleId = body.bundleId;
@@ -166,6 +174,7 @@ export class FakeCreateHost {
       }
       this.count += 1;
       this.reservedIds.set(bundleId, requestId);
+      this.reservedDigests.set(requestId, digest);
     }
     if (this.failNextCreate) {
       this.failNextCreate = false;

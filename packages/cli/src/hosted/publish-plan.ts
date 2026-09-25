@@ -14,11 +14,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { readDocBytesAtRef, runGit } from "@superbee/board-git";
-import { assertSafeConceptId, conceptIdFromPath, isReservedFile, parseMarkdown } from "@superbee/core";
+import { assertSafeBlobKey, assertSafeConceptId, conceptIdFromPath, isReservedFile, parseMarkdown } from "@superbee/core";
 import { wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 
 import type { GitBoardFacts } from "../bundle-home.js";
-import { digestOf, findPathCollision } from "./projection.js";
+import { digestOf, findPathCollision, fold } from "./projection.js";
 import { unsendable, utf8 } from "./sync-scan.js";
 
 /** The host's bounds for one creation (hosted `src/person-bundle-create.ts`). */
@@ -127,7 +127,7 @@ async function walkAll(folder: string, prefix = "", out: { rel: string; kind: "f
 
 /** The host refuses control and format characters (bidi overrides, zero-width) in an author. */
 function cleanAuthor(author: string): string {
-  return author.replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 256) || "unknown";
+  return [...author.replace(/[\p{Cc}\p{Cf}]/gu, "").trim()].slice(0, 200).join("").trim() || "unknown";
 }
 
 interface HistoryOptions {
@@ -135,7 +135,7 @@ interface HistoryOptions {
   readonly now: number;
 }
 
-/** Earlier Git versions of one document, newest first, as import rows (the current version excluded). */
+/** Earlier Git versions of one document, oldest first, as import rows (the current version excluded). */
 function gitVersions(board: GitBoardFacts, id: string, rel: string, current: string, okfVersion: "0.1" | "0.2" | undefined, now: number): { rows: CreateHistory[]; skipped: number } {
   const repoPath = board.prefix === "" ? rel : `${board.prefix}/${rel}`;
   const log = runGit(board.top, ["log", "--no-renames", "--format=%H%x1f%an <%ae>%x1f%aI", "HEAD", "--", repoPath]);
@@ -176,7 +176,8 @@ function gitVersions(board: GitBoardFacts, id: string, rel: string, current: str
       body: parsed.body ?? "",
     });
   }
-  return { rows, skipped };
+  // The host numbers imported versions oldest first, in the order sent.
+  return { rows: rows.reverse(), skipped };
 }
 
 function okfVersionOf(rootIndex: string | null): "0.1" | "0.2" | undefined {
@@ -240,6 +241,12 @@ export async function planPublish(folder: string, options: { history: false } | 
       continue;
     }
     if (!entry.rel.endsWith(".md")) {
+      try {
+        assertSafeBlobKey(entry.rel);
+      } catch (error) {
+        blockers.push({ path: entry.rel, reason: "unsafe_path", message: `${entry.rel} cannot be a file key (${(error as Error).message})` });
+        continue;
+      }
       if (bytes.byteLength > PUBLISH_BOUNDS.blobBytes) {
         blockers.push({ path: entry.rel, reason: "too_large", message: `${entry.rel} is over the 1 MB a file may hold` });
         continue;
@@ -253,6 +260,11 @@ export async function planPublish(folder: string, options: { history: false } | 
       assertSafeConceptId(id);
     } catch (error) {
       blockers.push({ path: entry.rel, reason: "unsafe_id", message: `${entry.rel} cannot be a document id (${(error as Error).message})` });
+      continue;
+    }
+    // The host's canonical spelling (#642): no segment starting or ending with whitespace, NFC.
+    if (id.split("/").some((segment) => segment !== segment.trim()) || id !== id.normalize("NFC")) {
+      blockers.push({ path: entry.rel, reason: "document_id_not_canonical", message: `${entry.rel} is not in its canonical spelling (a segment starts or ends with a space, or it is not NFC); rename it` });
       continue;
     }
     const refusal = unsendable(id, entry.rel, bytes, null, { bundleId: "publish", okfVersion });
@@ -275,11 +287,22 @@ export async function planPublish(folder: string, options: { history: false } | 
     documentFiles.push({ id, rel: entry.rel, text: utf8(bytes)! });
   }
   if (rootIndex === null) blockers.push({ path: "index.md", reason: "no_root_index", message: "a hosted bundle needs a root index.md" });
-  // Document paths that would be one file on a case-insensitive disk (the host also checks
-  // reserved files and blobs, and refuses such a pair as document_id_collision).
+  // Paths that would be one file on a case-insensitive disk: documents (and their folders), then
+  // every path the host claims, documents, reserved files and files together.
   const collision = findPathCollision(documents.map((doc) => doc.id));
   if (collision) {
     blockers.push({ path: collision.first, reason: "path_collision", message: `'${collision.first}' and '${collision.second}' differ only in letter case` });
+  } else {
+    const claimed = new Map<string, string>();
+    for (const file of [...documents.map((doc) => `${doc.id}.md`), ...reserved.map((r) => (r.dir === "" ? r.name : `${r.dir}/${r.name}`)), ...blobs.map((b) => b.key)]) {
+      const key = file.split("/").map(fold).join("/");
+      const other = claimed.get(key);
+      if (other !== undefined) {
+        blockers.push({ path: file, reason: "path_collision", message: `'${other}' and '${file}' would be one file on a case-insensitive disk` });
+        break;
+      }
+      claimed.set(key, file);
+    }
   }
   if (documents.length > PUBLISH_BOUNDS.documents) blockers.push({ path: ".", reason: "too_many_documents", message: `${documents.length} documents; a hosted bundle is created with at most ${PUBLISH_BOUNDS.documents}` });
   if (reserved.length > PUBLISH_BOUNDS.reserved) blockers.push({ path: ".", reason: "too_many_reserved", message: `${reserved.length} reserved files; at most ${PUBLISH_BOUNDS.reserved}` });

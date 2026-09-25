@@ -75,6 +75,43 @@ function git(cwd: string, args: string[]): string {
   return result.stdout.trim();
 }
 
+function gitAs(cwd: string, args: string[], author: string): void {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: author, GIT_AUTHOR_EMAIL: "b@example.com", GIT_COMMITTER_NAME: "Ada", GIT_COMMITTER_EMAIL: "ada@example.com" } });
+  assert.equal(result.status, 0, result.stderr);
+}
+
+/**
+ * A copy of the host's strict request schema (superbee-hosted `src/person-bundle-create.ts`,
+ * `personBundleCreateInput` at 09e577e6): the keys, types and bounds a CLI-built body must meet.
+ */
+function assertCreateSchema(body: Record<string, unknown>): void {
+  const text = (value: unknown, max: number, min = 0) => typeof value === "string" && [...value].length >= min && value.length <= max;
+  const plain = (value: unknown) => typeof value === "string" && /^[^\p{Cc}\p{Cf}]*$/u.test(value);
+  const keys = (value: unknown, allowed: string[]) => typeof value === "object" && value !== null && Object.keys(value).every((key) => allowed.includes(key));
+  const record = (value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value);
+  assert.ok(keys(body, ["workspace", "bundleId", "name", "documents", "reserved", "blobs", "history"]), "only the schema's keys");
+  assert.ok(body.name === undefined || (text(body.name, 200, 1) && plain(body.name)), "name");
+  const documents = body.documents as unknown[];
+  assert.ok(Array.isArray(documents) && documents.length <= 1000);
+  for (const doc of documents) assert.ok(keys(doc, ["id", "frontmatter", "body"]) && text((doc as { id: unknown }).id, 512, 1) && record((doc as { frontmatter: unknown }).frontmatter) && typeof (doc as { body: unknown }).body === "string", JSON.stringify(doc));
+  const reserved = body.reserved as { dir: unknown; name: unknown; content: unknown }[];
+  assert.ok(Array.isArray(reserved) && reserved.length >= 1 && reserved.length <= 1000);
+  for (const file of reserved) assert.ok(keys(file, ["dir", "name", "content"]) && text(file.dir, 512) && (file.name === "index.md" || file.name === "log.md") && typeof file.content === "string");
+  const blobs = (body.blobs ?? []) as { key: unknown; contentType: unknown; base64: unknown }[];
+  assert.ok(Array.isArray(blobs) && blobs.length <= 100);
+  for (const blob of blobs) assert.ok(keys(blob, ["key", "contentType", "base64"]) && text(blob.key, 512, 1) && text(blob.contentType, 200, 1) && typeof blob.base64 === "string");
+  const history = (body.history ?? []) as Record<string, unknown>[];
+  assert.ok(Array.isArray(history) && history.length <= 1000);
+  for (const row of history) {
+    assert.ok(keys(row, ["documentId", "label", "author", "authoredAt", "frontmatter", "body"]), "history keys");
+    assert.ok(text(row.documentId, 512, 1));
+    assert.match(String(row.label), /^imported:git\/(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+    assert.ok(row.author === undefined || (typeof row.author === "string" && row.author.length <= 200 && plain(row.author)), `author ${String(row.author)}`);
+    assert.ok(typeof row.authoredAt === "string" && !Number.isNaN(Date.parse(row.authoredAt)) && /(Z|[+-]\d\d:\d\d)$/.test(row.authoredAt));
+    assert.ok(record(row.frontmatter) && typeof row.body === "string");
+  }
+}
+
 async function checkoutState(home: string, folder: string) {
   const binding = await bindingForPath(home, folder);
   assert.ok(binding, "the folder is a hosted checkout");
@@ -138,6 +175,7 @@ test("--yes creates the bundle and converts the folder in place, rewriting nothi
   assert.deepEqual(receipt.checkout, { matched: 2, placed: 0, conflicts: 0, local_only: 0 });
   // One creation request, identified, carrying the whole bundle.
   assert.equal(fake.creates.length, 1);
+  assertCreateSchema(fake.creates[0]!.body);
   const sent = fake.creates[0]!.body as { documents: { id: string }[]; reserved: { dir: string; name: string }[]; blobs: { key: string }[] };
   assert.deepEqual(sent.documents.map((doc) => doc.id).sort(), ["notes/alpha", "notes/beta"]);
   assert.deepEqual(sent.reserved.map((r) => `${r.dir}/${r.name}`).sort(), ["/index.md", "notes/index.md"]);
@@ -220,9 +258,11 @@ test("a Git board is published with its history, unbound, and its branch left as
   git(board, ["checkout", "-q", "--orphan", "board"]);
   git(board, ["rm", "-q", "-rf", "--ignore-unmatch", "."]);
   await writeBundle(board);
-  await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha v1.\n");
+  await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha v0.\n");
   git(board, ["add", "."]);
-  git(board, ["commit", "-q", "-m", "v1"]);
+  git(board, ["commit", "-q", "-m", "v0"]);
+  await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha v1.\n");
+  gitAs(board, ["commit", "-q", "-am", "v1"], "B".repeat(240));
   await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha body é.\n");
   git(board, ["commit", "-q", "-am", "v2"]);
   const head = git(board, ["rev-parse", "HEAD"]);
@@ -232,18 +272,21 @@ test("a Git board is published with its history, unbound, and its branch left as
   const fake = new FakeCreateHost();
   const preview = await run(h, ["--to", "hosted", "--dir", canonical, "--host", HOST, "--with-history"], fake);
   assert.equal(preview.home, "git");
-  assert.equal((preview.travels as { history: { mode: string; versions: number } }).history.versions, 1);
+  assert.equal((preview.travels as { history: { mode: string; versions: number } }).history.versions, 2);
   assert.equal((preview.git as Record<string, unknown>).head, head);
 
   const receipt = await run(h, ["--to", "hosted", "--dir", canonical, "--host", HOST, "--bundle-id", "team.board", "--with-history", "--yes"], fake);
   assert.equal(receipt.published, "created");
-  assert.deepEqual(receipt.sent, { documents: 2, reserved_files: 2, other_files: 1, history: { imported: 1, verified: false } });
-  const history = (fake.creates[0]!.body as { history: { documentId: string; label: string; author: string; body: string }[] }).history;
-  assert.equal(history.length, 1);
+  assert.deepEqual(receipt.sent, { documents: 2, reserved_files: 2, other_files: 1, history: { imported: 2, verified: false } });
+  const body = fake.creates[0]!.body;
+  assertCreateSchema(body);
+  const history = (body as { history: { documentId: string; label: string; author: string; body: string }[] }).history;
+  // Oldest first, as the host numbers them.
+  assert.deepEqual(history.map((row) => row.body), ["Alpha v0.\n", "Alpha v1.\n"]);
   assert.equal(history[0]!.documentId, "notes/alpha");
   assert.match(history[0]!.label, /^imported:git\/[0-9a-f]{40}$/);
   assert.equal(history[0]!.author, "Ada <ada@example.com>");
-  assert.equal(history[0]!.body, "Alpha v1.\n");
+  assert.equal([...history[1]!.author].length, 200, "an author is cut to the host's 200 characters");
   const unbound = receipt.git as Record<string, unknown>;
   assert.equal(unbound.unbound, true);
   assert.equal(unbound.head, head);
@@ -258,7 +301,7 @@ test("a Git board is published with its history, unbound, and its branch left as
   assert.equal((await hostedCheckoutAt(project, h.home))?.bundle_id, "team.board");
 });
 
-test("a board behind its upstream is refused until synced", async () => {
+test("a board behind its upstream is a blocker until synced", async () => {
   const h = await harness();
   const remote = path.join(h.cwd, "remote.git");
   git(h.cwd, ["init", "-q", "--bare", remote]);
@@ -285,8 +328,60 @@ test("a board behind its upstream is refused until synced", async () => {
   git(other, ["commit", "-q", "-m", "teammate"]);
   git(other, ["push", "-q", "origin", "board"]);
   git(board, ["fetch", "-q", "origin"]);
-  const error = await rejects(run(h, ["--to", "hosted", "--dir", await realpath(board), "--host", HOST], new FakeCreateHost()));
+  const preview = await run(h, ["--to", "hosted", "--dir", await realpath(board), "--host", HOST], new FakeCreateHost());
+  assert.equal(preview.ready, false);
+  assert.equal((preview.blockers as { rows: { reason: string }[] }).rows[0]!.reason, "board_behind");
+  const fake = new FakeCreateHost();
+  const error = await rejects(run(h, ["--to", "hosted", "--dir", await realpath(board), "--host", HOST, "--yes"], fake));
+  assert.equal(fake.requests.length, 0);
   assert.equal(error.code, "CONFLICT");
   assert.equal(error.details?.reason, "board_behind");
   assert.match(error.help ?? "", /sync --dir/);
+  // A clone of the board branch (its .git a repository) is refused before any request: publish
+  // could not unbind it, and deleting its .git would lose the repository.
+  const cloneFake = new FakeCreateHost();
+  const clone = await rejects(run(h, ["--to", "hosted", "--dir", await realpath(other), "--host", HOST, "--yes"], cloneFake));
+  assert.equal(clone.code, "FORBIDDEN");
+  assert.equal(clone.details?.reason, "board_clone");
+  assert.equal(cloneFake.requests.length, 0);
+  assert.doesNotMatch(clone.help ?? "", /delete/);
+});
+
+test("an unfinished creation keeps its request id when the files change: the host says request_conflict", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "b");
+  await writeBundle(folder);
+  const fake = new FakeCreateHost();
+  fake.failNextCreate = true;
+  const argv = ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "team.notes", "--yes"];
+  assert.equal((await rejects(run(h, argv, fake))).code, "TRANSIENT");
+  await writeFile(path.join(folder, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nChanged meanwhile.\n");
+  const conflict = await rejects(run(h, argv, fake));
+  assert.equal(conflict.code, "CONFLICT");
+  assert.equal(conflict.details?.reason, "request_conflict");
+  assert.equal(fake.creates[1]!.requestId, fake.creates[0]!.requestId, "never a second request holding the id");
+  // Putting the files back finishes the one creation.
+  await writeFile(path.join(folder, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha body é.\n");
+  assert.equal((await run(h, argv, fake)).published, "created");
+  assert.equal(fake.creates[2]!.requestId, fake.creates[0]!.requestId);
+});
+
+test("a conversion that fails after the creation is finished by checkout --adopt, extras included", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "b");
+  await writeBundle(folder);
+  const fake = new FakeCreateHost();
+  fake.hideCreated = true;
+  const failed = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "team.notes", "--yes"], fake));
+  assert.equal(failed.details?.reason, "bind_failed");
+  assert.match(failed.help ?? "", /checkout --adopt .* --host https:\/\/hosted\.example/);
+  assert.equal(readCheckoutMarker(folder)?.bundle_id, "team.notes", "the marker went in first");
+  fake.hideCreated = false;
+  const { checkout } = await import("../src/commands/checkout.js");
+  const out: string[] = [];
+  await checkout(["--adopt", folder, "--host", HOST], { stdout: (text) => out.push(text), auth: h.auth, cwd: h.cwd, fetch: fake.fetch });
+  assert.equal((decode(out.at(-1)!.trim()) as Record<string, unknown>).adopted, "copy");
+  const state = await checkoutState(h.home, folder);
+  assert.deepEqual(state.held, [], "the blob and nested index publish sent are not held");
+  assert.deepEqual(state.pending, []);
 });

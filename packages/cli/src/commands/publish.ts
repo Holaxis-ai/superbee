@@ -14,7 +14,7 @@
 //
 // A retry after an unknown outcome reuses the same request id, recorded in private state, so the
 // host finishes or confirms the one creation instead of starting another.
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { lstat, readFile, realpath, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -38,10 +38,10 @@ import { createHostedSyncClient, hostedFailure } from "../hosted/client.js";
 import { readDefaultWorkspace } from "../hosted/defaults.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
 import { createBody, planDigest, planPublish, type PublishPlan } from "../hosted/publish-plan.js";
+import { clearPendingCreate, clearPublishedExtras, readPendingCreate, writePendingCreate, writePublishedExtras } from "../hosted/publish-state.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
-import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { bindFolderInPlace } from "./checkout-adopt.js";
 import { BUNDLE_ID, connectHostedBundle, registerInCatalog, type CheckoutDeps } from "./checkout.js";
 
@@ -62,7 +62,9 @@ you share it in the app), then converts this folder in place into a hosted check
 is rewritten, a read-only .superbee/checkout.json marker is added, and 'superbee sync' then syncs
 it with the host. A Git board is unbound first: the folder stops being a worktree of the board
 branch, which stays as it is, locally and on origin (the receipt names its commit). Teammates who
-use the Git board keep it until you tell them to check the hosted bundle out instead.
+use the Git board keep it until you tell them to check the hosted bundle out instead. A board
+behind its upstream (as of the last fetch) is a blocker until 'superbee sync'; a clone of the board
+branch, or any other folder that is its own Git working tree, is refused.
 
 --with-history imports each document's earlier Git versions as labeled, unverified history
 (imported:git/<commit>); without it, history starts at publish. A local bundle has only its current
@@ -128,35 +130,6 @@ function cleanName(name: string): string {
   return name.replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 128);
 }
 
-// The request id of a creation that may be pending, per folder, so a retry resends the same one.
-function pendingDir(home: string): string {
-  return path.join(userStateDir(home), "hosted-publish");
-}
-function pendingFile(canonical: string): string {
-  return `${createHash("sha256").update(`superbee:publish\0${canonical}`, "utf8").digest("hex")}.json`;
-}
-interface PendingCreate {
-  readonly request_id: string;
-  readonly host: string;
-  readonly workspace: string;
-  readonly bundle_id: string;
-  readonly digest: string;
-}
-async function readPending(home: string, canonical: string): Promise<PendingCreate | null> {
-  try {
-    const value = JSON.parse(await readUserStateFile(home, path.join(pendingDir(home), pendingFile(canonical)), 16 * 1024)) as Partial<PendingCreate>;
-    return typeof value.request_id === "string" && typeof value.digest === "string" ? (value as PendingCreate) : null;
-  } catch {
-    return null;
-  }
-}
-async function writePending(home: string, canonical: string, pending: PendingCreate): Promise<void> {
-  await writeUserStateFileAtomic0600(home, pendingDir(home), pendingFile(canonical), `${JSON.stringify(pending)}\n`);
-}
-async function clearPending(home: string, canonical: string): Promise<void> {
-  await unlink(path.join(pendingDir(home), pendingFile(canonical))).catch(() => {});
-}
-
 /** Refuse a folder that is not its own authority: nested in another bundle, or bound elsewhere. */
 async function assertPublishable(canonical: string, facts: BundleHomeFacts): Promise<void> {
   if (facts.home === "hosted") {
@@ -177,6 +150,19 @@ async function assertPublishable(canonical: string, facts: BundleHomeFacts): Pro
       help: `move it to its own board branch first: ${cliInvocation()} sync --establish`,
     });
   }
+  // A folder that is itself a Git working tree must be a linked worktree of the board branch
+  // (which publish unbinds by removing its `.git` file); anything else (a clone of the board, a
+  // detached worktree, a repository) would leave the folder two authorities.
+  const dotGit = await lstat(path.join(canonical, ".git")).catch(() => null);
+  if (dotGit) {
+    const linkedBoard = facts.home === "git" && facts.board.channel === "branch" && dotGit.isFile() && isLinkedWorktree(canonical);
+    if (!linkedBoard) {
+      throw new CliError("FORBIDDEN", `${canonical} is a Git ${dotGit.isFile() ? "worktree" : "repository"} that publish cannot unbind${facts.home === "git" ? " (a clone of the board branch, not a project's board worktree)" : ""}`, {
+        details: { reason: facts.home === "git" ? "board_clone" : "git_working_tree", folder: canonical },
+        help: "copy the bundle's files (without .git) into a new folder and publish that, or publish from the project whose board worktree this is",
+      });
+    }
+  }
   const enclosing = await findBundleRoot(path.dirname(canonical)).catch(() => null);
   if (enclosing && enclosing !== canonical) {
     throw new CliError("FORBIDDEN", `${canonical} is inside the bundle at ${enclosing}`, {
@@ -193,16 +179,28 @@ async function assertPublishable(canonical: string, facts: BundleHomeFacts): Pro
   }
 }
 
-/** A Git board that must not lose a teammate's change: publish sends this folder as it is now. */
-async function assertBoardCurrent(board: GitBoardFacts, canonical: string): Promise<Record<string, unknown>> {
+/** True when the folder is a linked worktree: its own Git dir is not the repository's common dir. */
+function isLinkedWorktree(folder: string): boolean {
+  const own = runGit(folder, ["rev-parse", "--path-format=absolute", "--git-dir"]);
+  const common = runGit(folder, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  return own.status === 0 && common.status === 0 && own.stdout.trim() !== common.stdout.trim();
+}
+
+/**
+ * A Git board that must not lose a teammate's change: publish sends this folder as it is now, so a
+ * board behind or diverged from its upstream (as of the last fetch) is a blocker until synced.
+ */
+async function boardCheck(board: GitBoardFacts, canonical: string): Promise<{ block: Record<string, unknown>; blocker: { path: string; reason: string; message: string } | null }> {
   const block = await gitBoardSyncBlock(board);
-  if (block.state === "behind" || block.state === "diverged") {
-    throw new CliError("CONFLICT", `the Git board at ${canonical} is ${block.state} its upstream (as of the last fetch); publishing now would leave teammates' changes out`, {
-      details: { reason: `board_${block.state}`, sync: block },
-      help: `${cliInvocation()} sync --dir ${commandToken(canonical)}`,
-    });
-  }
-  return block;
+  const blocker =
+    block.state === "behind" || block.state === "diverged"
+      ? {
+          path: ".",
+          reason: `board_${String(block.state)}`,
+          message: `the Git board is ${String(block.state)} its upstream as of the last fetch; run ${cliInvocation()} sync --dir ${commandToken(canonical)} first so teammates' changes travel too`,
+        }
+      : null;
+  return { block, blocker };
 }
 
 function boardHead(board: GitBoardFacts): string | null {
@@ -222,7 +220,7 @@ async function unbindBoard(board: GitBoardFacts, canonical: string): Promise<voi
   }
   const common = runGit(board.top, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   await unlink(dotGit);
-  if (common.status === 0) runGit(path.dirname(common.stdout.trim()), ["worktree", "prune"]);
+  if (common.status === 0) runGit(board.top === canonical ? path.dirname(canonical) : board.top, ["--git-dir", common.stdout.trim(), "worktree", "prune"]);
 }
 
 function summary(plan: PublishPlan): Record<string, unknown> {
@@ -249,7 +247,10 @@ function createRefusal(code: string, message: string, context: { bundleId: strin
         help: "ask a workspace admin in the Superbee app",
       });
     case "request_conflict":
-      return new CliError("CONFLICT", "an earlier publish of this folder used the same request with other contents", { details, help: context.resume });
+      return new CliError("CONFLICT", `an unfinished publish of '${context.bundleId}' from this folder carried other contents, and the host holds the id for it`, {
+        details,
+        help: `put the files back as they were and re-run the same command to finish it, or publish under another id: ${cliInvocation()} publish --to hosted --bundle-id <another id>`,
+      });
     default:
       return new CliError("USAGE", `${context.target.origin} refused the bundle (${code}): ${message}`, { details, help: "fix the files it names, then preview again" });
   }
@@ -294,7 +295,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   const facts = await bundleHomeAt(canonical, { home });
   await assertPublishable(canonical, facts);
   const board = facts.home === "git" ? facts.board : null;
-  const boardState = board ? await assertBoardCurrent(board, canonical) : null;
+  const boardState = board ? await boardCheck(board, canonical) : null;
 
   const bundle = await openBundle(canonical);
   const display = await deriveBundleDisplayName(bundle).catch(() => ({ name: path.basename(canonical), source: "root-basename" as const }));
@@ -323,13 +324,16 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         branch: board.branch,
         upstream: board.upstream,
         head: boardHead(board),
-        sync: boardState?.state,
+        sync: boardState?.block.state,
+        ...(boardState && ((boardState.block.ahead as number | null) ?? 0) + ((boardState.block.uncommitted as number | null) ?? 0) > 0
+          ? { not_on_branch: { ahead: boardState.block.ahead, uncommitted: boardState.block.uncommitted, note: "these travel to hosted but not to the board branch teammates still sync" } }
+          : {}),
         will: "unbind this folder from the board branch; the branch and its commits stay, locally and on origin",
       }
     : null;
 
   if (!values.yes) {
-    const blockers = [...plan.blockers.map((b) => ({ path: b.path, reason: b.reason, message: b.message }))];
+    const blockers = [...plan.blockers.map((b) => ({ path: b.path, reason: b.reason, message: b.message })), ...(boardState?.blocker ? [boardState.blocker] : [])];
     if (!target) blockers.push({ path: "", reason: "no_host", message: "no hosted Superbee host: sign in first, or pass --host" });
     deps.stdout(
       render(
@@ -365,6 +369,12 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   if (!target) {
     throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
   }
+  if (boardState?.blocker) {
+    throw new CliError("CONFLICT", boardState.blocker.message, {
+      details: { reason: boardState.blocker.reason, sync: boardState.block },
+      help: `${cliInvocation()} sync --dir ${commandToken(canonical)}`,
+    });
+  }
   if (plan.blockers.length > 0) {
     throw new CliError("USAGE", `${plan.blockers.length} thing(s) in the bundle cannot be published: ${plan.blockers[0]!.message}`, {
       details: { reason: "blocked", blockers: plan.blockers.slice(0, LISTED), blockers_total: plan.blockers.length },
@@ -396,10 +406,13 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
 
   const body = createBody(plan, { workspace, bundleId, name });
   const digest = planDigest(body);
-  const earlier = await readPending(home, canonical);
-  const requestId =
-    earlier && earlier.digest === digest && earlier.host === target.origin && earlier.workspace === workspace && earlier.bundle_id === bundleId ? earlier.request_id : randomUUID();
-  await writePending(home, canonical, { request_id: requestId, host: target.origin, workspace, bundle_id: bundleId, digest });
+  // An unfinished creation of the same bundle keeps its request id whatever changed since: the
+  // host then finishes or confirms it, or answers request_conflict, and never holds the id for a
+  // request nobody can finish.
+  const earlier = await readPendingCreate(home, canonical);
+  const resumes = earlier !== null && earlier.host === target.origin && earlier.workspace === workspace && earlier.bundle_id === bundleId;
+  const requestId = resumes ? earlier.request_id : randomUUID();
+  if (!resumes) await writePendingCreate(home, canonical, { request_id: requestId, host: target.origin, workspace, bundle_id: bundleId, digest });
 
   const context = { bundleId, workspace, target, resume: yesCommand };
   let answer;
@@ -424,19 +437,20 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     });
   }
   if (answer.status === 429 && code === "bundle_create_limit") {
-    await clearPending(home, canonical);
+    await clearPendingCreate(home, canonical);
     throw createRefusal(code, hostMessage, context);
   }
   if (answer.status === 200 && envelope.ok === false && code !== null) {
-    await clearPending(home, canonical);
+    if (code !== "request_conflict") await clearPendingCreate(home, canonical);
     throw createRefusal(code, hostMessage, context);
   }
   if (answer.status !== 200 || envelope.ok !== true || typeof envelope.data !== "object" || envelope.data === null) {
-    if (answer.status === 400) await clearPending(home, canonical);
+    if (answer.status === 400) await clearPendingCreate(home, canonical);
     throw hostedFailure(new RemoteError(`hosted bundle-create answered ${answer.status}`, code ?? "RUNTIME", answer.status), target, yesCommand);
   }
-  await clearPending(home, canonical);
+  await clearPendingCreate(home, canonical);
   const created = envelope.data;
+  await writePublishedExtras(home, canonical, { host: target.origin, bundle_id: bundleId, extras: plan.extras }).catch(() => {});
 
   // The bundle exists on the host. From here, a failure leaves the folder adoptable: the marker
   // goes in first, so `checkout --adopt` can finish the conversion.
@@ -466,6 +480,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   try {
     const connection = await connectHostedBundle(bundleId, target, workspace, deps, resume);
     bound = await bindFolderInPlace({ canonical, target, bundleId, connection, deps, resume, extras: plan.extras });
+    await clearPublishedExtras(home, canonical);
   } catch (error) {
     const failure = error instanceof CliError ? error : new CliError("RUNTIME", (error as Error).message);
     throw new CliError(failure.code, `'${bundleId}' was created on ${target.origin}, but binding this folder to it failed: ${failure.message}`, {
