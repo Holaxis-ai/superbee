@@ -312,6 +312,9 @@ test("hook install --turn-end-sync --git-boards records a per-user opt-in; the h
     await hook(["install"], { ...deps, stdout: () => {} });
     assert.equal(await readTurnEndGitBoards(home), true, "a plain reinstall keeps the Git opt-in");
 
+    await hook(["uninstall", "--turn-end-sync"], { ...deps, stdout: () => {} });
+    assert.deepEqual(await status(), { claude_code: false, codex: false }, "no Stop hook, so no Git sync to report");
+
     await hook(["install", "--turn-end-sync"], { ...deps, stdout: () => {} });
     assert.equal(await readTurnEndGitBoards(home), false, "--turn-end-sync alone switches Git back off");
   } finally {

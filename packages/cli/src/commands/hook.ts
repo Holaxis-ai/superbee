@@ -102,8 +102,8 @@ End-of-turn sync is a separate opt-in: \`hook install --turn-end-sync\` also ins
 that runs \`turn-end\` (one sync of a hosted checkout when the agent's turn ends; nothing anywhere
 else) for Claude Code and Codex. OpenCode has no Stop hook, so there it is not installed.
 A Git board is never synced by the Stop hook unless you also pass \`--git-boards\`, which records
-the opt-in for this user: then the shared board a session is in is synced (committed, pulled,
-pushed) at turn end as well. \`hook install --turn-end-sync\` without it switches the Git sync back
+the opt-in for this user, whatever the --scope: then every installed Stop hook of yours, in any
+project, also syncs (commits, pulls, pushes) the shared board its session is in at turn end. \`hook install --turn-end-sync\` without it switches the Git sync back
 off; a plain \`hook install\` keeps the current choice.
 \`hook uninstall --turn-end-sync\` removes only the Stop hook; plain \`hook uninstall\` removes both.
 SUPERBEE_NO_TURN_SYNC=<any value> turns the Stop hook off without uninstalling it, and
@@ -275,6 +275,13 @@ export function computeTurnEndHookUninstall(settings: HookSettings): [HookSettin
   if (next.length === 0) delete updated.hooks!.Stop;
   else updated.hooks!.Stop = next as NonNullable<HookSettings["hooks"]>["SessionStart"];
   return [updated, true];
+}
+
+/** `hook status`'s end-of-turn report: per host, plus the Git opt-in only while a Stop hook would act on it. */
+async function turnEndStatus(claude: HookSettings, codex: HookSettings, userHome: string): Promise<Record<string, unknown>> {
+  const hosts = { claude_code: turnEndHookInstalled(claude), codex: turnEndHookInstalled(codex) };
+  const git = (hosts.claude_code || hosts.codex) && (await readTurnEndGitBoards(userHome));
+  return { ...hosts, ...(git ? { git_boards: true } : {}) };
 }
 
 /** True when the managed Stop hook is installed in this settings file. */
@@ -1298,11 +1305,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
             claude_code: claude.installed,
             codex: codex.installed,
             opencode: opencode.installed,
-            turn_end_sync: {
-              claude_code: turnEndHookInstalled(readSettings(inspection.targets.claudeSettings)),
-              codex: turnEndHookInstalled(readSettings(inspection.targets.codexHooks)),
-              ...((await readTurnEndGitBoards(userHome)) ? { git_boards: true } : {}),
-            },
+            turn_end_sync: await turnEndStatus(readSettings(inspection.targets.claudeSettings), readSettings(inspection.targets.codexHooks), userHome),
             ...(inspection.displayCommand !== undefined ? { command: inspection.displayCommand } : {}),
             hosts: {
               claude_code: {
