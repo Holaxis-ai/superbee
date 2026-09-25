@@ -375,7 +375,9 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
       case "settled-only":
         // A create-only write that found the document is a conflict whether or not it was recorded.
         if ((result as WriteFailure).error.code === "document_exists" && intent.base === null) return servedHead(intent);
-        return settled ? settleRecorded(intent, result as WriteFailure) : lookupRecorded();
+        // The header says the answer is recorded, not that the write never applied: a refusal
+        // settles here only when it also says `not_applied`, as a recorded one must on lookup.
+        return settled && (result as WriteFailure).error.writeState === "not_applied" ? settleRecorded(intent, result as WriteFailure) : lookupRecorded();
       case "no":
         return row.code ? denial(row.code, result?.ok === false ? result.error.message : "The host refused the request before dispatch.") : UNKNOWN;
       default:
