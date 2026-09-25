@@ -255,6 +255,12 @@ export interface SyncControl {
 
 interface AcknowledgedMarker {
   at: string;
+  /**
+   * Fresh for every acknowledgement, so each one rewrites the row to a value no earlier one had,
+   * even at the same clock reading: a fenced pull detects an acknowledgement by the row changing.
+   * Absent on rows written by older code.
+   */
+  token?: string;
 }
 
 export interface PullMarker {
@@ -1444,7 +1450,7 @@ export async function settleIntent(
   switch (outcome.kind) {
     case "committed": {
       // Recorded with the acknowledgement itself, so no pull can offer an older digest after it.
-      const acknowledged: MetaRecord = { key: ACKNOWLEDGED_KEY, value: { at: new Date().toISOString() } satisfies AcknowledgedMarker };
+      const acknowledged: MetaRecord = { key: ACKNOWLEDGED_KEY, value: { at: new Date().toISOString(), token: mintRequestId() } satisfies AcknowledgedMarker };
       if (current.kind === DOCUMENT_DELETE_KIND) {
         // The document left the authority. Its version is the deletion's tombstone, which a
         // create recorded later acknowledges; the deletion version itself says none is known.

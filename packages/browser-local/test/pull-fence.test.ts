@@ -104,6 +104,25 @@ async function lastPull(local: LocalBundle): Promise<PullMarker | null> {
   return (await syncStatus(local)).lastPull;
 }
 
+/** Freeze the clock (`new Date()` and `Date.now`) at one instant; returns the restore. */
+function freezeClock(at: string): () => void {
+  const Real = Date;
+  const instant = Real.parse(at);
+  class Frozen extends Real {
+    constructor(...args: unknown[]) {
+      if (args.length === 0) super(instant);
+      else super(...(args as [number]));
+    }
+    static override now(): number {
+      return instant;
+    }
+  }
+  globalThis.Date = Frozen as DateConstructor;
+  return () => {
+    globalThis.Date = Real;
+  };
+}
+
 for (const adapter of ADAPTERS) {
   test(`${adapter}: an older pull cannot overwrite a newer refresh; it stops superseded, the newer pull's digest stands, and the next pull is a 304 over the authority's state`, async () => {
     const fixture = await createRemoteFixture();
@@ -187,6 +206,32 @@ for (const adapter of ADAPTERS) {
       assert.deepEqual((await a.backend.list()).sort(), (await fixture.authority.list()).sort());
       assert.equal(await body(a, "notes/x"), "x v1\n");
     } finally {
+      close();
+    }
+  });
+
+  test(`${adapter}: QA: an acknowledgement at the same clock reading as the one a pull fenced on still supersedes that pull's stale deletion`, async () => {
+    const fixture = await createRemoteFixture();
+    await fixture.authority.write("notes/x", doc("notes/x", "x v0\n"));
+    const { a, b, close } = twoRealms(adapter);
+    const restore = freezeClock(NOW);
+    try {
+      await bootstrap(fixture.remote, a);
+      await commitLocal(a, "notes/x", edit("x v1 (local edit)\n"));
+      assert.deepEqual((await pushWithRole(a, fixture.transport, { write: immediate })).result?.settled.map((row) => row.state), ["acknowledged"]);
+      await commitLocal(a, "notes/y", { mode: "patch", onAbsent: "create", buildCandidate: () => ({ frontmatter: { type: "Note", title: "y" }, body: "mine\n" }), now: () => NOW });
+      const held = holdAfter(fixture.remote, "heads");
+      const stale = pull(b, held.remote);
+      await held.entered; // b fenced on the first acknowledgement; its listing predates y
+      assert.deepEqual((await pushWithRole(a, fixture.transport, { write: immediate })).result?.settled.map((row) => row.state), ["acknowledged"]);
+      held.release();
+      const report = await stale;
+
+      assert.equal(report.superseded, true);
+      assert.deepEqual(report.deleted, []);
+      assert.equal(await body(a, "notes/y"), "mine\n");
+    } finally {
+      restore();
       close();
     }
   });
