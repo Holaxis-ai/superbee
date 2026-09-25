@@ -137,6 +137,12 @@ Options:
  * state and local Git (a few short `git rev-parse` calls per Git board), never the network.
  */
 export const SESSION_START_WORKSPACES_BUDGET_MS = 2_000;
+/**
+ * The probes' own deadline, under that budget: a Git probe is a blocking spawn that no timer can
+ * cut short, so once this passes the remaining rows keep their label and are marked not checked,
+ * and the block never falls back to "timed out".
+ */
+export const SESSION_START_PROBE_DEADLINE_MS = 1_000;
 
 /** How current one other bundle's folder is, from its last pull or fetch. No network. */
 async function bundleFreshness(root: string, userHome: string, now: Date): Promise<Pick<HomeWorkspace, "home" | "freshness">> {
@@ -160,10 +166,11 @@ async function bundleFreshness(root: string, userHome: string, now: Date): Promi
  */
 export async function otherCatalogBundles(
   currentRoot: string | null,
-  options: { home?: string; signal?: AbortSignal; now?: Date } = {},
+  options: { home?: string; signal?: AbortSignal; now?: Date; deadlineMs?: number } = {},
 ): Promise<HomeWorkspace[]> {
   const userHome = options.home ?? homedir();
   const now = options.now ?? new Date();
+  const deadline = Date.now() + (options.deadlineMs ?? SESSION_START_PROBE_DEADLINE_MS);
   const current = currentRoot === null ? null : await realpath(currentRoot).catch(() => path.resolve(currentRoot));
   const entries = [...(await loadCatalog(userHome, options.signal)).entries].sort((a, b) => a.label.localeCompare(b.label));
   const others: { label: string; root: string }[] = [];
@@ -175,7 +182,7 @@ export async function otherCatalogBundles(
   const rows: HomeWorkspace[] = [];
   for (const [index, other] of others.entries()) {
     // Only the rows the block shows are probed; the rest are counted.
-    if (index >= HOME_WORKSPACES_LIMIT || options.signal?.aborted) {
+    if (index >= HOME_WORKSPACES_LIMIT || options.signal?.aborted || Date.now() >= deadline) {
       rows.push({ label: other.label, home: "unknown", freshness: "not checked" });
       continue;
     }

@@ -16,7 +16,7 @@ import { addCatalogEntry } from "../src/catalog.js";
 import { checkout } from "../src/commands/checkout.js";
 import { hook } from "../src/commands/hook.js";
 import { otherCatalogBundles, sessionStart } from "../src/commands/session-start.js";
-import { sharedGitBoardAt, turnEnd, type GitTurnEndBoard } from "../src/commands/turn-end.js";
+import { readTurnEndGitBoards, recordTurnEndGitBoards, sharedGitBoardAt, turnEnd, type GitTurnEndBoard } from "../src/commands/turn-end.js";
 import { CliError } from "../src/errors.js";
 import { defaultHostedAuthDeps } from "../src/hosted-auth/session.js";
 import {
@@ -276,46 +276,81 @@ async function turnEndQuietWith(env: Record<string, string>, home: string, board
 
 // ------------------------------------------------------------------------ hook install
 
-test("hook install --turn-end-sync --git-boards opts the Stop hook in to Git boards; a plain reinstall keeps it", async () => {
+test("hook install --turn-end-sync --git-boards records a per-user opt-in; the hook command stays `turn-end`", async () => {
   const base = await tempDir("sb-hab-hook-");
+  const home = await tempDir("sb-hab-hook-home-");
   try {
     const program = path.join(base, "packages", "superbee", "dist", "superbee.mjs");
+    const deps = { base, home, commandBase: program };
     const stopCommand = async (file: string) =>
       (JSON.parse(await readFile(path.join(base, file), "utf8")) as { hooks: { Stop?: { hooks: { command: string }[] }[] } }).hooks.Stop?.map((g) => g.hooks[0]!.command);
     const status = async () => {
       const out: string[] = [];
-      await hook(["status", "--json"], { base, commandBase: program, stdout: (t) => void out.push(t) });
+      await hook(["status", "--json"], { ...deps, stdout: (t) => void out.push(t) });
       return JSON.parse(out.join("")).hook.turn_end_sync as Record<string, unknown>;
     };
 
-    await assert.rejects(hook(["install", "--git-boards"], { base, commandBase: program, stdout: () => {} }), (e: unknown) => e instanceof CliError && e.code === "USAGE");
-    await assert.rejects(hook(["uninstall", "--turn-end-sync", "--git-boards"], { base, commandBase: program, stdout: () => {} }), (e: unknown) => e instanceof CliError && e.code === "USAGE");
+    await assert.rejects(hook(["install", "--git-boards"], { ...deps, stdout: () => {} }), (e: unknown) => e instanceof CliError && e.code === "USAGE");
+    await assert.rejects(hook(["uninstall", "--turn-end-sync", "--git-boards"], { ...deps, stdout: () => {} }), (e: unknown) => e instanceof CliError && e.code === "USAGE");
 
-    await hook(["install", "--turn-end-sync"], { base, commandBase: program, stdout: () => {} });
+    await hook(["install", "--turn-end-sync"], { ...deps, stdout: () => {} });
     assert.deepEqual(await stopCommand(".claude/settings.json"), [`${program} turn-end`]);
     assert.deepEqual(await status(), { claude_code: true, codex: true }, "hosted-only status is unchanged");
+    assert.equal(await readTurnEndGitBoards(home), false);
 
     const out: string[] = [];
-    await hook(["install", "--turn-end-sync", "--git-boards", "--json"], { base, commandBase: program, stdout: (t) => void out.push(t) });
-    const receipt = JSON.parse(out.join("")).hook.turn_end_sync as { command: string; git_boards: string[] };
-    assert.equal(receipt.command, `${program} turn-end --git-boards`);
-    assert.deepEqual(receipt.git_boards, ["claude_code", "codex"]);
+    await hook(["install", "--turn-end-sync", "--git-boards", "--json"], { ...deps, stdout: (t) => void out.push(t) });
+    const receipt = JSON.parse(out.join("")).hook.turn_end_sync as { command: string; git_boards: boolean };
+    assert.equal(receipt.command, `${program} turn-end`, "older CLIs still recognize (and safely ignore) the hook");
+    assert.equal(receipt.git_boards, true);
     for (const file of [".claude/settings.json", ".codex/hooks.json"]) {
-      assert.deepEqual(await stopCommand(file), [`${program} turn-end --git-boards`], "rewritten in place, never duplicated");
+      assert.deepEqual(await stopCommand(file), [`${program} turn-end`], "rewritten in place, never duplicated");
     }
-    assert.deepEqual(await status(), { claude_code: true, codex: true, git_boards: { claude_code: true, codex: true } });
+    assert.equal(await readTurnEndGitBoards(home), true);
+    assert.deepEqual(await status(), { claude_code: true, codex: true, git_boards: true });
 
-    await hook(["install"], { base, commandBase: program, stdout: () => {} });
-    assert.deepEqual(await stopCommand(".claude/settings.json"), [`${program} turn-end --git-boards`], "a plain reinstall keeps the Git opt-in");
+    await hook(["install"], { ...deps, stdout: () => {} });
+    assert.equal(await readTurnEndGitBoards(home), true, "a plain reinstall keeps the Git opt-in");
 
-    await hook(["install", "--turn-end-sync"], { base, commandBase: program, stdout: () => {} });
-    assert.deepEqual(await stopCommand(".claude/settings.json"), [`${program} turn-end`], "--turn-end-sync alone switches Git back off");
-
-    await hook(["install", "--turn-end-sync", "--git-boards"], { base, commandBase: program, stdout: () => {} });
-    await hook(["uninstall", "--turn-end-sync"], { base, commandBase: program, stdout: () => {} });
-    assert.equal(await stopCommand(".claude/settings.json"), undefined, "uninstall removes the Git form too");
+    await hook(["install", "--turn-end-sync"], { ...deps, stdout: () => {} });
+    assert.equal(await readTurnEndGitBoards(home), false, "--turn-end-sync alone switches Git back off");
   } finally {
     await rm(base, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("the recorded opt-in makes the plain Stop hook command sync a Git board", async () => {
+  const topo = await makeTwoCloneTopology();
+  const home = await tempDir("sb-hab-optin-home-");
+  try {
+    await writeBoardDoc(topo.a, "notes/optin", { frontmatter: { type: "Note", title: "Opt in" }, body: "# Opt in\n" });
+    const before = originBoardHead(topo);
+    const run = () => withIsolatedUserEnv(home, () => withCwd(topo.a.root, () => turnEnd([], { stdout: () => {}, env: {}, readStdin: async () => null })));
+    await run();
+    assert.equal(originBoardHead(topo), before);
+    await recordTurnEndGitBoards(home, true);
+    await run();
+    assert.equal(originBoardHead(topo), boardHead(topo.a));
+    assert.notEqual(originBoardHead(topo), before);
+  } finally {
+    await topo.cleanup();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("the listing stops probing at its deadline and keeps every label", async () => {
+  const home = await tempDir("sb-hab-deadline-home-");
+  try {
+    for (const label of ["a", "b", "c"]) {
+      const dir = path.join(home, label);
+      await initBundle(dir);
+      await addCatalogEntry(label, dir, { home });
+    }
+    const rows = await otherCatalogBundles(null, { home, deadlineMs: 0 });
+    assert.deepEqual(rows, ["a", "b", "c"].map((label) => ({ label, home: "unknown", freshness: "not checked" })));
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 });
 

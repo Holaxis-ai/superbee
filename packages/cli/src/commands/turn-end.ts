@@ -6,8 +6,9 @@
 // a held file, or a sign-in link to relay. Then it prints the hosts' Stop-hook decision
 // (`{"decision":"block","reason":...}`), which hands the reason back to the agent once; a turn that
 // is already continuing because of this hook (`stop_hook_active`) is never blocked again.
-// A shared Git board is synced only with `--git-boards` (`hook install --turn-end-sync
-// --git-boards`), under the same rules; without it, and anywhere else, it does nothing.
+// A shared Git board is synced only when the person opted in (`hook install --turn-end-sync
+// --git-boards`, recorded in private state) or `--git-boards` is passed, under the same rules;
+// otherwise, and anywhere else, it does nothing.
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -48,7 +49,7 @@ conflict, a held file, or a sign-in link to relay. Then it prints a Stop-hook de
 ({"decision":"block","reason":...}) whose reason is the sync receipt and the next command, once
 per condition: the same unresolved condition is not reported again until it changes.
 
-With --git-boards, a shared Git board (the \`board\` branch checkout) gets the same treatment:
+With --git-boards, or after \`hook install --turn-end-sync --git-boards\`, a shared Git board (the \`board\` branch checkout) gets the same treatment:
 one \`sync\` (commit, pull, push) when it has changes or its last fetch is over five minutes old,
 silent on success, and a conflict or a Git sign-in failure is reported once. Without the flag a
 Git board is never synced here, and a local bundle never is.
@@ -177,7 +178,7 @@ export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}
   }
   const home = partial.syncDeps?.auth?.home ?? homedir();
   if (!binding) {
-    if (values["git-boards"]) await gitTurnEnd(values.dir, home, partial, stdout);
+    if (values["git-boards"] || (await readTurnEndGitBoards(home))) await gitTurnEnd(values.dir, home, partial, stdout);
     return;
   }
   const stdin = await (partial.readStdin ?? readHookStdin)().catch(() => null);
@@ -239,8 +240,27 @@ function conditionDigest(error: CliError, receipt: string): string {
 
 // ── Git boards (opt-in) ─────────────────────────────────────────────────────────────────────────
 
-/** Where the Git end-of-turn sync remembers the condition it last reported, per board. */
+/** Where the Git end-of-turn sync remembers the condition it last reported, per board, and the opt-in. */
 const GIT_TURN_END_DIR = "turn-end";
+const GIT_OPT_IN_FILE = "git-boards.json";
+
+/**
+ * Whether this user opted in to the end-of-turn sync of Git boards. Kept in private state rather
+ * than in the hook command, so the installed command stays `… turn-end` and every CLI version that
+ * reads it still owns it. A missing or unreadable file means no.
+ */
+export async function readTurnEndGitBoards(home: string = homedir()): Promise<boolean> {
+  try {
+    const value = JSON.parse(await readUserStateFile(home, join(credentialsDir(home), GIT_TURN_END_DIR, GIT_OPT_IN_FILE), 1024)) as { git_boards?: unknown } | null;
+    return value?.git_boards === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function recordTurnEndGitBoards(home: string, enabled: boolean): Promise<void> {
+  await writeUserStateFileAtomic0600(home, join(credentialsDir(home), GIT_TURN_END_DIR), GIT_OPT_IN_FILE, `${JSON.stringify({ git_boards: enabled })}\n`);
+}
 
 /**
  * The shared Git board this run is in: the `board` branch worktree with an upstream, found the way
@@ -333,7 +353,7 @@ async function gitTurnEnd(dir: string | undefined, home: string, partial: Partia
     if ((await readGitBlock(home, board.root)) !== null) await recordGitBlock(home, board.root, null).catch(() => {});
     return;
   }
-  const condition = createHash("sha256").update(JSON.stringify([blocking.code, blocking.message, blocking.details ?? null])).digest("hex");
+  const condition = createHash("sha256").update(JSON.stringify([blocking.code, blocking.message])).digest("hex");
   if (condition === (await readGitBlock(home, board.root))) return;
   await recordGitBlock(home, board.root, condition).catch(() => {});
   stdout(`${JSON.stringify({ decision: "block", reason: gitReasonFor(board.root, blocking) })}\n`);
