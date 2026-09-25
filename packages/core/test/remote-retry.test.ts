@@ -17,12 +17,30 @@ import { VersionConflict } from "../src/index.js";
 
 type Step = { status?: number; body?: string; throwErr?: Error };
 
-/** A fetchImpl returning a scripted sequence (the LAST step repeats); counts calls, records per-call bodies. */
-function scripted(steps: Step[]): { impl: (r: Request) => Promise<Response>; state: { calls: number; bodies: string[] } } {
-  const state: { calls: number; bodies: string[] } = { calls: 0, bodies: [] };
+interface ScriptState {
+  calls: number;
+  bodies: string[];
+  /** Each scripted call's `Idempotency-Key`, `null` when it carried none. */
+  keys: Array<string | null>;
+  /** Capability requests, answered outside the script and not counted in `calls`. */
+  probes: number;
+}
+
+/**
+ * A fetchImpl returning a scripted sequence (the LAST step repeats); counts calls, records per-call
+ * bodies and keys. `GET /v0/capabilities` is answered with `operations` and kept out of the script,
+ * so a guarded write's one capability question does not shift the steps.
+ */
+function scripted(steps: Step[], operations = false): { impl: (r: Request) => Promise<Response>; state: ScriptState } {
+  const state: ScriptState = { calls: 0, bodies: [], keys: [], probes: 0 };
   const impl = async (req: Request): Promise<Response> => {
+    if (new URL(req.url).pathname === "/v0/capabilities") {
+      state.probes++;
+      return new Response(JSON.stringify({ operations }), { status: 200 });
+    }
     const step = steps[Math.min(state.calls, steps.length - 1)]!;
     state.bodies.push(await req.text()); // "" for bodyless GET/HEAD; the PUT payload otherwise
+    state.keys.push(req.headers.get("Idempotency-Key"));
     state.calls++;
     if (step.throwErr) throw step.throwErr;
     return new Response(step.body ?? "", { status: step.status ?? 200 });
@@ -95,7 +113,7 @@ test("retries a transient 500 on a WRITE and re-sends the body on the retry", as
   assert.equal(sent.frontmatter.title, "A");
 });
 
-test("a write with an ambiguous first response fails closed when the retry observes a conflict", async () => {
+test("a guarded write with an ambiguous first response fails closed when the retry observes a conflict on a host without operations", async () => {
   const transportFailure = new Error("connection closed after request dispatch");
   const { impl, state } = scripted([
     { throwErr: transportFailure },
@@ -113,6 +131,24 @@ test("a write with an ambiguous first response fails closed when the retry obser
     (error: unknown) => error instanceof VersionConflict,
   );
   assert.equal(state.calls, 2);
+  assert.equal(state.probes, 1);
+  assert.deepEqual(state.keys, [null, null], "a host without operations is sent no Idempotency-Key");
+});
+
+test("a guarded write to a host with operations carries one minted Idempotency-Key, the same on every retry", async () => {
+  const transportFailure = new Error("connection closed after request dispatch");
+  const { impl, state } = scripted(
+    [{ throwErr: transportFailure }, ERR500, { status: 200, body: JSON.stringify({ version: "sha256:committed" }) }],
+    true,
+  );
+  const doc = { id: "concepts/a", frontmatter: { type: "Concept" }, body: "hello world" };
+
+  assert.equal(await backend(impl, 3).write("concepts/a", doc, { expectedVersion: null }), "sha256:committed");
+  assert.equal(state.calls, 3);
+  assert.equal(state.probes, 1);
+  const [first, ...rest] = state.keys;
+  assert.ok(first, "the first attempt is identified");
+  assert.deepEqual(rest, [first, first], "every retry reuses the first attempt's key");
 });
 
 test("maxRetries: 0 disables retry", async () => {

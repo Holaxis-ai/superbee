@@ -300,6 +300,43 @@ test("multi-writer convergence over FilesystemBackend: N concurrent `link add`s 
   }
 });
 
+test("doc update --remote: a lost answer to the guarded write is retried as a replay, so a byte-identical revert made between attempts survives", async () => {
+  const backend = new MemoryBackend();
+  const bundle: Bundle = { root: "mem://lost-answer-test", backend };
+  await writeDoc(bundle, { id: "lost", frontmatter: { type: "Concept", title: "A", timestamp: T }, body: "Body." });
+  const base = await backend.read("lost");
+  const server = await bootServerOverBundle(bundle);
+  const realFetch = globalThis.fetch;
+  const keys: Array<string | null> = [];
+  let reverted: string | undefined;
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const request = new Request(input, init);
+    const isDocPut = request.method === "PUT" && new URL(request.url).pathname.endsWith("/docs/lost");
+    if (isDocPut) keys.push(request.headers.get("Idempotency-Key"));
+    const response = await realFetch(request);
+    if (isDocPut && keys.length === 1) {
+      // The update applied; a third party restores the exact base bytes before the answer is lost.
+      reverted = await backend.write("lost", base.doc, { expectedVersion: response.headers.get("X-Version")! });
+      throw new TypeError("fetch failed");
+    }
+    return response;
+  };
+  try {
+    const updated = await runJson(doc, ["update", "lost", "--title", "B", "--remote", server.url]);
+    assert.equal(updated.changed, true);
+  } finally {
+    globalThis.fetch = realFetch;
+    await server.close();
+  }
+  assert.equal(reverted, base.version, "the third party restored the base bytes");
+  const head = await backend.read("lost");
+  assert.equal(head.version, base.version, "the retry did not apply the update over the revert");
+  assert.equal(head.doc.frontmatter.title, "A");
+  assert.equal(keys.length, 2);
+  assert.ok(keys[0], "the CLI's guarded write is identified without a caller requestId");
+  assert.equal(keys[1], keys[0]);
+});
+
 test("--remote: an unreachable server maps to exit 1 RUNTIME with a serve hint, not a raw TypeError/USAGE misclassification", async () => {
   await assert.rejects(
     () => list(["--remote", "http://127.0.0.1:1", "--json"], {}),

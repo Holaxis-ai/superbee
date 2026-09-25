@@ -761,6 +761,32 @@ export interface CommitResult extends DocumentMutationResult {
 }
 
 /**
+ * The intent a change journals in place of one the authority never applied (never sent, or
+ * refused): a fresh identity on the superseded intent's premise, its base, its base content and
+ * the predecessor it waited on. A write over a never-applied delete is a replace against that
+ * base, never a delete and a re-create, and a write over a never-applied create keeps the
+ * deletion that create re-creates. A deletion over a never-applied create has nothing to delete
+ * at the authority, so it collapses to no intent. {@link composeIntent}, {@link deleteLocal} and
+ * push's fold of a refused chain all take the premise from here, so they cannot disagree on it.
+ */
+function supersedingIntent(kind: "document.write", superseded: IntentRecord, now: string): NewIntentRecord;
+function supersedingIntent(kind: "document.write" | typeof DOCUMENT_DELETE_KIND, superseded: IntentRecord, now: string): NewIntentRecord | undefined;
+function supersedingIntent(kind: "document.write" | typeof DOCUMENT_DELETE_KIND, superseded: IntentRecord, now: string): NewIntentRecord | undefined {
+  const deleting = kind === DOCUMENT_DELETE_KIND;
+  if (deleting && superseded.base === null) return undefined;
+  return {
+    requestId: mintRequestId(),
+    kind,
+    target: superseded.target,
+    base: superseded.base,
+    baseContent: superseded.baseContent,
+    createdAt: now,
+    ...(superseded.after !== undefined ? { after: superseded.after } : {}),
+    ...(!deleting && superseded.recreates !== undefined && superseded.base === null ? { recreates: superseded.recreates } : {}),
+  };
+}
+
+/**
  * How a new local edit relates to the intents already journaled for its target.
  *
  * Compose-per-id: when the latest intent for the id is `pending` and has never been submitted
@@ -775,7 +801,9 @@ export interface CommitResult extends DocumentMutationResult {
  * resolution, its content and identity are frozen: the new edit becomes a separate intent whose
  * base is the predecessor's local version and whose `after` names it. Push delivers it only
  * once the predecessor is acknowledged, and the predecessor's acknowledgement can never clear
- * it, because it is its own record with its own identity.
+ * it, because it is its own record with its own identity. If the authority instead refuses the
+ * predecessor on its content, push folds the never-sent successor into it by the same
+ * supersede rule (see {@link push}).
  */
 async function composeIntent(backend: JournaledBackend, id: ConceptId, now: string): Promise<{ intent: NewIntentRecord; supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number } }> {
   const unsettled = (await backend.listIntents(UNSETTLED_STATES)).filter((row) => row.target === id);
@@ -799,19 +827,8 @@ async function composeIntent(backend: JournaledBackend, id: ConceptId, now: stri
   }
   const neverDelivered = latest.state === "pending" && latest.attempts === 0;
   if (neverDelivered || latest.state === "refused") {
-    // A write over a never-delivered delete collapses the two into one change against the base:
-    // a replace, never a delete and a re-create.
     return {
-      intent: {
-        requestId: mintRequestId(),
-        kind: "document.write",
-        target: id,
-        base: latest.base,
-        baseContent: latest.baseContent,
-        createdAt: now,
-        ...(latest.after !== undefined ? { after: latest.after } : {}),
-        ...(latest.recreates !== undefined && latest.base === null ? { recreates: latest.recreates } : {}),
-      },
+      intent: supersedingIntent("document.write", latest, now),
       supersede: { requestId: latest.requestId, expectedState: latest.state, expectedAttempts: latest.attempts },
     };
   }
@@ -945,9 +962,7 @@ export async function deleteLocal(local: LocalTarget, id: ConceptId, options: { 
       if (shared?.version) intent = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: id, base: shared.version, baseContent: shared.content, createdAt: now };
     } else if ((latest.state === "pending" && latest.attempts === 0) || latest.state === "refused") {
       supersede = { requestId: latest.requestId, expectedState: latest.state, expectedAttempts: latest.attempts };
-      if (latest.base !== null) {
-        intent = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: id, base: latest.base, baseContent: latest.baseContent, createdAt: now, ...(latest.after !== undefined ? { after: latest.after } : {}) };
-      }
+      intent = supersedingIntent(DOCUMENT_DELETE_KIND, latest, now);
     } else if (latest.state === "conflict") {
       throw new InvalidInputError(`'${id}' has a conflict to resolve before it can be deleted.`);
     } else {
@@ -1081,7 +1096,7 @@ function isContentRefusal(row: IntentRecord): boolean {
  * recorded conflict (or, with `admitRefused`, a content refusal), continued only by dependent
  * edits, whose latest bytes are the working document. Body mode admits the refused head, since
  * a refused body update cannot be superseded by a later edit; exact mode keeps its rule, where
- * a later edit supersedes a refused request.
+ * a later edit supersedes a refused request and push folds a never-sent successor into it.
  */
 function conflictChain(id: ConceptId, snapshot: JournaledReadResult, admitRefused: boolean) {
   const intents = snapshot.intents.filter(row => row.state !== "acknowledged");
@@ -1403,6 +1418,22 @@ export interface PushReport {
   paused: boolean;
   settled: Array<{ requestId: string; target: ConceptId; state: OperationState }>;
   skipped: Array<{ requestId: string; target: ConceptId; reason: "blocked" | "claimed-elsewhere" | "settled-elsewhere" }>;
+  /**
+   * The refused chains this run folded (see {@link push}), present only when it folded one. A
+   * host that showed a refusal reads here why that row is gone.
+   */
+  rebased?: PushRebase[];
+}
+
+/** One chain push folded: a content refusal and the never-sent edit that waited on it. */
+export interface PushRebase {
+  target: ConceptId;
+  /** The retired identities, the refused head first. Neither is ever sent again. */
+  retired: string[];
+  /** The fresh intent that carries the edit, or `null` when a deletion of a create that never landed left nothing to send. */
+  requestId: string | null;
+  /** The refusal the head recorded. */
+  refusal: { code: string; message: string };
 }
 
 /** Read the shared head for a conflict record; absence is a real answer (`null`), a failure is unknown. */
@@ -1565,6 +1596,59 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
 }
 
 /**
+ * Refusal codes that say the authority was busy, not that the content is wrong: the identity
+ * can only answer that refusal again, so a caller resends the unchanged change under a fresh
+ * identity (the CLI's hosted sync does), and push never folds a successor into one.
+ */
+export const BUSY_REFUSAL_CODES: ReadonlySet<string> = new Set(["concurrent_change", "backend_unavailable", "internal_error", "deadline_exceeded", "cancelled"]);
+
+/** A head push may fold a successor into: refused on its content, neither for lost permission nor by a busy authority. */
+function isFoldableRefusal(row: IntentRecord): boolean {
+  return isContentRefusal(row) && !BUSY_REFUSAL_CODES.has(row.refusal!.code);
+}
+
+/**
+ * Fold a never-sent intent into the content refusal it waits on. The authority recorded the
+ * head as refused, so it never applied it, and it never saw the successor; the pair is the state
+ * a later edit over a refused latest intent composes away, reached instead because the edit
+ * landed while the head was in flight (or, in a checkout, after its answer was lost). Retires
+ * exactly that complete unsettled journal, `[head refused, successor pending with no attempt]`,
+ * and journals one fresh intent of the successor's kind on the head's premise
+ * ({@link supersedingIntent}) over the working document as it is, in one guarded
+ * `writeJournaled` or `deleteJournaled` with `resolveIntents`. The document's bytes are
+ * unchanged, so its version is too. A deletion of a create that never landed retires the chain
+ * and journals nothing.
+ *
+ * Returns `null` and writes nothing when the journal is any other shape, when the working
+ * document is not the successor's own bytes (absent, for a deletion), or when another realm
+ * moved the journal or the document between the read and the write; the caller reports the
+ * intent `blocked` and the next push reads again.
+ */
+async function foldRefusedChain(backend: JournaledBackend, listed: IntentRecord): Promise<{ retired: IntentRecord[]; intent: IntentRecord | null } | null> {
+  const snapshot = await backend.readWithJournal(listed.target);
+  const chain = snapshot.intents.filter(row => row.state !== "acknowledged");
+  const [head, successor] = chain;
+  if (chain.length !== 2 || !head || !successor || !isFoldableRefusal(head) || successor.requestId !== listed.requestId ||
+      successor.state !== "pending" || successor.attempts !== 0 || successor.after !== head.requestId) return null;
+  const deleting = successor.kind === DOCUMENT_DELETE_KIND;
+  if (deleting ? snapshot.document !== null : !snapshot.document || successor.local !== snapshot.document.version || successor.content !== snapshot.raw) return null;
+  const intent = supersedingIntent(deleting ? DOCUMENT_DELETE_KIND : "document.write", head, new Date().toISOString());
+  const resolveIntents = { expected: chain };
+  try {
+    if (deleting) {
+      // A deletion chain holds no working document: its compare-and-swap is on absence.
+      const deleted = await backend.deleteJournaled(listed.target, { expectedVersion: null as unknown as Version, resolveIntents, ...(intent ? { intent } : {}) });
+      return { retired: chain, intent: deleted.outcome === "held" ? null : deleted.intent ?? null };
+    }
+    const written = await backend.writeJournaled(listed.target, snapshot.document!.doc, { expectedVersion: snapshot.document!.version, resolveIntents, intent: intent! });
+    return { retired: chain, intent: written.intent };
+  } catch (error) {
+    if (error instanceof JournalSnapshotConflict || error instanceof IntentStateConflict || (error as { name?: unknown })?.name === "VersionConflict") return null;
+    throw error;
+  }
+}
+
+/**
  * Deliver pending intents in local commit order through the uncertain-write primitive. Each
  * intent is claimed (`pending` to `in_flight`) by compare-and-swap, so two realms cannot both
  * deliver it, and settled by {@link settleIntent}. A chained intent waits for its predecessor's
@@ -1575,6 +1659,15 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
  * it may have been delivered, so {@link reclaimInFlight} and the next push treat it that way.
  * The primitive itself receives the count of attempts completed before this claim, so a first
  * delivery is a submission and a repeated one starts with a lookup.
+ *
+ * A never-sent intent whose predecessor the authority refused on its content (a refusal
+ * outside {@link AUTHORIZATION_REFUSAL_CODES} and {@link BUSY_REFUSAL_CODES}) would otherwise
+ * wait forever, so push folds the two, as a later edit supersedes a refused latest intent: see
+ * {@link foldRefusedChain}. The fresh intent is delivered in the same run and the fold is
+ * listed in {@link PushReport.rebased}. A head refused for lost permission keeps the resume
+ * path, a busy refusal keeps its caller's requeue, and a conflict keeps resolution; none of
+ * them is folded, nor is a successor that was ever claimed for delivery. Body delivery has no
+ * fold: its refused head is resolved.
  */
 export async function push(local: LocalTarget, transport: OperationTransport, options: PushOptions = {}): Promise<PushReport> {
   const mode = await admitBodyMode(backendOf(local));
@@ -1586,7 +1679,10 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
     report.paused = true;
     return report;
   }
-  for (const intent of await backend.listIntents("pending")) {
+  // A queue, not a snapshot: an intent a fold journals is delivered in this same run.
+  const queue = await backend.listIntents("pending");
+  for (let index = 0; index < queue.length; index++) {
+    const intent = queue[index]!;
     if (mode) {
       const settled = await pushBodyIntent(backendOf(local), mode, intent.requestId, options);
       if (!settled) { report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" }); continue; }
@@ -1598,7 +1694,14 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
     if (intent.after !== undefined) {
       const predecessor = await backend.readIntent(intent.after);
       if (predecessor && predecessor.state !== "acknowledged") {
-        report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" });
+        const folded = intent.attempts === 0 && isFoldableRefusal(predecessor) ? await foldRefusedChain(backend, intent) : null;
+        if (!folded) {
+          report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" });
+          continue;
+        }
+        const head = folded.retired[0]!;
+        (report.rebased ??= []).push({ target: intent.target, retired: folded.retired.map(row => row.requestId), requestId: folded.intent?.requestId ?? null, refusal: head.refusal! });
+        if (folded.intent) queue.push(folded.intent);
         continue;
       }
       if (predecessor && intent.attempts === 0) rebase = chainedPremise(intent, predecessor);

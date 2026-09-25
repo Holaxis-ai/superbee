@@ -5,9 +5,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,7 +41,7 @@ import {
   type ToolRunner,
 } from "../src/hosted-auth/secret-store.js";
 import { loopbackSignIn } from "../src/hosted-auth/loopback.js";
-import { withSessionLock, HOST_ENV } from "../src/hosted-auth/session.js";
+import { withSessionLock, HOST_ENV, SESSION_LOCK_ORPHAN_MS } from "../src/hosted-auth/session.js";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { login, logout, whoami } from "../src/commands/hosted-auth.js";
@@ -49,6 +49,7 @@ import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 import { decode } from "@toon-format/toon";
+import { FilesystemMutationLockError, filesystemMutationLockPath } from "@superbee/core";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1315,6 +1316,177 @@ test("a busy session lock is session_busy inside the caller's lock wait, not the
     release();
     await held;
   } finally {
+    await h.cleanup();
+  }
+});
+
+/** The session lock directory for the harness's host, with the session directory in place. */
+async function sessionLockPath(h: Harness): Promise<string> {
+  const target = resolveHostedTarget(h.host);
+  await withSessionLock(target, h.deps, async () => {});
+  return filesystemMutationLockPath(path.join(await realpath(sessionDirFor(h.home, sessionAccount(target))), "session"));
+}
+
+/** Leave a session lock behind as a command that is gone would: its directory, `ageMs` old. */
+async function plantSessionLock(h: Harness, owner: Record<string, unknown> | null, ageMs: number): Promise<string> {
+  const lock = await sessionLockPath(h);
+  await mkdir(lock);
+  if (owner) await writeFile(path.join(lock, "owner.json"), `${JSON.stringify(owner)}\n`);
+  const when = new Date(Date.now() - ageMs);
+  await utimes(lock, when, when);
+  return lock;
+}
+
+async function sessionLockError(h: Harness): Promise<CliError> {
+  try {
+    await withSessionLock(resolveHostedTarget(h.host), { ...h.deps, lockWaitMs: 100 }, async () => {});
+  } catch (error) {
+    assert.ok(error instanceof CliError, `expected CliError, got ${String(error)}`);
+    return error;
+  }
+  assert.fail("expected the session lock to be refused");
+}
+
+test("an owner-less session lock left by a killed command is session_lock_orphaned, not retryable, and names the lock", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, null, 60_000);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "CONFLICT");
+    assert.equal(toExit(error).exitCode, EXIT.CONFLICT);
+    assert.deepEqual(error.details, { reason: "session_lock_orphaned", host: h.host, lock, retryable: false });
+    assert.ok(error.help?.includes(lock), error.help);
+    await rm(lock, { recursive: true });
+    assert.equal(await withSessionLock(resolveHostedTarget(h.host), h.deps, async () => "ran"), "ran", "removing the named lock clears it");
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
+test("an owner-less session lock inside the claim grace is a claim in progress: session_busy", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, null, 0);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "TRANSIENT");
+    assert.equal((error.details as Record<string, unknown>).reason, "session_busy");
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
+test("a session lock held far past any refresh is orphaned though its PID is alive or its host is another", async () => {
+  const h = await harness();
+  // A live process other than this one: a record naming this process's own id and claimed before
+  // it started is a prior incarnation's, which the filesystem lock reclaims by itself.
+  const livePid = process.ppid;
+  process.kill(livePid, 0);
+  const record = (host: string) => ({ pid: livePid, hostname: host, created_at_ms: Date.now() - SESSION_LOCK_ORPHAN_MS, token: "gone", target: "session" });
+  try {
+    for (const host of [hostname(), "another-host.example"]) {
+      const lock = await plantSessionLock(h, record(host), SESSION_LOCK_ORPHAN_MS + 60_000);
+      try {
+        const error = await sessionLockError(h);
+        assert.equal(error.code, "CONFLICT", host);
+        assert.deepEqual(error.details, { reason: "session_lock_orphaned", host: h.host, lock, retryable: false });
+        // The same holder inside the bound may still finish, even well past the claim grace: busy.
+        const recent = new Date(Date.now() - 60_000);
+        await utimes(lock, recent, recent);
+        assert.equal((await sessionLockError(h)).details?.reason, "session_busy", host);
+      } finally {
+        await rm(lock, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+/** An owner record for a session lock another host claimed at `createdAtMs`. */
+const claimedAt = (createdAtMs: number) => ({ pid: process.pid, hostname: "another-host.example", created_at_ms: createdAtMs, token: "held", target: "session" });
+
+test("a session lock whose directory is old but whose owner claimed it just now is session_busy, not orphaned", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, claimedAt(Date.now()), SESSION_LOCK_ORPHAN_MS + 60_000);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "TRANSIENT");
+    assert.deepEqual(error.details, { reason: "session_busy", retryable: true, host: h.host });
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
+test("a session lock whose directory and owner claim are both old is session_lock_orphaned", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, claimedAt(Date.now() - SESSION_LOCK_ORPHAN_MS - 60_000), SESSION_LOCK_ORPHAN_MS + 60_000);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "CONFLICT");
+    assert.deepEqual(error.details, { reason: "session_lock_orphaned", host: h.host, lock, retryable: false });
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
+test("a session lock whose owner claim time is far ahead of this clock is session_lock_orphaned, not busy until the clock catches up", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, claimedAt(Date.now() + 100 * SESSION_LOCK_ORPHAN_MS), SESSION_LOCK_ORPHAN_MS + 60_000);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "CONFLICT");
+    assert.deepEqual(error.details, { reason: "session_lock_orphaned", host: h.host, lock, retryable: false });
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
+test("a session lock claimed just now by a holder whose clock runs slightly ahead is session_busy", async () => {
+  const h = await harness();
+  const lock = await plantSessionLock(h, claimedAt(Date.now() + 30_000), SESSION_LOCK_ORPHAN_MS + 60_000);
+  try {
+    const error = await sessionLockError(h);
+    assert.equal(error.code, "TRANSIENT");
+    assert.deepEqual(error.details, { reason: "session_busy", retryable: true, host: h.host });
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+    await h.cleanup();
+  }
+});
+
+test("a session lock that cannot be released after its work is reported as such, never as session_busy", async () => {
+  const h = await harness();
+  const lock = await sessionLockPath(h);
+  try {
+    let error: unknown;
+    try {
+      await withSessionLock(resolveHostedTarget(h.host), h.deps, async () => {
+        const owner = JSON.parse(await readFile(path.join(lock, "owner.json"), "utf8")) as Record<string, unknown>;
+        await writeFile(path.join(lock, "owner.json"), `${JSON.stringify({ ...owner, token: "another" })}\n`);
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.ok(error instanceof CliError, `expected CliError, got ${String(error)}`);
+    assert.equal(error.code, "RUNTIME");
+    assert.deepEqual(error.details, { reason: "session_lock_release_failed", host: h.host, lock, retryable: false });
+
+    // A lock error the session work itself raised passes through unchanged.
+    await rm(lock, { recursive: true, force: true });
+    const own = new FilesystemMutationLockError("inner", { lockPath: "/elsewhere", owner: null, stale: false, malformed: true });
+    await assert.rejects(
+      withSessionLock(resolveHostedTarget(h.host), h.deps, async () => {
+        throw own;
+      }),
+      (caught: unknown) => caught === own,
+    );
+  } finally {
+    await rm(lock, { recursive: true, force: true });
     await h.cleanup();
   }
 });
