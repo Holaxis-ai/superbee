@@ -4,11 +4,12 @@
 // no temp file behind). Everything runs against the in-process fake host; no request leaves.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { decode } from "@toon-format/toon";
+import { filesystemMutationLockPath } from "@superbee/core";
 
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
@@ -262,6 +263,27 @@ test("B2: a busy sign-in session lock never holds a read past its budget", async
   assert.match(notes.join(""), /another superbee command is using/);
 });
 
+test("B3: a sign-in session lock left by a killed command is reported by the pull, not skipped as busy", async () => {
+  const h = await harness();
+  const { auth } = await deadSession(h);
+  const lock = filesystemMutationLockPath(path.join(await realpath(sessionDirFor(h.home, sessionAccount(resolveHostedTarget(HOST)))), "session"));
+  await mkdir(lock);
+  const when = new Date(Date.now() - 60_000);
+  await utimes(lock, when, when);
+  try {
+    await assert.rejects(hostedPull(h.binding, { ...syncDeps(h), auth: { ...auth, lockWaitMs: 100 } }), (error: unknown) => {
+      assert.ok(error instanceof CliError);
+      assert.equal(error.code, "CONFLICT");
+      assert.deepEqual(error.details, { reason: "session_lock_orphaned", host: HOST, lock, retryable: false });
+      return true;
+    });
+    const block = await hostedSessionStartPull(h.binding, 2_000, { env: {}, sync: { ...syncDeps(h), auth } });
+    assert.equal(block.pull, "failed");
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+  }
+});
+
 // ------------------------------------------------------------------------ session start
 
 test("session-start in a hosted checkout pulls from the host and appends the hosted_checkout block", async () => {
@@ -359,6 +381,29 @@ test("turn-end relays the sign-in link when the session is gone", async () => {
   const decision = JSON.parse(out.join("")) as { decision: string; reason: string };
   assert.equal(decision.decision, "block");
   assert.match(decision.reason, /Relay this sign-in link to the person: https:\/\/issuer\.example\/activate\?user_code=ABCD/);
+});
+
+test("turn-end hands an orphaned lock to the person with the lock to remove, not the conflict steps", async () => {
+  const h = await harness();
+  const out: string[] = [];
+  const help = "confirm no superbee command is using the https://hosted.example sign-in session, remove /locks/x.lock, then retry the same command";
+  await turnEnd(["--dir", h.folder], {
+    stdout: (t) => void out.push(t),
+    env: {},
+    readStdin: async () => null,
+    hostedCheckout: async () => h.binding,
+    localState: async () => "changed",
+    sync: async () => {
+      throw new CliError("CONFLICT", "the https://hosted.example sign-in session lock was left by a command that is gone", {
+        details: { reason: "session_lock_orphaned", host: HOST, lock: "/locks/x.lock", retryable: false },
+        help,
+      });
+    },
+  });
+  const decision = JSON.parse(out.join("")) as { decision: string; reason: string };
+  assert.equal(decision.decision, "block");
+  assert.ok(decision.reason.includes(help), decision.reason);
+  assert.doesNotMatch(decision.reason, /sync --inspect/);
 });
 
 test("turn-end does nothing outside a hosted checkout, and never blocks for offline or busy", async () => {

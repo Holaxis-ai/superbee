@@ -2,9 +2,11 @@
  * `RemoteBackend` — a {@link StorageBackend} implemented over the wire-protocol v0
  * reference contract (`docs/WIRE-PROTOCOL.md`, `@superbee/server`).
  *
- * This is the client half of the seam over HTTP: every method maps directly to a wire endpoint,
- * and response versions remain the same content-addressed {@link Version} tokens local backends
- * produce. Tri-backend contract tests pin that invariant.
+ * This is the client half of the seam over HTTP: every method maps directly to a wire endpoint
+ * (a guarded document write may first ask `GET /v0/capabilities` whether the host records
+ * outcomes; see {@link RemoteBackendOptions.maxRetries}), and response versions remain the same
+ * content-addressed {@link Version} tokens local backends produce. Tri-backend contract tests pin
+ * that invariant.
  *
  * Zero new dependencies: it calls an injectable {@link FetchLike} transport
  * (defaulting to the global `fetch`, available on Node >= 20) with a constructed
@@ -47,8 +49,8 @@ import { encodeRemoteDocument } from "./remote-document-codec.js";
 import { RemoteError, malformed } from "./remote-error.js";
 import { SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream, type HeadsResult, type RemoteSnapshot } from "./remote-parsers.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys } from "./paths.js";
-import { isRequestIdentity, type Outcome } from "./uncertain-write.js";
-import { VersionConflict, stripETagWrapper } from "./version-transport.js";
+import { isRequestIdentity, mintRequestId, type Outcome } from "./uncertain-write.js";
+import { VersionConflict, isContentVersion, stripETagWrapper } from "./version-transport.js";
 import type {
   BlobKey,
   ConceptId,
@@ -103,13 +105,24 @@ export interface RemoteBackendOptions {
    * e.g. a Cloudflare D1 cold-start's 500 "storage caused object to be reset" when a hibernated
    * database is first hit) or a network/transport error. Each retry backs off exponentially with
    * jitter. A 4xx (incl. 412 VersionConflict), 401, or any 2xx is a REAL result, never retried.
-   * Default 3; set 0 to disable. A retried read is idempotent. A retried guarded write lands the
-   * same version or a conflict — possibly SPURIOUS, if a prior attempt actually committed before
-   * its response was lost. It is not free of lost updates: versions are content hashes, so if
-   * another writer returns the document to the exact state the premise names before a retry
-   * arrives, the retry applies the write again over that change and reports success. An
-   * unconditional write can simply be repeated. A write with `requestId` against a host with
-   * `operations` is answered from the recorded outcome instead.
+   * Default 3; set 0 to disable. A retried read is idempotent.
+   *
+   * A guarded document write (`write` with `expectedVersion`, or `delete` with a content-version
+   * `expectedVersion`) travels with an `Idempotency-Key`: the caller's `requestId`, or else, when
+   * the host's capabilities report `operations`, one minted for that call. Every retry of the
+   * request carries the same key, so while the host keeps the record a retry is answered from the
+   * recorded outcome and cannot apply the write a second time.
+   *
+   * Other guarded writes retry as a plain resubmission: a guarded document write sent without a key
+   * (to a host without `operations`, after a capability question that ended in a transient status,
+   * or resent after the host refused a key minted under a stale answer), a `delete` whose
+   * `expectedVersion` is not a content version, and every guarded reserved-file and blob write,
+   * none of which the wire identifies. Such a retry lands the same version or a conflict, possibly
+   * SPURIOUS if a prior attempt committed before its response was lost. It is not free of lost
+   * updates: versions are content hashes, so if another writer returns the document to the exact
+   * state the premise names before a retry arrives, the retry applies the write again over that
+   * change and reports success. An unconditional write carries no minted key and can simply be
+   * repeated.
    */
   maxRetries?: number;
 }
@@ -193,6 +206,19 @@ function assertValidExpectedVersion(expectedVersion: WriteOptions["expectedVersi
 /** The header that carries a write's durable request identity (`docs/WIRE-PROTOCOL.md`). */
 const IDENTITY_HEADER = "Idempotency-Key";
 
+/** The wire's `400 USAGE` message from a host that records no outcomes, answering any request that carries a key. */
+const IDENTITY_UNSUPPORTED = "request identity is not supported by this host";
+
+/** Whether `res` is a host's refusal of request identity itself, as opposed to a recorded or document refusal. */
+async function refusesIdentity(res: Response): Promise<boolean> {
+  try {
+    const envelope = (await res.json()) as ErrorEnvelope | null;
+    return envelope?.error?.code === "USAGE" && envelope.error.message === IDENTITY_UNSUPPORTED;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Reject a request identity the wire would refuse before any request is sent, so a malformed
  * key is a caller-side `InvalidInputError` rather than a `400` the caller might mistake for a
@@ -272,6 +298,8 @@ export class RemoteBackend implements StorageBackend {
   private readonly fetchImpl: FetchLike;
   private readonly authToken?: string;
   private readonly maxRetries: number;
+  /** The pending or settled answer to whether this host records outcomes; see {@link recordsOutcomes}. */
+  private operationsSupport?: Promise<boolean>;
 
   constructor(options: RemoteBackendOptions) {
     this.baseUrl = trimTrailingSlashes(options.baseUrl);
@@ -306,17 +334,19 @@ export class RemoteBackend implements StorageBackend {
     // object reset" when a hibernated database is first hit; also 502/503/504 from the edge) or a
     // network/transport error — with exponential backoff + jitter, so a hibernated-backend hiccup is
     // transparent instead of a hard failure. A REAL result (2xx, or 4xx incl. 412 VersionConflict,
-    // or 401) returns/throws immediately, never retried. A retried read is idempotent. A retried
-    // guarded write lands the same version or a conflict (possibly SPURIOUS — a prior attempt may
-    // have committed before its response was lost), except that a document returned in between
-    // to exactly the state its premise names (the same bytes hash to the same version) lets the
-    // retry apply again over that change; see `maxRetries`. `send` rebuilds the Request per
-    // attempt from `init` (bodies are strings/bytes, so reusable — no consumed-stream hazard).
+    // or 401) returns/throws immediately, never retried. A retried read is idempotent. `send`
+    // rebuilds the Request per attempt from the same `init` (bodies are strings/bytes, so reusable —
+    // no consumed-stream hazard), so every attempt carries the same headers, `Idempotency-Key`
+    // included.
     //
-    // A write that carries `Idempotency-Key` is different again: its transient retries are true
-    // replays, answered from the authority's recorded outcome while it keeps that record, so a
-    // retry after a lost response can neither apply twice nor surface a spurious conflict against
-    // its own earlier application.
+    // A write that carries `Idempotency-Key` is therefore retried as a true replay, answered from
+    // the authority's recorded outcome while it keeps that record: a retry after a lost response
+    // can neither apply twice nor surface a spurious conflict against its own earlier application.
+    // `write` and `delete` attach one to guarded document writes on a host with `operations` (see
+    // `maxRetries` for which). A guarded write without one lands the same version or a conflict
+    // (possibly SPURIOUS — a prior attempt may have committed before its response was lost), except
+    // that a document returned in between to exactly the state its premise names (the same bytes
+    // hash to the same version) lets the retry apply again over that change.
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await this.fetchImpl(new Request(url, init));
@@ -412,16 +442,19 @@ export class RemoteBackend implements StorageBackend {
     if (options.expectedVersion === null) headers["If-None-Match"] = "*";
     else if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
     if (options.actor) headers["X-Actor"] = options.actor;
+    // Captured before the capability question can yield, so the payload is the document as it
+    // stood when `write` was called and an unencodable one is refused before any request.
+    const body = encodeRemoteDocument(doc.frontmatter, doc.body ?? "");
+    let minted = false;
     if (options.requestId !== undefined) {
       assertRequestIdentity(options.requestId);
       headers[IDENTITY_HEADER] = options.requestId;
+    } else if (options.expectedVersion !== undefined && (await this.recordsOutcomes())) {
+      headers[IDENTITY_HEADER] = mintRequestId();
+      minted = true;
     }
 
-    const res = await this.send(`/docs/${encodeId(id)}`, {
-      method: "PUT",
-      headers,
-      body: encodeRemoteDocument(doc.frontmatter, doc.body ?? ""),
-    });
+    const res = await this.sendDocWrite(`/docs/${encodeId(id)}`, { method: "PUT", headers, body }, minted);
     if (!res.ok) throw await this.toError(res, id);
     const payload = (await res.json()) as { version: Version };
     return payload.version;
@@ -429,10 +462,11 @@ export class RemoteBackend implements StorageBackend {
 
   /**
    * `GET /v0/capabilities`, deployment-scoped: what this authority implements. `operations` says
-   * whether it records outcomes by request identity. A host without it ignores `Idempotency-Key`
-   * and answers the lookup route with a route-miss `404`, which {@link lookupOperation} cannot
-   * tell from "never recorded"; a consumer that relies on identity checks this once before it
-   * sends any intent. Missing booleans read as `false`.
+   * whether it records outcomes by request identity. The reference router without it refuses any
+   * request carrying `Idempotency-Key`, and the lookup route, with `400 USAGE`; a host that lacks
+   * the lookup route altogether answers it with a route-miss `404`, which {@link lookupOperation}
+   * cannot tell from "never recorded". A consumer that relies on identity checks this once before
+   * it sends any intent. Missing booleans read as `false`.
    */
   async wireCapabilities(): Promise<WireCapabilities> {
     const res = await this.send("/v0/capabilities", { method: "GET" }, "deployment");
@@ -449,6 +483,54 @@ export class RemoteBackend implements StorageBackend {
       heads: flag("heads"),
       snapshot: flag("snapshot"),
     };
+  }
+
+  /**
+   * Whether this host records outcomes by request identity, asked through `GET /v0/capabilities`
+   * and shared by concurrent callers. A host that answers anything but a `2xx` with
+   * `operations: true` is treated as not recording them, since a host that does not record them
+   * refuses a key with `400`. That answer is kept for the backend's lifetime, except that a
+   * transient status still returned after `send`'s retries, or a transport failure, is not kept:
+   * the former sends this write unidentified, and the latter rejects the write before it is sent.
+   * A kept yes is also dropped when a minted key meets the host's identity refusal; see
+   * {@link sendDocWrite}.
+   */
+  private recordsOutcomes(): Promise<boolean> {
+    this.operationsSupport ??= this.probeOperations();
+    return this.operationsSupport;
+  }
+
+  private async probeOperations(): Promise<boolean> {
+    let res: Response;
+    try {
+      res = await this.send("/v0/capabilities", { method: "GET" }, "deployment");
+    } catch (err) {
+      this.operationsSupport = undefined;
+      throw err;
+    }
+    if (RETRIABLE_STATUS.has(res.status)) this.operationsSupport = undefined;
+    if (!res.ok) return false;
+    try {
+      const payload = (await res.json()) as { operations?: unknown } | null;
+      return payload?.operations === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Send a document `PUT` or `DELETE`. When its `Idempotency-Key` was minted here, a kept
+   * `operations` answer may be stale: a host that has since lost its outcome store refuses every
+   * key with the wire's `400` {@link IDENTITY_UNSUPPORTED} before applying anything. That answer
+   * is dropped and the write is sent once more without a key, as to any host without
+   * `operations`. A caller's own `requestId` is never dropped, so its refusal is the answer.
+   */
+  private async sendDocWrite(path: string, init: RequestInit & { headers: Record<string, string> }, minted: boolean): Promise<Response> {
+    const res = await this.send(path, init);
+    if (!minted || res.status !== 400 || !(await refusesIdentity(res.clone()))) return res;
+    this.operationsSupport = undefined;
+    const { [IDENTITY_HEADER]: _refused, ...headers } = init.headers;
+    return this.send(path, { ...init, headers });
   }
 
   /**
@@ -647,12 +729,22 @@ export class RemoteBackend implements StorageBackend {
     assertValidExpectedVersion(options.expectedVersion);
     const headers: Record<string, string> = {};
     if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
+    let minted = false;
     if (options.requestId !== undefined) {
       assertRequestIdentity(options.requestId);
       headers[IDENTITY_HEADER] = options.requestId;
+    } else if (
+      options.expectedVersion !== undefined &&
+      isContentVersion(stripETagWrapper(options.expectedVersion)) &&
+      (await this.recordsOutcomes())
+    ) {
+      // The wire identifies a delete only under a content-version premise; any other premise
+      // stays an unidentified request rather than becoming a `400`.
+      headers[IDENTITY_HEADER] = mintRequestId();
+      minted = true;
     }
 
-    const res = await this.send(`/docs/${encodeId(id)}`, { method: "DELETE", headers });
+    const res = await this.sendDocWrite(`/docs/${encodeId(id)}`, { method: "DELETE", headers }, minted);
     if (!res.ok) throw await this.toError(res, id);
     const payload = (await res.json()) as { deleted: boolean };
     return payload.deleted;
