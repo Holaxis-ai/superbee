@@ -1231,6 +1231,54 @@ test("RemoteBackend: a guarded write sends the document as it stood when write()
   assert.deepEqual(sent, ["GET /v0/capabilities", "PUT /v0/bundles/test/docs/concepts/cap"]);
 });
 
+test("RemoteBackend: a kept operations answer that went stale is dropped on the host's identity refusal and the guarded write is sent once more without a key; a caller's requestId is not", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  let router = createRouterForBackend(serverBackend);
+  const sent: SentRequest[] = [];
+  const fetchImpl: WireRouter = async (req) => {
+    sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
+    return router(req);
+  };
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", maxRetries: 0, fetchImpl });
+  const doc = (id: string, body: string): OkfDocument => ({ id, frontmatter: { type: "T", timestamp: T_DOC }, body });
+  const a = await remote.write("concepts/a", doc("concepts/a", "a1"), { expectedVersion: null });
+  const b = await remote.write("concepts/b", doc("concepts/b", "b1"), { expectedVersion: null });
+
+  // The host restarts over the same documents without an outcome store.
+  router = createRouterForBackend(serverBackend, { outcomes: null });
+  sent.length = 0;
+  const a2 = await remote.write("concepts/a", doc("concepts/a", "a2"), { expectedVersion: a });
+  assert.equal((await serverBackend.read("concepts/a")).version, a2);
+  assert.equal((await serverBackend.versions("concepts/a")).length, 2, "the refused attempt applied nothing");
+  await assert.rejects(
+    () => remote.write("concepts/c", doc("concepts/c", "c1"), { expectedVersion: null, requestId: "caller-chosen" }),
+    (error: unknown) => error instanceof RemoteError && error.status === 400,
+  );
+  assert.equal(await remote.delete("concepts/b", { expectedVersion: b }), true);
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.path} ${r.key === null ? "unidentified" : r.key === "caller-chosen" ? "caller" : "minted"}`),
+    [
+      "PUT /v0/bundles/test/docs/concepts/a minted",
+      "PUT /v0/bundles/test/docs/concepts/a unidentified",
+      "PUT /v0/bundles/test/docs/concepts/c caller",
+      "GET /v0/capabilities unidentified",
+      "DELETE /v0/bundles/test/docs/concepts/b unidentified",
+    ],
+  );
+
+  // A stale answer met by a delete is handled the same way.
+  const staleDelete = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", maxRetries: 0, fetchImpl });
+  router = createRouterForBackend(serverBackend);
+  const d = await staleDelete.write("concepts/d", doc("concepts/d", "d1"), { expectedVersion: null });
+  router = createRouterForBackend(serverBackend, { outcomes: null });
+  sent.length = 0;
+  assert.equal(await staleDelete.delete("concepts/d", { expectedVersion: d }), true);
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.key === null ? "unidentified" : "minted"}`),
+    ["DELETE minted", "DELETE unidentified"],
+  );
+});
+
 test("wire: MemoryOperationOutcomeStore releases the claim and settles waiters with null when the clock throws inside record", async () => {
   let clockFails = false;
   const store = new MemoryOperationOutcomeStore({

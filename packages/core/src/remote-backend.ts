@@ -203,6 +203,19 @@ function assertValidExpectedVersion(expectedVersion: WriteOptions["expectedVersi
 /** The header that carries a write's durable request identity (`docs/WIRE-PROTOCOL.md`). */
 const IDENTITY_HEADER = "Idempotency-Key";
 
+/** The wire's `400 USAGE` message from a host that records no outcomes, answering any request that carries a key. */
+const IDENTITY_UNSUPPORTED = "request identity is not supported by this host";
+
+/** Whether `res` is a host's refusal of request identity itself, as opposed to a recorded or document refusal. */
+async function refusesIdentity(res: Response): Promise<boolean> {
+  try {
+    const envelope = (await res.json()) as ErrorEnvelope | null;
+    return envelope?.error?.code === "USAGE" && envelope.error.message === IDENTITY_UNSUPPORTED;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Reject a request identity the wire would refuse before any request is sent, so a malformed
  * key is a caller-side `InvalidInputError` rather than a `400` the caller might mistake for a
@@ -429,14 +442,16 @@ export class RemoteBackend implements StorageBackend {
     // Captured before the capability question can yield, so the payload is the document as it
     // stood when `write` was called and an unencodable one is refused before any request.
     const body = encodeRemoteDocument(doc.frontmatter, doc.body ?? "");
+    let minted = false;
     if (options.requestId !== undefined) {
       assertRequestIdentity(options.requestId);
       headers[IDENTITY_HEADER] = options.requestId;
     } else if (options.expectedVersion !== undefined && (await this.recordsOutcomes())) {
       headers[IDENTITY_HEADER] = mintRequestId();
+      minted = true;
     }
 
-    const res = await this.send(`/docs/${encodeId(id)}`, { method: "PUT", headers, body });
+    const res = await this.sendDocWrite(`/docs/${encodeId(id)}`, { method: "PUT", headers, body }, minted);
     if (!res.ok) throw await this.toError(res, id);
     const payload = (await res.json()) as { version: Version };
     return payload.version;
@@ -473,6 +488,8 @@ export class RemoteBackend implements StorageBackend {
    * refuses a key with `400`. That answer is kept for the backend's lifetime, except that a
    * transient status still returned after `send`'s retries, or a transport failure, is not kept:
    * the former sends this write unidentified, and the latter rejects the write before it is sent.
+   * A kept yes is also dropped when a minted key meets the host's identity refusal; see
+   * {@link sendDocWrite}.
    */
   private recordsOutcomes(): Promise<boolean> {
     this.operationsSupport ??= this.probeOperations();
@@ -495,6 +512,21 @@ export class RemoteBackend implements StorageBackend {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Send a document `PUT` or `DELETE`. When its `Idempotency-Key` was minted here, a kept
+   * `operations` answer may be stale: a host that has since lost its outcome store refuses every
+   * key with the wire's `400` {@link IDENTITY_UNSUPPORTED} before applying anything. That answer
+   * is dropped and the write is sent once more without a key, as to any host without
+   * `operations`. A caller's own `requestId` is never dropped, so its refusal is the answer.
+   */
+  private async sendDocWrite(path: string, init: RequestInit & { headers: Record<string, string> }, minted: boolean): Promise<Response> {
+    const res = await this.send(path, init);
+    if (!minted || res.status !== 400 || !(await refusesIdentity(res.clone()))) return res;
+    this.operationsSupport = undefined;
+    const { [IDENTITY_HEADER]: _refused, ...headers } = init.headers;
+    return this.send(path, { ...init, headers });
   }
 
   /**
@@ -693,6 +725,7 @@ export class RemoteBackend implements StorageBackend {
     assertValidExpectedVersion(options.expectedVersion);
     const headers: Record<string, string> = {};
     if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
+    let minted = false;
     if (options.requestId !== undefined) {
       assertRequestIdentity(options.requestId);
       headers[IDENTITY_HEADER] = options.requestId;
@@ -704,9 +737,10 @@ export class RemoteBackend implements StorageBackend {
       // The wire identifies a delete only under a content-version premise; any other premise
       // stays an unidentified request rather than becoming a `400`.
       headers[IDENTITY_HEADER] = mintRequestId();
+      minted = true;
     }
 
-    const res = await this.send(`/docs/${encodeId(id)}`, { method: "DELETE", headers });
+    const res = await this.sendDocWrite(`/docs/${encodeId(id)}`, { method: "DELETE", headers }, minted);
     if (!res.ok) throw await this.toError(res, id);
     const payload = (await res.json()) as { deleted: boolean };
     return payload.deleted;
