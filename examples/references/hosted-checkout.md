@@ -190,6 +190,10 @@ confirm that no superbee command is still running, then remove the lock named in
 - Offer the Stop hook, but install it only when the person agrees.
   `superbee hook uninstall --turn-end-sync` removes it, and `SUPERBEE_NO_TURN_SYNC=<any value>`
   turns it off for a shell.
+- Each write names the agent the sync runs under, and the host records it with the write as
+  unverified attribution, never authority: `claude-code` under Claude Code (`CLAUDECODE=1`), or
+  `SUPERBEE_VIA=<token>` (1 to 32 of `a-z 0-9 . _ -`). `SUPERBEE_NO_VIA=<any value>` names none.
+  A token the host would refuse is not sent, and the receipt says so (`via_ignored`).
 
 ## Export: taking a bundle out of hosted
 

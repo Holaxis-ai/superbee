@@ -90,7 +90,7 @@ const BINDING = `sha256:${"c".repeat(64)}`;
 
 test("the fake answers every golden /sync/v1 exchange in the host's shape", async () => {
   const host = new FakeHost();
-  const sendTo = (to: FakeHost, route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string } = {}) =>
+  const sendTo = (to: FakeHost, route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string; via?: string } = {}) =>
     to.fetch(`${to.origin}/sync/v1/${route}`, {
       method: "POST",
       headers: {
@@ -99,10 +99,11 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
         ...(options.requestId === undefined || options.requestId === null ? {} : { "X-Superbee-Write-Request": options.requestId, "X-Superbee-Checkout": BINDING }),
         ...(options.requestId === null ? { "X-Superbee-Checkout": BINDING } : {}),
         ...(options.recreate === undefined ? {} : { "X-Superbee-Recreate": options.recreate }),
+        ...(options.via === undefined ? {} : { "X-Superbee-Via": options.via }),
       },
       body: JSON.stringify(body),
     });
-  const send = (route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string } = {}) => sendTo(host, route, body, options);
+  const send = (route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string; via?: string } = {}) => sendTo(host, route, body, options);
   const [firstId, first] = [...host.docs][0]!;
   const create = (documentId: string, body = "two") => ({ bundleId: BUNDLE, documentId, expectAbsent: true, frontmatter: { type: "Note" }, body });
   const replace = (expectedVersion: string, body: string) => ({ bundleId: BUNDLE, documentId: firstId, expectedVersion, frontmatter: { type: "Note" }, body });
@@ -156,6 +157,8 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("outcome-200-absent", send("outcome", create("notes/never"), { requestId: identity(8) }));
   await observe("write-400-invalid-input", send("replace", { ...replace(replaced.data.version, "x"), extra: true }, { requestId: identity(9) }));
   await observe("write-400-missing-identity", send("create", create("notes/x"), { requestId: null }));
+  await observe("create-200-ok-via", send("create", create("notes/via", "via"), { requestId: identity(22), via: "claude-code" }));
+  await observe("write-400-invalid-via", send("create", create("notes/x"), { requestId: identity(23), via: "Claude Code" }));
   host.hook = (call) => (call.requestId === identity(21) ? { kind: "unknown" } : undefined);
   await observe("create-200-write-outcome-unknown", send("create", create("notes/unknown"), { requestId: identity(21) }));
   host.hook = undefined;

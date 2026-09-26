@@ -6,6 +6,10 @@ export const SUPERBEE_API_KEY_ENV = "SUPERBEE_API_KEY";
 export const LEGACY_API_KEY_ENV = "AGENTSTATE_LITE_API_KEY";
 export const SUPERBEE_NO_UPDATE_CHECK_ENV = "SUPERBEE_NO_UPDATE_CHECK";
 export const LEGACY_NO_UPDATE_CHECK_ENV = "ASLITE_NO_UPDATE_CHECK";
+/** The agent a hosted sync names for its writes (`X-Superbee-Via`), such as `codex`. */
+export const SUPERBEE_VIA_ENV = "SUPERBEE_VIA";
+/** Any value: a hosted sync names no agent, even under Claude Code. */
+export const SUPERBEE_NO_VIA_ENV = "SUPERBEE_NO_VIA";
 
 export interface CompatibleScalarEnvOptions {
   canonical: string;

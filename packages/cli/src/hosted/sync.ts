@@ -54,6 +54,7 @@ import { resolveLocalBundleTarget } from "../bundle.js";
 import { parseSyncArgs } from "../commands/sync/orchestrate.js";
 import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
+import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { ACCESS_TOKEN_ENV, defaultHostedAuthDeps, ensureHostedAccessToken, readSession, SignedOutError, type HostedAuthDeps } from "../hosted-auth/session.js";
@@ -127,6 +128,9 @@ answer was lost; the next sync looks it up by the same request) and paused (sign
 sync quota for this bundle). The exit is 0 only when every row is committed: 5 when a row needs
 your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a lost answer, and
 4 (AUTH_REQUIRED, with the sign-in link) when you must sign in.
+Each write names the agent the sync runs under, recorded with it on the host as unverified
+attribution (never authority): claude-code under Claude Code (CLAUDECODE=1), or SUPERBEE_VIA=<token>
+(1 to 32 of a-z 0-9 . _ -); SUPERBEE_NO_VIA=<any value> names none. SUPERBEE_ACTOR does not set it.
 `;
 
 /** Rows shown by default; --limit changes it. */
@@ -612,6 +616,8 @@ interface PushOutcome {
   readonly notSent: NotSentReason;
   /** Creates not sent because the host holds a document whose id differs only in case. */
   readonly collisions: HeldFile[];
+  /** The agent the writes named (`X-Superbee-Via`), or why a named one was not sent. */
+  readonly via?: { readonly token?: string; readonly ignored?: string };
 }
 
 /**
@@ -661,6 +667,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
   // Running sync is the person's decision to retry: a pause from an earlier run (sign-in, quota,
   // a withdrawn grant) is lifted and its refused changes are requeued under their identities.
   await resume(local);
+  const via = resolveHostedVia(deps.auth.env);
   const transport = createWholeDocumentTransport({
     carrier,
     bundleId: binding.bundle_id,
@@ -669,6 +676,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     remote: reader,
     routes: { create: `${session.routes}/create`, replace: `${session.routes}/replace`, delete: `${session.routes}/delete`, outcome: `${session.routes}/outcome` },
     ...(session.okfVersion ? { okfVersion: session.okfVersion } : {}),
+    ...(via.token !== undefined ? { via: via.token } : {}),
   });
   const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)));
   let signInRequired = false;
@@ -692,7 +700,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     if (pass === PUSH_PASSES - 1 || (await requeueBusy(store)) === 0) break;
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions };
+  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions, via };
 }
 
 /**
@@ -901,6 +909,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
           }
         : {}),
       ...(scan.accepted !== undefined ? { deletions_accepted: scan.accepted } : {}),
+      ...(outcome.via?.ignored !== undefined ? { via_ignored: outcome.via.ignored } : {}),
       ...(scan.deleted.length > 0
         ? { deletions: scan.deleted.map((row) => ({ id: row.id, ...(row.inbound.length > 0 ? { still_linked_from: row.inbound.slice(0, 20), warning: `${row.inbound.length} document(s) still link to '${row.id}'; the links are left as they are` } : {}) })) }
         : {}),
