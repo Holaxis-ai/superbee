@@ -70,13 +70,19 @@ function bodyShape(text: string): unknown {
 
 const GRAMMAR = ["content-type", "etag", "x-superbee-root-version", "x-superbee-write-settled"];
 
+/** Header names, and the root version header's value where it selects a row: `none` (no root) or a version. */
+function headerShape(get: (name: string) => string | null): string[] {
+  return GRAMMAR.filter((name) => get(name) !== null)
+    .sort()
+    .map((name) => (name === "x-superbee-root-version" ? `${name}=${get(name) === "none" ? "none" : shape(get(name))}` : name));
+}
+
 async function answerOf(response: Response) {
-  const headers = GRAMMAR.filter((name) => response.headers.has(name)).sort();
-  return { status: response.status, headers, body: bodyShape(await response.text()) };
+  return { status: response.status, headers: headerShape((name) => response.headers.get(name)), body: bodyShape(await response.text()) };
 }
 
 function expectedOf(exchange: Exchange) {
-  return { status: exchange.response.status, headers: Object.keys(exchange.response.headers).sort(), body: bodyShape(exchange.response.body) };
+  return { status: exchange.response.status, headers: headerShape((name) => exchange.response.headers[name] ?? null), body: bodyShape(exchange.response.body) };
 }
 
 const identity = (n: number) => `4a2f9c1e-8b3d-4e6f-9a1b-${String(n).padStart(12, "0")}`;
