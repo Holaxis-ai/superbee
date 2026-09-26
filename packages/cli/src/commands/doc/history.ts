@@ -269,6 +269,8 @@ async function hostedList(connection: Connection, checkout: CheckoutBinding, id:
   } else if (truncated) {
     help.push(truncationHelp(id, versions.length, total));
   }
+  // A document whose head exists with no rows of its own: its versions came in with an import.
+  if (total === 0) help.push(`the host lists no versions for '${id}' (imported history is not served yet); its current version is \`${cliInvocation()} doc read ${commandToken(id)}\``);
   // No --expected-version line: the host's newest version is not this folder's compare-and-swap base.
   if (versions.length > 0) help.push(`${cliInvocation()} doc history ${commandToken(id)} --seq ${commandToken(String(versions[0]!.seq))}`);
   if (help.length > 0) out.help = help;
