@@ -28,12 +28,13 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
-import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, readDefaultHost, type HostedAuthDeps } from "../hosted-auth/session.js";
-import { readDefaultWorkspace } from "../hosted/defaults.js";
+import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { connectHostedAccount, hostedListCommand } from "../hosted/account.js";
 import { recordPulled } from "../hosted/freshness.js";
-import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
+import type { HostedTarget } from "../hosted-auth/discovery.js";
 import {
   bindingForPath,
+  bindsBundle,
   checkoutLockName,
   checkoutStoreDir,
   discardCheckoutState,
@@ -46,7 +47,7 @@ import {
   writeBinding,
   type CheckoutBinding,
 } from "../hosted/binding.js";
-import { createHostedSyncClient, hostedFailure, syncRoutePrefix, WORKSPACE_HEADER } from "../hosted/client.js";
+import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, WORKSPACE_HEADER } from "../hosted/client.js";
 import { HOSTED_CHECKOUT_REFUSALS } from "../hosted/refusals.js";
 import { digestOf, exportFresh, findPathCollision, ROOT_INDEX } from "../hosted/projection.js";
 import { writeProjection } from "../hosted/sync-scan.js";
@@ -60,8 +61,6 @@ import { adopt } from "./checkout-adopt.js";
  */
 export const CHECKOUT_DOCUMENT_LIMIT = 1000;
 export const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
-/** The bundle list the host answers is capped at this many rows. */
-const BUNDLE_LIST_CAP = 100;
 
 export const CHECKOUT_USAGE = `superbee checkout — mirror a hosted bundle into a local folder
 
@@ -70,8 +69,8 @@ Usage:
   superbee checkout --adopt <folder> [--host <url>] [--workspace <id>] [--json]
   superbee checkout --release <folder> [--json]
 
-Signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the command to
-re-run), then copies the hosted bundle into --dir (default: ./<bundle-id>), which must be new or
+'superbee catalog list --hosted' lists the bundle ids you can check out. Signs in if needed
+(AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then copies the hosted bundle into --dir (default: ./<bundle-id>), which must be new or
 empty. The host is --host, else the host of your last sign-in (never SUPERBEE_HOST alone); the
 receipt names the host it bound. The folder holds plain bundle files, so every command runs on it
 with --dir <folder>. The link to the host is kept in private state, keyed by the folder's path,
@@ -149,10 +148,6 @@ export async function entryKind(target: string): Promise<"absent" | "empty-dir" 
   }
   if (!info.isDirectory()) return "other";
   return (await readdir(target)).length === 0 ? "empty-dir" : "dir";
-}
-
-function sameBundle(binding: CheckoutBinding, target: HostedTarget, bundleId: string): boolean {
-  return binding.origin === target.origin && binding.audience === target.audience && binding.bundle_id === bundleId;
 }
 
 export function bindingView(binding: CheckoutBinding): Record<string, unknown> {
@@ -393,15 +388,8 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   if (!BUNDLE_ID.test(bundleId) || bundleId.length > 128) {
     throw new CliError("USAGE", `'${bundleId}' is not a hosted bundle id`, { help: `${cliInvocation()} checkout --help` });
   }
-  // The host is the flag, else the last sign-in's host. SUPERBEE_HOST alone never selects it, and
-  // the chosen host is fixed in the binding and echoed in the receipt.
-  const hostChoice = values.host || (await readDefaultHost(deps.auth.home));
-  if (!hostChoice) {
-    throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", {
-      help: `${cliInvocation()} login --host <url>`,
-    });
-  }
-  const target = resolveHostedTarget(hostChoice);
+  // The chosen host is fixed in the binding and echoed in the receipt.
+  const target = await requireHostedBundleHost(values.host, deps.auth.home);
   const prefix = syncRoutePrefix(target);
   const folder = path.resolve(deps.cwd, values.dir ?? bundleId);
   assertBundleOutsidePrivateState(folder, deps.auth.home);
@@ -415,7 +403,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   }
   if (found === "dir") {
     const existing = await bindingForPath(deps.auth.home, await realpath(folder));
-    if (existing && sameBundle(existing, target, bundleId)) {
+    if (existing && bindsBundle(existing, target, bundleId)) {
       deps.stdout(render({ checkout: "unchanged", ...bindingView(existing), help: nextSteps(existing.path) }, mode));
       return;
     }
@@ -590,25 +578,18 @@ export async function connectHostedBundle(
   deps: CheckoutDeps,
   resume: CommandText,
 ): Promise<HostedBundleConnection> {
-  // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
-  const token = await ensureHostedAccessToken(target, { resume }, deps.auth);
-  const client = createHostedSyncClient({
+  const { client, identity, workspace } = await connectHostedAccount(
     target,
-    accessToken: token.accessToken,
-    resume,
-    ...(workspaceFlag !== undefined ? { workspace: workspaceFlag } : {}),
-    ...(deps.fetch ? { fetch: deps.fetch } : {}),
-  });
-
-  const identity = await client.whoami();
-  if (workspaceFlag !== undefined && !identity.tenantIds.includes(workspaceFlag)) {
-    throw new CliError("NOT_FOUND", `you are not a member of workspace '${workspaceFlag}' on ${target.origin}`, {
-      details: { workspace: workspaceFlag, workspaces: identity.tenantIds },
-      help: `${cliInvocation()} checkout ${commandToken(bundleId)} --host ${commandToken(hostArgument(target))} --workspace <id>`,
-    });
-  }
+    {
+      workspace: workspaceFlag,
+      resume,
+      otherWorkspace: `${cliInvocation()} checkout ${commandToken(bundleId)} --host ${commandToken(hostArgument(target))} --workspace <id>`,
+    },
+    deps,
+  );
   const bundles = await client.bundles();
-  const matches = bundles.filter((row) => row.bundleId === bundleId).length;
+  const listing = readBundleListing(bundles);
+  const matches = listing.bundles.get(bundleId)?.workspaces ?? 0;
   if (matches > 1) {
     // The host selects the tenant from the bundle id and refuses an id two tenants serve; it does
     // not select by workspace yet, so naming one cannot settle it.
@@ -618,10 +599,10 @@ export async function connectHostedBundle(
     });
   }
   const listed = matches === 1;
-  if (!listed && bundles.length < BUNDLE_LIST_CAP) {
+  if (!listed && listing.complete) {
     throw new CliError("NOT_FOUND", `no hosted bundle '${bundleId}' is visible to you on ${target.origin}`, {
       details: { bundle_id: bundleId, host: target.origin, visible: bundles.slice(0, 20).map((row) => row.bundleId), visible_total: bundles.length },
-      help: `${cliInvocation()} checkout <bundle-id> --host ${commandToken(hostArgument(target))}`,
+      help: hostedListCommand(target),
     });
   }
 
@@ -645,11 +626,6 @@ export async function connectHostedBundle(
   if (ids.length > Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.bound.documents)) throw tooLarge(bundleId, target, ids.length);
   assertProjectable(ids, bundleId, target);
 
-  // Named, else the only one, else the default `setup hosted` recorded for this host (if still yours).
-  const remembered = identity.tenantIds.length > 1 ? await readDefaultWorkspace(deps.auth.home, target.origin) : null;
-  const workspace =
-    workspaceFlag ??
-    (identity.tenantIds.length === 1 ? identity.tenantIds[0]! : remembered !== null && identity.tenantIds.includes(remembered) ? remembered : null);
   return { identity, reader, listed, workspace };
 }
 

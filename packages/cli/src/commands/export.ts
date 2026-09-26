@@ -40,10 +40,11 @@ import { render, renderUsage, resolveMode, type OutputMode } from "../output.js"
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 import { hostedCheckoutAt } from "../autopull.js";
-import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, readDefaultHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { bindingForPath, checkoutLockName, checkoutStoreDir, releaseCheckout, type CheckoutBinding } from "../hosted/binding.js";
 import { createHostedSyncClient, hostedFailure } from "../hosted/client.js";
+import { hostedListCommand } from "../hosted/account.js";
 import { hostedCheckoutFor } from "../hosted/sync.js";
 import { classifyCheckout, hostedStatus } from "../hosted/status.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
@@ -199,7 +200,7 @@ async function fetchArchive(source: Source, deps: ExportDeps, resume: CommandTex
     if (code === "bundle_not_found") {
       throw new CliError("NOT_FOUND", `no hosted bundle '${bundleId}' is visible to you on ${target.origin}`, {
         details: { bundle_id: bundleId, host: target.origin },
-        help: `${cliInvocation()} whoami --host ${commandToken(hostArgument(target))}`,
+        help: hostedListCommand(target),
       });
     }
     if (code === "result_too_large") {
@@ -900,9 +901,7 @@ export async function exportCommand(argv: string[], partial: Partial<ExportDeps>
 
   let source: Source;
   if (bundleId !== undefined) {
-    const hostChoice = values.host || (await readDefaultHost(deps.auth.home));
-    if (!hostChoice) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
-    source = { target: resolveHostedTarget(hostChoice), bundleId, workspace: values.workspace ?? null, binding: null };
+    source = { target: await requireHostedBundleHost(values.host, deps.auth.home), bundleId, workspace: values.workspace ?? null, binding: null };
   } else {
     const binding = await hostedCheckoutFor(values.dir === undefined ? [] : ["--dir", values.dir], deps.auth.home, deps.cwd);
     if (!binding) {

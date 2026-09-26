@@ -33,7 +33,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
-import { defaultHostedAuthDeps, ensureHostedAccessToken, readDefaultHost } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, ensureHostedAccessToken, hostedBundleHost } from "../hosted-auth/session.js";
 import { createHostedSyncClient, hostedFailure } from "../hosted/client.js";
 import { readDefaultWorkspace } from "../hosted/defaults.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
@@ -309,7 +309,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       help: `${cliInvocation()} publish --to hosted --bundle-id <id>`,
     });
   }
-  const hostChoice = values.host || (await readDefaultHost(home));
+  const hostChoice = await hostedBundleHost(values.host, home);
   const target = hostChoice ? resolveHostedTarget(hostChoice) : null;
   const withHistory = values["with-history"] === true;
   const plan = await planPublish(canonical, withHistory ? { history: true, ...(board ? { board } : {}), now: deps.auth.now() } : { history: false });

@@ -16,6 +16,7 @@ import { headsDigest } from "@superbee/core";
 
 import { CliError } from "../src/errors.js";
 import { checkout, CHECKOUT_DOCUMENT_LIMIT } from "../src/commands/checkout.js";
+import { catalog } from "../src/commands/catalog.js";
 import { list } from "../src/commands/list.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
@@ -285,6 +286,7 @@ test("a bundle not visible to the person is NOT_FOUND before any bundle route", 
   const error = await rejects(run(h, [BUNDLE, "--host", HOST], fake));
   assert.equal(error.code, "NOT_FOUND");
   assert.deepEqual(error.details?.visible, ["other.bundle"]);
+  assert.match(error.help ?? "", /superbee catalog list --hosted --host https:\/\/hosted\.example$/);
   assert.deepEqual(fake.requests.map((r) => r.path), ["/sync/v1/whoami", "/sync/v1/bundles"]);
 });
 
@@ -727,4 +729,54 @@ test("a folder matched by device and inode alone is never adopted as moved: it i
   assert.equal(receipt.adopted, "preview", "no rebind to the old store without a birth-time match");
   assert.equal(fake.requests.length, requests);
   assert.equal(await bindingForPath(h.home, restored), null);
+});
+
+// ------------------------------------------------------------------------ catalog list --hosted
+
+async function listHosted(h: Harness, argv: string[], fake = fakeSyncFamily()) {
+  await catalog(["list", "--hosted", ...argv], { stdout: (text) => h.out.push(text), home: () => h.home, auth: h.auth, fetch: fake.fetch });
+  return decode(h.out.at(-1)!.trim()) as Record<string, unknown>;
+}
+
+test("catalog list --hosted lists each reachable bundle once, with the folder of a live checkout here", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
+  const folder = await realpath(path.join(h.cwd, "team"));
+  const fake = fakeSyncFamily({ tenants: ["tenant-a", "tenant-b"], bundles: ["zeta.notes", BUNDLE, "shared.id", "shared.id"] });
+  const receipt = await listHosted(h, ["--host", HOST], fake);
+  assert.deepEqual(fake.requests.map((r) => r.path), ["/sync/v1/whoami", "/sync/v1/bundles"]);
+  assert.equal(receipt.host, HOST);
+  assert.equal(receipt.principal, PRINCIPAL);
+  assert.deepEqual(receipt.workspaces, ["tenant-a", "tenant-b"]);
+  assert.equal(receipt.complete, true);
+  assert.deepEqual(receipt.bundles, [
+    { bundle_id: "shared.id", name: "shared.id", lifecycle: "active", folder: null, ambiguous: true },
+    { bundle_id: BUNDLE, name: BUNDLE, lifecycle: "active", folder, ambiguous: false },
+    { bundle_id: "zeta.notes", name: "zeta.notes", lifecycle: "active", folder: null, ambiguous: false },
+  ]);
+
+  // A checkout whose folder was deleted is not a checkout here, although its binding remains.
+  await rm(folder, { recursive: true });
+  const after = await listHosted(h, ["--host", HOST], fake);
+  assert.equal((after.bundles as { bundle_id: string; folder: unknown }[]).find((row) => row.bundle_id === BUNDLE)?.folder, null);
+});
+
+test("catalog list --hosted says when the host's list stopped at its cap", async () => {
+  const h = await harness();
+  const ids = Array.from({ length: 100 }, (_, index) => `bundle.n${index}`);
+  const receipt = await listHosted(h, ["--host", HOST], fakeSyncFamily({ bundles: ids }));
+  assert.equal(receipt.count, 100);
+  assert.equal(receipt.complete, false);
+});
+
+test("catalog list --hosted signs in with a resume that re-runs it, and --host is refused without --hosted", async () => {
+  const h = await harness({ SUPERBEE_ACCESS_TOKEN: jwt({ ...TOKEN_CLAIMS, sub: "someone-else" }) });
+  const error = await rejects(listHosted(h, ["--host", HOST, "--json"]));
+  assert.equal(error.code, "AUTH_REQUIRED");
+  assert.match(String(error.details?.resume), /superbee catalog list --hosted --host https:\/\/hosted\.example --json$/);
+
+  const fake = fakeSyncFamily();
+  const usage = await rejects(catalog(["list", "--host", HOST], { stdout: () => {}, home: () => h.home, auth: h.auth, fetch: fake.fetch }));
+  assert.equal(usage.code, "USAGE");
+  assert.equal(fake.requests.length, 0);
 });
