@@ -25,10 +25,14 @@ import {
   InvalidInputError,
   isReservedFile,
   KindConformanceError,
+  MalformedDocumentError,
   matchesFilter,
+  MemoryBackend,
   OkfActorError,
   parseMarkdown,
   prepareDocumentMutationCandidate,
+  readBundleOkfVersion,
+  stringifyDoc,
   type OkfDocument,
 } from "@superbee/core";
 import { wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
@@ -144,17 +148,6 @@ async function walkAll(folder: string, prefix = "", out: { rel: string; kind: "f
 /** How a hosted write prepares a candidate against its Kind (superbee-hosted `HOSTED_KIND_WRITE`). */
 const HOSTED_KIND_WRITE = Object.freeze({ strict: true, persistActor: true, producer: "process:superbee-hosted" } as const);
 
-/** The bundle's edition as `readBundleOkfVersion` reads it from the root index. */
-function rootIndexEdition(rootIndex: string | null): string | undefined {
-  if (rootIndex === null) return undefined;
-  try {
-    const value = parseMarkdown(rootIndex, "index").frontmatter.okf_version;
-    return typeof value === "string" && value.trim() !== "" ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** The host refuses control and format characters (bidi overrides, zero-width) in an author. */
 function cleanAuthor(author: string): string {
   // The host bounds it at 200 UTF-16 units; whole characters are kept, never half a surrogate pair.
@@ -216,14 +209,25 @@ function gitVersions(board: GitBoardFacts, id: string, rel: string, current: str
   return { rows: rows.reverse(), skipped };
 }
 
-function okfVersionOf(rootIndex: string | null): "0.1" | "0.2" | undefined {
+/**
+ * The edition the root index declares, read by core's own `readBundleOkfVersion` (as
+ * superbee-hosted `rootIndexEdition` reads it): undefined when it declares none (a write then uses
+ * 0.1), `unsupported` for an `okf_version` other than 0.1 or 0.2 or root frontmatter that does not
+ * parse, which no hosted write can use.
+ */
+async function okfVersionOf(rootIndex: string | null): Promise<"0.1" | "0.2" | "unsupported" | undefined> {
   if (rootIndex === null) return undefined;
+  const backend = new MemoryBackend();
+  await backend.writeReserved("", "index.md", rootIndex);
+  let version: string | undefined;
   try {
-    const version = parseMarkdown(rootIndex, "index").frontmatter.okf_version;
-    return version === "0.1" || version === "0.2" ? version : undefined;
-  } catch {
-    return undefined;
+    version = await readBundleOkfVersion({ root: "/edition", backend });
+  } catch (error) {
+    if (error instanceof MalformedDocumentError) return "unsupported";
+    throw error;
   }
+  if (version === undefined) return undefined;
+  return version === "0.1" || version === "0.2" ? version : "unsupported";
 }
 
 const FORMAT_AT_EDGE = /^\p{Cf}|\p{Cf}$/u;
@@ -244,19 +248,19 @@ function isHostCanonicalId(id: string): boolean {
 }
 
 /**
- * Kind problems that would make the created bundle refuse writes, found with the rules of
+ * Kind problems that would make the created bundle refuse edits, found with the rules of
  * superbee-hosted `packages/agent-operations/src/kind-conformance.ts` (`bundleKindFindings`), which
  * `bundles.create.v1` also applies: every hosted write refuses while the Kind registry has a
  * warning, and prepares its candidate strictly against the document's Kind. The registry is built
- * as `loadKinds` builds it, and each document is prepared as a hosted create prepares it, so a
- * timestamp or actor the write supplies is not a problem. Mirrored here because the host pins a
- * released core.
+ * as `loadKinds` builds it, and each document is prepared as its first hosted edit, so a timestamp
+ * or actor the write supplies is not a problem. Mirrored here because the host pins a released
+ * core.
  */
-function kindBlockers(documents: readonly CreateDocument[], rootIndex: string | null): PublishBlocker[] {
-  const docs: OkfDocument[] = documents.map((doc) => ({ id: doc.id, frontmatter: doc.frontmatter as OkfDocument["frontmatter"], body: doc.body }));
-  const edition = rootIndexEdition(rootIndex);
+function kindBlockers(documents: readonly CreateDocument[], okfVersion: "0.1" | "0.2" | undefined): PublishBlocker[] {
+  // As the host will store them: serialized, then parsed back.
+  const docs: OkfDocument[] = documents.map((doc) => ({ id: doc.id, ...parseMarkdown(stringifyDoc(doc.frontmatter as OkfDocument["frontmatter"], doc.body), doc.id) }));
   const ids = new Set(docs.map((doc) => doc.id));
-  const registry = buildKindRegistry(docs.filter((doc) => matchesFilter(doc, { prefix: CONVENTIONS_PREFIX, type: CONVENTION_TYPE })), [], { okfVersion: edition });
+  const registry = buildKindRegistry(docs.filter((doc) => matchesFilter(doc, { prefix: CONVENTIONS_PREFIX, type: CONVENTION_TYPE })), [], { okfVersion });
   const blockers: PublishBlocker[] = registry.warnings.map((warning) => ({
     path: warning.field !== undefined && ids.has(warning.field) ? `${warning.field}.md` : CONVENTIONS_PREFIX,
     reason: "kind_convention",
@@ -264,11 +268,14 @@ function kindBlockers(documents: readonly CreateDocument[], rootIndex: string | 
   }));
   for (const doc of docs) {
     try {
-      prepareDocumentMutationCandidate(undefined, { frontmatter: doc.frontmatter, body: doc.body }, {
+      // Its first edit: the stored document as the existing one and a body one line longer, so
+      // unchanged values keep the leniency an edit gives them.
+      prepareDocumentMutationCandidate(doc, { frontmatter: doc.frontmatter, body: `${doc.body ?? ""}\n` }, {
         ...HOSTED_KIND_WRITE,
         id: doc.id,
         registry,
-        okfVersion: (edition ?? "0.1") as "0.1" | "0.2",
+        okfVersion: okfVersion ?? "0.1",
+        // Stands in for the creating person, whom the preview does not know; only its presence matters.
         actor: "person:publish-preview",
       });
     } catch (error) {
@@ -304,7 +311,8 @@ export async function planPublish(folder: string, options: { history: false } | 
   } catch {
     rootIndex = null;
   }
-  const okfVersion = okfVersionOf(rootIndex);
+  const edition = await okfVersionOf(rootIndex);
+  const okfVersion = edition === "unsupported" ? undefined : edition;
   for (const entry of entries) {
     if (entry.kind === "dot") {
       skipped.push({ path: entry.rel, reason: "dot-file or dot-folder" });
@@ -380,7 +388,9 @@ export async function planPublish(folder: string, options: { history: false } | 
     documentFiles.push({ id, rel: entry.rel, text: utf8(bytes)! });
   }
   if (rootIndex === null) blockers.push({ path: "index.md", reason: "no_root_index", message: "a hosted bundle needs a root index.md" });
-  blockers.push(...kindBlockers(documents, rootIndex));
+  if (edition === "unsupported") {
+    blockers.push({ path: "index.md", reason: "unsupported_okf_version", message: "index.md declares an okf_version other than 0.1 or 0.2, or its frontmatter does not parse; the host could not write to the bundle" });
+  } else blockers.push(...kindBlockers(documents, okfVersion));
   // Paths that would be one file on a case-insensitive disk: documents (and their folders), then
   // every path the host claims, documents, reserved files and files together.
   const collision = findPathCollision(documents.map((doc) => doc.id));

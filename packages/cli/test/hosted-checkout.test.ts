@@ -370,7 +370,8 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     assert.equal(error.code, "FORBIDDEN", `${command} ${args[0]}`);
     assert.equal(error.details?.do_this_in, undefined);
     assert.doesNotMatch(`${error.message} ${error.help}`, /app/);
-    assert.match(error.message, /Kinds.*cannot be changed from a checkout\): to design Kinds, work in a local or Git bundle and publish it$/);
+    assert.match(error.message, /cannot be changed from a checkout/);
+    assert.match(error.help ?? "", /local or Git bundle/);
     assert.equal(error.details?.bundle_id, BUNDLE);
   }
   const refused: [string, string[]][] = [

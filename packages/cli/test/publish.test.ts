@@ -260,6 +260,8 @@ test("a document that does not satisfy its Kind, or a Kind convention with a pro
   assert.equal(clean.ready, true, JSON.stringify(clean.blockers));
 
   await writeFile(path.join(folder, "tasks", "unowned.md"), "---\ntype: Task\ntitle: Unowned\n---\nx\n");
+  // A malformed standard field an edit leaves alone does not hide the Kind problem behind it.
+  await writeFile(path.join(folder, "tasks", "numeric.md"), "---\ntype: Task\ntitle: 5\n---\nx\n");
   await writeFile(path.join(folder, "conventions", "broken.md"), "---\ntype: Convention\n---\n# No governs\n");
   await writeFile(path.join(folder, "conventions", "task-again.md"), task);
   const preview = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
@@ -270,13 +272,29 @@ test("a document that does not satisfy its Kind, or a Kind convention with a pro
     [
       ["kind_convention", "conventions/broken.md"],
       ["kind_convention", "conventions/"],
+      ["kind_conformance", "tasks/numeric.md"],
       ["kind_conformance", "tasks/unowned.md"],
     ],
   );
-  assert.match(rows[2]!.message, /'tasks\/unowned' does not satisfy the 'Task' kind: .*owner/);
+  assert.match(rows[3]!.message, /'tasks\/unowned' does not satisfy the 'Task' kind: .*owner/);
   const error = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], fake));
   assert.equal(error.details?.reason, "blocked");
-  assert.equal(error.details?.blockers_total, 3);
+  assert.equal(error.details?.blockers_total, 4);
+
+  // An OKF 0.1 bundle: a write supplies the timestamp and actor there too.
+  await writeFile(path.join(folder, "index.md"), "---\ntitle: Team notes\n---\n# Team notes\n");
+  const v01 = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
+  assert.deepEqual(
+    (v01.blockers as { rows: { path: string; reason: string }[] }).rows.filter((row) => row.reason === "kind_conformance").map((row) => row.path),
+    ["tasks/numeric.md", "tasks/unowned.md"],
+  );
+  // An edition no hosted write can use blocks on the root index.
+  await writeFile(path.join(folder, "index.md"), '---\nokf_version: "0.3"\n---\n# Team notes\n');
+  const edition = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
+  assert.deepEqual(
+    (edition.blockers as { rows: { path: string; reason: string }[] }).rows.filter((row) => row.path === "index.md").map((row) => row.reason),
+    ["unsupported_okf_version"],
+  );
   assert.equal(fake.requests.length, 0);
 });
 

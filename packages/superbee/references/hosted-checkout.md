@@ -150,8 +150,8 @@ Some commands are refused in a hosted checkout with "do this in the Superbee app
 artifacts and `doc verify`. Tell the person what to do in the app. Editing Kinds or recipes is
 refused too, and the app cannot do it either: a hosted bundle's Kinds cannot be changed from a
 checkout. Kinds are designed in a local or Git bundle before it is published. Do not work around a
-refusal by editing files, using another command, or copying the bundle somewhere else. Taking a bundle out of hosted is `superbee export` (below), and only when the
-person asks for it.
+refusal by editing files, using another command, or copying the bundle somewhere else. Taking a
+bundle out of hosted is `superbee export` (below), and only when the person asks for it.
 
 `checkout` adds the folder to the workspace catalog, where `catalog list` shows it with
 `home: hosted`. The local MCP app (`superbee mcp`) can read it by that label, but refuses every
