@@ -70,13 +70,19 @@ function bodyShape(text: string): unknown {
 
 const GRAMMAR = ["content-type", "etag", "x-superbee-root-version", "x-superbee-write-settled"];
 
+/** Header names, and the root version header's value where it selects a row: `none` (no root) or a version. */
+function headerShape(get: (name: string) => string | null): string[] {
+  return GRAMMAR.filter((name) => get(name) !== null)
+    .sort()
+    .map((name) => (name === "x-superbee-root-version" ? `${name}=${get(name) === "none" ? "none" : shape(get(name))}` : name));
+}
+
 async function answerOf(response: Response) {
-  const headers = GRAMMAR.filter((name) => response.headers.has(name)).sort();
-  return { status: response.status, headers, body: bodyShape(await response.text()) };
+  return { status: response.status, headers: headerShape((name) => response.headers.get(name)), body: bodyShape(await response.text()) };
 }
 
 function expectedOf(exchange: Exchange) {
-  return { status: exchange.response.status, headers: Object.keys(exchange.response.headers).sort(), body: bodyShape(exchange.response.body) };
+  return { status: exchange.response.status, headers: headerShape((name) => exchange.response.headers[name] ?? null), body: bodyShape(exchange.response.body) };
 }
 
 const identity = (n: number) => `4a2f9c1e-8b3d-4e6f-9a1b-${String(n).padStart(12, "0")}`;
@@ -84,21 +90,23 @@ const BINDING = `sha256:${"c".repeat(64)}`;
 
 test("the fake answers every golden /sync/v1 exchange in the host's shape", async () => {
   const host = new FakeHost();
-  const send = (route: string, body: unknown, options: { requestId?: string | null; bearer?: string } = {}) =>
-    host.fetch(`${host.origin}/sync/v1/${route}`, {
+  const sendTo = (to: FakeHost, route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string } = {}) =>
+    to.fetch(`${to.origin}/sync/v1/${route}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        Authorization: `Bearer ${options.bearer ?? host.token}`,
+        Authorization: `Bearer ${options.bearer ?? to.token}`,
         ...(options.requestId === undefined || options.requestId === null ? {} : { "X-Superbee-Write-Request": options.requestId, "X-Superbee-Checkout": BINDING }),
         ...(options.requestId === null ? { "X-Superbee-Checkout": BINDING } : {}),
+        ...(options.recreate === undefined ? {} : { "X-Superbee-Recreate": options.recreate }),
       },
       body: JSON.stringify(body),
     });
+  const send = (route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string } = {}) => sendTo(host, route, body, options);
   const [firstId, first] = [...host.docs][0]!;
   const create = (documentId: string, body = "two") => ({ bundleId: BUNDLE, documentId, expectAbsent: true, frontmatter: { type: "Note" }, body });
   const replace = (expectedVersion: string, body: string) => ({ bundleId: BUNDLE, documentId: firstId, expectedVersion, frontmatter: { type: "Note" }, body });
-  const remove = (expectedVersion: string) => ({ bundleId: BUNDLE, documentId: "notes/two", expectedVersion });
+  const remove = (expectedVersion: string, documentId = "notes/two") => ({ bundleId: BUNDLE, documentId, expectedVersion });
 
   const observed = new Map<string, Awaited<ReturnType<typeof answerOf>>>();
   const observe = async (name: string, response: Promise<Response>) => {
@@ -120,6 +128,10 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("read-200-bundle-not-found", send("read", { bundleId: "nope.a", documentId: firstId }));
   await observe("read-400-invalid-input", send("read", { bundleId: BUNDLE, documentId: firstId, extra: true }));
   await observe("read-401-unauthenticated", send("read", { bundleId: BUNDLE, documentId: firstId }, { bearer: "not-a-token" }));
+  await observe("read-403-access-denied", sendTo(new FakeHost({ syncSurface: false }), "read", { bundleId: BUNDLE, documentId: firstId }));
+  host.unavailable = true;
+  await observe("heads-503-backend-unavailable", send("heads", { bundleId: BUNDLE }));
+  host.unavailable = false;
 
   const created = await json(send("create", create("notes/two"), { requestId: identity(1) }));
   observed.set("create-200-ok", await answerOf(await send("create", create("notes/two"), { requestId: identity(1) })));
@@ -127,15 +139,38 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("create-200-document-exists", send("create", create(firstId, "dup"), { requestId: identity(2) }));
   const replaced = await json(send("replace", replace(first.version, "one edited"), { requestId: identity(3) }));
   observed.set("replace-200-ok", await answerOf(await send("replace", replace(first.version, "one edited"), { requestId: identity(3) })));
+  await observe("outcome-200-committed-replace", send("outcome", replace(first.version, "one edited"), { requestId: identity(3) }));
   await observe("replace-200-version-conflict", send("replace", replace(first.version, "stale"), { requestId: identity(4) }));
   await observe("outcome-200-refused-replace", send("outcome", replace(first.version, "stale"), { requestId: identity(4) }));
+  await observe("delete-200-version-conflict", send("delete", remove(first.version, firstId), { requestId: identity(16) }));
   await observe("delete-200-ok", send("delete", remove(created.data.version), { requestId: identity(5) }));
   await observe("outcome-200-committed-delete", send("outcome", remove(created.data.version), { requestId: identity(5) }));
   await observe("delete-200-unchanged", send("delete", remove(created.data.version), { requestId: identity(6) }));
   await observe("create-200-version-conflict-tombstone", send("create", create("notes/two", "again"), { requestId: identity(7) }));
+  const firstTombstone = host.latestTombstone("notes/two")!.tombstone;
+  const recreated = await json(send("create", create("notes/two", "again"), { requestId: identity(17), recreate: firstTombstone }));
+  observed.set("create-200-recreate", await answerOf(await send("create", create("notes/two", "again"), { requestId: identity(17), recreate: firstTombstone })));
+  await send("delete", remove(recreated.data.version), { requestId: identity(18) });
+  await observe("create-200-version-conflict-stale-recreate", send("create", create("notes/two", "stale acknowledgement"), { requestId: identity(19), recreate: firstTombstone }));
+  await observe("create-200-insufficient-scope", sendTo(new FakeHost({ writable: false }), "create", create("notes/reader"), { requestId: identity(20) }));
   await observe("outcome-200-absent", send("outcome", create("notes/never"), { requestId: identity(8) }));
   await observe("write-400-invalid-input", send("replace", { ...replace(replaced.data.version, "x"), extra: true }, { requestId: identity(9) }));
   await observe("write-400-missing-identity", send("create", create("notes/x"), { requestId: null }));
+  host.hook = (call) => (call.requestId === identity(21) ? { kind: "unknown" } : undefined);
+  await observe("create-200-write-outcome-unknown", send("create", create("notes/unknown"), { requestId: identity(21) }));
+  host.hook = undefined;
+  await observe("outcome-200-pending", send("outcome", create("notes/unknown"), { requestId: identity(21) }));
+
+  // Pages: the three-document bundle served two to a page, then a write between pages.
+  const paged = new FakeHost({ pageSize: 2 });
+  const firstPage = await json(sendTo(paged, "heads", { bundleId: BUNDLE })) as unknown as { next: string };
+  await observe("heads-200-page-first", sendTo(paged, "heads", { bundleId: BUNDLE }));
+  await observe("heads-200-page-last", sendTo(paged, "heads", { bundleId: BUNDLE, cursor: firstPage.next }));
+  await observe("snapshot-200-page-first", sendTo(paged, "snapshot", { bundleId: BUNDLE }));
+  await observe("snapshot-200-page-last", sendTo(paged, "snapshot", { bundleId: BUNDLE, cursor: firstPage.next }));
+  paged.put("notes/four", { type: "Note" }, "four");
+  await observe("heads-409-concurrent-change", sendTo(paged, "heads", { bundleId: BUNDLE, cursor: firstPage.next }));
+  await observe("heads-200-no-root", sendTo(new FakeHost({ root: false }), "heads", { bundleId: BUNDLE }));
 
   for (const [name, exchange] of golden) {
     if (isExport(exchange)) continue;

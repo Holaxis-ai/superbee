@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
-  "description": "Golden /sync/v1 exchanges captured from the real hosted gateway app (createApp through test/support/sync-v1-fixture.ts: real bearer admission, tenant selection, kernel operations and D1/R2 storage; only the identity issuer is a fixture). Each file is one request and the exact answer bytes; response headers are limited to the grammar headers. The CLI fake and the core decoders are checked against these; see capture-sync-v1-exchanges.hosted.txt for the capture script. The four /sync/v1/export exchanges were captured later, from the route's own branch (each names its source); the 200 answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted e9e40a7547417e3083ab473afdcbd84a311be439",
+  "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
+  "source": "Holaxis-ai/superbee-hosted 716a042207aa5d8cee657ae40a16d27bb0ea4248",
+  "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
       "name": "whoami-200",
@@ -103,6 +104,60 @@
       "status": 401
     },
     {
+      "name": "read-403-access-denied",
+      "file": "read-403-access-denied.json",
+      "route": "/sync/v1/read",
+      "rows": [
+        "refusal 403 access_denied"
+      ],
+      "status": 403
+    },
+    {
+      "name": "heads-503-backend-unavailable",
+      "file": "heads-503-backend-unavailable.json",
+      "route": "/sync/v1/heads",
+      "rows": [
+        "refusal 503 backend_unavailable"
+      ],
+      "status": 503
+    },
+    {
+      "name": "export-200",
+      "file": "export-200.json",
+      "route": "/sync/v1/export",
+      "rows": [
+        "export 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "export-404-bundle-not-found",
+      "file": "export-404-bundle-not-found.json",
+      "route": "/sync/v1/export",
+      "rows": [
+        "refusal 404 bundle_not_found"
+      ],
+      "status": 404
+    },
+    {
+      "name": "export-400-invalid-input",
+      "file": "export-400-invalid-input.json",
+      "route": "/sync/v1/export",
+      "rows": [
+        "refusal 400 invalid_input"
+      ],
+      "status": 400
+    },
+    {
+      "name": "export-401-unauthenticated",
+      "file": "export-401-unauthenticated.json",
+      "route": "/sync/v1/export",
+      "rows": [
+        "refusal 401 unauthenticated"
+      ],
+      "status": 401
+    },
+    {
       "name": "create-200-ok",
       "file": "create-200-ok.json",
       "route": "/sync/v1/create",
@@ -139,6 +194,15 @@
       "status": 200
     },
     {
+      "name": "outcome-200-committed-replace",
+      "file": "outcome-200-committed-replace.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "200 committed"
+      ],
+      "status": 200
+    },
+    {
       "name": "replace-200-version-conflict",
       "file": "replace-200-version-conflict.json",
       "route": "/sync/v1/replace",
@@ -153,6 +217,15 @@
       "route": "/sync/v1/outcome",
       "rows": [
         "200 refused"
+      ],
+      "status": 200
+    },
+    {
+      "name": "delete-200-version-conflict",
+      "file": "delete-200-version-conflict.json",
+      "route": "/sync/v1/delete",
+      "rows": [
+        "200 version_conflict"
       ],
       "status": 200
     },
@@ -193,6 +266,33 @@
       "status": 200
     },
     {
+      "name": "create-200-recreate",
+      "file": "create-200-recreate.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "create-200-version-conflict-stale-recreate",
+      "file": "create-200-version-conflict-stale-recreate.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "200 version_conflict"
+      ],
+      "status": 200
+    },
+    {
+      "name": "create-200-insufficient-scope",
+      "file": "create-200-insufficient-scope.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "200 insufficient_scope"
+      ],
+      "status": 200
+    },
+    {
       "name": "outcome-200-absent",
       "file": "outcome-200-absent.json",
       "route": "/sync/v1/outcome",
@@ -220,6 +320,24 @@
       "status": 400
     },
     {
+      "name": "create-200-write-outcome-unknown",
+      "file": "create-200-write-outcome-unknown.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "200 write_outcome_unknown"
+      ],
+      "status": 200
+    },
+    {
+      "name": "outcome-200-pending",
+      "file": "outcome-200-pending.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "200 pending"
+      ],
+      "status": 200
+    },
+    {
       "name": "create-429-request-capacity",
       "file": "create-429-request-capacity.json",
       "route": "/sync/v1/create",
@@ -229,44 +347,58 @@
       "status": 429
     },
     {
-      "name": "export-200",
-      "file": "export-200.json",
-      "route": "/sync/v1/export",
+      "name": "heads-200-page-first",
+      "file": "heads-200-page-first.json",
+      "route": "/sync/v1/heads",
       "rows": [
-        "export 200"
+        "heads 200 page"
       ],
-      "status": 200,
-      "source": "Holaxis-ai/superbee-hosted d728d47135119dcc4f4979e417c569bb7a79c628"
+      "status": 200
     },
     {
-      "name": "export-404-bundle-not-found",
-      "file": "export-404-bundle-not-found.json",
-      "route": "/sync/v1/export",
+      "name": "heads-200-page-last",
+      "file": "heads-200-page-last.json",
+      "route": "/sync/v1/heads",
       "rows": [
-        "refusal 404 bundle_not_found"
+        "heads 200 page"
       ],
-      "status": 404,
-      "source": "Holaxis-ai/superbee-hosted d728d47135119dcc4f4979e417c569bb7a79c628"
+      "status": 200
     },
     {
-      "name": "export-400-invalid-input",
-      "file": "export-400-invalid-input.json",
-      "route": "/sync/v1/export",
+      "name": "snapshot-200-page-first",
+      "file": "snapshot-200-page-first.json",
+      "route": "/sync/v1/snapshot",
       "rows": [
-        "refusal 400 invalid_input"
+        "snapshot 200 page"
       ],
-      "status": 400,
-      "source": "Holaxis-ai/superbee-hosted d728d47135119dcc4f4979e417c569bb7a79c628"
+      "status": 200
     },
     {
-      "name": "export-401-unauthenticated",
-      "file": "export-401-unauthenticated.json",
-      "route": "/sync/v1/export",
+      "name": "snapshot-200-page-last",
+      "file": "snapshot-200-page-last.json",
+      "route": "/sync/v1/snapshot",
       "rows": [
-        "refusal 401 unauthenticated"
+        "snapshot 200 page"
       ],
-      "status": 401,
-      "source": "Holaxis-ai/superbee-hosted d728d47135119dcc4f4979e417c569bb7a79c628"
+      "status": 200
+    },
+    {
+      "name": "heads-409-concurrent-change",
+      "file": "heads-409-concurrent-change.json",
+      "route": "/sync/v1/heads",
+      "rows": [
+        "refusal 409 concurrent_change"
+      ],
+      "status": 409
+    },
+    {
+      "name": "heads-200-no-root",
+      "file": "heads-200-no-root.json",
+      "route": "/sync/v1/heads",
+      "rows": [
+        "heads 200 no root"
+      ],
+      "status": 200
     }
   ]
 }

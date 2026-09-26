@@ -5,8 +5,13 @@
 // pinned byte-for-byte in core's `test/fixtures/hosted-transport/`): the capabilities answer, and
 // the bundle the snapshot fixture serves, at the versions the fixtures name. From there it answers
 // as the hosted routes do, and the fixtures remain the grammar it is checked against:
-// - reads: the heads listing (digest, `304` on a matching `ifNoneMatch`, the root version header),
-//   the snapshot stream and `documents.read.v1`, in the shapes the fixtures pin;
+// - reads: the heads listing (digest, `304` on a matching `ifNoneMatch`, the root version header,
+//   `none` for a bundle built without a root), the snapshot stream and `documents.read.v1`, in the
+//   shapes the fixtures pin; heads and snapshot a page at a time under `pageSize` (a cursor pins
+//   the listing's digest, and a listing that moved since is `409 concurrent_change`), and
+//   `503 backend_unavailable` while `unavailable` is set;
+// - refusals: `403 {"error":"access_denied"}` on every route for a client built without the sync
+//   surface, and `insufficient_scope` on every write for a person built without write access;
 // - writes (`/create`, `/replace`, superbee-hosted `docs/sync-v1-writes.md` at PR 591): one
 //   whole document per request, identified by `X-Superbee-Write-Request` and pinned by
 //   `X-Superbee-Checkout`, compare-and-swap on absence or on `expectedVersion`, never a merge; a
@@ -18,6 +23,8 @@
 //   at the same base answers `changed: false` naming it; a create of a tombstoned id is refused as
 //   `version_conflict` naming the latest tombstone unless `X-Superbee-Recreate` names exactly it,
 //   and without `currentVersion` when it acknowledges a tombstone the id does not have;
+// - an unknown outcome (the `unknown` write hook): the identity is reserved but never settled, the
+//   write answers `write_outcome_unknown` with no settled header, and its outcome is `pending`;
 // - `/outcome`: the `encodeIdentifiedOutcome` answer (`schemaVersion` 1, `absent`, `committed`
 //   with the committed bytes as base64, or none for a delete, or `refused`).
 // - `/export` (superbee-hosted PR 650, `src/sync-v1-export.ts`): the portable export of the fake's
@@ -91,6 +98,9 @@ export type WriteHook = (call: WriteCall) =>
   | { kind: "apply-then-drop" }
   | { kind: "drop" }
   | { kind: "record"; code: string }
+  /** Publication failed after the identity was reserved: `200 write_outcome_unknown`, and the
+   * identity's outcome stays `pending`. Nothing is applied. */
+  | { kind: "unknown" }
   | undefined;
 
 export interface FakeHostOptions {
@@ -100,6 +110,14 @@ export interface FakeHostOptions {
   tenants?: string[];
   bundles?: string[];
   principal?: string;
+  /** Serve heads and snapshot this many documents to a page (the host's page size is 1,000). */
+  pageSize?: number;
+  /** False serves a bundle with no root index: the heads' root version header is `none`. */
+  root?: boolean;
+  /** False is a client whose binding does not list the sync surface: every route is `403`. */
+  syncSurface?: boolean;
+  /** False is a person with only a read grant: every write is refused `insufficient_scope`. */
+  writable?: boolean;
 }
 
 const WRITE_REQUEST = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -123,6 +141,10 @@ export class FakeHost {
   /** Documents applied by the write routes, in order. */
   readonly applied: string[] = [];
   hook: WriteHook | undefined;
+  /** True while storage fails: heads and snapshot answer `503 backend_unavailable`. */
+  unavailable = false;
+  /** Identities reserved whose publication failed: their outcome is `pending`. */
+  readonly pending = new Set<string>();
   /** Reserved files and blobs the export carries beside the documents and the root index. */
   readonly exportExtras = new Map<string, Uint8Array>();
   /** The whole bundle the export serves, when a test sets it; otherwise the fake's own state. */
@@ -144,7 +166,7 @@ export class FakeHost {
     this.token = this.origin === HOST ? TOKEN : jwt({ aud: `${this.origin}/mcp`, sub: "auth0|person" });
     this.capabilities = options.capabilities ?? "capabilities-operations";
     this.principal = options.principal ?? PRINCIPAL;
-    this.rootVersion = fixture("heads-200").response.headers["x-superbee-root-version"]!;
+    this.rootVersion = options.root === false ? "none" : fixture("heads-200").response.headers["x-superbee-root-version"]!;
     for (const line of fixture("snapshot-complete").response.body.trim().split("\n")) {
       const row = JSON.parse(line) as { kind: string; id: string; version: string; frontmatter: Record<string, unknown>; body: string };
       if (row.kind !== "doc") continue;
@@ -172,6 +194,12 @@ export class FakeHost {
     return this.tombstone(id, doc.version);
   }
 
+  /** Whether this person may make the write: always, unless the host was built read-only.
+   * An outcome is a lookup, never refused this way. */
+  private writable(route: string): boolean {
+    return route === "outcome" || this.options.writable !== false;
+  }
+
   latestTombstone(id: string): Tombstone | undefined {
     return this.tombstones.get(id)?.at(-1);
   }
@@ -190,6 +218,24 @@ export class FakeHost {
     return { count: heads.length, digest: headsDigest(heads), heads };
   }
 
+  /** One page of the listing, as the host serves it: a cursor pins the listing's digest and names
+   * the last id served; a listing that moved since is a restart. */
+  private page(listing: ReturnType<FakeHost["heads"]>, cursor: unknown): { heads: { id: string; version: string }[]; next?: string } | "restart" {
+    const size = this.options.pageSize ?? 1000;
+    const pin = listing.digest.slice("sha256:".length);
+    let start = 0;
+    if (cursor !== undefined) {
+      const [digest, after] = String(cursor).split(".");
+      if (digest !== pin || after === undefined) return "restart";
+      const last = Buffer.from(after, "base64url").toString("utf8");
+      start = listing.heads.findIndex((head) => head.id > last);
+      if (start < 0) start = listing.heads.length;
+    }
+    const heads = listing.heads.slice(start, start + size);
+    const more = start + size < listing.heads.length;
+    return { heads, ...(more ? { next: `${pin}.${Buffer.from(heads.at(-1)!.id, "utf8").toString("base64url")}` } : {}) };
+  }
+
   readonly fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     const headers = new Headers(init?.headers);
@@ -201,7 +247,11 @@ export class FakeHost {
       const refusal = syncFixture("read-401-unauthenticated").response;
       return new Response(refusal.body, { status: refusal.status, headers: refusal.headers });
     }
+    if (this.options.syncSurface === false) return Response.json({ error: "access_denied" }, { status: 403 });
     const route = url.pathname.replace(/^\/sync\/v1\//, "");
+    if (this.unavailable && (route === "heads" || route === "snapshot")) {
+      return Response.json({ error: { code: "backend_unavailable", message: "The bundle backend is unavailable.", retryable: true } }, { status: 503 });
+    }
     switch (route) {
       case "whoami":
         return Response.json({ principalId: this.principal, credentialId: "cli", tenantIds: this.options.tenants ?? ["tenant-a"], surface: "sync" });
@@ -220,17 +270,21 @@ export class FakeHost {
         assert.equal(body.bundleId, BUNDLE);
         const listing = this.heads();
         const common = { etag: `"${listing.digest}"`, "x-superbee-root-version": this.rootVersion };
-        if (body.ifNoneMatch === listing.digest) return new Response(null, { status: 304, headers: common });
-        return new Response(JSON.stringify(listing), { status: 200, headers: { "content-type": "application/json; charset=utf-8", ...common } });
+        if (body.cursor === undefined && body.ifNoneMatch === listing.digest) return new Response(null, { status: 304, headers: common });
+        const page = this.page(listing, body.cursor);
+        if (page === "restart") return restart();
+        return new Response(JSON.stringify({ count: listing.count, digest: listing.digest, ...page }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", ...common } });
       }
       case "snapshot": {
         const listing = this.heads();
+        const page = this.page(listing, body.cursor);
+        if (page === "restart") return restart();
         const lines = [JSON.stringify({ kind: "snapshot", count: listing.count, digest: listing.digest })];
-        for (const head of listing.heads) {
+        for (const head of page.heads) {
           const doc = this.docs.get(head.id)!;
           lines.push(JSON.stringify({ kind: "doc", id: head.id, version: doc.version, frontmatter: doc.frontmatter, body: doc.body }));
         }
-        lines.push(JSON.stringify({ kind: "end", count: listing.count }));
+        lines.push(JSON.stringify(page.next === undefined ? { kind: "end", count: listing.count } : { kind: "page", count: page.heads.length, next: page.next }));
         return new Response(`${lines.join("\n")}\n`, { status: 200, headers: { "content-type": "application/x-ndjson; charset=utf-8", etag: `"${listing.digest}"` } });
       }
       case "read": {
@@ -300,10 +354,22 @@ export class FakeHost {
     // The acknowledgement is a create's (and its outcome's) alone, and a version.
     const creates = route === "create" || (route === "outcome" && body.expectAbsent === true);
     if (recreate !== null && (!creates || !BINDING.test(recreate))) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    if (!this.writable(route)) {
+      const operationId = route === "create" ? "documents.create.v1" : route === "replace" ? "documents.replace.v1" : "documents.delete.v1";
+      return Response.json({ ok: false, operationId, error: { code: "insufficient_scope", message: "Your access to this bundle does not allow this write. Nothing was written.", retryable: false, writeState: "not_applied" } });
+    }
     const hooked = this.hook?.(call);
     if (hooked?.kind === "respond") return new Response(JSON.stringify(hooked.body), { status: hooked.status, headers: { "content-type": "application/json", ...hooked.headers } });
     if (hooked?.kind === "drop") throw new TypeError("fetch failed");
     if (route === "outcome") return this.outcome(requestId, binding, body);
+    if (hooked?.kind === "unknown" && !this.recorded.has(requestId)) {
+      this.pending.add(requestId);
+      const operationId = route === "create" ? "documents.create.v1" : route === "replace" ? "documents.replace.v1" : "documents.delete.v1";
+      return new Response(
+        JSON.stringify({ ok: false, operationId, error: { code: "write_outcome_unknown", message: "The save outcome is unknown. Read the same document before making another write; do not create a replacement ID.", retryable: false, writeState: "unknown" } }),
+        { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
+      );
+    }
     const operationId = route === "create" ? "documents.create.v1" : route === "replace" ? "documents.replace.v1" : "documents.delete.v1";
     let recorded = this.recorded.get(requestId);
     if (!recorded) {
@@ -358,7 +424,7 @@ export class FakeHost {
   private outcome(requestId: string, binding: string, body: Record<string, unknown>): Response {
     const recorded = this.recorded.get(requestId);
     const envelope = { schemaVersion: 1, requestId, binding };
-    if (!recorded) return Response.json({ ...envelope, status: "absent" });
+    if (!recorded) return Response.json({ ...envelope, status: this.pending.has(requestId) ? "pending" : "absent" });
     assert.equal((recorded.result as { data?: { documentId?: unknown } }).data?.documentId ?? body.documentId, body.documentId);
     if ((recorded.result as { ok?: unknown }).ok === true && !recorded.content) return Response.json({ ...envelope, status: "committed", result: recorded.result });
     if (recorded.content) {
@@ -372,6 +438,9 @@ export class FakeHost {
     return Response.json({ ...envelope, status: "refused", result: recorded.result });
   }
 }
+
+/** The refusal of a page whose listing moved since the first page pinned it. */
+const restart = () => Response.json({ error: { code: "concurrent_change", message: "The bundle changed since the first page. Start again from the first page.", retryable: true } }, { status: 409 });
 
 const onlyKeys = (body: Record<string, unknown>, allowed: readonly string[]) => Object.keys(body).every((key) => allowed.includes(key));
 
