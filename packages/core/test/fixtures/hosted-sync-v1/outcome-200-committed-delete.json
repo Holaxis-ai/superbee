@@ -12,14 +12,14 @@
       "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000005",
       "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     },
-    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"expectedVersion\":\"sha256:97aeb632d61afe4c8150ec90163d61cb8becf659e73d500ca9c199d14be08188\"}"
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"expectedVersion\":\"sha256:72442039faabc41c2e36a899ba86a92ed7959a6ec35b720223795b9539637f1f\"}"
   },
   "response": {
     "status": 200,
     "headers": {
       "content-type": "application/json; charset=utf-8"
     },
-    "body": "{\"schemaVersion\":1,\"requestId\":\"4a2f9c1e-8b3d-4e6f-9a1b-000000000005\",\"binding\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"status\":\"committed\",\"result\":{\"ok\":true,\"operationId\":\"documents.delete.v1\",\"data\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"version\":\"sha256:07c898744d00f93c1a51350f80d511fb68d7c56e4715c221c5109ed57018a0b9\",\"deletedVersion\":\"sha256:97aeb632d61afe4c8150ec90163d61cb8becf659e73d500ca9c199d14be08188\",\"changed\":true,\"deleted\":true}}}",
+    "body": "{\"schemaVersion\":1,\"requestId\":\"4a2f9c1e-8b3d-4e6f-9a1b-000000000005\",\"binding\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"status\":\"committed\",\"result\":{\"ok\":true,\"operationId\":\"documents.delete.v1\",\"data\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"version\":\"sha256:26245f980e9194be7154390b7b11846bfffe2c94756c10bce18d0820d3294589\",\"deletedVersion\":\"sha256:72442039faabc41c2e36a899ba86a92ed7959a6ec35b720223795b9539637f1f\",\"changed\":true,\"deleted\":true}}}",
     "truncated": false
   }
 }

@@ -88,7 +88,7 @@ const capturedArchive = Buffer.from(captured.response.bodyBase64, "base64");
 test("the captured /sync/v1/export archive verifies to the host's values", () => {
   const exported = verifyExport(capturedArchive, "notes.a");
   assert.deepEqual(exported.source, { tenantId: "tenant:a", bundleId: "notes.a", revision: 2, okfEdition: "0.2" });
-  assert.equal(exported.exportedAt, "2026-09-24T13:55:23.656Z");
+  assert.equal(exported.exportedAt, "2030-01-01T00:00:00.000Z");
   assert.deepEqual(exported.counts, { documents: 1, reserved: 1, blobs: 0 });
   assert.equal(exported.bytes, 60);
   assert.deepEqual(

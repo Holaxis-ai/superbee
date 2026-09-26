@@ -19,7 +19,7 @@
     "headers": {
       "content-type": "application/json; charset=utf-8"
     },
-    "body": "{\"schemaVersion\":1,\"requestId\":\"4a2f9c1e-8b3d-4e6f-9a1b-000000000004\",\"binding\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"status\":\"refused\",\"result\":{\"ok\":false,\"operationId\":\"documents.replace.v1\",\"error\":{\"code\":\"version_conflict\",\"message\":\"The document changed; read it and reconcile your changes before trying again.\",\"retryable\":false,\"writeState\":\"not_applied\",\"currentVersion\":\"sha256:95feda4bb8fd1ff1210491d6715eeb5424a7cafe5c0ed3e6486f3994e55bb92d\"}}}",
+    "body": "{\"schemaVersion\":1,\"requestId\":\"4a2f9c1e-8b3d-4e6f-9a1b-000000000004\",\"binding\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"status\":\"refused\",\"result\":{\"ok\":false,\"operationId\":\"documents.replace.v1\",\"error\":{\"code\":\"version_conflict\",\"message\":\"The document changed; read it and reconcile your changes before trying again.\",\"retryable\":false,\"writeState\":\"not_applied\",\"currentVersion\":\"sha256:04c5cbc34e6644ad845cf717a378ca37202c95dd1a011c83c4d79c0837c44c9a\"}}}",
     "truncated": false
   }
 }

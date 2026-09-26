@@ -1,7 +1,9 @@
 /**
  * `@superbee/core/hosted-transport` against the `/sync/v1` golden exchanges: each fixture under
  * `fixtures/hosted-sync-v1/` is one request and the exact answer the real hosted gateway app
- * emitted (see the fixture index's `source` and `capture-sync-v1-exchanges.hosted.txt`). Every
+ * emitted. The files are generated in superbee-hosted (`test/support/sync-v1-exchanges.ts`) and
+ * copied here unchanged, with the index's `source` naming the hosted commit; a hosted CI job fails
+ * when these copies and the generator's output differ, so edit them only by copying. Every
  * read, write and outcome answer the CLI checkout depends on must decode, refuse or classify as
  * the row it names, through the real fetch carrier. The CLI's fake host is held to the same
  * exchanges by `packages/cli/test/hosted-fake-contract.test.ts`.
@@ -15,6 +17,8 @@ import { fileURLToPath } from "node:url";
 import {
   classifyWriteAnswer,
   createFetchCarrier,
+  HostedCarrierError,
+  isPageRestart,
   createHostedReadAdapter,
   decodeDocumentRead,
   decodeHostedCapabilities,
@@ -52,10 +56,15 @@ const BUNDLE = "notes.a";
 
 /** A read adapter whose fetch answers every request with the named exchange's exact bytes. */
 function adapterAnswering(byRoute: Partial<Record<keyof typeof SYNC_READ_ROUTES, string>>) {
-  const fetch = (async (input: string | URL | Request) => {
+  return adapterServing((route) => byRoute[route]);
+}
+
+/** A read adapter whose fetch answers each request with the exchange `pick` names for its route and input. */
+function adapterServing(pick: (route: keyof typeof SYNC_READ_ROUTES, input: Record<string, unknown>) => string | undefined) {
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const pathname = new URL(String(input)).pathname;
     const route = (Object.keys(SYNC_READ_ROUTES) as (keyof typeof SYNC_READ_ROUTES)[]).find((key) => SYNC_READ_ROUTES[key] === pathname);
-    const name = route && byRoute[route];
+    const name = route && pick(route, JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
     if (!name) return assert.fail(`no exchange for ${pathname}`);
     const { response } = fixture(name);
     return new Response(response.status === 304 || response.body === "" ? null : response.body, { status: response.status, headers: response.headers });
@@ -70,7 +79,7 @@ function answerOf(exchange: Exchange): HostedAnswer {
 }
 
 test(`golden /sync/v1 exchanges (${index.source}) are indexed as recorded`, () => {
-  assert.equal(index.exchanges.length, 29);
+  assert.equal(index.exchanges.length, 44);
   for (const entry of index.exchanges) {
     const exchange = fixture(entry.name);
     assert.equal(exchange.route, entry.route);
@@ -164,6 +173,53 @@ test("snapshot 200 decodes whole, and each document's version is its read's", as
   const read = JSON.parse(fixture("read-200-ok").response.body) as { data: { version: string; document: { body: string } } };
   assert.equal(docs[0]!.version, read.data.version);
   assert.equal(docs[0]!.body, read.data.document.body);
+});
+
+test("heads 200 no root decodes, with the root version header saying none", async () => {
+  const listing = await adapterAnswering({ heads: "heads-200-no-root" }).heads();
+  const expected = JSON.parse(fixture("heads-200-no-root").response.body) as { digest: string; heads: unknown[] };
+  assert.deepEqual(listing, { digest: expected.digest, heads: expected.heads });
+  assert.equal(fixture("heads-200-no-root").response.headers["x-superbee-root-version"], "none");
+});
+
+/** The paged exchanges: the first page for a request without a cursor, the last for one with it. */
+const byCursor = (first: string, last: string) => (_route: string, input: Record<string, unknown>) => (input.cursor === undefined ? first : last);
+
+test("heads 200 page: the adapter follows the cursor and assembles the whole listing under its digest", async () => {
+  const listing = await adapterServing(byCursor("heads-200-page-first", "heads-200-page-last")).heads();
+  const [first, last] = ["heads-200-page-first", "heads-200-page-last"].map((name) => JSON.parse(fixture(name).response.body) as { count: number; digest: string; heads: unknown[] });
+  assert.deepEqual(listing, { digest: first!.digest, heads: [...first!.heads, ...last!.heads] });
+  assert.equal(listing!.heads.length, first!.count);
+});
+
+test("snapshot 200 page: the adapter stitches the pages into one snapshot of every document", async () => {
+  const snapshot = await adapterServing(byCursor("snapshot-200-page-first", "snapshot-200-page-last")).snapshot();
+  const docs = [];
+  for await (const doc of snapshot.docs) docs.push(doc);
+  const heads = JSON.parse(fixture("heads-200-page-first").response.body) as { count: number; digest: string };
+  assert.deepEqual(snapshot.header, { count: heads.count, digest: heads.digest });
+  const last = JSON.parse(fixture("heads-200-page-last").response.body) as { heads: { id: string; version: string }[] };
+  assert.deepEqual(docs.map((doc) => doc.id).slice(-1), last.heads.map((head) => head.id));
+  assert.equal(docs.length, heads.count);
+});
+
+test("refusal 409 concurrent_change: a page of a listing that moved restarts, and the refusal stands after the attempts", async () => {
+  let firsts = 0;
+  const adapter = adapterServing((_route, input) => {
+    if (input.cursor !== undefined) return "heads-409-concurrent-change";
+    firsts += 1;
+    return "heads-200-page-first";
+  });
+  await assert.rejects(adapter.heads(), (error: unknown) => isPageRestart(error) && (error as RemoteError).status === 409);
+  assert.equal(firsts, 3, "the listing started again from the first page");
+});
+
+test("refusal 503 backend_unavailable is the carrier's unavailable, not an authority refusal", async () => {
+  await assert.rejects(adapterAnswering({ heads: "heads-503-backend-unavailable" }).heads(), (error: unknown) => error instanceof HostedCarrierError && error.code === "unavailable");
+});
+
+test("refusal 403 access_denied (a client without the sync surface) asks for sign-in with the host's status", async () => {
+  await assert.rejects(adapterAnswering({ read: "read-403-access-denied" }).read("notes/one"), (error: unknown) => error instanceof RemoteError && error.status === 403 && error.code === "AUTH_REQUIRED");
 });
 
 test("a malformed heads or capabilities answer names its route", async () => {

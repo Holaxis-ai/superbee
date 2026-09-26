@@ -1,0 +1,25 @@
+{
+  "name": "heads-200-page-last",
+  "description": "The last heads page: the remaining rows under the same count and digest, and no next cursor.",
+  "route": "/sync/v1/heads",
+  "rows": [
+    "heads 200 page"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"cursor\":\"2212f1a11f32877afc0ce90442c8088bc96900e2b0fd3453bfcaaa5543584d74.bm90ZXMvdGhyZWU\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "etag": "\"sha256:2212f1a11f32877afc0ce90442c8088bc96900e2b0fd3453bfcaaa5543584d74\"",
+      "x-superbee-root-version": "sha256:7cc1f9e472341f8bdf54f668a9ab98655055e36a9ad41f8bfcc8d5977aaa59d0"
+    },
+    "body": "{\"count\":3,\"digest\":\"sha256:2212f1a11f32877afc0ce90442c8088bc96900e2b0fd3453bfcaaa5543584d74\",\"heads\":[{\"id\":\"notes/two\",\"version\":\"sha256:72442039faabc41c2e36a899ba86a92ed7959a6ec35b720223795b9539637f1f\"}]}",
+    "truncated": false
+  }
+}
