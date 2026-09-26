@@ -6,6 +6,7 @@ import { currentHost } from "../../runtime-context.js";
 import { fstatSync } from "node:fs";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
+import type { HostedAuthDeps } from "../../hosted-auth/session.js";
 
 /** The common flags every `doc` verb accepts — appended to each verb's focused help (§10). */
 const COMMON_OPTIONS = `Common options:
@@ -312,10 +313,13 @@ Examples:
   superbee list --fields trust
 `;
 
+/** `doc history --limit 0` in a hosted checkout pages back at most this many versions. */
+export const HOSTED_HISTORY_CEILING = 10_000;
 export const DOC_HISTORY_USAGE = `superbee doc history — show a doc's attributed version chain (newest first)
 
 Usage:
   superbee doc history <id> [--limit <n>] [options]
+  superbee doc history <id> --seq <n> [options]
 
 Lists version + actor + timestamp (and agent, when recorded) per revision, with a count. A
 history-keeping backend (a remote deployment) returns the full chain and its real per-write
@@ -326,17 +330,25 @@ revision. Its actor is resolved from the doc's compatible advisory attribution, 
 the local user identity when none is present. The newest version is the token to
 pass to --expected-version for an optimistic doc update/delete.
 
+In a hosted checkout (and without --remote) the chain is the host's: every sent version, each with
+its seq (1 = the first write), the principal id that made it, and the agent label it named. The
+host's newest version is not the folder's compare-and-swap base, so no --expected-version line is
+offered there. A document created in the checkout has history once sync sends it.
+
 Options:
   --limit <n>           Cap the number of revisions returned, newest first (default: 20; 0 =
                         unlimited). A truncated result reports \`shown\` alongside the total
                         \`count\`, and a help line names the escape (a higher --limit, or 0 for
                         all). The newest revision is always included when truncated (it never
-                        gets cut off the front).
+                        gets cut off the front). In a hosted checkout, 0 lists at most ${HOSTED_HISTORY_CEILING.toLocaleString("en-US")}.
+  --seq <n>             Hosted checkout only: print version <n>'s full stored content (with
+                        --json, its row plus a content field). Refused on a local bundle.
 ${COMMON_OPTIONS}
 
 Examples:
   superbee doc history concepts/auth
   superbee doc history concepts/auth --limit 0
+  superbee doc history concepts/auth --seq 3
 `;
 
 export const DOC_DELETE_USAGE = `superbee doc delete — hard-delete a concept document (idempotent)
@@ -382,6 +394,14 @@ export interface DocCliDeps {
    * explicit-empty channel.
    */
   readStdin: () => Promise<StdinReadResult>;
+  /** What `doc history` reaches a hosted checkout's host with (default: the signed-in session and global fetch). */
+  hosted?: DocHostedDeps;
+}
+
+export interface DocHostedDeps {
+  readonly auth?: HostedAuthDeps;
+  /** The fetch the sync routes are reached with (the sign-in module keeps its own). */
+  readonly fetch?: typeof fetch;
 }
 
 /**

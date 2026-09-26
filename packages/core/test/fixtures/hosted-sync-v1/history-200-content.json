@@ -1,0 +1,23 @@
+{
+  "name": "history-200-content",
+  "description": "A page back from sequence 2, one version, with its stored content (includeContent): the create's bytes. A later page states no total.",
+  "route": "/sync/v1/history",
+  "rows": [
+    "history 200 ok"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/via\",\"limit\":1,\"before\":2,\"includeContent\":true}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"documents.history.v1\",\"data\":{\"documentId\":\"notes/via\",\"versions\":[{\"seq\":1,\"version\":\"sha256:771ebd568dd01a8482e8ca8254b0c16d466b062548022f671abddfa4cb769d83\",\"actor\":\"person:both\",\"timestamp\":\"2030-01-01T00:00:00.000Z\",\"agent\":\"sync/credential:cli;via=claude-code\",\"content\":\"---\\ntype: Note\\ngenerated:\\n  by: 'process:superbee-hosted'\\n  at: '2030-01-01T00:00:00.000Z'\\nsuperbee_updated_by: 'person:both'\\n---\\nvia\\n\"}],\"more\":false}}",
+    "truncated": false
+  }
+}
