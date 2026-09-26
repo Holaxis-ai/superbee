@@ -665,7 +665,7 @@ export async function registerInCatalog(home: string, binding: CheckoutBinding):
 export const REFUSED_SUMMARY: readonly string[] = Object.freeze(
   HOSTED_CHECKOUT_REFUSALS.filter((row) => row.reason !== "checkout_target").map((row) => {
     const words = row.words.join(" ");
-    return row.words[0] === "promote" || row.words[0] === "delete" ? `${words} (non-.md key)` : words;
+    return row.words[0] === "promote" || row.words[0] === "delete" ? `${words} (a blob, reserved or conventions key)` : words;
   }),
 );
 

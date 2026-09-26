@@ -65,15 +65,8 @@ const SYNC_ENVELOPE = ["home", "sent", "received", "conflicts", "held", "next"] 
  * Keyed `<step>/<surface>/<home>`. Only ever shrinks; a PR that makes a cell hold deletes its row.
  */
 const KNOWN_GAPS: Readonly<Record<string, { readonly slice: string; readonly failure: Failure }>> = {
-  // S1: `list_workspaces` does not say which home each workspace is.
-  "discover/mcp/git": { slice: "S1", failure: { missing: ["home"] } },
-  "discover/mcp/local": { slice: "S1", failure: { missing: ["home"] } },
-  "discover/mcp/hosted": { slice: "S1", failure: { missing: ["home"] } },
   // S3: plain `catalog list` shows folders only.
   "discover-remote/cli/hosted": { slice: "S3", failure: { missing: [UNCHECKED] } },
-  // S1: `superbee mcp` refuses to start with the cwd in a checkout, and every MCP write there.
-  "start/mcp/hosted": { slice: "S1", failure: { code: "FORBIDDEN", reason: "not_syncable" } },
-  "edit/mcp/hosted": { slice: "S1", failure: { code: "FORBIDDEN", reason: "not_syncable" } },
   // S4: `sync --json` has a different shape in each home.
   "sync/cli/git": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
   "sync/cli/local": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },

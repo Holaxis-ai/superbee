@@ -16,11 +16,20 @@ export interface McpBundleContextOptions {
   viewAuthorization?: ViewAuthorizationStore;
 }
 
+/**
+ * Where a workspace's documents live, as the host's catalog derives it: a plain local folder, a
+ * folder shared through Git, or a folder checked out from a hosted bundle. Descriptive only; every
+ * home is read and written through its folder the same way.
+ */
+export const MCP_WORKSPACE_HOMES = ["local", "git", "hosted"] as const;
+export type McpWorkspaceHome = (typeof MCP_WORKSPACE_HOMES)[number];
+
 export interface McpWorkspaceSummary {
   readonly id: string;
   readonly label: string;
   readonly displayName?: string;
   readonly available: boolean;
+  readonly home?: McpWorkspaceHome;
 }
 
 /** Host-neutral workspace authority supplied by the CLI; implementations may know the catalog. */

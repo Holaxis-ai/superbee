@@ -22,6 +22,7 @@ import { LocalViewAuthorizationStore } from "../ui/view-authorizations.js";
 import { cliVersion } from "../build-identity.js";
 import { stableMcpLaunchGuidance } from "../integration-guidance.js";
 import { createCatalogMcpWorkspaceResolver } from "../mcp-workspace-resolver.js";
+import { servedBundle } from "../hosted/served-bundle.js";
 import {
   inspectMcpHosts,
   MCP_INSTALL_TARGETS,
@@ -316,13 +317,15 @@ async function mcpInner(argv: string[], deps: Partial<McpCliDeps>): Promise<void
     });
     return;
   }
-  const bundle = await open(values.dir);
+  const opened = await open(values.dir);
+  // A hosted checkout is served through its folder, refusing up front what sync cannot send.
+  const bundle = await servedBundle(opened);
   const bundleName = (await deriveBundleDisplayName(bundle)).name;
   await start({
     bundle,
     version: cliVersion(),
     actor,
     bundleName,
-    viewAuthorization: new LocalViewAuthorizationStore(bundle.root),
+    viewAuthorization: new LocalViewAuthorizationStore(opened.root),
   });
 }

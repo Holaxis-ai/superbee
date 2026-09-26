@@ -58,6 +58,7 @@ import { randomBytes } from "node:crypto";
 import { PendingClaimRegistry, PendingLaunchRegistry } from "./pending-launches.js";
 import {
   createMcpBundleContext,
+  MCP_WORKSPACE_HOMES,
   type McpBundleContext,
   type McpBundleContextOptions,
   type McpWorkspaceResolver,
@@ -135,6 +136,7 @@ const workspaceSummarySchema = z
       .max(200)
       .optional(),
     available: z.boolean(),
+    home: z.enum(MCP_WORKSPACE_HOMES).optional(),
   })
   .strict();
 
@@ -846,7 +848,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       {
         title: "List Superbee workspaces",
         description:
-          "List the bounded private catalog of Superbee workspaces available for explicit selection. Results contain only stable IDs, labels, display names, and availability; they never expose filesystem paths.",
+          "List the bounded private catalog of Superbee workspaces available for explicit selection. Results contain only stable IDs, labels, display names, availability, and each workspace's home (local, git, or hosted, all read and written through their folder); they never expose filesystem paths.",
         inputSchema: z.object({}).strict(),
         outputSchema: listWorkspacesOutputSchema,
         annotations: {

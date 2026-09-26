@@ -40,6 +40,8 @@ export {
 } from "./document-contract.js";
 export {
   createMcpBundleContext,
+  MCP_WORKSPACE_HOMES,
+  type McpWorkspaceHome,
   type McpBundleContext,
   type McpBundleContextOptions,
   type McpWorkspaceResolver,

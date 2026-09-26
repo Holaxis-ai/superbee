@@ -39,6 +39,19 @@ export const FRONTMATTER_JSON_BYTES = 16 * 1024;
 /** Folders whose documents are conventions the app edits; sync holds them. */
 const HELD_PREFIXES = ["conventions/", "views/"] as const;
 
+/**
+ * Why sync holds a folder-relative path whatever its content, or null for a document path sync
+ * may send: a reserved OKF file, a file that is not a `.md` document (a blob), or a document under
+ * a folder of conventions the app edits. The one path rule the scan, the local MCP app's write
+ * guard (`served-bundle.ts`) and the command refusals (`refusals.ts`) share.
+ */
+export function heldPathReason(rel: string): "reserved_file" | "not_a_document" | "convention_folder" | null {
+  if (isReservedFile(rel)) return "reserved_file";
+  if (!rel.endsWith(".md")) return "not_a_document";
+  if (HELD_PREFIXES.some((prefix) => rel.startsWith(prefix))) return "convention_folder";
+  return null;
+}
+
 /** One document's accounting: the bytes the file was last known to hold, and the store version they match. */
 export interface ProjectionEntry {
   readonly digest: string;
@@ -533,7 +546,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
         continue;
       }
     }
-    if (HELD_PREFIXES.some((prefix) => rel.startsWith(prefix))) {
+    if (heldPathReason(rel) === "convention_folder") {
       report.held.push(held(id, rel, "convention_folder", `${rel} is under ${rel.split("/")[0]}/, which holds conventions edited in the Superbee app`));
       continue;
     }

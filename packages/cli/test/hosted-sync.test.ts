@@ -965,13 +965,12 @@ test("one sync command: Git-only flags are refused in a checkout, hosted verbs o
   assert.match(help.join(""), /--resolve keep\|take\|revise --doc <id>/);
 });
 
-test("sync is no longer refused in a checkout; ui and mcp (View writes) are", async () => {
+test("sync and mcp are not refused in a checkout; ui (View writes) is", async () => {
   const h = await harness();
   const context = { home: h.home, cwd: h.cwd };
   await assertAllowedInHostedCheckout("sync", ["--dir", h.folder], context);
-  for (const [command, args] of [["ui", ["--dir", h.folder]], ["mcp", ["--dir", h.folder]]] as const) {
-    await assert.rejects(assertAllowedInHostedCheckout(command, [...args], context), (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN" && error.details?.do_this_in === "app");
-  }
+  await assert.rejects(assertAllowedInHostedCheckout("ui", ["--dir", h.folder], context), (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN" && error.details?.do_this_in === "app");
+  await assertAllowedInHostedCheckout("mcp", ["--dir", h.folder], context);
   await assertAllowedInHostedCheckout("mcp", ["status", "--dir", h.folder], context);
   assert.ok(HOSTED_CHECKOUT_REFUSALS.every((row) => row.words[0] !== "sync"));
 });
