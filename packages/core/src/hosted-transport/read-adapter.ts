@@ -25,6 +25,7 @@ import { parseHeadsAnswer, readSnapshotStream, type HeadsResult, type RemoteSnap
 import type { HeadsOptions, WireCapabilities } from "../remote-backend.js";
 import type { ConceptId, ReadResult, ReservedFilename, ReservedReadResult, StorageBackend } from "../types.js";
 import { isContentVersion } from "../version-transport.js";
+import { sha256HexOfUtf8 } from "../sha256.js";
 import { HostedCarrierError, type HostedAnswer, type HostedCarrier } from "./carrier.js";
 import { decodeHeadsPage, HEADS_PAGE_ATTEMPTS, HeadsPages, isPageRestart, pageRestartDelay, pause, stitchSnapshotPages } from "./paged-reads.js";
 
@@ -73,6 +74,8 @@ export const HOSTED_READ_BOUNDS = Object.freeze({
   headsBytes: 4 * 1024 * 1024,
   /** One document read's answer, and one snapshot line. */
   documentBytes: 1024 * 1024 + 64 * 1024,
+  /** One history page's answer: the host bounds `documents.history.v1` at 1 MiB; the slack is the envelope's. */
+  historyBytes: 1024 * 1024 + 64 * 1024,
   /** Document reads in flight at once, whatever concurrency a caller's batches ask for. */
   readConcurrency: 8,
 });
@@ -243,6 +246,147 @@ export function decodeDocumentRead(id: ConceptId, body: unknown, route?: string)
   return { doc: { id, frontmatter: document.frontmatter as ReadResult["doc"]["frontmatter"], body: document.body }, version: data.version };
 }
 
+/** The operation a hosted history read runs (`POST <sync prefix>/history`). */
+export const HISTORY_OPERATION_ID = "documents.history.v1";
+/** The most versions one history page lists (hosted's `READ_LIMITS.documents`). */
+export const HISTORY_PAGE_LIMIT = 100;
+
+/** One page of a document's history, as asked: the newest `limit` versions older than `before`. */
+export interface HostedHistoryRequest {
+  readonly documentId: ConceptId;
+  /** 1..{@link HISTORY_PAGE_LIMIT}. */
+  readonly limit: number;
+  /** Only versions with a smaller `seq` are listed. Absent for the first page. */
+  readonly before?: number;
+  /** Ask for each listed version's stored bytes. */
+  readonly includeContent?: boolean;
+}
+
+/** One version of a document's lineage. `seq` counts the lineage's writes from 1. */
+export interface HostedHistoryVersion {
+  readonly seq: number;
+  readonly version: string;
+  /** The principal that made the write. */
+  readonly actor: string;
+  readonly timestamp: string;
+  /** The agent label the write named, when it named one. */
+  readonly agent?: string;
+  /** The version's stored bytes, verified against `version`; only when asked for. */
+  readonly content?: string;
+}
+
+export interface HostedHistoryPage {
+  readonly documentId: ConceptId;
+  /** Newest first. */
+  readonly versions: readonly HostedHistoryVersion[];
+  /** True when older versions exist before the last one listed. */
+  readonly more: boolean;
+  /** Every version of the lineage: stated on the first page (no `before`) only. */
+  readonly total?: number;
+}
+
+/** The body a history request sends. */
+export function historyInput(bundleId: string, request: HostedHistoryRequest): Record<string, unknown> {
+  return {
+    bundleId,
+    documentId: request.documentId,
+    limit: request.limit,
+    ...(request.before === undefined ? {} : { before: request.before }),
+    ...(request.includeContent ? { includeContent: true } : {}),
+  };
+}
+
+const optionalString = (value: unknown): value is string | undefined => value === undefined || typeof value === "string";
+const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * A `documents.history.v1` success, decoded against hosted's result schema
+ * (`{ ok: true, operationId, data: { documentId, versions: [{ seq, version, actor, timestamp,
+ * agent?, content? }], more, total? } }`) and against the page asked for: the document named,
+ * at most `limit` rows, `seq` strictly descending and below `before`, content exactly when asked
+ * and hashing to its version, a `more` page that is full, and a first page's `total`. Fields the
+ * result may gain are ignored.
+ */
+export function decodeDocumentHistory(request: HostedHistoryRequest, body: unknown, route?: string): HostedHistoryPage {
+  const fail = (why: string): never => {
+    throw malformed(`history answered ${why}`, route);
+  };
+  const envelope = body as { ok?: unknown; operationId?: unknown; data?: unknown } | undefined;
+  if (envelope?.operationId !== HISTORY_OPERATION_ID || envelope.ok !== true) fail(`an envelope that is not ${HISTORY_OPERATION_ID}'s result`);
+  const data = envelope!.data as { documentId?: unknown; versions?: unknown; more?: unknown; total?: unknown } | null | undefined;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) fail("without its data");
+  if (data!.documentId !== request.documentId) fail("for another document");
+  if (!Array.isArray(data!.versions) || data!.versions.length > request.limit) fail("more versions than asked for, or none as a list");
+  if (typeof data!.more !== "boolean") fail("without a boolean more");
+  const rows = data!.versions as unknown[];
+  const versions: HostedHistoryVersion[] = [];
+  let below = request.before ?? Number.MAX_SAFE_INTEGER + 1;
+  for (const raw of rows) {
+    const row = raw as { seq?: unknown; version?: unknown; actor?: unknown; timestamp?: unknown; agent?: unknown; content?: unknown } | null;
+    if (typeof row !== "object" || row === null || Array.isArray(row)) fail("a version that is not an object");
+    const { seq, version, actor, timestamp, agent, content } = row!;
+    if (!positiveInteger(seq) || seq >= below) fail("versions out of order, or outside the page asked for");
+    below = seq as number;
+    if (!isContentVersion(version) || typeof actor !== "string" || actor === "" || typeof timestamp !== "string" || !optionalString(agent))
+      fail("a malformed version row");
+    if (request.includeContent) {
+      if (typeof content !== "string") fail("a version without the content asked for");
+      if (`sha256:${sha256HexOfUtf8(content as string)}` !== version) fail("content that does not match its version");
+    } else if (content !== undefined) {
+      fail("content that was not asked for");
+    }
+    versions.push(
+      Object.freeze({
+        seq: seq as number,
+        version: version as string,
+        actor: actor as string,
+        timestamp: timestamp as string,
+        ...(agent === undefined ? {} : { agent: agent as string }),
+        ...(content === undefined ? {} : { content: content as string }),
+      }),
+    );
+  }
+  // A page that says more exists is full, so the next page always moves; a first page counts the lineage.
+  if (data!.more && versions.length !== request.limit) fail("more versions without a full page");
+  let total: number | undefined;
+  if (request.before === undefined) {
+    // A first page lists `total` rows exactly when nothing older exists, and fewer when more does.
+    if (!count(data!.total) || (data!.more ? data!.total <= versions.length : data!.total !== versions.length)) fail("a first page without a consistent total");
+    total = data!.total as number;
+  }
+  return Object.freeze({ documentId: request.documentId, versions: Object.freeze(versions), more: data!.more as boolean, ...(total === undefined ? {} : { total }) });
+}
+
+/** An operation's refusal (`ok: false`): the kernel's error code, its message and its retry advice. */
+export interface HostedOperationRefusal {
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+}
+
+/**
+ * The refusal a 200 operation answer carries, or `undefined` for an answer that is not one
+ * (`ok` is not `false`). A refusal must name `operationId` and a non-empty error code; any other
+ * `ok: false` envelope is malformed. One reading for every kernel operation a hosted client runs.
+ */
+export function operationRefusal(body: unknown, operationId: string, route?: string): HostedOperationRefusal | undefined {
+  const envelope = body as { ok?: unknown; operationId?: unknown; error?: { code?: unknown; message?: unknown; retryable?: unknown } | null } | undefined;
+  if (envelope?.ok !== false) return undefined;
+  const error = envelope.error;
+  if (envelope.operationId !== operationId || typeof error !== "object" || error === null || typeof error.code !== "string" || error.code === "")
+    throw malformed(`answered a refusal that is not ${operationId}'s`, route);
+  return Object.freeze({ code: error.code, message: typeof error.message === "string" ? error.message : error.code, retryable: error.retryable === true });
+}
+
+/** One history page's answer: the page, or the operation's refusal (`document_not_found` and the kernel's other codes). */
+export type HostedHistoryAnswer = { ok: true; page: HostedHistoryPage } | { ok: false; refusal: HostedOperationRefusal };
+
+/** A 200 history answer, decoded against the page asked for. */
+export function decodeHistoryAnswer(request: HostedHistoryRequest, body: unknown, route?: string): HostedHistoryAnswer {
+  const refusal = operationRefusal(body, HISTORY_OPERATION_ID, route);
+  return refusal ? { ok: false, refusal } : { ok: true, page: decodeDocumentHistory(request, body, route) };
+}
+
 /** `documents`, naming `route` on a malformed answer the iteration rejects with. */
 async function* namingRoute<T>(route: string, documents: AsyncIterable<T>): AsyncGenerator<T> {
   try {
@@ -318,10 +462,9 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
         .json(routes.read, { bundleId, documentId: id }, controller.signal, { maximum: HOSTED_READ_BOUNDS.documentBytes, ...(options.binding ? { binding: options.binding } : {}) })
         .catch(carrierFailure);
       if (answer.status !== 200) refused(answer);
-      const envelope = answer.body as { ok?: unknown; error?: { code?: unknown; message?: unknown } } | undefined;
-      if (envelope?.ok === false) {
-        const code = typeof envelope.error?.code === "string" ? envelope.error.code : "RUNTIME";
-        const message = typeof envelope.error?.message === "string" ? envelope.error.message : code;
+      const refusal = await onRoute(routes.read, async () => operationRefusal(answer.body, "documents.read.v1"));
+      if (refusal) {
+        const { code, message } = refusal;
         if (code === "document_not_found") throw notFound(id);
         if (code === "bundle_not_found" || code === "insufficient_scope") {
           forget();

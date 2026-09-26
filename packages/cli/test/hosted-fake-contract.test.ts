@@ -157,7 +157,14 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("outcome-200-absent", send("outcome", create("notes/never"), { requestId: identity(8) }));
   await observe("write-400-invalid-input", send("replace", { ...replace(replaced.data.version, "x"), extra: true }, { requestId: identity(9) }));
   await observe("write-400-missing-identity", send("create", create("notes/x"), { requestId: null }));
-  await observe("create-200-ok-via", send("create", create("notes/via", "via"), { requestId: identity(22), via: "claude-code" }));
+  const viaCreated = await json(send("create", create("notes/via", "via"), { requestId: identity(22), via: "claude-code" }));
+  observed.set("create-200-ok-via", await answerOf(await send("create", create("notes/via", "via"), { requestId: identity(22), via: "claude-code" })));
+  // History: the labeled create, then a replace, newest first; a page back with its content.
+  await send("replace", { bundleId: BUNDLE, documentId: "notes/via", expectedVersion: viaCreated.data.version, frontmatter: { type: "Note" }, body: "via edited" }, { requestId: identity(24) });
+  await observe("history-200-ok", send("history", { bundleId: BUNDLE, documentId: "notes/via" }));
+  await observe("history-200-content", send("history", { bundleId: BUNDLE, documentId: "notes/via", limit: 1, before: 2, includeContent: true }));
+  await observe("history-200-document-not-found", send("history", { bundleId: BUNDLE, documentId: "notes/absent" }));
+  await observe("history-400-invalid-input", send("history", { bundleId: BUNDLE, documentId: "notes/via", extra: true }));
   await observe("write-400-invalid-via", send("create", create("notes/x"), { requestId: identity(23), via: "Claude Code" }));
   host.hook = (call) => (call.requestId === identity(21) ? { kind: "unknown" } : undefined);
   await observe("create-200-write-outcome-unknown", send("create", create("notes/unknown"), { requestId: identity(21) }));
@@ -200,6 +207,9 @@ test("the contract catches the read answer the fake used to give, and a wrong er
   assert.notDeepEqual(bodyShape(refused.replace('"status":"refused"', '"status":"committed"')), bodyShape(refused));
   const changed = golden.get("delete-200-unchanged")!.response.body;
   assert.notDeepEqual(bodyShape(changed.replace('"changed":false', '"changed":true')), bodyShape(changed));
+  // A history row's keys are grammar: a row named with other keys (`revision`, `at`) is another answer.
+  const history = golden.get("history-200-ok")!.response.body;
+  assert.notDeepEqual(bodyShape(history.replaceAll('"seq"', '"revision"').replaceAll('"timestamp"', '"at"')), bodyShape(history));
 });
 
 test("the fake answers every golden /sync/v1/export exchange with the host's exact values and bytes", async () => {

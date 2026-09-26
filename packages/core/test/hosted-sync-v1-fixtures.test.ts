@@ -23,8 +23,14 @@ import {
   decodeDocumentRead,
   decodeHostedCapabilities,
   decodeOutcomeAnswer,
+  decodeDocumentHistory,
+  decodeHistoryAnswer,
+  HOSTED_READ_BOUNDS,
+  operationRefusal,
+  readRefusal,
   SYNC_READ_ROUTES,
   type HostedAnswer,
+  type HostedHistoryRequest,
 } from "../src/hosted-transport/index.js";
 import { MALFORMED_ANSWER, MalformedAnswer, RemoteError } from "../src/remote-error.js";
 import { versionOfBytes } from "../src/versioning.js";
@@ -79,7 +85,7 @@ function answerOf(exchange: Exchange): HostedAnswer {
 }
 
 test(`golden /sync/v1 exchanges (${index.source}) are indexed as recorded`, () => {
-  assert.equal(index.exchanges.length, 46);
+  assert.equal(index.exchanges.length, 50);
   for (const entry of index.exchanges) {
     const exchange = fixture(entry.name);
     assert.equal(exchange.route, entry.route);
@@ -230,6 +236,103 @@ test("a malformed heads or capabilities answer names its route", async () => {
   const adapter = createHostedReadAdapter({ carrier, bundleId: BUNDLE, routes: SYNC_READ_ROUTES });
   await assert.rejects(adapter.heads(), (error: unknown) => error instanceof MalformedAnswer && error.route === SYNC_READ_ROUTES.heads);
   await assert.rejects(adapter.hostedCapabilities(), (error: unknown) => error instanceof MalformedAnswer && error.route === SYNC_READ_ROUTES.capabilities);
+});
+
+// ── history ────────────────────────────────────────────────────────────────────────────────
+
+const HISTORY_ROUTE = "/sync/v1/history";
+
+/** The page an exchange's request asks for, as the client states it. */
+function historyRequestOf(exchange: Exchange): HostedHistoryRequest {
+  const body = JSON.parse(exchange.request.body) as { documentId: string; limit?: number; before?: number; includeContent?: true };
+  return { documentId: body.documentId, limit: body.limit ?? 20, ...(body.before === undefined ? {} : { before: body.before }), ...(body.includeContent ? { includeContent: true } : {}) };
+}
+
+/** The exchange's answer, through the real fetch carrier under the history bound. */
+async function historyAnswer(name: string): Promise<HostedAnswer> {
+  const exchange = fixture(name);
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(new URL(String(input)).pathname, HISTORY_ROUTE);
+    assert.deepEqual(JSON.parse(String(init?.body)), JSON.parse(exchange.request.body));
+    return new Response(exchange.response.body, { status: exchange.response.status, headers: exchange.response.headers });
+  }) as typeof fetch;
+  const carrier = createFetchCarrier({ baseUrl: "https://hosted.example", fetch, credentials: async () => ({ Authorization: "Bearer token" }) });
+  return carrier.json(HISTORY_ROUTE, JSON.parse(exchange.request.body), new AbortController().signal, { maximum: HOSTED_READ_BOUNDS.historyBytes });
+}
+
+test("history 200 ok: documents.history.v1 decodes newest first, with each agent label and the first page's total", async () => {
+  const answer = await historyAnswer("history-200-ok");
+  assert.equal(answer.status, 200);
+  const decoded = decodeHistoryAnswer(historyRequestOf(fixture("history-200-ok")), answer.body, HISTORY_ROUTE);
+  assert.ok(decoded.ok);
+  const expected = JSON.parse(fixture("history-200-ok").response.body) as { data: { versions: { seq: number; version: string; actor: string; timestamp: string; agent?: string }[]; total: number } };
+  assert.deepEqual(decoded.page.versions, expected.data.versions);
+  assert.deepEqual(decoded.page.versions.map((row) => row.seq), [2, 1]);
+  assert.equal(decoded.page.versions[1]!.agent, "sync/credential:cli;via=claude-code");
+  assert.equal(decoded.page.more, false);
+  assert.equal(decoded.page.total, 2);
+});
+
+test("history 200 content: a page back carries the version's bytes, which hash to its version, and no total", async () => {
+  const exchange = fixture("history-200-content");
+  const decoded = decodeHistoryAnswer(historyRequestOf(exchange), (await historyAnswer("history-200-content")).body, HISTORY_ROUTE);
+  assert.ok(decoded.ok);
+  const [version] = decoded.page.versions;
+  assert.equal(version!.seq, 1);
+  assert.equal(versionOfBytes(version!.content!), version!.version);
+  assert.equal(decoded.page.total, undefined);
+  // The same row's content, altered by one byte, no longer matches its version.
+  const tampered = JSON.parse(exchange.response.body) as { data: { versions: { content: string }[] } };
+  tampered.data.versions[0]!.content = tampered.data.versions[0]!.content.replace("via", "vib");
+  assert.throws(() => decodeDocumentHistory(historyRequestOf(exchange), tampered, HISTORY_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === HISTORY_ROUTE);
+});
+
+test("history 200 document_not_found is the operation's refusal, not a malformed answer", async () => {
+  const decoded = decodeHistoryAnswer(historyRequestOf(fixture("history-200-document-not-found")), (await historyAnswer("history-200-document-not-found")).body, HISTORY_ROUTE);
+  assert.deepEqual(decoded, { ok: false, refusal: { code: "document_not_found", message: "The document was not found.", retryable: false } });
+});
+
+test("history 400 invalid_input refuses with the host's status", async () => {
+  const answer = await historyAnswer("history-400-invalid-input");
+  const error = readRefusal(answer);
+  assert.ok(error instanceof RemoteError && error.status === 400 && error.code === "invalid_input");
+});
+
+test("history: an answer that breaks the page asked for is malformed, naming the route", () => {
+  const ok = fixture("history-200-ok");
+  const request = historyRequestOf(ok);
+  const body = () => JSON.parse(ok.response.body) as { operationId: string; data: Record<string, unknown> & { versions: Record<string, unknown>[] } };
+  const refuses = (mutate: (value: ReturnType<typeof body>) => void, asked: HostedHistoryRequest = request) => {
+    const value = body();
+    mutate(value);
+    assert.throws(() => decodeDocumentHistory(asked, value, HISTORY_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === HISTORY_ROUTE);
+  };
+  assert.ok(decodeDocumentHistory(request, body(), HISTORY_ROUTE));
+  refuses((value) => void (value.operationId = "documents.read.v1"));
+  refuses((value) => void (value.data.documentId = "notes/other"));
+  refuses((value) => void value.data.versions.reverse());
+  refuses((value) => void (value.data.versions[0]!.seq = 1));
+  refuses((value) => void (value.data.versions[0]!.version = "not-a-version"));
+  refuses((value) => void (value.data.versions[0]!.content = "---\n"));
+  refuses((value) => void delete value.data.total);
+  refuses((value) => void (value.data.total = 5));
+  refuses((value) => void (value.data.more = "no"));
+  refuses(() => {}, { ...request, limit: 1 });
+  refuses(() => {}, { ...request, before: 2 });
+  refuses((value) => void (value.data.more = true), { ...request, limit: 3 });
+  refuses(() => {}, { ...request, includeContent: true });
+  // A first page that says more exists lists fewer than the total.
+  refuses((value) => void (value.data.more = true), { ...request, limit: 2 });
+});
+
+test("operationRefusal: one reading of every operation's refusal, strict about whose it is", () => {
+  const body = JSON.parse(fixture("history-200-document-not-found").response.body);
+  assert.equal(operationRefusal(JSON.parse(fixture("history-200-ok").response.body), "documents.history.v1"), undefined);
+  assert.deepEqual(operationRefusal(body, "documents.history.v1"), { code: "document_not_found", message: "The document was not found.", retryable: false });
+  assert.deepEqual(operationRefusal(JSON.parse(fixture("read-200-document-not-found").response.body), "documents.read.v1")?.code, "document_not_found");
+  for (const bad of [{ ...body, operationId: "documents.read.v1" }, { ...body, error: { code: "" } }, { ok: false, operationId: "documents.history.v1" }]) {
+    assert.throws(() => operationRefusal(bad, "documents.history.v1", HISTORY_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === HISTORY_ROUTE);
+  }
 });
 
 // ── writes and outcomes ────────────────────────────────────────────────────────────────────

@@ -27,6 +27,12 @@
 //   write answers `write_outcome_unknown` with no settled header, and its outcome is `pending`;
 // - `/outcome`: the `encodeIdentifiedOutcome` answer (`schemaVersion` 1, `absent`, `committed`
 //   with the committed bytes as base64, or none for a delete, or `refused`).
+// - `/history` (superbee-hosted `documents.history.v1`, `src/sync-v1-reads.ts`): each live
+//   document's lineage, newest first, paged with `limit` and `before`, `total` on the first page,
+//   each version's stored bytes with `includeContent`; `document_not_found` for an absent document
+//   (a delete moves the lineage to the tombstone, and a recreate starts at seq 1 again); the agent
+//   label a write named in `X-Superbee-Via` as the host records it. `history: false` is a gateway
+//   from before the route: its `404 {"error":"not_found"}`.
 // - `/export` (superbee-hosted PR 650, `src/sync-v1-export.ts`): the portable export of the fake's
 //   bundle as the host writes it (`fake-export-archive.ts`): the documents' stored bytes, the root
 //   index, and any reserved files or blobs a test adds to `exportExtras`; a 404 `bundle_not_found`
@@ -121,7 +127,22 @@ export interface FakeHostOptions {
   syncSurface?: boolean;
   /** False is a person with only a read grant: every write is refused `insufficient_scope`. */
   writable?: boolean;
+  /** False is a gateway from before `/history`: the route is the family's unknown-route 404. */
+  history?: boolean;
 }
+
+/** One version of a live document's lineage, as the host's history rows hold it. */
+export interface HistoryRow {
+  seq: number;
+  version: string;
+  actor: string;
+  timestamp: string;
+  agent?: string;
+  raw: string;
+}
+
+/** The agent label the host records for a sync write: the credential, and the agent it named. */
+export const recordedAgentLabel = (via: string | null) => (via === null ? "sync/credential:cli" : `sync/credential:cli;via=${via}`);
 
 const WRITE_REQUEST = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BINDING = /^sha256:[a-f0-9]{64}$/;
@@ -134,6 +155,10 @@ export interface Tombstone {
 
 export class FakeHost {
   readonly docs = new Map<string, HostedDoc>();
+  /** Each live document's lineage, oldest first (the history route answers it newest first). */
+  readonly histories = new Map<string, HistoryRow[]>();
+  /** The instant each history row records. */
+  historyNow: () => Date = () => new Date();
   /** Every deletion of each id, oldest first; the last is the latest tombstone. */
   readonly tombstones = new Map<string, Tombstone[]>();
   /** The bundle revision: bumped by every write and delete, kept across deletion. */
@@ -174,7 +199,16 @@ export class FakeHost {
       const row = JSON.parse(line) as { kind: string; id: string; version: string; frontmatter: Record<string, unknown>; body: string };
       if (row.kind !== "doc") continue;
       this.docs.set(row.id, { frontmatter: row.frontmatter, body: row.body, version: row.version, raw: stringifyDoc(row.frontmatter as never, row.body) });
+      this.record(row.id, "someone-else", undefined);
     }
+  }
+
+  /** A write of `id`'s current bytes, appended to its lineage. */
+  private record(id: string, actor: string, agent: string | undefined): void {
+    const doc = this.docs.get(id)!;
+    const rows = this.histories.get(id) ?? [];
+    rows.push({ seq: rows.length + 1, version: doc.version, actor, timestamp: this.historyNow().toISOString(), ...(agent === undefined ? {} : { agent }), raw: doc.raw });
+    this.histories.set(id, rows);
   }
 
   /** A change made on the host (another person, or the app). */
@@ -183,11 +217,13 @@ export class FakeHost {
     const raw = stringifyDoc(stored as never, body);
     const version = versionOfBytes(raw);
     this.docs.set(id, { frontmatter: stored, body, version, raw });
+    this.record(id, "someone-else", undefined);
     return version;
   }
 
   remove(id: string): void {
     this.docs.delete(id);
+    this.histories.delete(id);
   }
 
   /** A delete made on the host by someone else (another checkout's sync): it leaves a tombstone. */
@@ -212,6 +248,7 @@ export class FakeHost {
     const tombstone = versionOfBytes(JSON.stringify({ deletedVersion, id, revision, superbee: "tombstone" }));
     this.tombstones.set(id, [...(this.tombstones.get(id) ?? []), { tombstone, deletedVersion, revision }]);
     this.docs.delete(id);
+    this.histories.delete(id);
     this.revision += 1;
     return tombstone;
   }
@@ -300,6 +337,8 @@ export class FakeHost {
         }
         return Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version } });
       }
+      case "history":
+        return this.history(body);
       case "export":
         return this.export(body);
       case "create":
@@ -325,6 +364,37 @@ export class FakeHost {
     for (const [id, doc] of this.docs) files.set(`${id}.md`, Buffer.from(doc.raw, "utf8"));
     for (const [file, bytes] of this.exportExtras) files.set(file, bytes);
     return { tenantId: (this.options.tenants ?? ["tenant-a"])[0]!, bundleId: BUNDLE, revision: this.revision, files };
+  }
+
+  private history(body: Record<string, unknown>): Response {
+    if (this.options.history === false) return Response.json({ error: "not_found" }, { status: 404 });
+    const operationId = "documents.history.v1";
+    const { limit = 20, before, includeContent } = body;
+    const int = (value: unknown, max: number) => typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= max;
+    if (
+      !onlyKeys(body, ["bundleId", "documentId", "limit", "before", "includeContent"]) ||
+      typeof body.bundleId !== "string" ||
+      typeof body.documentId !== "string" ||
+      !int(limit, 100) ||
+      (before !== undefined && !int(before, Number.MAX_SAFE_INTEGER)) ||
+      (includeContent !== undefined && includeContent !== true)
+    )
+      return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    if (body.bundleId !== BUNDLE) return Response.json({ ok: false, operationId, error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } });
+    const rows = this.histories.get(body.documentId);
+    if (!rows || !this.docs.has(body.documentId)) return Response.json({ ok: false, operationId, error: { code: "document_not_found", message: "The document was not found.", retryable: false } });
+    const older = [...rows].reverse().filter((row) => before === undefined || row.seq < (before as number));
+    const page = older.slice(0, limit as number);
+    const versions = page.map((row) => ({
+      seq: row.seq,
+      version: row.version,
+      actor: row.actor,
+      timestamp: row.timestamp,
+      ...(row.agent === undefined ? {} : { agent: row.agent }),
+      ...(includeContent ? { content: row.raw } : {}),
+    }));
+    const data = { documentId: body.documentId, versions, more: older.length > page.length, ...(before === undefined ? { total: rows.length } : {}) };
+    return new Response(JSON.stringify({ ok: true, operationId, data }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
   }
 
   private export(body: Record<string, unknown>): Response {
@@ -379,7 +449,7 @@ export class FakeHost {
     const operationId = route === "create" ? "documents.create.v1" : route === "replace" ? "documents.replace.v1" : "documents.delete.v1";
     let recorded = this.recorded.get(requestId);
     if (!recorded) {
-      recorded = hooked?.kind === "record" ? { result: failure(operationId, hooked.code) } : route === "delete" ? this.applyDelete(body) : this.apply(route, operationId, body, recreate);
+      recorded = hooked?.kind === "record" ? { result: failure(operationId, hooked.code) } : route === "delete" ? this.applyDelete(body) : this.apply(route, operationId, body, recreate, via);
       this.recorded.set(requestId, recorded);
     }
     if (hooked?.kind === "apply-then-drop") throw new TypeError("fetch failed");
@@ -404,7 +474,7 @@ export class FakeHost {
     return { result: failure(operationId, "document_not_found") };
   }
 
-  private apply(route: "create" | "replace", operationId: string, body: Record<string, unknown>, recreate: string | null = null): Recorded {
+  private apply(route: "create" | "replace", operationId: string, body: Record<string, unknown>, recreate: string | null = null, via: string | null = null): Recorded {
     const id = String(body.documentId);
     const existing = this.docs.get(id);
     if (route === "create" && existing) return { result: failure(operationId, "document_exists", existing.version) };
@@ -419,6 +489,8 @@ export class FakeHost {
     const raw = stringifyDoc(frontmatter as never, String(body.body));
     const version = versionOfBytes(raw);
     this.docs.set(id, { frontmatter, body: String(body.body), version, raw });
+    // An unchanged replace writes no version.
+    if (route === "create" || existing!.version !== version) this.record(id, this.principal, recordedAgentLabel(via));
     this.revision += 1;
     this.applied.push(id);
     return {
