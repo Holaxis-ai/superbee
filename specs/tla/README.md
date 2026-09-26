@@ -1,40 +1,46 @@
 # TLA+ specifications
 
-These TLA+ models describe three concurrency mechanisms whose correctness depends on how
-separately committed steps interleave. The TLC model checker explores every interleaving within
-small bounds. The models are checked against their own invariants; they are not generated from or
-linked to the TypeScript source. Each spec's header maps its actions to the functions they model,
-so a change to one of those functions should be mirrored in the spec.
+These TLA+ models describe concurrency mechanisms whose correctness depends on how separately
+committed steps interleave. The TLC model checker explores every interleaving within small bounds.
+The models are checked against their own invariants; they are not generated from or linked to the
+TypeScript source. Each spec's header maps its actions to the functions they model, so a change to
+one of those functions should be mirrored in the spec.
 
-| Area | Spec | Models |
-| --- | --- | --- |
-| `filesystem-lock/` | `FsLock.tla` | The cross-process mkdir lock (`packages/core/src/filesystem-lock.ts`) and the filesystem push role (`packages/core/src/filesystem-push-role.ts`) |
-| `intent-journal/` | `WorkingCopy.tla` | Browser-local sync data flow: push, pull by heads, digest recording and deletion reconciliation (`packages/browser-local/src/local-bundle.ts`) |
-| `intent-journal/` | `IntentLifecycle.tla` | The lifecycle of one document's intents: compose, claim, uncertain delivery, settle, reclaim, resume and resolve |
-| `identified-write/` | `IdentifiedWrite.tla` | At-most-once delivery of an identified guarded write across lost answers, outcome expiry and store restarts (`packages/core/src/uncertain-write.ts`, `packages/server/src/router.ts`) |
+| Spec | Code it models | Invariants and properties | CI job: configs |
+| --- | --- | --- | --- |
+| `filesystem-lock/FsLock.tla` | The cross-process mkdir lock (`packages/core/src/filesystem-lock.ts`), the filesystem push role (`packages/core/src/filesystem-push-role.ts`) and the default host policy (`packages/core/src/filesystem-host.ts`) | `M1`, `M2`, `Fence`, `NoImpossible`, `RetryDiagAccurate`, `StaleDiagAccurate` | `filesystem-lock`: every `filesystem-lock/*.cfg` |
+| `intent-journal/WorkingCopy.tla` | Browser-local sync data flow: push, pull by heads, digest recording, deletion reconciliation and the pull fence (`packages/browser-local/src/local-bundle.ts`, `packages/browser-local/src/platform/browser-local.ts`, `packages/browser-local/src/push-role.ts`, the journaled seam in `packages/core/src/journaled-backend.ts`, `packages/core/src/indexeddb-backend.ts` and the CLI checkout's `packages/core/src/file-journaled-backend.ts`) | `TruthfulDigest`, `NoRegress`, `OwnedWrites`, `DigestByOwner` | `working-copy`: every `intent-journal/WorkingCopy.*.cfg` |
+| `intent-journal/IntentLifecycle.tla` | The lifecycle of one document's intents: compose, claim, uncertain delivery, settle, reclaim, resume, resolve and the fold of a refused chain (`packages/browser-local/src/local-bundle.ts`, `packages/core/src/uncertain-write.ts`, the CLI hosted sync in `packages/cli/src/hosted/sync.ts` and `sync-rows.ts`) | `NoBlindResubmit`, `DurablyPossiblyDelivered`, `NoRetireOfApplied`, `ChainOrder`, `FoldRetiresOnlyUnapplied`, `NoDanglingAfter`, `OneUnsentIntent`, `EditKept`, `NoResendOfContentRefusal`, `EventuallyAllSettled`, `PendingProgress` | `intent-lifecycle`: every `intent-journal/IntentLifecycle.*.cfg` |
+| `identified-write/IdentifiedWrite.tla` | At-most-once delivery of an identified guarded write across lost answers, outcome expiry and store restarts (`packages/core/src/uncertain-write.ts`, `packages/core/src/remote-backend.ts`, `packages/core/src/hosted-transport/`, `packages/core/src/versioning.ts`, `packages/server/src/router.ts`, `packages/server/src/operation-outcomes.ts`) | `AtMostOnce`, `NoLostUpdate`, `NoMisleadingConflict`, `AckHonest`, `EventuallySettles` | `identified-write`: every `identified-write/*.cfg` |
+
+[`reference/`](reference/README.md) holds models of designs that are not built. CI does not run
+them.
 
 ## Status: fixes on `main` and design targets
 
-Each spec has one `*.fixed.cfg` whose invariants and properties must all hold, and a set of
-variant configs that must each produce one named counterexample. The fixed configs turn on knobs
-that model fixes. Some of those fixes are on `main`; the others are design targets that `main`
-does not implement:
+Each spec has one `*.fixed.cfg` whose invariants and properties must all hold. Some specs have
+further pass configs, variant configs that must each produce one named counterexample, and mutant
+configs (below). The fixed configs turn on knobs that model fixes. Some of those fixes are on
+`main`; the others are design targets that `main` does not implement:
 
 - `FsLock.fixed.cfg` models the owner re-checks before quarantine and before a "stale" diagnosis,
   which are on `main` (#310).
-- `WorkingCopy.fixed.cfg` models pull consistency (#314) and one `sync()` at a time per runtime
-  (#311), which are on `main`. It also turns on `AckInvalidates` (an acknowledgement drops the
-  recorded heads digest), a design target that `main` does not implement.
-- `IntentLifecycle.fixed.cfg` turns on `ReclaimBeforePush` and `AdmitRefused`, both design
-  targets. The CLI hosted sync already reclaims before every push; exact-mode `pushWithRole` does
-  not.
+- `WorkingCopy.fixed.cfg` models one `sync()` at a time per runtime (#311), pull consistency
+  (#314), dropping a digest recorded before an acknowledgement (#317) and the pull fence (#325),
+  all on `main`. `WorkingCopy.two-tabs.cfg` turns serialization off, because two tabs are two
+  runtimes, and checks the same fixes plus the fence's own properties.
+- `IntentLifecycle.fixed.cfg` turns on the fold of a refused chain, which is on `main` (#324,
+  #326), and `ReclaimBeforePush` and `AdmitRefused`, both design targets. The CLI hosted sync
+  already reclaims before every push; exact-mode `pushWithRole` does not.
+  `IntentLifecycle.fold.cfg` describes `main`: the fold without either design target, and no
+  crashes, since a crash without a reclaim is the open `bug-never-reclaim` defect.
 - `IdentifiedWrite.fixed.cfg` models a proposed protocol (a client read-back rule plus a server
   stale-identity guard) that `main` does not implement. The documented at-most-once claims on
   `main` describe the current behavior instead (#312).
 
-A fixed config therefore describes `main` only where every knob it turns on is a fix on `main`.
-A variant config that turns off a fix on `main` reproduces the behavior before that fix, not the
-current code. A config marked "open" below describes a defect that is still present on `main`.
+A pass config describes `main` only where every knob it turns on is a fix on `main`. A variant
+config that turns off a fix on `main` reproduces the behavior before that fix, not the current
+code. A config marked "open" below describes a defect that is still present on `main`.
 
 ## Running the models
 
@@ -56,10 +62,14 @@ TLA2TOOLS=/tmp/tla2tools.jar specs/tla/run-tlc.sh specs/tla/filesystem-lock/FsLo
 ```
 
 The runner prints one line per config and exits non-zero when any config does not produce its
-expected result: a fixed config that finds an error or does not finish, or a variant config that
-finds no counterexample or a different one. On a mismatch it prints the end of TLC's output,
-including the counterexample trace. Each area takes a few minutes on four cores; the fixed configs
-dominate.
+expected result: a pass config that finds an error or does not finish, or a variant or mutant
+config that finds no counterexample or a different one. On a mismatch it prints the end of TLC's
+output, including the counterexample trace. With no arguments it skips `reference/`. Each CI job
+takes about a minute on four cores; the pass configs dominate.
+
+The workflow runs on pull requests and pushes to `main` that change `specs/tla`, the workflow, or
+a source file in the table above, and on manual dispatch. It is not one of the `CI required
+lanes`, so a pull request it does not run for is not blocked.
 
 To see a counterexample trace or experiment with constants, run TLC directly from the spec's
 directory. A config named `<Module>.<variant>.cfg` runs against `MC<Module>.tla` when that file
@@ -77,14 +87,30 @@ terminal states by design.
 ### Config conventions
 
 The first line of every config is `\* expect: pass` or `\* expect: <TLC error text>`, for example
-`\* expect: Invariant M1 is violated`. The second line says what the config checks. A variant
-config checks only the invariant or property it is expected to violate, so the reported
-counterexample does not depend on the order in which TLC's workers find errors. Variant configs
-use the smallest constants that still reproduce their counterexample.
+`\* expect: Invariant M1 is violated`. The second line says what the config checks. A variant or
+mutant config checks only the invariant or property it is expected to violate, so the reported
+counterexample does not depend on the order in which TLC's workers find errors. Variant and mutant
+configs use the smallest constants that still reproduce their counterexample.
+
+- `*.fixed.cfg` and other pass configs must hold every invariant and property they list.
+- `*.bug-*.cfg` reproduces a defect: open on `main`, or present before the fix it names.
+- `*.assumption-*.cfg` shows what breaks when an environment assumption fails.
+- `*.mutant-*.cfg` turns on a knob that deliberately breaks code that is on `main`, and must
+  produce its counterexample. It shows the pass configs would catch that regression.
 
 When a fix lands, its knob should already be on in the fixed config; keep the variant config that
 turns it off, since it shows the fixed config is strong enough to catch that defect. When a new
 defect is found, add a variant config that reproduces it before changing the fixed config.
+
+### Keeping models in sync
+
+When you change a source file in the table above, check the spec that models it:
+
+1. If the change alters a step the spec's header maps, update the action, its knob or its
+   abstractions, and adjust the configs that describe `main`.
+2. Run the area's configs with `run-tlc.sh`. A pass config must still pass, and every variant and
+   mutant config must still produce its counterexample. A mutant that starts passing means the
+   model no longer catches the regression it names; fix the model before merging.
 
 ## filesystem-lock
 
@@ -119,38 +145,81 @@ Assumptions the fixed config relies on:
 
 `WorkingCopy.tla` models two documents, one or two concurrent `sync()` runs over one store, a
 third-party writer, and content-addressed versions, so an authority revert reproduces an earlier
-heads digest. `TruthfulDigest` says a 304 answer never hides a difference between an unheld local
-document and the authority; `NoRegress` says an unheld document never moves back to an older
-authority state.
+heads digest. `TruthfulDigest` says a 304 answer to the digest the next pull would offer never
+hides a difference between an unheld local document and the authority; `NoRegress` says an unheld
+document never moves back to an older authority state. For the pull fence, `OwnedWrites` says
+every pull write commits while that pull owns its in-progress marker and no acknowledgement has
+settled since it started, and `DigestByOwner` says a digest is recorded only by the pull replacing
+its own in-progress marker.
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `WorkingCopy.fixed.cfg` | `TruthfulDigest` and `NoRegress` with two runs serialized (#311) and pull consistency (#314), both on `main`, and `AckInvalidates` (design target) | pass |
-| `WorkingCopy.bug-ack-keeps-digest.cfg` | Open: an acknowledgement keeps the recorded heads digest, so a later return to that digest answers 304 over a stale copy, in a single realm | `TruthfulDigest` violated |
+| `WorkingCopy.fixed.cfg` | `TruthfulDigest` and `NoRegress` with two runs serialized (#311), pull consistency (#314), acknowledgement invalidation (#317) and the pull fence (#325) | pass |
+| `WorkingCopy.two-tabs.cfg` | `TruthfulDigest`, `NoRegress`, `OwnedWrites` and `DigestByOwner` for two unserialized runs (two tabs) with every fix on `main`; checked up to swapping the two runs | pass |
+| `WorkingCopy.bug-ack-keeps-digest.cfg` | Before #317: an acknowledgement keeps the recorded heads digest, so a later return to that digest answers 304 over a stale copy, in a single realm | `TruthfulDigest` violated |
 | `WorkingCopy.bug-pull-inconsistent-digest.cfg` | Before pull consistency was added (#314), pull records the listing's digest after a document changed between the heads answer and its fetch | `TruthfulDigest` violated |
-| `WorkingCopy.bug-overlapping-sync.cfg` | Two unserialized runs: a pull whose listing predates a push acknowledgement deletes the acknowledged create | `NoRegress` violated |
+| `WorkingCopy.bug-overlapping-sync.cfg` | Before the pull fence (#325), two unserialized runs: a pull whose listing predates a push acknowledgement deletes the acknowledged create | `NoRegress` violated |
+| `WorkingCopy.mutant-fence-ignores-marker.cfg` | Mutant: the fence's per-write guard pins the document snapshot and the acknowledgement row but not the pull marker, so an older pull overwrites a newer pull's refresh | `NoRegress` violated |
 
-`main` serializes `sync()` calls within one runtime (#311). Two tabs over one store are two
-runtimes and are not serialized by it, so `WorkingCopy.bug-overlapping-sync.cfg` still describes
-them.
+Where `WorkingCopy.tla` and the code differ (each difference gives the model at least the
+code's behaviors, so a pass still covers the code):
+
+- A sync that finds the push role held elsewhere pulls in the model. The runtime returns without
+  pulling (#311), so the model has more concurrent pulls.
+- Acknowledgement times are a counter. A pull records the counter at its start, and
+  `lastKnownDigest` offers a digest only if no acknowledgement has settled since. The code compares
+  timestamps with `>=`, which also drops a digest when an acknowledgement shares the pull's start
+  instant.
+- Marking over a marker that moved retries or marks without a digest nondeterministically, which
+  covers the code's `PULL_MARK_ATTEMPTS` bound. A superseded pull may pull again any number of
+  times, where the runtime pulls once more.
+- A guard refused under a fence that still holds is classified (`fenceStanding`) in the step that
+  refused it, not by a later read.
+- Body mode, adapters without `journalSnapshotCas` (which pull unfenced), bootstrap, and a sync
+  accepting refused deletions (`PullSupersededError`) are not modeled; the deletion bound never
+  trips with two documents.
 
 `IntentLifecycle.tla` models one document's journal with crashes, lost requests and answers,
 authority conflicts, content and authorization refusals, and an authority that records each
 request identity's outcome. Its invariants say a request identity is resubmitted only after a
 lookup found nothing, a possibly delivered identity is durably marked, an identity that may have
 been applied is never superseded or resolved away, and chained intents are submitted in order.
-`EventuallyAllSettled` says every change is eventually acknowledged or resolved away.
+For the fold, they say a fold retires only a recorded refusal and a successor the authority never
+received (`FoldRetiresOnlyUnapplied`), no intent waits on a retired row (`NoDanglingAfter`), a
+content-refused identity is never resent (`NoResendOfContentRefusal`), at most one never-sent
+intent exists and it is the latest (`OneUnsentIntent`), and the person's latest edit stays
+journaled unless they took the remote side (`EditKept`). `EventuallyAllSettled` says every change
+is eventually acknowledged or resolved away; `PendingProgress`, checked without fairness on the
+person's recovery edit, says a pending change is eventually claimed or retired.
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `IntentLifecycle.fixed.cfg` | All invariants and `EventuallyAllSettled` with `ReclaimBeforePush` and `AdmitRefused` (design targets), every fault kind | pass |
+| `IntentLifecycle.fixed.cfg` | All safety invariants and `EventuallyAllSettled` with the fold (#324, #326), `ReclaimBeforePush` and `AdmitRefused` (design targets), every fault kind | pass |
+| `IntentLifecycle.fold.cfg` | As on `main`: the fold, no reclaim, no refused head in resolve; all safety invariants and `PendingProgress` with lost answers, conflicts, two content refusals and an authorization refusal, no crash | pass |
 | `IntentLifecycle.bug-never-reclaim.cfg` | Open: exact-mode `pushWithRole` never reclaims, so a crash after the claim leaves the intent in flight forever | `EventuallyAllSettled` violated |
-| `IntentLifecycle.bug-refused-head-wedge.cfg` | Open: a content-refused head with a chained successor has no exit in exact mode | `EventuallyAllSettled` violated |
+| `IntentLifecycle.bug-refused-head-wedge.cfg` | Before the fold (#324): a content-refused head with a chained successor has no exit in exact mode | `EventuallyAllSettled` violated |
 | `IntentLifecycle.bug-claim-aba.cfg` | Open: `push` called outside the push role; the claim compares state only, so an intent claimed before can skip its lookup | `NoBlindResubmit` violated |
+| `IntentLifecycle.mutant-fold-drops-edit.cfg` | Mutant: the fold retires the refused chain without journaling the successor's edit | `EditKept` violated |
+| `IntentLifecycle.mutant-fold-auth.cfg` | Mutant: the fold also takes an authorization refusal, whose exit is resume. Caught only with `RoleDiscipline = FALSE`, that is, pushes outside the push role: under the push role an authorization refusal pauses the bundle, so an auth fold cannot occur and the pass configs do not catch this mutant | `FoldRetiresOnlyUnapplied` violated |
 
 Abstractions: a pull or push step is one IndexedDB transaction or one await; the push role is a
 mutex; the lookup rounds are collapsed to one lookup that may fail; retention expiry is left to
-`identified-write`. See each spec's header for the full list.
+`identified-write`. See each spec's header for the full list. Where the fold's model and the code
+differ:
+
+- Refusals have two classes. `content` stands for every refusal the authority records as not
+  applied: content codes and, since #326, the busy codes (`BUSY_REFUSAL_CODES`). `auth` stands for
+  `AUTHORIZATION_REFUSAL_CODES`, including the quota codes, which the fold never takes. A busy
+  answer that does not report `writeState` `not_applied` is a lost answer followed by a lookup, as
+  after #326.
+- The fold's journal read and its guarded write are one step, so the model has no run in which
+  another realm moves the journal between them; the code then reports the intent `blocked` and
+  the next push folds it. Its check that the working document holds the successor's bytes always
+  passes, since content is abstracted away.
+- Deletes are not modeled, so neither is a deletion over a never-landed create, which the fold
+  collapses to no intent. Body mode, which has no fold, is not modeled.
+- The recovery edit keeps one request identity spare, so the model's `MaxRid` bound never starves
+  a fold.
 
 ## identified-write
 

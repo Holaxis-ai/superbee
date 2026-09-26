@@ -23,11 +23,17 @@ env:
 
 jobs:
   model-check:
-    name: model check (${{ matrix.area }})
+    name: model check (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
-        area: [filesystem-lock, intent-journal, identified-write]
+        # Every config in an area directory is named after its module, so these globs cover
+        # the whole directory.
+        include:
+          - { name: filesystem-lock, configs: "filesystem-lock/*.cfg" }
+          - { name: intent-lifecycle, configs: "intent-journal/IntentLifecycle.*.cfg" }
+          - { name: working-copy, configs: "intent-journal/WorkingCopy.*.cfg" }
+          - { name: identified-write, configs: "identified-write/*.cfg" }
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -44,5 +50,7 @@ jobs:
           echo "$TLA2TOOLS_SHA256  $RUNNER_TEMP/tla2tools.jar" | sha256sum --check --strict
       - name: Check every config against its expected result
         env:
-          AREA: ${{ matrix.area }}
-        run: TLA2TOOLS="$RUNNER_TEMP/tla2tools.jar" specs/tla/run-tlc.sh specs/tla/"$AREA"/*.cfg
+          CONFIGS: ${{ matrix.configs }}
+        # CONFIGS is unquoted so the shell expands the glob; a glob that matches nothing is passed
+        # through literally and the runner fails on it.
+        run: TLA2TOOLS="$RUNNER_TEMP/tla2tools.jar" specs/tla/run-tlc.sh specs/tla/$CONFIGS
