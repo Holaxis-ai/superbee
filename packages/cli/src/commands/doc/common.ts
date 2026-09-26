@@ -6,7 +6,7 @@ import { currentHost } from "../../runtime-context.js";
 import { fstatSync } from "node:fs";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
-import type { HostedAuthDeps } from "../../hosted-auth/session.js";
+import type { HostedAccountDeps } from "../../hosted/account.js";
 
 /** The common flags every `doc` verb accepts — appended to each verb's focused help (§10). */
 const COMMON_OPTIONS = `Common options:
@@ -340,9 +340,11 @@ Options:
                         unlimited). A truncated result reports \`shown\` alongside the total
                         \`count\`, and a help line names the escape (a higher --limit, or 0 for
                         all). The newest revision is always included when truncated (it never
-                        gets cut off the front). In a hosted checkout, 0 lists at most ${HOSTED_HISTORY_CEILING.toLocaleString("en-US")}.
-  --seq <n>             Hosted checkout only: print version <n>'s full stored content (with
-                        --json, its row plus a content field). Refused on a local bundle.
+                        gets cut off the front). In a hosted checkout, a listing (0 included)
+                        stops at ${HOSTED_HISTORY_CEILING.toLocaleString("en-US")}.
+  --seq <n>             Hosted checkout only: show version <n> — its row, frontmatter and a
+                        bounded body preview; with --json, its row and the whole stored content.
+                        Refused on a local bundle and with --remote.
 ${COMMON_OPTIONS}
 
 Examples:
@@ -395,13 +397,7 @@ export interface DocCliDeps {
    */
   readStdin: () => Promise<StdinReadResult>;
   /** What `doc history` reaches a hosted checkout's host with (default: the signed-in session and global fetch). */
-  hosted?: DocHostedDeps;
-}
-
-export interface DocHostedDeps {
-  readonly auth?: HostedAuthDeps;
-  /** The fetch the sync routes are reached with (the sign-in module keeps its own). */
-  readonly fetch?: typeof fetch;
+  hosted?: HostedAccountDeps;
 }
 
 /**

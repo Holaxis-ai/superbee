@@ -44,7 +44,7 @@ import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, requireHo
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { bindingForPath, checkoutLockName, checkoutStoreDir, releaseCheckout, type CheckoutBinding } from "../hosted/binding.js";
 import { createHostedSyncClient, hostedFailure } from "../hosted/client.js";
-import { hostedListCommand } from "../hosted/account.js";
+import { connectCheckout, hostedListCommand } from "../hosted/account.js";
 import { hostedCheckoutFor } from "../hosted/sync.js";
 import { classifyCheckout, hostedStatus } from "../hosted/status.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
@@ -171,24 +171,17 @@ function refusalCode(body: unknown): string | undefined {
 /** The whole archive, bounded, or the CLI error the host's answer means. */
 async function fetchArchive(source: Source, deps: ExportDeps, resume: CommandText): Promise<Uint8Array> {
   const { target, bundleId } = source;
-  const token = await ensureHostedAccessToken(target, { resume }, deps.auth);
-  const client = createHostedSyncClient({
-    target,
-    accessToken: token.accessToken,
-    resume,
-    deadlineMs: EXPORT_DEADLINE_MS,
-    ...(source.workspace !== null ? { workspace: source.workspace } : {}),
-    ...(deps.fetch ? { fetch: deps.fetch } : {}),
-  });
-  if (source.binding) {
-    const identity = await client.whoami();
-    if (identity.principalId !== source.binding.principal_id) {
-      throw new CliError("FORBIDDEN", `the checkout at ${source.binding.path} was made by another hosted identity than the one signed in`, {
-        details: { reason: "other_principal", folder: source.binding.path, checkout_principal: source.binding.principal_id, signed_in_principal: identity.principalId },
-        help: `${cliInvocation()} login --host ${commandToken(hostArgument(target))}`,
+  // A checkout is read as its own person; a named bundle as whoever is signed in.
+  const client = source.binding
+    ? (await connectCheckout(source.binding, { resume, deadlineMs: EXPORT_DEADLINE_MS }, deps)).client
+    : createHostedSyncClient({
+        target,
+        accessToken: (await ensureHostedAccessToken(target, { resume }, deps.auth)).accessToken,
+        resume,
+        deadlineMs: EXPORT_DEADLINE_MS,
+        ...(source.workspace !== null ? { workspace: source.workspace } : {}),
+        ...(deps.fetch ? { fetch: deps.fetch } : {}),
       });
-    }
-  }
   let answer;
   try {
     answer = await client.carrier.stream(`${client.prefix}/export`, { bundleId }, client.signal);

@@ -25,7 +25,8 @@ import {
   decodeOutcomeAnswer,
   decodeDocumentHistory,
   decodeHistoryAnswer,
-  HISTORY_ANSWER_BYTES,
+  HOSTED_READ_BOUNDS,
+  operationRefusal,
   readRefusal,
   SYNC_READ_ROUTES,
   type HostedAnswer,
@@ -256,7 +257,7 @@ async function historyAnswer(name: string): Promise<HostedAnswer> {
     return new Response(exchange.response.body, { status: exchange.response.status, headers: exchange.response.headers });
   }) as typeof fetch;
   const carrier = createFetchCarrier({ baseUrl: "https://hosted.example", fetch, credentials: async () => ({ Authorization: "Bearer token" }) });
-  return carrier.json(HISTORY_ROUTE, JSON.parse(exchange.request.body), new AbortController().signal, { maximum: HISTORY_ANSWER_BYTES });
+  return carrier.json(HISTORY_ROUTE, JSON.parse(exchange.request.body), new AbortController().signal, { maximum: HOSTED_READ_BOUNDS.historyBytes });
 }
 
 test("history 200 ok: documents.history.v1 decodes newest first, with each agent label and the first page's total", async () => {
@@ -320,6 +321,18 @@ test("history: an answer that breaks the page asked for is malformed, naming the
   refuses(() => {}, { ...request, before: 2 });
   refuses((value) => void (value.data.more = true), { ...request, limit: 3 });
   refuses(() => {}, { ...request, includeContent: true });
+  // A first page that says more exists lists fewer than the total.
+  refuses((value) => void (value.data.more = true), { ...request, limit: 2 });
+});
+
+test("operationRefusal: one reading of every operation's refusal, strict about whose it is", () => {
+  const body = JSON.parse(fixture("history-200-document-not-found").response.body);
+  assert.equal(operationRefusal(JSON.parse(fixture("history-200-ok").response.body), "documents.history.v1"), undefined);
+  assert.deepEqual(operationRefusal(body, "documents.history.v1"), { code: "document_not_found", message: "The document was not found.", retryable: false });
+  assert.deepEqual(operationRefusal(JSON.parse(fixture("read-200-document-not-found").response.body), "documents.read.v1")?.code, "document_not_found");
+  for (const bad of [{ ...body, operationId: "documents.read.v1" }, { ...body, error: { code: "" } }, { ok: false, operationId: "documents.history.v1" }]) {
+    assert.throws(() => operationRefusal(bad, "documents.history.v1", HISTORY_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === HISTORY_ROUTE);
+  }
 });
 
 // ── writes and outcomes ────────────────────────────────────────────────────────────────────

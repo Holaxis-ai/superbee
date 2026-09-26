@@ -142,7 +142,7 @@ export interface HistoryRow {
 }
 
 /** The agent label the host records for a sync write: the credential, and the agent it named. */
-export const syncAgentLabel = (via: string | null) => (via === null ? "sync/credential:cli" : `sync/credential:cli;via=${via}`);
+export const recordedAgentLabel = (via: string | null) => (via === null ? "sync/credential:cli" : `sync/credential:cli;via=${via}`);
 
 const WRITE_REQUEST = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BINDING = /^sha256:[a-f0-9]{64}$/;
@@ -490,7 +490,7 @@ export class FakeHost {
     const version = versionOfBytes(raw);
     this.docs.set(id, { frontmatter, body: String(body.body), version, raw });
     // An unchanged replace writes no version.
-    if (route === "create" || existing!.version !== version) this.record(id, this.principal, syncAgentLabel(via));
+    if (route === "create" || existing!.version !== version) this.record(id, this.principal, recordedAgentLabel(via));
     this.revision += 1;
     this.applied.push(id);
     return {

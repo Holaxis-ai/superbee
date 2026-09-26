@@ -9,13 +9,12 @@ import {
   createFetchCarrier,
   createHostedReadAdapter,
   decodeHistoryAnswer,
-  HISTORY_ANSWER_BYTES,
   historyInput,
+  HOSTED_READ_BOUNDS,
   HostedCarrierError,
   readRefusal,
   type HostedCarrier,
-  type HostedHistoryPage,
-  type HostedHistoryRefusal,
+  type HostedHistoryAnswer,
   type HostedHistoryRequest,
   type HostedReadAdapter,
   type HostedReadRoutes,
@@ -63,7 +62,7 @@ export interface HostedSyncClient {
   bundles(): Promise<HostedBundleRow[]>;
   reader(bundleId: string): HostedReadAdapter;
   /** One page of a document's history (`documents.history.v1`), validated against the page asked for. */
-  history(bundleId: string, request: HostedHistoryRequest): Promise<{ ok: true; page: HostedHistoryPage } | { ok: false; refusal: HostedHistoryRefusal }>;
+  history(bundleId: string, request: HostedHistoryRequest): Promise<HostedHistoryAnswer>;
 }
 
 export interface HostedIdentity {
@@ -186,12 +185,12 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
       const route = `${prefix}/history`;
       let answer;
       try {
-        answer = await carrier.json(route, historyInput(bundleId, request), controller.signal, { maximum: HISTORY_ANSWER_BYTES });
+        answer = await carrier.json(route, historyInput(bundleId, request), controller.signal, { maximum: HOSTED_READ_BOUNDS.historyBytes });
       } catch (error) {
         throw hostedFailure(error, target, options.resume);
       }
-      // A gateway from before the route answers the family's own 404 for an unknown route.
-      if (answer.status === 404) {
+      // A gateway from before the route answers the family's own unknown-route 404, exactly this body.
+      if (answer.status === 404 && isUnknownRoute(answer.body)) {
         throw new CliError("NOT_IMPLEMENTED", `${target.origin} does not serve document history yet`, {
           details: { host: target.origin, route, status: 404 },
           help: `a later release of the host serves it; until then ${cliInvocation()} doc read ${commandToken(request.documentId)} shows the current version`,
@@ -205,6 +204,11 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
       }
     },
   };
+}
+
+/** The sync family's answer to a route it does not have: `404 {"error":"not_found"}`, nothing else. */
+function isUnknownRoute(body: unknown): boolean {
+  return typeof body === "object" && body !== null && !Array.isArray(body) && Object.keys(body).length === 1 && (body as { error?: unknown }).error === "not_found";
 }
 
 function loginHelp(target: HostedTarget): string {
