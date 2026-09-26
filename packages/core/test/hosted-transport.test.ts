@@ -31,6 +31,7 @@ import {
   capacityScopeOf,
   HostedCarrierError,
   HostedOutcomeError,
+  isAgentLabelVia,
   OUTCOME_ANSWER_ROWS,
   READ_ANSWER_ROWS,
   UPDATE_ANSWER_ROWS,
@@ -797,4 +798,41 @@ test("fetch carrier: credential, identity and binding headers ride every request
   await assert.rejects(signedOut.json("/sync/v1/heads", {}, new AbortController().signal, { maximum: 1024 }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
   await assert.rejects(carrier.json("/sync/v1/replace", {}, new AbortController().signal, { maximum: 1024, writeRequest: "not-a-uuid" }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
   assert.equal(seen.length, before);
+});
+
+test("via: the agent a client names rides each write and its lookup exactly as the golden exchange sends it, and an invalid token never leaves", async () => {
+  const golden = JSON.parse(readFileSync(path.join(HERE, "fixtures", "hosted-sync-v1", "create-200-ok-via.json"), "utf8")) as Exchange;
+  const sent: { path: string; headers: Headers }[] = [];
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    sent.push({ path: new URL(String(input)).pathname, headers: new Headers(init?.headers) });
+    return new Response(golden.response.body, { status: golden.response.status, headers: golden.response.headers });
+  }) as typeof globalThis.fetch;
+  const carrier = createFetchCarrier({ baseUrl: "https://hosted.example", fetch, credentials: async () => ({ Authorization: "Bearer token" }) });
+  const content = stringifyDoc({ type: "Note" } as never, "via");
+  // The golden request's own identity and binding, so every superbee header can be compared whole.
+  const requestId = golden.request.headers["x-superbee-write-request"]!;
+  const binding = golden.request.headers["x-superbee-checkout"]!;
+  const intent: OperationIntent = { requestId, kind: "document.write", target: "notes/via", base: null, local: versionOfBytes(content), content, createdAt: new Date(NOW).toISOString(), attempts: 0, state: "pending" };
+  const over = (via?: string) => createWholeDocumentTransport({ carrier, bundleId: "notes.a", binding, intentFor: async () => intent, remote: { read: async () => assert.fail("no read"), operationsRetentionMs: async () => 2_592_000_000 }, now: () => NOW, ...(via === undefined ? {} : { via }) });
+  const superbee = (headers: Headers | Record<string, string>) => [...new Headers(headers)].filter(([name]) => name.startsWith("x-superbee-"));
+  // The write carries the same superbee headers the host was sent, the via token included.
+  await over("claude-code").submit(intent);
+  assert.equal(sent[0]!.path, "/sync/v1/create");
+  assert.deepEqual(superbee(sent[0]!.headers), superbee(golden.request.headers));
+  assert.equal(sent[0]!.headers.get("x-superbee-via"), "claude-code");
+  // Its lookup carries it too; without a token, nothing is sent.
+  await over("claude-code").lookup(requestId).catch(() => null);
+  assert.deepEqual([sent[1]!.path, sent[1]!.headers.get("x-superbee-via")], ["/sync/v1/outcome", "claude-code"]);
+  await over().submit(intent);
+  assert.equal(sent[2]!.headers.get("x-superbee-via"), null);
+  // The grammar is the host's: these it accepts, and every token its tests refuse is refused here.
+  for (const via of ["a", "0", "codex", "claude-code", "gpt-5.1", "my_agent", "a".repeat(32)]) assert.equal(isAgentLabelVia(via), true, via);
+  const refused = ["", "Claude-Code", "Codex", "claude code", "a".repeat(33), "superbee", "superbee-cli", "superbee.cli", "superbee_cli", "superbeecli", "a;via=b", "a/b", "claude-code, codex"];
+  // A token the host would refuse is never sent: the transport refuses to be built, the carrier to send.
+  for (const via of refused) {
+    assert.equal(isAgentLabelVia(via), false, via);
+    assert.throws(() => over(via), TypeError, via);
+    await assert.rejects(carrier.json("/sync/v1/create", {}, new AbortController().signal, { maximum: 1024, via }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied", via);
+  }
+  assert.equal(sent.length, 3);
 });

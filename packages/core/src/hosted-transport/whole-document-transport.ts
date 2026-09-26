@@ -44,7 +44,7 @@ import {
   type WriteFailure,
 } from "./answer-rows.js";
 import { DELETE_OPERATION_ID } from "./answer-rows.js";
-import { HostedCarrierError, type HostedAnswer, type HostedCarrier, type HostedRequestOptions } from "./carrier.js";
+import { HostedCarrierError, isAgentLabelVia, type HostedAnswer, type HostedCarrier, type HostedRequestOptions } from "./carrier.js";
 import { isContentVersion } from "../version-transport.js";
 import { OPERATIONS_RETENTION_SKEW_MS, type HostedReadAdapter } from "./read-adapter.js";
 
@@ -201,6 +201,11 @@ export interface WholeDocumentTransportOptions {
   /** Ends every request in flight. */
   signal?: AbortSignal;
   now?: () => number;
+  /**
+   * The agent the client runs under (`X-Superbee-Via`), sent on every write and its lookup. It
+   * must be a token {@link isAgentLabelVia} admits: the transport refuses to be built otherwise.
+   */
+  via?: string;
 }
 
 const UNKNOWN: Outcome = Object.freeze({ kind: "unknown" });
@@ -213,6 +218,10 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   const lifetime = options.signal ?? new AbortController().signal;
   const requestSignal = (signal?: AbortSignal) => (signal ? AbortSignal.any([lifetime, signal]) : lifetime);
   const denial = (code: AuthorizationCode, message: string): Outcome => ({ kind: "refused", code, message });
+  // Checked here, so the carrier's own refusal of a bad token (a `denied`, read as a sign-in
+  // pause) is never reached from a write.
+  if (options.via !== undefined && !isAgentLabelVia(options.via)) throw new TypeError("the via token is not one the host admits");
+  const via = options.via;
 
   /**
    * The served head as the conflict a refusal stands for. Absent, it is a conflict against no
@@ -265,9 +274,18 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     return { request, body };
   }
 
-  /** The identity headers of a write and of its lookup: the same, including a create's acknowledgement. */
+  /**
+   * The identity headers of a write and of its lookup: the same, including a create's
+   * acknowledgement. `via` rides along but is not identity: the host ignores it on a lookup.
+   */
   function identity(intent: OperationIntent, request: WholeDocumentRequest, maximum: number): HostedRequestOptions {
-    return { maximum, writeRequest: intent.requestId, binding, ...(request.kind === "create" && request.recreates !== undefined ? { recreate: request.recreates } : {}) };
+    return {
+      maximum,
+      writeRequest: intent.requestId,
+      binding,
+      ...(request.kind === "create" && request.recreates !== undefined ? { recreate: request.recreates } : {}),
+      ...(via !== undefined ? { via } : {}),
+    };
   }
 
   /**
@@ -353,8 +371,10 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     if (result?.ok && request.kind === "delete" && result.data.deletedVersion !== intent.base) return UNKNOWN;
     if (result?.ok) return { kind: "committed", version: result.data.version };
     if (result && !result.ok && result.error.code === "request_capacity") return capacity(result.error);
-    // The carrier refuses a malformed identity or binding before sending, so a 400 here, and any
-    // invalid_input, is the host's schema refusing this exact document. That is deterministic:
+    // The carrier refuses a malformed identity, binding or via token before sending, so a 400
+    // here, and any invalid_input, is the host's schema refusing this exact document (were the
+    // via grammar ever to drift from the host's, every write would land here: the golden
+    // exchanges pin it). That is deterministic:
     // resending or looking it up again can only repeat it, so it is a terminal refusal.
     if (row.answer === "400") {
       const code = (answer.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;

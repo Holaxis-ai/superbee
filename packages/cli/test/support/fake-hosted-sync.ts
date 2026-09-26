@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 
 import { headsDigest, stringifyDoc } from "@superbee/core";
 import { versionOfBytes } from "@superbee/core/versioning";
+import { isAgentLabelVia } from "@superbee/core/hosted-transport";
 
 import { exportArchive, type ExportState } from "./fake-export-archive.js";
 
@@ -89,6 +90,8 @@ export interface WriteCall {
   binding: string | null;
   /** The `X-Superbee-Recreate` header, when sent. */
   recreate: string | null;
+  /** The `X-Superbee-Via` header, when sent. */
+  via: string | null;
   body: Record<string, unknown>;
 }
 
@@ -346,7 +349,8 @@ export class FakeHost {
     const requestId = headers.get("x-superbee-write-request");
     const binding = headers.get("x-superbee-checkout");
     const recreate = headers.get("x-superbee-recreate");
-    const call: WriteCall = { route, requestId, binding, recreate, body };
+    const via = headers.get("x-superbee-via");
+    const call: WriteCall = { route, requestId, binding, recreate, via, body };
     this.writes.push(call);
     if (!requestId || !WRITE_REQUEST.test(requestId) || !binding || !BINDING.test(binding) || !onlyKeys(body, WRITE_BODY_KEYS[route === "outcome" ? outcomeOf(body) : route])) {
       return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
@@ -354,6 +358,8 @@ export class FakeHost {
     // The acknowledgement is a create's (and its outcome's) alone, and a version.
     const creates = route === "create" || (route === "outcome" && body.expectAbsent === true);
     if (recreate !== null && (!creates || !BINDING.test(recreate))) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    // The agent a client names is attribution only: checked like the host checks it, never authority.
+    if (via !== null && !isAgentLabelVia(via)) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     if (!this.writable(route)) {
       const operationId = route === "create" ? "documents.create.v1" : route === "replace" ? "documents.replace.v1" : "documents.delete.v1";
       return Response.json({ ok: false, operationId, error: { code: "insufficient_scope", message: "Your access to this bundle does not allow this write. Nothing was written.", retryable: false, writeState: "not_applied" } });

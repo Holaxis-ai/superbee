@@ -31,10 +31,30 @@ export interface HostedRequestOptions {
    * lookup must carry exactly what the write carried.
    */
   recreate?: string;
+  /**
+   * The agent the client runs under, such as `claude-code` (`X-Superbee-Via`): the unverified
+   * `;via=` part of the host's agent label for this write. Attribution only, never authority, and
+   * not part of the request identity. Only the whole-document transport's write and outcome
+   * requests carry it, and only a token {@link isAgentLabelVia} admits is ever sent.
+   */
+  via?: string;
 }
 
 /** The header that carries {@link HostedRequestOptions.recreate}. */
 export const RECREATE_HEADER = "X-Superbee-Recreate";
+
+/** The header that carries {@link HostedRequestOptions.via}. */
+export const VIA_HEADER = "X-Superbee-Via";
+
+/**
+ * Whether `value` is a `via` token the host admits: 1 to 32 characters of `[a-z0-9._-]`, never
+ * starting with `superbee` (Superbee's own names). The same rule as the host's `isAgentLabelVia`;
+ * the `/sync/v1` golden exchanges (`create-200-ok-via`, `write-400-invalid-via`) pin the header
+ * and the host's refusal. A token the host refused would make every write a terminal 400.
+ */
+export function isAgentLabelVia(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9._-]{1,32}$/.test(value) && !value.startsWith("superbee");
+}
 
 export interface HostedCarrier {
   json(path: string, input: unknown, signal: AbortSignal, options: HostedRequestOptions): Promise<HostedAnswer>;
@@ -157,10 +177,12 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
       if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
       if (request.binding !== undefined && !BINDING.test(request.binding)) throw new HostedCarrierError("denied");
       if (request.recreate !== undefined && !BINDING.test(request.recreate)) throw new HostedCarrierError("denied");
+      if (request.via !== undefined && !isAgentLabelVia(request.via)) throw new HostedCarrierError("denied");
       const extra: Record<string, string> = {};
       if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
       if (request.binding !== undefined) extra[bindingHeader] = request.binding;
       if (request.recreate !== undefined) extra[RECREATE_HEADER] = request.recreate;
+      if (request.via !== undefined) extra[VIA_HEADER] = request.via;
       const deadline = AbortSignal.timeout(deadlineMs);
       const response = await send(path, input, signal, extra, deadline);
       let body: unknown;

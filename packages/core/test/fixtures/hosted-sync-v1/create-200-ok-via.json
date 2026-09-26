@@ -1,0 +1,27 @@
+{
+  "name": "create-200-ok-via",
+  "description": "A create naming the agent the client runs under (X-Superbee-Via): it commits, and the host records the token in the write's agent label.",
+  "route": "/sync/v1/create",
+  "rows": [
+    "200 ok"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000016",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "x-superbee-via": "claude-code"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/via\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"via\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000016"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"documents.create.v1\",\"data\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/via\",\"version\":\"sha256:771ebd568dd01a8482e8ca8254b0c16d466b062548022f671abddfa4cb769d83\",\"changed\":true}}",
+    "truncated": false
+  }
+}

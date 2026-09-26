@@ -135,6 +135,33 @@ test("an edited file is sent as one whole document, then the checkout is up to d
   assert.equal(h.host.writes.length, 0);
 });
 
+test("writes name the agent the sync runs under (X-Superbee-Via), and a token the host would refuse is never sent", async () => {
+  for (const [env, via, ignored] of [
+    [{}, null, false],
+    [{ CLAUDECODE: "1" }, "claude-code", false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "codex" }, "codex", false],
+    [{ CLAUDECODE: "1", SUPERBEE_NO_VIA: "1" }, null, false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "codex", SUPERBEE_NO_VIA: "1" }, null, false],
+    [{ CLAUDECODE: "true" }, null, false],
+    [{ SUPERBEE_VIA: " codex " }, "codex", false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "" }, "claude-code", false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "Claude Code" }, null, true],
+    [{ SUPERBEE_VIA: "superbee-cli" }, null, true],
+  ] as const) {
+    const h = await harness(new FakeHost(), { SUPERBEE_ACCESS_TOKEN: TOKEN, ...env });
+    await edit(h, "notes/alpha", (doc) => void (doc.body = "Alpha body, revised.\n"));
+    const receipt = await runSync(h);
+    assert.equal(receipt.status, "synced", JSON.stringify(env));
+    assert.deepEqual(
+      h.host.writes.map((call) => call.via),
+      [via],
+      JSON.stringify(env),
+    );
+    // A dropped token is named in the receipt; the sync itself runs as usual.
+    assert.equal(typeof receipt.via_ignored === "string", ignored, JSON.stringify(env));
+  }
+});
+
 test("a new file is created against absence, and creates are sent before replaces", async () => {
   const h = await harness();
   await edit(h, "notes/alpha", (doc) => void (doc.body = "Links to [Gamma](gamma.md).\n"));
