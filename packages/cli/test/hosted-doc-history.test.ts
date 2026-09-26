@@ -278,11 +278,43 @@ test("a bundle the host no longer serves is the checkout's conflict, as sync rep
   assert.match(largeVersion.help ?? "", /doc read/);
 });
 
-test("an explicit --remote wins over the checkout's binding: no request reaches the checkout's host", async () => {
+test("an explicit --remote wins over the checkout's binding: the remote path runs and no request reaches the checkout's host", async () => {
   const h = await harness();
-  await assert.rejects(doc(["history", h.id, "--remote", "http://127.0.0.1:9", "--dir", h.folder], { stdout: () => {}, hosted: { auth: h.auth, fetch: h.host.fetch } }));
-  await assert.rejects(doc(["history", h.id, "--remote", "http://127.0.0.1:9"], { stdout: () => {}, hosted: { auth: h.auth, fetch: h.host.fetch } }));
+  const deps = { stdout: () => {}, hosted: { auth: h.auth, fetch: h.host.fetch } };
+  // Inside the checkout, without --dir: the binding would be found, and --remote still decides.
+  const cwd = process.cwd();
+  process.chdir(h.folder);
+  try {
+    const remote = await rejects(() => doc(["history", h.id, "--remote", "http://127.0.0.1:9"], deps));
+    assert.equal(remote.code, "RUNTIME");
+    assert.match(remote.message, /could not reach the remote bundle at http:\/\/127\.0\.0\.1:9/);
+    assert.deepEqual(h.host.requests, []);
+    // The same folder without --remote reads the checkout's host.
+    const out: string[] = [];
+    await doc(["history", h.id, "--json"], { ...deps, stdout: (text) => void out.push(text) });
+    assert.equal((JSON.parse(out.join("")) as { count: number }).count, 1);
+    assert.ok(historyRequests(h.host).length > 0);
+  } finally {
+    process.chdir(cwd);
+  }
+  // --remote with --dir is the command's own usage refusal, before either is read.
+  h.host.requests.length = 0;
+  const both = await rejects(() => doc(["history", h.id, "--remote", "http://127.0.0.1:9", "--dir", h.folder], deps));
+  assert.equal(both.code, "USAGE");
+  assert.match(both.message, /--remote and --dir are mutually exclusive/);
   assert.deepEqual(h.host.requests, []);
+});
+
+test("a document the host lists no versions for says so, with a help line", async () => {
+  const h = await harness();
+  h.host.histories.set(h.id, []);
+  const record = await historyJson(h, [h.id]);
+  assert.deepEqual(record, {
+    id: h.id,
+    count: 0,
+    versions: [],
+    help: [`the host lists no versions for '${h.id}' (imported history is not served yet); its current version is \`${cliInvocation()} doc read ${h.id}\``],
+  });
 });
 
 test("a document the host does not have is the definitive empty state, as a local bundle answers it", async () => {
