@@ -17,6 +17,7 @@ import { CliError } from "../errors.js";
 import { commandToken } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
 import { bindingForPath, type CheckoutBinding } from "./binding.js";
+import { heldPathReason, type HeldFile, type HeldReason } from "./sync-scan.js";
 
 type RefusalReason = "not_syncable" | "checkout_target";
 
@@ -46,8 +47,11 @@ function docKey(args: readonly string[]): string | undefined {
   return value;
 }
 
-/** `mcp` subcommands that manage the host registration and never open a bundle. */
-const MCP_REGISTRATION: ReadonlySet<string> = new Set(["install", "status", "uninstall"]);
+/** True when sync holds a file at `key` whatever its content (`heldPathReason`); `.md` compared in any case, as before. */
+function heldKey(key: string): boolean {
+  const rel = key.toLowerCase().endsWith(".md") ? `${key.slice(0, -3)}.md` : key;
+  return heldPathReason(rel) !== null;
+}
 
 /** Every command a hosted checkout refuses up front. The order is the lookup order. */
 export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
@@ -59,16 +63,16 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
   {
     words: ["promote"],
     reason: "not_syncable",
-    why: "a key that is not a .md document is stored as a blob, and blobs do not sync",
-    when: (args) => !(docKey(args) ?? "").toLowerCase().endsWith(".md"),
+    why: "a key that is not a .md document is stored as a blob, and blobs, reserved files and conventions do not sync",
+    when: (args) => heldKey(docKey(args) ?? ""),
   },
   {
     words: ["delete"],
     reason: "not_syncable",
-    why: "a key that is not a .md document is a blob, and blobs do not sync (delete a document with doc delete)",
+    why: "a key that is not a .md document is a blob, and blobs, reserved files and conventions do not sync (delete a document with doc delete)",
     when: (args) => {
       const key = docKey(args);
-      return key !== undefined && !key.toLowerCase().endsWith(".md");
+      return key !== undefined && heldKey(key);
     },
   },
   {
@@ -80,12 +84,6 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
   },
   { words: ["serve"], reason: "not_syncable", why: "the served bundle accepts writes and deletes that do not sync" },
   { words: ["ui"], reason: "not_syncable", why: "the local app writes Views and conventions, which do not sync" },
-  {
-    words: ["mcp"],
-    reason: "not_syncable",
-    why: "the local MCP app writes Views and conventions, which do not sync",
-    when: (args) => !MCP_REGISTRATION.has(args.find((token) => !token.startsWith("-")) ?? ""),
-  },
   { words: ["init"], reason: "checkout_target", why: "the folder is a hosted checkout, not a local bundle" },
 ] satisfies RefusalRow[]).map((row): RefusalRow => Object.freeze({ ...row, words: Object.freeze([...row.words]) })));
 
@@ -124,8 +122,8 @@ async function checkoutFor(command: string, dir: string | undefined, home: strin
   return bindingForPath(home, root);
 }
 
-export function hostedCheckoutRefusal(row: RefusalRow, words: string, binding: CheckoutBinding): CliError {
-  const details = { reason: row.reason, command: words, bundle_id: binding.bundle_id, host: binding.origin, checkout: binding.path };
+export function hostedCheckoutRefusal(row: RefusalRow, words: string, binding: CheckoutBinding, extra: Readonly<Record<string, string>> = {}): CliError {
+  const details = { reason: row.reason, command: words, bundle_id: binding.bundle_id, host: binding.origin, checkout: binding.path, ...extra };
   if (row.reason === "checkout_target") {
     return new CliError("FORBIDDEN", `'${words}' refused: ${row.why} (bundle ${binding.bundle_id} on ${binding.origin})`, {
       details,
@@ -161,12 +159,26 @@ export async function assertAllowedInHostedCheckout(command: string, args: reado
   throw hostedCheckoutRefusal(row, sub ? `${command} ${sub}` : command, binding);
 }
 
-/** The refusal for a write the local MCP app tries in a cataloged hosted checkout. */
-export function hostedMcpWriteRefusal(binding: CheckoutBinding, operation: string): CliError {
+/** What to do instead of a write sync would hold, by the reason the scan records. */
+const HELD_INSTEAD: Partial<Record<HeldReason, string>> = {
+  type_change: "keep the document's type; a checkout cannot change it (create a new document instead)",
+  too_large: "keep the document within the size a sync write carries",
+  not_sendable: "change the document so sync can send it",
+  unsafe_path: "use a document id sync can send",
+};
+
+/**
+ * The refusal for a write the local MCP app tries in a hosted checkout that sync would hold
+ * (`served-bundle.ts`), made before the file is touched. `details.held_reason` is the reason the
+ * sync scan would record. Blobs, reserved files and conventions are the app's to change.
+ */
+export function hostedHeldWriteRefusal(binding: CheckoutBinding, held: HeldFile): CliError {
+  const instead = HELD_INSTEAD[held.reason];
   return hostedCheckoutRefusal(
-    { words: ["mcp"], reason: "not_syncable", why: "the local MCP app writes Views, blobs and documents the app owns for a checkout" },
-    `mcp ${operation}`,
+    { words: ["mcp"], reason: "not_syncable", why: held.message, ...(instead ? { instead } : {}) },
+    "mcp write",
     binding,
+    { held_reason: held.reason, id: held.id },
   );
 }
 

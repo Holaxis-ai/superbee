@@ -47,6 +47,7 @@ test("catalog MCP resolver exposes only path-free summaries and derives display 
       label: "planning",
       displayName: "Product planning",
       available: true,
+      home: "local",
     },
     {
       id: "bnd_11111111111111111111111111111111",

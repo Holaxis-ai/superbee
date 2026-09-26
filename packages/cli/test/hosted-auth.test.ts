@@ -900,6 +900,8 @@ test("only the sign-in commands, the hosted checkout, export, doc history and ho
         path.join("hosted", "sync.ts"),
         // Hosted-checkout triggers: each reaches the session only for a folder bound as a hosted checkout.
         "autopull.ts",
+        // The local MCP app's reads of a checkout run that checkout's automatic pull.
+        path.join("hosted", "served-bundle.ts"),
         path.join("commands", "session-start.ts"),
         path.join("commands", "turn-end.ts"),
         path.join("commands", "setup-hosted.ts"),
