@@ -7,7 +7,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createServer, type Server } from "node:http";
 import { mkdtemp, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,32 +18,12 @@ import { CliError } from "../../src/errors.js";
 import { checkout } from "../../src/commands/checkout.js";
 import { sync } from "../../src/commands/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../../src/hosted-auth/session.js";
+import { startFakeHostBridge } from "./fake-host-bridge.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./fake-hosted-sync.js";
 
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 let current: FakeHost;
-async function bridge(): Promise<{ server: Server; url: string }> {
-  const server = createServer((req, res) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", async () => {
-      const headers = new Headers();
-      for (const [k, v] of Object.entries(req.headers)) if (typeof v === "string" && !["host", "content-length", "connection"].includes(k)) headers.set(k, v);
-      try {
-        const response = await current.fetch(`${HOST}${req.url}`, { method: req.method, headers, body: Buffer.concat(chunks).toString("utf8") });
-        const out: Record<string, string> = {};
-        response.headers.forEach((v, k) => (out[k] = v));
-        res.writeHead(response.status, out);
-        res.end(Buffer.from(await response.arrayBuffer()));
-      } catch {
-        res.socket?.destroy();
-      }
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, url: `http://127.0.0.1:${(server.address() as { port: number }).port}` };
-}
 
 interface S {
   host: FakeHost;
@@ -278,7 +257,7 @@ export function registerCrashCases(group: keyof typeof CRASH_CASE_GROUPS): void 
 
 function registerCase(c: Case): void {
   test(`SIGKILL at every step: ${c.name}`, { timeout: 1_800_000 }, async () => {
-    const { server, url } = await bridge();
+    const { url, close } = await startFakeHostBridge(() => current, () => HOST);
     const failures: string[] = [];
     let steps = 0;
     try {
@@ -298,7 +277,7 @@ function registerCase(c: Case): void {
         if (!killed) break;
       }
     } finally {
-      server.close();
+      await close();
     }
     console.log(`# ${c.name}: ${steps} side effects; ${failures.length} failing kill points`);
     for (const line of failures) console.log(`# FAIL ${line.slice(0, 600)}`);

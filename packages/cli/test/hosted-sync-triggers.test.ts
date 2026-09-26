@@ -21,7 +21,6 @@ import { turnEnd } from "../src/commands/turn-end.js";
 import { hostedCheckoutAt, maybeAutoPull, maybeHostedAutoPull } from "../src/autopull.js";
 import { defaultHostedAuthDeps, readDefaultHost, sessionAccount, sessionDirFor, withSessionLock, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { resolveHostedTarget } from "../src/hosted-auth/discovery.js";
-import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
 import { readDefaultWorkspace } from "../src/hosted/defaults.js";
 import { readFreshness, recordPulled } from "../src/hosted/freshness.js";
 import { digestOf } from "../src/hosted/projection.js";
@@ -29,6 +28,7 @@ import { recoverPlacements } from "../src/hosted/sync-scan.js";
 import { hostedLocalState, hostedPull, type HostedSyncDeps } from "../src/hosted/sync.js";
 import type { CheckoutBinding } from "../src/hosted/binding.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
+import { seedHostedSession } from "./support/hosted-session.js";
 
 interface Harness {
   home: string;
@@ -210,21 +210,14 @@ test("sync records its pull, so a read after it is fresh; push always follows a 
 
 /** A stored session whose access token has expired and that has no refresh token: signed out. */
 async function deadSession(h: Harness): Promise<{ file: string; auth: HostedAuthDeps }> {
-  const target = resolveHostedTarget(HOST);
-  const dir = sessionDirFor(h.home, sessionAccount(target));
-  const record = {
-    schema: 1, host: target.origin, audience: target.audience, issuer: "https://issuer.example/", client_id: "cli",
-    token_endpoint: "https://issuer.example/oauth/token", credential_store: "file", has_refresh_token: false,
-    access_token: TOKEN, access_token_expires_at_ms: 0, subject: { sub: "auth0|person" }, signed_in_at_ms: 0,
-  };
-  await writeUserStateFileAtomic0600(h.home, dir, "session.json", `${JSON.stringify(record)}\n`);
+  const file = await seedHostedSession(h.home, { host: HOST, accessToken: TOKEN, expiresAtMs: 0 });
   const auth = defaultHostedAuthDeps(h.home, {
     env: { SUPERBEE_CREDENTIAL_STORE: "file" },
     fetch: async () => {
       throw new Error("background work must not reach the issuer");
     },
   });
-  return { file: path.join(dir, "session.json"), auth };
+  return { file, auth };
 }
 
 test("B1: a pull on a read with a dead stored session skips with a note, starts no sign-in, and leaves the session alone", async () => {
