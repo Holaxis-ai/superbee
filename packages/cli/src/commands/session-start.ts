@@ -150,13 +150,13 @@ export const SESSION_START_PROBE_DEADLINE_MS = 1_000;
  * checkout whose host's stored sign-in session looks unusable (checked once per host, from the
  * record alone) says it may need sign-in, so the link tends to come at the start of the session.
  */
-async function bundleFreshness(root: string, userHome: string, now: Date, signIn: Map<string, Promise<boolean>>): Promise<Pick<HomeWorkspace, "home" | "freshness">> {
+async function bundleFreshness(root: string, userHome: string, now: Date, signIn: Map<string, Promise<boolean>>, env: NodeJS.ProcessEnv): Promise<Pick<HomeWorkspace, "home" | "freshness">> {
   const facts = await bundleHomeAt(root, { home: userHome });
   if (facts.home === "hosted") {
     const age = ageMs((await readFreshness(userHome, facts.binding.checkout_id).catch(() => null))?.pulled_at ?? null, now);
     const pulled = age === null ? "never pulled" : `pulled ${describeAge(age)} ago`;
     const key = `${facts.binding.origin} ${facts.binding.audience}`;
-    if (!signIn.has(key)) signIn.set(key, storedSessionMayNeedSignIn(userHome, facts.binding, process.env, now.getTime()).catch(() => false));
+    if (!signIn.has(key)) signIn.set(key, storedSessionMayNeedSignIn(userHome, facts.binding, env, now.getTime()).catch(() => false));
     return { home: "hosted", freshness: (await signIn.get(key)) ? `${pulled}; may need sign-in` : pulled };
   }
   if (facts.home === "git") {
@@ -174,7 +174,7 @@ async function bundleFreshness(root: string, userHome: string, now: Date, signIn
  */
 export async function otherCatalogBundles(
   currentRoot: string | null,
-  options: { home?: string; signal?: AbortSignal; now?: Date; deadlineMs?: number } = {},
+  options: { home?: string; signal?: AbortSignal; now?: Date; deadlineMs?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<HomeWorkspace[]> {
   const userHome = options.home ?? homedir();
   const now = options.now ?? new Date();
@@ -203,7 +203,7 @@ export async function otherCatalogBundles(
     }
     rows.push({
       label: other.label,
-      ...(available ? await bundleFreshness(other.root, userHome, now, signIn).catch(() => ({ home: "unknown", freshness: "unreadable" })) : { home: "unknown", freshness: "folder missing" }),
+      ...(available ? await bundleFreshness(other.root, userHome, now, signIn, options.env ?? process.env).catch(() => ({ home: "unknown", freshness: "unreadable" })) : { home: "unknown", freshness: "folder missing" }),
     });
   }
   return rows;

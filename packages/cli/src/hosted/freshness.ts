@@ -26,9 +26,14 @@ export interface CheckoutFreshness {
   readonly attempt_at: string | null;
   /** Digest of the condition the end-of-turn hook last handed to the agent, until it changes. */
   readonly turn_end_block: string | null;
+  /**
+   * When the last full sync scanned the folder for edits to send. A file changed after it has not
+   * been sent (an automatic pull on a read moves `pulled_at`, never this).
+   */
+  readonly synced_at: string | null;
 }
 
-const EMPTY: CheckoutFreshness = { pulled_at: null, attempt_at: null, turn_end_block: null };
+const EMPTY: CheckoutFreshness = { pulled_at: null, attempt_at: null, turn_end_block: null, synced_at: null };
 
 export async function readFreshness(home: string, checkoutId: string): Promise<CheckoutFreshness> {
   const file = join(checkoutDir(home, checkoutId), FRESHNESS_FILE);
@@ -39,6 +44,7 @@ export async function readFreshness(home: string, checkoutId: string): Promise<C
       pulled_at: typeof value?.pulled_at === "string" ? value.pulled_at : null,
       attempt_at: typeof value?.attempt_at === "string" ? value.attempt_at : null,
       turn_end_block: typeof value?.turn_end_block === "string" ? value.turn_end_block : null,
+      synced_at: typeof value?.synced_at === "string" ? value.synced_at : null,
     };
   } catch {
     return EMPTY;
@@ -50,9 +56,9 @@ async function update(home: string, checkoutId: string, change: Partial<Checkout
   await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), FRESHNESS_FILE, `${JSON.stringify(next)}\n`);
 }
 
-/** Record a completed pull. */
-export async function recordPulled(home: string, checkoutId: string, now: Date = new Date()): Promise<void> {
-  await update(home, checkoutId, { pulled_at: now.toISOString() });
+/** Record a completed pull, and for a full sync, when it scanned the folder for edits to send. */
+export async function recordPulled(home: string, checkoutId: string, now: Date = new Date(), scannedAt?: Date): Promise<void> {
+  await update(home, checkoutId, { pulled_at: now.toISOString(), ...(scannedAt ? { synced_at: scannedAt.toISOString() } : {}) });
 }
 
 /** Record that an automatic pull is starting, before any request, so a failing one backs off. */

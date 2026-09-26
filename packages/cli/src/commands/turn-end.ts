@@ -13,13 +13,17 @@
 // Then every other hosted checkout on this machine (from the private bindings, not the catalog) is
 // synced when it has unsent changes and is quiet: no file changed in the last 30 seconds (another
 // session may be mid-batch there) and no command holding it; a clean one costs no request. Oldest
-// change first, and none is started with under five seconds of the budget left. Another folder's
-// condition blocks once only when it changed since its last sync (this session's `--dir` work);
-// older ones ride along in the reason as not blocking. Git boards other than the session's own are
+// change first, each within its own slice of the budget, none started with under five seconds
+// left, and one whose last sync (under five minutes ago) left something unsent while nothing has
+// changed since is not retried yet. Another folder's condition blocks once only when the folder
+// changed after a sync last scanned it (this session's `--dir` work); older ones ride along in the
+// reason as not blocking. Git boards other than the session's own are
 // never committed or pushed here; a printed decision names those with unsent changes. Accepted
 // residual: an agent in another session that pauses over 30 seconds mid-batch can have part of its
 // batch sent early; hosted sync is whole-document and compare-and-swap, so that is a conflict at
-// worst, never a loss.
+// worst, never a loss. Two more: the agent's own last `--dir` edits are usually under 30 seconds
+// old at its own Stop hook, so they go out at a later turn end (any session's) or its next sync;
+// and whichever session's hook first meets a new condition in another checkout is the one told.
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -176,6 +180,8 @@ function reasonFor(binding: CheckoutBinding, error: CliError, receipt: string): 
 export const TURN_END_START_MARGIN_MS = 5_000;
 /** A checkout edited more recently than this may be mid-batch in some session: it waits a turn. */
 export const TURN_END_QUIET_MS = 30_000;
+/** The most of the budget one other checkout's sync may take, so one slow host cannot starve the rest. */
+export const TURN_END_OTHER_SLICE_MS = 8_000;
 
 /**
  * One bundle's end-of-turn sync that needs the agent (a conflict, a held file, a sign-in link),
@@ -238,9 +244,10 @@ export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}
     if (condition) conditions.push(condition);
   }
   // Then every other hosted checkout on this machine with unsent changes, oldest change first.
-  for (const other of await otherCheckoutsToSync(binding, home, partial)) {
+  for (const other of await otherCheckoutsToSync(binding, home, deadline, partial)) {
     if (deadline - Date.now() < TURN_END_START_MARGIN_MS) break;
-    const condition = await hostedTurnEnd(other.binding, { cwd: false, changedAt: other.changedAt, home, deadline, partial, stopHookActive });
+    const slice = Math.min(deadline, Date.now() + TURN_END_OTHER_SLICE_MS);
+    const condition = await hostedTurnEnd(other.binding, { cwd: false, changedAt: other.changedAt, home, deadline: slice, partial, stopHookActive });
     if (condition === "stop") return;
     if (condition) conditions.push(condition);
   }
@@ -248,7 +255,7 @@ export async function turnEnd(argv: string[], partial: Partial<TurnEndDeps> = {}
   const blocking = conditions.filter((condition) => condition.blocks);
   if (blocking.length === 0) return;
   const notes = conditions.filter((condition) => !condition.blocks).map((condition) => `- ${condition.note}`);
-  notes.push(...(await unsentGitBoards(values.dir, home, partial).catch(() => [])));
+  notes.push(...(await unsentGitBoards(values.dir, home, deadline, partial).catch(() => [])));
   const reason = [...blocking.map((condition) => condition.reason)];
   if (notes.length > 0) reason.push(["Not blocking this turn:", ...notes].join("\n"));
   for (const condition of blocking) await condition.record().catch(() => {});
@@ -286,8 +293,9 @@ async function hostedTurnEnd(binding: CheckoutBinding, options: HostedTurnEndOpt
   const captured: string[] = [];
   const run = partial.sync ?? (async (args, deps) => (await import("./sync.js")).sync(args, deps));
   let blocking: CliError | null = null;
-  // The checkout's last pull before this sync: a change after it is work no sync has sent yet.
-  const lastPull = options.cwd ? null : (await readFreshness(home, binding.checkout_id).catch(() => null))?.pulled_at ?? null;
+  // When a sync last scanned the folder, before this one: a change after it is work no sync has
+  // sent yet. (Not the last pull: an automatic pull on a read moves that and sends nothing.)
+  const lastSync = options.cwd ? null : (await readFreshness(home, binding.checkout_id).catch(() => null))?.synced_at ?? null;
   try {
     // Every request and lock (the checkout's and the sign-in session's) is bounded by the budget.
     await run(["--dir", binding.path, "--limit", String(REASON_ROWS), "--json"], {
@@ -310,7 +318,7 @@ async function hostedTurnEnd(binding: CheckoutBinding, options: HostedTurnEndOpt
   const previous = (await readFreshness(home, binding.checkout_id).catch(() => null))?.turn_end_block ?? null;
   // Another checkout blocks only for a change made since its last sync: almost surely this
   // session's work (edited with --dir). An older condition, from before, is only mentioned.
-  const fresh = options.cwd || lastPull === null || (options.changedAt ?? 0) > Date.parse(lastPull);
+  const fresh = options.cwd || lastSync === null || (options.changedAt ?? 0) > Date.parse(lastSync);
   const failed = blocking;
   return {
     root: binding.path,
@@ -332,15 +340,22 @@ function localStateOf(binding: CheckoutBinding, home: string, partial: Partial<T
  * checkout. Enumerated from private state (the bindings), never from the editable catalog. A
  * clean checkout costs no request. Oldest change first.
  */
-async function otherCheckoutsToSync(current: CheckoutBinding | null, home: string, partial: Partial<TurnEndDeps>): Promise<{ binding: CheckoutBinding; changedAt: number }[]> {
+async function otherCheckoutsToSync(current: CheckoutBinding | null, home: string, deadline: number, partial: Partial<TurnEndDeps>): Promise<{ binding: CheckoutBinding; changedAt: number }[]> {
   const listed = await (partial.checkouts ?? (() => liveCheckouts(home)))().catch(() => []);
   const now = (partial.now ?? (() => new Date()))().getTime();
   const out: { binding: CheckoutBinding; changedAt: number }[] = [];
   for (const binding of listed) {
+    // Looking is bounded too: every check reads the folder, and the syncs need the rest.
+    if (deadline - Date.now() < TURN_END_START_MARGIN_MS) break;
     if (current && binding.checkout_id === current.checkout_id) continue;
     if ((await localStateOf(binding, home, partial)) !== "changed") continue;
-    const changedAt = await (partial.lastChange ?? lastChangeIn)(binding.path).catch(() => now);
+    // An unreadable folder counts as quiet: its sync reports what is wrong.
+    const changedAt = await (partial.lastChange ?? lastChangeIn)(binding.path).catch(() => 0);
     if (now - changedAt < TURN_END_QUIET_MS) continue;
+    // Nothing changed since a sync scanned it in the last five minutes: what is left needs the
+    // person (a conflict, a held file) or the host (offline). It is tried again after that.
+    const lastSync = ageMs((await readFreshness(home, binding.checkout_id).catch(() => null))?.synced_at ?? null, new Date(now));
+    if (lastSync !== null && lastSync <= HOSTED_AUTOPULL_STALE_MS && changedAt <= now - lastSync) continue;
     out.push({ binding, changedAt });
   }
   return out.sort((a, b) => a.changedAt - b.changedAt);
@@ -382,10 +397,12 @@ async function lastChangeIn(folder: string): Promise<number> {
  * Cataloged shared Git boards other than this run's, with unsent changes: the hook never commits
  * or pushes them (another session may own that work), so a printed decision names them.
  */
-async function unsentGitBoards(dir: string | undefined, home: string, partial: Partial<TurnEndDeps>): Promise<string[]> {
-  const own = await (partial.gitBoard ?? ((d) => sharedGitBoardAt(d, home)))(dir).catch(() => null);
+async function unsentGitBoards(dir: string | undefined, home: string, deadline: number, partial: Partial<TurnEndDeps>): Promise<string[]> {
   const lines: string[] = [];
+  if (Date.now() >= deadline) return lines;
+  const own = await (partial.gitBoard ?? ((d) => sharedGitBoardAt(d, home)))(dir).catch(() => null);
   for (const entry of await listCatalogEntries(home)) {
+    if (Date.now() >= deadline) break;
     if (entry.home !== "git" || !entry.available) continue;
     const board = await (partial.gitBoard ?? ((d) => sharedGitBoardAt(d, home)))(entry.locator.path).catch(() => null);
     if (!board || board.root === own?.root || !board.changed) continue;

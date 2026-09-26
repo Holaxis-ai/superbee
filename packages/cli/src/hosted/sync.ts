@@ -807,6 +807,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       return { report, placed };
     };
     // Push always follows a pull in the same run, so nothing is sent against a stale listing.
+    const scannedAt = new Date();
     const first = await pullAndExport(accepted);
     if (takeHostDeletions !== undefined) {
       taken =
@@ -816,7 +817,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
             ? { taken: false, message: "the host's listing changed since that refusal, so nothing was removed; check the new refused_deletions" }
             : { taken: true, removed: first.placed.removed.length, message: "the host's deletions were taken: their files are removed from the folder, apart from files you edited" };
     }
-    await recordPulled(deps.auth.home, binding.checkout_id);
+    await recordPulled(deps.auth.home, binding.checkout_id, new Date(), scannedAt);
     let outcome: PushOutcome;
     try {
       outcome = await pushChanges(session, deps);

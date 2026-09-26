@@ -103,7 +103,7 @@ test("a hosted checkout in the catalog reads as hosted with its last pull; a mis
     await rm(missing, { recursive: true, force: true });
     host.requests.length = 0;
 
-    const rows = await otherCatalogBundles(null, { home });
+    const rows = await otherCatalogBundles(null, { home, env: {} });
     const hosted = rows.find((row) => row.home === "hosted");
     assert.ok(hosted, JSON.stringify(rows));
     // No stored sign-in for the host (the checkout used an environment token): it may need one.
@@ -111,9 +111,11 @@ test("a hosted checkout in the catalog reads as hosted with its last pull; a mis
     assert.deepEqual(rows.find((row) => row.label === "moved"), { label: "moved", home: "unknown", freshness: "folder missing" });
     // A live stored session: nothing to say. An expired one with no refresh token: may need sign-in.
     await seedHostedSession(home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
-    assert.match((await otherCatalogBundles(null, { home })).find((row) => row.home === "hosted")!.freshness!, /^pulled \d+m ago$/);
+    assert.match((await otherCatalogBundles(null, { home, env: {} })).find((row) => row.home === "hosted")!.freshness!, /^pulled \d+m ago$/);
     await seedHostedSession(home, { host: HOST, accessToken: TOKEN, expiresAtMs: 0 });
-    assert.match((await otherCatalogBundles(null, { home })).find((row) => row.home === "hosted")!.freshness!, /; may need sign-in$/);
+    assert.match((await otherCatalogBundles(null, { home, env: {} })).find((row) => row.home === "hosted")!.freshness!, /; may need sign-in$/);
+    // An access token in the environment carries the session: nothing to say.
+    assert.match((await otherCatalogBundles(null, { home, env: { SUPERBEE_ACCESS_TOKEN: TOKEN } })).find((row) => row.home === "hosted")!.freshness!, /^pulled \d+m ago$/);
     assert.equal(host.requests.length, 0, "listing never reaches the host");
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -167,6 +169,30 @@ test("a real same-document Git conflict at turn end comes back once, in Git's fo
     assert.match(decision.reason, /Git board/);
     // The sync converged (teammate's version kept, B's exported), so the next turn has nothing to report.
     assert.equal(await run(), "");
+  } finally {
+    await topo.cleanup();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("turn end never commits or pushes a Git board other than the session's own; a printed decision names it as unsent", async () => {
+  const topo = await makeTwoCloneTopology();
+  const home = await tempDir("sb-hab-unsent-home-");
+  try {
+    const { docId } = await divergeSameDoc(topo);
+    // Another board with a change of its own, cataloged here.
+    await addCatalogEntry("other-board", topo.a.board, { home });
+    await writeBoardDoc(topo.a, "notes/elsewhere", { frontmatter: { type: "Note", title: "Elsewhere" }, body: "# Elsewhere\n" });
+    const before = boardHead(topo.a);
+    const out: string[] = [];
+    await withIsolatedUserEnv(home, () =>
+      withCwd(topo.b.root, () => turnEnd(["--git-boards"], { stdout: (text) => void out.push(text), env: {}, readStdin: async () => null })),
+    );
+    const decision = JSON.parse(out.join("")) as { decision: string; reason: string };
+    assert.ok(decision.reason.includes(docId), decision.reason);
+    assert.ok(decision.reason.includes(`unsent: the Git board ${topo.a.board}`), decision.reason);
+    assert.equal(boardHead(topo.a), before, "the other board was not committed");
+    assert.equal((await sharedGitBoardAt(topo.a.board, home))?.changed, true, "its change is still there to send");
   } finally {
     await topo.cleanup();
     await rm(home, { recursive: true, force: true });

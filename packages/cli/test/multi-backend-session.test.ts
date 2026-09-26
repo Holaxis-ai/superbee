@@ -229,7 +229,7 @@ async function ageFreshness(): Promise<void> {
   const state = userStateDir(r.home);
   for (const checkout of await readdir(path.join(state, "hosted-checkouts"), { withFileTypes: true })) {
     const file = path.join(state, "hosted-checkouts", checkout.name, "freshness.json");
-    if (checkout.isDirectory() && (await readFile(file).then(() => true, () => false))) await age(file, ["pulled_at", "attempt_at"]);
+    if (checkout.isDirectory() && (await readFile(file).then(() => true, () => false))) await age(file, ["pulled_at", "attempt_at", "synced_at"]);
   }
   for (const entry of await readdir(path.join(state, "sync"), { withFileTypes: true })) {
     if (entry.isFile() && entry.name.endsWith(".json")) await age(path.join(state, "sync", entry.name), ["updatedAt", "autoPullAttemptAt"]);
@@ -619,6 +619,8 @@ const STEPS: readonly Step[] = [
           }
         };
         await age(folder(home));
+        // The edit is newer than the checkout's last sync, which ran earlier in the session.
+        await ageFreshness();
       }
       // The Stop hook `hook install --turn-end-sync --git-boards` installs, with its recorded opt-in.
       const run = await cli(["turn-end"]);

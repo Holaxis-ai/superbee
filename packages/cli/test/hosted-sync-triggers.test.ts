@@ -10,6 +10,8 @@ import path from "node:path";
 
 import { decode } from "@toon-format/toon";
 import { filesystemMutationLockPath } from "@superbee/core";
+import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
+import { checkoutLockName } from "../src/hosted/binding.js";
 
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
@@ -17,7 +19,7 @@ import { sync } from "../src/commands/sync.js";
 import { hook } from "../src/commands/hook.js";
 import { sessionStart, hostedSessionStartPull } from "../src/commands/session-start.js";
 import { setupHosted } from "../src/commands/setup-hosted.js";
-import { turnEnd } from "../src/commands/turn-end.js";
+import { TURN_END_OTHER_SLICE_MS, TURN_END_START_MARGIN_MS, turnEnd } from "../src/commands/turn-end.js";
 import { hostedCheckoutAt, maybeAutoPull, maybeHostedAutoPull } from "../src/autopull.js";
 import { defaultHostedAuthDeps, readDefaultHost, sessionAccount, sessionDirFor, withSessionLock, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { resolveHostedTarget } from "../src/hosted-auth/discovery.js";
@@ -518,7 +520,9 @@ test("another checkout's conflict blocks once when it was edited since its last 
   await hostChangesAlpha(h);
   await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nLocal alpha.\n');
   await editedAgo(fileOf(h, "notes/alpha"), 60);
-  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(10));
+  // The last full sync scanned ten minutes ago; a read's automatic pull ran since (it sends nothing).
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(10), minutesAgo(10));
+  await recordPulled(h.home, h.binding.checkout_id, new Date());
   const decision = JSON.parse(await turnEndFrom(h, project)) as { decision: string; reason: string };
   assert.equal(decision.decision, "block");
   assert.match(decision.reason, /notes\/alpha/);
@@ -532,8 +536,64 @@ test("another checkout's conflict blocks once when it was edited since its last 
   await hostChangesAlpha(g);
   await writeFile(fileOf(g, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nOld local alpha.\n');
   await editedAgo(fileOf(g, "notes/alpha"), 600);
-  await recordPulled(g.home, g.binding.checkout_id, minutesAgo(5));
-  assert.equal(await turnEndFrom(g, elsewhere), "");
+  await recordPulled(g.home, g.binding.checkout_id, minutesAgo(6), minutesAgo(6));
+  const quiet: string[] = [];
+  await turnEnd(["--dir", elsewhere], { stdout: (t) => void quiet.push(t), env: {}, readStdin: async () => "{}", syncDeps: syncDeps(g) });
+  assert.equal(quiet.join(""), "");
+  assert.ok(g.host.requests.some((request) => request.path.endsWith("/heads")), "it was synced, and its conflict found");
+});
+
+test("turn end from another folder: a checkout another command holds is skipped, and an already-continuing turn syncs nothing", async () => {
+  const h = await harness();
+  const project = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  await settled(h.folder);
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nHeld back.\n');
+  await editedAgo(fileOf(h, "notes/beta"), 60);
+  // Busy: another command holds the checkout.
+  await filesystemPushRoleLocks().request(checkoutLockName(h.binding.path), {}, async () => {
+    assert.equal(await turnEndFrom(h, project), "");
+  });
+  assert.equal(h.host.requests.length, 0);
+  // The host says this turn is already continuing because of the hook: nothing is synced.
+  const out: string[] = [];
+  await turnEnd(["--dir", project], { stdout: (t) => void out.push(t), env: {}, readStdin: async () => JSON.stringify({ stop_hook_active: true }), syncDeps: syncDeps(h) });
+  assert.equal(out.join(""), "");
+  assert.equal(h.host.requests.length, 0);
+});
+
+test("turn end syncs several quiet checkouts, oldest change first, one slice each, and stops starting them near the deadline", async () => {
+  const h = await harness();
+  const project = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  const order: string[] = [];
+  const listed = ["/a", "/b", "/c"].map((folder, index) => ({ ...h.binding, checkout_id: `00000000-0000-4000-8000-00000000000${index}`, path: folder }));
+  const changed = new Map([["/a", 3], ["/b", 1], ["/c", 2]]);
+  let clock = 0;
+  await turnEnd(["--dir", project], {
+    stdout: () => {},
+    env: {},
+    readStdin: async () => "{}",
+    syncDeps: syncDeps(h),
+    budgetMs: 20_000,
+    checkouts: async () => listed,
+    localState: async () => "changed",
+    lastChange: async (folder) => Date.now() - 600_000 + changed.get(folder)!,
+    sync: async (argv, deps) => {
+      order.push(argv[1]!);
+      // Each sync's locks and requests are bounded by its own slice of the budget, not all of it.
+      assert.ok((deps.lockWaitMs ?? Infinity) <= TURN_END_OTHER_SLICE_MS, String(deps.lockWaitMs));
+      clock += 1;
+    },
+  });
+  assert.deepEqual(order, ["/b", "/c", "/a"], "oldest change first");
+  assert.equal(clock, 3);
+  // With the budget nearly spent, none is started.
+  const late: string[] = [];
+  await turnEnd(["--dir", project], {
+    stdout: () => {}, env: {}, readStdin: async () => "{}", syncDeps: syncDeps(h), budgetMs: TURN_END_START_MARGIN_MS - 1,
+    checkouts: async () => listed, localState: async () => "changed", lastChange: async () => 0,
+    sync: async (argv) => void late.push(argv[1]!),
+  });
+  assert.deepEqual(late, []);
 });
 
 test("a condition in the session's own checkout blocks, and another checkout's older one rides along as not blocking", async () => {
@@ -544,7 +604,7 @@ test("a condition in the session's own checkout blocks, and another checkout's o
   // The other checkout: an old conflict (edited before its last pull).
   await writeFile(otherAlpha, '---\ntype: "Note"\ntitle: "Alpha"\n---\nOther checkout alpha.\n');
   await editedAgo(otherAlpha, 600);
-  await recordPulled(h.home, other.binding.checkout_id, minutesAgo(5));
+  await recordPulled(h.home, other.binding.checkout_id, minutesAgo(6), minutesAgo(6));
   // The session's own checkout: a fresh conflict.
   await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nOwn alpha.\n');
   const decision = JSON.parse(await turnEndOutput(h)) as { decision: string; reason: string };

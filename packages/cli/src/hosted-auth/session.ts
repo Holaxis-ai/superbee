@@ -180,7 +180,7 @@ export function hostedAuthRoot(home: string): string {
 }
 
 /** The credential-store account for a target; also the session's identity. */
-export function sessionAccount(target: HostedTarget): string {
+export function sessionAccount(target: Pick<HostedTarget, "origin" | "audience">): string {
   return `${target.origin} ${target.audience}`;
 }
 
@@ -220,7 +220,7 @@ async function removeFile(file: string): Promise<boolean> {
   }
 }
 
-export async function readSession(home: string, target: HostedTarget): Promise<SessionRecord | null> {
+export async function readSession(home: string, target: Pick<HostedTarget, "origin" | "audience">): Promise<SessionRecord | null> {
   const record = await readRecord<SessionRecord>(home, join(sessionDirFor(home, sessionAccount(target)), SESSION_FILE));
   if (!record || record.schema !== 1 || record.audience !== target.audience || record.host !== target.origin) return null;
   if (typeof record.access_token !== "string" || typeof record.access_token_expires_at_ms !== "number") return null;
@@ -229,7 +229,7 @@ export async function readSession(home: string, target: HostedTarget): Promise<S
 
 /**
  * Whether a command for this host may have to ask the person to sign in, from the stored session
- * record alone (no network, no lock): no record, or an access token past its expiry with no
+ * record alone (no network, no lock): no record, or an access token at or near its expiry with no
  * refresh token to renew it. An access token in the environment answers no. "May": a refresh token
  * the issuer has since revoked is only found out by using it.
  */
@@ -240,9 +240,10 @@ export async function storedSessionMayNeedSignIn(
   now: number = Date.now(),
 ): Promise<boolean> {
   if (env[ACCESS_TOKEN_ENV]) return false;
-  const session = await readSession(home, target as HostedTarget).catch(() => null);
+  const session = await readSession(home, target).catch(() => null);
   if (!session) return true;
-  return session.access_token_expires_at_ms <= now && !session.has_refresh_token;
+  // The same margin the token cache uses: a token that close to expiry is renewed, not used.
+  return session.access_token_expires_at_ms - now <= REFRESH_SKEW_MS && !session.has_refresh_token;
 }
 
 export async function readPending(home: string, target: HostedTarget): Promise<PendingRecord | null> {
