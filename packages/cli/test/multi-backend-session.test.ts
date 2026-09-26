@@ -19,26 +19,24 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { readDocVersioned } from "@superbee/core";
+import { readDocVersioned, writeDoc } from "@superbee/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { decode } from "@toon-format/toon";
 
+import { CliError } from "../src/errors.js";
+import { createCatalogMcpWorkspaceResolver } from "../src/mcp-workspace-resolver.js";
 import { ensureUserStateRoot, userStateDir } from "../src/user-state.js";
 import { startFakeHostBridge, type FakeHostBridge } from "./support/fake-host-bridge.js";
 import { BUNDLE, FakeHost } from "./support/fake-hosted-sync.js";
+import { FakeIssuer } from "./support/fake-issuer.js";
 import { seedHostedSession } from "./support/hosted-session.js";
-import { isolatedUserEnv } from "./support/user-env.js";
+import { BUILT_CLI, ensureBuiltCli, readNetworkLog, runSandboxed, sandboxEnv, type NetworkLine } from "./support/network-sandbox.js";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const cliPackageRoot = path.resolve(here, "../../superbee");
-const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
-const preload = path.join(here, "fixtures", "deny-network.mjs");
 const DEBUG = process.env.SUPERBEE_REHEARSAL_DEBUG === "1";
 
 const HOMES = ["git", "local", "hosted"] as const;
@@ -75,7 +73,7 @@ const KNOWN_GAPS: Readonly<Record<string, { readonly slice: string; readonly fai
   "discover-remote/cli/hosted": { slice: "S3", failure: { missing: [UNCHECKED] } },
   // S1: `superbee mcp` refuses to start with the cwd in a checkout, and every MCP write there.
   "start/mcp/hosted": { slice: "S1", failure: { code: "FORBIDDEN", reason: "not_syncable" } },
-  "edit/mcp/hosted": { slice: "S1", failure: { invariant: "finish_view_action", detail: "failed: the trusted action could not be committed" } },
+  "edit/mcp/hosted": { slice: "S1", failure: { code: "FORBIDDEN", reason: "not_syncable" } },
   // S4: `sync --json` has a different shape in each home.
   "sync/cli/git": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
   "sync/cli/local": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
@@ -97,6 +95,8 @@ interface Rehearsal {
   labels: Record<Home, string>;
   origin: string;
   host: FakeHost;
+  /** The host's sign-in surface, answering at the bridge's origin. */
+  issuer: FakeIssuer;
   bridge: FakeHostBridge;
   env: NodeJS.ProcessEnv;
   log: string;
@@ -105,8 +105,6 @@ interface Rehearsal {
   /** Every CLI and MCP output of the run, for the sign-in invariant. */
   transcript: string[];
 }
-
-type NetworkLine = { api: string; target: string; allowed?: boolean };
 
 interface Run {
   code: number;
@@ -119,33 +117,26 @@ interface Run {
 let r: Rehearsal;
 
 before(async () => {
-  if (!existsSync(cliBin)) execFileSync("node", ["build.mjs", "local-dev"], { cwd: cliPackageRoot, stdio: "inherit" });
+  ensureBuiltCli();
   r = await setUp();
 });
 
 after(async () => {
+  await catalogMcp?.client.close();
   await r?.bridge.close();
+  await r?.issuer.stop();
   if (r && !DEBUG) await rm(r.root, { recursive: true, force: true });
 });
 
-async function networkLines(): Promise<NetworkLine[]> {
-  try {
-    return (await readFile(r.log, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as NetworkLine);
-  } catch {
-    return [];
-  }
-}
+const networkLines = (): Promise<NetworkLine[]> => readNetworkLog(r.log);
 
 async function cli(args: string[], cwd: string = r.project): Promise<Run> {
   const seen = (await networkLines()).length;
-  const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-    execFile("node", [cliBin, ...args], { cwd, env: r.env, encoding: "utf8", timeout: 60_000 }, (error, stdout, stderr) => {
-      resolve({ code: typeof error?.code === "number" ? error.code : error ? 1 : 0, stdout, stderr });
-    });
-  });
+  const started = Date.now();
+  const result = await runSandboxed(args, cwd, r.env);
   const network = (await networkLines()).slice(seen);
   r.transcript.push(result.stdout, result.stderr);
-  if (DEBUG) console.log(`# ${args.join(" ")} -> ${result.code}\n${result.stdout}${result.stderr}`);
+  if (DEBUG) console.log(`# ${args.join(" ")} -> ${result.code} in ${Date.now() - started} ms\n${result.stdout}${result.stderr}`);
   return { ...result, network };
 }
 
@@ -163,6 +154,8 @@ const folder = (home: Home): string => path.resolve(r.project, r.dirs[home]);
 
 /** The Kind every home declares for its Notes: MCP View actions need a declared Kind. */
 const NOTE_KIND = { type: "Convention", title: "Note", governs: "Note", fields: { required: ["title"], optional: ["tags", "owner"] } };
+/** The tag the search step filters on; one Note in every home carries it. */
+const TOPIC = "rehearsal";
 const NOTE_KIND_FILE = "---\ntype: Convention\ntitle: Note\ngoverns: Note\nfields:\n  required:\n    - title\n  optional:\n    - tags\n    - owner\n---\n";
 
 async function setUp(): Promise<Rehearsal> {
@@ -170,27 +163,22 @@ async function setUp(): Promise<Rehearsal> {
   const home = path.join(root, "home");
   await mkdir(home, { recursive: true });
   await writeFile(path.join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n");
+  // The host's two surfaces behind one loopback origin: `/sync/v1` is the golden-pinned fake,
+  // everything else (discovery and sign-in) the fake issuer, which names the bridge as its base.
   let host: FakeHost | undefined;
-  const bridge = await startFakeHostBridge(() => host!);
+  const issuer = await new FakeIssuer().start();
+  const issuerAddress = issuer.base;
+  const bridge = await startFakeHostBridge(() => host!, { others: () => issuerAddress });
+  issuer.base = bridge.url;
   host = new FakeHost({ origin: bridge.url, bundles: [BUNDLE, UNCHECKED] });
   host.put("conventions/note", NOTE_KIND, "");
-  host.put("notes/remote-seed", { type: "Note", title: "Seed" }, "Seed.\n");
+  host.put("notes/gamma", { type: "Note", title: "Gamma", tags: [TOPIC] }, "Gamma.\n");
   const log = path.join(root, "network.log");
-  const env = isolatedUserEnv(home, {
-    SUPERBEE_TEST_NETWORK_LOG: log,
-    SUPERBEE_TEST_NETWORK_ALLOW: `127.0.0.1:${bridge.port}`,
-    SUPERBEE_NO_UPDATE_CHECK: "1",
-    SUPERBEE_CREDENTIAL_STORE: "file",
-    SUPERBEE_ACTOR: "process:rehearsal",
-    NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
-  });
-  for (const key of Object.keys(env)) {
-    if (key === "AGENTSTATE_LITE_REMOTE" || key === "SUPERBEE_ACCESS_TOKEN" || key.startsWith("SUPERBEE_HOST") || key.endsWith("NO_AUTOPULL") || key.endsWith("NO_TURN_SYNC")) delete env[key];
-  }
+  const env = sandboxEnv(home, { log, allow: [bridge.port], actor: "process:rehearsal", extra: { SUPERBEE_CREDENTIAL_STORE: "file" } });
   const project = path.join(root, "project");
   const origin = path.join(root, "origin.git");
   r = {
-    root, home, project, origin, host, bridge, env, log,
+    root, home, project, origin, host, issuer, bridge, env, log,
     dirs: { git: ".superbee", local: path.join(root, "personal"), hosted: path.join(root, "team") },
     labels: { git: "board", local: "personal", hosted: BUNDLE },
     hostedEdits: new Set(),
@@ -211,18 +199,21 @@ async function setUp(): Promise<Rehearsal> {
   await ok(["init", "--dir", ".superbee", "--recipe", "none"]);
   await ok(["sync", "--establish"]);
   await ok(["catalog", "add", r.labels.git, "--dir", ".superbee"]);
+  // The Stop hook, opted in to syncing the session's Git board as well as a checkout.
+  await ok(["hook", "install", "--scope", "user", "--turn-end-sync", "--git-boards"]);
 
   // The local bundle.
   await ok(["init", "--dir", r.dirs.local, "--recipe", "none"]);
   await ok(["catalog", "add", r.labels.local, "--dir", r.dirs.local]);
 
   // The Git board and the local bundle hold what the hosted bundle serves: the Note Kind and the
-  // same two Notes.
+  // same Notes.
   for (const home of ["git", "local"] as const) {
     await mkdir(path.join(folder(home), "conventions"), { recursive: true });
     await writeFile(path.join(folder(home), "conventions", "note.md"), NOTE_KIND_FILE);
     await ok(["doc", "write", "notes/alpha", "--type", "Note", "--title", "Alpha", "--body", "Alpha.", "--dir", r.dirs[home]]);
     await ok(["doc", "write", "notes/beta", "--type", "Note", "--title", "Beta", "--body", "Beta.", "--dir", r.dirs[home]]);
+    await ok(["doc", "write", "notes/gamma", "--type", "Note", "--title", "Gamma", "--tag", TOPIC, "--body", "Gamma.", "--dir", r.dirs[home]]);
   }
   await ok(["sync"]);
 
@@ -232,21 +223,26 @@ async function setUp(): Promise<Rehearsal> {
   return r;
 }
 
-/** Make every freshness record in private state (the checkouts' and the Git board's) an hour old. */
+/**
+ * Make the freshness records an hour old, so the next read is past the stale window: each
+ * checkout's `freshness.json` and the Git board's sync state (its last pull and last attempt).
+ */
 async function ageFreshness(): Promise<void> {
   const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  const walk = async (dir: string): Promise<void> => {
-    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-      const file = path.join(dir, entry.name);
-      if (entry.isDirectory()) await walk(file);
-      else if (entry.name.endsWith(".json")) {
-        const text = await readFile(file, "utf8");
-        const aged = text.replace(/"(pulled_at|attempt_at|updatedAt|autoPullAttemptAt)"(\s*):(\s*)"[^"]+"/g, `"$1"$2:$3"${past}"`);
-        if (aged !== text) await writeFile(file, aged);
-      }
-    }
+  const age = async (file: string, fields: readonly string[]): Promise<void> => {
+    const text = await readFile(file, "utf8");
+    const aged = text.replace(new RegExp(`"(${fields.join("|")})"(\\s*):(\\s*)"[^"]+"`, "g"), `"$1"$2:$3"${past}"`);
+    assert.notEqual(aged, text, `${file} carries a freshness field to age`);
+    await writeFile(file, aged);
   };
-  await walk(userStateDir(r.home));
+  const state = userStateDir(r.home);
+  for (const checkout of await readdir(path.join(state, "hosted-checkouts"), { withFileTypes: true })) {
+    const file = path.join(state, "hosted-checkouts", checkout.name, "freshness.json");
+    if (checkout.isDirectory() && (await readFile(file).then(() => true, () => false))) await age(file, ["pulled_at", "attempt_at"]);
+  }
+  for (const entry of await readdir(path.join(state, "sync"), { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".json")) await age(path.join(state, "sync", entry.name), ["updatedAt", "autoPullAttemptAt"]);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -259,9 +255,9 @@ interface Mcp {
 
 let catalogMcp: Mcp | undefined;
 
-/** `superbee mcp` over stdio in `cwd`, as a host starts it; throws the server's error envelope when it refuses to start. */
+/** `superbee mcp` over stdio in `cwd`, as a host starts it, under the same preload and HOME. */
 async function startMcp(cwd: string): Promise<Mcp> {
-  const transport = new StdioClientTransport({ command: process.execPath, args: [cliBin, "mcp"], cwd, env: r.env as Record<string, string>, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [BUILT_CLI, "mcp"], cwd, env: r.env as Record<string, string>, stderr: "pipe" });
   let err = "";
   transport.stderr?.on("data", (chunk: Buffer) => void (err += chunk.toString("utf8")));
   const client = new Client({ name: "rehearsal", version: "test" }, { capabilities: {} });
@@ -269,10 +265,7 @@ async function startMcp(cwd: string): Promise<Mcp> {
     await client.connect(transport);
   } catch (error) {
     await client.close().catch(() => {});
-    // Let the exited process's stderr drain.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    r.transcript.push(err);
-    throw Object.assign(new Error(`mcp did not start: ${String(error)}`), { stderr: err });
+    throw error;
   }
   return { client, stderr: () => err };
 }
@@ -282,25 +275,41 @@ async function mcp(): Promise<Mcp> {
   return catalogMcp;
 }
 
-after(async () => {
-  await catalogMcp?.client.close();
-});
-
 async function callTool(name: string, args: Record<string, unknown>): Promise<{ isError?: boolean; structuredContent?: unknown; content: unknown }> {
   const result = (await (await mcp()).client.callTool({ name, arguments: args })) as { isError?: boolean; structuredContent?: unknown; content: unknown };
   r.transcript.push(JSON.stringify(result));
   return result;
 }
 
-/** A CLI error envelope's code and reason, from JSON or TOON output. */
-function refusalOf(text: string): { code: string; reason: string } | null {
-  const code = /"?code"?\s*[:=]\s*"?([A-Z_]+)"?/.exec(text)?.[1];
-  const reason = /"?reason"?\s*[:=]\s*"?([a-z_]+)"?/.exec(text)?.[1];
-  return code ? { code, reason: reason ?? "" } : null;
+/** The code and `details.reason` of the CLI error envelope one of `texts` is, or null. */
+function refusalOf(...texts: string[]): { code: string; reason: string } | null {
+  for (const text of texts) {
+    if (text.trim() === "") continue;
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(text);
+    } catch {
+      try {
+        envelope = decode(text.trim());
+      } catch {
+        continue;
+      }
+    }
+    const error = (envelope as { error?: { code?: unknown; details?: { reason?: unknown } } } | null)?.error;
+    if (typeof error?.code === "string") return { code: error.code, reason: typeof error.details?.reason === "string" ? error.details.reason : "" };
+  }
+  return null;
 }
 
-/** Update a Note's title through a transient View action, confirmed through the trusted tools. */
+/**
+ * Update a Note's title through a transient View action, confirmed through the trusted tools, as a
+ * person using a View would. View actions report any storage refusal only as `failed`, so a failed
+ * commit is followed by the same write through the same served bundle in process, whose refusal
+ * (code and reason) is the cell's failure; the file must be unchanged either way.
+ */
 async function mcpSetTitle(home: Home, id: string, title: string): Promise<Failure | null> {
+  const file = path.join(folder(home), `${id}.md`);
+  const before = await readFile(file, "utf8");
   const launched = await callTool("show_view", { workspace: r.labels[home], mode: "transient", title: "Rehearsal editor", html: "<!doctype html><title>Rehearsal editor</title>", access: "bundle-propose" });
   if (launched.isError) return { invariant: "show_view", detail: JSON.stringify(launched.content) };
   const launchId = (launched.structuredContent as { launch: { launchId: string } }).launch.launchId;
@@ -316,7 +325,17 @@ async function mcpSetTitle(home: Home, id: string, title: string): Promise<Failu
   const finished = await callTool("finish_view_action", { launchId, approvalToken: result.approvalToken, decision: "commit" });
   const outcome = (finished.structuredContent as { result?: { status: string; message?: string } } | undefined)?.result;
   if (outcome?.status === "committed") return null;
-  return { invariant: "finish_view_action", detail: outcome ? `${outcome.status}: ${outcome.message ?? ""}` : JSON.stringify(finished.content) };
+  if ((await readFile(file, "utf8")) !== before) return { invariant: "a failed View action left the file unchanged", detail: `${outcome?.status}: ${outcome?.message}` };
+  if (outcome?.status !== "failed") return { invariant: "finish_view_action", detail: outcome ? `${outcome.status}: ${outcome.message ?? ""}` : JSON.stringify(finished.content) };
+  try {
+    const context = await createCatalogMcpWorkspaceResolver({ home: r.home }).open(r.labels[home]);
+    await writeDoc(context.bundle, { id, frontmatter: { ...target.doc.frontmatter, title }, body: target.doc.body });
+    return { invariant: "finish_view_action", detail: "failed, but the same write in process succeeds" };
+  } catch (error) {
+    if (!(error instanceof CliError)) return { invariant: "finish_view_action", detail: String(error) };
+    if ((await readFile(file, "utf8")) !== before) return { invariant: "a refused write left the file unchanged", detail: error.message };
+    return { code: error.code, reason: String((error.details as { reason?: unknown } | undefined)?.reason ?? "") };
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -346,25 +365,31 @@ function missingKeys(value: unknown, keys: readonly string[]): Failure | null {
   return missing.length === 0 ? null : { missing };
 }
 
-/** A CLI cell: the command must exit 0 (else its refusal is the failure), then `check` its JSON. */
+/**
+ * A CLI cell: the command must exit 0 (else its refusal is the failure); a `--json` command must
+ * print one JSON document, which `check` then reads.
+ */
 async function cliCell(args: string[], check: (json: unknown, run: Run) => Failure | null | Promise<Failure | null> = () => null): Promise<Cell> {
   const run = await cli(args);
   const output = run.stdout + run.stderr;
-  if (run.code !== 0) return { failure: refusalOf(output) ?? { invariant: "exit", detail: `${run.code}: ${output.slice(0, 400)}` }, output, network: run.network };
+  if (run.code !== 0) return { failure: refusalOf(run.stdout, run.stderr) ?? { invariant: "exit", detail: `${run.code}: ${output.slice(0, 400)}` }, output, network: run.network };
   let json: unknown = null;
-  try {
-    json = JSON.parse(run.stdout);
-  } catch {
-    // Not every step asks for JSON.
+  if (args.includes("--json")) {
+    try {
+      json = JSON.parse(run.stdout);
+    } catch {
+      return { failure: { invariant: "json", detail: run.stdout.slice(0, 400) }, output, network: run.network };
+    }
   }
   return { failure: await check(json, run), output, network: run.network };
 }
 
-/** An MCP cell, with the network lines the MCP server wrote meanwhile. */
-async function mcpCell(action: () => Promise<Failure | null>, output: () => string = () => ""): Promise<Cell> {
+/** An MCP cell: its failure, every tool result it saw, and the network lines the servers wrote meanwhile. */
+async function mcpCell(action: () => Promise<Failure | null>): Promise<Cell> {
   const seen = (await networkLines()).length;
+  const said = r.transcript.length;
   const failure = await action();
-  return { failure, output: output(), network: (await networkLines()).slice(seen) };
+  return { failure, output: r.transcript.slice(said).join("\n"), network: (await networkLines()).slice(seen) };
 }
 
 let catalogListing: Promise<Run> | undefined;
@@ -406,7 +431,8 @@ const STEPS: readonly Step[] = [
         const listed = (await (workspaceListing ??= callTool("list_workspaces", {}).then((result) => result.structuredContent))) as { workspaces: { label: string; home?: string }[] };
         const entry = listed.workspaces.find((row) => row.label === r.labels[home]);
         if (!entry) return { missing: [r.labels[home]] };
-        return entry.home === home ? null : { missing: ["home"] };
+        if (entry.home === undefined) return { missing: ["home"] };
+        return entry.home === home ? null : { invariant: "home", detail: String(entry.home) };
       }),
   },
   {
@@ -441,21 +467,25 @@ const STEPS: readonly Step[] = [
     name: "start",
     surface: "mcp",
     homes: HOMES,
-    async run(home) {
-      try {
-        const started = await startMcp(folder(home));
-        const tools = await started.client.listTools();
-        await started.client.close();
-        return { failure: tools.tools.some((tool) => tool.name === "list_workspaces") ? null : { missing: ["list_workspaces"] }, output: "", network: [] };
-      } catch (error) {
-        // A refusal is written before the MCP transport starts; run the same command bare to read it.
-        const refused = await new Promise<string>((resolve) => {
-          execFile("node", [cliBin, "mcp"], { cwd: folder(home), env: r.env, encoding: "utf8", timeout: 20_000 }, (_error, stdout, stderr) => resolve(stdout + stderr));
-        });
-        r.transcript.push(refused);
-        return { failure: refusalOf(refused) ?? { invariant: "start", detail: `${String(error)} ${(error as { stderr?: string }).stderr ?? ""}` }, output: refused, network: [] };
-      }
-    },
+    run: (home) =>
+      // `superbee mcp` as a host starts it with the session opened in this home's folder.
+      mcpCell(async () => {
+        let started: Mcp;
+        try {
+          started = await startMcp(folder(home));
+        } catch (error) {
+          // A refusal is printed before the MCP transport starts; run the same command bare to read it.
+          const refused = await runSandboxed(["mcp"], folder(home), r.env);
+          r.transcript.push(refused.stdout, refused.stderr);
+          return refusalOf(refused.stdout, refused.stderr) ?? { invariant: "start", detail: String(error) };
+        }
+        try {
+          const tools = await started.client.listTools();
+          return tools.tools.some((tool) => tool.name === "list_workspaces") ? null : { missing: ["list_workspaces"] };
+        } finally {
+          await started.client.close();
+        }
+      }),
   },
   {
     name: "read",
@@ -498,9 +528,9 @@ const STEPS: readonly Step[] = [
     surface: "cli",
     homes: HOMES,
     run: (home) =>
-      cliCell(["list", "--type", "Note", "--dir", r.dirs[home], "--json"], (json) => {
-        const docs = (json as { docs?: unknown[] } | null)?.docs ?? [];
-        if (docs.length < 2) return { missing: ["notes/alpha", "notes/beta"] };
+      cliCell(["list", "--type", "Note", "--field", `tags=${TOPIC}`, "--dir", r.dirs[home], "--json"], (json) => {
+        const docs = (json as { docs?: { id: string }[] } | null)?.docs ?? [];
+        if (docs.map((doc) => doc.id).join() !== "notes/gamma") return { invariant: "rows", detail: JSON.stringify(docs) };
         return missingKeys(docs[0], ["id", "title"]);
       }),
   },
@@ -590,7 +620,8 @@ const STEPS: readonly Step[] = [
         const past = new Date(Date.now() - 60_000);
         await utimes(path.join(folder(home), "notes", "beta.md"), past, past);
       }
-      const run = await cli(["turn-end", "--git-boards"]);
+      // The Stop hook `hook install --turn-end-sync --git-boards` installs, with its recorded opt-in.
+      const run = await cli(["turn-end"]);
       const output = run.stdout + run.stderr;
       if (run.code !== 0) return { failure: { invariant: "exit", detail: output }, output, network: run.network };
       const sent = home === "git"
@@ -620,7 +651,10 @@ test("the deny-network allowlist admits only the fake's loopback port, logs it, 
   const answered = await probe(r.env);
   assert.deepEqual(JSON.parse(answered.stderr.trim().split("\n").at(-1)!), { allowed: 401, other: "refused" });
   const lines = (await networkLines()).slice(seen);
-  assert.deepEqual(lines.map((line) => [line.target, line.allowed ?? false]), [[`${r.bridge.url}/sync/v1/whoami`, true], ["http://127.0.0.1:9/", false]]);
+  assert.deepEqual(lines.filter((line) => line.api === "fetch").map((line) => [line.target, line.allowed ?? false]), [[`${r.bridge.url}/sync/v1/whoami`, true], ["http://127.0.0.1:9/", false]]);
+  // The socket under the allowed fetch is logged too, as allowed; nothing reached another port.
+  assert.ok(lines.some((line) => line.api !== "fetch" && line.target === `127.0.0.1:${r.bridge.port}` && line.allowed));
+  assert.deepEqual(lines.filter((line) => !line.allowed).map((line) => line.target), ["http://127.0.0.1:9/"]);
   const widened = await probe({ ...r.env, SUPERBEE_TEST_NETWORK_ALLOW: "example.com:443" });
   assert.notEqual(widened.code, 0);
   assert.match(widened.stderr, /only loopback endpoints may be allowed/);
@@ -674,4 +708,25 @@ test("one session across a Git board, a local bundle and a hosted checkout: same
 
   // Invariant 4: the seeded session carried the whole run: no sign-in was asked for.
   assert.doesNotMatch(r.transcript.join("\n"), /AUTH_REQUIRED/);
+});
+
+test("with the session expired, the first command that needs it gives one sign-in link and its resume command, then the session continues", async () => {
+  // Runs last: it replaces the seeded session. Reads and edits need no session.
+  const expired = { host: r.bridge.url, accessToken: r.host.token, issuer: `${r.bridge.url}/issuer/` };
+  await seedHostedSession(r.home, { ...expired, expiresAtMs: 0 });
+  await ok(["doc", "update", "notes/gamma", "--title", "Gamma, edited signed out", "--dir", r.dirs.hosted]);
+  const asked = await cli(["sync", "--dir", r.dirs.hosted]);
+  assert.equal(asked.code, 4, asked.stdout + asked.stderr);
+  assert.deepEqual(refusalOf(asked.stdout, asked.stderr)?.code, "AUTH_REQUIRED");
+  const links = new Set((asked.stdout + asked.stderr).match(/https?:\/\/[^\s"']+\/activate\?user_code=[A-Za-z0-9-]+/g) ?? []);
+  assert.equal(links.size, 1, `exactly one sign-in link: ${asked.stdout}${asked.stderr}`);
+  assert.match(asked.stdout + asked.stderr, /sync --dir/, "the command to run again after signing in");
+  assert.ok(asked.network.every((line) => line.allowed), "sign-in reaches only the host's origin");
+  assert.equal(r.host.docs.get("notes/gamma")?.frontmatter.title, "Gamma");
+
+  // Signing in (covered end to end by hosted-auth.test.ts) leaves a live session; the same command
+  // then carries on where it stopped.
+  await seedHostedSession(r.home, { ...expired, expiresAtMs: Date.now() + 60 * 60 * 1000 });
+  await ok(["sync", "--dir", r.dirs.hosted]);
+  assert.equal(r.host.docs.get("notes/gamma")?.frontmatter.title, "Gamma, edited signed out");
 });

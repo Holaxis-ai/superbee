@@ -8,22 +8,16 @@
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { isolatedUserEnv } from "./support/user-env.js";
+import { ensureBuiltCli, readNetworkLog, runSandboxed, sandboxEnv } from "./support/network-sandbox.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliPackageRoot = path.resolve(here, "../../superbee");
-const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
-const preload = path.join(here, "fixtures", "deny-network.mjs");
 
-before(() => {
-  if (!existsSync(cliBin)) execFileSync("node", ["build.mjs", "local-dev"], { cwd: cliPackageRoot, stdio: "inherit" });
-});
+before(ensureBuiltCli);
 
 interface Sandbox {
   root: string;
@@ -38,24 +32,12 @@ async function sandbox(): Promise<Sandbox> {
   await mkdir(home, { recursive: true });
   await writeFile(path.join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n");
   const log = path.join(root, "network.log");
-  const env = isolatedUserEnv(home, {
-    SUPERBEE_TEST_NETWORK_LOG: log,
-    SUPERBEE_NO_UPDATE_CHECK: "1",
-    SUPERBEE_ACTOR: "process:zero-network",
-    NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
-  });
-  for (const key of Object.keys(env)) {
-    if (key === "AGENTSTATE_LITE_REMOTE" || key === "SUPERBEE_ACCESS_TOKEN" || key.startsWith("SUPERBEE_HOST")) delete env[key];
-  }
+  const env = sandboxEnv(home, { log });
   return { root, home, log, env };
 }
 
 function run(box: Sandbox, args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    execFile("node", [cliBin, ...args], { cwd, env: box.env, encoding: "utf8", timeout: 60_000 }, (error, stdout, stderr) => {
-      resolve({ code: typeof error?.code === "number" ? error.code : error ? 1 : 0, stdout, stderr });
-    });
-  });
+  return runSandboxed(args, cwd, box.env);
 }
 
 function git(cwd: string, box: Sandbox, ...args: string[]): void {
@@ -63,11 +45,7 @@ function git(cwd: string, box: Sandbox, ...args: string[]): void {
 }
 
 async function networkLog(box: Sandbox): Promise<string[]> {
-  try {
-    return (await readFile(box.log, "utf8")).split("\n").filter(Boolean);
-  } catch {
-    return [];
-  }
+  return (await readNetworkLog(box.log)).map((line) => JSON.stringify(line));
 }
 
 /**

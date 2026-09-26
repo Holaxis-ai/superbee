@@ -5,9 +5,11 @@
 // command that reaches for the network both fails loudly and leaves evidence.
 //
 // Opt-in allowlist: $SUPERBEE_TEST_NETWORK_ALLOW names loopback endpoints (`127.0.0.1:<port>`,
-// comma-separated) a test's own fake serves on. A connection to one of them goes through and is
-// still logged, with `"allowed": true`, so a test can tell which steps touched the fake. Any entry
-// that is not a loopback endpoint makes the preload fail at load. Unset, everything is refused.
+// comma-separated) a test's own fake serves on. A `fetch` or a `net` connection to one of them goes
+// through and is still logged, with `"allowed": true` (a `fetch` logs its URL, then the socket under
+// it logs its endpoint), so a test can tell which steps touched the fake. `http(s).request`, `tls`
+// and every other endpoint stay refused. Any entry that is not a loopback endpoint makes the preload
+// fail at load. Unset, everything is refused, as before.
 import { appendFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -83,8 +85,10 @@ net.Socket.prototype.connect = function connect(...args) {
   if (target === null || (typeof normalized[0] === "string" && !/^\d+$/.test(normalized[0]))) {
     return socketConnect.apply(this, args);
   }
-  // An allowed fetch reaches its endpoint through a socket; it was logged at the fetch.
-  if (allowedEndpoint(target)) return socketConnect.apply(this, args);
+  if (allowedEndpoint(target)) {
+    record("net.Socket.connect", target, true);
+    return socketConnect.apply(this, args);
+  }
   return refuse("net.Socket.connect", target);
 };
 for (const name of ["connect", "createConnection"]) {
@@ -92,7 +96,10 @@ for (const name of ["connect", "createConnection"]) {
   net[name] = function (...args) {
     const target = describe(args);
     if (target === null || (typeof args[0] === "string" && !/^\d+$/.test(args[0]))) return original.apply(this, args);
-    if (allowedEndpoint(target)) return original.apply(this, args);
+    if (allowedEndpoint(target)) {
+      record(`net.${name}`, target, true);
+      return original.apply(this, args);
+    }
     return refuse(`net.${name}`, target);
   };
 }

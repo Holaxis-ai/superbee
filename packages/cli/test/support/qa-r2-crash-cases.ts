@@ -257,7 +257,7 @@ export function registerCrashCases(group: keyof typeof CRASH_CASE_GROUPS): void 
 
 function registerCase(c: Case): void {
   test(`SIGKILL at every step: ${c.name}`, { timeout: 1_800_000 }, async () => {
-    const { url, close } = await startFakeHostBridge(() => current, () => HOST);
+    const { url, close } = await startFakeHostBridge(() => current, { origin: () => HOST });
     const failures: string[] = [];
     let steps = 0;
     try {

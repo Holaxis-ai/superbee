@@ -14,11 +14,19 @@ export interface FakeHostBridge {
   close(): Promise<void>;
 }
 
-/**
- * Serve `host()` on a loopback port. `origin` overrides the origin the request is forwarded under
- * (the crash tests keep a fake at its default origin and reach it through the bridge).
- */
-export async function startFakeHostBridge(host: () => FakeHost, origin?: () => string): Promise<FakeHostBridge> {
+export interface FakeHostBridgeOptions {
+  /** The origin a request is forwarded under (the crash tests keep a fake at its default origin). */
+  readonly origin?: () => string;
+  /**
+   * Where a request outside `/sync/v1/` goes, when the host's other surface is faked too: the base
+   * URL of a local fake (for example `FakeIssuer`, whose discovery and sign-in routes then answer
+   * at the bridge's own origin).
+   */
+  readonly others?: () => string;
+}
+
+/** Serve `host()` on a loopback port. */
+export async function startFakeHostBridge(host: () => FakeHost, options: FakeHostBridgeOptions = {}): Promise<FakeHostBridge> {
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
@@ -27,7 +35,11 @@ export async function startFakeHostBridge(host: () => FakeHost, origin?: () => s
       for (const [k, v] of Object.entries(req.headers)) if (typeof v === "string" && !["host", "content-length", "connection"].includes(k)) headers.set(k, v);
       try {
         const fake = host();
-        const response = await fake.fetch(`${origin?.() ?? fake.origin}${req.url}`, { method: req.method, headers, body: Buffer.concat(chunks).toString("utf8") });
+        const body = Buffer.concat(chunks).toString("utf8");
+        const others = options.others?.();
+        const response = others !== undefined && !(req.url ?? "").startsWith("/sync/v1/")
+          ? await fetch(`${others}${req.url}`, { method: req.method, headers, ...(req.method === "GET" || req.method === "HEAD" ? {} : { body }) })
+          : await fake.fetch(`${options.origin?.() ?? fake.origin}${req.url}`, { method: req.method, headers, body });
         const out: Record<string, string> = {};
         response.headers.forEach((v, k) => (out[k] = v));
         res.writeHead(response.status, out);
