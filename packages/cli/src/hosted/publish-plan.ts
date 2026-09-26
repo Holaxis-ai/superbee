@@ -196,6 +196,23 @@ function okfVersionOf(rootIndex: string | null): "0.1" | "0.2" | undefined {
   }
 }
 
+const FORMAT_AT_EDGE = /^\p{Cf}|\p{Cf}$/u;
+const FORMAT_INSIDE = /(?![\u200c\u200d])\p{Cf}/u;
+
+/**
+ * The host's canonical spelling for a new document id (superbee-hosted
+ * `packages/agent-operations/src/document-ids.ts`), mirrored so a folder the host would refuse
+ * blocks before any request: no segment starts or ends with whitespace or a format character
+ * (Unicode Cf, such as U+200B), no segment holds a format character other than ZERO WIDTH
+ * NON-JOINER or ZERO WIDTH JOINER, and the id is NFC.
+ */
+function isHostCanonicalId(id: string): boolean {
+  return (
+    id.split("/").every((segment) => segment === segment.trim() && !FORMAT_AT_EDGE.test(segment) && !FORMAT_INSIDE.test(segment)) &&
+    id === id.normalize("NFC")
+  );
+}
+
 /**
  * Read the bundle folder into a creation plan. `history` asks for Git history; it is planned only
  * for a Git board, and a local bundle's plan says `current-only`.
@@ -268,9 +285,8 @@ export async function planPublish(folder: string, options: { history: false } | 
       blockers.push({ path: entry.rel, reason: "unsafe_id", message: `${entry.rel} cannot be a document id (${(error as Error).message})` });
       continue;
     }
-    // The host's canonical spelling (#642): no segment starting or ending with whitespace, NFC.
-    if (id.split("/").some((segment) => segment !== segment.trim()) || id !== id.normalize("NFC")) {
-      blockers.push({ path: entry.rel, reason: "document_id_not_canonical", message: `${entry.rel} is not in its canonical spelling (a segment starts or ends with a space, or it is not NFC); rename it` });
+    if (!isHostCanonicalId(id)) {
+      blockers.push({ path: entry.rel, reason: "document_id_not_canonical", message: `${entry.rel} is not in its canonical spelling (a segment starts or ends with a space or an invisible format character, holds a format character other than a joiner, or is not NFC); rename it` });
       continue;
     }
     const refusal = unsendable(id, entry.rel, bytes, null, { bundleId: "publish", okfVersion });
