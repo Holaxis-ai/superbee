@@ -588,6 +588,7 @@ test("turn end syncs several quiet checkouts, oldest change first, one slice eac
   const order: string[] = [];
   const listed = ["/a", "/b", "/c"].map((folder, index) => ({ ...h.binding, checkout_id: `00000000-0000-4000-8000-00000000000${index}`, path: folder }));
   const changed = new Map([["/a", 3], ["/b", 1], ["/c", 2]]);
+  const base = Date.now() - 600_000;
   let clock = 0;
   await turnEnd(["--dir", project], {
     stdout: () => {},
@@ -597,7 +598,7 @@ test("turn end syncs several quiet checkouts, oldest change first, one slice eac
     budgetMs: 20_000,
     checkouts: async () => listed,
     localState: async () => "changed",
-    lastChange: async (folder) => Date.now() - 600_000 + changed.get(folder)!,
+    lastChange: async (folder) => base + changed.get(folder)! * 1_000,
     sync: async (argv, deps) => {
       order.push(argv[1]!);
       // Each sync's locks and requests are bounded by its own slice of the budget, not all of it.
