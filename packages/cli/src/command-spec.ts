@@ -361,9 +361,9 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "docHistory",
         leaves: [publicLeaf("docHistory", "doc history", one, undefined, DIR_SURFACE)],
-        usage: "doc history <id> [--limit <n>] [--dir <path>] [--remote <url>]",
+        usage: "doc history <id> [--limit <n> | --seq <n>] [--dir <path>] [--remote <url>]",
         summary:
-          "Show a doc's version history (newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision) — the tokens for --expected-version",
+          "Show a doc's version history (newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision; a hosted checkout reads the host's chain, and --seq <n> prints one version's content there) — the tokens for --expected-version (local)",
       },
       {
         id: "docDelete",
