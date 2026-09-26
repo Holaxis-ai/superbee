@@ -82,7 +82,7 @@ import {
   type ProjectionRecord,
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded } from "./projection.js";
-import { recordPulled } from "./freshness.js";
+import { recordPulled, recordSynced } from "./freshness.js";
 
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
 
@@ -807,7 +807,6 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       return { report, placed };
     };
     // Push always follows a pull in the same run, so nothing is sent against a stale listing.
-    const scannedAt = new Date();
     const first = await pullAndExport(accepted);
     if (takeHostDeletions !== undefined) {
       taken =
@@ -817,7 +816,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
             ? { taken: false, message: "the host's listing changed since that refusal, so nothing was removed; check the new refused_deletions" }
             : { taken: true, removed: first.placed.removed.length, message: "the host's deletions were taken: their files are removed from the folder, apart from files you edited" };
     }
-    await recordPulled(deps.auth.home, binding.checkout_id, new Date(), scannedAt);
+    await recordPulled(deps.auth.home, binding.checkout_id);
     let outcome: PushOutcome;
     try {
       outcome = await pushChanges(session, deps);
@@ -837,6 +836,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // The closing pass: a file edited during this run against a document the pull refreshed or
     // removed is a conflict now, so the run that saw it never reports itself in sync.
     const conflicts = await folderConflicts(binding.path, store, projection, session.okfVersion);
+    // After the run's last placement: a file changed later is an edit this run did not see.
+    await recordSynced(deps.auth.home, binding.checkout_id);
     const inbound = await inboundLinks(store, outcome.deleted, session.okfVersion);
     const rows = buildRows({
       folderConflicts: conflicts,

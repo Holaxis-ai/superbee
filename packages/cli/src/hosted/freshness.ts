@@ -27,8 +27,8 @@ export interface CheckoutFreshness {
   /** Digest of the condition the end-of-turn hook last handed to the agent, until it changes. */
   readonly turn_end_block: string | null;
   /**
-   * When the last full sync scanned the folder for edits to send. A file changed after it has not
-   * been sent (an automatic pull on a read moves `pulled_at`, never this).
+   * When the last full sync finished with the folder (after its last placement). A file changed
+   * after it has not been sent; an automatic pull on a read moves `pulled_at`, never this.
    */
   readonly synced_at: string | null;
 }
@@ -56,9 +56,14 @@ async function update(home: string, checkoutId: string, change: Partial<Checkout
   await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), FRESHNESS_FILE, `${JSON.stringify(next)}\n`);
 }
 
-/** Record a completed pull, and for a full sync, when it scanned the folder for edits to send. */
-export async function recordPulled(home: string, checkoutId: string, now: Date = new Date(), scannedAt?: Date): Promise<void> {
-  await update(home, checkoutId, { pulled_at: now.toISOString(), ...(scannedAt ? { synced_at: scannedAt.toISOString() } : {}) });
+/** Record a completed pull. */
+export async function recordPulled(home: string, checkoutId: string, now: Date = new Date()): Promise<void> {
+  await update(home, checkoutId, { pulled_at: now.toISOString() });
+}
+
+/** Record that a full sync has finished with the folder: every file it wrote is older than this. */
+export async function recordSynced(home: string, checkoutId: string, now: Date = new Date()): Promise<void> {
+  await update(home, checkoutId, { synced_at: now.toISOString() });
 }
 
 /** Record that an automatic pull is starting, before any request, so a failing one backs off. */

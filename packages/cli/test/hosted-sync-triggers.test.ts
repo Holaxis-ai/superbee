@@ -24,7 +24,7 @@ import { hostedCheckoutAt, maybeAutoPull, maybeHostedAutoPull } from "../src/aut
 import { defaultHostedAuthDeps, readDefaultHost, sessionAccount, sessionDirFor, withSessionLock, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { resolveHostedTarget } from "../src/hosted-auth/discovery.js";
 import { readDefaultWorkspace } from "../src/hosted/defaults.js";
-import { readFreshness, recordPulled } from "../src/hosted/freshness.js";
+import { readFreshness, recordPulled, recordSynced } from "../src/hosted/freshness.js";
 import { digestOf } from "../src/hosted/projection.js";
 import { recoverPlacements } from "../src/hosted/sync-scan.js";
 import { hostedLocalState, hostedPull, type HostedSyncDeps } from "../src/hosted/sync.js";
@@ -521,7 +521,8 @@ test("another checkout's conflict blocks once when it was edited since its last 
   await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nLocal alpha.\n');
   await editedAgo(fileOf(h, "notes/alpha"), 60);
   // The last full sync scanned ten minutes ago; a read's automatic pull ran since (it sends nothing).
-  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(10), minutesAgo(10));
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(10));
+  await recordSynced(h.home, h.binding.checkout_id, minutesAgo(10));
   await recordPulled(h.home, h.binding.checkout_id, new Date());
   const decision = JSON.parse(await turnEndFrom(h, project)) as { decision: string; reason: string };
   assert.equal(decision.decision, "block");
@@ -536,11 +537,31 @@ test("another checkout's conflict blocks once when it was edited since its last 
   await hostChangesAlpha(g);
   await writeFile(fileOf(g, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nOld local alpha.\n');
   await editedAgo(fileOf(g, "notes/alpha"), 600);
-  await recordPulled(g.home, g.binding.checkout_id, minutesAgo(6), minutesAgo(6));
+  await recordPulled(g.home, g.binding.checkout_id, minutesAgo(6));
+  await recordSynced(g.home, g.binding.checkout_id, minutesAgo(6));
   const quiet: string[] = [];
   await turnEnd(["--dir", elsewhere], { stdout: (t) => void quiet.push(t), env: {}, readStdin: async () => "{}", syncDeps: syncDeps(g) });
   assert.equal(quiet.join(""), "");
   assert.ok(g.host.requests.some((request) => request.path.endsWith("/heads")), "it was synced, and its conflict found");
+});
+
+test("a turn end that pulls a host change into another checkout with an old conflict neither blocks then nor retries it within five minutes", async () => {
+  const h = await harness();
+  const project = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  await settled(h.folder);
+  // An old conflict on alpha (from another session), and an unrelated host change to beta to pull.
+  await hostChangesAlpha(h);
+  await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nOld local alpha.\n');
+  await editedAgo(fileOf(h, "notes/alpha"), 600);
+  await recordSynced(h.home, h.binding.checkout_id, minutesAgo(6));
+  h.host.put("notes/beta", h.host.docs.get("notes/beta")!.frontmatter, "Pulled beta.\n");
+  assert.equal(await turnEndFrom(h, project), "", "an old conflict does not block");
+  assert.equal(await readFile(fileOf(h, "notes/beta"), "utf8").then((text) => /Pulled beta/.test(text)), true, "the host's change was placed");
+  // The next turn: the placed file is not an edit, so nothing is retried inside five minutes.
+  await editedAgo(fileOf(h, "notes/beta"), 60);
+  h.host.requests.length = 0;
+  assert.equal(await turnEndFrom(h, project), "");
+  assert.equal(h.host.requests.length, 0, "not retried");
 });
 
 test("turn end from another folder: a checkout another command holds is skipped, and an already-continuing turn syncs nothing", async () => {
@@ -604,7 +625,8 @@ test("a condition in the session's own checkout blocks, and another checkout's o
   // The other checkout: an old conflict (edited before its last pull).
   await writeFile(otherAlpha, '---\ntype: "Note"\ntitle: "Alpha"\n---\nOther checkout alpha.\n');
   await editedAgo(otherAlpha, 600);
-  await recordPulled(h.home, other.binding.checkout_id, minutesAgo(6), minutesAgo(6));
+  await recordPulled(h.home, other.binding.checkout_id, minutesAgo(6));
+  await recordSynced(h.home, other.binding.checkout_id, minutesAgo(6));
   // The session's own checkout: a fresh conflict.
   await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nOwn alpha.\n');
   const decision = JSON.parse(await turnEndOutput(h)) as { decision: string; reason: string };

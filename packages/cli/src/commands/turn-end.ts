@@ -293,8 +293,10 @@ async function hostedTurnEnd(binding: CheckoutBinding, options: HostedTurnEndOpt
   const captured: string[] = [];
   const run = partial.sync ?? (async (args, deps) => (await import("./sync.js")).sync(args, deps));
   let blocking: CliError | null = null;
-  // When a sync last scanned the folder, before this one: a change after it is work no sync has
-  // sent yet. (Not the last pull: an automatic pull on a read moves that and sends nothing.)
+  // When a sync last finished with the folder, before this one: a change after it is work no sync
+  // has seen yet. (Not the last pull: an automatic pull on a read moves that and sends nothing,
+  // and a placement it makes is not an edit; accepted: its placed files look new, so a stale
+  // condition there can block once more.)
   const lastSync = options.cwd ? null : (await readFreshness(home, binding.checkout_id).catch(() => null))?.synced_at ?? null;
   try {
     // Every request and lock (the checkout's and the sign-in session's) is bounded by the budget.
