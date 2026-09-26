@@ -141,6 +141,10 @@ test("writes name the agent the sync runs under (X-Superbee-Via), and a token th
     [{ CLAUDECODE: "1" }, "claude-code", false],
     [{ CLAUDECODE: "1", SUPERBEE_VIA: "codex" }, "codex", false],
     [{ CLAUDECODE: "1", SUPERBEE_NO_VIA: "1" }, null, false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "codex", SUPERBEE_NO_VIA: "1" }, null, false],
+    [{ CLAUDECODE: "true" }, null, false],
+    [{ SUPERBEE_VIA: " codex " }, "codex", false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "" }, "claude-code", false],
     [{ CLAUDECODE: "1", SUPERBEE_VIA: "Claude Code" }, null, true],
     [{ SUPERBEE_VIA: "superbee-cli" }, null, true],
   ] as const) {

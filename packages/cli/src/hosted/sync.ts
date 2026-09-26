@@ -130,7 +130,9 @@ your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a 
 4 (AUTH_REQUIRED, with the sign-in link) when you must sign in.
 Each write names the agent the sync runs under, recorded with it on the host as unverified
 attribution (never authority): claude-code under Claude Code (CLAUDECODE=1), or SUPERBEE_VIA=<token>
-(1 to 32 of a-z 0-9 . _ -); SUPERBEE_NO_VIA=<any value> names none. SUPERBEE_ACTOR does not set it.
+(1 to 32 of a-z 0-9 . _ -, not starting with superbee); SUPERBEE_NO_VIA=<any value> names none.
+Another agent started from a Claude Code shell inherits CLAUDECODE=1 and is named claude-code
+unless SUPERBEE_VIA says otherwise. SUPERBEE_ACTOR does not set it.
 `;
 
 /** Rows shown by default; --limit changes it. */

@@ -192,8 +192,11 @@ confirm that no superbee command is still running, then remove the lock named in
   turns it off for a shell.
 - Each write names the agent the sync runs under, and the host records it with the write as
   unverified attribution, never authority: `claude-code` under Claude Code (`CLAUDECODE=1`), or
-  `SUPERBEE_VIA=<token>` (1 to 32 of `a-z 0-9 . _ -`). `SUPERBEE_NO_VIA=<any value>` names none.
-  A token the host would refuse is not sent, and the receipt says so (`via_ignored`).
+  `SUPERBEE_VIA=<token>` (1 to 32 of `a-z 0-9 . _ -`, not starting with `superbee`).
+  `SUPERBEE_NO_VIA=<any value>` names none. Another agent started from a Claude Code shell (a
+  Codex in a tmux pane, for example) inherits `CLAUDECODE=1` and is named `claude-code` unless
+  `SUPERBEE_VIA` is set. A token the host would refuse is not sent, and the receipt says so
+  (`via_ignored`).
 
 ## Export: taking a bundle out of hosted
 
