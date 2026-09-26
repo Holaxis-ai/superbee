@@ -247,6 +247,22 @@ export async function writeDefaultHost(home: string, host: string): Promise<void
   await writeUserStateFileAtomic0600(home, hostedAuthRoot(home), DEFAULT_HOST_FILE, `${JSON.stringify({ host })}\n`);
 }
 
+/**
+ * The host a command on a hosted bundle (checkout, export, publish, `catalog list --hosted`) uses:
+ * `--host`, else the host of the last sign-in, else null. SUPERBEE_HOST alone never selects it, so
+ * a bundle is always bound to a host the person chose.
+ */
+export async function hostedBundleHost(flag: string | undefined, home: string): Promise<string | null> {
+  return flag || (await readDefaultHost(home));
+}
+
+/** {@link hostedBundleHost}, refusing when there is none. */
+export async function requireHostedBundleHost(flag: string | undefined, home: string): Promise<HostedTarget> {
+  const chosen = await hostedBundleHost(flag, home);
+  if (!chosen) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
+  return resolveHostedTarget(chosen);
+}
+
 /** `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in. */
 export async function resolveHostSelection(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget> {
   const chosen = flag ?? (deps.env[HOST_ENV] || undefined) ?? (await readDefaultHost(deps.home)) ?? undefined;

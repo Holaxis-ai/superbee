@@ -33,9 +33,9 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
-import { defaultHostedAuthDeps, ensureHostedAccessToken, readDefaultHost } from "../hosted-auth/session.js";
-import { createHostedSyncClient, hostedFailure } from "../hosted/client.js";
-import { readDefaultWorkspace } from "../hosted/defaults.js";
+import { defaultHostedAuthDeps, hostedBundleHost } from "../hosted-auth/session.js";
+import { hostedFailure } from "../hosted/client.js";
+import { connectHostedAccount } from "../hosted/account.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
 import { createBody, planDigest, planPublish, type PublishPlan } from "../hosted/publish-plan.js";
 import { clearPendingCreate, clearPublishedExtras, readPendingCreate, writePendingCreate, writePublishedExtras } from "../hosted/publish-state.js";
@@ -309,7 +309,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       help: `${cliInvocation()} publish --to hosted --bundle-id <id>`,
     });
   }
-  const hostChoice = values.host || (await readDefaultHost(home));
+  const hostChoice = await hostedBundleHost(values.host, home);
   const target = hostChoice ? resolveHostedTarget(hostChoice) : null;
   const withHistory = values["with-history"] === true;
   const plan = await planPublish(canonical, withHistory ? { history: true, ...(board ? { board } : {}), now: deps.auth.now() } : { history: false });
@@ -382,25 +382,16 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     });
   }
 
-  // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
-  const token = await ensureHostedAccessToken(target, { resume: yesCommand }, deps.auth);
-  const client = createHostedSyncClient({
+  const otherWorkspace = `${cliInvocation()} publish --to hosted --workspace <id> --bundle-id ${commandToken(bundleId)} --yes`;
+  const { client, identity, workspace } = await connectHostedAccount(
     target,
-    accessToken: token.accessToken,
-    resume: yesCommand,
-    deadlineMs: CREATE_DEADLINE_MS,
-    ...(values.workspace !== undefined ? { workspace: values.workspace } : {}),
-    ...(deps.fetch ? { fetch: deps.fetch } : {}),
-  });
-  const identity = await client.whoami();
-  const remembered = identity.tenantIds.length > 1 ? await readDefaultWorkspace(home, target.origin) : null;
-  const workspace =
-    values.workspace ??
-    (identity.tenantIds.length === 1 ? identity.tenantIds[0]! : remembered !== null && identity.tenantIds.includes(remembered) ? remembered : null);
-  if (workspace === null || !identity.tenantIds.includes(workspace)) {
-    throw new CliError(workspace === null ? "USAGE" : "NOT_FOUND", workspace === null ? `you are in ${identity.tenantIds.length} workspaces on ${target.origin}: name one` : `you are not a member of workspace '${workspace}' on ${target.origin}`, {
-      details: { reason: workspace === null ? "choose_workspace" : "not_a_member", workspaces: identity.tenantIds },
-      help: `${cliInvocation()} publish --to hosted --workspace <id> --bundle-id ${commandToken(bundleId)} --yes`,
+    { workspace: values.workspace, resume: yesCommand, otherWorkspace, deadlineMs: CREATE_DEADLINE_MS },
+    { auth: deps.auth, ...(deps.fetch ? { fetch: deps.fetch } : {}) },
+  );
+  if (workspace === null) {
+    throw new CliError("USAGE", `you are in ${identity.tenantIds.length} workspaces on ${target.origin}: name one`, {
+      details: { reason: "choose_workspace", workspaces: identity.tenantIds },
+      help: otherWorkspace,
     });
   }
 

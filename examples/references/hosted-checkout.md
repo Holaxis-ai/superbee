@@ -4,6 +4,15 @@ Read this when you work in a folder made by `superbee checkout`, or when `superb
 conflict there. The hosted bundle is the authority. The folder is a working copy. `superbee sync`
 applies changes directly under the signed-in person's own access, and nobody has to approve them.
 
+## Finding a bundle to check out
+
+`superbee catalog list --hosted` lists the hosted bundles the signed-in person can reach on the
+host of their last sign-in (or `--host <url>`), across all their workspaces. Each row has the
+`bundle_id` that `superbee checkout <bundle-id>` takes, its `name` and `lifecycle`, the `folder` of
+an existing checkout here (null when there is none), and `ambiguous: true` when two of their
+workspaces hold the same id, which checkout refuses. If a bundle already has a `folder`, work there
+with `--dir` instead of checking it out again. The list is read live and never cached.
+
 ## The folder marker, and adopting a moved or copied checkout
 
 A checkout folder carries a read-only `.superbee/checkout.json` naming its host and bundle. It is a

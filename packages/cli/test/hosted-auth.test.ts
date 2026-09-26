@@ -905,6 +905,9 @@ test("only the sign-in commands, the hosted checkout, export and hosted sync imp
         path.join("commands", "setup-hosted.ts"),
         path.join("hosted", "defaults.ts"),
         path.join("hosted", "freshness.ts"),
+        // `catalog list --hosted` only: plain catalog commands never sign in.
+        path.join("commands", "catalog.ts"),
+        path.join("hosted", "account.ts"),
       ];
       if (/hosted-auth\//.test(text) && !allowed.includes(path.relative(src, full))) {
         offenders.push(path.relative(src, full));

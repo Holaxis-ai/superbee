@@ -514,6 +514,18 @@ test("setup hosted with several workspaces asks for a choice, then records it", 
   );
 });
 
+test("setup hosted refuses a workspace the person is not in, and records no default host", async () => {
+  const host = new FakeHost({ tenants: ["tenant-a", "tenant-b"] });
+  const home = await mkdtemp(path.join(tmpdir(), "sb-trig-setup4-"));
+  const auth = defaultHostedAuthDeps(home, { env: { SUPERBEE_ACCESS_TOKEN: TOKEN } });
+  await assert.rejects(
+    setupHosted(["--url", HOST, "--workspace", "tenant-z"], { stdout: () => {}, auth, fetch: host.fetch }),
+    (error: unknown) => error instanceof CliError && error.code === "NOT_FOUND" && error.details?.reason === "not_a_member",
+  );
+  assert.equal(await readDefaultHost(home), null);
+  assert.equal(await readDefaultWorkspace(home, HOST), null);
+});
+
 test("setup hosted records no default when sign-in cannot complete", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "sb-trig-setup3-"));
   const auth = defaultHostedAuthDeps(home, {

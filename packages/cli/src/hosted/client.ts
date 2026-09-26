@@ -65,6 +65,31 @@ export interface HostedIdentity {
 export interface HostedBundleRow {
   readonly bundleId: string;
   readonly name: string;
+  /** `active`, or another lifecycle the host names (archived, for example); null when it names none. */
+  readonly lifecycle: string | null;
+}
+
+/** The host answers at most this many bundle rows (the kernel's list cap, applied across tenants). */
+export const BUNDLE_LIST_CAP = 100;
+
+/** A bundle list read as a whole: each id once, how many of the person's workspaces hold it, and whether the cap cut it. */
+export interface HostedBundleListing {
+  readonly bundles: ReadonlyMap<string, { readonly row: HostedBundleRow; readonly workspaces: number }>;
+  /** False when the host's answer reached {@link BUNDLE_LIST_CAP}, so more bundles may exist. */
+  readonly complete: boolean;
+}
+
+/**
+ * One reading of the host's rows. The host answers one row per workspace that serves an id, and
+ * refuses an id two workspaces serve, so a count above one is an ambiguous id.
+ */
+export function readBundleListing(rows: readonly HostedBundleRow[]): HostedBundleListing {
+  const bundles = new Map<string, { row: HostedBundleRow; workspaces: number }>();
+  for (const row of rows) {
+    const seen = bundles.get(row.bundleId);
+    bundles.set(row.bundleId, seen ? { row: seen.row, workspaces: seen.workspaces + 1 } : { row, workspaces: 1 });
+  }
+  return { bundles, complete: rows.length < BUNDLE_LIST_CAP };
 }
 
 /**
@@ -142,8 +167,8 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
       const rows = body?.data?.bundles;
       if (body?.ok !== true || !Array.isArray(rows)) throw new CliError("RUNTIME", `${target.origin} answered a malformed bundle list`);
       return rows
-        .filter((row): row is { bundleId: string; name: string } => typeof row?.bundleId === "string" && typeof row?.name === "string")
-        .map((row) => ({ bundleId: row.bundleId, name: row.name }));
+        .filter((row): row is { bundleId: string; name: string; lifecycle?: unknown } => typeof row?.bundleId === "string" && typeof row?.name === "string")
+        .map((row) => ({ bundleId: row.bundleId, name: row.name, lifecycle: typeof row.lifecycle === "string" ? row.lifecycle : null }));
     },
     reader(bundleId) {
       return createHostedReadAdapter({ carrier, bundleId, routes: syncReadRoutes(prefix) });
