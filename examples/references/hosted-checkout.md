@@ -38,7 +38,9 @@ Only run it when the person asks for the move.
 
 1. Run it without `--yes` first. It makes no request. It lists what travels (documents, reserved
    files, other files), what stays (dot-files, links), anything that blocks the move, and the
-   bundle id and host it will use. Show the person the preview.
+   bundle id and host it will use. Show the person the preview. A document that does not satisfy
+   its Kind, or a Kind convention with a problem, blocks the move, because the host would refuse
+   writes to it. Fix them before publishing.
 2. When they agree, run the `--yes` command the preview names. It signs in if needed (relay the
    link, as below), creates the bundle, and converts the folder in place into a hosted checkout.
    No file is rewritten.
@@ -154,10 +156,11 @@ Superbee app, by the person.
 ## Refusals that belong to the person
 
 Some commands are refused in a hosted checkout with "do this in the Superbee app". Examples:
-editing Kinds or recipes, artifacts, and `doc verify`. Tell the person what to do in the app. Do
-not work around a refusal by editing files, using another command, or copying the bundle
-somewhere else. Taking a bundle out of hosted is `superbee export` (below), and only when the
-person asks for it.
+artifacts and `doc verify`. Tell the person what to do in the app. Editing Kinds or recipes is
+refused too, and the app cannot do it either: a hosted bundle's Kinds cannot be changed from a
+checkout. Kinds are designed in a local or Git bundle before it is published. Do not work around a
+refusal by editing files, using another command, or copying the bundle somewhere else. Taking a
+bundle out of hosted is `superbee export` (below), and only when the person asks for it.
 
 `checkout` adds the folder to the workspace catalog, where `catalog list` shows it with
 `home: hosted`. The local MCP app (`superbee mcp`) can read it by that label, but refuses every

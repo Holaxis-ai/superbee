@@ -245,6 +245,59 @@ test("a document the host would refuse blocks the preview and --yes, before any 
   assert.equal(fake.requests.length, 0);
 });
 
+test("a document that does not satisfy its Kind, or a Kind convention with a problem, blocks before any request", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "b");
+  await writeBundle(folder);
+  await mkdir(path.join(folder, "conventions"), { recursive: true });
+  await mkdir(path.join(folder, "tasks"), { recursive: true });
+  const task = "---\ntype: Convention\ngoverns: Task\nfields:\n  required:\n    - owner\n    - actor\n    - timestamp\n---\n# Task\n";
+  await writeFile(path.join(folder, "conventions", "task.md"), task);
+  // A write supplies the actor and the timestamp, so lacking only those is not a blocker.
+  await writeFile(path.join(folder, "tasks", "ready.md"), "---\ntype: Task\ntitle: Ready\nowner: ada\n---\nx\n");
+  const fake = new FakeCreateHost();
+  const clean = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
+  assert.equal(clean.ready, true, JSON.stringify(clean.blockers));
+
+  await writeFile(path.join(folder, "tasks", "unowned.md"), "---\ntype: Task\ntitle: Unowned\n---\nx\n");
+  // A malformed standard field an edit leaves alone does not hide the Kind problem behind it.
+  await writeFile(path.join(folder, "tasks", "numeric.md"), "---\ntype: Task\ntitle: 5\n---\nx\n");
+  await writeFile(path.join(folder, "conventions", "broken.md"), "---\ntype: Convention\n---\n# No governs\n");
+  await writeFile(path.join(folder, "conventions", "task-again.md"), task);
+  const preview = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
+  assert.equal(preview.ready, false);
+  const rows = (preview.blockers as { rows: { path: string; reason: string; message: string }[] }).rows;
+  assert.deepEqual(
+    rows.map((row) => [row.reason, row.path]),
+    [
+      ["kind_convention", "conventions/broken.md"],
+      ["kind_convention", "conventions/"],
+      ["kind_conformance", "tasks/numeric.md"],
+      ["kind_conformance", "tasks/unowned.md"],
+    ],
+  );
+  assert.match(rows[3]!.message, /'tasks\/unowned' does not satisfy the 'Task' kind: .*owner/);
+  const error = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], fake));
+  assert.equal(error.details?.reason, "blocked");
+  assert.equal(error.details?.blockers_total, 4);
+
+  // An OKF 0.1 bundle: a write supplies the timestamp and actor there too.
+  await writeFile(path.join(folder, "index.md"), "---\ntitle: Team notes\n---\n# Team notes\n");
+  const v01 = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
+  assert.deepEqual(
+    (v01.blockers as { rows: { path: string; reason: string }[] }).rows.filter((row) => row.reason === "kind_conformance").map((row) => row.path),
+    ["tasks/numeric.md", "tasks/unowned.md"],
+  );
+  // An edition no hosted write can use blocks on the root index.
+  await writeFile(path.join(folder, "index.md"), '---\nokf_version: "0.3"\n---\n# Team notes\n');
+  const edition = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
+  assert.deepEqual(
+    (edition.blockers as { rows: { path: string; reason: string }[] }).rows.filter((row) => row.path === "index.md").map((row) => row.reason),
+    ["unsupported_okf_version"],
+  );
+  assert.equal(fake.requests.length, 0);
+});
+
 test("an id the host's canonical spelling refuses blocks before any request; a joiner between visible characters does not", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "b");

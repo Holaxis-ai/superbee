@@ -359,13 +359,25 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   await run(h, [BUNDLE, "--host", HOST, "--dir", "team"]);
   const folder = path.join(h.cwd, "team");
   const context = { home: h.home, cwd: h.cwd };
-  const refused: [string, string[]][] = [
-    ["doc", ["verify", "notes/alpha", "--dir", folder]],
+  // The app cannot change Kinds either: these say what to do instead, and never send to the app.
+  const kinds: [string, string[]][] = [
     ["kind", ["field", "Note", "add", "owner", "--dir", folder]],
     ["kind", ["draft", "Note", "--dir", folder]],
     ["kind", ["dismiss", "Note", "--dir", folder]],
     ["recipe", ["add", "core", "--dir", folder]],
     ["recipe", ["evolve", "core", "--dir", folder]],
+  ];
+  for (const [command, args] of kinds) {
+    const error = await rejects(assertAllowedInHostedCheckout(command, args, context));
+    assert.equal(error.code, "FORBIDDEN", `${command} ${args[0]}`);
+    assert.equal(error.details?.do_this_in, undefined);
+    assert.doesNotMatch(`${error.message} ${error.help}`, /app/);
+    assert.match(error.message, /cannot be changed from a checkout/);
+    assert.match(error.help ?? "", /local or Git bundle/);
+    assert.equal(error.details?.bundle_id, BUNDLE);
+  }
+  const refused: [string, string[]][] = [
+    ["doc", ["verify", "notes/alpha", "--dir", folder]],
     ["artifact", ["create", "x.pdf", "--title", "x", "--dir", folder]],
     // Both succeeded locally and were then held by sync forever: refuse them up front instead.
     ["index", ["generate", "--dir", folder]],
@@ -462,7 +474,7 @@ test("built CLI: checkout is registered, and a refused command in a checkout is 
   assert.equal(refused.status, 2, refused.stdout);
   const envelope = decode(refused.stdout.trim()) as { error: { code: string; details: Record<string, unknown> } };
   assert.equal(envelope.error.code, "FORBIDDEN");
-  assert.equal(envelope.error.details.do_this_in, "app");
+  assert.equal(envelope.error.details.reason, "not_syncable");
   assert.ok((await stat(path.join(folder, "notes/alpha.md"))).isFile(), "the document is untouched");
 
   const read = await runCli(["doc", "read", "notes/alpha", "--dir", folder]);
