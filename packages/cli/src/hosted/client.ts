@@ -8,8 +8,15 @@
 import {
   createFetchCarrier,
   createHostedReadAdapter,
+  decodeHistoryAnswer,
+  HISTORY_ANSWER_BYTES,
+  historyInput,
   HostedCarrierError,
+  readRefusal,
   type HostedCarrier,
+  type HostedHistoryPage,
+  type HostedHistoryRefusal,
+  type HostedHistoryRequest,
   type HostedReadAdapter,
   type HostedReadRoutes,
 } from "@superbee/core/hosted-transport";
@@ -55,6 +62,8 @@ export interface HostedSyncClient {
   whoami(): Promise<HostedIdentity>;
   bundles(): Promise<HostedBundleRow[]>;
   reader(bundleId: string): HostedReadAdapter;
+  /** One page of a document's history (`documents.history.v1`), validated against the page asked for. */
+  history(bundleId: string, request: HostedHistoryRequest): Promise<{ ok: true; page: HostedHistoryPage } | { ok: false; refusal: HostedHistoryRefusal }>;
 }
 
 export interface HostedIdentity {
@@ -172,6 +181,28 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
     },
     reader(bundleId) {
       return createHostedReadAdapter({ carrier, bundleId, routes: syncReadRoutes(prefix) });
+    },
+    async history(bundleId, request) {
+      const route = `${prefix}/history`;
+      let answer;
+      try {
+        answer = await carrier.json(route, historyInput(bundleId, request), controller.signal, { maximum: HISTORY_ANSWER_BYTES });
+      } catch (error) {
+        throw hostedFailure(error, target, options.resume);
+      }
+      // A gateway from before the route answers the family's own 404 for an unknown route.
+      if (answer.status === 404) {
+        throw new CliError("NOT_IMPLEMENTED", `${target.origin} does not serve document history yet`, {
+          details: { host: target.origin, route, status: 404 },
+          help: `a later release of the host serves it; until then ${cliInvocation()} doc read ${commandToken(request.documentId)} shows the current version`,
+        });
+      }
+      if (answer.status !== 200) throw hostedFailure(readRefusal(answer), target, options.resume);
+      try {
+        return decodeHistoryAnswer(request, answer.body, route);
+      } catch (error) {
+        throw hostedFailure(error, target, options.resume);
+      }
     },
   };
 }

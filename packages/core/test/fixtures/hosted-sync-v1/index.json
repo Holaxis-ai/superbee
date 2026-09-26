@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted 47b4f482742d748dc691bc5665c91b5ff755beaa",
+  "source": "Holaxis-ai/superbee-hosted 01662e7699270325543788ca739ee1ec1716bf2b",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
@@ -354,6 +354,42 @@
         "200 pending"
       ],
       "status": 200
+    },
+    {
+      "name": "history-200-ok",
+      "file": "history-200-ok.json",
+      "route": "/sync/v1/history",
+      "rows": [
+        "history 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "history-200-content",
+      "file": "history-200-content.json",
+      "route": "/sync/v1/history",
+      "rows": [
+        "history 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "history-200-document-not-found",
+      "file": "history-200-document-not-found.json",
+      "route": "/sync/v1/history",
+      "rows": [
+        "history 200 document_not_found"
+      ],
+      "status": 200
+    },
+    {
+      "name": "history-400-invalid-input",
+      "file": "history-400-invalid-input.json",
+      "route": "/sync/v1/history",
+      "rows": [
+        "refusal 400 invalid_input"
+      ],
+      "status": 400
     },
     {
       "name": "create-429-request-capacity",
