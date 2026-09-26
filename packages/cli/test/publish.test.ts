@@ -245,6 +245,23 @@ test("a document the host would refuse blocks the preview and --yes, before any 
   assert.equal(fake.requests.length, 0);
 });
 
+test("an id the host's canonical spelling refuses blocks before any request; a joiner between visible characters does not", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "b");
+  await writeBundle(folder);
+  const refused = ["notes/zero\u200bwidth.md", "notes/\u200bedge.md", "notes/edge\u2060.md", "notes/a\u202eb.md", "notes/nai\u0308ve.md"];
+  for (const rel of refused) await writeFile(path.join(folder, rel), "---\ntype: Note\n---\nx\n");
+  await writeFile(path.join(folder, "notes", "\u{1f469}\u200d\u{1f4bb}.md"), "---\ntype: Note\n---\nx\n");
+  const fake = new FakeCreateHost();
+  const preview = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
+  assert.equal(preview.ready, false);
+  const rows = (preview.blockers as { rows: { path: string; reason: string }[] }).rows;
+  // A filesystem may hand back the decomposed spelling as it was written; compare as written.
+  assert.deepEqual(rows.map((row) => row.reason), refused.map(() => "document_id_not_canonical"), JSON.stringify(rows));
+  assert.deepEqual(new Set(rows.map((row) => row.path)), new Set(refused));
+  assert.equal(fake.requests.length, 0);
+});
+
 test("a Git board is published with its history, unbound, and its branch left as it was", async () => {
   const h = await harness();
   const project = path.join(h.cwd, "project");
