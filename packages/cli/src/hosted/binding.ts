@@ -227,6 +227,33 @@ export async function listReadyBindings(home: string): Promise<CheckoutBinding[]
   return out;
 }
 
+/** A host as a binding records it: its origin and token audience (a `HostedTarget` has both). */
+export interface HostIdentity {
+  readonly origin: string;
+  readonly audience: string;
+}
+
+/** True when a binding is a checkout of this bundle on this host and audience. */
+export function bindsBundle(binding: CheckoutBinding, target: HostIdentity, bundleId: string): boolean {
+  return binding.origin === target.origin && binding.audience === target.audience && binding.bundle_id === bundleId;
+}
+
+/**
+ * The live checkout folders of each bundle on this host and audience, sorted: a ready binding
+ * whose folder is still the one it was made for ({@link bindingForPath}). A deleted, moved or
+ * replaced folder is not a checkout here.
+ */
+export async function liveCheckoutFolders(home: string, target: HostIdentity): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  for (const binding of await listReadyBindings(home)) {
+    if (!bindsBundle(binding, target, binding.bundle_id)) continue;
+    const live = await bindingForPath(home, binding.path).catch(() => null);
+    if (live?.checkout_id !== binding.checkout_id) continue;
+    out.set(binding.bundle_id, [...(out.get(binding.bundle_id) ?? []), binding.path].sort());
+  }
+  return out;
+}
+
 /**
  * The ready binding whose folder was moved to this canonical path: the folder here has the
  * identity the binding recorded (a rename keeps it), and the binding's own path no longer holds
