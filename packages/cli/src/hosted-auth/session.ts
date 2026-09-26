@@ -227,6 +227,24 @@ export async function readSession(home: string, target: HostedTarget): Promise<S
   return record;
 }
 
+/**
+ * Whether a command for this host may have to ask the person to sign in, from the stored session
+ * record alone (no network, no lock): no record, or an access token past its expiry with no
+ * refresh token to renew it. An access token in the environment answers no. "May": a refresh token
+ * the issuer has since revoked is only found out by using it.
+ */
+export async function storedSessionMayNeedSignIn(
+  home: string,
+  target: Pick<HostedTarget, "origin" | "audience">,
+  env: NodeJS.ProcessEnv = process.env,
+  now: number = Date.now(),
+): Promise<boolean> {
+  if (env[ACCESS_TOKEN_ENV]) return false;
+  const session = await readSession(home, target as HostedTarget).catch(() => null);
+  if (!session) return true;
+  return session.access_token_expires_at_ms <= now && !session.has_refresh_token;
+}
+
 export async function readPending(home: string, target: HostedTarget): Promise<PendingRecord | null> {
   const record = await readRecord<PendingRecord>(home, join(sessionDirFor(home, sessionAccount(target)), PENDING_FILE));
   if (!record || record.schema !== 1 || record.audience !== target.audience || record.host !== target.origin) return null;

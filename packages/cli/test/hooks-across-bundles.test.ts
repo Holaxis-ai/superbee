@@ -27,6 +27,7 @@ import {
   writeBoardDoc,
 } from "../../board-git/test/git-harness.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
+import { seedHostedSession } from "./support/hosted-session.js";
 import { withIsolatedUserEnv } from "./support/user-env.js";
 
 const MIN = 60_000;
@@ -105,8 +106,14 @@ test("a hosted checkout in the catalog reads as hosted with its last pull; a mis
     const rows = await otherCatalogBundles(null, { home });
     const hosted = rows.find((row) => row.home === "hosted");
     assert.ok(hosted, JSON.stringify(rows));
-    assert.match(hosted.freshness!, /^pulled \d+m ago$/);
+    // No stored sign-in for the host (the checkout used an environment token): it may need one.
+    assert.match(hosted.freshness!, /^pulled \d+m ago; may need sign-in$/);
     assert.deepEqual(rows.find((row) => row.label === "moved"), { label: "moved", home: "unknown", freshness: "folder missing" });
+    // A live stored session: nothing to say. An expired one with no refresh token: may need sign-in.
+    await seedHostedSession(home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+    assert.match((await otherCatalogBundles(null, { home })).find((row) => row.home === "hosted")!.freshness!, /^pulled \d+m ago$/);
+    await seedHostedSession(home, { host: HOST, accessToken: TOKEN, expiresAtMs: 0 });
+    assert.match((await otherCatalogBundles(null, { home })).find((row) => row.home === "hosted")!.freshness!, /; may need sign-in$/);
     assert.equal(host.requests.length, 0, "listing never reaches the host");
   } finally {
     await rm(home, { recursive: true, force: true });
