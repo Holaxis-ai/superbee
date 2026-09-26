@@ -148,6 +148,50 @@ test("an MCP write while sync holds the checkout does not wait, keeps the file, 
   assert.equal(c.host.docs.get("notes/beta")?.frontmatter.title, "Beta during sync");
 });
 
+test("an MCP write landing while sync places the host's change to the same document is kept, as a conflict, never overwritten", async () => {
+  const c = await hostedCheckout();
+  const context = await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const alpha = await readDoc(context.bundle, "notes/alpha");
+  c.host.put("notes/alpha", { type: "Note", title: "Alpha from the app" }, "Changed on the host.\n");
+  let wrote = false;
+  // The host's change is pulled, then placed with the pre-image guard (replaceGuarded); the MCP
+  // write lands after the pull read the listing and before the placement.
+  const during: typeof c.host.fetch = async (input, init) => {
+    const response = await c.host.fetch(input, init);
+    const route = new URL(String(input)).pathname.split("/").pop();
+    if (!wrote && (route === "read" || route === "snapshot")) {
+      wrote = true;
+      await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha through MCP" }, body: alpha.body });
+    }
+    return response;
+  };
+  await runSync(c, during).catch((error: unknown) => assert.ok(error instanceof CliError && error.code === "CONFLICT", String(error)));
+  assert.ok(wrote);
+  assert.match(await readFile(path.join(c.folder, "notes", "alpha.md"), "utf8"), /Alpha through MCP/, "the MCP write is kept");
+  assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha from the app", "the host's change is not overwritten");
+  await assert.rejects(runSync(c), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
+});
+
+test("the guard: an unknown storage method is refused, an unsafe id is unsafe_path, a document delete is admitted and synced", async () => {
+  const c = await hostedCheckout();
+  const context = await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const backend = context.bundle.backend as unknown as Record<string, unknown>;
+  // A method the guard's table does not name is refused, whatever it would do.
+  const unguarded = (await openBundle(c.folder)).backend as unknown as Record<string, unknown>;
+  const probe = Object.getPrototypeOf(unguarded) as Record<string, unknown>;
+  probe.rewrite = async () => "written";
+  try {
+    assert.throws(() => (backend.rewrite as () => unknown)(), /does not know the storage method 'rewrite'/);
+  } finally {
+    delete probe.rewrite;
+  }
+  await assert.rejects(context.bundle.backend!.write("../outside", { id: "../outside", frontmatter: { type: "Note" }, body: "" }), refusedAs("unsafe_path", false));
+  await deleteDoc(context.bundle, "notes/beta");
+  assert.equal(await exists(path.join(c.folder, "notes", "beta.md")), false);
+  await runSync(c);
+  assert.equal(c.host.docs.has("notes/beta"), false, "the delete reached the host");
+});
+
 test("mcp --dir on a checkout serves the same guarded bundle, and mcp is no longer refused in a checkout", async () => {
   const c = await hostedCheckout();
   await assertAllowedInHostedCheckout("mcp", ["--dir", c.folder], { home: c.home, cwd: c.cwd });

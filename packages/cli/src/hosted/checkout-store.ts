@@ -3,7 +3,7 @@
 // A running `sync` holds the checkout lock (and the store) for its whole run. Readers that must not
 // wait on it (`status`, the end-of-turn hook's local check, the local MCP app's write guard) try
 // the lock without waiting and treat a held lock as "busy". One helper, so the three agree on how.
-import { parseMarkdown, type JournaledBackend } from "@superbee/core";
+import { readBundleOkfVersion, type JournaledBackend, type StorageBackend } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
 
@@ -30,14 +30,11 @@ export async function withIdleCheckoutStore<T>(
   });
 }
 
-/** The OKF edition the checkout's root index declares, or undefined. */
-export async function storeOkfVersion(store: JournaledBackend): Promise<"0.1" | "0.2" | undefined> {
-  const root = await store.readReserved("", "index.md");
-  if (!root) return undefined;
-  try {
-    const version = parseMarkdown(root.content, "index").frontmatter.okf_version;
-    return version === "0.1" || version === "0.2" ? version : undefined;
-  } catch {
-    return undefined;
-  }
+/**
+ * The OKF edition a backend's root index declares (core's `readBundleOkfVersion`), or undefined
+ * for an absent, malformed or unknown one: the checkout's store, or its folder.
+ */
+export async function storeOkfVersion(store: StorageBackend): Promise<"0.1" | "0.2" | undefined> {
+  const version = await readBundleOkfVersion({ root: "", backend: store }).catch(() => undefined);
+  return version === "0.1" || version === "0.2" ? version : undefined;
 }

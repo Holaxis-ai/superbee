@@ -88,7 +88,8 @@ export function createCatalogMcpWorkspaceResolver(
       // A hosted checkout is served through its folder, with the guard that refuses up front what
       // sync cannot send (hosted/served-bundle.ts). Its binding is read fresh, never taken from the catalog.
       const served = await servedBundle(bundle, options.home !== undefined ? { home: options.home } : {});
-      const bundleName = (await deriveName(served)).name;
+      // Named from the folder as opened, so naming it never waits on an automatic pull.
+      const bundleName = (await deriveName(bundle)).name;
       return createMcpBundleContext({
         bundle: served,
         bundleName,

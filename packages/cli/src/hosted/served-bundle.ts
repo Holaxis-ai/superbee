@@ -17,11 +17,10 @@
 // it. Every backend method is classified as a read or a write at compile time; a method the table
 // does not name is refused. `mcp-app` stays free of hosted knowledge: the CLI hands it the bundle
 // already wrapped, from both open paths (the catalog resolver and `mcp --dir`).
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { assertSafeConceptId, parseMarkdown, pathFromConceptId, stringifyDoc, type Bundle, type Frontmatter, type OkfDocument, type StorageBackend } from "@superbee/core";
+import { assertSafeConceptId, pathFromConceptId, stringifyDoc, type Bundle, type Frontmatter, type OkfDocument, type StorageBackend } from "@superbee/core";
 
 import { maybeHostedAutoPull, type HostedAutoPullOptions } from "../autopull.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
@@ -84,7 +83,7 @@ export async function servedBundle(bundle: Bundle, options: ServedBundleOptions 
   const binding = await bindingForPath(home, root);
   if (!binding) return bundle;
   const backend: StorageBackend = bundle.backend ?? configuredBundle(bundle.root).backend!;
-  const guard = checkoutGuard(binding, home, root, options);
+  const guard = checkoutGuard(binding, home, backend, options);
   const guarded = new Proxy(backend, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver) as unknown;
@@ -122,10 +121,10 @@ interface CheckoutGuard {
   admit(method: Method, args: readonly unknown[]): Promise<void>;
 }
 
-/** When this process last started an automatic pull of each checkout, and the pull in flight. */
+/** When this process last started an automatic pull of each checkout (by home and checkout), and the pull in flight. */
 const lastPulls = new Map<string, { at: number; pending: Promise<void> }>();
 
-function checkoutGuard(binding: CheckoutBinding, home: string, root: string, options: ServedBundleOptions): CheckoutGuard {
+function checkoutGuard(binding: CheckoutBinding, home: string, folder: StorageBackend, options: ServedBundleOptions): CheckoutGuard {
   const refuse = (held: HeldFile): never => {
     throw hostedHeldWriteRefusal(binding, held);
   };
@@ -143,13 +142,14 @@ function checkoutGuard(binding: CheckoutBinding, home: string, root: string, opt
   };
   return {
     freshen() {
-      const last = lastPulls.get(binding.checkout_id);
+      const key = `${home}\0${binding.checkout_id}`;
+      const last = lastPulls.get(key);
       if (last && Date.now() - last.at < HOSTED_AUTOPULL_STALE_MS) return last.pending;
       const pending = maybeHostedAutoPull(binding, { sync: { auth: defaultHostedAuthDeps(home) }, ...options.autoPull }).then(
         () => undefined,
         () => undefined,
       );
-      lastPulls.set(binding.checkout_id, { at: Date.now(), pending });
+      lastPulls.set(key, { at: Date.now(), pending });
       return pending;
     },
     async admit(method, args) {
@@ -158,7 +158,7 @@ function checkoutGuard(binding: CheckoutBinding, home: string, root: string, opt
           const [id, doc] = args as [string, OkfDocument];
           const rel = documentPath(id);
           const bytes = Buffer.from(stringifyDoc(doc.frontmatter, doc.body ?? ""), "utf8");
-          const stored = await storedDocument(binding, home, root, id, rel);
+          const stored = await storedDocument(binding, home, folder, id);
           const held = unsendable(id, rel, bytes, stored.frontmatter ? { frontmatter: stored.frontmatter } : null, { bundleId: binding.bundle_id, okfVersion: stored.okfVersion });
           if (held) refuse(held);
           return;
@@ -172,7 +172,9 @@ function checkoutGuard(binding: CheckoutBinding, home: string, root: string, opt
         case "writeBlob":
         case "deleteBlob": {
           const key = String(args[0]);
-          return refuse({ id: key, path: key, reason: heldPathReason(key) ?? "not_a_document", message: `${key} is not a .md document; files other than documents do not sync` });
+          const reason = heldPathReason(key) ?? "not_a_document";
+          const message = reason === "convention_folder" ? `${key} is under ${key.split("/")[0]}/, which holds conventions edited in the Superbee app` : reason === "reserved_file" ? `${key} is a reserved OKF file, which sync does not send` : `${key} is not a .md document; files other than documents do not sync`;
+          return refuse({ id: key, path: key, reason, message });
         }
         default:
           return refuse({ id: String(args[0]), path: String(args[0]), reason: "not_sendable", message: `'${method}' is not a write sync sends` });
@@ -184,31 +186,17 @@ function checkoutGuard(binding: CheckoutBinding, home: string, root: string, opt
 /**
  * The document as sync last accounted it, for the type-change rule, and the checkout's OKF edition.
  * Read from the checkout's private store when no other command holds the checkout. While a sync
- * runs, the guard never waits on it: it reads the folder's current file instead, which sync is
- * bringing up to the host's version. The residual: a file already retyped by hand is not caught
- * then, and the scan still holds it (`type_change`), so nothing wrong is ever sent.
+ * runs, the guard never waits on it: it reads the folder's current document instead (through the
+ * folder's own, unguarded backend), which sync is bringing up to the host's version. The residual:
+ * a file already retyped by hand is not caught then, and the scan still holds it (`type_change`), so
+ * nothing wrong is ever sent.
  */
-async function storedDocument(binding: CheckoutBinding, home: string, root: string, id: string, rel: string): Promise<{ frontmatter: Frontmatter | null; okfVersion: "0.1" | "0.2" | undefined }> {
+async function storedDocument(binding: CheckoutBinding, home: string, folder: StorageBackend, id: string): Promise<{ frontmatter: Frontmatter | null; okfVersion: "0.1" | "0.2" | undefined }> {
   const fromStore = await withIdleCheckoutStore(binding, home, async (store) => ({
     frontmatter: (await store.readWithJournal(id)).document?.doc.frontmatter ?? null,
     okfVersion: await storeOkfVersion(store),
   }));
   if (fromStore) return fromStore;
-  const okfVersion = await folderOkfVersion(root);
-  const text = await readFile(path.join(root, rel), "utf8").catch(() => null);
-  if (text === null) return { frontmatter: null, okfVersion };
-  try {
-    return { frontmatter: parseMarkdown(text, id, { okfVersion }).frontmatter, okfVersion };
-  } catch {
-    return { frontmatter: null, okfVersion };
-  }
-}
-
-async function folderOkfVersion(root: string): Promise<"0.1" | "0.2" | undefined> {
-  try {
-    const version = parseMarkdown(await readFile(path.join(root, "index.md"), "utf8"), "index").frontmatter.okf_version;
-    return version === "0.1" || version === "0.2" ? version : undefined;
-  } catch {
-    return undefined;
-  }
+  const frontmatter = await folder.read(id).then((read) => read.doc.frontmatter, () => null);
+  return { frontmatter, okfVersion: await storeOkfVersion(folder) };
 }

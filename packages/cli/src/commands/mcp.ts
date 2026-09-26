@@ -320,7 +320,8 @@ async function mcpInner(argv: string[], deps: Partial<McpCliDeps>): Promise<void
   const opened = await open(values.dir);
   // A hosted checkout is served through its folder, refusing up front what sync cannot send.
   const bundle = await servedBundle(opened);
-  const bundleName = (await deriveBundleDisplayName(bundle)).name;
+  // Named from the folder as opened, so starting never waits on an automatic pull.
+  const bundleName = (await deriveBundleDisplayName(opened)).name;
   await start({
     bundle,
     version: cliVersion(),

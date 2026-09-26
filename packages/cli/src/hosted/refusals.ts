@@ -122,8 +122,8 @@ async function checkoutFor(command: string, dir: string | undefined, home: strin
   return bindingForPath(home, root);
 }
 
-export function hostedCheckoutRefusal(row: RefusalRow, words: string, binding: CheckoutBinding): CliError {
-  const details = { reason: row.reason, command: words, bundle_id: binding.bundle_id, host: binding.origin, checkout: binding.path };
+export function hostedCheckoutRefusal(row: RefusalRow, words: string, binding: CheckoutBinding, extra: Readonly<Record<string, string>> = {}): CliError {
+  const details = { reason: row.reason, command: words, bundle_id: binding.bundle_id, host: binding.origin, checkout: binding.path, ...extra };
   if (row.reason === "checkout_target") {
     return new CliError("FORBIDDEN", `'${words}' refused: ${row.why} (bundle ${binding.bundle_id} on ${binding.origin})`, {
       details,
@@ -174,14 +174,12 @@ const HELD_INSTEAD: Partial<Record<HeldReason, string>> = {
  */
 export function hostedHeldWriteRefusal(binding: CheckoutBinding, held: HeldFile): CliError {
   const instead = HELD_INSTEAD[held.reason];
-  const details = { reason: "not_syncable", held_reason: held.reason, id: held.id, command: "mcp", bundle_id: binding.bundle_id, host: binding.origin, checkout: binding.path };
-  if (instead) {
-    return new CliError("FORBIDDEN", `this write cannot sync from a hosted checkout: ${held.message}; ${instead}`, { details, help: instead });
-  }
-  return new CliError("FORBIDDEN", `this write cannot sync from a hosted checkout: ${held.message}; do this in the Superbee app`, {
-    details: { ...details, do_this_in: "app" },
-    help: `do this in the Superbee app for bundle ${binding.bundle_id} on ${binding.origin}`,
-  });
+  return hostedCheckoutRefusal(
+    { words: ["mcp"], reason: "not_syncable", why: held.message, ...(instead ? { instead } : {}) },
+    "mcp write",
+    binding,
+    { held_reason: held.reason, id: held.id },
+  );
 }
 
 /**
