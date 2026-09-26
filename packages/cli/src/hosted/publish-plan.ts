@@ -9,12 +9,28 @@
 //   history         with `--with-history` on a Git board: each earlier Git version of each document,
 //                   labeled `imported:git/<commit>` and unverified (Mike's decision D2)
 // What does not: dot-files and dot-folders (`.git`, the checkout marker), symbolic links, and
-// anything that is not a regular file. A document the host would refuse blocks the plan.
+// anything that is not a regular file. A document the host would refuse blocks the plan, and so does
+// a Kind problem the host would refuse later writes over.
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { readDocBytesAtRef, runGit } from "@superbee/board-git";
-import { assertSafeBlobKey, assertSafeConceptId, conceptIdFromPath, isReservedFile, parseMarkdown } from "@superbee/core";
+import {
+  assertSafeBlobKey,
+  assertSafeConceptId,
+  buildKindRegistry,
+  conceptIdFromPath,
+  CONVENTION_TYPE,
+  CONVENTIONS_PREFIX,
+  InvalidInputError,
+  isReservedFile,
+  KindConformanceError,
+  matchesFilter,
+  OkfActorError,
+  parseMarkdown,
+  prepareDocumentMutationCandidate,
+  type OkfDocument,
+} from "@superbee/core";
 import { wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 
 import type { GitBoardFacts } from "../bundle-home.js";
@@ -125,6 +141,20 @@ async function walkAll(folder: string, prefix = "", out: { rel: string; kind: "f
   return out;
 }
 
+/** How a hosted write prepares a candidate against its Kind (superbee-hosted `HOSTED_KIND_WRITE`). */
+const HOSTED_KIND_WRITE = Object.freeze({ strict: true, persistActor: true, producer: "process:superbee-hosted" } as const);
+
+/** The bundle's edition as `readBundleOkfVersion` reads it from the root index. */
+function rootIndexEdition(rootIndex: string | null): string | undefined {
+  if (rootIndex === null) return undefined;
+  try {
+    const value = parseMarkdown(rootIndex, "index").frontmatter.okf_version;
+    return typeof value === "string" && value.trim() !== "" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The host refuses control and format characters (bidi overrides, zero-width) in an author. */
 function cleanAuthor(author: string): string {
   // The host bounds it at 200 UTF-16 units; whole characters are kept, never half a surrogate pair.
@@ -211,6 +241,47 @@ function isHostCanonicalId(id: string): boolean {
     id.split("/").every((segment) => segment === segment.trim() && !FORMAT_AT_EDGE.test(segment) && !FORMAT_INSIDE.test(segment)) &&
     id === id.normalize("NFC")
   );
+}
+
+/**
+ * Kind problems that would make the created bundle refuse writes, found with the rules of
+ * superbee-hosted `packages/agent-operations/src/kind-conformance.ts` (`bundleKindFindings`), which
+ * `bundles.create.v1` also applies: every hosted write refuses while the Kind registry has a
+ * warning, and prepares its candidate strictly against the document's Kind. The registry is built
+ * as `loadKinds` builds it, and each document is prepared as a hosted create prepares it, so a
+ * timestamp or actor the write supplies is not a problem. Mirrored here because the host pins a
+ * released core.
+ */
+function kindBlockers(documents: readonly CreateDocument[], rootIndex: string | null): PublishBlocker[] {
+  const docs: OkfDocument[] = documents.map((doc) => ({ id: doc.id, frontmatter: doc.frontmatter as OkfDocument["frontmatter"], body: doc.body }));
+  const edition = rootIndexEdition(rootIndex);
+  const ids = new Set(docs.map((doc) => doc.id));
+  const registry = buildKindRegistry(docs.filter((doc) => matchesFilter(doc, { prefix: CONVENTIONS_PREFIX, type: CONVENTION_TYPE })), [], { okfVersion: edition });
+  const blockers: PublishBlocker[] = registry.warnings.map((warning) => ({
+    path: warning.field !== undefined && ids.has(warning.field) ? `${warning.field}.md` : CONVENTIONS_PREFIX,
+    reason: "kind_convention",
+    message: `${warning.message}; the host refuses every write while a Kind convention has a problem`,
+  }));
+  for (const doc of docs) {
+    try {
+      prepareDocumentMutationCandidate(undefined, { frontmatter: doc.frontmatter, body: doc.body }, {
+        ...HOSTED_KIND_WRITE,
+        id: doc.id,
+        registry,
+        okfVersion: (edition ?? "0.1") as "0.1" | "0.2",
+        actor: "person:publish-preview",
+      });
+    } catch (error) {
+      if (error instanceof KindConformanceError) {
+        blockers.push({ path: `${doc.id}.md`, reason: "kind_conformance", message: `${error.message}; the host refuses edits to it until it does` });
+        continue;
+      }
+      // Other input errors are not Kind problems; the checks above and the host own them.
+      if (error instanceof InvalidInputError && !(error instanceof OkfActorError)) continue;
+      throw error;
+    }
+  }
+  return blockers;
 }
 
 /**
@@ -309,6 +380,7 @@ export async function planPublish(folder: string, options: { history: false } | 
     documentFiles.push({ id, rel: entry.rel, text: utf8(bytes)! });
   }
   if (rootIndex === null) blockers.push({ path: "index.md", reason: "no_root_index", message: "a hosted bundle needs a root index.md" });
+  blockers.push(...kindBlockers(documents, rootIndex));
   // Paths that would be one file on a case-insensitive disk: documents (and their folders), then
   // every path the host claims, documents, reserved files and files together.
   const collision = findPathCollision(documents.map((doc) => doc.id));

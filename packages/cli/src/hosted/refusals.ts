@@ -1,5 +1,6 @@
 // Up-front refusals in a hosted checkout (Mike's decision, September 22, 2026: refuse at the
-// command, with "do this in the app"). A hosted checkout syncs whole documents only, through
+// command, with "do this in the app"; Kind and recipe commands, which the app cannot do either, say
+// what to do instead). A hosted checkout syncs whole documents only, through
 // `documents.create.v1`, `documents.replace.v1` and `documents.delete.v1` (a deleted file, from
 // `doc delete` or by hand, syncs as a delete). A command whose effect sync cannot send is
 // refused before it touches the folder, instead of succeeding locally and being held forever.
@@ -25,7 +26,11 @@ interface RefusalRow {
   readonly why: string;
   /** When present, the row applies only to invocations this accepts. */
   readonly when?: (args: readonly string[]) => boolean;
+  /** What to do instead, for a command the app cannot do either. */
+  readonly instead?: string;
 }
+
+const KINDS_INSTEAD = "to design Kinds, work in a local or Git bundle and publish it";
 
 /** The `--doc-key` value in argv, in either spelling; the last one wins, as the parser takes it. */
 function docKey(args: readonly string[]): string | undefined {
@@ -45,9 +50,9 @@ const MCP_REGISTRATION: ReadonlySet<string> = new Set(["install", "status", "uni
 /** Every command a hosted checkout refuses up front. The order is the lookup order. */
 export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
   { words: ["doc", "verify"], reason: "not_syncable", why: "verification is a managed field the host records" },
-  { words: ["kind", "*"], reason: "not_syncable", why: "Kind conventions are edited in the app" },
-  { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change Kind and View conventions, which are edited in the app" },
-  { words: ["recipe", "evolve"], reason: "not_syncable", why: "recipes change Kind and View conventions, which are edited in the app" },
+  { words: ["kind", "*"], reason: "not_syncable", why: "a hosted bundle's Kinds cannot be changed from a checkout", instead: KINDS_INSTEAD },
+  { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD },
+  { words: ["recipe", "evolve"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD },
   { words: ["artifact", "*"], reason: "not_syncable", why: "artifacts carry blobs, which do not sync" },
   {
     words: ["promote"],
@@ -124,6 +129,9 @@ export function hostedCheckoutRefusal(row: RefusalRow, words: string, binding: C
       details,
       help: "choose another folder for a local bundle",
     });
+  }
+  if (row.instead) {
+    return new CliError("FORBIDDEN", `'${words}' cannot sync from a hosted checkout (${row.why}): ${row.instead}`, { details, help: row.instead });
   }
   return new CliError("FORBIDDEN", `'${words}' cannot sync from a hosted checkout (${row.why}): do this in the Superbee app`, {
     details: { ...details, do_this_in: "app" },
