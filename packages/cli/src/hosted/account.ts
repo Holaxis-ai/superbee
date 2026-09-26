@@ -11,7 +11,7 @@ import { cliInvocation } from "../invocation.js";
 import { ensureHostedAccessToken, hostArgument, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import type { CheckoutBinding } from "./binding.js";
-import { createHostedSyncClient, type HostedIdentity, type HostedSyncClient } from "./client.js";
+import { createHostedSyncClient, type HostedIdentity, type HostedSyncClient, type HostedWorkspace } from "./client.js";
 import { readDefaultWorkspace } from "./defaults.js";
 
 export interface HostedAccountDeps {
@@ -25,10 +25,15 @@ export interface HostedAccount {
   readonly identity: HostedIdentity;
   /** Named, else the only one, else the default `setup hosted` recorded for this host (if still yours). */
   readonly workspace: string | null;
+  /**
+   * The slug of the workspace `--workspace` named, when the host reports one: a qualified
+   * reference may name the bundle in it. Never a remembered default, which may be stale.
+   */
+  readonly namedSlug: string | null;
 }
 
 export interface HostedAccountRequest {
-  /** `--workspace`: checked against the memberships and sent as the workspace header. */
+  /** `--workspace`: a workspace id or slug, checked against the memberships. */
   readonly workspace?: string | undefined;
   /** The command that repeats this one, carried on AUTH_REQUIRED. */
   readonly resume: CommandText;
@@ -45,22 +50,32 @@ export async function connectHostedAccount(target: HostedTarget, request: Hosted
     target,
     accessToken: token.accessToken,
     resume: request.resume,
-    ...(request.workspace !== undefined ? { workspace: request.workspace } : {}),
     ...(request.deadlineMs !== undefined ? { deadlineMs: request.deadlineMs } : {}),
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
   });
   const identity = await client.whoami();
-  if (request.workspace !== undefined && !identity.tenantIds.includes(request.workspace)) {
+  const named = request.workspace === undefined ? undefined : namedWorkspace(identity, request.workspace);
+  if (request.workspace !== undefined && named === undefined) {
     throw new CliError("NOT_FOUND", `you are not a member of workspace '${request.workspace}' on ${target.origin}`, {
-      details: { reason: "not_a_member", workspace: request.workspace, workspaces: identity.tenantIds },
+      details: { reason: "not_a_member", workspace: request.workspace, workspaces: workspaceNames(identity) },
       ...(request.otherWorkspace !== undefined ? { help: request.otherWorkspace } : {}),
     });
   }
   const remembered = identity.tenantIds.length > 1 ? await readDefaultWorkspace(deps.auth.home, target.origin) : null;
   const workspace =
-    request.workspace ??
+    named?.tenantId ??
     (identity.tenantIds.length === 1 ? identity.tenantIds[0]! : remembered !== null && identity.tenantIds.includes(remembered) ? remembered : null);
-  return { client, identity, workspace };
+  return { client, identity, workspace, namedSlug: named?.slug ?? null };
+}
+
+/** The person's workspace a `--workspace` value names: by its id, or by its slug. Undefined when none. */
+function namedWorkspace(identity: HostedIdentity, value: string): HostedWorkspace | undefined {
+  return identity.workspaces.find((w) => w.tenantId === value) ?? identity.workspaces.find((w) => w.slug === value);
+}
+
+/** Each workspace as `--workspace` takes it: its slug when the host reports one, else its id. */
+export function workspaceNames(identity: HostedIdentity): string[] {
+  return identity.workspaces.map((w) => w.slug ?? w.tenantId);
 }
 
 export interface CheckoutConnectionRequest {
@@ -93,7 +108,7 @@ export async function connectCheckout(binding: CheckoutBinding, request: Checkou
     target,
     accessToken: token.accessToken,
     resume: request.resume,
-    ...(binding.workspace !== null ? { workspace: binding.workspace } : {}),
+    ...(binding.workspace_slug ? { slug: binding.workspace_slug } : {}),
     ...(request.deadlineMs !== undefined ? { deadlineMs: request.deadlineMs } : {}),
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
   });

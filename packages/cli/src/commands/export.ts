@@ -44,7 +44,8 @@ import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, requireHo
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { bindingForPath, checkoutLockName, checkoutStoreDir, releaseCheckout, type CheckoutBinding } from "../hosted/binding.js";
 import { createHostedSyncClient, hostedFailure } from "../hosted/client.js";
-import { connectCheckout, hostedListCommand } from "../hosted/account.js";
+import { connectCheckout, connectHostedAccount, hostedListCommand } from "../hosted/account.js";
+import { hostedBundleReferenceText, parseHostedBundleReference } from "../hosted/reference.js";
 import { hostedCheckoutFor } from "../hosted/sync.js";
 import { classifyCheckout, hostedStatus } from "../hosted/status.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
@@ -78,7 +79,8 @@ current revision only.
 
 --to <folder> writes a new local bundle there. The folder must be new or empty; it appears
 complete or not at all. With a bundle id the host is --host, else your last sign-in; with
---dir (or run inside a checkout) the checkout's own host and bundle are used.
+--dir (or run inside a checkout) the checkout's own host and bundle are used. A bundle id in more
+than one of your workspaces is named <workspace>/<bundle-id>, or with --workspace.
 
 --in-place converts a hosted checkout into a plain local bundle: it adds the files the checkout
 lacks (blobs, reserved files, documents added on the host), never overwrites a file, then
@@ -94,7 +96,7 @@ Options:
   --in-place          Convert the hosted checkout (--dir, else the current folder) into a local bundle
   --dir <checkout>    The hosted checkout to export (default: the current folder)
   --host <url>        Hosted Superbee URL, with a bundle id; default: your last sign-in
-  --workspace <id>    Your workspace that holds the bundle, sent with the request
+  --workspace <id>    With a bundle id: your workspace that holds it, by id or slug
   --git               Initialize a Git repository on branch '${BOARD_BRANCH}' and commit the export
   --keep-unsent       With --in-place: convert even with unsent changes, conflicts or held files
   --json              Emit compact JSON instead of TOON
@@ -125,7 +127,6 @@ function exportDeps(partial: Partial<ExportDeps>): ExportDeps {
 
 /** The export route's own window (60 s); the default 15 s read deadline would cut a large bundle. */
 const EXPORT_DEADLINE_MS = 60_000;
-const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 /** Paths shown per list in a receipt; the counts are always the totals. */
 const SHOWN = 20;
 const JOURNAL = IN_PLACE_JOURNAL;
@@ -138,6 +139,9 @@ const HOSTED_UNCHANGED = "unchanged: the hosted bundle still exists and was not 
 interface Source {
   readonly target: HostedTarget;
   readonly bundleId: string;
+  /** The workspace slug a named bundle's reference gave (`<slug>/<bundle-id>`), or null. */
+  readonly slug: string | null;
+  /** With a named bundle: `--workspace`, resolved against the person's workspaces before the export. */
   readonly workspace: string | null;
   /** Set when the source is a checkout: the principal it was made under. */
   readonly binding: CheckoutBinding | null;
@@ -168,20 +172,36 @@ function refusalCode(body: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
+/** The client a named bundle is exported through: `--workspace` is checked against the person's
+ * workspaces, and a slug (the reference's, or the one `--workspace` names) names the bundle in it. */
+async function namedClient(source: Source, deps: ExportDeps, resume: CommandText) {
+  const { target, bundleId } = source;
+  if (source.workspace === null) {
+    const client = createHostedSyncClient({
+      target,
+      accessToken: (await ensureHostedAccessToken(target, { resume }, deps.auth)).accessToken,
+      resume,
+      deadlineMs: EXPORT_DEADLINE_MS,
+      ...(deps.fetch ? { fetch: deps.fetch } : {}),
+    });
+    return source.slug === null ? client : client.within(source.slug);
+  }
+  const { client, namedSlug } = await connectHostedAccount(target, { workspace: source.workspace, resume, deadlineMs: EXPORT_DEADLINE_MS }, deps);
+  if (source.slug !== null && namedSlug !== null && source.slug !== namedSlug) {
+    throw new CliError("USAGE", `'${source.slug}/${bundleId}' names workspace '${source.slug}', but --workspace names '${namedSlug}'`, { help: `${cliInvocation()} export --help` });
+  }
+  const slug = source.slug ?? namedSlug;
+  return slug === null ? client : client.within(slug);
+}
+
 /** The whole archive, bounded, or the CLI error the host's answer means. */
 async function fetchArchive(source: Source, deps: ExportDeps, resume: CommandText): Promise<Uint8Array> {
   const { target, bundleId } = source;
-  // A checkout is read as its own person; a named bundle as whoever is signed in.
+  // A checkout is read as its own person (in the workspace it names); a named bundle as whoever is
+  // signed in, in the workspace its reference or --workspace names.
   const client = source.binding
     ? (await connectCheckout(source.binding, { resume, deadlineMs: EXPORT_DEADLINE_MS }, deps)).client
-    : createHostedSyncClient({
-        target,
-        accessToken: (await ensureHostedAccessToken(target, { resume }, deps.auth)).accessToken,
-        resume,
-        deadlineMs: EXPORT_DEADLINE_MS,
-        ...(source.workspace !== null ? { workspace: source.workspace } : {}),
-        ...(deps.fetch ? { fetch: deps.fetch } : {}),
-      });
+    : await namedClient(source, deps, resume);
   let answer;
   try {
     answer = await client.carrier.stream(`${client.prefix}/export`, { bundleId }, client.signal);
@@ -191,7 +211,8 @@ async function fetchArchive(source: Source, deps: ExportDeps, resume: CommandTex
   if (!answer.ok) {
     const code = refusalCode(answer.body) ?? "RUNTIME";
     if (code === "bundle_not_found") {
-      throw new CliError("NOT_FOUND", `no hosted bundle '${bundleId}' is visible to you on ${target.origin}`, {
+      const named = hostedBundleReferenceText({ slug: source.slug, bundleId });
+      throw new CliError("NOT_FOUND", `no hosted bundle '${named}' is visible to you on ${target.origin}`, {
         details: { bundle_id: bundleId, host: target.origin },
         help: hostedListCommand(target),
       });
@@ -769,7 +790,7 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
   const early = Number(status.sync.unsent ?? 0) + Number(status.sync.conflicts ?? 0) + Number(status.sync.held_files ?? 0) + Number(status.sync.held_deletions ?? 0);
   if (early > 0 && !keepUnsent) throw unsentRefusal(early, status.sync);
 
-  const source: Source = { target: resolveHostedTarget(binding.audience), bundleId: binding.bundle_id, workspace: binding.workspace, binding };
+  const source: Source = { target: resolveHostedTarget(binding.audience), bundleId: binding.bundle_id, slug: binding.workspace_slug ?? null, workspace: null, binding };
   const exported = verified(await fetchArchive(source, deps, resume), source);
 
   const result = await filesystemPushRoleLocks()
@@ -869,16 +890,17 @@ export async function exportCommand(argv: string[], partial: Partial<ExportDeps>
   }
   const mode = resolveMode(values);
   const usage = (message: string) => new CliError("USAGE", message, { help: `${cliInvocation()} export --help` });
-  const bundleId = positionals[0];
+  const named = positionals[0];
   const inPlace = values["in-place"] === true;
   if (inPlace === (values.to !== undefined)) throw usage("pass exactly one of --to <folder> and --in-place");
-  if (bundleId !== undefined && values.dir !== undefined) throw usage("pass a bundle id or --dir <checkout>, not both");
-  if (bundleId === undefined && (values.host !== undefined || values.workspace !== undefined)) throw usage("--host and --workspace go with a bundle id; a checkout uses its own");
-  if (inPlace && bundleId !== undefined) throw usage("--in-place converts a checkout folder: pass --dir <checkout>, not a bundle id");
+  if (named !== undefined && values.dir !== undefined) throw usage("pass a bundle id or --dir <checkout>, not both");
+  if (named === undefined && (values.host !== undefined || values.workspace !== undefined)) throw usage("--host and --workspace go with a bundle id; a checkout uses its own");
+  if (inPlace && named !== undefined) throw usage("--in-place converts a checkout folder: pass --dir <checkout>, not a bundle id");
   if (!inPlace && values["keep-unsent"]) throw usage("--keep-unsent goes with --in-place");
-  if (bundleId !== undefined && (!BUNDLE_ID.test(bundleId) || bundleId.length > 128)) throw usage(`'${bundleId}' is not a hosted bundle id`);
+  const reference = named === undefined ? undefined : parseHostedBundleReference(named);
+  if (named !== undefined && !reference) throw usage(`'${named}' is not a hosted bundle id or <workspace>/<bundle-id>`);
   const git = values.git === true;
-  const resume: CommandText = commandFragment`${cliInvocation()} export${bundleId !== undefined ? commandFragment` ${commandToken(bundleId)}` : commandFragment``}${
+  const resume: CommandText = commandFragment`${cliInvocation()} export${named !== undefined ? commandFragment` ${commandToken(named)}` : commandFragment``}${
     values.dir !== undefined ? commandFragment` --dir ${commandToken(path.resolve(deps.cwd, values.dir))}` : commandFragment``
   }${values.to !== undefined ? commandFragment` --to ${commandToken(path.resolve(deps.cwd, values.to))}` : commandFragment``}${inPlace ? commandFragment` --in-place` : commandFragment``}${
     values.host !== undefined ? commandFragment` --host ${commandToken(values.host)}` : commandFragment``
@@ -893,8 +915,14 @@ export async function exportCommand(argv: string[], partial: Partial<ExportDeps>
   }
 
   let source: Source;
-  if (bundleId !== undefined) {
-    source = { target: await requireHostedBundleHost(values.host, deps.auth.home), bundleId, workspace: values.workspace ?? null, binding: null };
+  if (reference) {
+    source = {
+      target: await requireHostedBundleHost(values.host, deps.auth.home),
+      bundleId: reference.bundleId,
+      slug: reference.slug,
+      workspace: values.workspace ?? null,
+      binding: null,
+    };
   } else {
     const binding = await hostedCheckoutFor(values.dir === undefined ? [] : ["--dir", values.dir], deps.auth.home, deps.cwd);
     if (!binding) {
@@ -903,7 +931,7 @@ export async function exportCommand(argv: string[], partial: Partial<ExportDeps>
         help: `${cliInvocation()} export <bundle-id> --to ${commandToken(values.to!)}`,
       });
     }
-    source = { target: resolveHostedTarget(binding.audience), bundleId: binding.bundle_id, workspace: binding.workspace, binding };
+    source = { target: resolveHostedTarget(binding.audience), bundleId: binding.bundle_id, slug: binding.workspace_slug ?? null, workspace: null, binding };
   }
   await exportToFolder(source, values.to!, git, deps, mode, resume);
 }

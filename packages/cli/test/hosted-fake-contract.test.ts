@@ -125,6 +125,7 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("heads-304", send("heads", { bundleId: BUNDLE, ifNoneMatch: digest }));
   await observe("snapshot-200", send("snapshot", { bundleId: BUNDLE }));
   await observe("read-200-ok", send("read", { bundleId: BUNDLE, documentId: firstId }));
+  await observe("read-200-ok-qualified", send("read", { bundleId: `tenant-a/${BUNDLE}`, documentId: firstId }));
   await observe("read-200-document-not-found", send("read", { bundleId: BUNDLE, documentId: "notes/absent" }));
   await observe("read-200-bundle-not-found", send("read", { bundleId: "nope.a", documentId: firstId }));
   await observe("read-400-invalid-input", send("read", { bundleId: BUNDLE, documentId: firstId, extra: true }));

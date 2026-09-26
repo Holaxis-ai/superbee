@@ -66,6 +66,7 @@ import {
   type HostedBundleConnection,
 } from "./checkout.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
+import type { HostedBundleReference } from "../hosted/reference.js";
 
 /** How many ids a receipt lists per group before it only counts. */
 const LISTED = 20;
@@ -227,17 +228,20 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
     });
   }
   const bundleId = marker.bundle_id;
+  const typed: HostedBundleReference = { slug: marker.workspace_slug ?? null, bundleId };
   await assertStandaloneFolder(canonical);
   const resume: CommandText = commandFragment`${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))}${
     options.workspace !== undefined ? commandFragment` --workspace ${commandToken(options.workspace)}` : commandFragment``
   }${options.json ? commandFragment` --json` : commandFragment``}`;
-  const { identity, reader, listed: isListed, workspace } = await connectHostedBundle(bundleId, target, options.workspace ?? marker.workspace ?? undefined, deps, resume);
+  // Only a workspace the person names here narrows the bundle; the marker's recorded one (folder
+  // content, and possibly a stale default) never does.
+  const { identity, reader, listed: isListed, workspace, reference } = await connectHostedBundle(typed, target, options.workspace, deps, resume);
 
   // A conversion `publish` started and could not finish: the files it sent that a checkout does
   // not hold as documents are recorded too, so sync leaves them be.
   const published = await readPublishedExtras(home, canonical);
   const extras = published && published.host === target.origin && published.bundle_id === bundleId ? published.extras : undefined;
-  const result = await bindFolderInPlace({ canonical, target, bundleId, connection: { identity, reader, listed: isListed, workspace }, deps, resume, ...(extras ? { extras } : {}) });
+  const result = await bindFolderInPlace({ canonical, target, bundleId, connection: { identity, reader, listed: isListed, workspace, reference }, deps, resume, ...(extras ? { extras } : {}) });
   if (published) await clearPublishedExtras(home, canonical);
   const cataloged = await registerInCatalog(home, result.binding);
   const syncHelp = `${cliInvocation()} sync --dir ${commandToken(canonical)}`;
@@ -291,7 +295,7 @@ export async function bindFolderInPlace(input: {
   readonly extras?: Readonly<Record<string, string>>;
 }): Promise<BindResult> {
   const { canonical, target, bundleId, deps, resume } = input;
-  const { identity, reader, listed: isListed, workspace } = input.connection;
+  const { identity, reader, listed: isListed, workspace, reference } = input.connection;
   const home = deps.auth.home;
   const placedFiles = new Map<string, string>();
   return withCheckoutLock(canonical, async () => {
@@ -310,6 +314,7 @@ export async function bindFolderInPlace(input: {
       workspace,
       workspaces: identity.tenantIds,
       bundle_id: bundleId,
+      ...(reference.slug !== null ? { workspace_slug: reference.slug } : {}),
       principal_id: identity.principalId,
       created_at: new Date(deps.auth.now()).toISOString(),
       state: "hydrating",

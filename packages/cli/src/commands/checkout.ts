@@ -29,11 +29,12 @@ import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
-import { connectHostedAccount, hostedListCommand } from "../hosted/account.js";
+import { connectHostedAccount, hostedListCommand, workspaceNames } from "../hosted/account.js";
 import { recordPulled } from "../hosted/freshness.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
 import {
   bindingForPath,
+  bindingReference,
   bindsBundle,
   checkoutLockName,
   checkoutStoreDir,
@@ -47,20 +48,21 @@ import {
   writeBinding,
   type CheckoutBinding,
 } from "../hosted/binding.js";
-import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, WORKSPACE_HEADER } from "../hosted/client.js";
+import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, type HostedIdentity } from "../hosted/client.js";
 import { HOSTED_CHECKOUT_REFUSALS } from "../hosted/refusals.js";
 import { digestOf, exportFresh, findPathCollision, ROOT_INDEX } from "../hosted/projection.js";
 import { writeProjection } from "../hosted/sync-scan.js";
 import { addCatalogEntry, assertCatalogLabel, loadCatalog } from "../catalog.js";
 import { checkoutMarkerBytes, readCheckoutMarker, removeCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
 import { adopt } from "./checkout-adopt.js";
+import { hostedBundleReferenceText, parseHostedBundleReference, type HostedBundleReference } from "../hosted/reference.js";
 
 /**
  * Checkout refuses a bundle over this many documents until paged heads and snapshot land: the
  * host's working copy routes answer one unpaged listing, bounded at this size.
  */
 export const CHECKOUT_DOCUMENT_LIMIT = 1000;
-export const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+export { BUNDLE_ID } from "../hosted/reference.js";
 
 export const CHECKOUT_USAGE = `superbee checkout — mirror a hosted bundle into a local folder
 
@@ -103,13 +105,18 @@ is not a checkout is a no-op.
 sync cannot send (doc verify, kind, recipe add/evolve, artifact, promote or delete of a non-.md
 key, index generate, serve, ui, mcp) are refused in it with "do this in the app". Deleting a
 document file, by hand or with doc delete or delete --doc-key <id>.md, syncs as a delete. Bundles over ${CHECKOUT_DOCUMENT_LIMIT} documents, bundles the host does not
-serve to a checkout (such as one with a Git source), and ids in two of your workspaces are refused.
+serve to a checkout (such as one with a Git source), and a bare id in two of your workspaces are refused.
+
+<bundle-id> may name its workspace: a bundle id in more than one of your workspaces is <workspace>/<bundle-id>
+(catalog list --hosted shows it that way, and whoami names each workspace's slug); --workspace
+<slug> does the same for a bare id. The checkout records the workspace, so its sync keeps reaching
+that workspace's bundle when another of your workspaces gains the same id.
 
 Options:
   --host <url>        Hosted Superbee URL (an origin, or an agent connection URL); default: your last sign-in
   --dir <folder>      Checkout folder (default: ./<bundle-id>)
-  --workspace <id>    Your workspace that holds the bundle: checked against your memberships,
-                      recorded in the binding and sent as ${WORKSPACE_HEADER}
+  --workspace <id>    Your workspace that holds the bundle, by id or slug: checked against your
+                      memberships and recorded in the binding; a slug names the bundle in it
   --adopt             Treat the argument as a moved, copied or restored checkout folder and bind it
   --release           Treat the argument as a checkout folder and forget its binding
   --json              Emit compact JSON instead of TOON
@@ -154,6 +161,7 @@ export async function entryKind(target: string): Promise<"absent" | "empty-dir" 
 export function bindingView(binding: CheckoutBinding): Record<string, unknown> {
   return {
     bundle_id: binding.bundle_id,
+    ...(binding.workspace_slug ? { reference: hostedBundleReferenceText(bindingReference(binding)) } : {}),
     host: binding.origin,
     audience: binding.audience,
     workspace: binding.workspace,
@@ -337,7 +345,7 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
         ...bindingView(binding),
         files: "kept (the folder is now an ordinary local folder)",
         marker: markerRemoved ? "removed" : "none",
-        help: [`${cliInvocation()} checkout ${commandToken(binding.bundle_id)} --host ${commandToken(binding.origin)} --dir <new folder>`],
+        help: [`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(bindingReference(binding)))} --host ${commandToken(binding.origin)} --dir <new folder>`],
       },
       mode,
     ),
@@ -385,16 +393,17 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
     await release(positionals[0]!, deps, mode);
     return;
   }
-  const bundleId = positionals[0]!;
-  if (!BUNDLE_ID.test(bundleId) || bundleId.length > 128) {
-    throw new CliError("USAGE", `'${bundleId}' is not a hosted bundle id`, { help: `${cliInvocation()} checkout --help` });
+  const typed = parseHostedBundleReference(positionals[0]!);
+  if (!typed) {
+    throw new CliError("USAGE", `'${positionals[0]!}' is not a hosted bundle id or <workspace>/<bundle-id>`, { help: `${cliInvocation()} checkout --help` });
   }
+  const bundleId = typed.bundleId;
   // The chosen host is fixed in the binding and echoed in the receipt.
   const target = await requireHostedBundleHost(values.host, deps.auth.home);
   const prefix = syncRoutePrefix(target);
   const folder = path.resolve(deps.cwd, values.dir ?? bundleId);
   assertBundleOutsidePrivateState(folder, deps.auth.home);
-  const resume: CommandText = commandFragment`${cliInvocation()} checkout ${commandToken(bundleId)} --host ${commandToken(hostArgument(target))} --dir ${commandToken(folder)}${
+  const resume: CommandText = commandFragment`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(hostArgument(target))} --dir ${commandToken(folder)}${
     values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
   }${values.json ? commandFragment` --json` : commandFragment``}`;
 
@@ -404,7 +413,8 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   }
   if (found === "dir") {
     const existing = await bindingForPath(deps.auth.home, await realpath(folder));
-    if (existing && bindsBundle(existing, target, bundleId)) {
+    // A bare id matches the checkout of that id in whichever workspace it names.
+    if (existing && bindsBundle(existing, target, { slug: typed.slug ?? existing.workspace_slug ?? null, bundleId })) {
       deps.stdout(render({ checkout: "unchanged", ...bindingView(existing), help: nextSteps(existing.path) }, mode));
       return;
     }
@@ -428,7 +438,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   }
   await assertStandaloneFolder(folder);
 
-  const { identity, reader, listed, workspace } = await connectHostedBundle(bundleId, target, values.workspace, deps, resume);
+  const { identity, reader, listed, workspace, reference } = await connectHostedBundle(typed, target, values.workspace, deps, resume);
   const canonical = await canonicalFolder(folder);
   let createdFolder = false;
   const placed = new Map<string, string>();
@@ -470,6 +480,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         workspace,
         workspaces: identity.tenantIds,
         bundle_id: bundleId,
+        ...(reference.slug !== null ? { workspace_slug: reference.slug } : {}),
         principal_id: identity.principalId,
         created_at: new Date(deps.auth.now()).toISOString(),
         state: "hydrating",
@@ -560,74 +571,111 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
 
 /** What `connectHostedBundle` found: who signed in, a reader for the bundle, and its workspace. */
 export interface HostedBundleConnection {
-  readonly identity: { readonly principalId: string; readonly tenantIds: readonly string[] };
+  readonly identity: HostedIdentity;
   readonly reader: ReturnType<ReturnType<typeof createHostedSyncClient>["reader"]>;
   /** True when the host's bundle list named it. */
   readonly listed: boolean;
   /** Named, else the only one, else the default `setup hosted` recorded for this host (if still yours). */
   readonly workspace: string | null;
+  /** The reference the checkout names the bundle by: the one typed, or the bare id qualified by `--workspace <slug>`. */
+  readonly reference: HostedBundleReference;
 }
 
 /**
  * Sign in, confirm the bundle is visible and servable as a working copy, and check its documents
- * fit a folder. Every refusal comes before anything is written.
+ * fit a folder. Every refusal comes before anything is written. A reference with a workspace, or a
+ * bare id with `--workspace` naming a workspace by a slug the host reports, names the bundle in
+ * that workspace: its reader sends `<slug>/<bundle-id>`, and the host selects that workspace's
+ * bundle among the person's own. A recorded default workspace never qualifies anything.
  */
 export async function connectHostedBundle(
-  bundleId: string,
+  typed: HostedBundleReference,
   target: HostedTarget,
   workspaceFlag: string | undefined,
   deps: CheckoutDeps,
   resume: CommandText,
 ): Promise<HostedBundleConnection> {
-  const { client, identity, workspace } = await connectHostedAccount(
+  const { bundleId } = typed;
+  const { client, identity, workspace, namedSlug } = await connectHostedAccount(
     target,
     {
       workspace: workspaceFlag,
       resume,
-      otherWorkspace: `${cliInvocation()} checkout ${commandToken(bundleId)} --host ${commandToken(hostArgument(target))} --workspace <id>`,
+      otherWorkspace: `${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(hostArgument(target))} --workspace <id>`,
     },
     deps,
   );
-  const bundles = await client.bundles();
-  const listing = readBundleListing(bundles);
-  const matches = listing.bundles.get(bundleId)?.workspaces ?? 0;
-  if (matches > 1) {
-    // The host selects the tenant from the bundle id and refuses an id two tenants serve; it does
-    // not select by workspace yet, so naming one cannot settle it.
-    throw new CliError("CONFLICT", `hosted bundle id '${bundleId}' is in ${matches} of your workspaces on ${target.origin}, so the host cannot tell which one you mean`, {
-      details: { reason: "ambiguous_bundle", bundle_id: bundleId, host: target.origin, workspaces: identity.tenantIds, ...(workspaceFlag ? { requested_workspace: workspaceFlag } : {}) },
-      help: "rename the bundle in all but one workspace in the Superbee app, or use the app for it",
+  if (typed.slug !== null && namedSlug !== null && typed.slug !== namedSlug) {
+    throw new CliError("USAGE", `'${hostedBundleReferenceText(typed)}' names workspace '${typed.slug}', but --workspace names '${namedSlug}'`, {
+      help: `${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(hostArgument(target))}`,
     });
   }
-  const listed = matches === 1;
-  if (!listed && listing.complete) {
-    throw new CliError("NOT_FOUND", `no hosted bundle '${bundleId}' is visible to you on ${target.origin}`, {
-      details: { bundle_id: bundleId, host: target.origin, visible: bundles.slice(0, 20).map((row) => row.bundleId), visible_total: bundles.length },
+  const reference: HostedBundleReference = typed.slug !== null || namedSlug === null ? typed : { slug: namedSlug, bundleId };
+  const text = hostedBundleReferenceText(reference);
+  const holder = reference.slug === null ? undefined : identity.workspaces.find((w) => w.slug === reference.slug);
+  if (reference.slug !== null && !holder) {
+    // Only the person's own workspaces have slugs to name; a host from before qualified references reports none.
+    const slugs = identity.workspaces.some((w) => w.slug !== null);
+    throw new CliError(slugs ? "NOT_FOUND" : "USAGE", slugs
+      ? `you are not a member of workspace '${reference.slug}' on ${target.origin}`
+      : `${target.origin} does not accept <workspace>/<bundle-id> references yet`, {
+      details: { reason: slugs ? "not_a_member" : "references_unsupported", workspace: reference.slug, workspaces: workspaceNames(identity) },
+      help: slugs ? `${cliInvocation()} whoami --host ${commandToken(hostArgument(target))}` : `${cliInvocation()} checkout ${commandToken(bundleId)} --host ${commandToken(hostArgument(target))}`,
+    });
+  }
+  const bundles = await client.bundles();
+  const listing = readBundleListing(bundles);
+  const found = listing.lookup(reference);
+  const qualified = found.references.filter((named) => named !== bundleId);
+  if (reference.slug === null && (found.workspaces > 1 || (found.row === null && qualified.length > 1))) {
+    // A bare id in several of the person's workspaces: the host cannot tell which one is meant. The
+    // host's list names each by its reference (a host from before them lists the id twice, bare).
+    throw new CliError("CONFLICT", `hosted bundle id '${bundleId}' is in ${Math.max(found.workspaces, qualified.length)} of your workspaces on ${target.origin}: name the one you mean`, {
+      details: {
+        reason: "ambiguous_bundle",
+        bundle_id: bundleId,
+        host: target.origin,
+        ...(qualified.length > 0 ? { references: qualified } : {}),
+        workspaces: workspaceNames(identity),
+        ...(workspaceFlag ? { requested_workspace: workspaceFlag } : {}),
+      },
+      help:
+        qualified.length > 0
+          ? `${cliInvocation()} checkout ${commandToken(qualified[0]!)} --host ${commandToken(hostArgument(target))}`
+          : "rename the bundle in all but one workspace in the Superbee app, or use the app for it",
+    });
+  }
+  // A reference the list does not name as such may still be listed bare (its id is in one workspace):
+  // the host decides whether that workspace is the one named.
+  const listed = found.row !== null;
+  if (!listed && !(reference.slug !== null && found.references.length > 0) && listing.complete) {
+    throw new CliError("NOT_FOUND", `no hosted bundle '${text}' is visible to you on ${target.origin}`, {
+      details: { bundle_id: bundleId, ...(reference.slug !== null ? { reference: text } : {}), host: target.origin, visible: bundles.slice(0, 20).map((row) => row.bundleId), visible_total: bundles.length },
       help: hostedListCommand(target),
     });
   }
 
-  const reader = client.reader(bundleId);
+  const reader = (reference.slug === null ? client : client.within(reference.slug)).reader(bundleId);
   let capabilities: HostedCapabilities;
   try {
     capabilities = await reader.hostedCapabilities();
   } catch (error) {
-    throw capabilityRefusal(error, bundleId, target, listed, resume);
+    throw capabilityRefusal(error, text, target, listed, resume);
   }
   if (!capabilities.heads || !capabilities.snapshot) {
-    throw new CliError("RUNTIME", `${target.origin} does not serve a working copy of '${bundleId}'`, { details: { bundle_id: bundleId, host: target.origin } });
+    throw new CliError("RUNTIME", `${target.origin} does not serve a working copy of '${text}'`, { details: { bundle_id: bundleId, host: target.origin } });
   }
   let ids: string[];
   try {
     const heads = await reader.heads();
     ids = heads?.heads.map((head) => head.id) ?? [];
   } catch (error) {
-    throw capabilityRefusal(error, bundleId, target, listed, resume);
+    throw capabilityRefusal(error, text, target, listed, resume);
   }
-  if (ids.length > Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.bound.documents)) throw tooLarge(bundleId, target, ids.length);
+  if (ids.length > Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.bound.documents)) throw tooLarge(text, target, ids.length);
   assertProjectable(ids, bundleId, target);
 
-  return { identity, reader, listed, workspace };
+  return { identity, reader, listed, workspace: holder?.tenantId ?? workspace, reference };
 }
 
 /** Catalog labels tried for a checkout: the bundle id, then `-2` to `-9` when another entry holds it. */

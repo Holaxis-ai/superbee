@@ -282,6 +282,29 @@ test("export --to maps the host's refusals and a bad session", async () => {
   assert.deepEqual(await readdir(h.cwd), []);
 });
 
+test("export names the bundle in a workspace by <workspace>/<bundle-id> or --workspace <slug>, and a checkout by its reference", async () => {
+  const h = await harness(new FakeHost({ tenants: ["tenant-a", "tenant-b"], slug: "tenant-b" }));
+  const named = await run(h, [`tenant-b/${BUNDLE}`, "--host", HOST, "--to", "one"]);
+  assert.equal(named.bundle_id, BUNDLE);
+  assert.deepEqual(h.host.requests.at(-1)!.body, { bundleId: `tenant-b/${BUNDLE}` });
+  h.host.requests.length = 0;
+  await run(h, [BUNDLE, "--host", HOST, "--workspace", "tenant-b", "--to", "two"]);
+  assert.deepEqual(h.host.requests.map((r) => r.path), ["/sync/v1/whoami", "/sync/v1/export"]);
+  assert.deepEqual(h.host.requests[1]!.body, { bundleId: `tenant-b/${BUNDLE}` });
+  // Another of the person's workspaces does not hold it: absent, named as asked.
+  const elsewhere = await rejects(h, [`tenant-a/${BUNDLE}`, "--host", HOST, "--to", "three"]);
+  assert.equal(elsewhere.code, "NOT_FOUND");
+  assert.match(elsewhere.message, new RegExp(`'tenant-a/${BUNDLE.replace(".", "\\.")}'`));
+  const contradicted = await rejects(h, [`tenant-b/${BUNDLE}`, "--host", HOST, "--workspace", "tenant-a", "--to", "four"]);
+  assert.equal(contradicted.code, "USAGE");
+  assert.equal((await rejects(h, ["Tenant/x", "--host", HOST, "--to", "five"])).code, "USAGE");
+  // A checkout made by reference exports by it.
+  await checkout([`tenant-b/${BUNDLE}`, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  h.host.requests.length = 0;
+  await run(h, ["--dir", path.join(h.cwd, "team"), "--to", "six"]);
+  assert.deepEqual(h.host.requests.at(-1)!.body, { bundleId: `tenant-b/${BUNDLE}` });
+});
+
 test("export --to refuses a folder inside a bundle or a hosted checkout", async () => {
   const h = await harness();
   const folder = await checkedOut(h);
@@ -301,7 +324,8 @@ test("export --dir <checkout> --to exports the checkout's own bundle under its o
   const receipt = await run(h, ["--dir", folder, "--to", "copy"]);
   assert.equal(receipt.bundle_id, BUNDLE);
   assert.deepEqual(h.host.requests.map((request) => request.path), ["/sync/v1/whoami", "/sync/v1/export"]);
-  assert.equal(h.host.requests[1]!.headers.get("x-superbee-workspace"), "tenant-a");
+  // The checkout names its bundle bare, as it was checked out.
+  assert.deepEqual(h.host.requests[1]!.body, { bundleId: BUNDLE });
   // The checkout is untouched.
   assert.ok(await bindingForPath(h.home, await realpath(folder)));
 

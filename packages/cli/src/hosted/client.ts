@@ -19,6 +19,7 @@ import {
   type HostedReadAdapter,
   type HostedReadRoutes,
 } from "@superbee/core/hosted-transport";
+import { hostedBundleReferenceText, isWorkspaceSlug, parseHostedBundleReference, type HostedBundleReference } from "./reference.js";
 import { isMalformedAnswer, RemoteError } from "@superbee/core";
 
 import { CliError } from "../errors.js";
@@ -63,11 +64,23 @@ export interface HostedSyncClient {
   reader(bundleId: string): HostedReadAdapter;
   /** One page of a document's history (`documents.history.v1`), validated against the page asked for. */
   history(bundleId: string, request: HostedHistoryRequest): Promise<HostedHistoryAnswer>;
+  /** The same client, naming its bundles in the workspace with this slug ({@link qualifyingCarrier}). */
+  within(slug: string): HostedSyncClient;
 }
 
 export interface HostedIdentity {
   readonly principalId: string;
   readonly tenantIds: readonly string[];
+  /**
+   * Each workspace with the slug a qualified reference names it by (null for none), in
+   * `tenantIds` order. A host from before qualified references reports no slugs: every one is null.
+   */
+  readonly workspaces: readonly HostedWorkspace[];
+}
+
+export interface HostedWorkspace {
+  readonly tenantId: string;
+  readonly slug: string | null;
 }
 
 export interface HostedBundleRow {
@@ -80,38 +93,95 @@ export interface HostedBundleRow {
 /** The host answers at most this many bundle rows (the kernel's list cap, applied across tenants). */
 export const BUNDLE_LIST_CAP = 100;
 
-/** A bundle list read as a whole: each id once, how many of the person's workspaces hold it, and whether the cap cut it. */
+/**
+ * A bundle list read as a whole: each row under the reference it names (the bare id, or
+ * `<slug>/<id>` for an id two of the person's workspaces hold), how many rows name it, and whether
+ * the cap cut it.
+ */
 export interface HostedBundleListing {
   readonly bundles: ReadonlyMap<string, { readonly row: HostedBundleRow; readonly workspaces: number }>;
   /** False when the host's answer reached {@link BUNDLE_LIST_CAP}, so more bundles may exist. */
   readonly complete: boolean;
+  /**
+   * What the listing says about a reference: the row it names, and every listed reference whose
+   * bundle id is the reference's own, sorted. A bare id with two or more such references (or two
+   * rows, from a host from before qualified references) cannot be told apart.
+   */
+  lookup(reference: HostedBundleReference): { readonly row: HostedBundleRow | null; readonly workspaces: number; readonly references: readonly string[] };
 }
 
 /**
  * One reading of the host's rows. The host answers one row per workspace that serves an id, and
- * refuses an id two workspaces serve, so a count above one is an ambiguous id.
+ * names an id two workspaces serve by each one's reference. A host from before qualified
+ * references answers such an id twice, bare.
  */
 export function readBundleListing(rows: readonly HostedBundleRow[]): HostedBundleListing {
   const bundles = new Map<string, { row: HostedBundleRow; workspaces: number }>();
+  const byId = new Map<string, Set<string>>();
   for (const row of rows) {
     const seen = bundles.get(row.bundleId);
     bundles.set(row.bundleId, seen ? { row: seen.row, workspaces: seen.workspaces + 1 } : { row, workspaces: 1 });
+    const reference = parseHostedBundleReference(row.bundleId);
+    if (reference) byId.set(reference.bundleId, (byId.get(reference.bundleId) ?? new Set()).add(row.bundleId));
   }
-  return { bundles, complete: rows.length < BUNDLE_LIST_CAP };
+  return {
+    bundles,
+    complete: rows.length < BUNDLE_LIST_CAP,
+    lookup(reference) {
+      const named = bundles.get(hostedBundleReferenceText(reference));
+      return {
+        row: named?.row ?? null,
+        workspaces: named?.workspaces ?? 0,
+        references: [...(byId.get(reference.bundleId) ?? [])].sort(),
+      };
+    },
+  };
 }
 
 /**
- * The header that names the workspace a request means. The sync routes select the tenant from the
- * bundle and do not read it yet; it is sent so a host that learns to select by it needs no client
- * change, and it never widens anything (the tenant must still be one the admission reached).
+ * The sync routes whose body names one bundle (`bundleId`): the ones a qualified reference is sent
+ * on. `whoami`, `bundles` and `bundle-create` (which names its workspace in the body) never are.
  */
-export const WORKSPACE_HEADER = "X-Superbee-Workspace";
+const BUNDLE_SCOPED_ROUTES = Object.freeze([
+  "capabilities",
+  "heads",
+  "snapshot",
+  "read",
+  "history",
+  "create",
+  "replace",
+  "delete",
+  "outcome",
+  "export",
+] as const);
+
+/**
+ * The carrier with a workspace: every bundle-scoped request names its bundle as
+ * `<slug>/<bundle-id>`, so the host selects that workspace's bundle. Everything else the CLI does
+ * keeps the bare id, including reading the host's answers, which name the bare id.
+ */
+export function qualifyingCarrier(carrier: HostedCarrier, prefix: string, slug: string): HostedCarrier {
+  const routes = new Set(BUNDLE_SCOPED_ROUTES.map((route) => `${prefix}/${route}`));
+  const qualify = (route: string, input: unknown): unknown => {
+    if (!routes.has(route) || input === null || typeof input !== "object" || Array.isArray(input)) return input;
+    const bundleId = (input as { bundleId?: unknown }).bundleId;
+    if (typeof bundleId !== "string" || bundleId.includes("/")) return input;
+    return { ...input, bundleId: hostedBundleReferenceText({ slug, bundleId }) };
+  };
+  return {
+    json: (route, input, signal, options) => carrier.json(route, qualify(route, input), signal, options),
+    stream: (route, input, signal) => carrier.stream(route, qualify(route, input), signal),
+  };
+}
 
 export interface HostedClientOptions {
   readonly target: HostedTarget;
   readonly accessToken: string;
-  /** The workspace the person named, sent on every request as {@link WORKSPACE_HEADER}. */
-  readonly workspace?: string;
+  /**
+   * The slug of the workspace that holds the bundle, when the person named one: bundle-scoped
+   * requests then name the bundle as `<slug>/<bundle-id>` ({@link qualifyingCarrier}).
+   */
+  readonly slug?: string;
   /** The command that repeats this one, carried on an AUTH_REQUIRED so an agent can resume it. */
   readonly resume?: string;
   readonly fetch?: typeof fetch;
@@ -121,15 +191,13 @@ export interface HostedClientOptions {
 export function createHostedSyncClient(options: HostedClientOptions): HostedSyncClient {
   const { target } = options;
   const prefix = syncRoutePrefix(target);
-  const carrier = createFetchCarrier({
+  const fetchCarrier = createFetchCarrier({
     baseUrl: target.origin,
-    credentials: async () => ({
-      Authorization: `Bearer ${options.accessToken}`,
-      ...(options.workspace !== undefined ? { [WORKSPACE_HEADER]: options.workspace } : {}),
-    }),
+    credentials: async () => ({ Authorization: `Bearer ${options.accessToken}` }),
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.deadlineMs ? { deadlineMs: options.deadlineMs } : {}),
   });
+  const carrier = options.slug === undefined ? fetchCarrier : qualifyingCarrier(fetchCarrier, prefix, options.slug);
   const controller = new AbortController();
 
   async function json(route: string, maximum: number): Promise<unknown> {
@@ -153,7 +221,7 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
     carrier,
     signal: controller.signal,
     async whoami() {
-      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown } | undefined;
+      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown; workspaces?: unknown } | undefined;
       if (
         typeof body?.principalId !== "string" ||
         body.principalId === "" ||
@@ -162,7 +230,30 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
       ) {
         throw new CliError("RUNTIME", `${target.origin} answered a malformed identity`);
       }
-      return { principalId: body.principalId, tenantIds: [...body.tenantIds].sort() };
+      const tenantIds = [...body.tenantIds].sort();
+      // A host from before qualified references names no slugs.
+      const slugs = new Map<string, string | null>();
+      if (body.workspaces !== undefined) {
+        if (
+          !Array.isArray(body.workspaces) ||
+          body.workspaces.length !== tenantIds.length ||
+          !body.workspaces.every(
+            (w) =>
+              typeof w?.tenantId === "string" &&
+              tenantIds.includes(w.tenantId) &&
+              (w.slug === null || isWorkspaceSlug(w.slug)),
+          )
+        ) {
+          throw new CliError("RUNTIME", `${target.origin} answered a malformed identity`);
+        }
+        for (const w of body.workspaces as { tenantId: string; slug: string | null }[]) slugs.set(w.tenantId, w.slug);
+        if (slugs.size !== tenantIds.length) throw new CliError("RUNTIME", `${target.origin} answered a malformed identity`);
+      }
+      return {
+        principalId: body.principalId,
+        tenantIds,
+        workspaces: tenantIds.map((tenantId) => ({ tenantId, slug: slugs.get(tenantId) ?? null })),
+      };
     },
     async bundles() {
       const body = (await json("bundles", BUNDLES_BYTES)) as
@@ -180,6 +271,9 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
     },
     reader(bundleId) {
       return createHostedReadAdapter({ carrier, bundleId, routes: syncReadRoutes(prefix) });
+    },
+    within(slug) {
+      return createHostedSyncClient({ ...options, slug });
     },
     async history(bundleId, request) {
       const route = `${prefix}/history`;

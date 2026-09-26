@@ -17,6 +17,8 @@ import { CliError } from "../errors.js";
 import { commandToken } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
 import { bindingForPath, type CheckoutBinding } from "./binding.js";
+import { readBundleListing, type HostedSyncClient } from "./client.js";
+import { bindingHostArgument } from "./marker.js";
 
 type RefusalReason = "not_syncable" | "checkout_target";
 
@@ -168,6 +170,39 @@ export function hostedMcpWriteRefusal(binding: CheckoutBinding, operation: strin
     `mcp ${operation}`,
     binding,
   );
+}
+
+/**
+ * The host answered a checkout's bundle as absent. A checkout that names no workspace, whose id
+ * the host now lists by reference in two or more of the person's workspaces, was not deleted: the
+ * id became ambiguous, and the answer names the references. Anything else is {@link bundleGone}.
+ * The listing is read once; if that read fails, the answer is {@link bundleGone}.
+ */
+export async function bundleAbsent(binding: CheckoutBinding, client: Pick<HostedSyncClient, "bundles">, unsent?: number): Promise<CliError> {
+  if (!binding.workspace_slug) {
+    let references: string[] = [];
+    try {
+      references = readBundleListing(await client.bundles())
+        .lookup({ slug: null, bundleId: binding.bundle_id })
+        .references.filter((named) => named !== binding.bundle_id);
+    } catch {
+      // The listing could not be read: the refusal the host gave stands.
+    }
+    if (references.length > 1) {
+      return new CliError("CONFLICT", `hosted bundle id '${binding.bundle_id}' is now in ${references.length} of your workspaces on ${binding.origin}, so this checkout no longer names one`, {
+        details: {
+          reason: "ambiguous_bundle",
+          bundle_id: binding.bundle_id,
+          references,
+          host: binding.origin,
+          folder: binding.path,
+          ...(unsent === undefined ? {} : { unsent_changes: unsent }),
+        },
+        help: `your files stay in ${binding.path}; check out the one you mean into a new folder, naming its workspace: ${cliInvocation()} checkout ${commandToken(references[0]!)} --host ${commandToken(bindingHostArgument(binding))} --dir <new folder>`,
+      });
+    }
+  }
+  return bundleGone(binding, unsent);
 }
 
 /**

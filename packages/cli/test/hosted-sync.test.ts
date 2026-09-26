@@ -1020,3 +1020,31 @@ test("checkout into a symlinked --dir binds the real folder, and sync finds it t
   assert.equal(rowFor(synced, "notes/alpha")?.state, "committed");
   assert.equal(host.docs.get("notes/alpha")!.body, "Through the link.\n");
 });
+
+test("a checkout naming no workspace whose id another workspace gains is told so, not that its bundle was deleted", async () => {
+  const h = await harness();
+  // The host now serves the id in two of the person's workspaces: the bare id selects neither,
+  // and the list names each by its reference.
+  const listed: string[] = [];
+  h.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(input)).pathname.slice("/sync/v1/".length);
+    if (route === "capabilities") return Response.json({ error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } }, { status: 404 });
+    if (route === "bundles") {
+      return Response.json({
+        ok: true,
+        operationId: "bundles.list.v1",
+        data: { bundles: listed.map((bundleId) => ({ bundleId, name: bundleId, purpose: "", domains: [], lifecycle: "active", sensitivity: "internal" })) },
+      });
+    }
+    return h.host.fetch(input, init);
+  }) as typeof fetch;
+  listed.push(`north/${BUNDLE}`, `south/${BUNDLE}`);
+  const { error } = await failingSync(h);
+  assert.equal(error.code, "CONFLICT");
+  assert.equal(error.details?.reason, "ambiguous_bundle");
+  assert.deepEqual(error.details?.references, [`north/${BUNDLE}`, `south/${BUNDLE}`]);
+  assert.match(error.help ?? "", new RegExp(`checkout north/${BUNDLE.replace(".", "\\.")} --host .* --dir <new folder>`));
+  // Gone from every workspace: the bundle is gone.
+  listed.length = 0;
+  assert.equal((await failingSync(h)).error.details?.reason, "bundle_deleted_remotely");
+});

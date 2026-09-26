@@ -13,6 +13,7 @@ import { lstat, readdir, rm, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
+import { hostedBundleReferenceText, isWorkspaceSlug, type HostedBundleReference } from "./reference.js";
 
 export const BINDING_SCHEMA = 1;
 const MAX_RECORD_BYTES = 64 * 1024;
@@ -34,6 +35,13 @@ export interface CheckoutBinding {
   /** Every workspace the identity reached at checkout, sorted. */
   readonly workspaces: readonly string[];
   readonly bundle_id: string;
+  /**
+   * The slug of the workspace that holds the bundle, when the checkout names it: every
+   * bundle-scoped request then names the bundle `<slug>/<bundle_id>`, so another of the person's
+   * workspaces gaining the same id never makes it ambiguous. Absent (older checkouts) or null: the
+   * bare id.
+   */
+  readonly workspace_slug?: string | null;
   /** The principal the gateway named at checkout; later commands refuse any other. */
   readonly principal_id: string;
   readonly created_at: string;
@@ -143,6 +151,7 @@ function isBinding(value: unknown): value is CheckoutBinding {
     (record.workspace === null || typeof record.workspace === "string") &&
     Array.isArray(record.workspaces) &&
     typeof record.bundle_id === "string" &&
+    (record.workspace_slug === undefined || record.workspace_slug === null || isWorkspaceSlug(record.workspace_slug)) &&
     typeof record.principal_id === "string" &&
     (record.state === "hydrating" || record.state === "ready") &&
     typeof record.folder_identity?.dev === "number" &&
@@ -233,23 +242,35 @@ export interface HostIdentity {
   readonly audience: string;
 }
 
-/** True when a binding is a checkout of this bundle on this host and audience. */
-export function bindsBundle(binding: CheckoutBinding, target: HostIdentity, bundleId: string): boolean {
-  return binding.origin === target.origin && binding.audience === target.audience && binding.bundle_id === bundleId;
+/** The reference a checkout names its bundle by: `<workspace_slug>/<bundle_id>`, or the bare id. */
+export function bindingReference(binding: CheckoutBinding): HostedBundleReference {
+  return { slug: binding.workspace_slug ?? null, bundleId: binding.bundle_id };
+}
+
+/** True when a binding is a checkout of this bundle reference on this host and audience. */
+export function bindsBundle(binding: CheckoutBinding, target: HostIdentity, reference: HostedBundleReference): boolean {
+  return (
+    binding.origin === target.origin &&
+    binding.audience === target.audience &&
+    binding.bundle_id === reference.bundleId &&
+    (binding.workspace_slug ?? null) === reference.slug
+  );
 }
 
 /**
- * The live checkout folders of each bundle on this host and audience, sorted: a ready binding
+ * The live checkout folders of each bundle on this host and audience, keyed by the checkout's
+ * reference (`bindingReference`), sorted: a ready binding
  * whose folder is still the one it was made for ({@link bindingForPath}). A deleted, moved or
  * replaced folder is not a checkout here.
  */
 export async function liveCheckoutFolders(home: string, target: HostIdentity): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>();
   for (const binding of await listReadyBindings(home)) {
-    if (!bindsBundle(binding, target, binding.bundle_id)) continue;
+    if (!bindsBundle(binding, target, bindingReference(binding))) continue;
     const live = await bindingForPath(home, binding.path).catch(() => null);
     if (live?.checkout_id !== binding.checkout_id) continue;
-    out.set(binding.bundle_id, [...(out.get(binding.bundle_id) ?? []), binding.path].sort());
+    const reference = hostedBundleReferenceText(bindingReference(binding));
+    out.set(reference, [...(out.get(reference) ?? []), binding.path].sort());
   }
   return out;
 }

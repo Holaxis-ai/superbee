@@ -269,6 +269,12 @@ test("a bundle the host no longer serves is the checkout's conflict, as sync rep
   const gone = await rejects(() => history(h, [h.id], refusing("bundle_not_found")));
   assert.equal(gone.code, "CONFLICT");
   assert.equal(gone.details?.reason, "bundle_deleted_remotely");
+  // The same refusal, when the host now lists the id in two workspaces, is the ambiguity instead.
+  const collided = (async (input: string | URL | Request, init?: RequestInit) =>
+    String(input).endsWith("/bundles")
+      ? Response.json({ ok: true, operationId: "bundles.list.v1", data: { bundles: ["north", "south"].map((slug) => ({ bundleId: `${slug}/${BUNDLE}`, name: BUNDLE, purpose: "", domains: [], lifecycle: "active", sensitivity: "internal" })) } })
+      : refusing("bundle_not_found")(input, init)) as typeof fetch;
+  assert.equal((await rejects(() => history(h, [h.id], collided))).details?.reason, "ambiguous_bundle");
   assert.equal((await rejects(() => history(h, [h.id], refusing("insufficient_scope")))).code, "FORBIDDEN");
   assert.equal((await rejects(() => history(h, [h.id], refusing("backend_unavailable", true)))).code, "TRANSIENT");
   const large = await rejects(() => history(h, [h.id], refusing("result_too_large")));

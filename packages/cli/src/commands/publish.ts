@@ -35,7 +35,7 @@ import { CliError } from "../errors.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { defaultHostedAuthDeps, hostedBundleHost } from "../hosted-auth/session.js";
 import { hostedFailure } from "../hosted/client.js";
-import { connectHostedAccount } from "../hosted/account.js";
+import { connectHostedAccount, workspaceNames } from "../hosted/account.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
 import { createBody, planDigest, planPublish, type PublishPlan } from "../hosted/publish-plan.js";
 import { clearPendingCreate, clearPublishedExtras, readPendingCreate, writePendingCreate, writePublishedExtras } from "../hosted/publish-state.js";
@@ -390,7 +390,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   );
   if (workspace === null) {
     throw new CliError("USAGE", `you are in ${identity.tenantIds.length} workspaces on ${target.origin}: name one`, {
-      details: { reason: "choose_workspace", workspaces: identity.tenantIds },
+      details: { reason: "choose_workspace", workspaces: workspaceNames(identity) },
       help: otherWorkspace,
     });
   }
@@ -445,7 +445,10 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
 
   // The bundle exists on the host. From here, a failure leaves the folder adoptable: the marker
   // goes in first, so `checkout --adopt` can finish the conversion.
-  const markerSource = { origin: target.origin, audience: target.audience, bundle_id: bundleId, workspace };
+  // The checkout names the bundle in the workspace it was created in, so another of the person's
+  // workspaces holding the same id never makes it ambiguous.
+  const slug = identity.workspaces.find((w) => w.tenantId === workspace)?.slug ?? null;
+  const markerSource = { origin: target.origin, audience: target.audience, bundle_id: bundleId, workspace, ...(slug !== null ? { workspace_slug: slug } : {}) };
   const adoptHelp = `${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))}`;
   let unbound: Record<string, unknown> | null = null;
   try {
@@ -469,7 +472,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   const resume = commandFragment`${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))}`;
   let bound;
   try {
-    const connection = await connectHostedBundle(bundleId, target, workspace, deps, resume);
+    const connection = await connectHostedBundle({ slug, bundleId }, target, workspace, deps, resume);
     bound = await bindFolderInPlace({ canonical, target, bundleId, connection, deps, resume, extras: plan.extras });
     await clearPublishedExtras(home, canonical);
   } catch (error) {

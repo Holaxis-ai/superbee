@@ -53,6 +53,8 @@ export interface FakeCreateHostOptions {
   limit?: number;
   /** Creation is not offered (`bundle_create_unavailable`). */
   unavailable?: boolean;
+  /** Each workspace with its slug, as whoami names them; absent is a host from before qualified references. */
+  workspaces?: { tenantId: string; slug: string | null }[];
 }
 
 function fold(segment: string): string {
@@ -96,7 +98,9 @@ export class FakeCreateHost {
     if (headers.get("authorization") !== `Bearer ${TOKEN}`) return Response.json({ error: { code: "unauthenticated" } }, { status: 401 });
     const route = url.pathname.replace(/^\/sync\/v1\//, "");
     const tenants = this.options.tenants ?? ["tenant:a"];
-    if (route === "whoami") return Response.json({ principalId: PRINCIPAL, credentialId: "cli", tenantIds: tenants, surface: "sync" });
+    if (route === "whoami") {
+      return Response.json({ principalId: PRINCIPAL, credentialId: "cli", tenantIds: tenants, ...(this.options.workspaces ? { workspaces: this.options.workspaces } : {}), surface: "sync" });
+    }
     if (route === "bundles") {
       return Response.json({
         ok: true,
@@ -106,7 +110,11 @@ export class FakeCreateHost {
     }
     if (route === "bundle-create") return this.create(text, body, headers, tenants);
     if (this.hideCreated) return Response.json({ error: { code: "unavailable" } }, { status: 503 });
-    const bundle = this.bundles.get(String(body.bundleId));
+    // A qualified reference names the created bundle when its slug is the first workspace's (where the fake creates).
+    const named = String(body.bundleId);
+    const at = named.indexOf("/");
+    const bare = at < 0 ? named : named.slice(0, at) === this.options.workspaces?.[0]?.slug ? named.slice(at + 1) : "";
+    const bundle = this.bundles.get(bare);
     if (!bundle) return Response.json({ ok: false, operationId: "documents.read.v1", error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } });
     if (route === "capabilities") {
       const base = JSON.parse(fixture("capabilities-operations").response.body) as Record<string, unknown>;

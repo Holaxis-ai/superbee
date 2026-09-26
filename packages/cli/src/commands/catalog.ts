@@ -17,9 +17,10 @@ import { cliInvocation } from "../invocation.js";
 import { render, renderErrorEnvelope, resolveMode } from "../output.js";
 import { commandFragment, commandToken } from "../command-text.js";
 import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
-import { connectHostedAccount } from "../hosted/account.js";
+import { connectHostedAccount, workspaceNames } from "../hosted/account.js";
 import { liveCheckoutFolders } from "../hosted/binding.js";
 import { readBundleListing } from "../hosted/client.js";
+import { parseHostedBundleReference } from "../hosted/reference.js";
 
 export const CATALOG_USAGE = `superbee catalog — register and resolve this user's workspaces
 
@@ -57,7 +58,9 @@ needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the command to 
 lists every hosted bundle you can reach on that host, across all your workspaces: its bundle_id
 (what 'checkout' takes), name and lifecycle, the folder of your checkout of it here (null when
 there is none; the first, sorted, when there are several), and ambiguous: true when two of your
-workspaces hold the same id (checkout refuses such an id). It lists hosted bundles only, never
+workspaces hold the same id and the host lists it bare twice (checkout refuses such an id). A host
+that names workspaces lists such an id once per workspace as <workspace>/<bundle-id>, which
+checkout takes as it is. It lists hosted bundles only, never
 your local entries, and caches nothing: the catalog file is unchanged. complete: false means the
 host's list stopped at its cap.
 
@@ -250,13 +253,23 @@ async function listHosted(
   );
   const listing = readBundleListing(await client.bundles());
   const folders = await liveCheckoutFolders(auth.home, target);
+  // A row names its bundle by the reference to check it out with: the bare id, or
+  // `<workspace>/<bundle-id>` for an id more than one of the person's workspaces holds. A checkout
+  // that names its workspace is the folder of either spelling of its bundle.
+  const folderOf = (listed: string): string | null => {
+    const reference = parseHostedBundleReference(listed);
+    const exact = folders.get(listed)?.[0];
+    if (exact !== undefined || !reference || reference.slug !== null) return exact ?? null;
+    const qualified = [...folders.entries()].filter(([named]) => parseHostedBundleReference(named)?.bundleId === reference.bundleId);
+    return qualified.length === 1 ? qualified[0]![1][0]! : null;
+  };
   const bundles = [...listing.bundles.values()]
     .sort((a, b) => (a.row.bundleId < b.row.bundleId ? -1 : a.row.bundleId > b.row.bundleId ? 1 : 0))
     .map(({ row, workspaces }) => ({
       bundle_id: row.bundleId,
       name: row.name,
       lifecycle: row.lifecycle,
-      folder: folders.get(row.bundleId)?.[0] ?? null,
+      folder: folderOf(row.bundleId),
       ambiguous: workspaces > 1,
     }));
   stdout(
@@ -265,7 +278,7 @@ async function listHosted(
         schema_version: 1,
         host: target.origin,
         principal: identity.principalId,
-        workspaces: identity.tenantIds,
+        workspaces: workspaceNames(identity),
         count: bundles.length,
         complete: listing.complete,
         bundles,
@@ -276,7 +289,7 @@ async function listHosted(
         help:
           bundles.length === 0
             ? [`${cliInvocation()} publish --to hosted --host ${commandToken(host)}`]
-            : [`${cliInvocation()} checkout <bundle-id> --host ${commandToken(host)}`],
+            : [`${cliInvocation()} checkout <bundle_id as listed> --host ${commandToken(host)}`],
       },
       resolveMode(values),
     ),
