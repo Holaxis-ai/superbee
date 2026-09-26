@@ -31,6 +31,8 @@ export interface HostedAccountRequest {
   readonly resume: CommandText;
   /** With `workspace`: the command a person not in it runs instead (with `<id>` to fill in). */
   readonly otherWorkspace?: string;
+  /** The client's per-request deadline, when the command needs longer than the default. */
+  readonly deadlineMs?: number;
 }
 
 export async function connectHostedAccount(target: HostedTarget, request: HostedAccountRequest, deps: HostedAccountDeps): Promise<HostedAccount> {
@@ -41,12 +43,13 @@ export async function connectHostedAccount(target: HostedTarget, request: Hosted
     accessToken: token.accessToken,
     resume: request.resume,
     ...(request.workspace !== undefined ? { workspace: request.workspace } : {}),
+    ...(request.deadlineMs !== undefined ? { deadlineMs: request.deadlineMs } : {}),
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
   });
   const identity = await client.whoami();
   if (request.workspace !== undefined && !identity.tenantIds.includes(request.workspace)) {
     throw new CliError("NOT_FOUND", `you are not a member of workspace '${request.workspace}' on ${target.origin}`, {
-      details: { workspace: request.workspace, workspaces: identity.tenantIds },
+      details: { reason: "not_a_member", workspace: request.workspace, workspaces: identity.tenantIds },
       ...(request.otherWorkspace !== undefined ? { help: request.otherWorkspace } : {}),
     });
   }

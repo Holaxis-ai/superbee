@@ -56,9 +56,10 @@ the Superbee app'.
 needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then
 lists every hosted bundle you can reach on that host, across all your workspaces: its bundle_id
 (what 'checkout' takes), name and lifecycle, the folder of your checkout of it here (null when
-there is none), and ambiguous: true when two of your workspaces hold the same id (checkout refuses
-such an id). It lists hosted bundles only, never your local entries, and caches nothing: the
-catalog file is unchanged. complete: false means the host's list stopped at its cap.
+there is none; the first, sorted, when there are several), and ambiguous: true when two of your
+workspaces hold the same id (checkout refuses such an id). It lists hosted bundles only, never
+your local entries, and caches nothing: the catalog file is unchanged. complete: false means the
+host's list stopped at its cap.
 
 The catalog only selects a target. Pass a resolved path explicitly to ordinary commands with
 --dir; there is no process-global active workspace and no implicit cross-bundle operation.

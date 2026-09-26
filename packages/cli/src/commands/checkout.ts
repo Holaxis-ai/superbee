@@ -70,13 +70,14 @@ Usage:
   superbee checkout --release <folder> [--json]
 
 'superbee catalog list --hosted' lists the bundle ids you can check out. Signs in if needed
-(AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then copies the hosted bundle into --dir (default: ./<bundle-id>), which must be new or
-empty. The host is --host, else the host of your last sign-in (never SUPERBEE_HOST alone); the
-receipt names the host it bound. The folder holds plain bundle files, so every command runs on it
-with --dir <folder>. The link to the host is kept in private state, keyed by the folder's path,
-never in the folder. Re-running for the same folder and bundle is a no-op. A checkout whose folder
-was deleted, or replaced by a new empty folder, is replaced, unless it holds changes sync has not
-sent yet; a checkout emptied in place is refused, because removing every file is a pending edit.
+(AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then copies the
+hosted bundle into --dir (default: ./<bundle-id>), which must be new or empty. The host is --host,
+else the host of your last sign-in (never SUPERBEE_HOST alone); the receipt names the host it
+bound. The folder holds plain bundle files, so every command runs on it with --dir <folder>. The
+link to the host is kept in private state, keyed by the folder's path, never in the folder.
+Re-running for the same folder and bundle is a no-op. A checkout whose folder was deleted, or
+replaced by a new empty folder, is replaced, unless it holds changes sync has not sent yet; a
+checkout emptied in place is refused, because removing every file is a pending edit.
 
 A new checkout is added to your workspace catalog under its bundle id (or the id with -2 to -9
 when that label is taken), so other sessions and the local MCP app can find it; 'catalog list'

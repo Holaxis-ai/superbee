@@ -755,6 +755,14 @@ test("catalog list --hosted lists each reachable bundle once, with the folder of
     { bundle_id: "zeta.notes", name: "zeta.notes", lifecycle: "active", folder: null, ambiguous: false },
   ]);
 
+  // A checkout of the same bundle id on another host is not this host's checkout.
+  const binding = await bindingForPath(h.home, folder);
+  assert.ok(binding);
+  await writeBinding(h.home, { ...binding, origin: "https://other.example", audience: "https://other.example/mcp" });
+  const elsewhere = await listHosted(h, ["--host", HOST], fake);
+  assert.equal((elsewhere.bundles as { bundle_id: string; folder: unknown }[]).find((row) => row.bundle_id === BUNDLE)?.folder, null);
+  await writeBinding(h.home, binding);
+
   // A checkout whose folder was deleted is not a checkout here, although its binding remains.
   await rm(folder, { recursive: true });
   const after = await listHosted(h, ["--host", HOST], fake);
