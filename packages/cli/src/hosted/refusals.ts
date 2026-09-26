@@ -14,6 +14,8 @@ import path from "node:path";
 
 import { resolveLocalBundleTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
+import { commandToken } from "../command-text.js";
+import { cliInvocation } from "../invocation.js";
 import { bindingForPath, type CheckoutBinding } from "./binding.js";
 
 type RefusalReason = "not_syncable" | "checkout_target";
@@ -165,5 +167,21 @@ export function hostedMcpWriteRefusal(binding: CheckoutBinding, operation: strin
     { words: ["mcp"], reason: "not_syncable", why: "the local MCP app writes Views, blobs and documents the app owns for a checkout" },
     `mcp ${operation}`,
     binding,
+  );
+}
+
+/**
+ * The host no longer serves a checkout's bundle (`bundle_not_found`): it was deleted there, or the
+ * person's access was removed. A conflict with the checkout, whose files stay; `unsent` is the
+ * count of changes sync has not sent, when the command knows it.
+ */
+export function bundleGone(binding: CheckoutBinding, unsent?: number): CliError {
+  return new CliError(
+    "CONFLICT",
+    `hosted bundle '${binding.bundle_id}' is no longer served to you on ${binding.origin}: it was deleted there, or your access was removed`,
+    {
+      details: { reason: "bundle_deleted_remotely", bundle_id: binding.bundle_id, host: binding.origin, folder: binding.path, ...(unsent === undefined ? {} : { unsent_changes: unsent }) },
+      help: `your files stay in ${binding.path}; to keep them as a plain folder: ${cliInvocation()} checkout --release ${commandToken(binding.path)}`,
+    },
   );
 }

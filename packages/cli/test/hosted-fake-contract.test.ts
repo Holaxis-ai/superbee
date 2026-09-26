@@ -207,7 +207,7 @@ test("the contract catches the read answer the fake used to give, and a wrong er
   assert.notDeepEqual(bodyShape(refused.replace('"status":"refused"', '"status":"committed"')), bodyShape(refused));
   const changed = golden.get("delete-200-unchanged")!.response.body;
   assert.notDeepEqual(bodyShape(changed.replace('"changed":false', '"changed":true')), bodyShape(changed));
-  // The design's first names for a history row (`revision`, `at`) are not the host's.
+  // A history row's keys are grammar: a row named with other keys (`revision`, `at`) is another answer.
   const history = golden.get("history-200-ok")!.response.body;
   assert.notDeepEqual(bodyShape(history.replaceAll('"seq"', '"revision"').replaceAll('"timestamp"', '"at"')), bodyShape(history));
 });

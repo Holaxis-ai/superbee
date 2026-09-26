@@ -116,10 +116,10 @@ superbee sync                                 # sends what keep or revise decide
 
 In a checkout, `superbee doc history <id>` reads the host's version chain, not the folder: every
 sent version, newest first, with its `seq`, the principal id that made it, and the agent label
-the write named. `count` is the host's total; `--limit 0` lists them all. `superbee doc history
-<id> --seq <n>` prints version `n`'s full content. A document created in the folder has history
-once `superbee sync` sends it. To compare-and-swap, use the folder's own version from `doc read`,
-not the host's newest version.
+the write named. `count` is the host's total; `--limit 0` lists up to 10,000 of them. `superbee
+doc history <id> --seq <n>` shows version `n` (add `--json` for its whole content). A document
+created in the folder has history once `superbee sync` sends it. To compare-and-swap, use the
+folder's own version from `doc read`, not the host's newest version.
 
 ## Deleting documents
 

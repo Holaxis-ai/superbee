@@ -15,6 +15,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  readHistoryListing,
+  type HostedHistoryAnswer,
+  type HostedHistoryRequest,
+  type HostedHistoryVersion,
   classifyWriteAnswer,
   createFetchCarrier,
   createHostedReadAdapter,
@@ -835,4 +839,104 @@ test("via: the agent a client names rides each write and its lookup exactly as t
     await assert.rejects(carrier.json("/sync/v1/create", {}, new AbortController().signal, { maximum: 1024, via }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied", via);
   }
   assert.equal(sent.length, 3);
+});
+
+// ── history pages ────────────────────────────────────────────────────────────────────────────
+
+/** A lineage served as the host pages it: newest first, `total` on the first page, content on request. */
+function lineage(length: number, tag = "a") {
+  const rows: HostedHistoryVersion[] = [];
+  const append = (n: number) => {
+    for (let index = 0; index < n; index += 1) {
+      const seq = rows.length + 1;
+      rows.push({ seq, version: `sha256:${(tag + seq.toString(16)).padStart(64, "0").slice(-64)}`, actor: "person:a", timestamp: `2030-01-01T00:00:${String(seq % 60).padStart(2, "0")}.000Z` });
+    }
+  };
+  append(length);
+  const requests: HostedHistoryRequest[] = [];
+  const state = { rows, append, requests, absent: false, onRequest: undefined as ((request: HostedHistoryRequest) => void) | undefined };
+  const read = async (request: HostedHistoryRequest): Promise<HostedHistoryAnswer> => {
+    requests.push(request);
+    state.onRequest?.(request);
+    if (state.absent) return { ok: false, refusal: { code: "document_not_found", message: "gone", retryable: false } };
+    const older = [...state.rows].reverse().filter((row) => request.before === undefined || row.seq < request.before);
+    const versions = older.slice(0, request.limit).map((row) => (request.includeContent ? { ...row, content: `content ${row.seq}` } : row));
+    return { ok: true, page: { documentId: request.documentId, versions, more: older.length > versions.length, ...(request.before === undefined ? { total: state.rows.length } : {}) } };
+  };
+  return { state, read };
+}
+
+const listing = (read: (request: HostedHistoryRequest) => Promise<HostedHistoryAnswer>, wanted: number, extra: { includeContent?: boolean; pageSize?: number } = {}, sleeps: number[] = []) =>
+  readHistoryListing(read, { documentId: "notes/a", wanted, ...extra }, { signal: new AbortController().signal, sleep: async (ms) => void sleeps.push(ms) });
+
+test("history pages: one page is one request; more pages follow `before` and re-read the newest version by its seq", async () => {
+  const one = lineage(3);
+  assert.deepEqual(await listing(one.read, 20), { status: "listed", versions: [...one.state.rows].reverse(), total: 3 });
+  assert.equal(one.state.requests.length, 1);
+
+  const many = lineage(7);
+  const listed = await listing(many.read, 20, { pageSize: 3, includeContent: true });
+  assert.equal(listed.status, "listed");
+  if (listed.status !== "listed") return;
+  assert.deepEqual(listed.versions.map((row) => row.seq), [7, 6, 5, 4, 3, 2, 1]);
+  assert.ok(listed.versions.every((row) => row.content === `content ${row.seq}`), "content passes through on every page");
+  assert.deepEqual(
+    many.state.requests.map(({ limit, before, includeContent }) => [limit, before, includeContent]),
+    [
+      [3, undefined, true],
+      [3, 5, true],
+      [3, 2, true],
+      [1, 8, undefined],
+    ],
+  );
+  // `wanted` bounds the listing, and the last page asks only for what is left.
+  const capped = lineage(7);
+  const five = await listing(capped.read, 5, { pageSize: 3 });
+  assert.deepEqual(five.status === "listed" && [five.versions.length, five.total], [5, 7]);
+  assert.deepEqual(capped.state.requests.map(({ limit, before }) => [limit, before]), [[3, undefined], [2, 5], [1, 8]]);
+});
+
+test("history pages: a write that only appends keeps the listing; a new lineage starts it again, and one that keeps changing is moved", async () => {
+  const appended = lineage(5);
+  appended.state.onRequest = (request) => {
+    if (request.before !== undefined && request.limit > 1) appended.state.append(1);
+  };
+  const kept = await listing(appended.read, 20, { pageSize: 2 });
+  assert.equal(kept.status, "listed");
+  assert.deepEqual(kept.status === "listed" && [kept.total, kept.versions.map((row) => row.seq)], [5, [5, 4, 3, 2, 1]]);
+
+  // Deleted and recreated after the first page of the first attempt: a lineage with other versions.
+  const recreated = lineage(5);
+  let swapped = false;
+  recreated.state.onRequest = (request) => {
+    if (!swapped && request.before !== undefined) {
+      swapped = true;
+      recreated.state.rows.splice(0, recreated.state.rows.length, ...lineage(6, "b").state.rows);
+    }
+  };
+  const sleeps: number[] = [];
+  const again = await listing(recreated.read, 20, { pageSize: 2 }, sleeps);
+  assert.deepEqual(again.status === "listed" && [again.total, again.versions[0]!.version], [6, recreated.state.rows[5]!.version]);
+  assert.equal(sleeps.length, 1, "one pause before starting again");
+
+  const churning = lineage(4);
+  let generation = 0;
+  churning.state.onRequest = (request) => {
+    if (request.before !== undefined && request.limit > 1) churning.state.rows.splice(0, churning.state.rows.length, ...lineage(4, `c${(generation += 1)}`).state.rows);
+  };
+  assert.deepEqual(await listing(churning.read, 20, { pageSize: 2 }), { status: "moved" });
+
+  // A later page that answers document_not_found: the lineage ended between pages.
+  const deleted = lineage(4);
+  deleted.state.onRequest = (request) => void (deleted.state.absent = request.before !== undefined);
+  assert.deepEqual(await listing(deleted.read, 20, { pageSize: 2 }), { status: "moved" });
+});
+
+test("history pages: absence on the first page is the answer, and any other refusal passes through", async () => {
+  const gone = lineage(2);
+  gone.state.absent = true;
+  assert.deepEqual(await listing(gone.read, 20), { status: "absent" });
+  const refusal = { code: "insufficient_scope", message: "no", retryable: false };
+  assert.deepEqual(await listing(async () => ({ ok: false, refusal }), 20), { status: "refused", refusal });
+  await assert.rejects(listing(lineage(1).read, 20, { pageSize: 101 }), RangeError);
 });

@@ -74,6 +74,8 @@ export const HOSTED_READ_BOUNDS = Object.freeze({
   headsBytes: 4 * 1024 * 1024,
   /** One document read's answer, and one snapshot line. */
   documentBytes: 1024 * 1024 + 64 * 1024,
+  /** One history page's answer: the host bounds `documents.history.v1` at 1 MiB; the slack is the envelope's. */
+  historyBytes: 1024 * 1024 + 64 * 1024,
   /** Document reads in flight at once, whatever concurrency a caller's batches ask for. */
   readConcurrency: 8,
 });
@@ -248,8 +250,6 @@ export function decodeDocumentRead(id: ConceptId, body: unknown, route?: string)
 export const HISTORY_OPERATION_ID = "documents.history.v1";
 /** The most versions one history page lists (hosted's `READ_LIMITS.documents`). */
 export const HISTORY_PAGE_LIMIT = 100;
-/** One history answer: the host bounds the operation's result at 1 MiB; the slack is the envelope's. */
-export const HISTORY_ANSWER_BYTES = 1024 * 1024 + 64 * 1024;
 
 /** One page of a document's history, as asked: the newest `limit` versions older than `before`. */
 export interface HostedHistoryRequest {
@@ -350,30 +350,41 @@ export function decodeDocumentHistory(request: HostedHistoryRequest, body: unkno
   if (data!.more && versions.length !== request.limit) fail("more versions without a full page");
   let total: number | undefined;
   if (request.before === undefined) {
-    if (!count(data!.total) || data!.total < versions.length || (!data!.more && data!.total !== versions.length)) fail("a first page without a consistent total");
+    // A first page lists `total` rows exactly when nothing older exists, and fewer when more does.
+    if (!count(data!.total) || (data!.more ? data!.total <= versions.length : data!.total !== versions.length)) fail("a first page without a consistent total");
     total = data!.total as number;
   }
   return Object.freeze({ documentId: request.documentId, versions: Object.freeze(versions), more: data!.more as boolean, ...(total === undefined ? {} : { total }) });
 }
 
-/** A history answer's refusal (`ok: false`): the operation's error code, message and retry advice. */
-export interface HostedHistoryRefusal {
+/** An operation's refusal (`ok: false`): the kernel's error code, its message and its retry advice. */
+export interface HostedOperationRefusal {
   readonly code: string;
   readonly message: string;
   readonly retryable: boolean;
 }
 
-/** A 200 history answer: its page, or its refusal (`document_not_found` and the kernel's other codes). */
-export function decodeHistoryAnswer(request: HostedHistoryRequest, body: unknown, route?: string): { ok: true; page: HostedHistoryPage } | { ok: false; refusal: HostedHistoryRefusal } {
+/**
+ * The refusal a 200 operation answer carries, or `undefined` for an answer that is not one
+ * (`ok` is not `false`). A refusal must name `operationId` and a non-empty error code; any other
+ * `ok: false` envelope is malformed. One reading for every kernel operation a hosted client runs.
+ */
+export function operationRefusal(body: unknown, operationId: string, route?: string): HostedOperationRefusal | undefined {
   const envelope = body as { ok?: unknown; operationId?: unknown; error?: { code?: unknown; message?: unknown; retryable?: unknown } | null } | undefined;
-  if (envelope?.ok !== false) return { ok: true, page: decodeDocumentHistory(request, body, route) };
+  if (envelope?.ok !== false) return undefined;
   const error = envelope.error;
-  if (envelope.operationId !== HISTORY_OPERATION_ID || typeof error !== "object" || error === null || typeof error.code !== "string" || error.code === "")
-    throw malformed(`history answered a refusal that is not ${HISTORY_OPERATION_ID}'s`, route);
-  return {
-    ok: false,
-    refusal: Object.freeze({ code: error.code, message: typeof error.message === "string" ? error.message : error.code, retryable: error.retryable === true }),
-  };
+  if (envelope.operationId !== operationId || typeof error !== "object" || error === null || typeof error.code !== "string" || error.code === "")
+    throw malformed(`answered a refusal that is not ${operationId}'s`, route);
+  return Object.freeze({ code: error.code, message: typeof error.message === "string" ? error.message : error.code, retryable: error.retryable === true });
+}
+
+/** One history page's answer: the page, or the operation's refusal (`document_not_found` and the kernel's other codes). */
+export type HostedHistoryAnswer = { ok: true; page: HostedHistoryPage } | { ok: false; refusal: HostedOperationRefusal };
+
+/** A 200 history answer, decoded against the page asked for. */
+export function decodeHistoryAnswer(request: HostedHistoryRequest, body: unknown, route?: string): HostedHistoryAnswer {
+  const refusal = operationRefusal(body, HISTORY_OPERATION_ID, route);
+  return refusal ? { ok: false, refusal } : { ok: true, page: decodeDocumentHistory(request, body, route) };
 }
 
 /** `documents`, naming `route` on a malformed answer the iteration rejects with. */
@@ -451,10 +462,9 @@ export function createHostedReadAdapter(options: HostedReadAdapterOptions): Host
         .json(routes.read, { bundleId, documentId: id }, controller.signal, { maximum: HOSTED_READ_BOUNDS.documentBytes, ...(options.binding ? { binding: options.binding } : {}) })
         .catch(carrierFailure);
       if (answer.status !== 200) refused(answer);
-      const envelope = answer.body as { ok?: unknown; error?: { code?: unknown; message?: unknown } } | undefined;
-      if (envelope?.ok === false) {
-        const code = typeof envelope.error?.code === "string" ? envelope.error.code : "RUNTIME";
-        const message = typeof envelope.error?.message === "string" ? envelope.error.message : code;
+      const refusal = await onRoute(routes.read, async () => operationRefusal(answer.body, "documents.read.v1"));
+      if (refusal) {
+        const { code, message } = refusal;
         if (code === "document_not_found") throw notFound(id);
         if (code === "bundle_not_found" || code === "insufficient_scope") {
           forget();

@@ -10,6 +10,8 @@ import path from "node:path";
 
 import { decode } from "@toon-format/toon";
 import { versionOfBytes } from "@superbee/core/versioning";
+import { parseMarkdown } from "@superbee/core";
+import { BODY_PREVIEW_LIMIT } from "../src/body-replace-guards.js";
 
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
@@ -116,48 +118,70 @@ test("--limit 0 pages back 100 at a time with before, to the whole chain", async
       [100, undefined],
       [100, 152],
       [100, 52],
-      [1, undefined],
+      [1, 252],
     ],
-    "a listing of more than one page is checked against a fresh first page",
+    "a listing of more than one page re-reads its newest version by seq",
   );
 });
 
-test("a write that lands between pages starts the listing again; a chain that keeps moving is a retryable refusal", async () => {
+/** The fake's fetch, with `after` run once a history request has been answered. */
+function afterHistory(h: Harness, after: (body: { before?: number; limit?: number }) => void): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const answer = await h.host.fetch(input, init);
+    if (String(input).endsWith("/history")) after(JSON.parse(String(init?.body ?? "{}")) as { before?: number; limit?: number });
+    return answer;
+  }) as typeof fetch;
+}
+
+test("a write between pages keeps the listing (older versions never change); a delete and recreate starts it again", async () => {
   const h = await harness();
   edits(h.host, h.id, 150);
+  // A write lands after the first page: the listing is the lineage as the first page saw it.
   let writes = 1;
-  // One host write after the first page of the first attempt only.
-  const oneWrite = (async (input: string | URL | Request, init?: RequestInit) => {
-    const answer = await h.host.fetch(input, init);
-    const body = JSON.parse(String(init?.body ?? "{}")) as { before?: number; limit?: number };
-    if (String(input).endsWith("/history") && body.before === undefined && body.limit === 100 && writes > 0) {
+  const appended = afterHistory(h, (body) => {
+    if (body.before === undefined && writes > 0) {
       writes -= 1;
       edits(h.host, h.id, 1);
     }
-    return answer;
-  }) as typeof fetch;
-  const record = JSON.parse(await history(h, [h.id, "--limit", "0", "--json"], oneWrite)) as { count: number; versions: { seq: number }[] };
-  assert.equal(record.count, 152, "the second attempt's total");
-  assert.deepEqual(record.versions.map((row) => row.seq), Array.from({ length: 152 }, (_, index) => 152 - index));
+  });
+  const kept = JSON.parse(await history(h, [h.id, "--limit", "0", "--json"], appended)) as { count: number; versions: { seq: number }[] };
+  assert.equal(kept.count, 151);
+  assert.deepEqual(kept.versions.map((row) => row.seq), Array.from({ length: 151 }, (_, index) => 151 - index));
+  assert.equal(historyRequests(h.host).length, 3, "no restart");
+
+  // Deleted and recreated after the first page: the rows from the old lineage are never merged in.
+  h.host.requests.length = 0;
+  let recreated = false;
+  const recreate = afterHistory(h, (body) => {
+    if (body.before === undefined && !recreated) {
+      recreated = true;
+      h.host.remove(h.id);
+      edits(h.host, h.id, 120);
+    }
+  });
+  const fresh = JSON.parse(await history(h, [h.id, "--limit", "0", "--json"], recreate)) as { count: number; versions: { seq: number; version: string }[] };
+  assert.equal(fresh.count, 120);
+  assert.deepEqual(fresh.versions.map((row) => row.version), [...h.host.histories.get(h.id)!].reverse().map((row) => row.version));
   assert.deepEqual(
     historyRequests(h.host).map(({ limit, before }) => [limit, before]),
     [
       [100, undefined],
-      [100, 52],
-      [1, undefined],
-      [100, undefined],
       [100, 53],
-      [1, undefined],
+      [1, 153],
+      [100, undefined],
+      [100, 21],
+      [1, 121],
     ],
   );
-  // A write after every first page: never merged, refused after the attempts.
-  const always = (async (input: string | URL | Request, init?: RequestInit) => {
-    const answer = await h.host.fetch(input, init);
-    const body = JSON.parse(String(init?.body ?? "{}")) as { before?: number; limit?: number };
-    if (String(input).endsWith("/history") && body.before === undefined && body.limit === 100) edits(h.host, h.id, 1);
-    return answer;
-  }) as typeof fetch;
-  const error = await rejects(() => history(h, [h.id, "--limit", "0"], always));
+
+  // A lineage replaced after every first page: refused, retryable, after the attempts.
+  const churn = afterHistory(h, (body) => {
+    if (body.before === undefined && body.limit === 100) {
+      h.host.remove(h.id);
+      edits(h.host, h.id, 120);
+    }
+  });
+  const error = await rejects(() => history(h, [h.id, "--limit", "0"], churn));
   assert.equal(error.code, "TRANSIENT");
   assert.equal(error.details?.reason, "history_moved");
   assert.equal(error.details?.retryable, true);
@@ -172,16 +196,33 @@ test("--limit 0 stops at the listing ceiling and says so", async () => {
   assert.equal(record.count, HOSTED_HISTORY_CEILING + 5);
   assert.equal(record.shown, HOSTED_HISTORY_CEILING);
   assert.equal((record.versions as unknown[]).length, HOSTED_HISTORY_CEILING);
-  assert.match((record.help as string[])[0]!, new RegExp(`^showing the newest ${HOSTED_HISTORY_CEILING} of ${HOSTED_HISTORY_CEILING + 5} — the listing stops at ${HOSTED_HISTORY_CEILING}`));
+  const ceilingHelp = new RegExp(`^showing the newest ${HOSTED_HISTORY_CEILING} of ${HOSTED_HISTORY_CEILING + 5} — a listing stops at ${HOSTED_HISTORY_CEILING}`);
+  assert.match((record.help as string[])[0]!, ceilingHelp);
+  assert.equal(historyRequests(h.host).length, HOSTED_HISTORY_CEILING / 100 + 1);
+  // A --limit above the ceiling is held to it, with the same help.
+  h.host.requests.length = 0;
+  const above = await historyJson(h, [h.id, "--limit", String(HOSTED_HISTORY_CEILING * 2)]);
+  assert.deepEqual([above.count, above.shown, (above.versions as unknown[]).length], [HOSTED_HISTORY_CEILING + 5, HOSTED_HISTORY_CEILING, HOSTED_HISTORY_CEILING]);
+  assert.match((above.help as string[])[0]!, ceilingHelp);
   assert.equal(historyRequests(h.host).length, HOSTED_HISTORY_CEILING / 100 + 1);
 });
 
-test("--seq prints that version's stored content; with --json, its row and the content", async () => {
+test("--seq shows that version as a record with a bounded body preview; with --json, its row and the whole content", async () => {
   const h = await harness();
   edits(h.host, h.id, 2);
   const [first, second] = h.host.histories.get(h.id)!;
-  assert.equal(await history(h, [h.id, "--seq", "1"]), first!.raw);
+  const shown = decode((await history(h, [h.id, "--seq", "1"])).trim()) as Record<string, unknown>;
+  const parsed = parseMarkdown(first!.raw);
+  assert.deepEqual(shown, { id: h.id, seq: 1, version: first!.version, actor: first!.actor, timestamp: first!.timestamp, frontmatter: parsed.frontmatter, body: parsed.body });
   assert.deepEqual(historyRequests(h.host).at(-1), { bundleId: BUNDLE, documentId: h.id, limit: 1, before: 2, includeContent: true });
+  // A long body is a preview, never the whole body, and the record names the complete channel.
+  h.host.put(h.id, { type: "Note" }, "x".repeat(BODY_PREVIEW_LIMIT * 3));
+  const long = decode((await history(h, [h.id, "--seq", "4"])).trim()) as Record<string, unknown>;
+  assert.equal(long.body, undefined);
+  assert.equal(long.body_truncated, true);
+  assert.equal(long.body_chars, parseMarkdown(h.host.histories.get(h.id)!.at(-1)!.raw).body.length);
+  assert.ok((long.body_preview as string).length < BODY_PREVIEW_LIMIT * 2);
+  assert.deepEqual(long.help, [`${cliInvocation()} doc history ${h.id} --seq 4 --json`]);
   const record = await historyJson(h, [h.id, "--seq", "2"]);
   assert.deepEqual(record, { id: h.id, seq: 2, version: second!.version, actor: second!.actor, timestamp: second!.timestamp, content: second!.raw });
   assert.equal(versionOfBytes(record.content as string), record.version);
@@ -210,6 +251,38 @@ test("a gateway from before /history answers its unknown-route 404: 'does not se
   assert.equal(error.code, "NOT_IMPLEMENTED");
   assert.match(error.message, /does not serve document history yet/);
   assert.equal(error.details?.status, 404);
+  // Any other 404 is the host's refusal, not a missing route.
+  const h2 = await harness();
+  const otherNotFound = (async (input: string | URL | Request, init?: RequestInit) =>
+    String(input).endsWith("/history") ? Response.json({ error: { code: "bundle_not_found" } }, { status: 404 }) : h2.host.fetch(input, init)) as typeof fetch;
+  const refused = await rejects(() => history(h2, [h2.id], otherNotFound));
+  assert.notEqual(refused.code, "NOT_IMPLEMENTED");
+});
+
+test("a bundle the host no longer serves is the checkout's conflict, as sync reports it; other refusals go through the hosted translation", async () => {
+  const h = await harness();
+  const refusing = (code: string, retryable = false) =>
+    (async (input: string | URL | Request, init?: RequestInit) =>
+      String(input).endsWith("/history")
+        ? Response.json({ ok: false, operationId: "documents.history.v1", error: { code, message: code, retryable } })
+        : h.host.fetch(input, init)) as typeof fetch;
+  const gone = await rejects(() => history(h, [h.id], refusing("bundle_not_found")));
+  assert.equal(gone.code, "CONFLICT");
+  assert.equal(gone.details?.reason, "bundle_deleted_remotely");
+  assert.equal((await rejects(() => history(h, [h.id], refusing("insufficient_scope")))).code, "FORBIDDEN");
+  assert.equal((await rejects(() => history(h, [h.id], refusing("backend_unavailable", true)))).code, "TRANSIENT");
+  const large = await rejects(() => history(h, [h.id], refusing("result_too_large")));
+  assert.equal(large.code, "RUNTIME");
+  assert.match(large.help ?? "", /--limit 10/);
+  const largeVersion = await rejects(() => history(h, [h.id, "--seq", "1"], refusing("result_too_large")));
+  assert.match(largeVersion.help ?? "", /doc read/);
+});
+
+test("an explicit --remote wins over the checkout's binding: no request reaches the checkout's host", async () => {
+  const h = await harness();
+  await assert.rejects(doc(["history", h.id, "--remote", "http://127.0.0.1:9", "--dir", h.folder], { stdout: () => {}, hosted: { auth: h.auth, fetch: h.host.fetch } }));
+  await assert.rejects(doc(["history", h.id, "--remote", "http://127.0.0.1:9"], { stdout: () => {}, hosted: { auth: h.auth, fetch: h.host.fetch } }));
+  assert.deepEqual(h.host.requests, []);
 });
 
 test("a document the host does not have is the definitive empty state, as a local bundle answers it", async () => {
@@ -217,7 +290,9 @@ test("a document the host does not have is the definitive empty state, as a loca
   const record = await historyJson(h, ["notes/never-sent"]);
   assert.equal(record.count, 0);
   assert.deepEqual(record.versions, []);
-  assert.match(record.help as string, /no version history for 'notes\/never-sent' on https:\/\/hosted\.example/);
+  const help = record.help as string[];
+  assert.match(help[0]!, /no version history for 'notes\/never-sent' on https:\/\/hosted\.example/);
+  assert.equal(help[1], `${cliInvocation()} sync --dir ${h.folder}`);
 });
 
 test("the checkout's person is required: another signed-in identity is refused before any history is read", async () => {

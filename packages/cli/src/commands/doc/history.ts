@@ -2,7 +2,7 @@ import { renderUsage } from "../../output.js";
 // `doc history <id>` — see `../doc.ts`'s header comment for the CAS-token / attribution rationale.
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
-import { docVersions, type VersionInfo } from "@superbee/core";
+import { docVersions, parseMarkdown, RemoteError, type VersionInfo } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
@@ -10,12 +10,15 @@ import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
-import { DOC_HISTORY_USAGE, HOSTED_HISTORY_CEILING, type DocCliDeps, type DocHostedDeps, readErrorToCliError } from "./common.js";
+import { DOC_HISTORY_USAGE, HOSTED_HISTORY_CEILING, type DocCliDeps, readErrorToCliError } from "./common.js";
 import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
 import { hostedCheckoutAt } from "../../autopull.js";
 import type { CheckoutBinding } from "../../hosted/binding.js";
+import type { HostedAccountDeps } from "../../hosted/account.js";
 import type { HostedSyncClient } from "../../hosted/client.js";
-import type { HostedHistoryRefusal, HostedHistoryVersion } from "@superbee/core/hosted-transport";
+import type { HostedTarget } from "../../hosted-auth/discovery.js";
+import { HISTORY_PAGE_LIMIT, readHistoryListing, type HostedHistoryVersion, type HostedOperationRefusal } from "@superbee/core/hosted-transport";
+import { attachBodyPreview } from "../../body-replace-guards.js";
 
 /**
  * AXI unbounded-output guard (same class as `list`/`status`/`blobs`'s row cap): a history-keeping
@@ -26,8 +29,6 @@ import type { HostedHistoryRefusal, HostedHistoryVersion } from "@superbee/core/
  * every other capped command's 0-means-unlimited convention.
  */
 const DEFAULT_LIMIT = 20;
-/** Versions one hosted history request asks for (the host's page cap). */
-const HOSTED_PAGE = 100;
 
 export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
@@ -105,12 +106,12 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     const resume = commandFragment`${cliInvocation()} doc history ${commandToken(id)} --dir ${commandToken(checkout.path)}${
       seq !== undefined ? commandFragment` --seq ${commandToken(String(seq))}` : values.limit !== undefined ? commandFragment` --limit ${commandToken(String(limit))}` : commandFragment``
     }${values.json ? commandFragment` --json` : commandFragment``}`;
-    const client = await hostedClient(checkout, deps.hosted, resume);
+    const connection = await hostedConnection(checkout, deps.hosted, resume);
     if (seq !== undefined) {
-      await hostedVersion(client, checkout, id, seq, mode, stdout);
+      await hostedVersion(connection, checkout, id, seq, mode, stdout);
       return;
     }
-    await hostedList(client, checkout, id, limit, mode, stdout);
+    await hostedList(connection, checkout, id, limit, mode, stdout);
     return;
   }
 
@@ -174,56 +175,44 @@ function truncationHelp(id: string, shown: number, total: number): string {
   return `showing ${shown} of ${total} — run \`${cliInvocation()} doc history ${commandToken(id)} --limit 0\` (or a higher --limit) for all`;
 }
 
-/** A client for the checkout's host, signed in as the checkout's own person (as `export` checks it). */
-async function hostedClient(checkout: CheckoutBinding, hosted: DocHostedDeps | undefined, resume: CommandText): Promise<HostedSyncClient> {
-  // Loaded only in a hosted checkout, so an ordinary history never loads the hosted modules.
-  const [{ resolveHostedTarget }, { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument }, { createHostedSyncClient }] = await Promise.all([
-    import("../../hosted-auth/discovery.js"),
-    import("../../hosted-auth/session.js"),
-    import("../../hosted/client.js"),
-  ]);
-  const target = resolveHostedTarget(checkout.audience);
-  if (target.origin !== checkout.origin) {
-    throw new CliError("RUNTIME", `the checkout binding for ${checkout.path} is inconsistent`, { help: `${cliInvocation()} checkout --release ${commandToken(checkout.path)}` });
-  }
-  const auth = hosted?.auth ?? defaultHostedAuthDeps(homedir());
-  const token = await ensureHostedAccessToken(target, { resume }, auth);
-  const client = createHostedSyncClient({
-    target,
-    accessToken: token.accessToken,
-    resume,
-    ...(checkout.workspace !== null ? { workspace: checkout.workspace } : {}),
-    ...(hosted?.fetch ? { fetch: hosted.fetch } : {}),
-  });
-  const identity = await client.whoami();
-  if (identity.principalId !== checkout.principal_id) {
-    throw new CliError("FORBIDDEN", `the checkout at ${checkout.path} was made by another hosted identity than the one signed in`, {
-      details: { reason: "other_principal", folder: checkout.path, checkout_principal: checkout.principal_id, signed_in_principal: identity.principalId },
-      help: `${cliInvocation()} login --host ${commandToken(hostArgument(target))}`,
-    });
-  }
-  return client;
+interface Connection {
+  readonly client: HostedSyncClient;
+  readonly target: HostedTarget;
+  readonly resume: CommandText;
 }
 
-/** The CLI error a history refusal means; `document_not_found` is the caller's to decide. */
-function refusalError(refusal: HostedHistoryRefusal, checkout: CheckoutBinding, id: string): CliError {
-  const details = { host: checkout.origin, bundle_id: checkout.bundle_id, id, code: refusal.code };
+/** The checkout's host, reached as the checkout's own person. */
+async function hostedConnection(checkout: CheckoutBinding, hosted: HostedAccountDeps | undefined, resume: CommandText): Promise<Connection> {
+  // Loaded only in a hosted checkout, so an ordinary history never loads the hosted modules.
+  const [{ connectCheckout }, { defaultHostedAuthDeps }] = await Promise.all([import("../../hosted/account.js"), import("../../hosted-auth/session.js")]);
+  const { client, target } = await connectCheckout(checkout, { resume }, hosted ?? { auth: defaultHostedAuthDeps(homedir()) });
+  return { client, target, resume };
+}
+
+/**
+ * The CLI error a history refusal means. `document_not_found` and `result_too_large` are this
+ * command's own; a bundle the host no longer serves is the checkout's conflict, as sync reports
+ * it; every other code goes through the hosted client's one translation.
+ */
+async function refusalError(refusal: HostedOperationRefusal, connection: Connection, checkout: CheckoutBinding, id: string, path: "list" | "seq"): Promise<unknown> {
   if (refusal.code === "document_not_found") {
-    return new CliError("NOT_FOUND", `no document '${id}' on ${checkout.origin}`, { details, help: `${cliInvocation()} doc history ${commandToken(id)}` });
-  }
-  if (refusal.code === "bundle_not_found" || refusal.code === "insufficient_scope" || refusal.code === "access_denied") {
-    return new CliError("FORBIDDEN", `${checkout.origin} refused to read '${checkout.bundle_id}' (${refusal.code})`, { details, help: `${cliInvocation()} whoami --host ${commandToken(checkout.origin)}` });
-  }
-  if (refusal.code === "result_too_large") {
-    return new CliError("RUNTIME", `the history of '${id}' is larger than one history read carries`, {
-      details: { ...details, retryable: false },
-      help: "the version's content is over 1 MiB; open it in the Superbee app",
+    return new CliError("NOT_FOUND", `no document '${id}' on ${checkout.origin}`, {
+      details: { host: checkout.origin, id, code: refusal.code },
+      help: `${cliInvocation()} doc history ${commandToken(id)}`,
     });
   }
-  if (refusal.retryable) {
-    return new CliError("TRANSIENT", `${checkout.origin} could not read the history of '${id}' (${refusal.code})`, { details: { ...details, retryable: true }, help: "retry the same command" });
+  if (refusal.code === "result_too_large") {
+    return new CliError("RUNTIME", path === "list" ? `one page of the history of '${id}' is larger than a history read carries` : `version content of '${id}' is larger than a history read carries (1 MiB)`, {
+      details: { host: checkout.origin, id, code: refusal.code, retryable: false },
+      help:
+        path === "list"
+          ? `${cliInvocation()} doc history ${commandToken(id)} --limit 10`
+          : `this version cannot be read from the CLI; the current version is ${cliInvocation()} doc read ${commandToken(id)}`,
+    });
   }
-  return new CliError("RUNTIME", `${checkout.origin} refused the history of '${id}' (${refusal.code})`, { details });
+  const [{ bundleGone }, { hostedFailure }] = await Promise.all([import("../../hosted/refusals.js"), import("../../hosted/client.js")]);
+  if (refusal.code === "bundle_not_found") return bundleGone(checkout);
+  return hostedFailure(new RemoteError(refusal.message, refusal.code, refusal.retryable ? 503 : 422), connection.target, connection.resume);
 }
 
 function row(version: HostedHistoryVersion): Record<string, unknown> {
@@ -236,58 +225,23 @@ function row(version: HostedHistoryVersion): Record<string, unknown> {
   };
 }
 
-/** How many times a paged listing starts again from the first page when the chain moved under it. */
-const LISTING_ATTEMPTS = 3;
-
-type Listing = { versions: HostedHistoryVersion[]; total: number } | "absent" | "moved";
-
-/**
- * One reading of the newest `wanted` versions, paged back with `before`. Older versions never
- * change, but a write, or a delete and recreate (a new lineage whose seq restarts), can land
- * between pages; a listing of more than one page is checked against a fresh first page, and any
- * difference in the total or the newest version is "moved": the pages are never merged across it.
- */
-async function readListing(client: HostedSyncClient, checkout: CheckoutBinding, id: string, wanted: number): Promise<Listing> {
-  const versions: HostedHistoryVersion[] = [];
-  let total = 0;
-  let before: number | undefined;
-  for (;;) {
-    const size = Math.min(HOSTED_PAGE, wanted - versions.length);
-    const answer = await client.history(checkout.bundle_id, { documentId: id, limit: size, ...(before === undefined ? {} : { before }) });
-    if (!answer.ok) {
-      // Absent on the first page is the answer; absent on a later one, the document was deleted meanwhile.
-      if (answer.refusal.code === "document_not_found") return before === undefined ? "absent" : "moved";
-      throw refusalError(answer.refusal, checkout, id);
-    }
-    const { page } = answer;
-    if (before === undefined) total = page.total!;
-    versions.push(...page.versions);
-    if (!page.more || versions.length >= wanted) break;
-    before = page.versions.at(-1)!.seq;
-  }
-  if (before === undefined) return { versions, total };
-  const check = await client.history(checkout.bundle_id, { documentId: id, limit: 1 });
-  if (!check.ok) {
-    if (check.refusal.code === "document_not_found") return "moved";
-    throw refusalError(check.refusal, checkout, id);
-  }
-  const newest = check.page.versions[0];
-  if (check.page.total !== total || newest?.seq !== versions[0]?.seq || newest?.version !== versions[0]?.version) return "moved";
-  return { versions, total };
-}
-
-/** The host's chain, newest first: `limit` versions (0 = every one up to the ceiling). */
-async function hostedList(client: HostedSyncClient, checkout: CheckoutBinding, id: string, limit: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
-  const wanted = limit === 0 ? HOSTED_HISTORY_CEILING : limit;
-  let listing: Listing = "moved";
-  for (let attempt = 1; attempt <= LISTING_ATTEMPTS && listing === "moved"; attempt += 1) listing = await readListing(client, checkout, id, wanted);
-  if (listing === "moved") {
-    throw new CliError("TRANSIENT", `the history of '${id}' changed on ${checkout.origin} while it was read, ${LISTING_ATTEMPTS} times`, {
+/** The host's chain, newest first: `limit` versions (0 = every one), never more than the ceiling. */
+async function hostedList(connection: Connection, checkout: CheckoutBinding, id: string, limit: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
+  const { client } = connection;
+  const wanted = Math.min(limit === 0 ? HOSTED_HISTORY_CEILING : limit, HOSTED_HISTORY_CEILING);
+  const listing = await readHistoryListing(
+    (request) => client.history(checkout.bundle_id, request),
+    { documentId: id, wanted, pageSize: HISTORY_PAGE_LIMIT },
+    { signal: client.signal },
+  );
+  if (listing.status === "moved") {
+    throw new CliError("TRANSIENT", `'${id}' was deleted or recreated on ${checkout.origin} while its history was read`, {
       details: { host: checkout.origin, id, reason: "history_moved", retryable: true },
-      help: `retry the same command, or read fewer versions at once (${cliInvocation()} doc history ${commandToken(id)} --limit 100)`,
+      help: "retry the same command",
     });
   }
-  if (listing === "absent") {
+  if (listing.status === "refused") throw await refusalError(listing.refusal, connection, checkout, id, "list");
+  if (listing.status === "absent") {
     // Definitive empty state, as a local bundle answers a document it has never written.
     stdout(
       render(
@@ -295,7 +249,10 @@ async function hostedList(client: HostedSyncClient, checkout: CheckoutBinding, i
           id,
           count: 0,
           versions: [],
-          help: `no version history for '${id}' on ${checkout.origin} — the host has no such document (one created in this checkout has history once \`${cliInvocation()} sync\` sends it)`,
+          help: [
+            `no version history for '${id}' on ${checkout.origin}: the host has no such document; one created in this checkout has history once sync sends it`,
+            `${cliInvocation()} sync --dir ${commandToken(checkout.path)}`,
+          ],
         },
         mode,
       ),
@@ -307,8 +264,8 @@ async function hostedList(client: HostedSyncClient, checkout: CheckoutBinding, i
   const truncated = versions.length < total;
   if (truncated) out.shown = versions.length;
   const help: string[] = [];
-  if (truncated && limit === 0) {
-    help.push(`showing the newest ${versions.length} of ${total} — the listing stops at ${HOSTED_HISTORY_CEILING}; read an older version with \`${cliInvocation()} doc history ${commandToken(id)} --seq <n>\``);
+  if (truncated && versions.length === HOSTED_HISTORY_CEILING) {
+    help.push(`showing the newest ${versions.length} of ${total} — a listing stops at ${HOSTED_HISTORY_CEILING}; read an older version with \`${cliInvocation()} doc history ${commandToken(id)} --seq <n>\``);
   } else if (truncated) {
     help.push(truncationHelp(id, versions.length, total));
   }
@@ -318,10 +275,14 @@ async function hostedList(client: HostedSyncClient, checkout: CheckoutBinding, i
   stdout(render(out, mode));
 }
 
-/** One version with its stored content: the row and the content with --json, the content alone otherwise. */
-async function hostedVersion(client: HostedSyncClient, checkout: CheckoutBinding, id: string, seq: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
-  const answer = await client.history(checkout.bundle_id, { documentId: id, limit: 1, before: seq + 1, includeContent: true });
-  if (!answer.ok) throw refusalError(answer.refusal, checkout, id);
+/**
+ * One version with its stored content. `--json` carries the row and the whole content; the
+ * default record carries the row, the version's frontmatter and a bounded body preview (AXI: no
+ * unbounded document on stdout), with the `--json` command as the complete-content channel.
+ */
+async function hostedVersion(connection: Connection, checkout: CheckoutBinding, id: string, seq: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
+  const answer = await connection.client.history(checkout.bundle_id, { documentId: id, limit: 1, before: seq + 1, includeContent: true });
+  if (!answer.ok) throw await refusalError(answer.refusal, connection, checkout, id, "seq");
   const version = answer.page.versions[0];
   if (!version || version.seq !== seq) {
     throw new CliError("NOT_FOUND", `'${id}' has no version ${seq} on ${checkout.origin}`, {
@@ -329,9 +290,20 @@ async function hostedVersion(client: HostedSyncClient, checkout: CheckoutBinding
       help: `${cliInvocation()} doc history ${commandToken(id)}`,
     });
   }
+  const content = version.content!;
   if (mode === "json") {
-    stdout(render({ id, ...row(version), content: version.content! }, mode));
+    stdout(render({ id, ...row(version), content }, mode));
     return;
   }
-  stdout(version.content!);
+  const record: Record<string, unknown> = { id, ...row(version) };
+  let body = content;
+  try {
+    const parsed = parseMarkdown(content, `${id} version ${seq}`);
+    record.frontmatter = parsed.frontmatter;
+    body = parsed.body;
+  } catch {
+    // Stored bytes that do not parse are shown whole, as the body.
+  }
+  attachBodyPreview(record, body, [`${cliInvocation()} doc history ${commandToken(id)} --seq ${commandToken(String(seq))} --json`]);
+  stdout(render(record, mode));
 }

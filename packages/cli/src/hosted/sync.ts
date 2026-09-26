@@ -57,10 +57,12 @@ import { CliError } from "../errors.js";
 import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
-import { ACCESS_TOKEN_ENV, defaultHostedAuthDeps, ensureHostedAccessToken, readSession, SignedOutError, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { ACCESS_TOKEN_ENV, defaultHostedAuthDeps, readSession, SignedOutError, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./binding.js";
-import { createHostedSyncClient, hostedFailure } from "./client.js";
+import { hostedFailure, type createHostedSyncClient } from "./client.js";
+import { connectCheckout } from "./account.js";
+import { bundleGone } from "./refusals.js";
 import { buildRows, BUSY_REFUSAL_CODES, countRows, receiptFailure, rowsFailure, type NotSentReason, type SyncRow } from "./sync-rows.js";
 import {
   exportCheckout,
@@ -407,17 +409,6 @@ function unsafeIdRows(unsafe: ReadonlyMap<string, string>): HeldFile[] {
   }));
 }
 
-function bundleGone(binding: CheckoutBinding, unsent: number): CliError {
-  return new CliError(
-    "CONFLICT",
-    `hosted bundle '${binding.bundle_id}' is no longer served to you on ${binding.origin}: it was deleted there, or your access was removed`,
-    {
-      details: { reason: "bundle_deleted_remotely", bundle_id: binding.bundle_id, host: binding.origin, folder: binding.path, unsent_changes: unsent },
-      help: `your files stay in ${binding.path}; to keep them as a plain folder: ${cliInvocation()} checkout --release ${commandToken(binding.path)}`,
-    },
-  );
-}
-
 /** A read-side failure in CLI terms: a bundle the host no longer serves is a conflict with the checkout. */
 function readFailure(error: unknown, session: Pick<Session, "binding" | "target">, resumeCommand: CommandText, unsent: number): unknown {
   if (error instanceof RemoteError && (error.code === "bundle_not_found" || error.status === 404)) return bundleGone(session.binding, unsent);
@@ -471,21 +462,7 @@ async function withSession<T>(
   return locks
     .request(checkoutLockName(binding.path), {}, async () => {
       // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
-      const token = await ensureHostedAccessToken(target, { resume: resumeCommand, ...(options.signIn === false ? { signIn: false } : {}) }, deps.auth);
-      const client = createHostedSyncClient({
-        target,
-        accessToken: token.accessToken,
-        resume: resumeCommand,
-        ...(binding.workspace !== null ? { workspace: binding.workspace } : {}),
-        ...(deps.fetch ? { fetch: deps.fetch } : {}),
-      });
-      const identity = await client.whoami();
-      if (identity.principalId !== binding.principal_id) {
-        throw new CliError("FORBIDDEN", `you are signed in to ${binding.origin} as another person than the one this checkout belongs to`, {
-          details: { reason: "other_principal", folder: binding.path, checkout_principal: binding.principal_id, signed_in_principal: identity.principalId },
-          help: `sign in as the checkout's person (${cliInvocation()} login --host ${commandToken(binding.origin)}), or check the bundle out again for yourself in a new folder`,
-        });
-      }
+      const { client } = await connectCheckout(binding, { resume: resumeCommand, ...(options.signIn === false ? { signIn: false } : {}) }, deps);
       const unsafeIds = new Map<string, string>();
       const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) });
       const reader = withoutUnsafeIds(client.reader(binding.bundle_id), unsafeIds, store, deps.idRule);

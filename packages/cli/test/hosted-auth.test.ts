@@ -908,9 +908,8 @@ test("only the sign-in commands, the hosted checkout, export, doc history and ho
         // `catalog list --hosted` only: plain catalog commands never sign in.
         path.join("commands", "catalog.ts"),
         path.join("hosted", "account.ts"),
-        // `doc history` in a hosted checkout reads the host's chain; `common.ts` carries its deps type.
+        // `doc history` in a hosted checkout reads the host's chain.
         path.join("commands", "doc", "history.ts"),
-        path.join("commands", "doc", "common.ts"),
       ];
       if (/hosted-auth\//.test(text) && !allowed.includes(path.relative(src, full))) {
         offenders.push(path.relative(src, full));
