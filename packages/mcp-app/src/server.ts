@@ -66,6 +66,7 @@ import {
   type McpWorkspaceSummary,
 } from "./workspace.js";
 import { McpServer202012 } from "./mcp-server-2020-12.js";
+import { registerOperationTools } from "./operations.js";
 
 // MCP Apps hosts may preload/cache resources by URI. Keep one URI immutable to one exact shell
 // byte sequence so a newly built server cannot silently execute stale trusted-shell code.
@@ -1002,6 +1003,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       },
     );
 
+    registerOperationTools(server, workspaceResolver, workspaceSelectorSchema);
   }
 
   if (fixedRuntime) registerAppTool(

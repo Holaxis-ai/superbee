@@ -81,6 +81,8 @@ export const HOSTED_READ_BOUNDS = Object.freeze({
   operationsBytes: 256 * 1024,
   /** Any one operation run's answer; the operation's own `maximumOutputBytes` is lower when it says so. */
   runBytes: 4 * 1024 * 1024,
+  /** The most bytes one run's input may take, as a caller serializes it (the CLI's --input, MCP's run_operation). */
+  runInputBytes: 64 * 1024,
   /** The most operation descriptors one listing admits; the rest are dropped with a note. */
   operations: 200,
   /** The deepest nesting (objects and arrays, the schema itself level 1) a descriptor's schema may have. */

@@ -1,4 +1,5 @@
 import type { Bundle } from "@superbee/core";
+import type { HostedOperationListingAnswer, HostedOperationRun, JsonObject } from "@superbee/core/hosted-transport";
 import type { ViewAuthorizationStore } from "@superbee/view-runtime";
 
 /** The exact bundle-scoped inputs that every MCP operation must retain together. */
@@ -52,12 +53,32 @@ export interface McpReachableListing {
   readonly notes: readonly string[];
 }
 
+/**
+ * Why a workspace's host was not asked: the resolver's own answer, never the host's. A local or Git
+ * folder has no host operations; a hosted checkout answers some reads from its folder (they would
+ * skip its unsent edits run on the host); and a missing session is the one sign-in link to relay.
+ */
+export type McpOperationsStop =
+  | { readonly stop: "no_host_operations"; readonly home: Exclude<McpWorkspaceHome, "hosted"> }
+  | { readonly stop: "folder_answers"; readonly operationId: string }
+  | { readonly stop: "sign_in_required"; readonly signInUrl: string; readonly userCode: string };
+
 /** Host-neutral workspace authority supplied by the CLI; implementations may know the catalog. */
 export interface McpWorkspaceResolver {
   list(): Promise<readonly McpWorkspaceSummary[]>;
   /** Reachable workspaces with no folder here, when the host knows any; bounded and best effort. */
   reachable?(): Promise<McpReachableListing>;
   open(selector: string): Promise<McpBundleContext>;
+  /**
+   * The reads a workspace's host runs by id, as the host lists them (the hosted client's
+   * `listOperations` for the workspace's bundle), or why the host was not asked.
+   */
+  listOperations?(selector: string): Promise<HostedOperationListingAnswer | McpOperationsStop>;
+  /**
+   * One read run by id on the workspace's host, the hosted client's `runOperation` answer passed
+   * through unchanged (`input.bundleId` is the workspace's), or why the host was not asked.
+   */
+  runOperation?(selector: string, operationId: string, input: JsonObject): Promise<HostedOperationRun | McpOperationsStop>;
 }
 
 /** Normalize the existing fixed-bundle server inputs into one immutable routing context. */

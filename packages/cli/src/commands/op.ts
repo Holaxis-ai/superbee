@@ -12,13 +12,13 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { escapeHostJson, stripHostData } from "@superbee/core";
-import { isOperationId, type HostedOperation, type HostedOperationRefusal, type JsonObject } from "@superbee/core/hosted-transport";
+import { HOSTED_READ_BOUNDS, isOperationId, type HostedOperation, type HostedOperationRefusal, type JsonObject } from "@superbee/core/hosted-transport";
 
 import { parseLeafOrUsage } from "../args.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
 import { bundleHomeAt, type BundleHome } from "../bundle-home.js";
 import { CLI_LEAVES } from "../command-spec.js";
-import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
+import { commandFragment, commandLiteral, commandToken } from "../command-text.js";
 import { CliError } from "../errors.js";
 import { readExternalTextFileWithin } from "../external-file.js";
 import { cliInvocation } from "../invocation.js";
@@ -26,6 +26,7 @@ import { render, renderUsage, resolveMode, type OutputMode } from "../output.js"
 import type { CheckoutBinding } from "../hosted/binding.js";
 import type { HostedAccountDeps } from "../hosted/account.js";
 import { openCheckoutConnection, type CheckoutConnection } from "../hosted/checkout-connection.js";
+import { FOLDER_ANSWERED_OPERATIONS } from "../hosted/folder-answered.js";
 
 export const OP_USAGE = `superbee op — list and run the reads a hosted checkout's host offers by id
 
@@ -54,17 +55,8 @@ Options:
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help`;
 
-/**
- * The host operations a folder answers through typed verbs, which a checkout never runs by id:
- * they would read the host and skip the folder's unsent edits.
- */
-export const FOLDER_ANSWERED_OPERATIONS: Readonly<Record<string, { readonly verb: string; readonly command: CommandText }>> = Object.freeze({
-  "documents.read.v1": Object.freeze({ verb: "doc read", command: commandLiteral("doc read <id>") }),
-  "documents.query.v1": Object.freeze({ verb: "list or query", command: commandLiteral("list") }),
-});
-
 /** The most bytes an operation's input may take, from --input or --input-file. */
-export const OP_INPUT_BYTES = 64 * 1024;
+const OP_INPUT_BYTES = HOSTED_READ_BOUNDS.runInputBytes;
 
 const TYPED_VERBS = "doc read, doc history, list, query, status";
 /** An inline --input longer than this is not repeated in the sign-in resume command. */

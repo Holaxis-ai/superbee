@@ -126,6 +126,9 @@ export function operationRunBody(bundleId: string, operationId: string, input: J
 }
 
 /** A run's `200` answer: the operation's data, or its refusal (the kernel's code, message and retry advice). */
+/** A listing, or the refusal of the bundle it was asked for. */
+export type HostedOperationListingAnswer = { readonly ok: true; readonly listing: HostedOperationListing } | { readonly ok: false; readonly refusal: HostedOperationRefusal };
+
 export type HostedOperationRun = { readonly ok: true; readonly data: unknown } | { readonly ok: false; readonly refusal: HostedOperationRefusal };
 
 /**
