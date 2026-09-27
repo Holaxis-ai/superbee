@@ -80,14 +80,23 @@ export interface HostedSyncClient {
    * The reads this host runs by id for one bundle (`<prefix>/operations`). A bundle the host does
    * not serve to this person is the refusal `bundle_not_found`, as a run answers it.
    */
-  listOperations(bundleId: string): Promise<HostedOperationListingAnswer>;
+  listOperations(bundleId: string, options?: OperationRouteOptions): Promise<HostedOperationListingAnswer>;
   /**
    * One operation, run by id (`<prefix>/run`) in one request, its answer read within
    * `maximumBytes` (default: `HOSTED_READ_BOUNDS.runBytes`): the operation's data, or its refusal.
    * The route's own `unknown_operation` (the host does not run this id) and `invalid_input` come
    * back as refusals too. `input.bundleId` is set to `bundleId`.
    */
-  runOperation(bundleId: string, operationId: string, input: JsonObject, options?: { readonly maximumBytes?: number }): Promise<HostedOperationRun>;
+  runOperation(bundleId: string, operationId: string, input: JsonObject, options?: OperationRouteOptions & { readonly maximumBytes?: number }): Promise<HostedOperationRun>;
+}
+
+/** What a caller adds to the operations routes' answers. */
+export interface OperationRouteOptions {
+  /**
+   * Appended to the help of the `NOT_IMPLEMENTED` a gateway from before the routes is: the
+   * caller's own pointer (a command's typed verbs, say), since the client names no command.
+   */
+  readonly unavailableHelp?: string;
 }
 
 /** A listing, or the refusal of the bundle it was asked for. */
@@ -323,9 +332,9 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
         throw hostedFailure(error, target, options.resume);
       }
     },
-    async listOperations(bundleId) {
+    async listOperations(bundleId, listOptions = {}) {
       const route = `${prefix}/operations`;
-      const answer = await send(route, { bundleId }, HOSTED_READ_BOUNDS.operationsBytes, { message: `${target.origin} does not offer operations by id yet`, help: OPERATIONS_NOT_OFFERED_HELP });
+      const answer = await send(route, { bundleId }, HOSTED_READ_BOUNDS.operationsBytes, operationsMissing(listOptions));
       if (answer.status !== 200) {
         // The listing refuses a bundle as capabilities does: a 404 naming the code, never a 200.
         const refusal = answer.status === 404 ? familyRefusal(answer) : undefined;
@@ -340,7 +349,7 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
     },
     async runOperation(bundleId, operationId, input, runOptions = {}) {
       const route = `${prefix}/run`;
-      const answer = await send(route, operationRunBody(bundleId, operationId, input), runOptions.maximumBytes ?? HOSTED_READ_BOUNDS.runBytes, { message: `${target.origin} does not offer operations by id yet`, help: OPERATIONS_NOT_OFFERED_HELP });
+      const answer = await send(route, operationRunBody(bundleId, operationId, input), runOptions.maximumBytes ?? HOSTED_READ_BOUNDS.runBytes, operationsMissing(runOptions));
       if (answer.status !== 200) {
         // The route's own refusals of the request, before any operation ran: an id the host does
         // not run by id, and an envelope or input it refuses. Both are typed, for the caller to word.
@@ -355,6 +364,12 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
       }
     },
   };
+
+  /** A gateway from before the operations routes, in words that name no command, then the caller's. */
+  function operationsMissing(routeOptions: OperationRouteOptions): { message: string; help: string } {
+    const help = "a later release of the host offers them";
+    return { message: `${target.origin} does not offer operations by id yet`, help: routeOptions.unavailableHelp ? `${help}; ${routeOptions.unavailableHelp}` : help };
+  }
 
   /**
    * One read request of a route a gateway may not have yet. That gateway answers the family's
@@ -379,9 +394,6 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
     return answer;
   }
 }
-
-/** A gateway from before the operations routes, in words that name no command (the caller adds its own). */
-const OPERATIONS_NOT_OFFERED_HELP = "a later release of the host offers them";
 
 /** The sync family's answer to a route it does not have: `404 {"error":"not_found"}`, nothing else. */
 function isUnknownRoute(body: unknown): boolean {

@@ -173,14 +173,12 @@ function truncationHelp(id: string, shown: number, total: number): string {
   return `showing ${shown} of ${total} — run \`${cliInvocation()} doc history ${commandToken(id)} --limit 0\` (or a higher --limit) for all`;
 }
 
-type Connection = CheckoutConnection;
-
 /**
  * The CLI error a history refusal means. `document_not_found` and `result_too_large` are this
  * command's own; a bundle the host no longer serves is the checkout's conflict, as sync reports
  * it; every other code goes through the hosted client's one translation.
  */
-async function refusalError(refusal: HostedOperationRefusal, connection: Connection, checkout: CheckoutBinding, id: string, path: "list" | "seq"): Promise<unknown> {
+async function refusalError(refusal: HostedOperationRefusal, connection: CheckoutConnection, checkout: CheckoutBinding, id: string, path: "list" | "seq"): Promise<unknown> {
   if (refusal.code === "document_not_found") {
     return new CliError("NOT_FOUND", `no document '${id}' on ${checkout.origin}`, {
       details: { host: checkout.origin, id, code: refusal.code },
@@ -218,7 +216,7 @@ function row(version: HostedHistoryVersion): Record<string, unknown> {
 }
 
 /** The host's chain, newest first: `limit` versions (0 = every one), never more than the ceiling. */
-async function hostedList(connection: Connection, checkout: CheckoutBinding, id: string, limit: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
+async function hostedList(connection: CheckoutConnection, checkout: CheckoutBinding, id: string, limit: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
   const { client } = connection;
   const wanted = Math.min(limit === 0 ? HOSTED_HISTORY_CEILING : limit, HOSTED_HISTORY_CEILING);
   const listing = await readHistoryListing(
@@ -274,7 +272,7 @@ async function hostedList(connection: Connection, checkout: CheckoutBinding, id:
  * default record carries the row, the version's frontmatter and a bounded body preview (AXI: no
  * unbounded document on stdout), with the `--json` command as the complete-content channel.
  */
-async function hostedVersion(connection: Connection, checkout: CheckoutBinding, id: string, seq: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
+async function hostedVersion(connection: CheckoutConnection, checkout: CheckoutBinding, id: string, seq: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
   const answer = await connection.client.history(checkout.bundle_id, { documentId: id, limit: 1, before: seq + 1, includeContent: true });
   if (!answer.ok) throw await refusalError(answer.refusal, connection, checkout, id, "seq");
   const version = answer.page.versions[0];

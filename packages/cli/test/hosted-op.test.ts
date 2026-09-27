@@ -300,6 +300,18 @@ test("op run reads within the run bound, not the descriptor's; an answer over it
   assert.equal(error.details?.maximum, 4 * 1024 * 1024);
 });
 
+test("a result nested deeper than the run bound is the host's contract mismatch naming /run, never a crash", async () => {
+  const h = await harness();
+  h.host.operationsListing = [syntheticDescriptor()];
+  let deep: unknown = "leaf";
+  for (let level = 0; level < 50_000; level += 1) deep = [deep];
+  h.host.runHook = () => deep;
+  const error = await rejects(() => run(h, ["run", "bundles.synthetic.v1", "--input", '{"depth":1}']));
+  assert.equal(error.code, "RUNTIME");
+  assert.equal(error.details?.route, "/sync/v1/run");
+  assert.equal(error.details?.retryable, false);
+});
+
 test("the sign-in resume repeats a small --input, and points to a file for a large one", async () => {
   const h = await harness();
   const signedOut = (async (input: string | URL | Request, init?: RequestInit) => {

@@ -125,23 +125,20 @@ export function operationRunBody(bundleId: string, operationId: string, input: J
   return { bundleId, operationId, input: { bundleId, ...rest } };
 }
 
-/** The most bytes a run of `operation` is read within: its own bound, never more than {@link HOSTED_READ_BOUNDS}.runBytes. */
-export function operationRunMaximum(operation: Pick<HostedOperation, "maximumOutputBytes">): number {
-  return Math.min(operation.maximumOutputBytes, HOSTED_READ_BOUNDS.runBytes);
-}
-
 /** A run's `200` answer: the operation's data, or its refusal (the kernel's code, message and retry advice). */
 export type HostedOperationRun = { readonly ok: true; readonly data: unknown } | { readonly ok: false; readonly refusal: HostedOperationRefusal };
 
 /**
  * A run's `200` answer, the kernel's operation result: `{ ok: true, operationId, data }` for the
  * operation asked for, or its refusal through {@link operationRefusal}. Anything else, including
- * a result for another operation, is malformed, naming `route`. The data is not interpreted.
+ * a result for another operation, or data nested deeper than `HOSTED_READ_BOUNDS.runDepth`
+ * levels (which no renderer could walk), is malformed, naming `route`. The data is not interpreted.
  */
 export function decodeOperationRun(operationId: string, body: unknown, route?: string): HostedOperationRun {
   const refusal = operationRefusal(body, operationId, route);
   if (refusal) return Object.freeze({ ok: false, refusal });
   if (!isRecord(body) || body.ok !== true || body.operationId !== operationId || !("data" in body) || body.data === undefined)
     throw malformed(`run answered an envelope that is not ${operationId}'s result`, route);
+  if (deeperThan(body.data, HOSTED_READ_BOUNDS.runDepth)) throw malformed(`run answered data nested deeper than ${HOSTED_READ_BOUNDS.runDepth} levels`, route);
   return Object.freeze({ ok: true, data: body.data });
 }

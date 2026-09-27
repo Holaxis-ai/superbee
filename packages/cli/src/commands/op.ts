@@ -105,17 +105,8 @@ function noHostOperations(home: string): string {
   return `no host operations for a ${home} bundle; use the typed verbs (${TYPED_VERBS}, ...)`;
 }
 
-/** The host's words for a gateway from before the operations routes, with this command's pointer added. */
-async function withTypedVerbs<T>(action: () => Promise<T>): Promise<T> {
-  try {
-    return await action();
-  } catch (error) {
-    if (error instanceof CliError && error.code === "NOT_IMPLEMENTED" && error.details?.status === 404) {
-      throw new CliError("NOT_IMPLEMENTED", error.message, { details: error.details, help: `${error.help}; until then use the typed verbs (${TYPED_VERBS})` });
-    }
-    throw error;
-  }
-}
+/** Added to the host's "does not offer operations by id yet". */
+const UNAVAILABLE_HELP = `until then use the typed verbs (${TYPED_VERBS})`;
 
 /** The shared refusal reading, with `op`'s input pointer. */
 async function refusalError(refusal: HostedOperationRefusal, connection: CheckoutConnection, binding: CheckoutBinding, subject: string): Promise<unknown> {
@@ -178,7 +169,7 @@ async function opList(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdo
   const { binding } = where;
   const resume = commandFragment`${cliInvocation()} op list --dir ${commandToken(binding.path)}${values.json ? commandFragment` --json` : commandFragment``}`;
   const connection = await openCheckoutConnection(binding, deps.hosted, resume);
-  const answer = await withTypedVerbs(() => connection.client.listOperations(binding.bundle_id));
+  const answer = await connection.client.listOperations(binding.bundle_id, { unavailableHelp: UNAVAILABLE_HELP });
   if (!answer.ok) throw await refusalError(answer.refusal, connection, binding, "the operation listing");
   const notes = [...answer.listing.notes];
   const operations: Record<string, unknown>[] = [];
@@ -311,7 +302,7 @@ async function opRun(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdou
   }`;
   // One request: the host's allowlist decides what runs; an id it does not run is its unknown_operation.
   const connection = await openCheckoutConnection(binding, deps.hosted, resume);
-  const answer = await withTypedVerbs(() => connection.client.runOperation(binding.bundle_id, operationId, input));
+  const answer = await connection.client.runOperation(binding.bundle_id, operationId, input, { unavailableHelp: UNAVAILABLE_HELP });
   if (!answer.ok) {
     if (answer.refusal.code === "unknown_operation") {
       throw new CliError("NOT_IMPLEMENTED", `${binding.origin} does not offer ${operationId}`, {

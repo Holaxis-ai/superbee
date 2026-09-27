@@ -32,7 +32,6 @@ import {
   familyRefusal,
   isAnswerTooLarge,
   operationRunBody,
-  operationRunMaximum,
   operationRefusal,
   readRefusal,
   SYNC_READ_ROUTES,
@@ -387,8 +386,6 @@ test("operations 200: the listing decodes to its one pinned descriptor, host tex
   assert.deepEqual(operation!.inputJsonSchema, raw!.inputJsonSchema);
   assert.deepEqual(operation!.resultJsonSchema, raw!.resultJsonSchema);
   assert.deepEqual(operation!.annotations, raw!.annotations);
-  assert.equal(operationRunMaximum(operation!), 1048576);
-  assert.equal(operationRunMaximum({ maximumOutputBytes: 64 * 1024 * 1024 }), HOSTED_READ_BOUNDS.runBytes);
 });
 
 test("refusal 404 bundle_not_found on operations is the capabilities refusal, with the host's status", async () => {
@@ -429,6 +426,22 @@ test("run 400 unknown_operation and invalid_input refuse with the host's status 
   const old = fixture("unknown-route-404");
   assert.equal(old.response.status, 404);
   assert.deepEqual(JSON.parse(old.response.body), { error: "not_found" });
+});
+
+test("run: data nested deeper than the run bound is malformed, naming the route; at the bound it decodes", () => {
+  const deep = (levels: number): unknown => {
+    let value: unknown = "leaf";
+    for (let level = 0; level < levels; level += 1) value = level % 2 === 0 ? [value] : { next: value };
+    return value;
+  };
+  const at = decodeOperationRun("documents.history.v1", { ok: true, operationId: "documents.history.v1", data: deep(HOSTED_READ_BOUNDS.runDepth) }, RUN_ROUTE);
+  assert.ok(at.ok);
+  for (const levels of [HOSTED_READ_BOUNDS.runDepth + 1, 100_000]) {
+    assert.throws(
+      () => decodeOperationRun("documents.history.v1", { ok: true, operationId: "documents.history.v1", data: deep(levels) }, RUN_ROUTE),
+      (error: unknown) => error instanceof MalformedAnswer && error.route === RUN_ROUTE && /deeper than 256 levels/.test(error.message),
+    );
+  }
 });
 
 test("run: an answer that is not the operation's result is malformed, naming the route", () => {

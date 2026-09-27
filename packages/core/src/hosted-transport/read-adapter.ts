@@ -88,6 +88,8 @@ export const HOSTED_READ_BOUNDS = Object.freeze({
   /** An operation title's and description's length, in UTF-16 units, once stripped. */
   operationTitleChars: 200,
   operationDescriptionChars: 2048,
+  /** The deepest nesting (objects and arrays, the data itself level 1) a run's data may have. */
+  runDepth: 256,
   /** Document reads in flight at once, whatever concurrency a caller's batches ask for. */
   readConcurrency: 8,
 });
