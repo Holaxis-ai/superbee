@@ -210,8 +210,8 @@ async function refusalError(refusal: HostedOperationRefusal, connection: Connect
           : `this version cannot be read from the CLI; the current version is ${cliInvocation()} doc read ${commandToken(id)}`,
     });
   }
-  const [{ bundleGone }, { hostedFailure }] = await Promise.all([import("../../hosted/refusals.js"), import("../../hosted/client.js")]);
-  if (refusal.code === "bundle_not_found") return bundleGone(checkout);
+  const [{ bundleAbsent }, { hostedFailure }] = await Promise.all([import("../../hosted/refusals.js"), import("../../hosted/client.js")]);
+  if (refusal.code === "bundle_not_found") return bundleAbsent(checkout, connection.client);
   return hostedFailure(new RemoteError(refusal.message, refusal.code, refusal.retryable ? 503 : 422), connection.target, connection.resume);
 }
 

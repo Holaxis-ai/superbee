@@ -85,7 +85,7 @@ function answerOf(exchange: Exchange): HostedAnswer {
 }
 
 test(`golden /sync/v1 exchanges (${index.source}) are indexed as recorded`, () => {
-  assert.equal(index.exchanges.length, 50);
+  assert.equal(index.exchanges.length, 51);
   for (const entry of index.exchanges) {
     const exchange = fixture(entry.name);
     assert.equal(exchange.route, entry.route);
@@ -119,6 +119,18 @@ test("read 200 ok: documents.read.v1 decodes to the document at its version", as
   const read = await adapter.read("notes/one");
   const expected = JSON.parse(fixture("read-200-ok").response.body) as { data: { document: { frontmatter: object; body: string }; version: string } };
   assert.deepEqual(read, { doc: { id: "notes/one", frontmatter: expected.data.document.frontmatter, body: expected.data.document.body }, version: expected.data.version });
+});
+
+test("read 200 ok qualified: a request naming the bundle <workspace>/<bundle-id> gets the bare id's answer, byte for byte", () => {
+  const qualified = fixture("read-200-ok-qualified");
+  const bare = fixture("read-200-ok");
+  assert.equal(JSON.parse(qualified.request.body).bundleId, `tenant-a/${JSON.parse(bare.request.body).bundleId}`);
+  assert.equal(qualified.response.body, bare.response.body);
+});
+
+test("whoami 200 names each workspace with its slug", () => {
+  const body = JSON.parse(fixture("whoami-200").response.body) as { tenantIds: string[]; workspaces: { tenantId: string; slug: string | null }[] };
+  assert.deepEqual(body.workspaces.map((w) => w.tenantId), body.tenantIds);
 });
 
 test("read 200 ok: an answer naming another document is malformed, naming the route", () => {

@@ -19,6 +19,7 @@ import { commandToken } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
 import { readRegularFileTextNoFollowSync } from "../nofollow-read.js";
 import type { CheckoutBinding } from "./binding.js";
+import { isWorkspaceSlug } from "./reference.js";
 import { IN_PLACE_JOURNAL, IN_PLACE_STAGING } from "./export-archive.js";
 import { placeNew } from "./projection.js";
 
@@ -36,6 +37,8 @@ export interface CheckoutMarker {
   readonly host: string;
   readonly bundle_id: string;
   readonly workspace: string | null;
+  /** The workspace slug the checkout names its bundle by (`<slug>/<bundle_id>`); absent for a bare id. */
+  readonly workspace_slug?: string;
 }
 
 export function checkoutMarkerPath(folder: string): string {
@@ -51,10 +54,16 @@ export function bindingHostArgument(binding: { readonly origin: string; readonly
 }
 
 /** The binding fields a marker is made from. */
-export type MarkerSource = Pick<CheckoutBinding, "origin" | "audience" | "bundle_id" | "workspace">;
+export type MarkerSource = Pick<CheckoutBinding, "origin" | "audience" | "bundle_id" | "workspace" | "workspace_slug">;
 
 export function markerFor(binding: MarkerSource): CheckoutMarker {
-  return { home: "hosted", host: bindingHostArgument(binding), bundle_id: binding.bundle_id, workspace: binding.workspace };
+  return {
+    home: "hosted",
+    host: bindingHostArgument(binding),
+    bundle_id: binding.bundle_id,
+    workspace: binding.workspace,
+    ...(binding.workspace_slug ? { workspace_slug: binding.workspace_slug } : {}),
+  };
 }
 
 function markerBytes(marker: CheckoutMarker): Buffer {
@@ -74,7 +83,8 @@ function isMarker(value: unknown): value is CheckoutMarker & { superbee_checkout
     typeof record.bundle_id === "string" &&
     record.bundle_id.length > 0 &&
     record.bundle_id.length <= 128 &&
-    (record.workspace === null || record.workspace === undefined || (typeof record.workspace === "string" && record.workspace.length <= 256))
+    (record.workspace === null || record.workspace === undefined || (typeof record.workspace === "string" && record.workspace.length <= 256)) &&
+    (record.workspace_slug === undefined || record.workspace_slug === null || isWorkspaceSlug(record.workspace_slug))
   );
 }
 
@@ -97,11 +107,17 @@ export function readCheckoutMarker(folder: string): CheckoutMarker | null {
     return null;
   }
   if (!isMarker(value)) return null;
-  return { home: "hosted", host: value.host, bundle_id: value.bundle_id, workspace: value.workspace ?? null };
+  return {
+    home: "hosted",
+    host: value.host,
+    bundle_id: value.bundle_id,
+    workspace: value.workspace ?? null,
+    ...(typeof value.workspace_slug === "string" ? { workspace_slug: value.workspace_slug } : {}),
+  };
 }
 
 function sameMarker(a: CheckoutMarker, b: CheckoutMarker): boolean {
-  return a.host === b.host && a.bundle_id === b.bundle_id && a.workspace === b.workspace;
+  return a.host === b.host && a.bundle_id === b.bundle_id && a.workspace === b.workspace && a.workspace_slug === b.workspace_slug;
 }
 
 /**

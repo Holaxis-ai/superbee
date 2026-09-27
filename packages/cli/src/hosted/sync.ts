@@ -63,7 +63,7 @@ import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreD
 import { hostedFailure, type createHostedSyncClient } from "./client.js";
 import { connectCheckout } from "./account.js";
 import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
-import { bundleGone } from "./refusals.js";
+import { bundleAbsent } from "./refusals.js";
 import { buildRows, BUSY_REFUSAL_CODES, countRows, receiptFailure, rowsFailure, type NotSentReason, type SyncRow } from "./sync-rows.js";
 import {
   exportCheckout,
@@ -339,6 +339,8 @@ interface Session {
   readonly reader: HostedReadAdapter;
   readonly capabilities: HostedCapabilities;
   readonly carrier: ReturnType<typeof createHostedSyncClient>["carrier"];
+  /** The checkout's client, for a second read after a refusal (the bundle list). */
+  readonly client: Pick<ReturnType<typeof createHostedSyncClient>, "bundles">;
   readonly routes: string;
   readonly store: FileJournaledBackend;
   readonly local: LocalBundle;
@@ -411,9 +413,10 @@ function unsafeIdRows(unsafe: ReadonlyMap<string, string>): HeldFile[] {
   }));
 }
 
-/** A read-side failure in CLI terms: a bundle the host no longer serves is a conflict with the checkout. */
-function readFailure(error: unknown, session: Pick<Session, "binding" | "target">, resumeCommand: CommandText, unsent: number): unknown {
-  if (error instanceof RemoteError && (error.code === "bundle_not_found" || error.status === 404)) return bundleGone(session.binding, unsent);
+/** A read-side failure in CLI terms: a bundle the host no longer serves (or whose id became
+ * ambiguous for a checkout naming no workspace) is a conflict with the checkout. */
+async function readFailure(error: unknown, session: Pick<Session, "binding" | "target" | "client">, resumeCommand: CommandText, unsent: number): Promise<unknown> {
+  if (error instanceof RemoteError && (error.code === "bundle_not_found" || error.status === 404)) return bundleAbsent(session.binding, session.client, unsent);
   return hostedFailure(error, session.target, resumeCommand);
 }
 
@@ -465,7 +468,7 @@ async function withSession<T>(
         try {
           capabilities = await reader.hostedCapabilities();
         } catch (error) {
-          throw readFailure(error, { binding, target }, resumeCommand, await unsent());
+          throw await readFailure(error, { binding, target, client }, resumeCommand, await unsent());
         }
         projection = await readProjection(deps.auth.home, binding.checkout_id, store);
         // Finish or undo any placement an interrupted run left, then record the baseline before
@@ -481,6 +484,7 @@ async function withSession<T>(
           reader,
           capabilities,
           carrier: client.carrier,
+          client,
           routes: client.prefix,
           store,
           local,
@@ -800,7 +804,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       try {
         report = await pull(local, reader, acceptRefusedDeletions ? { acceptRefusedDeletions } : {});
       } catch (error) {
-        throw readFailure(error, session, resumeCommand, await unsent());
+        throw await readFailure(error, session, resumeCommand, await unsent());
       }
       if (report.held.length > 0 || session.unsafeIds.size > 0) await forgetPullDigest(store);
       const placed = await exportCheckout(binding.path, store, projection);
@@ -822,7 +826,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     try {
       outcome = await pushChanges(session, deps);
     } catch (error) {
-      throw readFailure(error, session, resumeCommand, await unsent());
+      throw await readFailure(error, session, resumeCommand, await unsent());
     }
     // A document the pull held for a change that has now committed may have changed on the host
     // meanwhile: pull it once more so the folder is current when the run says so.
@@ -976,7 +980,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     try {
       report = await pull(local, reader);
     } catch (error) {
-      throw readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
+      throw await readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
     }
     if (report.held.length > 0 || session.unsafeIds.size > 0) await forgetPullDigest(store);
     const placed = await exportCheckout(binding.path, store, projection);
@@ -1042,7 +1046,7 @@ async function conflictFor(session: Session, id: string, resumeCommand: CommandT
         help: syncCommand(session.binding),
       });
     }
-    throw readFailure(error, session, resumeCommand, 0);
+    throw await readFailure(error, session, resumeCommand, 0);
   }
 }
 
@@ -1430,7 +1434,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
         if (error instanceof InvalidInputError) {
           throw new CliError("CONFLICT", `${file} is not a valid document: ${error.message}`, { details: { reason: "not_sendable", id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
         }
-        throw readFailure(error, session, resumeCommand, 0);
+        throw await readFailure(error, session, resumeCommand, 0);
       }
       fileState = "unchanged";
       if (choice === "take") {

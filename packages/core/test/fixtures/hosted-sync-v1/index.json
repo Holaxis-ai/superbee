@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted e96a63a63fe275f157377c0868fadddfc9eda13f",
+  "source": "Holaxis-ai/superbee-hosted 08b6af750b7ab6323dc6b08db10bb42f03e4a55f",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
@@ -61,6 +61,15 @@
     {
       "name": "read-200-ok",
       "file": "read-200-ok.json",
+      "route": "/sync/v1/read",
+      "rows": [
+        "read 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "read-200-ok-qualified",
+      "file": "read-200-ok-qualified.json",
       "route": "/sync/v1/read",
       "rows": [
         "read 200 ok"

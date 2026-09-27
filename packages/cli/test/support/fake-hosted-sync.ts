@@ -37,6 +37,10 @@
 //   bundle as the host writes it (`fake-export-archive.ts`): the documents' stored bytes, the root
 //   index, and any reserved files or blobs a test adds to `exportExtras`; a 404 `bundle_not_found`
 //   for another bundle and a 400 `invalid_input` for any body but `{ bundleId }`.
+// - qualified references (superbee-hosted `docs/data-organizations.md`, "Qualified references"):
+//   with `workspaces`, whoami names each workspace's slug; a bundle-scoped body may name the bundle
+//   `<slug>/<bundle-id>`, which reaches the bundle only when `slug` is its workspace's (another
+//   slug is absent, as for another bundle). The recorded request keeps the body as sent.
 // Every answer shape is held to the `/sync/v1` golden exchanges captured from the real hosted
 // gateway (core's `test/fixtures/hosted-sync-v1/`) by `hosted-fake-contract.test.ts`; the export
 // answers are held to them byte for byte.
@@ -129,6 +133,13 @@ export interface FakeHostOptions {
   writable?: boolean;
   /** False is a gateway from before `/history`: the route is the family's unknown-route 404. */
   history?: boolean;
+  /**
+   * Each workspace with its slug, as whoami names them. Absent: each tenant is its own slug. Null:
+   * a host from before qualified references, whose whoami names no workspaces.
+   */
+  workspaces?: { tenantId: string; slug: string | null }[] | null;
+  /** The slug of the workspace that holds the bundle (default: the first workspace's): a reference naming it reaches the bundle. */
+  slug?: string;
 }
 
 /** One version of a live document's lineage, as the host's history rows hold it. */
@@ -280,7 +291,7 @@ export class FakeHost {
     const url = new URL(String(input));
     const headers = new Headers(init?.headers);
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
-    this.requests.push({ path: url.pathname, body, headers });
+    this.requests.push({ path: url.pathname, body: structuredClone(body), headers });
     assert.equal(url.origin, this.origin);
     assert.equal(init?.method, "POST");
     if (headers.get("authorization") !== `Bearer ${this.token}`) {
@@ -289,12 +300,23 @@ export class FakeHost {
     }
     if (this.options.syncSurface === false) return Response.json({ error: "access_denied" }, { status: 403 });
     const route = url.pathname.replace(/^\/sync\/v1\//, "");
+    // A qualified reference reaches the bundle in the workspace it names; the routes read the bare id.
+    if (!["whoami", "bundles"].includes(route) && typeof body.bundleId === "string" && body.bundleId.includes("/")) {
+      const [slug, bare] = body.bundleId.split("/");
+      body.bundleId = slug === (this.options.slug ?? this.workspaces()?.[0]?.slug) && bare === BUNDLE ? BUNDLE : `absent.${bare}`;
+    }
     if (this.unavailable && (route === "heads" || route === "snapshot")) {
       return Response.json({ error: { code: "backend_unavailable", message: "The bundle backend is unavailable.", retryable: true } }, { status: 503 });
     }
     switch (route) {
       case "whoami":
-        return Response.json({ principalId: this.principal, credentialId: "cli", tenantIds: this.options.tenants ?? ["tenant-a"], surface: "sync" });
+        return Response.json({
+          principalId: this.principal,
+          credentialId: "cli",
+          tenantIds: this.options.tenants ?? ["tenant-a"],
+          ...(this.workspaces() ? { workspaces: this.workspaces() } : {}),
+          surface: "sync",
+        });
       case "bundles":
         return Response.json({
           ok: true,
@@ -302,11 +324,13 @@ export class FakeHost {
           data: { bundles: (this.options.bundles ?? [BUNDLE]).map((bundleId) => ({ bundleId, name: bundleId, purpose: "", domains: [], lifecycle: "active", sensitivity: "internal" })) },
         });
       case "capabilities": {
+        if (body.bundleId !== BUNDLE && String(body.bundleId).startsWith("absent.")) return bundleNotFound();
         assert.equal(body.bundleId, BUNDLE);
         const { response } = fixture(this.capabilities);
         return new Response(response.body, { status: response.status, headers: response.headers });
       }
       case "heads": {
+        if (body.bundleId !== BUNDLE && String(body.bundleId).startsWith("absent.")) return bundleNotFound();
         assert.equal(body.bundleId, BUNDLE);
         const listing = this.heads();
         const common = { etag: `"${listing.digest}"`, "x-superbee-root-version": this.rootVersion };
@@ -350,6 +374,12 @@ export class FakeHost {
         return Response.json({ error: { code: "not_found" } }, { status: 404 });
     }
   }) as typeof fetch;
+
+  /** The workspaces whoami names, or null for a host from before qualified references. */
+  private workspaces(): { tenantId: string; slug: string | null }[] | null {
+    if (this.options.workspaces !== undefined) return this.options.workspaces;
+    return (this.options.tenants ?? ["tenant-a"]).map((tenantId) => ({ tenantId, slug: /^[a-z0-9-]+$/.test(tenantId) ? tenantId : null }));
+  }
 
   /** The root index the host serves: the capabilities answer's `root.content`. */
   rootIndex(): string {
@@ -530,6 +560,12 @@ const WRITE_BODY_KEYS = {
 } as const;
 
 const outcomeOf = (body: Record<string, unknown>): keyof typeof WRITE_BODY_KEYS => (body.expectAbsent === true ? "create" : body.body === undefined ? "delete" : "replace");
+
+/** The working copy routes' answer for a bundle no admitted workspace serves (the export's golden exchange). */
+function bundleNotFound(): Response {
+  const { response } = syncFixture("export-404-bundle-not-found");
+  return new Response(response.body, { status: response.status, headers: response.headers });
+}
 
 function failure(operationId: string, code: string, currentVersion?: string): Record<string, unknown> {
   return {

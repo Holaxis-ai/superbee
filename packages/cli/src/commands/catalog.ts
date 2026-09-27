@@ -17,7 +17,7 @@ import { cliInvocation } from "../invocation.js";
 import { render, renderErrorEnvelope, resolveMode } from "../output.js";
 import { commandFragment, commandToken } from "../command-text.js";
 import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
-import { connectHostedAccount } from "../hosted/account.js";
+import { connectHostedAccount, workspaceNames } from "../hosted/account.js";
 import { hostedBundleRows, reachableHostedBundles } from "../hosted/reachable.js";
 
 export const CATALOG_USAGE = `superbee catalog — register and resolve this user's workspaces
@@ -61,10 +61,13 @@ alone and makes no request; when a host cannot be asked in time, a note says so.
 with a Git source is refused by checkout, which names the Git route instead.
 
 'catalog list --hosted' signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then
-lists every hosted bundle you can reach on that host, across all your workspaces: its bundle_id
-(what 'checkout' takes), name and lifecycle, the folder of your checkout of it here (null when
-there is none; the first, sorted, when there are several), and ambiguous: true when two of your
-workspaces hold the same id (checkout refuses such an id). It lists hosted bundles only, never
+lists every hosted bundle you can reach on that host, across all your workspaces: its bundle_id,
+its reference (what 'checkout' takes: the bundle id, or <workspace>/<bundle-id> for an id more than
+one of your workspaces holds), name and lifecycle, the folder of your checkout of it here (null when
+there is none; the first, sorted, when there are several), and ambiguous: true when a bare
+reference names an id more than one of your workspaces holds (checkout refuses it; a host that names
+workspaces lists such an id once per workspace by reference instead). workspaces lists your
+workspaces by name (what --workspace and a reference take), or by id for one the host names none for. It lists hosted bundles only, never
 your local entries, and caches nothing: the catalog file is unchanged. complete: false means the
 host's list stopped at its cap.
 
@@ -281,7 +284,7 @@ async function listHosted(
         schema_version: 1,
         host: target.origin,
         principal: identity.principalId,
-        workspaces: identity.tenantIds,
+        workspaces: workspaceNames(identity),
         count: bundles.length,
         complete: listing.complete,
         bundles,
@@ -292,7 +295,7 @@ async function listHosted(
         help:
           bundles.length === 0
             ? [`${cliInvocation()} publish --to hosted --host ${commandToken(host)}`]
-            : [`${cliInvocation()} checkout <bundle-id> --host ${commandToken(host)}`],
+            : [`${cliInvocation()} checkout <reference> --host ${commandToken(host)}`],
       },
       resolveMode(values),
     ),

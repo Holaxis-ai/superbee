@@ -56,7 +56,7 @@ export function createCatalogMcpWorkspaceResolver(
           value: reachable().then(
             (listing): McpReachableListing => ({
               workspaces: (listing?.hosts ?? []).flatMap((host) =>
-                host.bundles.map((bundle) => ({ id: bundle.bundle_id, name: bundle.name || bundle.bundle_id, home: "hosted" as const, location: host.host, command: bundle.checkout ?? host.ask })),
+                host.bundles.map((bundle) => ({ id: bundle.reference, name: bundle.name || bundle.reference, home: "hosted" as const, location: host.host, command: bundle.checkout ?? host.ask })),
               ),
               notes: listing?.notes ?? [],
             }),

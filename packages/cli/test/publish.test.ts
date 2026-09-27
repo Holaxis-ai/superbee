@@ -161,6 +161,23 @@ test("--to is required and names the one destination", async () => {
   assert.match(error.help ?? "", /publish --to hosted/);
 });
 
+test("a host that names workspaces: the new checkout names its bundle in the workspace it was created in", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "notes-bundle");
+  await writeBundle(folder);
+  const fake = new FakeCreateHost({ workspaces: [{ tenantId: "tenant:a", slug: "north" }] });
+  const receipt = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], fake);
+  assert.equal(receipt.published, "created");
+  const binding = (await bindingForPath(h.home, await realpath(folder)))!;
+  assert.equal(binding.bundle_id, "team-notes");
+  assert.equal(binding.workspace_slug, "north");
+  assert.equal(readCheckoutMarker(folder)?.workspace_slug, "north");
+  // Every read after the creation names the bundle in that workspace.
+  const after = fake.requests.slice(fake.requests.findIndex((r) => r.path.endsWith("/bundle-create")) + 1);
+  for (const request of after.filter((r) => r.body.bundleId !== undefined)) assert.equal(request.body.bundleId, "north/team-notes", request.path);
+  assert.ok(after.some((r) => r.path.endsWith("/snapshot")));
+});
+
 test("--yes creates the bundle and converts the folder in place, rewriting nothing", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "notes-bundle");
