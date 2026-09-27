@@ -30,6 +30,7 @@ import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { connectHostedAccount, hostedListCommand } from "../hosted/account.js";
+import { isHostedBundleId } from "../hosted/bundle-id.js";
 import { recordPulled } from "../hosted/freshness.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
 import {
@@ -48,7 +49,7 @@ import {
   type CheckoutBinding,
 } from "../hosted/binding.js";
 import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, WORKSPACE_HEADER } from "../hosted/client.js";
-import { HOSTED_CHECKOUT_REFUSALS } from "../hosted/refusals.js";
+import { HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from "../hosted/refusals.js";
 import { digestOf, exportFresh, findPathCollision, ROOT_INDEX } from "../hosted/projection.js";
 import { writeProjection } from "../hosted/sync-scan.js";
 import { addCatalogEntry, assertCatalogLabel, loadCatalog } from "../catalog.js";
@@ -60,7 +61,6 @@ import { adopt } from "./checkout-adopt.js";
  * host's working copy routes answer one unpaged listing, bounded at this size.
  */
 export const CHECKOUT_DOCUMENT_LIMIT = 1000;
-export const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 
 export const CHECKOUT_USAGE = `superbee checkout — mirror a hosted bundle into a local folder
 
@@ -81,12 +81,15 @@ checkout emptied in place is refused, because removing every file is a pending e
 
 A new checkout is added to your workspace catalog under its bundle id (or the id with -2 to -9
 when that label is taken), so other sessions and the local MCP app can find it; 'catalog list'
-shows it with home: hosted. The local MCP app serves it read-only.
+shows it with home: hosted. The local MCP app serves it through the folder, and refuses before the
+file changes a write sync cannot send.
 
 The folder carries a read-only marker, .superbee/checkout.json, naming the host and bundle. It is
 informational: it never selects a host or routes a command. A folder that has the marker but no
-binding here (it was moved, copied or restored) works as a plain local bundle, and status, home,
-bundle locate and session-start report it as copy_of_checkout.
+binding here (it was moved, copied or restored) is reported as copy_of_checkout by status, home,
+bundle locate and session-start. Nothing done in it reaches the host: sync, publish and writes
+through the local MCP app refuse it (unbound_copy) until it is adopted, or until its marker is
+deleted to keep it as a plain local bundle.
 
 --adopt <folder> binds such a folder again. A folder moved on the same disk is bound back to its
 own checkout with no network (unsent edits and conflicts carry over). Any other copy needs --host,
@@ -101,7 +104,7 @@ is not a checkout is a no-op.
 
 'superbee sync --dir <folder>' sends your edits and brings in the host's. Commands whose effect
 sync cannot send (doc verify, kind, recipe add/evolve, artifact, promote or delete of a non-.md
-key, index generate, serve, ui, mcp) are refused in it with "do this in the app". Deleting a
+key, index generate, serve, ui) are refused in it with "do this in the app". Deleting a
 document file, by hand or with doc delete or delete --doc-key <id>.md, syncs as a delete. Bundles over ${CHECKOUT_DOCUMENT_LIMIT} documents, bundles the host does not
 serve to a checkout (such as one with a Git source), and ids in two of your workspaces are refused.
 
@@ -386,7 +389,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
     return;
   }
   const bundleId = positionals[0]!;
-  if (!BUNDLE_ID.test(bundleId) || bundleId.length > 128) {
+  if (!isHostedBundleId(bundleId)) {
     throw new CliError("USAGE", `'${bundleId}' is not a hosted bundle id`, { help: `${cliInvocation()} checkout --help` });
   }
   // The chosen host is fixed in the binding and echoed in the receipt.
@@ -409,21 +412,10 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       return;
     }
     const marker = existing ? null : readCheckoutMarker(folder);
-    throw new CliError("ALREADY_EXISTS", existing
-      ? `${folder} is already a checkout of '${existing.bundle_id}' on ${existing.origin}`
-      : marker
-        ? `${folder} is a copy of a hosted checkout of '${marker.bundle_id}', not bound here`
-        : `${folder} is not empty`, {
-      details: existing
-        ? { reason: "other_checkout", ...bindingView(existing) }
-        : marker
-          ? { reason: "unbound_copy", folder, marker_host: marker.host, marker_bundle_id: marker.bundle_id }
-          : { reason: "not_empty", folder },
-      help: existing
-        ? `${cliInvocation()} checkout --release ${commandToken(existing.path)}`
-        : marker
-          ? `${cliInvocation()} checkout --adopt ${commandToken(folder)} --host ${commandToken(marker.host)}`
-          : "pass --dir <new or empty folder>",
+    if (marker) throw unboundCopyRefusal({ folder, marker }, "ALREADY_EXISTS", `${folder} is a copy of a hosted checkout of '${marker.bundle_id}', not bound here`);
+    throw new CliError("ALREADY_EXISTS", existing ? `${folder} is already a checkout of '${existing.bundle_id}' on ${existing.origin}` : `${folder} is not empty`, {
+      details: existing ? { reason: "other_checkout", ...bindingView(existing) } : { reason: "not_empty", folder },
+      help: existing ? `${cliInvocation()} checkout --release ${commandToken(existing.path)}` : "pass --dir <new or empty folder>",
     });
   }
   await assertStandaloneFolder(folder);

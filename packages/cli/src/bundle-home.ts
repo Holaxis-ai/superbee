@@ -13,7 +13,9 @@
 //
 // A local or Git folder that carries a hosted checkout marker (`.superbee/checkout.json`) but no
 // binding is reported as a `copy` of a checkout: moved, copied or restored. The marker never
-// changes the home; only `checkout --adopt` binds the folder again.
+// changes the home; only `checkout --adopt` binds the folder again. A local one is refused by
+// `sync` and by the local MCP app's writes (`unboundLocalCopyAt`), since nothing done there
+// reaches the host.
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -126,6 +128,16 @@ export async function bundleHomeAt(canonicalRoot: string, options: { home?: stri
   const board = await gitBoardAt(canonicalRoot).catch(() => null);
   if (board) return { home: "git", board, ...copy };
   return { home: "local", ...copy };
+}
+
+/**
+ * The unbound copy of a checkout at this canonical root when the folder is otherwise a plain local
+ * bundle, or null: what `sync` and the local MCP app refuse to act on. A Git board that carries a
+ * marker syncs through Git and is not one.
+ */
+export async function unboundLocalCopyAt(canonicalRoot: string, options: { home?: string } = {}): Promise<UnboundCopy | null> {
+  const facts = await bundleHomeAt(canonicalRoot, options);
+  return facts.home === "local" && facts.copy ? facts.copy : null;
 }
 
 /** The `copy_of_checkout` detail for a marked folder that is not bound, or nothing. */

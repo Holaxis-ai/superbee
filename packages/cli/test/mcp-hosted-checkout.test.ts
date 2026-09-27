@@ -6,7 +6,8 @@
 // open paths (the catalog resolver and `mcp --dir`) serve the same guarded bundle.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, cp, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -24,6 +25,7 @@ import { sync } from "../src/commands/sync.js";
 import { CliError } from "../src/errors.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { bindingForPath } from "../src/hosted/binding.js";
+import { IN_PLACE_JOURNAL, IN_PLACE_STAGING } from "../src/hosted/export-archive.js";
 import { recordPulled } from "../src/hosted/freshness.js";
 import { assertAllowedInHostedCheckout } from "../src/hosted/refusals.js";
 import { servedBundle } from "../src/hosted/served-bundle.js";
@@ -191,6 +193,173 @@ test("the guard: an unknown storage method is refused, an unsafe id is unsafe_pa
   assert.equal(await exists(path.join(c.folder, "notes", "beta.md")), false);
   await runSync(c);
   assert.equal(c.host.docs.has("notes/beta"), false, "the delete reached the host");
+});
+
+test("an MCP write that changes verified is refused before the file changes; an ordinary edit carries it and is sent", async () => {
+  const c = await hostedCheckout();
+  const reviewed = { by: "human:reviewer", at: "2026-09-26T12:00:00Z" };
+  c.host.put("notes/alpha", { type: "Note", title: "Alpha", verified: [reviewed] }, "Alpha body.\n");
+  await runSync(c);
+  const context = await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE);
+  const alpha = await readDoc(context.bundle, "notes/alpha");
+  assert.deepEqual(alpha.frontmatter.verified, [reviewed], "the host's verification is in the folder");
+  const alphaFile = path.join(c.folder, "notes", "alpha.md");
+  const before = await readFile(alphaFile, "utf8");
+  c.host.requests.length = 0;
+
+  const managed = (error: unknown): true => {
+    assert.ok(error instanceof CliError, `expected a CliError, got ${String(error)}`);
+    assert.equal(error.code, "FORBIDDEN");
+    const details = error.details as Record<string, unknown>;
+    assert.deepEqual([details.reason, details.command, details.field, details.bundle_id, details.do_this_in], ["not_syncable", "mcp write", "verified", BUNDLE, "app"]);
+    assert.match(error.message, /verification is a managed field the host records/);
+    return true;
+  };
+  // Only verified changes: appended, replaced, removed. And a new document that carries it.
+  await assert.rejects(writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, verified: [reviewed, { by: "human:someone", at: "2026-09-27T09:00:00Z" }] }, body: alpha.body }), managed);
+  await assert.rejects(writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, verified: [{ by: "human:someone", at: "2026-09-27T09:00:00Z" }] }, body: alpha.body }), managed);
+  const { verified: _dropped, ...unverified } = alpha.frontmatter;
+  await assert.rejects(context.bundle.backend!.write("notes/alpha", { id: "notes/alpha", frontmatter: unverified, body: alpha.body }), managed);
+  await assert.rejects(writeDoc(context.bundle, { id: "notes/claimed", frontmatter: { type: "Note", title: "Claimed", verified: [reviewed] }, body: "" }), managed);
+  assert.equal(await readFile(alphaFile, "utf8"), before, "a refused write leaves the file as it was");
+  assert.equal(await exists(path.join(c.folder, "notes", "claimed.md")), false);
+  assert.deepEqual([(await syncState(c)).state, (await syncState(c)).unsent], ["clean", 0]);
+
+  // A write made against an older version meets the version check first: a conflict the caller
+  // retries, not a final refusal (a pull may have brought the new verification in meanwhile).
+  await assert.rejects(
+    context.bundle.backend!.write("notes/alpha", { id: "notes/alpha", frontmatter: unverified, body: alpha.body }, { expectedVersion: "stale-version" }),
+    (error: unknown) => {
+      assert.ok(!(error instanceof CliError), `a version conflict, not a refusal: ${String(error)}`);
+      assert.match(String(error), /version|conflict/i);
+      return true;
+    },
+  );
+  assert.equal(await readFile(alphaFile, "utf8"), before);
+
+  // An ordinary edit of the verified document carries verified forward unchanged, and is sent.
+  await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha, retitled" }, body: alpha.body });
+  assert.match(await readFile(alphaFile, "utf8"), /Alpha, retitled/);
+  await runSync(c);
+  assert.equal(c.host.docs.get("notes/alpha")?.frontmatter.title, "Alpha, retitled");
+  assert.deepEqual(c.host.applied, ["notes/alpha"]);
+});
+
+/** The `unbound_copy` refusal an MCP write gets in a copy of a checkout, naming the adopt command. */
+function refusedAsCopy(folder: string) {
+  return (error: unknown): true => {
+    assert.ok(error instanceof CliError, `expected a CliError, got ${String(error)}`);
+    assert.equal(error.code, "FORBIDDEN");
+    const details = error.details as Record<string, unknown>;
+    assert.deepEqual([details.reason, details.command, details.folder, details.marker_bundle_id, details.marker_host], ["unbound_copy", "mcp write", folder, BUNDLE, HOST]);
+    assert.equal(details.or, `to use it as a plain local bundle instead, delete ${path.join(folder, ".superbee", "checkout.json")}`);
+    assert.match(error.help ?? "", /checkout --adopt .* --host https:\/\/hosted\.example/);
+    return true;
+  };
+}
+
+test("an unbound copy of a checkout is served for reading, and every MCP write is refused until it is adopted or its marker goes", async () => {
+  const c = await hostedCheckout();
+  await cp(c.folder, path.join(c.cwd, "copy"), { recursive: true });
+  const copy = await realpath(path.join(c.cwd, "copy"));
+  await addCatalogEntry("copy", copy, { home: c.home });
+  const alphaFile = path.join(copy, "notes", "alpha.md");
+  const before = await readFile(alphaFile, "utf8");
+
+  // Both open paths: the catalog resolver and `mcp --dir`.
+  const cataloged = (await createCatalogMcpWorkspaceResolver({ home: c.home }).open("copy")).bundle;
+  let direct: Bundle | undefined;
+  const { withIsolatedUserEnv } = await import("./support/user-env.js");
+  await withIsolatedUserEnv(c.home, () =>
+    mcp(["--dir", copy, "--actor", "process:test"], { stdout: () => {}, stderr: () => {}, startServer: async (options) => void (direct = (options as { bundle: Bundle }).bundle) }),
+  );
+  assert.ok(direct);
+  for (const bundle of [cataloged, direct]) {
+    const alpha = await readDoc(bundle, "notes/alpha");
+    assert.ok((await queryHeads(bundle)).length > 0, "reads are served");
+    await assert.rejects(writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha in the copy" }, body: alpha.body }), refusedAsCopy(copy));
+    await assert.rejects(writeDoc(bundle, { id: "notes/new", frontmatter: { type: "Note", title: "New" }, body: "" }), refusedAsCopy(copy));
+    await assert.rejects(deleteDoc(bundle, "notes/beta"), refusedAsCopy(copy));
+    await assert.rejects(writeBlob(bundle, "views/probe/index.html", new TextEncoder().encode("<p/>"), "text/html"), refusedAsCopy(copy));
+    await assert.rejects(bundle.backend!.writeReserved("", "log.md", "# Log\n"), refusedAsCopy(copy));
+  }
+  assert.equal(await readFile(alphaFile, "utf8"), before, "a refused write leaves the file as it was");
+  assert.equal(await exists(path.join(copy, "notes", "new.md")), false);
+  assert.equal(await exists(path.join(copy, "notes", "beta.md")), true);
+  assert.equal(c.host.requests.length, 0, "nothing reaches the host");
+  // The original checkout is still served through its own guard, and still writable.
+  const original = (await createCatalogMcpWorkspaceResolver({ home: c.home }).open(BUNDLE)).bundle;
+  const alpha = await readDoc(original, "notes/alpha");
+  await writeDoc(original, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha in the checkout" }, body: alpha.body });
+
+  // Adopted mid-session: the same served bundle takes the checkout's guard, with no reopen.
+  await checkout(["--adopt", copy, "--host", HOST, "--json"], { stdout: () => {}, auth: c.auth, cwd: c.cwd, fetch: c.host.fetch });
+  const adopted = await readDoc(cataloged, "notes/alpha");
+  await writeDoc(cataloged, { id: "notes/alpha", frontmatter: { ...adopted.frontmatter, title: "Alpha, adopted" }, body: adopted.body });
+  assert.match(await readFile(alphaFile, "utf8"), /Alpha, adopted/);
+  await assert.rejects(writeDoc(cataloged, { id: "conventions/probe", frontmatter: { type: "Convention", title: "Probe", governs: "Probe" }, body: "" }), refusedAs("convention_folder", true));
+
+  // Deleting the marker keeps a copy as a plain local bundle: writes work at once, no reopen.
+  await cp(c.folder, path.join(c.cwd, "kept"), { recursive: true });
+  const kept = await realpath(path.join(c.cwd, "kept"));
+  const local = await servedBundle(await openBundle(kept), { home: c.home });
+  await assert.rejects(writeDoc(local, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha, kept" }, body: alpha.body }), refusedAsCopy(kept));
+  await unlink(path.join(kept, ".superbee", "checkout.json"));
+  await writeDoc(local, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha, kept" }, body: alpha.body });
+  assert.match(await readFile(path.join(kept, "notes", "alpha.md"), "utf8"), /Alpha, kept/);
+});
+
+test("a copy made a Git board mid-session is written as sync takes it; a stopped in-place export names its resume, not deleting the marker", async () => {
+  const c = await hostedCheckout();
+  await cp(c.folder, path.join(c.cwd, "copy"), { recursive: true });
+  const copy = await realpath(path.join(c.cwd, "copy"));
+  const bundle = await servedBundle(await openBundle(copy), { home: c.home });
+  const alpha = await readDoc(bundle, "notes/alpha");
+  await assert.rejects(writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha" }, body: "x" }), refusedAsCopy(copy));
+
+  // An in-place export that stopped part way leaves the marker and no binding: the refusal names the
+  // resume, and never suggests deleting the marker, which would abandon it.
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(path.join(copy, IN_PLACE_STAGING), { recursive: true });
+  await writeFile(path.join(copy, IN_PLACE_STAGING, IN_PLACE_JOURNAL), "{}\n");
+  await assert.rejects(writeDoc(bundle, { id: "notes/alpha", frontmatter: alpha.frontmatter, body: "x" }), (error: unknown) => {
+    assert.ok(error instanceof CliError);
+    const details = error.details as Record<string, unknown>;
+    assert.equal(details.reason, "unbound_copy");
+    assert.equal("or" in details, false);
+    assert.match(error.help ?? "", /export --in-place --dir /);
+    return true;
+  });
+  const refused = await rejects(sync(["--dir", copy], { auth: c.auth, cwd: c.cwd }));
+  assert.equal("or" in (refused.details ?? {}), false);
+  await rm(path.join(copy, IN_PLACE_STAGING), { recursive: true });
+
+  // Made a Git board (as sync --establish leaves it): sync takes it through Git, so the same served
+  // bundle writes to it with no reopen.
+  execFileSync("git", ["init", "-q", "-b", "board"], { cwd: copy, stdio: "ignore" });
+  await writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha on the board" }, body: alpha.body });
+  assert.match(await readFile(path.join(copy, "notes", "alpha.md"), "utf8"), /Alpha on the board/);
+});
+
+async function rejects(promise: Promise<unknown>): Promise<CliError> {
+  try {
+    await promise;
+  } catch (error) {
+    assert.ok(error instanceof CliError, String(error));
+    return error;
+  }
+  throw new assert.AssertionError({ message: "expected a refusal" });
+}
+
+test("a Git board that carries a checkout marker syncs through Git, so local MCP serves it unguarded", async () => {
+  const c = await hostedCheckout();
+  await cp(c.folder, path.join(c.cwd, "board"), { recursive: true });
+  const board = await realpath(path.join(c.cwd, "board"));
+  execFileSync("git", ["init", "-q", "-b", "board"], { cwd: board, stdio: "ignore" });
+  const bundle = await servedBundle(await openBundle(board), { home: c.home });
+  const alpha = await readDoc(bundle, "notes/alpha");
+  await writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha on the board" }, body: alpha.body });
+  assert.match(await readFile(path.join(board, "notes", "alpha.md"), "utf8"), /Alpha on the board/);
 });
 
 test("mcp --dir on a checkout serves the same guarded bundle, and mcp is no longer refused in a checkout", async () => {

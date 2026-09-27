@@ -19,6 +19,7 @@ import { cliInvocation } from "../invocation.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { defaultHostedAuthDeps, hostArgument, hostedBundleHost, SignedOutError, storedSessionMayNeedSignIn, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { checkoutTarget, connectHostedAccount } from "./account.js";
+import { isHostedBundleId } from "./bundle-id.js";
 import { listReadyBindings, liveCheckoutFolders } from "./binding.js";
 import { readBundleListing, type HostedSyncClient } from "./client.js";
 import { fetchWithDeadline } from "./freshness.js";
@@ -57,8 +58,9 @@ export async function hostedBundleRows(client: HostedSyncClient, target: HostedT
 
 /**
  * The hosted bundles one host lists that have no folder here, each with the command that brings it
- * into one. An id two of the person's workspaces hold has none (`checkout` refuses it): `ask`
- * lists them all.
+ * into one. An id `checkout` refuses has none: one two of the person's workspaces hold, or one that
+ * is not a bundle id `checkout` takes (`isHostedBundleId`; an id starting with `-` would read as an
+ * option). `ask` lists them all.
  */
 export interface ReachableHost {
   readonly host: string;
@@ -147,7 +149,7 @@ async function askHosts(options: ReachableOptions): Promise<ReachableListing | n
           ask: String(ask),
           bundles: rows
             .filter((row) => row.folder === null)
-            .map((row) => (row.ambiguous ? row : { ...row, checkout: `${cliInvocation()} checkout ${commandToken(row.bundle_id)} --host ${commandToken(host)}` })),
+            .map((row) => (row.ambiguous || !isHostedBundleId(row.bundle_id) ? row : { ...row, checkout: `${cliInvocation()} checkout ${commandToken(row.bundle_id)} --host ${commandToken(host)}` })),
         };
       } catch (error) {
         // Signed out after all (a refresh the issuer refused), or an environment token that is for
