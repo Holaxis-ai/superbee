@@ -6,8 +6,11 @@ applies changes directly under the signed-in person's own access, and nobody has
 
 ## Finding a bundle to check out
 
-`superbee catalog list --hosted` lists the hosted bundles the signed-in person can reach on the
-host of their last sign-in (or `--host <url>`), across all their workspaces. Each row has the
+While the person is signed in, plain `superbee catalog list` also lists, under `hosted`, the
+bundles they can reach that have no folder here, each with the `checkout` command that brings it
+into one (`--local` skips that; it never starts a sign-in). `superbee catalog list --hosted` lists
+every hosted bundle the signed-in person can reach on the host of their last sign-in (or
+`--host <url>`), across all their workspaces. Each row has the
 `bundle_id` that `superbee checkout <bundle-id>` takes, its `name` and `lifecycle`, the `folder` of
 an existing checkout here (null when there is none), and `ambiguous: true` when two of their
 workspaces hold the same id, which checkout refuses. If a bundle already has a `folder`, work there
@@ -172,9 +175,12 @@ refusal by editing files, using another command, or copying the bundle somewhere
 bundle out of hosted is `superbee export` (below), and only when the person asks for it.
 
 `checkout` adds the folder to the workspace catalog, where `catalog list` shows it with
-`home: hosted`. The local MCP app (`superbee mcp`) can read it by that label, but refuses every
-write there with the same "do this in the Superbee app": Views and documents written through it
-could not sync.
+`home: hosted`. The local MCP app (`superbee mcp`) serves it through the folder, by that label or
+with the session opened in it: a document written through a View lands in the folder and reaches
+the host at the next `superbee sync`. A write sync could not send (a View save, a convention, a
+retype, a document over the size limit) is refused before the file changes; View saves and
+conventions are for the person to do in the Superbee app. With a checkout of a bundle on this
+machine, work through the folder, not also through the hosted connector's tools for that bundle.
 
 `sync_busy` means another command is working, or is just taking or releasing the lock: wait,
 then retry, and never remove that lock. Only `lock_orphaned` means the lock's holder is gone:

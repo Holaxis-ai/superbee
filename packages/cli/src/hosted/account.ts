@@ -86,10 +86,7 @@ export interface CheckoutConnection {
  * principal checked against the one the checkout was made under before any other request.
  */
 export async function connectCheckout(binding: CheckoutBinding, request: CheckoutConnectionRequest, deps: HostedAccountDeps): Promise<CheckoutConnection> {
-  const target = resolveHostedTarget(binding.audience);
-  if (target.origin !== binding.origin) {
-    throw new CliError("RUNTIME", `the checkout binding for ${binding.path} is inconsistent`, { help: `${cliInvocation()} checkout --release ${commandToken(binding.path)}` });
-  }
+  const target = checkoutTarget(binding);
   const token = await ensureHostedAccessToken(target, { resume: request.resume, ...(request.signIn === false ? { signIn: false } : {}) }, deps.auth);
   const client = createHostedSyncClient({
     target,
@@ -107,6 +104,15 @@ export async function connectCheckout(binding: CheckoutBinding, request: Checkou
     });
   }
   return { target, client, identity };
+}
+
+/** The host a checkout's binding names, refused when its origin and audience disagree. */
+export function checkoutTarget(binding: CheckoutBinding): HostedTarget {
+  const target = resolveHostedTarget(binding.audience);
+  if (target.origin !== binding.origin) {
+    throw new CliError("RUNTIME", `the checkout binding for ${binding.path} is inconsistent`, { help: `${cliInvocation()} checkout --release ${commandToken(binding.path)}` });
+  }
+  return target;
 }
 
 /** The command that lists the hosted bundles the person can reach on this host. */

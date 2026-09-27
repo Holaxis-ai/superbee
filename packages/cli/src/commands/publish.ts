@@ -21,7 +21,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { runGit } from "@superbee/board-git";
-import { parseMarkdown, RemoteError } from "@superbee/core";
+import { parseMarkdown, RemoteError, stripHostText } from "@superbee/core";
 import { HostedCarrierError } from "@superbee/core/hosted-transport";
 
 import { parseLeafOrUsage } from "../args.js";
@@ -127,7 +127,7 @@ async function rootTitle(folder: string): Promise<string | null> {
 
 /** The host refuses control and format characters in a name. */
 function cleanName(name: string): string {
-  return name.replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 128);
+  return stripHostText(name, 128);
 }
 
 /** Refuse a folder that is not its own authority: nested in another bundle, or bound elsewhere. */

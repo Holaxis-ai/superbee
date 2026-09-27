@@ -444,9 +444,9 @@ const STEPS: readonly Step[] = [
     exempt: true,
     run: () =>
       mcpCell(async () => {
-        const listed = (await (workspaceListing ??= callTool("list_workspaces", {}).then((result) => result.structuredContent))) as { elsewhere?: { name: string; home: string; bring: string }[] };
-        const row = (listed.elsewhere ?? []).find((entry) => entry.name === UNCHECKED);
-        return row?.home === "hosted" && /checkout team\.archive --host/.test(row.bring) ? null : { missing: [UNCHECKED] };
+        const listed = (await (workspaceListing ??= callTool("list_workspaces", {}).then((result) => result.structuredContent))) as { reachable?: { id: string; home: string; command: string }[] };
+        const row = (listed.reachable ?? []).find((entry) => entry.id === UNCHECKED);
+        return row?.home === "hosted" && /checkout team\.archive --host/.test(row.command) ? null : { missing: [UNCHECKED] };
       }),
   },
   {

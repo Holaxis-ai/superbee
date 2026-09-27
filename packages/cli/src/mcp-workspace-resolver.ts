@@ -15,7 +15,7 @@ import {
 import { LocalViewAuthorizationStore } from "./ui/view-authorizations.js";
 import { servedBundle } from "./hosted/served-bundle.js";
 import { reachableHostedBundles, type ReachableListing } from "./hosted/reachable.js";
-import type { McpElsewhereWorkspace } from "@superbee/mcp-app";
+import type { McpReachableListing } from "@superbee/mcp-app";
 
 /** How long `list_workspaces` waits for the hosted bundles, and how long an answer is reused. */
 export const MCP_HOSTED_BUDGET_MS = 1_500;
@@ -46,16 +46,21 @@ export function createCatalogMcpWorkspaceResolver(
   const reachable = options.reachable ?? (() => reachableHostedBundles({ budgetMs: MCP_HOSTED_BUDGET_MS, ...(options.home !== undefined ? { home: options.home } : {}) }));
   const now = options.now ?? Date.now;
   // One answer per minute per process, in memory only.
-  let cached: { at: number; value: Promise<McpElsewhereWorkspace[]> } | undefined;
+  let cached: { at: number; value: Promise<McpReachableListing> } | undefined;
 
   return {
-    elsewhere: captureRuntimeCallback(async () => {
+    reachable: captureRuntimeCallback(async () => {
       if (!cached || now() - cached.at >= MCP_HOSTED_CACHE_MS) {
         cached = {
           at: now(),
           value: reachable().then(
-            (listing) => (listing?.hosts ?? []).flatMap((host) => host.bundles.map((bundle) => ({ name: bundle.bundle_id, home: "hosted" as const, source: host.host, bring: bundle.checkout }))),
-            () => [],
+            (listing): McpReachableListing => ({
+              workspaces: (listing?.hosts ?? []).flatMap((host) =>
+                host.bundles.map((bundle) => ({ id: bundle.bundle_id, name: bundle.name || bundle.bundle_id, home: "hosted" as const, location: host.host, command: bundle.checkout ?? host.ask })),
+              ),
+              notes: listing?.notes ?? [],
+            }),
+            () => ({ workspaces: [], notes: [] }),
           ),
         };
       }
