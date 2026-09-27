@@ -155,21 +155,12 @@ export function readBundleListing(rows: readonly HostedBundleRow[]): HostedBundl
 }
 
 /**
- * The sync routes whose body names one bundle (`bundleId`): the ones a qualified reference is sent
- * on. `whoami`, `bundles` and `bundle-create` (which names its workspace in the body) never are.
+ * The sync routes whose body never names one bundle by reference: `whoami` and `bundles` span the
+ * person's workspaces, and `bundle-create` names its workspace in the body. Every other route under
+ * the family's prefix is bundle-scoped, the host's own rule, so a route added later (`operations`
+ * and `run`, say) is qualified by default rather than read as an absent bundle once an id collides.
  */
-const BUNDLE_SCOPED_ROUTES = Object.freeze([
-  "capabilities",
-  "heads",
-  "snapshot",
-  "read",
-  "history",
-  "create",
-  "replace",
-  "delete",
-  "outcome",
-  "export",
-] as const);
+const UNSCOPED_ROUTES = Object.freeze(["whoami", "bundles", "bundle-create"] as const);
 
 /**
  * The carrier with a workspace: every bundle-scoped request names its bundle as
@@ -177,9 +168,10 @@ const BUNDLE_SCOPED_ROUTES = Object.freeze([
  * keeps the bare id, including reading the host's answers, which name the bare id.
  */
 export function qualifyingCarrier(carrier: HostedCarrier, prefix: string, slug: string): HostedCarrier {
-  const routes = new Set(BUNDLE_SCOPED_ROUTES.map((route) => `${prefix}/${route}`));
+  const unscoped = new Set(UNSCOPED_ROUTES.map((route) => `${prefix}/${route}`));
+  const scoped = (route: string) => route.startsWith(`${prefix}/`) && !unscoped.has(route);
   const qualify = (route: string, input: unknown): unknown => {
-    if (!routes.has(route) || input === null || typeof input !== "object" || Array.isArray(input)) return input;
+    if (!scoped(route) || input === null || typeof input !== "object" || Array.isArray(input)) return input;
     const bundleId = (input as { bundleId?: unknown }).bundleId;
     if (typeof bundleId !== "string") return input;
     // Only this wrapper qualifies: an id that already names a workspace is a caller's mistake.

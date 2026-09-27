@@ -738,14 +738,15 @@ test("whoami's workspaces are read strictly: absent is an older host, a mismatch
     await assert.rejects(answering({ ...base, workspaces }).whoami(), (error: unknown) => error instanceof CliError && error.code === "RUNTIME");
 });
 
-test("the client names the bundle by its reference on exactly the bundle-scoped routes", async () => {
+test("the client names the bundle by its reference on every sync route but whoami, bundles and bundle-create", async () => {
   const sent: { path: string; body: unknown }[] = [];
   const recorder = (async (input: string | URL | Request, init?: RequestInit) => {
     sent.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body)) });
     return Response.json({ ok: true });
   }) as typeof fetch;
   const client = createHostedSyncClient({ target: { origin: HOST, audience: `${HOST}/mcp` } as never, accessToken: TOKEN, fetch: recorder }).within("south");
-  const scoped = ["capabilities", "heads", "snapshot", "read", "history", "create", "replace", "delete", "outcome"];
+  // Including the generic operation routes and a route no client knows yet: scoped by default.
+  const scoped = ["capabilities", "heads", "snapshot", "read", "history", "create", "replace", "delete", "outcome", "operations", "run", "later-read"];
   for (const route of [...scoped, "whoami", "bundles", "bundle-create"])
     await client.carrier.json(`/sync/v1/${route}`, { bundleId: BUNDLE, n: 1 }, client.signal, { maximum: 1024 }).catch(() => {});
   await client.carrier.stream("/sync/v1/export", { bundleId: BUNDLE }, client.signal).catch(() => {});
