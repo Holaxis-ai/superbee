@@ -2,7 +2,7 @@ import { renderUsage } from "../../output.js";
 // `doc history <id>` — see `../doc.ts`'s header comment for the CAS-token / attribution rationale.
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
-import { docVersions, parseMarkdown, RemoteError, type VersionInfo } from "@superbee/core";
+import { docVersions, parseMarkdown, type VersionInfo } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
@@ -11,12 +11,10 @@ import { render, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { DOC_HISTORY_USAGE, HOSTED_HISTORY_CEILING, type DocCliDeps, readErrorToCliError } from "./common.js";
-import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
+import { commandFragment, commandToken } from "../../command-text.js";
 import { hostedCheckoutAt } from "../../autopull.js";
 import type { CheckoutBinding } from "../../hosted/binding.js";
-import type { HostedAccountDeps } from "../../hosted/account.js";
-import type { HostedSyncClient } from "../../hosted/client.js";
-import type { HostedTarget } from "../../hosted-auth/discovery.js";
+import { openCheckoutConnection, type CheckoutConnection } from "../../hosted/checkout-connection.js";
 import { HISTORY_PAGE_LIMIT, readHistoryListing, type HostedHistoryVersion, type HostedOperationRefusal } from "@superbee/core/hosted-transport";
 import { attachBodyPreview } from "../../body-replace-guards.js";
 
@@ -106,7 +104,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     const resume = commandFragment`${cliInvocation()} doc history ${commandToken(id)} --dir ${commandToken(checkout.path)}${
       seq !== undefined ? commandFragment` --seq ${commandToken(String(seq))}` : values.limit !== undefined ? commandFragment` --limit ${commandToken(String(limit))}` : commandFragment``
     }${values.json ? commandFragment` --json` : commandFragment``}`;
-    const connection = await hostedConnection(checkout, deps.hosted, resume);
+    const connection = await openCheckoutConnection(checkout, deps.hosted, resume);
     if (seq !== undefined) {
       await hostedVersion(connection, checkout, id, seq, mode, stdout);
       return;
@@ -175,19 +173,7 @@ function truncationHelp(id: string, shown: number, total: number): string {
   return `showing ${shown} of ${total} — run \`${cliInvocation()} doc history ${commandToken(id)} --limit 0\` (or a higher --limit) for all`;
 }
 
-interface Connection {
-  readonly client: HostedSyncClient;
-  readonly target: HostedTarget;
-  readonly resume: CommandText;
-}
-
-/** The checkout's host, reached as the checkout's own person. */
-async function hostedConnection(checkout: CheckoutBinding, hosted: HostedAccountDeps | undefined, resume: CommandText): Promise<Connection> {
-  // Loaded only in a hosted checkout, so an ordinary history never loads the hosted modules.
-  const [{ connectCheckout }, { defaultHostedAuthDeps }] = await Promise.all([import("../../hosted/account.js"), import("../../hosted-auth/session.js")]);
-  const { client, target } = await connectCheckout(checkout, { resume }, hosted ?? { auth: defaultHostedAuthDeps(homedir()) });
-  return { client, target, resume };
-}
+type Connection = CheckoutConnection;
 
 /**
  * The CLI error a history refusal means. `document_not_found` and `result_too_large` are this
@@ -210,9 +196,15 @@ async function refusalError(refusal: HostedOperationRefusal, connection: Connect
           : `this version cannot be read from the CLI; the current version is ${cliInvocation()} doc read ${commandToken(id)}`,
     });
   }
-  const [{ bundleAbsent }, { hostedFailure }] = await Promise.all([import("../../hosted/refusals.js"), import("../../hosted/client.js")]);
-  if (refusal.code === "bundle_not_found") return bundleAbsent(checkout, connection.client);
-  return hostedFailure(new RemoteError(refusal.message, refusal.code, refusal.retryable ? 503 : 422), connection.target, connection.resume);
+  const { operationRefusalError } = await import("../../hosted/operation-refusal.js");
+  return operationRefusalError(refusal, {
+    binding: checkout,
+    client: connection.client,
+    target: connection.target,
+    resume: connection.resume,
+    subject: `the history of '${id}'`,
+    inputHelp: `${cliInvocation()} doc history --help`,
+  });
 }
 
 function row(version: HostedHistoryVersion): Record<string, unknown> {

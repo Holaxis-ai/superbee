@@ -29,7 +29,8 @@ import {
   decodeOperationRun,
   HOSTED_READ_BOUNDS,
   isOperationId,
-  OPERATION_LISTING_LIMIT,
+  familyRefusal,
+  isAnswerTooLarge,
   operationRunBody,
   operationRunMaximum,
   operationRefusal,
@@ -450,14 +451,14 @@ function nested(levels: number): Record<string, unknown> {
 test("operations: ESC sequences and U+202E in a title or description are stripped, and each is bounded", () => {
   const descriptor = {
     ...goldenDescriptor(),
-    title: "\u001b[31mRead\u001b[0m a history‮",
-    description: `Lists versions.‮\u001b]8;;https://evil.example\u0007click\u001b]8;;\u0007 ${"x".repeat(5000)}`,
+    title: "\u001b[31mRead\u001b[0m a history\u202e",
+    description: `Lists versions.\u202e\u001b]8;;https://evil.example\u0007click\u001b]8;;\u0007 ${"x".repeat(5000)}`,
   };
   const { operations, notes } = decodeOperationListing({ operations: [descriptor] }, OPERATIONS_ROUTE);
   assert.deepEqual(notes, []);
   const [operation] = operations;
   for (const text of [operation!.title, operation!.description]) {
-    assert.doesNotMatch(text, /[\u0000-\u001f\u007f‮]/u);
+    assert.doesNotMatch(text, /[\u0000-\u001f\u007f\u202e]/u);
   }
   assert.equal(operation!.title, "[31mRead[0m a history");
   assert.ok(operation!.description.startsWith("Lists versions.]8;;https://evil.example"));
@@ -496,13 +497,48 @@ test("operations: a descriptor with a bad id, an over-deep schema or a bad bound
 });
 
 test("operations: at most 200 descriptors are read, and a body that is not a listing is malformed", () => {
-  const rows = Array.from({ length: OPERATION_LISTING_LIMIT + 5 }, (_, index) => ({ ...goldenDescriptor(), operationId: `synthetic.op${index}.v1` }));
+  const rows = Array.from({ length: HOSTED_READ_BOUNDS.operations + 5 }, (_, index) => ({ ...goldenDescriptor(), operationId: `synthetic.op${index}.v1` }));
   const { operations, notes } = decodeOperationListing({ operations: rows });
-  assert.equal(operations.length, OPERATION_LISTING_LIMIT);
+  assert.equal(operations.length, HOSTED_READ_BOUNDS.operations);
   assert.deepEqual(notes, ["dropped 5 operations past the first 200 the host listed"]);
   for (const bad of [{}, { operations: {} }, [], null, "operations"]) {
     assert.throws(() => decodeOperationListing(bad, OPERATIONS_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === OPERATIONS_ROUTE);
   }
+});
+
+test("a refusal code outside the code grammar is never echoed: malformed in a result, ignored in a family body", async () => {
+  const hostile = "x\u202eevil\u009b";
+  const body = JSON.parse(fixture("run-200-document-not-found").response.body) as { error: { code: string } };
+  body.error.code = hostile;
+  assert.throws(() => decodeOperationRun("documents.history.v1", body, RUN_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === RUN_ROUTE);
+  for (const code of [hostile, "Bundle_Not_Found", "a".repeat(65)]) {
+    const refused = readRefusal({ status: 400, body: { error: { code } } });
+    assert.ok(refused instanceof RemoteError && refused.code === "USAGE", code);
+    assert.equal(familyRefusal({ body: { error: { code, message: "m" } } }), undefined);
+  }
+});
+
+test("a refusal's message is host text: control and format characters stripped, bounded", () => {
+  const body = JSON.parse(fixture("run-200-document-not-found").response.body) as { error: { message: string } };
+  body.error.message = `\u001b[31mgone\u202e ${"z".repeat(900)}`;
+  const decoded = decodeOperationRun("documents.history.v1", body, RUN_ROUTE);
+  assert.ok(!decoded.ok);
+  assert.ok(decoded.refusal.message.startsWith("[31mgone "));
+  assert.equal(decoded.refusal.message.length, 500);
+  const family = familyRefusal(answerOf(fixture("operations-404-bundle-not-found")));
+  assert.deepEqual(family, { code: "bundle_not_found", message: JSON.parse(fixture("operations-404-bundle-not-found").response.body).error.message, retryable: false });
+  assert.equal(familyRefusal(answerOf(fixture("unknown-route-404"))), undefined);
+  assert.equal(familyRefusal({ body: { error: { code: "x", message: "\u202e" } } })?.message, "x");
+});
+
+test("an answer over the request's bound is the carrier's unavailable, marked as too large rather than an outage", async () => {
+  const exchange = fixture("run-200-ok");
+  const fetch = (async () => new Response(exchange.response.body, { status: 200, headers: exchange.response.headers })) as typeof fetch;
+  const carrier = createFetchCarrier({ baseUrl: "https://hosted.example", fetch, credentials: async () => ({ Authorization: "Bearer token" }) });
+  const small = await carrier.json(RUN_ROUTE, {}, new AbortController().signal, { maximum: 64 }).catch((error: unknown) => error);
+  assert.ok(small instanceof HostedCarrierError && small.code === "unavailable");
+  assert.equal(isAnswerTooLarge(small), true);
+  assert.equal(isAnswerTooLarge(new HostedCarrierError("unavailable")), false);
 });
 
 // ── writes and outcomes ────────────────────────────────────────────────────────────────────

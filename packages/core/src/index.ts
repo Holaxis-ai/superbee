@@ -85,7 +85,7 @@ export { readBlob, writeBlob, existsBlob, listBlobs } from "./bundle.js";
 export type { BlobKey, ReadBlobResult } from "./types.js";
 
 export { freshness, staleAfterInstant } from "./freshness.js";
-export { stripHostText } from "./host-text.js";
+export { escapeHostJson, stripHostControls, stripHostData, stripHostText } from "./host-text.js";
 // The one equality for OKF frontmatter values: what the write policy treats as unchanged.
 export { okfValuesEqual } from "./okf-authored-values.js";
 

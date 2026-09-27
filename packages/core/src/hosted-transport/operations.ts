@@ -7,7 +7,7 @@
  * Everything the host says here is untrusted data. A descriptor's title and description go
  * through {@link stripHostText}; its JSON Schemas are carried for rendering only, never compiled
  * and never followed (`$ref`, `$id`); a result is data, never a path, URL or command. A listing
- * is bounded: at most {@link OPERATION_LISTING_LIMIT} descriptors, and a descriptor that is
+ * is bounded: at most {@link HOSTED_READ_BOUNDS.operations} descriptors, and a descriptor that is
  * malformed or out of bounds is dropped with a note while the rest still list.
  */
 
@@ -15,18 +15,12 @@ import { stripHostText } from "../host-text.js";
 import { malformed } from "../remote-error.js";
 import { operationRefusal, HOSTED_READ_BOUNDS, type HostedOperationRefusal } from "./read-adapter.js";
 
-/** The most descriptors one listing admits; the rest are dropped with a note. */
-export const OPERATION_LISTING_LIMIT = 200;
-/** The deepest nesting (objects and arrays) a descriptor's schema may have. */
-export const OPERATION_SCHEMA_DEPTH = 32;
 /** The longest operation id admitted. */
-export const OPERATION_ID_MAX = 128;
-export const OPERATION_TITLE_MAX = 200;
-export const OPERATION_DESCRIPTION_MAX = 2048;
+const OPERATION_ID_MAX = 128;
 
 const OPERATION_ID = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)*\.v[1-9][0-9]*$/;
 
-/** True for an id in the operation grammar (`documents.history.v1`), at most {@link OPERATION_ID_MAX} characters. */
+/** True for an id in the operation grammar (`documents.history.v1`), at most 128 characters. */
 export function isOperationId(value: unknown): value is string {
   return typeof value === "string" && value.length <= OPERATION_ID_MAX && OPERATION_ID.test(value);
 }
@@ -37,9 +31,9 @@ export type JsonObject = { readonly [key: string]: unknown };
 /** One operation the host runs by id, as its listing describes it. */
 export interface HostedOperation {
   readonly operationId: string;
-  /** Host text, stripped of control and format characters, at most {@link OPERATION_TITLE_MAX}. */
+  /** Host text, stripped of control and format characters, at most {@link HOSTED_READ_BOUNDS.operationTitleChars}. */
   readonly title: string;
-  /** Host text, stripped of control and format characters, at most {@link OPERATION_DESCRIPTION_MAX}. */
+  /** Host text, stripped of control and format characters, at most {@link HOSTED_READ_BOUNDS.operationDescriptionChars}. */
   readonly description: string;
   /** The most bytes the host answers a run of this operation with. */
   readonly maximumOutputBytes: number;
@@ -75,14 +69,14 @@ function admitDescriptor(raw: unknown): HostedOperation | string {
   if (typeof title !== "string" || typeof description !== "string") return "it has no title or description";
   if (typeof maximumOutputBytes !== "number" || !Number.isSafeInteger(maximumOutputBytes) || maximumOutputBytes <= 0) return "its maximumOutputBytes is not a positive integer";
   if (!isRecord(inputJsonSchema) || !isRecord(resultJsonSchema)) return "its schemas are not objects";
-  if (deeperThan(inputJsonSchema, OPERATION_SCHEMA_DEPTH) || deeperThan(resultJsonSchema, OPERATION_SCHEMA_DEPTH)) return `a schema is nested deeper than ${OPERATION_SCHEMA_DEPTH} levels`;
+  if (deeperThan(inputJsonSchema, HOSTED_READ_BOUNDS.operationSchemaDepth) || deeperThan(resultJsonSchema, HOSTED_READ_BOUNDS.operationSchemaDepth)) return `a schema is nested deeper than ${HOSTED_READ_BOUNDS.operationSchemaDepth} levels`;
   if (annotations !== undefined && !isRecord(annotations)) return "its annotations are not an object";
   const hints: Record<string, boolean> = {};
   for (const [key, value] of Object.entries(annotations ?? {})) if (typeof value === "boolean") hints[key] = value;
   return Object.freeze({
     operationId,
-    title: stripHostText(title, OPERATION_TITLE_MAX),
-    description: stripHostText(description, OPERATION_DESCRIPTION_MAX),
+    title: stripHostText(title, HOSTED_READ_BOUNDS.operationTitleChars),
+    description: stripHostText(description, HOSTED_READ_BOUNDS.operationDescriptionChars),
     maximumOutputBytes,
     inputJsonSchema,
     resultJsonSchema,
@@ -95,8 +89,8 @@ function admitDescriptor(raw: unknown): HostedOperation | string {
  * object with an `operations` array is malformed, naming `route`; fields the answer may gain are
  * ignored. Each descriptor is admitted on its own: one that is malformed, whose id is outside the
  * operation grammar or repeats an earlier one, whose `maximumOutputBytes` is not positive, or
- * whose schema nests deeper than {@link OPERATION_SCHEMA_DEPTH} is dropped with a note. At most
- * {@link OPERATION_LISTING_LIMIT} are read.
+ * whose schema nests deeper than {@link HOSTED_READ_BOUNDS.operationSchemaDepth} is dropped with a note. At most
+ * {@link HOSTED_READ_BOUNDS.operations} are read.
  */
 export function decodeOperationListing(body: unknown, route?: string): HostedOperationListing {
   if (!isRecord(body) || !Array.isArray(body.operations)) throw malformed("operations answered a body that is not an operation listing", route);
@@ -104,7 +98,7 @@ export function decodeOperationListing(body: unknown, route?: string): HostedOpe
   const operations: HostedOperation[] = [];
   const notes: string[] = [];
   const seen = new Set<string>();
-  rows.slice(0, OPERATION_LISTING_LIMIT).forEach((raw, index) => {
+  rows.slice(0, HOSTED_READ_BOUNDS.operations).forEach((raw, index) => {
     const admitted = admitDescriptor(raw);
     // Only an id that passed the grammar is named: anything else the host sent stays out of the note.
     const named = isRecord(raw) && isOperationId(raw.operationId) ? ` (${raw.operationId})` : "";
@@ -115,7 +109,7 @@ export function decodeOperationListing(body: unknown, route?: string): HostedOpe
       operations.push(admitted);
     }
   });
-  if (rows.length > OPERATION_LISTING_LIMIT) notes.push(`dropped ${rows.length - OPERATION_LISTING_LIMIT} operations past the first ${OPERATION_LISTING_LIMIT} the host listed`);
+  if (rows.length > HOSTED_READ_BOUNDS.operations) notes.push(`dropped ${rows.length - HOSTED_READ_BOUNDS.operations} operations past the first ${HOSTED_READ_BOUNDS.operations} the host listed`);
   return Object.freeze({ operations: Object.freeze(operations), notes: Object.freeze(notes) });
 }
 

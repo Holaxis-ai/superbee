@@ -26,6 +26,7 @@ import type { HeadsOptions, WireCapabilities } from "../remote-backend.js";
 import type { ConceptId, ReadResult, ReservedFilename, ReservedReadResult, StorageBackend } from "../types.js";
 import { isContentVersion } from "../version-transport.js";
 import { sha256HexOfUtf8 } from "../sha256.js";
+import { stripHostText } from "../host-text.js";
 import { HostedCarrierError, type HostedAnswer, type HostedCarrier } from "./carrier.js";
 import { decodeHeadsPage, HEADS_PAGE_ATTEMPTS, HeadsPages, isPageRestart, pageRestartDelay, pause, stitchSnapshotPages } from "./paged-reads.js";
 
@@ -80,6 +81,13 @@ export const HOSTED_READ_BOUNDS = Object.freeze({
   operationsBytes: 256 * 1024,
   /** Any one operation run's answer; the operation's own `maximumOutputBytes` is lower when it says so. */
   runBytes: 4 * 1024 * 1024,
+  /** The most operation descriptors one listing admits; the rest are dropped with a note. */
+  operations: 200,
+  /** The deepest nesting (objects and arrays, the schema itself level 1) a descriptor's schema may have. */
+  operationSchemaDepth: 32,
+  /** An operation title's and description's length, in UTF-16 units, once stripped. */
+  operationTitleChars: 200,
+  operationDescriptionChars: 2048,
   /** Document reads in flight at once, whatever concurrency a caller's batches ask for. */
   readConcurrency: 8,
 });
@@ -142,9 +150,15 @@ function notFound(id: ConceptId): Error & { code: string } {
   return error;
 }
 
+/**
+ * The grammar of a refusal code a host may name (`bundle_not_found`, `unknown_operation`, ...).
+ * A code is host text that reaches messages and details; anything outside it is never echoed.
+ */
+export const REFUSAL_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
 function errorCode(body: unknown): string | undefined {
   const error = (body as { error?: { code?: unknown } } | undefined)?.error;
-  return typeof error?.code === "string" ? error.code : undefined;
+  return typeof error?.code === "string" && REFUSAL_CODE.test(error.code) ? error.code : undefined;
 }
 
 /** A read route's refusal as the runtime must see it (the `refusal` rows of {@link READ_ANSWER_ROWS}). */
@@ -370,16 +384,38 @@ export interface HostedOperationRefusal {
 
 /**
  * The refusal a 200 operation answer carries, or `undefined` for an answer that is not one
- * (`ok` is not `false`). A refusal must name `operationId` and a non-empty error code; any other
- * `ok: false` envelope is malformed. One reading for every kernel operation a hosted client runs.
+ * (`ok` is not `false`). A refusal must name `operationId` and an error code in
+ * {@link REFUSAL_CODE}; any other `ok: false` envelope is malformed. The message is host text,
+ * stripped of control and format characters. One reading for every kernel operation a hosted
+ * client runs.
  */
 export function operationRefusal(body: unknown, operationId: string, route?: string): HostedOperationRefusal | undefined {
   const envelope = body as { ok?: unknown; operationId?: unknown; error?: { code?: unknown; message?: unknown; retryable?: unknown } | null } | undefined;
   if (envelope?.ok !== false) return undefined;
   const error = envelope.error;
-  if (envelope.operationId !== operationId || typeof error !== "object" || error === null || typeof error.code !== "string" || error.code === "")
+  if (envelope.operationId !== operationId || typeof error !== "object" || error === null || typeof error.code !== "string" || !REFUSAL_CODE.test(error.code))
     throw malformed(`answered a refusal that is not ${operationId}'s`, route);
-  return Object.freeze({ code: error.code, message: typeof error.message === "string" ? error.message : error.code, retryable: error.retryable === true });
+  return refusalOf(error.code, error.message, error.retryable);
+}
+
+/** The most UTF-16 units of a host's refusal message kept, once stripped. */
+const REFUSAL_MESSAGE_CHARS = 500;
+
+function refusalOf(code: string, message: unknown, retryable: unknown): HostedOperationRefusal {
+  const text = typeof message === "string" ? stripHostText(message, REFUSAL_MESSAGE_CHARS) : "";
+  return Object.freeze({ code, message: text === "" ? code : text, retryable: retryable === true });
+}
+
+/**
+ * A route family's own refusal body (`{ error: { code, message, retryable } }`, as capabilities,
+ * export and the operation listing answer it), or `undefined` when the body is not one or names a
+ * code outside {@link REFUSAL_CODE}. The message is host text, stripped.
+ */
+export function familyRefusal(answer: { body: unknown }): HostedOperationRefusal | undefined {
+  const error = (answer.body as { error?: unknown } | null | undefined)?.error;
+  if (typeof error !== "object" || error === null || Array.isArray(error)) return undefined;
+  const { code, message, retryable } = error as { code?: unknown; message?: unknown; retryable?: unknown };
+  return typeof code === "string" && REFUSAL_CODE.test(code) ? refusalOf(code, message, retryable) : undefined;
 }
 
 /** One history page's answer: the page, or the operation's refusal (`document_not_found` and the kernel's other codes). */
