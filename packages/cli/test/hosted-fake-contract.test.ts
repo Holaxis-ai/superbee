@@ -90,7 +90,7 @@ const BINDING = `sha256:${"c".repeat(64)}`;
 
 test("the fake answers every golden /sync/v1 exchange in the host's shape", async () => {
   const host = new FakeHost();
-  const sendTo = (to: FakeHost, route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string; via?: string } = {}) =>
+  const sendTo = (to: FakeHost, route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string; via?: string; acceptDeletes?: string } = {}) =>
     to.fetch(`${to.origin}/sync/v1/${route}`, {
       method: "POST",
       headers: {
@@ -100,6 +100,7 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
         ...(options.requestId === null ? { "X-Superbee-Checkout": BINDING } : {}),
         ...(options.recreate === undefined ? {} : { "X-Superbee-Recreate": options.recreate }),
         ...(options.via === undefined ? {} : { "X-Superbee-Via": options.via }),
+        ...(options.acceptDeletes === undefined ? {} : { "X-Superbee-Accept-Deletes": options.acceptDeletes }),
       },
       body: JSON.stringify(body),
     });
@@ -183,6 +184,15 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("create-200-write-outcome-unknown", send("create", create("notes/unknown"), { requestId: identity(21) }));
   host.hook = undefined;
   await observe("outcome-200-pending", send("outcome", create("notes/unknown"), { requestId: identity(21) }));
+
+  // The mass-delete hold: four old documents, two deleted, the third held until the person's count admits it.
+  const holding = new FakeHost({ massDeleteHold: true });
+  while (holding.docs.size < 4) holding.put(`notes/old-${holding.docs.size}`, { type: "Note" }, "old");
+  const [one, two, three] = [...holding.docs];
+  for (const [n, [id, doc]] of [one!, two!].entries()) await sendTo(holding, "delete", remove(doc.version, id), { requestId: identity(30 + n) });
+  const heldDelete = remove(three![1].version, three![0]);
+  await observe("delete-428-deletions-held", sendTo(holding, "delete", heldDelete, { requestId: identity(32) }));
+  await observe("delete-200-ok-accepted", sendTo(holding, "delete", heldDelete, { requestId: identity(32), acceptDeletes: "3" }));
 
   // Pages: the three-document bundle served two to a page, then a write between pages.
   const paged = new FakeHost({ pageSize: 2 });

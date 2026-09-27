@@ -38,6 +38,24 @@ export interface HostedRequestOptions {
    * requests carry it, and only a token {@link isAgentLabelVia} admits is ever sent.
    */
   via?: string;
+  /**
+   * A person's typed acknowledgment of the host's mass-delete hold (`X-Superbee-Accept-Deletes`):
+   * the deletions they confirmed the bundle's 24-hour window may hold, from 1 to 100,000. Sent on
+   * a delete only, and never without that confirmation. Admission only, not part of the request
+   * identity.
+   */
+  acceptDeletes?: number;
+}
+
+/** The header that carries {@link HostedRequestOptions.acceptDeletes}. */
+export const ACCEPT_DELETES_HEADER = "X-Superbee-Accept-Deletes";
+
+/** The largest acknowledgment the host admits. */
+export const MAXIMUM_ACCEPTED_DELETIONS = 100000;
+
+/** Whether `value` is an acknowledgment count the host admits: an integer from 1 to 100,000. */
+export function isAcceptedDeletionCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= MAXIMUM_ACCEPTED_DELETIONS;
 }
 
 /** The header that carries {@link HostedRequestOptions.recreate}. */
@@ -197,11 +215,13 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
       if (request.binding !== undefined && !BINDING.test(request.binding)) throw new HostedCarrierError("denied");
       if (request.recreate !== undefined && !BINDING.test(request.recreate)) throw new HostedCarrierError("denied");
       if (request.via !== undefined && !isAgentLabelVia(request.via)) throw new HostedCarrierError("denied");
+      if (request.acceptDeletes !== undefined && !isAcceptedDeletionCount(request.acceptDeletes)) throw new HostedCarrierError("denied");
       const extra: Record<string, string> = {};
       if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
       if (request.binding !== undefined) extra[bindingHeader] = request.binding;
       if (request.recreate !== undefined) extra[RECREATE_HEADER] = request.recreate;
       if (request.via !== undefined) extra[VIA_HEADER] = request.via;
+      if (request.acceptDeletes !== undefined) extra[ACCEPT_DELETES_HEADER] = String(request.acceptDeletes);
       const deadline = AbortSignal.timeout(deadlineMs);
       const response = await send(path, input, signal, extra, deadline);
       let body: unknown;

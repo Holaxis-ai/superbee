@@ -32,6 +32,13 @@ export type AuthorizationCode = "AUTH_REQUIRED" | "PERMISSION_DENIED";
 export const CAPACITY_REFUSAL_CODES = Object.freeze({ principal: "REQUEST_CAPACITY_PRINCIPAL", bundle: "REQUEST_CAPACITY_BUNDLE" } as const);
 export type CapacityScope = keyof typeof CAPACITY_REFUSAL_CODES;
 
+/**
+ * The refusal code of the host's mass-delete hold (`428 deletions_held`): a delete that would take
+ * over half of the bundle's documents within 24 hours, counted over every person and checkout. It
+ * never pauses: only a person's typed acknowledgment releases it, never time or a plain resend.
+ */
+export const DELETIONS_HELD_REFUSAL_CODE = "DELETIONS_HELD";
+
 /** The quota scope a refused outcome names, or `null` when it is not a capacity refusal. */
 export function capacityScopeOf(outcome: { kind: string; code?: string }): CapacityScope | null {
   if (outcome.kind !== "refused") return null;
@@ -84,6 +91,8 @@ export const UPDATE_ANSWER_ROWS: readonly UpdateAnswerRow[] = Object.freeze([
   // The sync quota, refused before dispatch; the row's outcome code is chosen by the scope the answer names.
   { answer: "200 request_capacity", recorded: "no", outcome: "refused" },
   { answer: "429 request_capacity", recorded: "no", outcome: "refused" },
+  // The mass-delete hold, refused before dispatch on a delete; not pausing (see DELETIONS_HELD_REFUSAL_CODE).
+  { answer: "428 deletions_held", recorded: "no", outcome: "refused" },
   { answer: "200 write_outcome_unknown", recorded: "maybe", outcome: "unknown" },
   { answer: "200 other", recorded: "unknown", outcome: "unknown" },
   { answer: "400", recorded: "no", outcome: "unknown" },
@@ -182,6 +191,7 @@ export const WRITE_ERROR_CODES = Object.freeze([
   "document_id_not_canonical",
   "document_id_collision",
   "request_capacity",
+  "deletions_held",
 ] as const);
 export type WriteErrorCode = (typeof WRITE_ERROR_CODES)[number];
 
@@ -212,6 +222,9 @@ export type WriteFailure = {
     scope?: CapacityScope;
     /** On `request_capacity` only, when the host states it: when the bound admits writes again (ISO instant). */
     resetAt?: string;
+    /** On `deletions_held` only: the bundle's deletions in 24 hours with this one, and the documents it held when that window opened. */
+    deletions?: number;
+    baseline?: number;
   };
 };
 export type WriteResult = WriteSuccess | WriteFailure;
@@ -224,7 +237,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const onlyKeys = (value: Record<string, unknown>, allowed: readonly string[]) => Object.keys(value).every((key) => allowed.includes(key));
 const DATA_KEYS = ["bundleId", "documentId", "version", "changed", "scope"] as const;
 const DELETE_DATA_KEYS = [...DATA_KEYS, "deletedVersion", "deleted"] as const;
-const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "candidate", "retentionUnavailable", "scope", "resetAt"] as const;
+const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "candidate", "retentionUnavailable", "scope", "resetAt", "deletions", "baseline"] as const;
+const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 1;
 
 /**
  * A write operation's result envelope, admitted or refused as one: the operation it answers,
@@ -255,11 +269,20 @@ export function parseWriteResult(raw: unknown, expected: { operationIds: readonl
       (error.code === "write_outcome_unknown" && error.writeState !== "unknown") ||
       (error.code === "request_capacity"
         ? (error.scope !== "principal" && error.scope !== "bundle") || error.writeState !== "not_applied" || (error.resetAt !== undefined && (typeof error.resetAt !== "string" || !Number.isFinite(Date.parse(error.resetAt))))
-        : error.scope !== undefined || error.resetAt !== undefined)) throw refuse();
+        : error.scope !== undefined || error.resetAt !== undefined) ||
+      (error.code === "deletions_held"
+        ? operationId !== DELETE_OPERATION_ID || error.writeState !== "not_applied" || !count(error.deletions) || !count(error.baseline)
+        : error.deletions !== undefined || error.baseline !== undefined)) throw refuse();
   return { ok: false, operationId, error: { ...(error as WriteFailure["error"]) } };
 }
 
 // ── classifying an identified-write answer ─────────────────────────────────────────────────
+
+/** The refusals answered before dispatch, by status: the sync quota, and the mass-delete hold. */
+const BEFORE_DISPATCH = new Map<number, { code: WriteErrorCode; lenient: boolean }>([
+  [429, { code: "request_capacity", lenient: true }],
+  [428, { code: "deletions_held", lenient: false }],
+]);
 
 const rowsByAnswer = new Map(UPDATE_ANSWER_ROWS.map((row) => [row.answer, row]));
 
@@ -297,17 +320,19 @@ export function classifyWriteAnswer(
     return { row: updateRow("401 other") };
   }
   if (status === 403) return { row: updateRow("403") };
-  if (status === 429) {
+  // The refusals the host answers before dispatch, each with its own status and code. The
+  // capacity refusal is read leniently (its early hosts left fields out); the mass-delete hold is
+  // parsed exactly as the host sends it, so a 428 that does not say it applied nothing is not one.
+  const beforeDispatch = BEFORE_DISPATCH.get(status);
+  if (beforeDispatch) {
     const error = (body as { error?: unknown } | undefined)?.error;
-    if (isRecord(error) && error.code === "request_capacity") {
-      try {
-        const result = parseWriteResult({ ok: false, operationId: expected.operationIds[0], error: { retryable: false, writeState: "not_applied", message: "", ...error } }, expected);
-        return { row: updateRow("429 request_capacity"), result };
-      } catch {
-        return { row: updateRow("other status") };
-      }
+    if (!isRecord(error) || error.code !== beforeDispatch.code) return { row: updateRow("other status") };
+    try {
+      const sent = beforeDispatch.lenient ? { retryable: false, writeState: "not_applied", message: "", ...error } : error;
+      return { row: updateRow(`${status} ${beforeDispatch.code}`), result: parseWriteResult({ ok: false, operationId: expected.operationIds[0], error: sent }, expected) };
+    } catch {
+      return { row: updateRow("other status") };
     }
-    return { row: updateRow("other status") };
   }
   if (status === 503) return { row: updateRow("503") };
   return { row: updateRow("other status") };
