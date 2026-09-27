@@ -39,6 +39,7 @@ import {
   HostedOutcomeError,
   CAPACITY_REFUSAL_CODES,
   DELETIONS_HELD_REFUSAL_CODE,
+  definitionFindingsText,
   updateRow,
   UPDATE_ANSWER_ROWS,
   type AuthorizationCode,
@@ -277,7 +278,10 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     if (error.code === "version_conflict" && intent.base === null) return servedHead(intent, "conflict", error.currentVersion);
     if (error.code === "version_conflict") return error.currentVersion === undefined ? servedHead(intent) : { kind: "conflict", actual: error.currentVersion };
     const row = UPDATE_ANSWER_ROWS.find((candidate) => candidate.answer === `200 ${error.code}`) ?? updateRow("200 other");
-    return row.code ? denial(row.code, error.message) : { kind: "refused", code: error.code, message: error.message };
+    if (row.code) return denial(row.code, error.message);
+    // A model change's findings ride in the message the refusal row prints: what to fix, by rule.
+    const findings = error.code === "definition_incompatible" ? definitionFindingsText(error.definitionDetails) : "";
+    return { kind: "refused", code: error.code, message: findings ? `${error.message} Findings: ${findings}.` : error.message };
   }
 
   function prepare(intent: OperationIntent): { request: WholeDocumentRequest; body: string } {

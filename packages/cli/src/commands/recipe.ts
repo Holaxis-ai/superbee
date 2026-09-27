@@ -23,6 +23,7 @@ import { cliInvocation, exactCliInvocation } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
 import { applyRecipeEvolution, planRecipeEvolution } from "../recipe-evolution.js";
 import { resolveRecipe } from "../recipe-source.js";
+import { assertKindOnlyRecipe } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
 
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
@@ -125,6 +126,7 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     throw new CliError("USAGE", loaded.error.message, { help: `${cliInvocation()} recipes` });
   }
   const remote = await resolveRemoteFlag(values.remote, values.dir);
+  if (remote === undefined) await assertKindOnlyRecipe("recipe evolve", values.dir, loaded.recipe);
   const bundle = await openBundle(values.dir, remote);
   const target: CommandText = values.dir !== undefined
     ? commandFragment` --dir ${commandQuoted(values.dir)}`
@@ -193,6 +195,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   }
 
   const remote = await resolveRemoteFlag(values.remote, values.dir);
+  if (remote === undefined) await assertKindOnlyRecipe("recipe add", values.dir, loaded.recipe);
   const bundle = await openBundle(values.dir, remote);
   const result = await applyRecipe(bundle, loaded.recipe);
 

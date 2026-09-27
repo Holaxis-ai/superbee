@@ -45,6 +45,8 @@ export async function classifyCheckout(binding: CheckoutBinding, home: string, s
     local: openLocalBundle(binding.checkout_id, { backend: store }),
     projection: await readProjection(home, binding.checkout_id, store),
     preview: true,
+    // What the host said at the last sync: a preview makes no request.
+    definitionWrites: binding.definition_writes ?? null,
   });
   for (const id of report.pending) result.unsent.add(id);
   for (const id of report.conflicted) result.conflicts.add(id);

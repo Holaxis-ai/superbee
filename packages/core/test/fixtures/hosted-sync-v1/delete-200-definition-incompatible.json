@@ -1,0 +1,26 @@
+{
+  "name": "delete-200-definition-incompatible",
+  "description": "A definition writer deletes a Kind that stored documents still use: refused, naming the rule and the documents.",
+  "route": "/sync/v1/delete",
+  "rows": [
+    "200 definition_incompatible"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000284",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"conventions/note\",\"expectedVersion\":\"sha256:6909e195de4bf6815833cdce19c4fa0704148fbe28eb1400ab7683d5df3fa6b2\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000284"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.delete.v1\",\"error\":{\"code\":\"definition_incompatible\",\"message\":\"The model change would break documents or other Kinds in this bundle; nothing was saved. The details name what to fix first.\",\"retryable\":false,\"writeState\":\"not_applied\",\"definitionDetails\":{\"version\":1,\"findings\":[{\"rule\":\"convention_removed_in_use\",\"conventionId\":\"conventions/note\",\"type\":\"Note\",\"instances\":{\"count\":1,\"ids\":[\"notes/one\"]}}],\"truncated\":false}}}",
+    "truncated": false
+  }
+}

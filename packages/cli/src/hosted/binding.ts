@@ -12,6 +12,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, readdir, rm, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
+import type { HostedDefinitionWrites } from "@superbee/core/hosted-transport";
+
 import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { hostedBundleReferenceText, isWorkspaceSlug, type HostedBundleReference } from "./reference.js";
 
@@ -55,6 +57,38 @@ export interface CheckoutBinding {
    * filesystem reports one.
    */
   readonly folder_identity: FolderIdentity;
+  /**
+   * Whether the host last said this person may change the bundle's model (its Kind conventions),
+   * as `sync` and `checkout` read it from the capabilities answer. Absent: the host did not say
+   * (no workspace has model changes), and a checkout refuses Kind commands as it always has. The
+   * up-front refusals read it with no request; the host stays the authority.
+   */
+  readonly definition_writes?: DefinitionWrites;
+}
+
+/** What a capabilities answer says about model changes, as a binding records it. */
+export type DefinitionWrites = HostedDefinitionWrites;
+
+/** The binding with `definition_writes` as the host now says it (`null`: it does not say). */
+export function withDefinitionWrites(binding: CheckoutBinding, stated: DefinitionWrites | null): CheckoutBinding {
+  const { definition_writes: _previous, ...rest } = binding;
+  return stated === null ? rest : { ...rest, definition_writes: stated };
+}
+
+/**
+ * Record what a capabilities answer said about model changes on a ready checkout's binding, the
+ * one field of the record that changes after checkout: a cache of the host's last answer for the
+ * up-front refusals, never authority. The caller holds the checkout lock; the record is re-read
+ * under it and written only when the answer changed. Returns the binding as recorded.
+ */
+export async function recordDefinitionWrites(home: string, binding: CheckoutBinding, stated: DefinitionWrites | null): Promise<CheckoutBinding> {
+  const current = await readBinding(home, binding.checkout_id);
+  // Released meanwhile (`checkout --release`): nothing is written back, so nothing is revived.
+  if (current === null) return binding;
+  if ((current.definition_writes ?? null) === stated) return current;
+  const next = withDefinitionWrites(current, stated);
+  await writeBinding(home, next);
+  return next;
 }
 
 export interface FolderIdentity {
@@ -165,7 +199,11 @@ export async function writeBinding(home: string, binding: CheckoutBinding): Prom
 
 export async function readBinding(home: string, checkoutId: string): Promise<CheckoutBinding | null> {
   const value = await readJson(home, join(checkoutDir(home, checkoutId), "binding.json"));
-  return isBinding(value) && value.checkout_id === checkoutId ? value : null;
+  if (!isBinding(value) || value.checkout_id !== checkoutId) return null;
+  // A `definition_writes` this CLI does not know (a newer CLI's) reads as `refused`: rejecting the
+  // record would read as no checkout, turning every up-front refusal off.
+  const stated: unknown = value.definition_writes;
+  return stated === undefined || stated === "allowed" || stated === "refused" ? value : { ...value, definition_writes: "refused" };
 }
 
 /** Index a ready checkout by its folder path. The index is written last, so a partial checkout is never found. */

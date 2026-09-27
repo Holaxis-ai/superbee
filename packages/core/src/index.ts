@@ -296,6 +296,7 @@ export { applyV02MutationMetadata } from "./document-write-policy.js";
 export {
   CONVENTIONS_PREFIX,
   CONVENTION_TYPE,
+  isConventionId,
   PROGRESS_STATUS_FIELD,
   SUPERBEE_PROGRESS_STATUS_FIELD,
   RESERVED_KIND_FIELD_NAMES,

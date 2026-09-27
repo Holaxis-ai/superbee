@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted 16ec5be49e97597ec40d1baa21f0ec47723ca8a1",
+  "source": "Holaxis-ai/superbee-hosted 2fb7144e116dd546ab8bd2ab242dae5ae98b7437",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
@@ -505,6 +505,78 @@
       "route": "/sync/v1/delete",
       "rows": [
         "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "capabilities-200-definition-writes-allowed",
+      "file": "capabilities-200-definition-writes-allowed.json",
+      "route": "/sync/v1/capabilities",
+      "rows": [
+        "capabilities 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "capabilities-200-definition-writes-refused",
+      "file": "capabilities-200-definition-writes-refused.json",
+      "route": "/sync/v1/capabilities",
+      "rows": [
+        "capabilities 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "create-200-ok-convention",
+      "file": "create-200-ok-convention.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "replace-200-definition-incompatible",
+      "file": "replace-200-definition-incompatible.json",
+      "route": "/sync/v1/replace",
+      "rows": [
+        "200 definition_incompatible"
+      ],
+      "status": 200
+    },
+    {
+      "name": "outcome-200-refused-definition",
+      "file": "outcome-200-refused-definition.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "200 refused"
+      ],
+      "status": 200
+    },
+    {
+      "name": "replace-200-validation-failed-kind",
+      "file": "replace-200-validation-failed-kind.json",
+      "route": "/sync/v1/replace",
+      "rows": [
+        "200 validation_failed"
+      ],
+      "status": 200
+    },
+    {
+      "name": "create-200-invalid-input-convention",
+      "file": "create-200-invalid-input-convention.json",
+      "route": "/sync/v1/create",
+      "rows": [
+        "200 invalid_input"
+      ],
+      "status": 200
+    },
+    {
+      "name": "delete-200-definition-incompatible",
+      "file": "delete-200-definition-incompatible.json",
+      "route": "/sync/v1/delete",
+      "rows": [
+        "200 definition_incompatible"
       ],
       "status": 200
     },

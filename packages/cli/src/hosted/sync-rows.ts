@@ -63,6 +63,9 @@ function refusalRow(id: string, row: IntentRecord, accessWithdrawn = false): Syn
   if (SIGN_IN_CODES.has(code) && accessWithdrawn) return { id, state: "refused", reason: "access_withdrawn", version: null, message: ACCESS_WITHDRAWN_MESSAGE };
   if (SIGN_IN_CODES.has(code)) return { id, state: "paused", reason: "sign_in", version: null, message: "The hosted session ended before this change was sent; sign in and run sync again." };
   if (BUSY_REFUSAL_CODES.has(code)) return { id, state: "paused", reason: "busy", version: null, message: "The host was busy and did not apply this change; run sync again." };
+  // A model change the documents do not fit yet: the file stays, and a later sync that lands the
+  // documents it names sends it again (section 5.3's retry pass), as does an edit to the Kind.
+  if (code === "definition_incompatible") return { id, state: "refused", reason: code, version: null, message: `The host refused this model change (${code}): ${message} Fix the documents it names (the sync that sends them sends this change again), or edit the Kind and run sync again.` };
   return { id, state: "refused", reason: code, version: null, message: `The host refused this document (${code}): ${message} Edit the file and run sync again.` };
 }
 

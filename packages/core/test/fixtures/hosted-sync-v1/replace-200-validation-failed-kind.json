@@ -1,0 +1,26 @@
+{
+  "name": "replace-200-validation-failed-kind",
+  "description": "A document write that its Kind refuses (a value outside the field's enumeration): refused validation_failed, nothing saved.",
+  "route": "/sync/v1/replace",
+  "rows": [
+    "200 validation_failed"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000282",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\",\"expectedVersion\":\"sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4\",\"frontmatter\":{\"type\":\"Note\",\"stage\":\"later\"},\"body\":\"one\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000282"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.replace.v1\",\"error\":{\"code\":\"validation_failed\",\"message\":\"The candidate or bundle conventions failed validation; no change was saved.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

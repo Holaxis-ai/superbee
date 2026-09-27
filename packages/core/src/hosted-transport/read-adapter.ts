@@ -30,6 +30,9 @@ import { stripHostText } from "../host-text.js";
 import { HostedCarrierError, type HostedAnswer, type HostedCarrier } from "./carrier.js";
 import { decodeHeadsPage, HEADS_PAGE_ATTEMPTS, HeadsPages, isPageRestart, pageRestartDelay, pause, stitchSnapshotPages } from "./paged-reads.js";
 
+/** What a capabilities answer says about changing the bundle's model (its Kind conventions). */
+export type HostedDefinitionWrites = "allowed" | "refused";
+
 /** What the capabilities route states about one bundle, beyond the wire booleans. */
 export interface HostedCapabilities {
   readonly heads: boolean;
@@ -47,6 +50,12 @@ export interface HostedCapabilities {
   readonly root: Readonly<{ content: string; version: string }> | null;
   /** How long the host keeps a request identity, in milliseconds (stated, or the thirty-day default). */
   readonly operationsRetentionMs: number;
+  /**
+   * Whether the caller may change this bundle's model (its Kind conventions) through the identified
+   * writes: `null` when the host does not say (a host or workspace without model changes), else
+   * what it says. Any value other than `"allowed"` reads as `"refused"`.
+   */
+  readonly definitionWrites: HostedDefinitionWrites | null;
 }
 
 /** The retention window assumed for a host that states none: thirty days. */
@@ -220,6 +229,7 @@ export function decodeHostedCapabilities(value: unknown): HostedCapabilities {
     paged,
     root,
     operationsRetentionMs: retention ?? DEFAULT_OPERATIONS_RETENTION_MS,
+    definitionWrites: body.definitionWrites === undefined ? null : body.definitionWrites === "allowed" ? "allowed" : "refused",
   });
 }
 

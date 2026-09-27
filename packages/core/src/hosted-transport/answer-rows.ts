@@ -17,6 +17,7 @@
  */
 
 import { isContentVersion } from "../version-transport.js";
+import { stripHostText } from "../host-text.js";
 import type { Version } from "../types.js";
 import type { HostedAnswer } from "./carrier.js";
 
@@ -81,6 +82,8 @@ export const UPDATE_ANSWER_ROWS: readonly UpdateAnswerRow[] = Object.freeze([
   // The remaining not_applied codes of the write schema: definitive once recorded, like the transient ones.
   { answer: "200 result_too_large", recorded: "settled-only", outcome: "refused" },
   { answer: "200 field_action_refused", recorded: "settled-only", outcome: "refused" },
+  // A model change the host's compatibility check refused (designs/hosted-model-evolution.md 4.6).
+  { answer: "200 definition_incompatible", recorded: "settled-only", outcome: "refused" },
   { answer: "200 document_exists", recorded: "settled-only", outcome: "refused" },
   { answer: "200 candidate_unavailable", recorded: "settled-only", outcome: "refused" },
   { answer: "200 candidate_recovery_unavailable", recorded: "settled-only", outcome: "refused" },
@@ -192,6 +195,7 @@ export const WRITE_ERROR_CODES = Object.freeze([
   "document_id_collision",
   "request_capacity",
   "deletions_held",
+  "definition_incompatible",
 ] as const);
 export type WriteErrorCode = (typeof WRITE_ERROR_CODES)[number];
 
@@ -225,9 +229,68 @@ export type WriteFailure = {
     /** On `deletions_held` only: the bundle's deletions in 24 hours with this one, and the documents it held when that window opened. */
     deletions?: number;
     baseline?: number;
+    /**
+     * On `definition_incompatible` only: the host's compatibility findings, carried as sent and
+     * read leniently by {@link definitionFindingsText} (as `fieldActionDetails` is carried), so a
+     * field the host adds later never makes the recorded refusal unreadable.
+     */
+    definitionDetails?: unknown;
   };
 };
 export type WriteResult = WriteSuccess | WriteFailure;
+
+/** At most this many documents are named per finding in {@link definitionFindingsText}; the count says the rest. */
+const FINDING_IDS_SHOWN = 5;
+/** The bound on the findings text: the refusal message is journaled, so it stays small. */
+export const DEFINITION_FINDINGS_TEXT_BYTES = 2048;
+
+/** One part of a finding as text to show: host text, stripped of control and format characters; absent when not short text. */
+const findingText = (value: unknown): string | undefined => {
+  if (typeof value !== "string" || value.length > 256) return undefined;
+  const text = stripHostText(value, 256);
+  return text.length > 0 ? text : undefined;
+};
+
+/**
+ * A model-change refusal's findings (`definitionDetails`) as text a person reads: one clause per
+ * finding, naming the rule, the Kind's type and field, the core code, and up to five documents
+ * with the full count, within {@link DEFINITION_FINDINGS_TEXT_BYTES}. Read leniently: a finding
+ * without a rule, or a part that is not short text, is left out; anything else the host sends is
+ * ignored. Empty when nothing is readable. The findings carry no values, bodies or authors, so
+ * neither does this.
+ */
+export function definitionFindingsText(details: unknown): string {
+  const findings = isRecord(details) && Array.isArray(details.findings) ? details.findings : [];
+  const clauses: string[] = [];
+  for (const finding of findings) {
+    if (!isRecord(finding)) continue;
+    const rule = findingText(finding.rule);
+    if (!rule) continue;
+    const type = findingText(finding.type);
+    const conventionId = findingText(finding.conventionId);
+    const field = findingText(finding.field);
+    const detail = findingText(finding.detail);
+    const where = [type ? `Kind '${type}'` : conventionId ? `'${conventionId}'` : "", field ? `field '${field}'` : ""].filter(Boolean).join(" ");
+    const instances = isRecord(finding.instances) ? finding.instances : undefined;
+    const total = instances && Number.isSafeInteger(instances.count) && (instances.count as number) > 0 ? (instances.count as number) : 0;
+    const ids = instances && Array.isArray(instances.ids) ? instances.ids.map(findingText).filter((id): id is string => id !== undefined) : [];
+    const shown = ids.slice(0, FINDING_IDS_SHOWN);
+    const documents = total > 0 ? `: ${total} document${total === 1 ? "" : "s"}${shown.length > 0 ? `, ${shown.join(", ")}${total > shown.length ? ", ..." : ""}` : ""}` : "";
+    clauses.push(`${rule}${where ? ` on ${where}` : ""}${detail ? ` (${detail})` : ""}${documents}`);
+  }
+  const more = isRecord(details) && details.truncated === true;
+  let text = "";
+  for (const [index, clause] of clauses.entries()) {
+    const next = text === "" ? clause : `${text}; ${clause}`;
+    const rest = clauses.length - index;
+    if (new TextEncoder().encode(next).byteLength > DEFINITION_FINDINGS_TEXT_BYTES - 32) {
+      // One clause alone can pass the bound (every part at the host's 256): it is cut, not dropped.
+      return text === "" ? `${clause.slice(0, 512)}...${rest > 1 ? `; and ${rest - 1} more` : ""}` : `${text}; and ${rest} more`;
+    }
+    text = next;
+  }
+  return more && text !== "" ? `${text}; and more` : text;
+}
 
 export class HostedAnswerError extends Error {
   override readonly name = "HostedAnswerError";
@@ -237,9 +300,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const onlyKeys = (value: Record<string, unknown>, allowed: readonly string[]) => Object.keys(value).every((key) => allowed.includes(key));
 const DATA_KEYS = ["bundleId", "documentId", "version", "changed", "scope"] as const;
 const DELETE_DATA_KEYS = [...DATA_KEYS, "deletedVersion", "deleted"] as const;
-const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "candidate", "retentionUnavailable", "scope", "resetAt", "deletions", "baseline"] as const;
+const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "definitionDetails", "candidate", "retentionUnavailable", "scope", "resetAt", "deletions", "baseline"] as const;
 const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 1;
-
 /**
  * A write operation's result envelope, admitted or refused as one: the operation it answers,
  * the document it names, and a success with a content version or a refusal with a known code
@@ -272,7 +334,10 @@ export function parseWriteResult(raw: unknown, expected: { operationIds: readonl
         : error.scope !== undefined || error.resetAt !== undefined) ||
       (error.code === "deletions_held"
         ? operationId !== DELETE_OPERATION_ID || error.writeState !== "not_applied" || !count(error.deletions) || !count(error.baseline)
-        : error.deletions !== undefined || error.baseline !== undefined)) throw refuse();
+        : error.deletions !== undefined || error.baseline !== undefined) ||
+      // A model-change refusal says nothing was applied; its findings ride on it alone.
+      (error.code === "definition_incompatible" && error.writeState !== "not_applied") ||
+      (error.definitionDetails !== undefined && error.code !== "definition_incompatible")) throw refuse();
   return { ok: false, operationId, error: { ...(error as WriteFailure["error"]) } };
 }
 

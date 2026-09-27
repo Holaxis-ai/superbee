@@ -38,7 +38,7 @@ import { HOSTED_AUTOPULL_STALE_MS } from "./freshness.js";
 import { bundleHomeAt, unboundLocalCopyAt, type UnboundCopy } from "../bundle-home.js";
 import { readCheckoutMarker } from "./marker.js";
 import { hostedHeldWriteRefusal, hostedManagedFieldRefusal, unboundCopyRefusal } from "./refusals.js";
-import { heldPathReason, unsendable, type HeldFile } from "./sync-scan.js";
+import { heldPathMessage, heldPathReason, unsendable, type HeldFile } from "./sync-scan.js";
 
 /** Every storage backend method, as the guard treats it. The compiler keeps the table complete. */
 const ACCESS = {
@@ -180,7 +180,7 @@ function checkoutGuard(binding: CheckoutBinding, home: string, folder: StorageBa
     }
     const rel = pathFromConceptId(id);
     const reason = heldPathReason(rel);
-    if (reason === "convention_folder") refuse({ id, path: rel, reason, message: `${rel} is under ${rel.split("/")[0]}/, which holds conventions edited in the Superbee app` });
+    if (reason === "convention_folder") refuse({ id, path: rel, reason, message: heldPathMessage(rel, binding.definition_writes ?? null, "app") });
     if (reason !== null) refuse({ id, path: rel, reason, message: `${rel} is a reserved OKF file, which sync does not send` });
     return rel;
   };
@@ -203,7 +203,7 @@ function checkoutGuard(binding: CheckoutBinding, home: string, folder: StorageBa
           const rel = documentPath(id);
           const bytes = Buffer.from(stringifyDoc(doc.frontmatter, doc.body ?? ""), "utf8");
           const stored = await storedDocument(binding, home, folder, id);
-          const held = unsendable(id, rel, bytes, stored.frontmatter ? { frontmatter: stored.frontmatter } : null, { bundleId: binding.bundle_id, okfVersion: stored.okfVersion });
+          const held = unsendable(id, rel, bytes, stored.frontmatter ? { frontmatter: stored.frontmatter } : null, { bundleId: binding.bundle_id, okfVersion: stored.okfVersion }, { definitionWrites: null, sender: "app" });
           if (held) refuse(held);
           // Against the folder's current document, which every write carries `verified` forward
           // from, so only a write that sets it differently is refused. A write made against an
@@ -225,7 +225,7 @@ function checkoutGuard(binding: CheckoutBinding, home: string, folder: StorageBa
         case "deleteBlob": {
           const key = String(args[0]);
           const reason = heldPathReason(key) ?? "not_a_document";
-          const message = reason === "convention_folder" ? `${key} is under ${key.split("/")[0]}/, which holds conventions edited in the Superbee app` : reason === "reserved_file" ? `${key} is a reserved OKF file, which sync does not send` : `${key} is not a .md document; files other than documents do not sync`;
+          const message = reason === "convention_folder" ? heldPathMessage(key, binding.definition_writes ?? null, "app") : reason === "reserved_file" ? `${key} is a reserved OKF file, which sync does not send` : `${key} is not a .md document; files other than documents do not sync`;
           return refuse({ id: key, path: key, reason, message });
         }
         default:
