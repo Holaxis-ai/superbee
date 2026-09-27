@@ -311,6 +311,8 @@ test("the host holds again when the bundle's count rose past what the person con
   assert.equal(again.error.code, "CONFLICT");
   // The first of the two fit the confirmed 8; the second would make 9 and is held once more.
   assert.equal(holdOf(again.receipt)!.count, 1);
+  assert.equal(again.receipt!.deletions_accepted, 2, "both were accepted and sent");
+  assert.equal((again.receipt!.deletions_held as { window_deletions: number }).window_deletions, 9, "the host's new count");
   assert.equal(mine.slice(1).filter((id) => second.host.docs.has(id)).length, 1);
 });
 

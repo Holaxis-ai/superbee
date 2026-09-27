@@ -113,10 +113,11 @@ first, and are refused (stale_review) if the host's version changed after it; ta
 A deleted file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
 document's history. A mass delete is held: when the deletes of the last day (sent, unsent and
 new) are more than half the checkout and at least 3 (or every document of a smaller one), the new
-ones are not sent, and they stay held until restored or accepted. The host applies the same rule
-to the whole bundle, over everyone's deletes of the last day: a delete it holds (deletions_held
-with counted_over naming the bundle) is parked the same way, and a plain sync never resends it. --restore-deletes puts held
-and unsent deleted files back (so does --resolve take --doc <id> for one of them).
+ones are not sent, and they stay held until restored or accepted. The host applies the same
+rule to the whole bundle, over everyone's deletes of the last day: a delete it holds
+(deletions_held, counted_over naming the bundle) is parked the same way and never resent by a
+plain sync. --restore-deletes puts held and unsent deleted files back (so does --resolve take
+--doc <id> for one of them).
 --accept-deletes <token> sends exactly the held set the receipt names, and only after the person
 types the held count at the prompt: it needs an interactive terminal, and refuses any other
 shell (needs_person_at_terminal), so an agent asks the person to run it themselves.
@@ -589,8 +590,6 @@ interface PushOutcome {
   readonly collisions: HeldFile[];
   /** The agent the writes named (`X-Superbee-Via`), or why a named one was not sent. */
   readonly via?: { readonly token?: string; readonly ignored?: string };
-  /** The host's mass-delete hold as it first answered in this run, when it held a delete. */
-  readonly deletionsHeld?: { readonly deletions: number; readonly baseline: number };
 }
 
 /**
@@ -629,7 +628,6 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
   if (!session.capabilities.operations) return { ...none, notSent: "read_only" };
   const collisions = await caseCollidingCreates(store);
   let denied = false;
-  let deletionsHeld: { deletions: number; baseline: number } | undefined;
   const carrier: HostedCarrier = {
     async json(route, input, signal, options) {
       const answer = await session.carrier.json(route, input, signal, options);
@@ -654,8 +652,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     // Only the person's typed confirmation in this run sets it (scanCheckout's acceptance).
     ...(acceptDeletes !== undefined ? { acceptDeletes } : {}),
     onDeletionsHeld: ({ deletions, baseline }) => {
-      deletionsHeld ??= { deletions, baseline };
-      heldSink.value ??= deletionsHeld;
+      heldSink.value ??= { deletions, baseline };
     },
   });
   const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)));
@@ -680,7 +677,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     if (pass === PUSH_PASSES - 1 || (await requeueBusy(store)) === 0) break;
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions, via, ...(deletionsHeld ? { deletionsHeld } : {}) };
+  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions, via };
 }
 
 /**
@@ -838,6 +835,9 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       await recordHostHold(store, heldSink.value, scan.hold).catch(() => undefined);
       throw readFailure(error, session, resumeCommand, await unsent());
     }
+    // The deletes the host held join the scan's held set: one hold, one token to accept it. Kept
+    // before anything else can fail, so the host's counts are never lost.
+    const hold = await recordHostHold(store, heldSink.value, scan.hold);
     // A document the pull held for a change that has now committed may have changed on the host
     // meanwhile: pull it once more so the folder is current when the run says so.
     const second = first.report.held.some((id) => outcome.acknowledged.has(id)) ? await pullAndExport() : null;
@@ -854,8 +854,6 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // After the run's last placement: a file changed later is an edit this run did not see.
     await recordSynced(deps.auth.home, binding.checkout_id);
     const inbound = await inboundLinks(store, outcome.deleted, session.okfVersion);
-    // The deletes the host held join the scan's held set: one hold, one token to accept it.
-    const hold = await recordHostHold(store, outcome.deletionsHeld, scan.hold);
     const rows = buildRows({
       folderConflicts: conflicts,
       unsettled: await store.listIntents(UNSETTLED_STATES),

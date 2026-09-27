@@ -212,10 +212,8 @@ export async function recordHostHold(store: JournaledBackend, answered: { deleti
   if (parked.length === 0) return local;
   const window = await readDeletionWindow(store);
   const host = answered ?? window.host ?? null;
-  const ids = [...new Set([...parked.map((row) => row.target), ...(local?.ids ?? [])])].sort();
-  const token = acceptToken(ids);
+  const { ids, token, bundle } = heldSet(parked, local?.ids ?? [], host);
   await store.writeMeta(DELETION_WINDOW_KEY, { ...window, hold: { ids, token }, host } satisfies DeletionWindow);
-  const bundle = hostWindow(host, ids.length);
   return {
     count: ids.length,
     ids,
@@ -228,6 +226,15 @@ export async function recordHostHold(store: JournaledBackend, answered: { deleti
     ...(local?.acceptMismatch !== undefined ? { acceptMismatch: local.acceptMismatch } : {}),
     ...(local?.acceptDeclined ? { acceptDeclined: true as const } : {}),
   };
+}
+
+/**
+ * The one held set: the deletes the host parked with the ones held here, the token that accepts
+ * exactly them, and the bundle's window if they all went through (only while the host holds some).
+ */
+function heldSet(parked: readonly IntentRecord[], others: readonly string[], host: { deletions: number; baseline: number } | null | undefined): { ids: string[]; token: string; bundle: { deletions: number; baseline: number } | null } {
+  const ids = [...new Set([...parked.map((row) => row.target), ...others])].sort();
+  return { ids, token: acceptToken(ids), bundle: parked.length > 0 ? hostWindow(host, ids.length) : null };
 }
 
 /** The bundle's window if all `count` held deletes went through, from the host's last answer (its
@@ -704,10 +711,8 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   const decision = overall.held || !originals.held ? { ...overall, basis: "all" as const } : { ...originals, basis: "originals" as const };
   // The deletes the host held are one set with this scan's: one hold at a time, one token.
   const parked = await parkedDeletions(local.backend);
-  const union = [...new Set([...parked.map((row) => row.target), ...counting.map(({ id }) => id)])].sort();
-  const bundle = parked.length > 0 ? hostWindow(window.host, union.length) : null;
+  const { ids: union, token, bundle } = heldSet(parked, counting.map(({ id }) => id), window.host);
   const pendingHold = parked.length > 0 || (window.hold !== null && counting.some(({ id }) => window.hold!.ids.includes(id)));
-  const token = acceptToken(union);
   const holding = union.length > 0 && (pendingHold || decision.held);
   let accepting = false;
   let declined = false;
