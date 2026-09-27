@@ -25,7 +25,13 @@ import {
   decodeOutcomeAnswer,
   decodeDocumentHistory,
   decodeHistoryAnswer,
+  decodeOperationListing,
+  decodeOperationRun,
   HOSTED_READ_BOUNDS,
+  isOperationId,
+  OPERATION_LISTING_LIMIT,
+  operationRunBody,
+  operationRunMaximum,
   operationRefusal,
   readRefusal,
   SYNC_READ_ROUTES,
@@ -85,7 +91,7 @@ function answerOf(exchange: Exchange): HostedAnswer {
 }
 
 test(`golden /sync/v1 exchanges (${index.source}) are indexed as recorded`, () => {
-  assert.equal(index.exchanges.length, 51);
+  assert.equal(index.exchanges.length, 59);
   for (const entry of index.exchanges) {
     const exchange = fixture(entry.name);
     assert.equal(exchange.route, entry.route);
@@ -344,6 +350,158 @@ test("operationRefusal: one reading of every operation's refusal, strict about w
   assert.deepEqual(operationRefusal(JSON.parse(fixture("read-200-document-not-found").response.body), "documents.read.v1")?.code, "document_not_found");
   for (const bad of [{ ...body, operationId: "documents.read.v1" }, { ...body, error: { code: "" } }, { ok: false, operationId: "documents.history.v1" }]) {
     assert.throws(() => operationRefusal(bad, "documents.history.v1", HISTORY_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === HISTORY_ROUTE);
+  }
+});
+
+// ── operations by id ───────────────────────────────────────────────────────────────────────
+
+/** The exchange's answer, through the real fetch carrier under `maximum`, after checking the request the client would send. */
+async function exchangeAnswer(name: string, maximum: number): Promise<HostedAnswer> {
+  const exchange = fixture(name);
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(new URL(String(input)).pathname, exchange.route);
+    assert.equal(String(init?.body), exchange.request.body, "the client sends the golden request's exact bytes");
+    return new Response(exchange.response.body, { status: exchange.response.status, headers: exchange.response.headers });
+  }) as typeof fetch;
+  const carrier = createFetchCarrier({ baseUrl: "https://hosted.example", fetch, credentials: async () => ({ Authorization: "Bearer token" }) });
+  return carrier.json(exchange.route, JSON.parse(exchange.request.body), new AbortController().signal, { maximum });
+}
+
+const OPERATIONS_ROUTE = "/sync/v1/operations";
+const RUN_ROUTE = "/sync/v1/run";
+const HISTORY_RUN_INPUT = { documentId: "notes/via" };
+
+test("operations 200: the listing decodes to its one pinned descriptor, host text intact, schemas carried as data", async () => {
+  const answer = await exchangeAnswer("operations-200", HOSTED_READ_BOUNDS.operationsBytes);
+  assert.equal(answer.status, 200);
+  const listing = decodeOperationListing(answer.body, OPERATIONS_ROUTE);
+  const [raw] = (JSON.parse(fixture("operations-200").response.body) as { operations: Record<string, unknown>[] }).operations;
+  assert.deepEqual(listing.notes, []);
+  assert.equal(listing.operations.length, 1);
+  const [operation] = listing.operations;
+  assert.equal(operation!.operationId, "documents.history.v1");
+  assert.equal(operation!.title, raw!.title);
+  assert.equal(operation!.description, raw!.description);
+  assert.equal(operation!.maximumOutputBytes, 1048576);
+  assert.deepEqual(operation!.inputJsonSchema, raw!.inputJsonSchema);
+  assert.deepEqual(operation!.resultJsonSchema, raw!.resultJsonSchema);
+  assert.deepEqual(operation!.annotations, raw!.annotations);
+  assert.equal(operationRunMaximum(operation!), 1048576);
+  assert.equal(operationRunMaximum({ maximumOutputBytes: 64 * 1024 * 1024 }), HOSTED_READ_BOUNDS.runBytes);
+});
+
+test("refusal 404 bundle_not_found on operations is the capabilities refusal, with the host's status", async () => {
+  const error = readRefusal(await exchangeAnswer("operations-404-bundle-not-found", HOSTED_READ_BOUNDS.operationsBytes));
+  assert.ok(error instanceof RemoteError && error.status === 404 && error.code === "bundle_not_found");
+  assert.equal(fixture("operations-404-bundle-not-found").response.body, fixture("export-404-bundle-not-found").response.body);
+});
+
+test("run 200 ok: the client's run body is the golden request, and the answer is history-200-ok's data", async () => {
+  assert.equal(JSON.stringify(operationRunBody("notes.a", "documents.history.v1", HISTORY_RUN_INPUT)), fixture("run-200-ok").request.body);
+  // An input already naming the same bundle sends the same bytes.
+  assert.equal(JSON.stringify(operationRunBody("notes.a", "documents.history.v1", { documentId: "notes/via", bundleId: "notes.a" })), fixture("run-200-ok").request.body);
+  const answer = await exchangeAnswer("run-200-ok", HOSTED_READ_BOUNDS.runBytes);
+  assert.equal(fixture("run-200-ok").response.body, fixture("history-200-ok").response.body);
+  const run = decodeOperationRun("documents.history.v1", answer.body, RUN_ROUTE);
+  assert.ok(run.ok);
+  assert.deepEqual(run.data, (JSON.parse(fixture("history-200-ok").response.body) as { data: unknown }).data);
+});
+
+test("run 200 document_not_found and bundle_not_found are the operation's refusals, as the read routes answer them", async () => {
+  const absent = decodeOperationRun("documents.history.v1", (await exchangeAnswer("run-200-document-not-found", HOSTED_READ_BOUNDS.runBytes)).body, RUN_ROUTE);
+  assert.deepEqual(absent, { ok: false, refusal: { code: "document_not_found", message: "The document was not found.", retryable: false } });
+  const gone = decodeOperationRun("documents.history.v1", (await exchangeAnswer("run-200-bundle-not-found", HOSTED_READ_BOUNDS.runBytes)).body, RUN_ROUTE);
+  assert.equal(gone.ok, false);
+  assert.equal(!gone.ok && gone.refusal.code, "bundle_not_found");
+  assert.equal(JSON.parse(fixture("run-200-bundle-not-found").response.body).error.message, JSON.parse(fixture("read-200-bundle-not-found").response.body).error.message);
+});
+
+test("run 400 unknown_operation and invalid_input refuse with the host's status and code; an old gateway's unknown route is its own body", async () => {
+  const unknown = readRefusal(await exchangeAnswer("run-400-unknown-operation", HOSTED_READ_BOUNDS.runBytes));
+  assert.ok(unknown instanceof RemoteError && unknown.status === 400 && unknown.code === "unknown_operation");
+  assert.equal(fixture("run-400-unknown-operation").response.body, '{"error":{"code":"unknown_operation"}}');
+  const invalid = readRefusal(await exchangeAnswer("run-400-invalid-input", HOSTED_READ_BOUNDS.runBytes));
+  assert.ok(invalid instanceof RemoteError && invalid.status === 400 && invalid.code === "invalid_input");
+  // The client never sends an input naming another bundle than the envelope's.
+  const request = JSON.parse(fixture("run-400-invalid-input").request.body) as { bundleId: string; operationId: string; input: Record<string, unknown> };
+  assert.throws(() => operationRunBody(request.bundleId, request.operationId, request.input), RangeError);
+  const old = fixture("unknown-route-404");
+  assert.equal(old.response.status, 404);
+  assert.deepEqual(JSON.parse(old.response.body), { error: "not_found" });
+});
+
+test("run: an answer that is not the operation's result is malformed, naming the route", () => {
+  const ok = JSON.parse(fixture("run-200-ok").response.body) as Record<string, unknown>;
+  for (const bad of [{ ...ok, operationId: "documents.read.v1" }, { ...ok, ok: "yes" }, { ok: true, operationId: "documents.history.v1" }, null, "text"]) {
+    assert.throws(() => decodeOperationRun("documents.history.v1", bad, RUN_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === RUN_ROUTE);
+  }
+});
+
+/** The golden descriptor, as a fresh object to vary. */
+const goldenDescriptor = () => (JSON.parse(fixture("operations-200").response.body) as { operations: Record<string, unknown>[] }).operations[0]!;
+
+/** An object nested `levels` deep (the object itself is level 1). */
+function nested(levels: number): Record<string, unknown> {
+  let value: Record<string, unknown> = { type: "string" };
+  for (let level = 1; level < levels; level += 1) value = { next: value };
+  return value;
+}
+
+test("operations: ESC sequences and U+202E in a title or description are stripped, and each is bounded", () => {
+  const descriptor = {
+    ...goldenDescriptor(),
+    title: "\u001b[31mRead\u001b[0m a history‮",
+    description: `Lists versions.‮\u001b]8;;https://evil.example\u0007click\u001b]8;;\u0007 ${"x".repeat(5000)}`,
+  };
+  const { operations, notes } = decodeOperationListing({ operations: [descriptor] }, OPERATIONS_ROUTE);
+  assert.deepEqual(notes, []);
+  const [operation] = operations;
+  for (const text of [operation!.title, operation!.description]) {
+    assert.doesNotMatch(text, /[\u0000-\u001f\u007f‮]/u);
+  }
+  assert.equal(operation!.title, "[31mRead[0m a history");
+  assert.ok(operation!.description.startsWith("Lists versions.]8;;https://evil.example"));
+  assert.ok(operation!.description.length <= 2048);
+  const long = decodeOperationListing({ operations: [{ ...goldenDescriptor(), title: "t".repeat(500) }] }).operations[0]!;
+  assert.equal(long.title.length, 200);
+});
+
+test("operations: a descriptor with a bad id, an over-deep schema or a bad bound is dropped with a note, and the rest list", () => {
+  const good = goldenDescriptor();
+  const other = { ...good, operationId: "documents.graph.v1", title: "Graph" };
+  const rows = [
+    { ...good, operationId: "../../etc/passwd" },
+    good,
+    { ...good, operationId: "bundles.model.v1", inputJsonSchema: nested(33) },
+    { ...good, operationId: "bundles.inspect.v1", resultJsonSchema: nested(32) },
+    { ...good, operationId: "bundles.graph.v1", maximumOutputBytes: 0 },
+    { ...good, operationId: "Documents.Read" },
+    { ...good, operationId: `a.${"b".repeat(130)}.v1` },
+    { ...good, title: undefined, operationId: "documents.query.v1" },
+    "not an object",
+    good,
+    other,
+  ];
+  const { operations, notes } = decodeOperationListing({ operations: rows, extra: true }, OPERATIONS_ROUTE);
+  assert.deepEqual(operations.map((operation) => operation.operationId), ["documents.history.v1", "bundles.inspect.v1", "documents.graph.v1"]);
+  assert.equal(notes.length, 8);
+  assert.match(notes[0]!, /^dropped the host's operation #1: its id is not an operation id$/);
+  assert.match(notes[1]!, /#3 \(bundles\.model\.v1\): a schema is nested deeper than 32 levels/);
+  assert.match(notes[2]!, /#5 \(bundles\.graph\.v1\): its maximumOutputBytes is not a positive integer/);
+  assert.match(notes[7]!, /#10 \(documents\.history\.v1\): its id repeats an earlier one/);
+  // A dropped id outside the grammar never reaches a note.
+  assert.ok(notes.every((note) => !note.includes("passwd") && !note.includes("Documents.Read")));
+  assert.equal(isOperationId("documents.history.v1"), true);
+  assert.equal(isOperationId("documents.history"), false);
+});
+
+test("operations: at most 200 descriptors are read, and a body that is not a listing is malformed", () => {
+  const rows = Array.from({ length: OPERATION_LISTING_LIMIT + 5 }, (_, index) => ({ ...goldenDescriptor(), operationId: `synthetic.op${index}.v1` }));
+  const { operations, notes } = decodeOperationListing({ operations: rows });
+  assert.equal(operations.length, OPERATION_LISTING_LIMIT);
+  assert.deepEqual(notes, ["dropped 5 operations past the first 200 the host listed"]);
+  for (const bad of [{}, { operations: {} }, [], null, "operations"]) {
+    assert.throws(() => decodeOperationListing(bad, OPERATIONS_ROUTE), (error: unknown) => error instanceof MalformedAnswer && error.route === OPERATIONS_ROUTE);
   }
 });
 

@@ -76,6 +76,10 @@ export const HOSTED_READ_BOUNDS = Object.freeze({
   documentBytes: 1024 * 1024 + 64 * 1024,
   /** One history page's answer: the host bounds `documents.history.v1` at 1 MiB; the slack is the envelope's. */
   historyBytes: 1024 * 1024 + 64 * 1024,
+  /** The operation listing's answer: at most 200 descriptors, each with its two JSON Schemas. */
+  operationsBytes: 256 * 1024,
+  /** Any one operation run's answer; the operation's own `maximumOutputBytes` is lower when it says so. */
+  runBytes: 4 * 1024 * 1024,
   /** Document reads in flight at once, whatever concurrency a caller's batches ask for. */
   readConcurrency: 8,
 });
