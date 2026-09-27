@@ -62,6 +62,7 @@ import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery
 import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./binding.js";
 import { hostedFailure, type createHostedSyncClient } from "./client.js";
 import { connectCheckout } from "./account.js";
+import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { bundleAbsent } from "./refusals.js";
 import { buildRows, BUSY_REFUSAL_CODES, countRows, receiptFailure, rowsFailure, type NotSentReason, type SyncRow } from "./sync-rows.js";
 import {
@@ -81,7 +82,7 @@ import {
   type ProjectionRecord,
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded } from "./projection.js";
-import { recordPulled } from "./freshness.js";
+import { recordPulled, recordSynced } from "./freshness.js";
 
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
 
@@ -434,17 +435,6 @@ function lockFailure(error: unknown, folder: string): unknown {
     });
   }
   return error;
-}
-
-export async function storeOkfVersion(store: JournaledBackend): Promise<"0.1" | "0.2" | undefined> {
-  const root = await store.readReserved("", "index.md");
-  if (!root) return undefined;
-  try {
-    const version = parseMarkdown(root.content, "index").frontmatter.okf_version;
-    return version === "0.1" || version === "0.2" ? version : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -850,6 +840,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // The closing pass: a file edited during this run against a document the pull refreshed or
     // removed is a conflict now, so the run that saw it never reports itself in sync.
     const conflicts = await folderConflicts(binding.path, store, projection, session.okfVersion);
+    // After the run's last placement: a file changed later is an edit this run did not see.
+    await recordSynced(deps.auth.home, binding.checkout_id);
     const inbound = await inboundLinks(store, outcome.deleted, session.okfVersion);
     const rows = buildRows({
       folderConflicts: conflicts,
@@ -955,17 +947,17 @@ export async function hostedPull(binding: CheckoutBinding, partial: Partial<Host
  * leaves the machine; `busy` when another command holds the checkout.
  */
 export async function hostedLocalState(binding: CheckoutBinding, home: string): Promise<"changed" | "clean" | "busy"> {
-  return filesystemPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {
-    if (!lock) return "busy" as const;
-    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id) });
-    try {
+  const state = await withIdleCheckoutStore(
+    binding,
+    home,
+    async (store) => {
       if ((await store.listIntents(UNSETTLED_STATES)).length > 0) return "changed" as const;
       const projection = await readProjection(home, binding.checkout_id, store);
       return (await folderMatchesProjection(binding.path, projection)) ? ("clean" as const) : ("changed" as const);
-    } finally {
-      await store.close();
-    }
-  });
+    },
+    { readOnly: false },
+  );
+  return state ?? "busy";
 }
 
 async function pullOnly(binding: CheckoutBinding, session: Session, deps: HostedSyncDeps, resumeCommand: CommandText): Promise<HostedPullResult> {

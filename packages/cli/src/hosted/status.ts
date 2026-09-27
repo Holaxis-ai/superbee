@@ -6,13 +6,12 @@
 // classified by the sync scan itself (`scanCheckout` in preview), so status and sync never
 // disagree about what a file is.
 import { UNSETTLED_STATES, openLocalBundle } from "@superbee/browser-local";
-import { parseMarkdown, type JournaledBackend } from "@superbee/core";
-import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
-import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
+import type { JournaledBackend } from "@superbee/core";
 
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
-import { checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./binding.js";
+import type { CheckoutBinding } from "./binding.js";
+import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { ageMs, describeAge, HOSTED_STALE_WARNING_MS, readFreshness } from "./freshness.js";
 import { readProjection, scanCheckout, type HeldReason } from "./sync-scan.js";
 
@@ -24,17 +23,6 @@ export interface Classified {
   readonly conflicts: Set<string>;
   readonly held: Map<string, HeldReason>;
   readonly heldDeletions: Set<string>;
-}
-
-async function storeOkfVersion(store: JournaledBackend): Promise<"0.1" | "0.2" | undefined> {
-  const root = await store.readReserved("", "index.md");
-  if (!root) return undefined;
-  try {
-    const version = parseMarkdown(root.content, "index").frontmatter.okf_version;
-    return version === "0.1" || version === "0.2" ? version : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -92,15 +80,7 @@ export async function hostedStatus(binding: CheckoutBinding, home: string, now: 
   const freshness = await readFreshness(home, binding.checkout_id);
   const age = ageMs(freshness.pulled_at, now);
   const stale = age === null || age > HOSTED_STALE_WARNING_MS;
-  const classified = await filesystemPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {
-    if (!lock) return null;
-    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id), readOnly: true });
-    try {
-      return await classifyCheckout(binding, home, store);
-    } finally {
-      await store.close();
-    }
-  });
+  const classified = await withIdleCheckoutStore(binding, home, (store) => classifyCheckout(binding, home, store));
 
   const sync: Record<string, unknown> = {
     bundle_id: binding.bundle_id,

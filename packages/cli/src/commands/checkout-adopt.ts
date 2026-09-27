@@ -56,7 +56,7 @@ import { clearPublishedExtras, readPublishedExtras } from "../hosted/publish-sta
 import { bindingHostArgument, readCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
 import { digestOf, ensureParentInside, parentUnsafe, placeNew, ROOT_INDEX } from "../hosted/projection.js";
 import { sameAsStored, walk, writeProjection, type ProjectionEntry } from "../hosted/sync-scan.js";
-import { storeOkfVersion } from "../hosted/sync.js";
+import { storeOkfVersion } from "../hosted/checkout-store.js";
 import {
   assertProjectable,
   assertStandaloneFolder,

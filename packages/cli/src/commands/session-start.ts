@@ -86,6 +86,7 @@ import { commandToken } from "../command-text.js";
 import { render } from "../output.js";
 import type { CheckoutBinding } from "../hosted/binding.js";
 import { ageMs, backgroundSyncDeps, describeAge, readFreshness } from "../hosted/freshness.js";
+import { storedSessionMayNeedSignIn } from "../hosted-auth/session.js";
 import type { HostedPullResult, HostedSyncDeps } from "../hosted/sync.js";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
@@ -144,12 +145,19 @@ export const SESSION_START_WORKSPACES_BUDGET_MS = 2_000;
  */
 export const SESSION_START_PROBE_DEADLINE_MS = 1_000;
 
-/** How current one other bundle's folder is, from its last pull or fetch. No network. */
-async function bundleFreshness(root: string, userHome: string, now: Date): Promise<Pick<HomeWorkspace, "home" | "freshness">> {
+/**
+ * How current one other bundle's folder is, from its last pull or fetch. No network. A hosted
+ * checkout whose host's stored sign-in session looks unusable (checked once per host, from the
+ * record alone) says it may need sign-in, so the link tends to come at the start of the session.
+ */
+async function bundleFreshness(root: string, userHome: string, now: Date, signIn: Map<string, Promise<boolean>>, env: NodeJS.ProcessEnv): Promise<Pick<HomeWorkspace, "home" | "freshness">> {
   const facts = await bundleHomeAt(root, { home: userHome });
   if (facts.home === "hosted") {
     const age = ageMs((await readFreshness(userHome, facts.binding.checkout_id).catch(() => null))?.pulled_at ?? null, now);
-    return { home: "hosted", freshness: age === null ? "never pulled" : `pulled ${describeAge(age)} ago` };
+    const pulled = age === null ? "never pulled" : `pulled ${describeAge(age)} ago`;
+    const key = `${facts.binding.origin} ${facts.binding.audience}`;
+    if (!signIn.has(key)) signIn.set(key, storedSessionMayNeedSignIn(userHome, facts.binding, env, now.getTime()).catch(() => false));
+    return { home: "hosted", freshness: (await signIn.get(key)) ? `${pulled}; may need sign-in` : pulled };
   }
   if (facts.home === "git") {
     if (!facts.board.shared) return { home: "git", freshness: "not shared yet" };
@@ -166,7 +174,7 @@ async function bundleFreshness(root: string, userHome: string, now: Date): Promi
  */
 export async function otherCatalogBundles(
   currentRoot: string | null,
-  options: { home?: string; signal?: AbortSignal; now?: Date; deadlineMs?: number } = {},
+  options: { home?: string; signal?: AbortSignal; now?: Date; deadlineMs?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<HomeWorkspace[]> {
   const userHome = options.home ?? homedir();
   const now = options.now ?? new Date();
@@ -180,6 +188,7 @@ export async function otherCatalogBundles(
     others.push({ label: entry.label, root: root ?? entry.locator.path });
   }
   const rows: HomeWorkspace[] = [];
+  const signIn = new Map<string, Promise<boolean>>();
   for (const [index, other] of others.entries()) {
     // Only the rows the block shows are probed; the rest are counted.
     if (index >= HOME_WORKSPACES_LIMIT || options.signal?.aborted || Date.now() >= deadline) {
@@ -194,7 +203,7 @@ export async function otherCatalogBundles(
     }
     rows.push({
       label: other.label,
-      ...(available ? await bundleFreshness(other.root, userHome, now).catch(() => ({ home: "unknown", freshness: "unreadable" })) : { home: "unknown", freshness: "folder missing" }),
+      ...(available ? await bundleFreshness(other.root, userHome, now, signIn, options.env ?? process.env).catch(() => ({ home: "unknown", freshness: "unreadable" })) : { home: "unknown", freshness: "folder missing" }),
     });
   }
   return rows;
