@@ -25,6 +25,7 @@ import { docUpdate } from "../doc/update.js";
 import { docWrite } from "../doc/write.js";
 import { CLAIM_LOST_KEY, claimLostStatement, ENGINE_STAMPED_FIELDS, loadClaimPolicy, recordedOwner } from "./claim-conflict.js";
 import { parseSyncArgs } from "./orchestrate.js";
+import { syncVerbNotApplicable } from "../../sync-outcomes.js";
 
 /** The raw flags that ask for a conflict verb (as opposed to a hosted-only deletion verb). */
 const CONFLICT_FLAGS = ["--inspect", "--resolve", "--doc"] as const;
@@ -53,11 +54,9 @@ export function requestsHostedOnlyVerb(argv: readonly string[]): boolean {
   return hasFlag(argv, HOSTED_ONLY_FLAGS);
 }
 
-/** The refusal for a hosted-only verb on any other target. */
-export function hostedOnlyVerbError(): CliError {
-  return new CliError("USAGE", "--accept-deletes, --restore-deletes and --take-host-deletions apply to a hosted checkout; this folder is not one", {
-    help: `${cliInvocation()} sync --help`,
-  });
+/** The refusal for a hosted-only verb on any other target: a Git board, or a local bundle. */
+export function hostedOnlyVerbError(home: "local" | "git" = "git"): CliError {
+  return syncVerbNotApplicable(["accept-deletes", "restore-deletes", "take-host-deletions"], home, `these apply to a hosted checkout only; ${cliInvocation()} sync --help`);
 }
 
 type Choice = "keep" | "take" | "revise";

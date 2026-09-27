@@ -439,6 +439,19 @@ test("turn-end does nothing outside a hosted checkout, and never blocks for offl
   }
 });
 
+test("a Git-board verb in a hosted checkout answers 'not applicable in a hosted bundle'; a --json run carries the one envelope", async () => {
+  const h = await harness();
+  const refused = await syncError(h, ["--establish"]);
+  assert.equal(refused.code, "USAGE");
+  assert.deepEqual(refused.details, { reason: "not_applicable", home: "hosted", flags: ["--establish"] });
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nEnveloped.\n');
+  const out: string[] = [];
+  await sync(["--dir", h.folder, "--json"], { ...syncDeps(h), stdout: (text: string) => void out.push(text) });
+  const receipt = JSON.parse(out.join("")) as Record<string, unknown>;
+  assert.deepEqual([receipt.home, receipt.sent, receipt.conflicts, receipt.held, receipt.schema_version], ["hosted", 1, 0, 0, 2]);
+  assert.ok(Array.isArray(receipt.rows), "the hosted rows stay");
+});
+
 // ------------------------------------------------------------------------ turn end across checkouts
 
 /** A second checkout of the bundle beside the harness's, in the same home. */

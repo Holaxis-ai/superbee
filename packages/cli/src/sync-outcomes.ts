@@ -849,3 +849,78 @@ export function ffSwallowToError(reason: string, inv: CommandPrefix, boardPath?:
       return syncOutcomeError("ff.unclassified", { reason });
   }
 }
+
+// ── One sync receipt shape across homes (designs/seamless-multi-backend-cli, S4) ─────────────────
+
+/** The version of `sync --json` that carries {@link SYNC_ENVELOPE_KEYS}; the unversioned shape was 1. */
+export const SYNC_RECEIPT_SCHEMA_VERSION = 2;
+/** The keys every `sync --json` run receipt carries, in every home, beside its own keys. */
+export const SYNC_ENVELOPE_KEYS = ["home", "sent", "received", "conflicts", "held", "next"] as const;
+
+export type SyncHome = "local" | "git" | "hosted";
+
+/** The home-neutral summary of one sync run's receipt: counts of documents, and the commands to run next. */
+export interface SyncEnvelope {
+  readonly home: SyncHome;
+  readonly sent: number;
+  readonly received: number;
+  readonly conflicts: number;
+  readonly held: number;
+  readonly next: readonly string[];
+}
+
+const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
+/**
+ * The envelope of a sync receipt, read from the keys its home already prints: a hosted checkout's
+ * `counts`, `pulled` and `help`; a Git board's `committed`, `pushed` and `pulled` (documents; a
+ * conflicted Git run exits 5 with its rows in the error, never a receipt); a local bundle has
+ * nothing to send or receive.
+ */
+export function syncEnvelope(receipt: Record<string, unknown>, home: SyncHome): SyncEnvelope {
+  if (home === "hosted") {
+    const counts = (receipt.counts ?? {}) as Record<string, unknown>;
+    const pulled = (receipt.pulled ?? {}) as Record<string, unknown>;
+    const help = Array.isArray(receipt.help) ? receipt.help.filter((line): line is string => typeof line === "string") : [];
+    return { home, sent: count(counts.committed), received: count(pulled.refreshed) + count(pulled.removed), conflicts: count(counts.conflict), held: count(counts.held), next: help };
+  }
+  if (home === "git") {
+    return { home, sent: count(receipt.pushed) > 0 ? count(receipt.committed) : 0, received: count(receipt.pulled), conflicts: 0, held: 0, next: [] };
+  }
+  return { home, sent: 0, received: 0, conflicts: 0, held: 0, next: [] };
+}
+
+/**
+ * A `sync --json` receipt with the envelope added: every existing key kept, in order and unchanged,
+ * then `schema_version` and each envelope key the receipt does not already carry. Anything that is
+ * not one JSON object receipt (an error envelope, another command's bytes) passes through as it is.
+ */
+export function withSyncEnvelope(text: string, home: SyncHome): string {
+  let receipt: unknown;
+  try {
+    receipt = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt) || "error" in receipt) return text;
+  const record = receipt as Record<string, unknown>;
+  const envelope = syncEnvelope(record, home) as unknown as Record<string, unknown>;
+  const added: Record<string, unknown> = { ...record };
+  if (!("schema_version" in added)) added.schema_version = SYNC_RECEIPT_SCHEMA_VERSION;
+  for (const key of SYNC_ENVELOPE_KEYS) if (!(key in added)) added[key] = envelope[key];
+  return `${JSON.stringify(added)}${text.endsWith("\n") ? "\n" : ""}`;
+}
+
+/**
+ * The one answer for a sync verb that belongs to another home: `--accept-deletes`,
+ * `--restore-deletes` and `--take-host-deletions` in a Git board or a local bundle (only hosted sync
+ * has a mass-delete guard), and `--establish`, `--pull-only`, `--show-incoming` and the like in a
+ * hosted checkout (it has no Git branch to share or read).
+ */
+export function syncVerbNotApplicable(flags: readonly string[], home: SyncHome, help: string): CliError {
+  const spelled = flags.map((flag) => "--" + flag);
+  return new CliError("USAGE", `${spelled.join(", ")} ${flags.length === 1 ? "is" : "are"} not applicable in a ${home} bundle`, {
+    details: { reason: "not_applicable", home, flags: spelled },
+    help,
+  });
+}

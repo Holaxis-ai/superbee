@@ -442,8 +442,10 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
   const { values } = parseSyncArgs(argv);
   if (values.help) return { kind: "help" };
   if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined || values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined) {
-    throw new CliError("USAGE", "--inspect, --resolve, --doc, --accept-deletes, --restore-deletes and --take-host-deletions apply to a hosted checkout; this folder is not one", {
-      help: `for a Git board, see incoming changes with: ${inv} sync --show-incoming <id>`,
+    // `superbee sync` routes the conflict verbs (both homes) and the hosted-only verbs before the
+    // Git sync runs; only a caller that invokes the Git sync directly reaches this.
+    throw new CliError("USAGE", "--inspect, --resolve and --doc are handled by 'superbee sync' (the one conflict grammar for Git boards and hosted checkouts); --accept-deletes, --restore-deletes and --take-host-deletions apply to a hosted checkout only", {
+      help: `${inv} sync --inspect --doc <id>`,
     });
   }
 

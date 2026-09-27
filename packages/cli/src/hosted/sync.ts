@@ -83,6 +83,7 @@ import {
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded } from "./projection.js";
 import { recordPulled, recordSynced } from "./freshness.js";
+import { syncVerbNotApplicable } from "../sync-outcomes.js";
 
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
 
@@ -266,7 +267,7 @@ function parseHosted(argv: string[]): HostedValues {
   const inv = cliInvocation();
   for (const flag of GIT_ONLY_FLAGS) {
     if ((values as Record<string, unknown>)[flag] !== undefined) {
-      throw new CliError("USAGE", `--${flag} is for a Git board; a hosted checkout syncs with plain 'sync'`, { help: `${inv} sync --help` });
+      throw syncVerbNotApplicable([flag], "hosted", `--${flag} is for a Git board; a hosted checkout syncs with plain 'sync' (${inv} sync --help)`);
     }
   }
   if (values.inspect !== undefined && values.resolve !== undefined) {
