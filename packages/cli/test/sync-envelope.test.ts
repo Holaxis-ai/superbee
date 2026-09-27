@@ -5,46 +5,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { conditionDigest } from "../src/commands/turn-end.js";
 import { CliError } from "../src/errors.js";
 import { SYNC_ENVELOPE_KEYS, SYNC_RECEIPT_SCHEMA_VERSION, syncEnvelope, syncVerbNotApplicable, withSyncEnvelope } from "../src/sync-outcomes.js";
 
-const hostedReceipt = {
-  sync: "hosted",
-  bundle_id: "team.knowledge",
-  status: "incomplete",
-  pulled: { refreshed: 2, removed: 1 },
-  counts: { committed: 3, conflict: 1, held: 2, refused: 0, unknown: 0, paused: 0 },
-  rows: [{ id: "notes/alpha", state: "conflict", reason: "changed_remotely" }],
-  help: ["superbee sync --inspect --doc notes/alpha --dir /x"],
-};
-
-test("each home's receipt projects to the same envelope keys", () => {
-  assert.deepEqual(syncEnvelope(hostedReceipt, "hosted"), { home: "hosted", sent: 3, received: 3, conflicts: 1, held: 2, next: ["superbee sync --inspect --doc notes/alpha --dir /x"] });
-  assert.deepEqual(syncEnvelope({ committed: 2, pushed: 1, pulled: 4, incoming: { shown: 0, total: 0, rows: [] } }, "git"), { home: "git", sent: 2, received: 4, conflicts: 0, held: 0, next: [] });
-  assert.deepEqual(syncEnvelope({ committed: 2, pushed: 0, pulled: 0 }, "git").sent, 0, "committed but not pushed is not sent");
-  assert.deepEqual(syncEnvelope({ sync: "already up to date" }, "git"), { home: "git", sent: 0, received: 0, conflicts: 0, held: 0, next: [] });
-  assert.deepEqual(syncEnvelope({ sync: "nothing to sync" }, "local"), { home: "local", sent: 0, received: 0, conflicts: 0, held: 0, next: [] });
+test("an envelope counts what it is given, and zero for the rest", () => {
+  assert.deepEqual(syncEnvelope("local"), { home: "local", sent: 0, received: 0, conflicts: 0, held: 0, next: [] });
+  assert.deepEqual(syncEnvelope("git", { sent: 2, received: 4 }), { home: "git", sent: 2, received: 4, conflicts: 0, held: 0, next: [] });
 });
 
 test("the envelope is additive: every existing key kept, in order and unchanged, then the version and the envelope", () => {
-  const text = `${JSON.stringify(hostedReceipt)}\n`;
-  const out = withSyncEnvelope(text, "hosted");
-  assert.ok(out.endsWith("\n"));
-  const parsed = JSON.parse(out) as Record<string, unknown>;
-  assert.deepEqual(Object.keys(parsed), [...Object.keys(hostedReceipt), "schema_version", ...SYNC_ENVELOPE_KEYS]);
-  for (const [key, value] of Object.entries(hostedReceipt)) assert.deepEqual(parsed[key], value, key);
-  assert.equal(parsed.schema_version, SYNC_RECEIPT_SCHEMA_VERSION);
+  const receipt = { sync: "hosted", status: "incomplete", counts: { committed: 3, conflict: 1 }, rows: [{ id: "notes/alpha" }], help: ["x"] };
+  const out = withSyncEnvelope(receipt, syncEnvelope("hosted", { sent: 3, conflicts: 1, next: ["x"] }));
+  assert.deepEqual(Object.keys(out), [...Object.keys(receipt), "schema_version", ...SYNC_ENVELOPE_KEYS]);
+  for (const [key, value] of Object.entries(receipt)) assert.deepEqual(out[key], value, key);
+  assert.equal(out.schema_version, SYNC_RECEIPT_SCHEMA_VERSION);
+  assert.deepEqual([out.home, out.sent, out.conflicts, out.next], ["hosted", 3, 1, ["x"]]);
   // A key a receipt already carries is never overwritten.
-  assert.equal((JSON.parse(withSyncEnvelope(JSON.stringify({ home: "mine", schema_version: 7 }), "git")) as { home: string; schema_version: number }).home, "mine");
-  // Anything that is not one JSON object receipt passes through as it is.
-  for (const other of ['{"error":{"code":"CONFLICT","message":"x"}}\n', "sync: hosted\nstatus: synced\n", "[1,2]", "not json"]) assert.equal(withSyncEnvelope(other, "git"), other);
+  const own = withSyncEnvelope({ home: "mine", schema_version: 7 }, syncEnvelope("git"));
+  assert.deepEqual([own.home, own.schema_version], ["mine", 7]);
+  // The input is not changed.
+  assert.equal("home" in receipt, false);
 });
 
 test("a verb of another home answers one 'not applicable in a <home> bundle'", () => {
-  const git = syncVerbNotApplicable(["accept-deletes", "restore-deletes"], "git", "help");
+  const git = syncVerbNotApplicable(["accept-deletes", "restore-deletes"], "git", "they apply to a hosted checkout only", "superbee sync --help");
   assert.ok(git instanceof CliError);
   assert.equal(git.code, "USAGE");
-  assert.equal(git.message, "--accept-deletes, --restore-deletes are not applicable in a git bundle");
+  assert.equal(git.message, "--accept-deletes, --restore-deletes are not applicable in a git bundle: they apply to a hosted checkout only");
+  assert.equal(git.help, "superbee sync --help");
   assert.deepEqual(git.details, { reason: "not_applicable", home: "git", flags: ["--accept-deletes", "--restore-deletes"] });
-  assert.equal(syncVerbNotApplicable(["establish"], "hosted", "h").message, "--establish is not applicable in a hosted bundle");
+  assert.match(syncVerbNotApplicable(["establish"], "hosted", "why", "h").message, /^--establish is not applicable in a hosted bundle: why$/);
+});
+
+test("the Stop hook's condition digest is the same for the same condition, with or without the envelope", () => {
+  const receipt = { sync: "hosted", counts: { committed: 0, conflict: 1 }, rows: [{ id: "notes/alpha", state: "conflict", reason: "changed_remotely" }], help: ["x"] };
+  const error = new CliError("CONFLICT", "1 document(s) not synced", { details: { reason: "sync_incomplete" } });
+  assert.equal(conditionDigest(error, JSON.stringify(withSyncEnvelope(receipt, syncEnvelope("hosted", { conflicts: 1, next: ["x"] })))), conditionDigest(error, JSON.stringify(receipt)));
 });

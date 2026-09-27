@@ -1222,8 +1222,9 @@ test("a fresh clone whose binding names its own conventional board provisions fr
     await withHome(homeDir, async () => {
       let out = "";
       await inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true }));
-      const rec = JSON.parse(out) as { provisioned?: string; sync?: string };
+      const rec = JSON.parse(out) as { provisioned?: string; sync?: string; home?: string };
       assert.match(rec.provisioned ?? "", /materialized from origin\/board/);
+      assert.equal(rec.home, "git", "the first sync, which provisions the board, reports a Git board");
       assert.equal(rec.provisioned?.startsWith(topo.a.board), true, "provisioned exactly the bound path");
       assert.equal(rec.sync, "already up to date");
       assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");

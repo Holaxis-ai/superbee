@@ -243,8 +243,9 @@ test("conflict verbs refuse cleanly: no saved conflict, bad arguments, and hoste
     }
     const hostedOnly = await runSync(homeB, ["--restore-deletes", "--dir", topo.b.root]);
     assert.equal(hostedOnly.err?.code, "USAGE");
-    assert.match(hostedOnly.err!.message, /not applicable in a git bundle/);
-    assert.deepEqual(hostedOnly.err!.details, { reason: "not_applicable", home: "git", flags: ["--accept-deletes", "--restore-deletes", "--take-host-deletions"] });
+    assert.match(hostedOnly.err!.message, /^--restore-deletes is not applicable in a git bundle/);
+    assert.deepEqual(hostedOnly.err!.details, { reason: "not_applicable", home: "git", flags: ["--restore-deletes"] });
+    assert.match(hostedOnly.err!.help ?? "", /sync --help$/);
 
     // The saved copy survived every refusal.
     assert.ok(existsSync(exportPathFor(topo, homeB, "tasks/seed-one.md")));

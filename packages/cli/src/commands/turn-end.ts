@@ -414,7 +414,7 @@ async function unsentGitBoards(dir: string | undefined, home: string, deadline: 
 }
 
 /** What makes two blocks the same: the error, and the documents still not synced with their states. */
-function conditionDigest(error: CliError, receipt: string): string {
+export function conditionDigest(error: CliError, receipt: string): string {
   let rows: unknown = null;
   try {
     const parsed = JSON.parse(receipt) as { rows?: { id?: unknown; state?: unknown; reason?: unknown }[] };

@@ -54,9 +54,11 @@ export function requestsHostedOnlyVerb(argv: readonly string[]): boolean {
   return hasFlag(argv, HOSTED_ONLY_FLAGS);
 }
 
-/** The refusal for a hosted-only verb on any other target: a Git board, or a local bundle. */
-export function hostedOnlyVerbError(home: "local" | "git" = "git"): CliError {
-  return syncVerbNotApplicable(["accept-deletes", "restore-deletes", "take-host-deletions"], home, `these apply to a hosted checkout only; ${cliInvocation()} sync --help`);
+/** The refusal for a hosted-only verb on any other target (a Git board, or a local bundle), naming the ones passed. */
+export function hostedOnlyVerbError(home: "local" | "git" = "git", argv: readonly string[] = []): CliError {
+  const passed = HOSTED_ONLY_FLAGS.filter((flag) => hasFlag(argv, [flag]));
+  const flags = passed.length > 0 ? passed.map((flag) => flag.replace(/^--/, "")) : ["accept-deletes", "restore-deletes", "take-host-deletions"];
+  return syncVerbNotApplicable(flags, home, "only a hosted checkout has them", `${cliInvocation()} sync --help`);
 }
 
 type Choice = "keep" | "take" | "revise";

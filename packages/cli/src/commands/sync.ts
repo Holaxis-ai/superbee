@@ -21,7 +21,6 @@ import { bundleHomeAt, type UnboundCopy } from "../bundle-home.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
 import { commandToken } from "../command-text.js";
 import { writeCheckoutMarker } from "../hosted/marker.js";
-import { withSyncEnvelope, type SyncHome } from "../sync-outcomes.js";
 
 export type UnifiedSyncDeps = Partial<SyncCliDeps> & Partial<HostedSyncDeps>;
 
@@ -48,7 +47,7 @@ export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<
   if (binding) {
     // A checkout made before the folder marker existed gets one (best effort; it never routes).
     await writeCheckoutMarker(binding.path, binding).catch(() => null);
-    await hostedSync(argv, binding, withEnvelope(argv, deps, "hosted"));
+    await hostedSync(argv, binding, deps);
     return;
   }
   // `--establish` shares the folder as a Git board: the marker does not stand in its way.
@@ -67,46 +66,29 @@ export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<
   }
   // The conflict verbs are one grammar for both homes: on a Git board they read the copy a
   // converged sync saved and finish its reconcile chain. The deletion verbs stay hosted-only.
-  if (requestsHostedOnlyVerb(argv)) throw hostedOnlyVerbError(await targetHome(argv, deps.cwd ?? process.cwd(), home));
+  if (requestsHostedOnlyVerb(argv)) throw hostedOnlyVerbError(await targetHome(argv, deps.cwd ?? process.cwd(), home), argv);
   if (requestsConflictVerb(argv)) {
     await gitConflictVerb(argv, deps);
     return;
   }
-  await gitSync(argv, envelopedRun(argv) ? withEnvelope(argv, deps, await targetHome(argv, deps.cwd ?? process.cwd(), home)) : deps);
-}
-
-/** The home of a sync target that is not a hosted checkout: a Git board, or a local bundle. */
-async function targetHome(argv: readonly string[], cwd: string, home: string): Promise<"local" | "git"> {
-  try {
-    const root = (await resolveLocalBundleTarget(dirArgument(argv), cwd)).canonicalRoot;
-    return (await bundleHomeAt(root, { home })).home === "git" ? "git" : "local";
-  } catch {
-    return "local";
-  }
-}
-
-/** True for a sync run (not a conflict verb or the incoming viewer) asked for as JSON. */
-function envelopedRun(argv: readonly string[]): boolean {
-  let json = false;
-  for (const token of argv) {
-    if (token === "--") break;
-    if (token === "--json") json = true;
-    // The conflict verbs and the incoming viewer print their own records, not a run receipt.
-    if (["--show-incoming", "--inspect", "--resolve"].some((flag) => token === flag || token.startsWith(`${flag}=`))) return false;
-  }
-  return json;
+  await gitSync(argv, deps);
 }
 
 /**
- * The sync's stdout with the one receipt envelope added to its `--json` run receipt
- * (`withSyncEnvelope`): the same keys in every home, beside each home's own. TOON output, error
- * envelopes and the incoming viewer's bytes are unchanged.
+ * The home a deletion verb is refused in: a Git board, or else a local bundle. A target that does
+ * not resolve is left to the refusal's own words (local).
  */
-function withEnvelope<T extends UnifiedSyncDeps>(argv: readonly string[], deps: T, home: SyncHome): T {
-  if (!envelopedRun(argv)) return deps;
-  const out = deps.stdout ?? ((text: string) => void process.stdout.write(text));
-  return { ...deps, stdout: (text: string) => out(withSyncEnvelope(text, home)) };
+async function targetHome(argv: readonly string[], cwd: string, home: string): Promise<"local" | "git"> {
+  let root: string;
+  try {
+    root = (await resolveLocalBundleTarget(dirArgument(argv), cwd)).canonicalRoot;
+  } catch (error) {
+    if (error instanceof CliError) return "local";
+    throw error;
+  }
+  return (await bundleHomeAt(root, { home })).home === "git" ? "git" : "local";
 }
+
 
 /**
  * The unbound checkout copy this sync targets: a local bundle (not a Git board) whose folder
