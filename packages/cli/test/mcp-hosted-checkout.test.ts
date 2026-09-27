@@ -608,7 +608,7 @@ test("list_operations and run_operation reach a hosted checkout's host reads by 
   }
 });
 
-test("a hosted checkout's reads the folder answers are neither listed nor run, and an input naming another bundle is refused, before any run request", async () => {
+test("a hosted checkout's reads the folder answers are neither listed nor run, and an input naming another bundle is refused, with no request at all", async () => {
   const c = await hostedCheckout();
   c.host.operationsListing = [{ ...historyDescriptor(), operationId: "documents.read.v1" }, { ...historyDescriptor(), operationId: "documents.query.v1" }, historyDescriptor()];
   const mcp = await mcpClient(createCatalogMcpWorkspaceResolver({ home: c.home, hosted: { auth: c.auth, fetch: c.host.fetch } }));
@@ -624,13 +624,13 @@ test("a hosted checkout's reads the folder answers are neither listed nor run, a
       const refused = await mcp.call("run_operation", { workspace: BUNDLE, operationId, input: { documentId: "notes/alpha" } });
       assert.equal(refused.isError, true);
       assert.match(refused.content[0]!.text, /answers documents\.(read|query)\.v1 from its folder.*show_document/);
-      assert.equal(c.host.requests.some((request) => request.path === "/sync/v1/run"), false, operationId);
+      assert.deepEqual(c.host.requests, [], operationId);
     }
     c.host.requests.length = 0;
     const mismatch = await mcp.call("run_operation", { workspace: BUNDLE, operationId: "documents.history.v1", input: { bundleId: "team.other", documentId: "notes/alpha" } });
     assert.equal(mismatch.isError, true);
     assert.match(mismatch.content[0]!.text, /\(invalid_input\): the input names another bundle/);
-    assert.equal(c.host.requests.some((request) => request.path === "/sync/v1/run"), false);
+    assert.deepEqual(c.host.requests, []);
   } finally {
     await mcp.close();
   }
@@ -692,6 +692,9 @@ test("a hosted workspace with no session answers the one sign-in link to relay, 
         assert.match(answer.content[0]!.text, new RegExp(`is required: ask the person to open http://127\\.0\\.0\\.1:\\d+/activate\\?user_code=\\S+ and confirm the code \\S+, then call ${name} again\\.$`));
         assert.doesNotMatch(answer.content[0]!.text, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "no path");
       }
+      // Stops decided on this machine come first, signed in or not.
+      const folder = await mcp.call("run_operation", { workspace: BUNDLE, operationId: "documents.read.v1", input: { documentId: "notes/alpha" } });
+      assert.match(folder.content[0]!.text, /answers documents\.read\.v1 from its folder/);
       assert.deepEqual(host.requests, [], "no host request before sign-in");
     } finally {
       await mcp.close();

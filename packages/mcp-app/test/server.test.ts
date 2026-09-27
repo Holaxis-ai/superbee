@@ -462,7 +462,7 @@ test("operation stops, host refusals and resolver failures are tool errors in th
       for (const [signInUrl, userCode] of [["javascript:alert(1)", "ABCD"], ["http://issuer.example/activate", "ABCD"], ["https://issuer.example/\u202eactivate", "ABCD"], ["https://issuer.example/activate", "AB CD\u0007"]]) {
         answers.push(async () => ({ stop: "sign_in_required", signInUrl, userCode }));
         const said = text(await run());
-        assert.match(said, /ask the person to sign in with the superbee CLI \(superbee login\)/, signInUrl);
+        assert.match(said, /ask the person to sign in to the workspace's host on this machine, then call run_operation again\.$/, signInUrl);
         assert.doesNotMatch(said, /issuer\.example|javascript/);
       }
 

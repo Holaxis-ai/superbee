@@ -7,7 +7,7 @@ import {
   type McpOperationsStop,
   type McpWorkspaceResolver,
 } from "@superbee/mcp-app";
-import type { HostedOperationListingAnswer, HostedOperationRun, JsonObject } from "@superbee/core/hosted-transport";
+import { namesOtherBundle, type HostedOperationListingAnswer, type HostedOperationRun, type JsonObject } from "@superbee/core/hosted-transport";
 
 import { openBundle, resolveLocalBundleTarget, samePhysicalPath } from "./bundle.js";
 import { deriveBundleDisplayName } from "./bundle-name.js";
@@ -60,7 +60,8 @@ export function createCatalogMcpWorkspaceResolver(
   const deriveName = options.deriveName ?? deriveBundleDisplayName;
   const reachable = options.reachable ?? (() => reachableHostedBundles({ budgetMs: MCP_HOSTED_BUDGET_MS, ...(options.home !== undefined ? { home: options.home } : {}) }));
   const now = options.now ?? Date.now;
-  const home = options.home ?? homedir();
+  // The private state bindings and sessions are read from: one home, as `op` derives it.
+  const home = options.hosted?.auth?.home ?? options.home ?? homedir();
 
   /**
    * The catalog entry a selector names and its canonical root, refused when the two disagree.
@@ -77,19 +78,23 @@ export function createCatalogMcpWorkspaceResolver(
   };
 
   /**
-   * A workspace's host, as the checkout's own person: its binding read fresh (never from the
-   * catalog), then the one checkout connection `op` uses. A local or Git folder stops here; a
-   * missing session stops with the one sign-in link, never a prompt. The sign-in's resume names
-   * the host only, never the folder.
+   * The checkout a workspace is, decided on this machine with no request: its binding read fresh
+   * (never from the catalog). A local or Git folder stops here.
    */
-  const hostOf = async (selector: string): Promise<{ binding: CheckoutBinding; connection: CheckoutConnection } | McpOperationsStop> => {
+  const checkoutOf = async (selector: string): Promise<CheckoutBinding | McpOperationsStop> => {
     const { target } = await select(selector, async () => undefined);
     const facts = await bundleHomeAt(target.canonicalRoot, { home });
-    if (facts.home !== "hosted") return { stop: "no_host_operations", home: facts.home };
-    const resume = commandFragment`${cliInvocation()} login --host ${commandToken(bindingHostArgument(facts.binding))}`;
+    return facts.home === "hosted" ? facts.binding : { stop: "no_host_operations", home: facts.home };
+  };
+
+  /**
+   * The one checkout connection `op` uses, as the checkout's own person. A missing session stops
+   * with the one sign-in link, never a prompt; its resume names the host only, never the folder.
+   */
+  const connect = async (binding: CheckoutBinding): Promise<CheckoutConnection | McpOperationsStop> => {
+    const resume = commandFragment`${cliInvocation()} login --host ${commandToken(bindingHostArgument(binding))}`;
     try {
-      const connection = await openCheckoutConnection(facts.binding, options.hosted, resume, home);
-      return { binding: facts.binding, connection };
+      return await openCheckoutConnection(binding, options.hosted, resume, home);
     } catch (error) {
       const details = error instanceof CliError && error.code === "AUTH_REQUIRED" ? (error.details as { sign_in_url?: unknown; user_code?: unknown } | undefined) : undefined;
       if (typeof details?.sign_in_url === "string" && typeof details.user_code === "string") {
@@ -176,9 +181,11 @@ export function createCatalogMcpWorkspaceResolver(
       });
     }),
     listOperations: captureRuntimeCallback(async (selector: string): Promise<HostedOperationListingAnswer | McpOperationsStop> => {
-      const host = await hostOf(selector);
-      if ("stop" in host) return host;
-      const answer = await host.connection.client.listOperations(host.binding.bundle_id);
+      const binding = await checkoutOf(selector);
+      if ("stop" in binding) return binding;
+      const connection = await connect(binding);
+      if ("stop" in connection) return connection;
+      const answer = await connection.client.listOperations(binding.bundle_id);
       if (!answer.ok) return answer;
       const kept = answer.listing.operations.filter((operation) => !isFolderAnswered(operation.operationId));
       const skipped = answer.listing.operations.filter((operation) => isFolderAnswered(operation.operationId));
@@ -194,14 +201,16 @@ export function createCatalogMcpWorkspaceResolver(
       };
     }),
     runOperation: captureRuntimeCallback(async (selector: string, operationId: string, input: JsonObject): Promise<HostedOperationRun | McpOperationsStop> => {
-      const host = await hostOf(selector);
-      if ("stop" in host) return host;
+      const binding = await checkoutOf(selector);
+      if ("stop" in binding) return binding;
+      // Decided here before any request, as `op run` decides them.
       if (isFolderAnswered(operationId)) return { stop: "folder_answers", operationId };
-      // The route's own refusal wording, before any request: the input names another bundle.
-      if (input.bundleId !== undefined && input.bundleId !== host.binding.bundle_id) {
+      if (namesOtherBundle(input, binding.bundle_id)) {
         return { ok: false, refusal: { code: "invalid_input", message: "the input names another bundle than this workspace's: leave bundleId out", retryable: false } };
       }
-      return host.connection.client.runOperation(host.binding.bundle_id, operationId, input);
+      const connection = await connect(binding);
+      if ("stop" in connection) return connection;
+      return connection.client.runOperation(binding.bundle_id, operationId, input);
     }),
   };
 }

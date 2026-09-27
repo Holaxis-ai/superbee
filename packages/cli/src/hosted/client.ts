@@ -98,7 +98,6 @@ export interface OperationRouteOptions {
   readonly unavailableHelp?: string;
 }
 
-
 export interface HostedIdentity {
   readonly principalId: string;
   readonly tenantIds: readonly string[];

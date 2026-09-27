@@ -12,7 +12,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { escapeHostJson, stripHostData } from "@superbee/core";
-import { HOSTED_READ_BOUNDS, isOperationId, type HostedOperation, type HostedOperationRefusal, type JsonObject } from "@superbee/core/hosted-transport";
+import { HOSTED_READ_BOUNDS, isOperationId, namesOtherBundle, type HostedOperation, type HostedOperationRefusal, type JsonObject } from "@superbee/core/hosted-transport";
 
 import { parseLeafOrUsage } from "../args.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
@@ -276,7 +276,7 @@ async function opRun(argv: string[], deps: Partial<OpDeps> & Pick<OpDeps, "stdou
       help: commandFragment`${cliInvocation()} ${typed.command} --dir ${commandToken(binding.path)}`,
     });
   }
-  if (input.bundleId !== undefined && input.bundleId !== binding.bundle_id) {
+  if (namesOtherBundle(input, binding.bundle_id)) {
     throw new CliError("USAGE", `the input names another bundle than this checkout's (${binding.bundle_id})`, {
       details: { reason: "bundle_mismatch", bundle: binding.bundle_id },
       help: "leave bundleId out: it is filled from the checkout",

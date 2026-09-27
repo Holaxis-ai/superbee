@@ -81,12 +81,12 @@ function stopResult(stop: McpOperationsStop, workspace: string, retry: string): 
       return toolError(`Workspace '${workspace}' is a ${stop.home === "git" ? "Git" : "local"} bundle: it has no host operations. Use ${TYPED_TOOLS}.`);
     case "folder_answers":
       return toolError(
-        `Workspace '${workspace}' is a hosted checkout that answers ${stop.operationId} from its folder, which sees its unsent edits: read documents with show_document (the superbee CLI's list and query answer queries).`,
+        `Workspace '${workspace}' is a hosted checkout that answers ${stop.operationId} from its folder, which sees its unsent edits: read documents with show_document; documents.query.v1 has no tool here, and the folder answers it.`,
       );
     case "sign_in_required": {
       const link = signInLink(stop.signInUrl);
       if (link === undefined || !USER_CODE.test(stop.userCode)) {
-        return toolError(`Sign-in to the host of workspace '${workspace}' is required: ask the person to sign in with the superbee CLI (superbee login), then call ${retry} again.`);
+        return toolError(`Sign-in to the host of workspace '${workspace}' is required: ask the person to sign in to the workspace's host on this machine, then call ${retry} again.`);
       }
       return toolError(`Sign-in to the host of workspace '${workspace}' is required: ask the person to open ${link} and confirm the code ${stop.userCode}, then call ${retry} again.`);
     }
@@ -117,9 +117,9 @@ function failureResult(error: unknown, workspace: string, doing: string): CallTo
   const next: Record<string, string> = {
     NOT_FOUND: "Call list_workspaces and retry with an available exact ID or label.",
     TRANSIENT: "Retry the same call.",
-    AUTH_REQUIRED: "Ask the person to sign in to the workspace's host with the superbee CLI (superbee login), then retry.",
+    AUTH_REQUIRED: "Ask the person to sign in to the workspace's host on this machine, then retry.",
     FORBIDDEN: "The host refused access, or the workspace's checkout belongs to another person than the one signed in.",
-    CONFLICT: "The superbee CLI's status and sync, run in the workspace's folder, say what needs the person.",
+    CONFLICT: "The person resolves it in the workspace's folder.",
     NOT_IMPLEMENTED: "The workspace's host does not offer operations by id yet.",
   };
   const tail = code !== undefined && Object.hasOwn(next, code) ? ` ${next[code]}` : "";
