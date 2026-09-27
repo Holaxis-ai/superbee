@@ -49,7 +49,8 @@ import { fileURLToPath } from "node:url";
 
 import { headsDigest, stringifyDoc } from "@superbee/core";
 import { versionOfBytes } from "@superbee/core/versioning";
-import { isAgentLabelVia } from "@superbee/core/hosted-transport";
+import { isAcceptedDeletionCount, isAgentLabelVia } from "@superbee/core/hosted-transport";
+import { deletionHold } from "../../src/hosted/sync-scan.js";
 
 import { exportArchive, type ExportState } from "./fake-export-archive.js";
 
@@ -245,6 +246,7 @@ export class FakeHost {
   deleteWithTombstone(id: string): string {
     const doc = this.docs.get(id);
     assert.ok(doc, `the host has ${id}`);
+    if (this.oldIds.has(id)) this.oldDeleted += 1;
     return this.tombstone(id, doc.version);
   }
 
@@ -448,7 +450,7 @@ export class FakeHost {
     if (via !== null && !isAgentLabelVia(via)) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     // The hold's acknowledgment is a delete's (and its outcome's) alone: 1 to 100,000.
     const deletes = route === "delete" || (route === "outcome" && outcomeOf(body) === "delete");
-    if (acceptDeletes !== null && (!deletes || !/^[1-9][0-9]{0,5}$/.test(acceptDeletes) || Number(acceptDeletes) > 100000)) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    if (acceptDeletes !== null && (!deletes || !/^[1-9][0-9]*$/.test(acceptDeletes) || !isAcceptedDeletionCount(Number(acceptDeletes)))) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     if (!this.writable(route)) {
       const operationId = route === "create" ? "documents.create.v1" : route === "replace" ? "documents.replace.v1" : "documents.delete.v1";
       return Response.json({ ok: false, operationId, error: { code: "insufficient_scope", message: "Your access to this bundle does not allow this write. Nothing was written.", retryable: false, writeState: "not_applied" } });
@@ -486,7 +488,7 @@ export class FakeHost {
     const live = [...this.docs.keys()].filter((key) => this.oldIds.has(key)).length;
     const deletions = this.oldDeleted + 1;
     const baseline = live + this.oldDeleted;
-    if (!(deletions * 2 > baseline && deletions >= Math.min(3, baseline)) || (accepted !== undefined && deletions <= accepted)) return null;
+    if (!deletionHold(1, live, this.oldDeleted).held || (accepted !== undefined && deletions <= accepted)) return null;
     return Response.json(
       { error: { code: "deletions_held", deletions, baseline, message: `This would make ${deletions} deletions in 24 hours of the ${baseline} documents this bundle held. Nothing was deleted; a person must confirm this mass delete.`, retryable: false, writeState: "not_applied" } },
       { status: 428 },

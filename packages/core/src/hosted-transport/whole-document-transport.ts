@@ -45,7 +45,7 @@ import {
   type WriteFailure,
 } from "./answer-rows.js";
 import { DELETE_OPERATION_ID } from "./answer-rows.js";
-import { HostedCarrierError, isAgentLabelVia, MAXIMUM_ACCEPTED_DELETIONS, type HostedAnswer, type HostedCarrier, type HostedRequestOptions } from "./carrier.js";
+import { HostedCarrierError, isAcceptedDeletionCount, isAgentLabelVia, type HostedAnswer, type HostedCarrier, type HostedRequestOptions } from "./carrier.js";
 import { isContentVersion } from "../version-transport.js";
 import { OPERATIONS_RETENTION_SKEW_MS, type HostedReadAdapter } from "./read-adapter.js";
 
@@ -234,7 +234,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   // Checked here, so the carrier's own refusal of a bad token (a `denied`, read as a sign-in
   // pause) is never reached from a write.
   if (options.via !== undefined && !isAgentLabelVia(options.via)) throw new TypeError("the via token is not one the host admits");
-  if (options.acceptDeletes !== undefined && (!Number.isSafeInteger(options.acceptDeletes) || options.acceptDeletes < 1 || options.acceptDeletes > MAXIMUM_ACCEPTED_DELETIONS)) throw new TypeError("acceptDeletes is not a count the host admits");
+  if (options.acceptDeletes !== undefined && !isAcceptedDeletionCount(options.acceptDeletes)) throw new TypeError("acceptDeletes is not a count the host admits");
   const via = options.via;
 
   /**

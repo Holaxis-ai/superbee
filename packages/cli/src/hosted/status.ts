@@ -52,6 +52,8 @@ export async function classifyCheckout(binding: CheckoutBinding, home: string, s
     if (row.reason === "bulk_deletion") result.heldDeletions.add(row.id);
     else result.held.set(row.id, row.reason);
   }
+  // The held set also names the deletes the host held: journaled, but a plain sync never sends them.
+  for (const id of report.hold?.ids ?? []) result.heldDeletions.add(id);
 
   // One category per document: a conflict needs the person first, then a held file.
   for (const id of result.conflicts) {

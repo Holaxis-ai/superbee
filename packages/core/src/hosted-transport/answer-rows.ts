@@ -278,6 +278,12 @@ export function parseWriteResult(raw: unknown, expected: { operationIds: readonl
 
 // ── classifying an identified-write answer ─────────────────────────────────────────────────
 
+/** The refusals answered before dispatch, by status: the sync quota, and the mass-delete hold. */
+const BEFORE_DISPATCH = new Map<number, { code: WriteErrorCode; lenient: boolean }>([
+  [429, { code: "request_capacity", lenient: true }],
+  [428, { code: "deletions_held", lenient: false }],
+]);
+
 const rowsByAnswer = new Map(UPDATE_ANSWER_ROWS.map((row) => [row.answer, row]));
 
 /** The row named `answer`; every name this module uses is in the table. */
@@ -314,29 +320,19 @@ export function classifyWriteAnswer(
     return { row: updateRow("401 other") };
   }
   if (status === 403) return { row: updateRow("403") };
-  if (status === 429) {
+  // The refusals the host answers before dispatch, each with its own status and code. The
+  // capacity refusal is read leniently (its early hosts left fields out); the mass-delete hold is
+  // parsed exactly as the host sends it, so a 428 that does not say it applied nothing is not one.
+  const beforeDispatch = BEFORE_DISPATCH.get(status);
+  if (beforeDispatch) {
     const error = (body as { error?: unknown } | undefined)?.error;
-    if (isRecord(error) && error.code === "request_capacity") {
-      try {
-        const result = parseWriteResult({ ok: false, operationId: expected.operationIds[0], error: { retryable: false, writeState: "not_applied", message: "", ...error } }, expected);
-        return { row: updateRow("429 request_capacity"), result };
-      } catch {
-        return { row: updateRow("other status") };
-      }
+    if (!isRecord(error) || error.code !== beforeDispatch.code) return { row: updateRow("other status") };
+    try {
+      const sent = beforeDispatch.lenient ? { retryable: false, writeState: "not_applied", message: "", ...error } : error;
+      return { row: updateRow(`${status} ${beforeDispatch.code}`), result: parseWriteResult({ ok: false, operationId: expected.operationIds[0], error: sent }, expected) };
+    } catch {
+      return { row: updateRow("other status") };
     }
-    return { row: updateRow("other status") };
-  }
-  if (status === 428) {
-    const error = (body as { error?: unknown } | undefined)?.error;
-    if (isRecord(error) && error.code === "deletions_held") {
-      try {
-        const result = parseWriteResult({ ok: false, operationId: expected.operationIds[0], error: { retryable: false, writeState: "not_applied", message: "", ...error } }, expected);
-        return { row: updateRow("428 deletions_held"), result };
-      } catch {
-        return { row: updateRow("other status") };
-      }
-    }
-    return { row: updateRow("other status") };
   }
   if (status === 503) return { row: updateRow("503") };
   return { row: updateRow("other status") };

@@ -154,7 +154,7 @@ export interface DeletionWindow {
    * in 24 hours with the first held delete, and its baseline. Kept while deletes the host held are
    * parked in the journal; cleared by an acceptance or once none is parked.
    */
-  server?: { deletions: number; baseline: number } | null;
+  host?: { deletions: number; baseline: number } | null;
 }
 
 export async function readDeletionWindow(store: JournaledBackend): Promise<DeletionWindow> {
@@ -165,9 +165,9 @@ export async function readDeletionWindow(store: JournaledBackend): Promise<Delet
     acceptedSequence: typeof raw?.acceptedSequence === "number" && Number.isSafeInteger(raw.acceptedSequence) ? raw.acceptedSequence : null,
     baseline: typeof raw?.baseline === "number" && Number.isSafeInteger(raw.baseline) ? raw.baseline : null,
     hold,
-    server:
-      raw?.server && Number.isSafeInteger(raw.server.deletions) && Number.isSafeInteger(raw.server.baseline) && raw.server.deletions >= 1
-        ? { deletions: raw.server.deletions, baseline: raw.server.baseline }
+    host:
+      raw?.host && Number.isSafeInteger(raw.host.deletions) && Number.isSafeInteger(raw.host.baseline) && raw.host.deletions >= 1 && raw.host.baseline >= 1
+        ? { deletions: raw.host.deletions, baseline: raw.host.baseline }
         : null,
   };
 }
@@ -211,11 +211,11 @@ export async function recordHostHold(store: JournaledBackend, answered: { deleti
   const parked = await parkedDeletions(store);
   if (parked.length === 0) return local;
   const window = await readDeletionWindow(store);
-  const server = answered ?? window.server ?? null;
+  const host = answered ?? window.host ?? null;
   const ids = [...new Set([...parked.map((row) => row.target), ...(local?.ids ?? [])])].sort();
   const token = acceptToken(ids);
-  await store.writeMeta(DELETION_WINDOW_KEY, { ...window, hold: { ids, token }, server } satisfies DeletionWindow);
-  const bundle = hostWindow(server, ids.length);
+  await store.writeMeta(DELETION_WINDOW_KEY, { ...window, hold: { ids, token }, host } satisfies DeletionWindow);
+  const bundle = hostWindow(host, ids.length);
   return {
     count: ids.length,
     ids,
@@ -224,13 +224,16 @@ export async function recordHostHold(store: JournaledBackend, answered: { deleti
     deletions: bundle?.deletions ?? local?.deletions ?? ids.length,
     baseline: bundle?.baseline ?? local?.baseline ?? ids.length,
     basis: bundle ? "bundle" : (local?.basis ?? "all"),
+    // What the person's --accept-deletes did in this run's scan, carried to the receipt.
+    ...(local?.acceptMismatch !== undefined ? { acceptMismatch: local.acceptMismatch } : {}),
+    ...(local?.acceptDeclined ? { acceptDeclined: true as const } : {}),
   };
 }
 
 /** The bundle's window if all `count` held deletes went through, from the host's last answer (its
  * `deletions` counted the first held delete). */
-function hostWindow(server: { deletions: number; baseline: number } | null | undefined, count: number): { deletions: number; baseline: number } | null {
-  return server ? { deletions: server.deletions - 1 + count, baseline: server.baseline } : null;
+function hostWindow(host: { deletions: number; baseline: number } | null | undefined, count: number): { deletions: number; baseline: number } | null {
+  return host ? { deletions: host.deletions - 1 + count, baseline: host.baseline } : null;
 }
 
 /** What the window holds, read from the journal; see {@link deletionWindowStats}. */
@@ -702,7 +705,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   // The deletes the host held are one set with this scan's: one hold at a time, one token.
   const parked = await parkedDeletions(local.backend);
   const union = [...new Set([...parked.map((row) => row.target), ...counting.map(({ id }) => id)])].sort();
-  const bundle = parked.length > 0 ? hostWindow(window.server, union.length) : null;
+  const bundle = parked.length > 0 ? hostWindow(window.host, union.length) : null;
   const pendingHold = parked.length > 0 || (window.hold !== null && counting.some(({ id }) => window.hold!.ids.includes(id)));
   const token = acceptToken(union);
   const holding = union.length > 0 && (pendingHold || decision.held);
@@ -733,7 +736,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
         ? `${decision.deletions} of the ${decision.baseline} documents this checkout did not create itself`
         : `${decision.deletions} of the ${decision.baseline} documents`;
     for (const { id, rel } of counting) {
-      report.held.push(held(id, rel, "bulk_deletion", `${rel} is one of ${counting.length} files deleted and held: with the deletes of the last day that is ${counts}${pendingHold && !decision.held ? " (held since an earlier sync)" : ""}, so none is sent. Put the files back with sync --restore-deletes; removing them from the bundle needs the person to confirm it in their own terminal (see deletions_held)`));
+      report.held.push(held(id, rel, "bulk_deletion", `${rel} is one of ${union.length} files deleted and held: with the deletes of the last day that is ${counts}${pendingHold && !decision.held ? " (held since an earlier sync)" : ""}, so none is sent. Put the files back with sync --restore-deletes; removing them from the bundle needs the person to confirm it in their own terminal (see deletions_held)`));
     }
     // Deleting what the checkout created today is not part of the hold; it goes out as usual.
     const heldIds = new Set(ids);
@@ -742,7 +745,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   if (!context.preview && !report.hold && (counting.length > 0 || window.hold !== null)) {
     // Opening the window freezes its baseline; an acceptance, or a hold whose files came back, closes it.
     const opening = counted === 0 && counting.length > 0 && !accepting;
-    const next: DeletionWindow = { acceptedAt: window.acceptedAt, acceptedSequence: window.acceptedSequence ?? null, baseline: accepting ? null : opening ? baseline : window.baseline, hold: null, server: null };
+    const next: DeletionWindow = { acceptedAt: window.acceptedAt, acceptedSequence: window.acceptedSequence ?? null, baseline: accepting ? null : opening ? baseline : window.baseline, hold: null, host: null };
     await local.backend.writeMeta(DELETION_WINDOW_KEY, next satisfies DeletionWindow);
   }
   if (context.preview) {
@@ -770,7 +773,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     for (const row of parked) if (await supersedeDeletion(local.backend, row)) requeued += 1;
     // An explicit acceptance admits the whole window and starts a new one. It is written after the
     // deletes are journaled and requeued: a crash in between leaves them counted, which only holds more.
-    await local.backend.writeMeta(DELETION_WINDOW_KEY, { acceptedAt: new Date().toISOString(), acceptedSequence: await latestSequence(local.backend), baseline: null, hold: null, server: null } satisfies DeletionWindow);
+    await local.backend.writeMeta(DELETION_WINDOW_KEY, { acceptedAt: new Date().toISOString(), acceptedSequence: await latestSequence(local.backend), baseline: null, hold: null, host: null } satisfies DeletionWindow);
     report.accepted = admitted.length + requeued;
     // The host counts the whole bundle: the person confirmed the host's count when it answered
     // one, else this checkout's own (a second prompt follows only if the bundle's is higher).

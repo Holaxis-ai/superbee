@@ -53,6 +53,11 @@ export const ACCEPT_DELETES_HEADER = "X-Superbee-Accept-Deletes";
 /** The largest acknowledgment the host admits. */
 export const MAXIMUM_ACCEPTED_DELETIONS = 100000;
 
+/** Whether `value` is an acknowledgment count the host admits: an integer from 1 to 100,000. */
+export function isAcceptedDeletionCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= MAXIMUM_ACCEPTED_DELETIONS;
+}
+
 /** The header that carries {@link HostedRequestOptions.recreate}. */
 export const RECREATE_HEADER = "X-Superbee-Recreate";
 
@@ -191,7 +196,7 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
       if (request.binding !== undefined && !BINDING.test(request.binding)) throw new HostedCarrierError("denied");
       if (request.recreate !== undefined && !BINDING.test(request.recreate)) throw new HostedCarrierError("denied");
       if (request.via !== undefined && !isAgentLabelVia(request.via)) throw new HostedCarrierError("denied");
-      if (request.acceptDeletes !== undefined && (!Number.isSafeInteger(request.acceptDeletes) || request.acceptDeletes < 1 || request.acceptDeletes > MAXIMUM_ACCEPTED_DELETIONS)) throw new HostedCarrierError("denied");
+      if (request.acceptDeletes !== undefined && !isAcceptedDeletionCount(request.acceptDeletes)) throw new HostedCarrierError("denied");
       const extra: Record<string, string> = {};
       if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
       if (request.binding !== undefined) extra[bindingHeader] = request.binding;

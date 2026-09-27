@@ -356,6 +356,10 @@ test("mass-delete hold: 428 deletions_held classifies on its own row with the bu
   const bare = JSON.parse(held.response.body);
   delete bare.error.baseline;
   assert.equal(classifyWriteAnswer({ status: 428, headers: new Headers(), body: bare }, expected).row.answer, "other status");
+  // Parsed as the host sends it: a 428 that does not say it applied nothing is not the hold.
+  const unstated = JSON.parse(held.response.body);
+  delete unstated.error.writeState;
+  assert.equal(classifyWriteAnswer({ status: 428, headers: new Headers(), body: unstated }, expected).row.answer, "other status");
   assert.equal(classifyWriteAnswer(answerOf(held), { ...expected, operationIds: ["documents.create.v1"] }).row.answer, "other status");
 });
 

@@ -17,6 +17,7 @@ import { decode } from "@toon-format/toon";
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { sync } from "../src/commands/sync.js";
+import { status } from "../src/commands/status.js";
 import { withoutUnsafeIds } from "../src/hosted/sync.js";
 import { deletionHold } from "../src/hosted/sync-scan.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
@@ -262,6 +263,63 @@ test("a mass delete split across two checkouts is held by the host, parked, and 
   assert.deepEqual(deletes(second).slice(sent).map((call) => call.acceptDeletes), ["8", "8"]);
   assert.deepEqual(mine.map((id) => second.host.docs.has(id)), [false, false, false]);
   assert.equal(holdOf(await ok(second)), undefined);
+});
+
+/** The split mass delete of the first test, stopped where the host holds the second checkout's last two. */
+async function hostHeld(): Promise<{ first: H; second: H; mine: string[]; hold: Hold }> {
+  const [first, second] = await splitCheckouts();
+  for (const id of bulkIds(5)) await unlink(fileOf(first, id));
+  await ok(first);
+  const mine = bulkIds(8).slice(5);
+  for (const id of mine) await unlink(fileOf(second, id));
+  const hold = holdOf((await fails(second)).receipt)!;
+  return { first, second, mine, hold };
+}
+
+test("a host hold keeps the person's feedback: a declined count or another set's token accepts nothing", async () => {
+  const { second, hold } = await hostHeld();
+  const sent = deletes(second).length;
+  second.terminal = personAtTerminal(() => "1");
+  const declined = await fails(second, ["--accept-deletes", hold.confirmation_required.token]);
+  assert.match(holdOf(declined.receipt)!.accept_declined ?? "", /not 2; nothing was accepted/);
+  second.terminal = personAtTerminal();
+  const mismatch = await fails(second, ["--accept-deletes", `2:${"0".repeat(12)}`]);
+  assert.match(holdOf(mismatch.receipt)!.accept_mismatch ?? "", /does not name the held set/);
+  assert.equal(deletes(second).length, sent, "nothing was sent");
+});
+
+test("a new local delete joins the host's hold: one token covers both, and the person's count sends all three", async () => {
+  const { second, mine, hold } = await hostHeld();
+  await unlink(fileOf(second, "bulk/n08"));
+  const joined = holdOf((await fails(second)).receipt)!;
+  assert.equal(joined.count, 3);
+  assert.notEqual(joined.confirmation_required.token, hold.confirmation_required.token);
+  const sent = deletes(second).length;
+  second.terminal = personAtTerminal();
+  const accepted = await ok(second, ["--accept-deletes", joined.confirmation_required.token]);
+  assert.equal(accepted.deletions_accepted, 3);
+  assert.deepEqual(deletes(second).slice(sent).map((call) => call.acceptDeletes), ["9", "9", "9"]);
+  assert.deepEqual([...mine, "bulk/n08"].filter((id) => second.host.docs.has(id)), []);
+});
+
+test("the host holds again when the bundle's count rose past what the person confirmed", async () => {
+  const { second, mine, hold } = await hostHeld();
+  // Someone else deletes one more old document after the person saw "8 of 12".
+  second.host.deleteWithTombstone("bulk/n08");
+  second.terminal = personAtTerminal();
+  const again = await fails(second, ["--accept-deletes", hold.confirmation_required.token]);
+  assert.equal(again.error.code, "CONFLICT");
+  // The first of the two fit the confirmed 8; the second would make 9 and is held once more.
+  assert.equal(holdOf(again.receipt)!.count, 1);
+  assert.equal(mine.slice(1).filter((id) => second.host.docs.has(id)).length, 1);
+});
+
+test("status counts the deletes the host holds as held, not as unsent changes a plain sync would send", async () => {
+  const { second } = await hostHeld();
+  const out: string[] = [];
+  await status(["--dir", second.folder], { stdout: (t: string) => void out.push(t), home: second.home, autoPull: async () => assert.fail("status must not pull") });
+  const block = (decode(out.join("").trim()) as { sync: { state: string; held_deletions: number; unsent: number } }).sync;
+  assert.deepEqual([block.state, block.held_deletions, block.unsent], ["needs_decision", 2, 0]);
 });
 
 test("deletes the host held are restored by --restore-deletes, and the hold ends", async () => {

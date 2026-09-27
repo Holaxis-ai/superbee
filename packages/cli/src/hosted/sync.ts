@@ -113,7 +113,9 @@ first, and are refused (stale_review) if the host's version changed after it; ta
 A deleted file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
 document's history. A mass delete is held: when the deletes of the last day (sent, unsent and
 new) are more than half the checkout and at least 3 (or every document of a smaller one), the new
-ones are not sent, and they stay held until restored or accepted. --restore-deletes puts held
+ones are not sent, and they stay held until restored or accepted. The host applies the same rule
+to the whole bundle, over everyone's deletes of the last day: a delete it holds (deletions_held
+with counted_over naming the bundle) is parked the same way, and a plain sync never resends it. --restore-deletes puts held
 and unsent deleted files back (so does --resolve take --doc <id> for one of them).
 --accept-deletes <token> sends exactly the held set the receipt names, and only after the person
 types the held count at the prompt: it needs an interactive terminal, and refuses any other
@@ -614,7 +616,7 @@ async function caseCollidingCreates(store: JournaledBackend): Promise<HeldFile[]
   return out;
 }
 
-async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes?: number): Promise<PushOutcome> {
+async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes?: number, heldSink: { value?: { deletions: number; baseline: number } } = {}): Promise<PushOutcome> {
   const { store, local, binding, reader } = session;
   const acknowledged = new Map<string, string>();
   const deleted = new Set<string>();
@@ -653,6 +655,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     ...(acceptDeletes !== undefined ? { acceptDeletes } : {}),
     onDeletionsHeld: ({ deletions, baseline }) => {
       deletionsHeld ??= { deletions, baseline };
+      heldSink.value ??= deletionsHeld;
     },
   });
   const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)));
@@ -767,7 +770,7 @@ function confirmAtTerminal(binding: CheckoutBinding, terminal: HostedTerminal) {
         ...shown,
         ...more,
         `Accepting removes them from the hosted bundle '${binding.bundle_id}' for everyone; the host keeps their history.`,
-        ...(hold.bundle ? [`With every deletion in the bundle over the last 24 hours, that is ${hold.bundle.deletions} of the ${hold.bundle.baseline} documents it held.`] : []),
+        ...(hold.bundle ? [`With every deletion in the bundle over the last 24 hours when the host last answered, that is ${hold.bundle.deletions} of the ${hold.bundle.baseline} documents it held; the host counts again when they are sent.`] : []),
         `Type ${hold.count} to remove them, or anything else to keep them held: `,
       ].join("\n"),
     );
@@ -827,9 +830,12 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     }
     await recordPulled(deps.auth.home, binding.checkout_id);
     let outcome: PushOutcome;
+    const heldSink: { value?: { deletions: number; baseline: number } } = {};
     try {
-      outcome = await pushChanges(session, deps, scan.acceptDeletes);
+      outcome = await pushChanges(session, deps, scan.acceptDeletes, heldSink);
     } catch (error) {
+      // The deletes the host held before the push failed stay parked; keep its counts with them.
+      await recordHostHold(store, heldSink.value, scan.hold).catch(() => undefined);
       throw readFailure(error, session, resumeCommand, await unsent());
     }
     // A document the pull held for a change that has now committed may have changed on the host

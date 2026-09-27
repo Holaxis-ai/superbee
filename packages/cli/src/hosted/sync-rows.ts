@@ -48,6 +48,8 @@ export const READ_ONLY_MESSAGE =
   "The host refused writes to this bundle: you have read-only access, your access was withdrawn, or sync writes are not enabled for it. Your change stays in the folder; ask a bundle admin for write access, or make the change in the Superbee app.";
 export const READ_ONLY_DELETE_MESSAGE =
   "The host refused writes to this bundle, so the document was not removed there. Put the file back with 'sync --restore-deletes' (or '--resolve take --doc <id>'), or ask a bundle admin for write access.";
+export const HOST_HELD_DELETE_MESSAGE =
+  "The host held this delete: with every deletion in the bundle over the last 24 hours it would remove over half of the bundle, so nothing was deleted. Put the file back with sync --restore-deletes; removing it from the bundle needs the person to confirm it in their own terminal (see deletions_held).";
 export const ACCESS_WITHDRAWN_MESSAGE =
   "The host denied access to this bundle (403): your access was withdrawn. Signing in again does not restore it. Your change stays in the folder; ask a bundle admin for access.";
 
@@ -56,8 +58,7 @@ function refusalRow(id: string, row: IntentRecord, accessWithdrawn = false): Syn
   const message = row.refusal?.message ?? "the host refused the change";
   if (code === CAPACITY_REFUSAL_CODES.principal) return { id, state: "paused", reason: "sync_quota_principal", version: null, message: QUOTA_MESSAGES.principal };
   if (code === CAPACITY_REFUSAL_CODES.bundle) return { id, state: "paused", reason: "sync_quota_bundle", version: null, message: QUOTA_MESSAGES.bundle };
-  if (code === DELETIONS_HELD_REFUSAL_CODE)
-    return { id, state: "held", reason: "bulk_deletion", version: null, message: "The host held this delete: with every deletion in the bundle over the last 24 hours it would remove over half of the bundle, so nothing was deleted. Put the file back with sync --restore-deletes; removing it from the bundle needs the person to confirm it in their own terminal (see deletions_held)." };
+  if (code === DELETIONS_HELD_REFUSAL_CODE) return { id, state: "held", reason: "bulk_deletion", version: null, message: HOST_HELD_DELETE_MESSAGE };
   if (code === "PERMISSION_DENIED") return { id, state: "refused", reason: "read_only", version: null, message: row.kind === "document.delete" ? READ_ONLY_DELETE_MESSAGE : READ_ONLY_MESSAGE };
   if (SIGN_IN_CODES.has(code) && accessWithdrawn) return { id, state: "refused", reason: "access_withdrawn", version: null, message: ACCESS_WITHDRAWN_MESSAGE };
   if (SIGN_IN_CODES.has(code)) return { id, state: "paused", reason: "sign_in", version: null, message: "The hosted session ended before this change was sent; sign in and run sync again." };

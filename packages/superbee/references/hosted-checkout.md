@@ -139,8 +139,8 @@ count. The host applies the same rule to the whole bundle, over every person and
 delete that would make more than half of the bundle's documents deleted in the last day is not
 applied (`428 deletions_held`), and sync holds it with the rest (`counted_over` then names the
 bundle). The sync receipt then carries `deletions_held`, which names the held documents. The hold
-stays in place across syncs until the person decides; a plain sync never sends a held delete again. Accepting it is the person's step, never
-yours:
+stays in place across syncs until the person decides; a plain sync never sends a held delete
+again. Accepting it is the person's step, never yours:
 
 1. Name the held documents to the person, and ask whether they should be removed from the bundle.
 2. If they want them removed, give them `deletions_held.confirmation_required.command_for_person`
