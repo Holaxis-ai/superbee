@@ -23,14 +23,21 @@ import { isHostedBundleId } from "./bundle-id.js";
 import { listReadyBindings, liveCheckoutFolders } from "./binding.js";
 import { readBundleListing, type HostedSyncClient } from "./client.js";
 import { fetchWithDeadline } from "./freshness.js";
+import { parseHostedBundleReference } from "./reference.js";
 
 /** One hosted bundle as a listing row: `folder` is the first live checkout of it here, sorted, or null. */
 export interface HostedBundleRow {
+  /** The bare bundle id. */
   readonly bundle_id: string;
+  /**
+   * What `checkout` takes: the bare id, or `<workspace>/<bundle-id>` for an id more than one of the
+   * person's workspaces holds (a host that names workspaces lists such an id once per workspace).
+   */
+  readonly reference: string;
   readonly name: string;
   readonly lifecycle: string | null;
   readonly folder: string | null;
-  /** Two of the person's workspaces hold the same id; `checkout` refuses it. */
+  /** A bare reference names an id more than one of the person's workspaces holds; `checkout` refuses it. */
   readonly ambiguous: boolean;
 }
 
@@ -46,19 +53,27 @@ export async function hostedBundleRows(client: HostedSyncClient, target: HostedT
   const rows = [...listing.bundles.values()]
     .filter(({ row }) => row.bundleId !== "" && stripHostText(row.bundleId, 256) === row.bundleId)
     .sort((a, b) => (a.row.bundleId < b.row.bundleId ? -1 : a.row.bundleId > b.row.bundleId ? 1 : 0))
-    .map(({ row, workspaces }) => ({
-      bundle_id: row.bundleId,
-      name: stripHostText(row.name, 200),
-      lifecycle: row.lifecycle === null ? null : stripHostText(row.lifecycle, 64),
-      folder: folders.get(row.bundleId)?.[0] ?? null,
-      ambiguous: workspaces > 1,
-    }));
+    // Each row: its bare bundle id, and the reference to check it out with. A checkout is the
+    // folder of the row its reference names, or of the bare row of its id.
+    .map(({ row, workspaces, reference }) => {
+      const bundleId = reference?.bundleId ?? row.bundleId;
+      const bare = reference?.slug === null ? [...folders.entries()].filter(([named]) => parseHostedBundleReference(named)?.bundleId === bundleId) : [];
+      return {
+        bundle_id: bundleId,
+        reference: row.bundleId,
+        name: stripHostText(row.name, 200),
+        lifecycle: row.lifecycle === null ? null : stripHostText(row.lifecycle, 64),
+        folder: folders.get(row.bundleId)?.[0] ?? (bare.length === 1 ? bare[0]![1][0]! : null),
+        ambiguous: workspaces > 1 || (reference?.slug === null && listing.lookup(reference).holders > 1),
+      };
+    });
   return { rows, complete: listing.complete };
 }
 
 /**
  * The hosted bundles one host lists that have no folder here, each with the command that brings it
- * into one. An id `checkout` refuses has none: one two of the person's workspaces hold, or one that
+ * into one (by its reference: `<workspace>/<bundle-id>` for an id more than one of the person's
+ * workspaces holds). An id `checkout` refuses has none: a bare one two of the person's workspaces hold, or one that
  * is not a bundle id `checkout` takes (`isHostedBundleId`; an id starting with `-` would read as an
  * option). `ask` lists them all.
  */
@@ -149,7 +164,7 @@ async function askHosts(options: ReachableOptions): Promise<ReachableListing | n
           ask: String(ask),
           bundles: rows
             .filter((row) => row.folder === null)
-            .map((row) => (row.ambiguous || !isHostedBundleId(row.bundle_id) ? row : { ...row, checkout: `${cliInvocation()} checkout ${commandToken(row.bundle_id)} --host ${commandToken(host)}` })),
+            .map((row) => (row.ambiguous || !isHostedBundleId(row.bundle_id) || parseHostedBundleReference(row.reference) === null ? row : { ...row, checkout: `${cliInvocation()} checkout ${commandToken(row.reference)} --host ${commandToken(host)}` })),
         };
       } catch (error) {
         // Signed out after all (a refresh the issuer refused), or an environment token that is for

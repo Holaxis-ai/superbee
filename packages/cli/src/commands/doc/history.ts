@@ -2,7 +2,7 @@ import { renderUsage } from "../../output.js";
 // `doc history <id>` — see `../doc.ts`'s header comment for the CAS-token / attribution rationale.
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
-import { docVersions, parseMarkdown, RemoteError, type VersionInfo } from "@superbee/core";
+import { docVersions, parseMarkdown, type VersionInfo } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
@@ -11,12 +11,10 @@ import { render, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { DOC_HISTORY_USAGE, HOSTED_HISTORY_CEILING, type DocCliDeps, readErrorToCliError } from "./common.js";
-import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
+import { commandFragment, commandToken } from "../../command-text.js";
 import { hostedCheckoutAt } from "../../autopull.js";
 import type { CheckoutBinding } from "../../hosted/binding.js";
-import type { HostedAccountDeps } from "../../hosted/account.js";
-import type { HostedSyncClient } from "../../hosted/client.js";
-import type { HostedTarget } from "../../hosted-auth/discovery.js";
+import { openCheckoutConnection, type CheckoutConnection } from "../../hosted/checkout-connection.js";
 import { HISTORY_PAGE_LIMIT, readHistoryListing, type HostedHistoryVersion, type HostedOperationRefusal } from "@superbee/core/hosted-transport";
 import { attachBodyPreview } from "../../body-replace-guards.js";
 
@@ -106,7 +104,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     const resume = commandFragment`${cliInvocation()} doc history ${commandToken(id)} --dir ${commandToken(checkout.path)}${
       seq !== undefined ? commandFragment` --seq ${commandToken(String(seq))}` : values.limit !== undefined ? commandFragment` --limit ${commandToken(String(limit))}` : commandFragment``
     }${values.json ? commandFragment` --json` : commandFragment``}`;
-    const connection = await hostedConnection(checkout, deps.hosted, resume);
+    const connection = await openCheckoutConnection(checkout, deps.hosted, resume);
     if (seq !== undefined) {
       await hostedVersion(connection, checkout, id, seq, mode, stdout);
       return;
@@ -175,26 +173,12 @@ function truncationHelp(id: string, shown: number, total: number): string {
   return `showing ${shown} of ${total} — run \`${cliInvocation()} doc history ${commandToken(id)} --limit 0\` (or a higher --limit) for all`;
 }
 
-interface Connection {
-  readonly client: HostedSyncClient;
-  readonly target: HostedTarget;
-  readonly resume: CommandText;
-}
-
-/** The checkout's host, reached as the checkout's own person. */
-async function hostedConnection(checkout: CheckoutBinding, hosted: HostedAccountDeps | undefined, resume: CommandText): Promise<Connection> {
-  // Loaded only in a hosted checkout, so an ordinary history never loads the hosted modules.
-  const [{ connectCheckout }, { defaultHostedAuthDeps }] = await Promise.all([import("../../hosted/account.js"), import("../../hosted-auth/session.js")]);
-  const { client, target } = await connectCheckout(checkout, { resume }, hosted ?? { auth: defaultHostedAuthDeps(homedir()) });
-  return { client, target, resume };
-}
-
 /**
  * The CLI error a history refusal means. `document_not_found` and `result_too_large` are this
  * command's own; a bundle the host no longer serves is the checkout's conflict, as sync reports
  * it; every other code goes through the hosted client's one translation.
  */
-async function refusalError(refusal: HostedOperationRefusal, connection: Connection, checkout: CheckoutBinding, id: string, path: "list" | "seq"): Promise<unknown> {
+async function refusalError(refusal: HostedOperationRefusal, connection: CheckoutConnection, checkout: CheckoutBinding, id: string, path: "list" | "seq"): Promise<unknown> {
   if (refusal.code === "document_not_found") {
     return new CliError("NOT_FOUND", `no document '${id}' on ${checkout.origin}`, {
       details: { host: checkout.origin, id, code: refusal.code },
@@ -210,9 +194,15 @@ async function refusalError(refusal: HostedOperationRefusal, connection: Connect
           : `this version cannot be read from the CLI; the current version is ${cliInvocation()} doc read ${commandToken(id)}`,
     });
   }
-  const [{ bundleGone }, { hostedFailure }] = await Promise.all([import("../../hosted/refusals.js"), import("../../hosted/client.js")]);
-  if (refusal.code === "bundle_not_found") return bundleGone(checkout);
-  return hostedFailure(new RemoteError(refusal.message, refusal.code, refusal.retryable ? 503 : 422), connection.target, connection.resume);
+  const { operationRefusalError } = await import("../../hosted/operation-refusal.js");
+  return operationRefusalError(refusal, {
+    binding: checkout,
+    client: connection.client,
+    target: connection.target,
+    resume: connection.resume,
+    subject: `the history of '${id}'`,
+    inputHelp: `${cliInvocation()} doc history --help`,
+  });
 }
 
 function row(version: HostedHistoryVersion): Record<string, unknown> {
@@ -226,7 +216,7 @@ function row(version: HostedHistoryVersion): Record<string, unknown> {
 }
 
 /** The host's chain, newest first: `limit` versions (0 = every one), never more than the ceiling. */
-async function hostedList(connection: Connection, checkout: CheckoutBinding, id: string, limit: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
+async function hostedList(connection: CheckoutConnection, checkout: CheckoutBinding, id: string, limit: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
   const { client } = connection;
   const wanted = Math.min(limit === 0 ? HOSTED_HISTORY_CEILING : limit, HOSTED_HISTORY_CEILING);
   const listing = await readHistoryListing(
@@ -282,7 +272,7 @@ async function hostedList(connection: Connection, checkout: CheckoutBinding, id:
  * default record carries the row, the version's frontmatter and a bounded body preview (AXI: no
  * unbounded document on stdout), with the `--json` command as the complete-content channel.
  */
-async function hostedVersion(connection: Connection, checkout: CheckoutBinding, id: string, seq: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
+async function hostedVersion(connection: CheckoutConnection, checkout: CheckoutBinding, id: string, seq: number, mode: OutputMode, stdout: (s: string) => void): Promise<void> {
   const answer = await connection.client.history(checkout.bundle_id, { documentId: id, limit: 1, before: seq + 1, includeContent: true });
   if (!answer.ok) throw await refusalError(answer.refusal, connection, checkout, id, "seq");
   const version = answer.page.versions[0];

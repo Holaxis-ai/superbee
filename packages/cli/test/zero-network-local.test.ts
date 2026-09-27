@@ -50,10 +50,11 @@ async function networkLog(box: Sandbox): Promise<string[]> {
 
 /**
  * Every read, write and sync verb a persona-A session uses, in one bundle, and the exit code each
- * must return: 0, except `whoami` with no hosted host selected (USAGE, 2).
+ * must return: 0, except `whoami` with no hosted host selected (USAGE, 2) and `op run`, which a
+ * local or Git bundle answers NOT_IMPLEMENTED (exit 2).
  */
 function expectedCode(args: string[]): number {
-  return args[0] === "whoami" ? 2 : 0;
+  return args[0] === "whoami" || (args[0] === "op" && args[1] === "run") ? 2 : 0;
 }
 
 /** Run one command and require its expected exit code and no refused network call. */
@@ -90,6 +91,9 @@ function localCommands(): string[][] {
     ["whoami"],
     // Not a hosted checkout: nothing to convert, and nothing is fetched.
     ["export", "--in-place"],
+    // No host operations here: none listed, none run, nothing fetched.
+    ["op", "list"],
+    ["op", "run", "documents.history.v1", "--input", '{"documentId":"notes/first"}'],
     ["sync"],
     ["sync", "--pull-only"],
   ];

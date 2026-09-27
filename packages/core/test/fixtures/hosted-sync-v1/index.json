@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted 7b05fb4b721c572e73fc5a1dbcce37f0df8228e0",
+  "source": "Holaxis-ai/superbee-hosted 16ec5be49e97597ec40d1baa21f0ec47723ca8a1",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
@@ -61,6 +61,15 @@
     {
       "name": "read-200-ok",
       "file": "read-200-ok.json",
+      "route": "/sync/v1/read",
+      "rows": [
+        "read 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "read-200-ok-qualified",
+      "file": "read-200-ok-qualified.json",
       "route": "/sync/v1/read",
       "rows": [
         "read 200 ok"
@@ -390,6 +399,87 @@
         "refusal 400 invalid_input"
       ],
       "status": 400
+    },
+    {
+      "name": "operations-200",
+      "file": "operations-200.json",
+      "route": "/sync/v1/operations",
+      "rows": [
+        "operations 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "operations-404-bundle-not-found",
+      "file": "operations-404-bundle-not-found.json",
+      "route": "/sync/v1/operations",
+      "rows": [
+        "refusal 404 bundle_not_found"
+      ],
+      "status": 404
+    },
+    {
+      "name": "run-200-ok",
+      "file": "run-200-ok.json",
+      "route": "/sync/v1/run",
+      "rows": [
+        "run 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "run-200-ok-qualified",
+      "file": "run-200-ok-qualified.json",
+      "route": "/sync/v1/run",
+      "rows": [
+        "run 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "run-200-document-not-found",
+      "file": "run-200-document-not-found.json",
+      "route": "/sync/v1/run",
+      "rows": [
+        "run 200 document_not_found"
+      ],
+      "status": 200
+    },
+    {
+      "name": "run-200-bundle-not-found",
+      "file": "run-200-bundle-not-found.json",
+      "route": "/sync/v1/run",
+      "rows": [
+        "run 200 bundle_not_found"
+      ],
+      "status": 200
+    },
+    {
+      "name": "run-400-unknown-operation",
+      "file": "run-400-unknown-operation.json",
+      "route": "/sync/v1/run",
+      "rows": [
+        "refusal 400 unknown_operation"
+      ],
+      "status": 400
+    },
+    {
+      "name": "run-400-invalid-input",
+      "file": "run-400-invalid-input.json",
+      "route": "/sync/v1/run",
+      "rows": [
+        "refusal 400 invalid_input"
+      ],
+      "status": 400
+    },
+    {
+      "name": "unknown-route-404",
+      "file": "unknown-route-404.json",
+      "route": "/sync/v1/nope",
+      "rows": [
+        "404 unknown route"
+      ],
+      "status": 404
     },
     {
       "name": "create-429-request-capacity",

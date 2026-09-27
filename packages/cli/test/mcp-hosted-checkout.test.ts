@@ -463,16 +463,19 @@ test("catalog list: signed out it lists the folders alone and asks no host; sign
 
   // Signed in: the bundles the host lists that have no folder here, each with its checkout command;
   // an id two of the person's workspaces hold gets none (checkout refuses it).
-  const signedIn = new FakeHost({ bundles: [BUNDLE, "team.archive", "team.shared", "team.shared"] });
+  // An id the host lists once per workspace, by reference, gets one checkout command per reference.
+  const signedIn = new FakeHost({ bundles: [BUNDLE, "team.archive", "team.shared", "team.shared", "north/team.dup", "south/team.dup"] });
   await seedHostedSession(c.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
   const merged = await listCatalog(c, [], undefined, signedIn.fetch);
   assert.deepEqual((merged.entries as unknown[]).length, 1, "the checkout stays one folder entry");
   const hosted = merged.hosted as { host: string; bundles: { bundle_id: string; folder: null; checkout: string }[] }[];
   assert.equal(hosted.length, 1);
   assert.equal(hosted[0]!.host, HOST);
-  assert.deepEqual(hosted[0]!.bundles.map((row) => [row.bundle_id, row.folder]), [["team.archive", null], ["team.shared", null]]);
-  assert.match(hosted[0]!.bundles[0]!.checkout, /checkout team\.archive --host /);
-  assert.equal("checkout" in hosted[0]!.bundles[1]!, false);
+  assert.deepEqual(hosted[0]!.bundles.map((row) => [row.bundle_id, row.folder]), [["team.dup", null], ["team.dup", null], ["team.archive", null], ["team.shared", null]]);
+  assert.match(hosted[0]!.bundles[0]!.checkout, /checkout north\/team\.dup --host /);
+  assert.match(hosted[0]!.bundles[1]!.checkout, /checkout south\/team\.dup --host /);
+  assert.match(hosted[0]!.bundles[2]!.checkout, /checkout team\.archive --host /);
+  assert.equal("checkout" in hosted[0]!.bundles[3]!, false);
   // --local never asks.
   signedIn.requests.length = 0;
   assert.equal("hosted" in (await listCatalog(c, ["--local"], undefined, signedIn.fetch)), false);
@@ -507,8 +510,8 @@ test("list_workspaces names the reachable hosted bundles with no folder here, fr
           complete: true,
           ask: "superbee catalog list --hosted --host hosted.example",
           bundles: [
-            { bundle_id: "team.archive", name: "Archive", lifecycle: "active", folder: null, ambiguous: false, checkout: "superbee checkout team.archive --host hosted.example" },
-            { bundle_id: "team.shared", name: "Shared", lifecycle: "active", folder: null, ambiguous: true },
+            { bundle_id: "team.archive", reference: "team.archive", name: "Archive", lifecycle: "active", folder: null, ambiguous: false, checkout: "superbee checkout team.archive --host hosted.example" },
+            { bundle_id: "team.shared", reference: "team.shared", name: "Shared", lifecycle: "active", folder: null, ambiguous: true },
           ],
         }],
         notes: ["a note"],

@@ -49,6 +49,7 @@ const PATH_FLAG_CANDIDATES = [
   "path",
   "from-file",
   "to-file",
+  "input-file",
 ] as const;
 
 /**
@@ -58,6 +59,7 @@ const PATH_FLAG_CANDIDATES = [
 const NOT_A_PATH_ON_LEAF: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   linkList: { to: "a link-target concept id or prefix filter; export's --to is the folder" },
   publish: { to: "the destination kind (only 'hosted'); publish moves the --dir bundle in place" },
+  opRun: { input: "the operation's input as inline JSON; --input-file is the path" },
 };
 
 /** Positionals a leaf needs before its own parser is reached. Default: `arity.count` placeholders. */

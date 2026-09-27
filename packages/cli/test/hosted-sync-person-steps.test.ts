@@ -51,7 +51,7 @@ interface H {
   idRule?: (id: string) => void;
 }
 
-async function harness(host = new FakeHost()): Promise<H> {
+async function harness(host = new FakeHost(), reference = BUNDLE): Promise<H> {
   const home = await mkdtemp(path.join(tmpdir(), "sb-person-home-"));
   const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-person-cwd-")));
   const auth = defaultHostedAuthDeps(home, {
@@ -60,7 +60,7 @@ async function harness(host = new FakeHost()): Promise<H> {
       throw new Error("no sign-in");
     },
   });
-  await checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth, cwd, fetch: host.fetch });
+  await checkout([reference, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth, cwd, fetch: host.fetch });
   host.requests.length = 0;
   host.writes.length = 0;
   return { home, cwd, folder: path.join(cwd, "team"), auth, host, terminal: noTerminal() };
@@ -263,6 +263,35 @@ test("a mass delete split across two checkouts is held by the host, parked, and 
   assert.deepEqual(deletes(second).slice(sent).map((call) => call.acceptDeletes), ["8", "8"]);
   assert.deepEqual(mine.map((id) => second.host.docs.has(id)), [false, false, false]);
   assert.equal(holdOf(await ok(second)), undefined);
+});
+
+test("a checkout that names its workspace meets the host's hold on <workspace>/<bundle-id> and sends the person's count with it", async () => {
+  skew = 0;
+  const workspaces = [
+    { tenantId: "tenant-a", slug: "north" },
+    { tenantId: "tenant-b", slug: "south" },
+  ];
+  const host = bulkHost(9, { tenants: ["tenant-a", "tenant-b"], workspaces, slug: "south", massDeleteHold: true });
+  const [first, second] = [await harness(host, `south/${BUNDLE}`), await harness(host, `south/${BUNDLE}`)];
+  for (const id of bulkIds(5)) await unlink(fileOf(first, id));
+  await ok(first);
+  const mine = bulkIds(8).slice(5);
+  for (const id of mine) await unlink(fileOf(second, id));
+  const hold = holdOf((await fails(second)).receipt)!;
+  assert.equal(hold.count, 2);
+  host.requests.length = 0;
+  second.terminal = personAtTerminal();
+  assert.equal((await ok(second, ["--accept-deletes", hold.confirmation_required.token])).deletions_accepted, 2);
+  // Each delete names the bundle by its reference and carries the person's count of the bundle's window.
+  const sent = host.requests.filter((request) => request.path === "/sync/v1/delete");
+  assert.deepEqual(
+    sent.map((request) => [(request.body as { bundleId?: unknown }).bundleId, request.headers.get("x-superbee-accept-deletes")]),
+    [
+      [`south/${BUNDLE}`, "8"],
+      [`south/${BUNDLE}`, "8"],
+    ],
+  );
+  assert.deepEqual(mine.map((id) => host.docs.has(id)), [false, false, false]);
 });
 
 /** The split mass delete of the first test, stopped where the host holds the second checkout's last two. */
