@@ -10,7 +10,7 @@
 //
 // The exit code is non-zero while any row is not committed.
 import type { IntentRecord } from "@superbee/core/journaled-backend";
-import { CAPACITY_REFUSAL_CODES } from "@superbee/core/hosted-transport";
+import { CAPACITY_REFUSAL_CODES, DELETIONS_HELD_REFUSAL_CODE } from "@superbee/core/hosted-transport";
 import { BUSY_REFUSAL_CODES } from "@superbee/browser-local";
 
 import { CliError, type CliErrorCode } from "../errors.js";
@@ -56,6 +56,8 @@ function refusalRow(id: string, row: IntentRecord, accessWithdrawn = false): Syn
   const message = row.refusal?.message ?? "the host refused the change";
   if (code === CAPACITY_REFUSAL_CODES.principal) return { id, state: "paused", reason: "sync_quota_principal", version: null, message: QUOTA_MESSAGES.principal };
   if (code === CAPACITY_REFUSAL_CODES.bundle) return { id, state: "paused", reason: "sync_quota_bundle", version: null, message: QUOTA_MESSAGES.bundle };
+  if (code === DELETIONS_HELD_REFUSAL_CODE)
+    return { id, state: "held", reason: "bulk_deletion", version: null, message: "The host held this delete: with every deletion in the bundle over the last 24 hours it would remove over half of the bundle, so nothing was deleted. Put the file back with sync --restore-deletes; removing it from the bundle needs the person to confirm it in their own terminal (see deletions_held)." };
   if (code === "PERMISSION_DENIED") return { id, state: "refused", reason: "read_only", version: null, message: row.kind === "document.delete" ? READ_ONLY_DELETE_MESSAGE : READ_ONLY_MESSAGE };
   if (SIGN_IN_CODES.has(code) && accessWithdrawn) return { id, state: "refused", reason: "access_withdrawn", version: null, message: ACCESS_WITHDRAWN_MESSAGE };
   if (SIGN_IN_CODES.has(code)) return { id, state: "paused", reason: "sign_in", version: null, message: "The hosted session ended before this change was sent; sign in and run sync again." };

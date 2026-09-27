@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden bundles.create.v1 exchanges (POST /sync/v1/bundle-create) generated from the real hosted gateway app (createApp: real bearer admission, the creation ledger, Miniflare D1 and R2; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type and x-superbee-write-settled.",
-  "source": "Holaxis-ai/superbee-hosted e96a63a63fe275f157377c0868fadddfc9eda13f",
+  "source": "Holaxis-ai/superbee-hosted 7b05fb4b721c572e73fc5a1dbcce37f0df8228e0",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {

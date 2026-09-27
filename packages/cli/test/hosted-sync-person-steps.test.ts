@@ -18,6 +18,7 @@ import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { sync } from "../src/commands/sync.js";
 import { withoutUnsafeIds } from "../src/hosted/sync.js";
+import { deletionHold } from "../src/hosted/sync-scan.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 import { noTerminal, personAtTerminal, type FakeTerminal } from "./support/fake-terminal.js";
@@ -101,8 +102,8 @@ const writeDoc = async (h: H, id: string, body: string) => {
 };
 
 /** A host with `n` documents under bulk/, plus the fixture's three. */
-function bulkHost(n: number): FakeHost {
-  const host = new FakeHost();
+function bulkHost(n: number, options: ConstructorParameters<typeof FakeHost>[0] = {}): FakeHost {
+  const host = new FakeHost(options);
   for (let i = 0; i < n; i += 1) host.put(`bulk/n${String(i).padStart(2, "0")}`, { type: "Note", title: `N${i}` }, `bulk ${i}\n`);
   return host;
 }
@@ -203,6 +204,91 @@ test("--restore-deletes and --resolve take need no terminal: agents keep them", 
   const after = await ok(h);
   assert.equal(after.status, "up_to_date");
   assert.equal(deletes(h).length, 0);
+});
+
+// ── the host's hold over the whole bundle ───────────────────────────────────────────────────
+
+test("the hold's rule is the host's: over half of the documents in 24 hours, and at least min(3, B)", () => {
+  // The same boundary table superbee-hosted pins for its server-side hold (test/sync-v1-writes.test.ts):
+  // [deletions counted before this one, documents held now (this one included)] → held.
+  const table: [number, number, boolean][] = [
+    [0, 1, true],
+    [1, 1, true],
+    [5, 5, true],
+    [4, 6, false],
+    [1, 3, false],
+    [2, 2, true],
+    [0, 2, false],
+  ];
+  for (const [counted, live, held] of table)
+    assert.deepEqual(deletionHold(1, live, counted), { held, deletions: counted + 1, baseline: counted + live }, `${counted}/${live}`);
+});
+
+/** Twelve old documents on a host that holds mass deletes, and two checkouts of it. */
+async function splitCheckouts(): Promise<[H, H]> {
+  skew = 0;
+  const host = bulkHost(9, { massDeleteHold: true });
+  return [await harness(host), await harness(host)];
+}
+
+test("a mass delete split across two checkouts is held by the host, parked, and never resent by a plain sync", async () => {
+  const [first, second] = await splitCheckouts();
+  // Five of twelve from the first checkout, three from the second: neither checkout holds its own.
+  for (const id of bulkIds(5)) await unlink(fileOf(first, id));
+  assert.equal((await ok(first)).status, "synced");
+  const mine = bulkIds(8).slice(5);
+  for (const id of mine) await unlink(fileOf(second, id));
+  const held = await fails(second);
+  assert.equal(held.error.code, "CONFLICT");
+  // The host admitted the sixth deletion of twelve and held the seventh and eighth.
+  const hold = holdOf(held.receipt)!;
+  assert.equal(hold.count, 2);
+  assert.match(hold.counted_over ?? "", /every deletion in the hosted bundle/);
+  assert.deepEqual((held.receipt!.deletions_held as { window_deletions: number; baseline: number }).window_deletions, 8);
+  assert.deepEqual(heldDeletes(held.receipt).sort(), mine.slice(1));
+  assert.match(rowFor(held.receipt, mine[2]!)!.message, /The host held this delete/);
+  assert.deepEqual(mine.map((id) => second.host.docs.has(id)), [false, true, true]);
+  // A plain sync sends nothing again: only a person releases the host's hold.
+  const sent = deletes(second).length;
+  const again = await fails(second);
+  assert.equal(holdOf(again.receipt)!.confirmation_required.token, hold.confirmation_required.token);
+  assert.equal(deletes(second).length, sent);
+  // An agent's shell cannot accept it; the person's typed count does, naming the bundle's count.
+  assert.equal((await fails(second, ["--accept-deletes", hold.confirmation_required.token])).error.code, "FORBIDDEN");
+  second.terminal = personAtTerminal();
+  const accepted = await ok(second, ["--accept-deletes", hold.confirmation_required.token]);
+  assert.equal(accepted.deletions_accepted, 2);
+  assert.match(second.terminal.prompts[0]!, /that is 8 of the 12 documents it held/);
+  assert.deepEqual(deletes(second).slice(sent).map((call) => call.acceptDeletes), ["8", "8"]);
+  assert.deepEqual(mine.map((id) => second.host.docs.has(id)), [false, false, false]);
+  assert.equal(holdOf(await ok(second)), undefined);
+});
+
+test("deletes the host held are restored by --restore-deletes, and the hold ends", async () => {
+  const [first, second] = await splitCheckouts();
+  for (const id of bulkIds(5)) await unlink(fileOf(first, id));
+  await ok(first);
+  const mine = bulkIds(8).slice(5);
+  for (const id of mine) await unlink(fileOf(second, id));
+  await fails(second);
+  const restored = await ok(second, ["--restore-deletes"]);
+  assert.equal(restored.restored, 2);
+  for (const id of mine.slice(1)) assert.equal(await exists(second, id), true, id);
+  const after = await ok(second);
+  assert.equal(holdOf(after), undefined);
+  assert.equal(after.status, "up_to_date");
+});
+
+test("a local hold the person accepted carries their count, so the host does not hold the same set again", async () => {
+  skew = 0;
+  const h = await harness(bulkHost(9, { massDeleteHold: true }));
+  const hold = await heldMassDelete(h, bulkIds(9));
+  h.terminal = personAtTerminal();
+  const accepted = await ok(h, ["--accept-deletes", hold.confirmation_required.token]);
+  assert.equal(accepted.deletions_accepted, 9);
+  assert.equal(h.terminal.prompts.length, 1, "one confirmation, not a second from the host");
+  assert.deepEqual([...new Set(deletes(h).map((call) => call.acceptDeletes))], ["9"]);
+  assert.equal(bulkIds(9).filter((id) => h.host.docs.has(id)).length, 0);
 });
 
 // ── the hold's count ────────────────────────────────────────────────────────────────────────

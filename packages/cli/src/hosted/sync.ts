@@ -77,6 +77,8 @@ import {
   unsendable,
   writeProjection,
   recoverPlacements,
+  recordHostHold,
+  supersedeDeletion,
   type FolderConflictReason,
   type HeldFile,
   type ProjectionRecord,
@@ -548,10 +550,7 @@ async function requeueBusy(store: JournaledBackend): Promise<number> {
     const supersede = { requestId: row.requestId, expectedState: "refused" as const, expectedAttempts: row.attempts };
     if (row.kind === DOCUMENT_DELETE_KIND) {
       // A deletion holds no document: the same deletion, recorded again under a fresh identity.
-      if (current.document) continue;
-      const intent: NewIntentRecord = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: row.target, base: row.base, baseContent: row.baseContent, createdAt: new Date().toISOString(), ...(row.after !== undefined ? { after: row.after } : {}) };
-      await store.deleteJournaled(row.target, { intent, supersede });
-      requeued += 1;
+      if (await supersedeDeletion(store, row)) requeued += 1;
       continue;
     }
     if (!current.document) continue;
@@ -588,6 +587,8 @@ interface PushOutcome {
   readonly collisions: HeldFile[];
   /** The agent the writes named (`X-Superbee-Via`), or why a named one was not sent. */
   readonly via?: { readonly token?: string; readonly ignored?: string };
+  /** The host's mass-delete hold as it first answered in this run, when it held a delete. */
+  readonly deletionsHeld?: { readonly deletions: number; readonly baseline: number };
 }
 
 /**
@@ -613,7 +614,7 @@ async function caseCollidingCreates(store: JournaledBackend): Promise<HeldFile[]
   return out;
 }
 
-async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<PushOutcome> {
+async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes?: number): Promise<PushOutcome> {
   const { store, local, binding, reader } = session;
   const acknowledged = new Map<string, string>();
   const deleted = new Set<string>();
@@ -626,6 +627,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
   if (!session.capabilities.operations) return { ...none, notSent: "read_only" };
   const collisions = await caseCollidingCreates(store);
   let denied = false;
+  let deletionsHeld: { deletions: number; baseline: number } | undefined;
   const carrier: HostedCarrier = {
     async json(route, input, signal, options) {
       const answer = await session.carrier.json(route, input, signal, options);
@@ -647,6 +649,11 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     routes: { create: `${session.routes}/create`, replace: `${session.routes}/replace`, delete: `${session.routes}/delete`, outcome: `${session.routes}/outcome` },
     ...(session.okfVersion ? { okfVersion: session.okfVersion } : {}),
     ...(via.token !== undefined ? { via: via.token } : {}),
+    // Only the person's typed confirmation in this run sets it (scanCheckout's acceptance).
+    ...(acceptDeletes !== undefined ? { acceptDeletes } : {}),
+    onDeletionsHeld: ({ deletions, baseline }) => {
+      deletionsHeld ??= { deletions, baseline };
+    },
   });
   const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)));
   let signInRequired = false;
@@ -670,7 +677,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     if (pass === PUSH_PASSES - 1 || (await requeueBusy(store)) === 0) break;
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions, via };
+  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions, via, ...(deletionsHeld ? { deletionsHeld } : {}) };
 }
 
 /**
@@ -751,7 +758,7 @@ function assertPersonAtTerminal(binding: CheckoutBinding, token: string, termina
 
 /** Ask the person to confirm removing exactly this held set by typing its count. */
 function confirmAtTerminal(binding: CheckoutBinding, terminal: HostedTerminal) {
-  return async (hold: { count: number; ids: readonly string[]; token: string }): Promise<boolean> => {
+  return async (hold: { count: number; ids: readonly string[]; token: string; bundle?: { deletions: number; baseline: number } }): Promise<boolean> => {
     const shown = hold.ids.slice(0, 50).map((id) => `  ${id}`);
     const more = hold.ids.length > shown.length ? [`  ... and ${hold.ids.length - shown.length} more`] : [];
     const answer = await terminal.ask(
@@ -760,6 +767,7 @@ function confirmAtTerminal(binding: CheckoutBinding, terminal: HostedTerminal) {
         ...shown,
         ...more,
         `Accepting removes them from the hosted bundle '${binding.bundle_id}' for everyone; the host keeps their history.`,
+        ...(hold.bundle ? [`With every deletion in the bundle over the last 24 hours, that is ${hold.bundle.deletions} of the ${hold.bundle.baseline} documents it held.`] : []),
         `Type ${hold.count} to remove them, or anything else to keep them held: `,
       ].join("\n"),
     );
@@ -820,7 +828,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     await recordPulled(deps.auth.home, binding.checkout_id);
     let outcome: PushOutcome;
     try {
-      outcome = await pushChanges(session, deps);
+      outcome = await pushChanges(session, deps, scan.acceptDeletes);
     } catch (error) {
       throw readFailure(error, session, resumeCommand, await unsent());
     }
@@ -840,6 +848,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // After the run's last placement: a file changed later is an edit this run did not see.
     await recordSynced(deps.auth.home, binding.checkout_id);
     const inbound = await inboundLinks(store, outcome.deleted, session.okfVersion);
+    // The deletes the host held join the scan's held set: one hold, one token to accept it.
+    const hold = await recordHostHold(store, outcome.deletionsHeld, scan.hold);
     const rows = buildRows({
       folderConflicts: conflicts,
       unsettled: await store.listIntents(UNSETTLED_STATES),
@@ -860,22 +870,23 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       status: rows.every((row) => row.state === "committed") ? (rows.length === 0 ? "up_to_date" : "synced") : "incomplete",
       pulled: pulledView(binding, pulled, exported.placed, exported.removed, exported.kept),
       ...(taken ? { take_host_deletions: taken } : {}),
-      ...(scan.hold
+      ...(hold
         ? {
             deletions_held: {
-              count: scan.hold.count,
-              documents: scan.hold.ids.slice(0, 50),
-              window_deletions: scan.hold.deletions,
-              baseline: scan.hold.baseline,
-              ...(scan.hold.basis === "originals" ? { counted_over: "the documents this checkout did not create itself" } : {}),
-              ...(scan.hold.pending ? { held_since_earlier_sync: true } : {}),
-              ...(scan.hold.acceptMismatch !== undefined ? { accept_mismatch: `the token given (${JSON.stringify(scan.hold.acceptMismatch)}) does not name the held set (${scan.hold.token}); nothing was accepted` } : {}),
-              ...(scan.hold.acceptDeclined ? { accept_declined: `the typed confirmation was not ${scan.hold.count}; nothing was accepted` } : {}),
+              count: hold.count,
+              documents: hold.ids.slice(0, 50),
+              window_deletions: hold.deletions,
+              baseline: hold.baseline,
+              ...(hold.basis === "originals" ? { counted_over: "the documents this checkout did not create itself" } : {}),
+              ...(hold.basis === "bundle" ? { counted_over: "every deletion in the hosted bundle over the last 24 hours, by anyone", held_by: "host" } : {}),
+              ...(hold.pending ? { held_since_earlier_sync: true } : {}),
+              ...(hold.acceptMismatch !== undefined ? { accept_mismatch: `the token given (${JSON.stringify(hold.acceptMismatch)}) does not name the held set (${hold.token}); nothing was accepted` } : {}),
+              ...(hold.acceptDeclined ? { accept_declined: `the typed confirmation was not ${hold.count}; nothing was accepted` } : {}),
               restore: syncCommand(binding, commandLiteral(" --restore-deletes")),
               confirmation_required: {
-                agent_instruction: `Do not run this yourself: it needs the person to type a confirmation in their own terminal, and it refuses any other shell. Name these ${scan.hold.count} documents to the person, and ask them to run the command in their terminal if they want them removed from the bundle; otherwise restore the files.`,
-                token: scan.hold.token,
-                command_for_person: syncCommand(binding, commandFragment` --accept-deletes ${commandToken(scan.hold.token)}`),
+                agent_instruction: `Do not run this yourself: it needs the person to type a confirmation in their own terminal, and it refuses any other shell. Name these ${hold.count} documents to the person, and ask them to run the command in their terminal if they want them removed from the bundle; otherwise restore the files.`,
+                token: hold.token,
+                command_for_person: syncCommand(binding, commandFragment` --accept-deletes ${commandToken(hold.token)}`),
               },
             },
           }

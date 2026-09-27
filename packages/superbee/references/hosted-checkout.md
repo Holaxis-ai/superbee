@@ -135,8 +135,11 @@ next sync. The host keeps the document's history.
 Deleting many files at once is held instead. The rule: when the deletes of the last day are more
 than half the checkout and at least 3, the new ones are not sent. The same rule is applied to the
 documents this checkout did not create itself, so documents it added earlier never dilute the
-count. The sync receipt then carries `deletions_held`, which names the held documents. The hold
-stays in place across syncs until the person decides. Accepting it is the person's step, never
+count. The host applies the same rule to the whole bundle, over every person and checkout: a
+delete that would make more than half of the bundle's documents deleted in the last day is not
+applied (`428 deletions_held`), and sync holds it with the rest (`counted_over` then names the
+bundle). The sync receipt then carries `deletions_held`, which names the held documents. The hold
+stays in place across syncs until the person decides; a plain sync never sends a held delete again. Accepting it is the person's step, never
 yours:
 
 1. Name the held documents to the person, and ask whether they should be removed from the bundle.

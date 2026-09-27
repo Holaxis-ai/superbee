@@ -98,6 +98,8 @@ export interface WriteCall {
   recreate: string | null;
   /** The `X-Superbee-Via` header, when sent. */
   via: string | null;
+  /** The `X-Superbee-Accept-Deletes` header, when sent. */
+  acceptDeletes: string | null;
   body: Record<string, unknown>;
 }
 
@@ -129,6 +131,14 @@ export interface FakeHostOptions {
   writable?: boolean;
   /** False is a gateway from before `/history`: the route is the family's unknown-route 404. */
   history?: boolean;
+  /**
+   * True models the host's mass-delete hold (superbee-hosted `docs/sync-v1-writes.md`): the
+   * documents present at construction or `put` by the host are the old ones; a delete of one that
+   * would make over half of them deleted (at least min(3, B)) answers `428 deletions_held`,
+   * unrecorded, unless `X-Superbee-Accept-Deletes` covers the count. The fake's window never
+   * rolls; client creates are new and never counted.
+   */
+  massDeleteHold?: boolean;
 }
 
 /** One version of a live document's lineage, as the host's history rows hold it. */
@@ -187,6 +197,9 @@ export class FakeHost {
   readonly token: string;
   private readonly rootVersion: string;
   private readonly options: FakeHostOptions;
+  /** The ids the mass-delete hold counts as old, and the old documents deleted so far. */
+  private readonly oldIds = new Set<string>();
+  private oldDeleted = 0;
 
   constructor(options: FakeHostOptions = {}) {
     this.options = options;
@@ -200,6 +213,7 @@ export class FakeHost {
       if (row.kind !== "doc") continue;
       this.docs.set(row.id, { frontmatter: row.frontmatter, body: row.body, version: row.version, raw: stringifyDoc(row.frontmatter as never, row.body) });
       this.record(row.id, "someone-else", undefined);
+      this.oldIds.add(row.id);
     }
   }
 
@@ -218,6 +232,7 @@ export class FakeHost {
     const version = versionOfBytes(raw);
     this.docs.set(id, { frontmatter: stored, body, version, raw });
     this.record(id, "someone-else", undefined);
+    this.oldIds.add(id);
     return version;
   }
 
@@ -420,7 +435,8 @@ export class FakeHost {
     const binding = headers.get("x-superbee-checkout");
     const recreate = headers.get("x-superbee-recreate");
     const via = headers.get("x-superbee-via");
-    const call: WriteCall = { route, requestId, binding, recreate, via, body };
+    const acceptDeletes = headers.get("x-superbee-accept-deletes");
+    const call: WriteCall = { route, requestId, binding, recreate, via, acceptDeletes, body };
     this.writes.push(call);
     if (!requestId || !WRITE_REQUEST.test(requestId) || !binding || !BINDING.test(binding) || !onlyKeys(body, WRITE_BODY_KEYS[route === "outcome" ? outcomeOf(body) : route])) {
       return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
@@ -430,6 +446,9 @@ export class FakeHost {
     if (recreate !== null && (!creates || !BINDING.test(recreate))) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     // The agent a client names is attribution only: checked like the host checks it, never authority.
     if (via !== null && !isAgentLabelVia(via)) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    // The hold's acknowledgment is a delete's (and its outcome's) alone: 1 to 100,000.
+    const deletes = route === "delete" || (route === "outcome" && outcomeOf(body) === "delete");
+    if (acceptDeletes !== null && (!deletes || !/^[1-9][0-9]{0,5}$/.test(acceptDeletes) || Number(acceptDeletes) > 100000)) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     if (!this.writable(route)) {
       const operationId = route === "create" ? "documents.create.v1" : route === "replace" ? "documents.replace.v1" : "documents.delete.v1";
       return Response.json({ ok: false, operationId, error: { code: "insufficient_scope", message: "Your access to this bundle does not allow this write. Nothing was written.", retryable: false, writeState: "not_applied" } });
@@ -448,12 +467,30 @@ export class FakeHost {
     }
     const operationId = route === "create" ? "documents.create.v1" : route === "replace" ? "documents.replace.v1" : "documents.delete.v1";
     let recorded = this.recorded.get(requestId);
+    if (!recorded && route === "delete" && this.options.massDeleteHold) {
+      const held = this.deletionHeld(body, acceptDeletes === null ? undefined : Number(acceptDeletes));
+      if (held) return held;
+    }
     if (!recorded) {
       recorded = hooked?.kind === "record" ? { result: failure(operationId, hooked.code) } : route === "delete" ? this.applyDelete(body) : this.apply(route, operationId, body, recreate, via);
       this.recorded.set(requestId, recorded);
     }
     if (hooked?.kind === "apply-then-drop") throw new TypeError("fetch failed");
     return new Response(JSON.stringify(recorded.result), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "x-superbee-write-settled": requestId } });
+  }
+
+  /** The host's mass-delete hold for a delete not yet recorded: its `428`, or null when admitted. */
+  private deletionHeld(body: Record<string, unknown>, accepted: number | undefined): Response | null {
+    const id = String(body.documentId);
+    if (!this.oldIds.has(id) || this.docs.get(id)?.version !== body.expectedVersion) return null;
+    const live = [...this.docs.keys()].filter((key) => this.oldIds.has(key)).length;
+    const deletions = this.oldDeleted + 1;
+    const baseline = live + this.oldDeleted;
+    if (!(deletions * 2 > baseline && deletions >= Math.min(3, baseline)) || (accepted !== undefined && deletions <= accepted)) return null;
+    return Response.json(
+      { error: { code: "deletions_held", deletions, baseline, message: `This would make ${deletions} deletions in 24 hours of the ${baseline} documents this bundle held. Nothing was deleted; a person must confirm this mass delete.`, retryable: false, writeState: "not_applied" } },
+      { status: 428 },
+    );
   }
 
   private applyDelete(body: Record<string, unknown>): Recorded {
@@ -467,6 +504,7 @@ export class FakeHost {
     if (existing && existing.version !== expected) return { result: failure(operationId, "version_conflict", existing.version) };
     if (existing) {
       this.applied.push(id);
+      if (this.oldIds.has(id)) this.oldDeleted += 1;
       return answer(this.tombstone(id, expected), true);
     }
     const latest = this.latestTombstone(id);
