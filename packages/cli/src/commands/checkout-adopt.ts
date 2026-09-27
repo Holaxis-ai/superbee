@@ -243,6 +243,18 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   // The marker's workspace slug is part of the reference it names; its recorded tenant id (folder
   // content, and possibly a stale default) never narrows anything. --workspace does.
   const connection = await connectHostedBundle(typed, target, options.workspace, deps, resume);
+  // A copy whose marker names no workspace cannot show which one it came from: --workspace may not
+  // pick one among several holders of the id (the next sync would send its documents there).
+  if (typed.slug === null && connection.reference.slug !== null) {
+    const found = readBundleListing(await connection.client.bundles()).lookup({ slug: null, bundleId });
+    if (found.holders > 1) {
+      const named = `${connection.reference.slug}/${bundleId}`;
+      throw new CliError("CONFLICT", `a copy of a checkout cannot show which of your workspaces '${bundleId}' came from`, {
+        details: { reason: "origin_unknown", folder: canonical, bundle_id: bundleId, ...(found.references.length > 0 ? { references: found.references } : {}) },
+        help: `check the one you mean out into a new folder and copy the files you want: ${cliInvocation()} checkout ${commandToken(named)} --host ${commandToken(bindingHostArgument(target))} --dir <new folder>`,
+      });
+    }
+  }
 
   // A conversion `publish` started and could not finish: the files it sent that a checkout does
   // not hold as documents are recorded too, so sync leaves them be.
@@ -336,15 +348,19 @@ async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, opti
     } else {
       if (recorded.size === 0) throw notThis("origin_unknown");
       if (!(await shares(connection.reader))) throw notThis("not_this_bundle");
-      const found = readBundleListing(await connection.client.bundles()).lookup({ slug: null, bundleId: bound.bundle_id });
+      const listing = readBundleListing(await connection.client.bundles());
+      const found = listing.lookup({ slug: null, bundleId: bound.bundle_id });
       const others = found.references.filter((reference) => reference !== named);
-      // A holder listed bare (a workspace with no name, or past the list cap) cannot be checked.
-      if (found.holders > found.references.length) throw notThis("origin_unknown");
+      // A holder listed bare (a workspace with no name), or one past the list cap, cannot be checked.
+      if (!listing.complete || found.holders > found.references.length) throw notThis("origin_unknown");
       for (const reference of others) {
         const other = parseHostedBundleReference(reference)!;
         if (await shares(connection.client.within(other.slug!).reader(other.bundleId))) throw notThis("origin_unknown");
       }
     }
+    // The marker names the verified workspace first, so a crash between the release and the new
+    // binding leaves a folder that `--adopt` binds back to that workspace, not a bare one.
+    await writeCheckoutMarker(canonical, { ...bound, workspace_slug: slug });
     await releaseCheckout(home, bound);
     return pending;
   });

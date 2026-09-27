@@ -691,6 +691,23 @@ test("a checkout made bare whose id another workspace gained is bound again in p
   assert.equal((await bindingForPath(h.home, folder))?.checkout_id, after.checkout_id);
 });
 
+test("a copied bare checkout cannot be adopted into a workspace it cannot show it came from; a rebind leaves its marker naming the workspace", async () => {
+  const h = await harness();
+  const listed = [`north/${BUNDLE}`, `south/${BUNDLE}`];
+  // A bare checkout, and a copy of it (its marker names no workspace).
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "bare"], fakeSyncFamily(TWO_WORKSPACES));
+  const bareFolder = await realpath(path.join(h.cwd, "bare"));
+  const copied = path.join(h.cwd, "bare-copy");
+  await cp(bareFolder, copied, { recursive: true });
+  const refused = await rejects(run(h, ["--adopt", copied, "--host", HOST, "--workspace", "north"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "north" })));
+  assert.equal(refused.details?.reason, "origin_unknown");
+  assert.equal(await bindingForPath(h.home, await realpath(copied)), null, "nothing bound");
+  // A verified rebind rewrites the marker to name the workspace before the old binding goes.
+  const rebound = await run(h, ["--adopt", bareFolder, "--host", HOST, "--workspace", "north"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "north", elsewhere: { south: withDocs(["notes/elsewhere"]) } }));
+  assert.equal(rebound.adopted, "rebound");
+  assert.equal(readCheckoutMarker(bareFolder)?.workspace_slug, "north");
+});
+
 test("a checkout made in the person's only workspace is re-bound only to that workspace", async () => {
   const h = await harness();
   await run(h, [BUNDLE, "--host", HOST, "--dir", "team"], fakeSyncFamily({ tenants: ["tenant-a"], workspaces: [{ tenantId: "tenant-a", slug: "north" }] }));
