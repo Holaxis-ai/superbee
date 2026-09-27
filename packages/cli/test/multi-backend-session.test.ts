@@ -65,12 +65,8 @@ const SYNC_ENVELOPE = ["home", "sent", "received", "conflicts", "held", "next"] 
  * Keyed `<step>/<surface>/<home>`. Only ever shrinks; a PR that makes a cell hold deletes its row.
  */
 const KNOWN_GAPS: Readonly<Record<string, { readonly slice: string; readonly failure: Failure }>> = {
-  // S3: plain `catalog list` shows folders only.
-  "discover-remote/cli/hosted": { slice: "S3", failure: { missing: [UNCHECKED] } },
-  // S4: `sync --json` has a different shape in each home.
-  "sync/cli/git": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
-  "sync/cli/local": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
-  "sync/cli/hosted": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
+  // Empty since S4: every cell holds, so the scenario is enforced end to end. A later slice that
+  // extends the step table with a cell that does not hold yet pins it here.
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -299,16 +295,21 @@ function refusalOf(...texts: string[]): { code: string; reason: string } | null 
  * (code and reason) is the cell's failure; the file must be unchanged either way.
  */
 async function mcpSetTitle(home: Home, id: string, title: string): Promise<Failure | null> {
-  const file = path.join(folder(home), `${id}.md`);
+  return viewSetTitle(r.labels[home], folder(home), id, title);
+}
+
+/** {@link mcpSetTitle} for any cataloged folder, by its label. */
+async function viewSetTitle(label: string, dir: string, id: string, title: string): Promise<Failure | null> {
+  const file = path.join(dir, `${id}.md`);
   const before = await readFile(file, "utf8");
-  const launched = await callTool("show_view", { workspace: r.labels[home], mode: "transient", title: "Rehearsal editor", html: "<!doctype html><title>Rehearsal editor</title>", access: "bundle-propose" });
+  const launched = await callTool("show_view", { workspace: label, mode: "transient", title: "Rehearsal editor", html: "<!doctype html><title>Rehearsal editor</title>", access: "bundle-propose" });
   if (launched.isError) return { invariant: "show_view", detail: JSON.stringify(launched.content) };
   const launchId = (launched.structuredContent as { launch: { launchId: string } }).launch.launchId;
   await callTool("authorize_durable_view", { launchId });
-  const target = await readDocVersioned({ root: folder(home) }, id);
+  const target = await readDocVersioned({ root: dir }, id);
   const prepared = await callTool("prepare_view_action", {
     launchId,
-    requestId: `rehearsal-${home}-${id}`,
+    requestId: `rehearsal-${label}-${id}`,
     action: { kind: "document.set-field", docId: id, field: "title", value: title, expectedVersion: target.version },
   });
   const result = (prepared.structuredContent as { result?: { status: string; approvalToken?: string; message?: string } } | undefined)?.result;
@@ -319,7 +320,7 @@ async function mcpSetTitle(home: Home, id: string, title: string): Promise<Failu
   if ((await readFile(file, "utf8")) !== before) return { invariant: "a failed View action left the file unchanged", detail: `${outcome?.status}: ${outcome?.message}` };
   if (outcome?.status !== "failed") return { invariant: "finish_view_action", detail: outcome ? `${outcome.status}: ${outcome.message ?? ""}` : JSON.stringify(finished.content) };
   try {
-    const context = await createCatalogMcpWorkspaceResolver({ home: r.home }).open(r.labels[home]);
+    const context = await createCatalogMcpWorkspaceResolver({ home: r.home }).open(label);
     await writeDoc(context.bundle, { id, frontmatter: { ...target.doc.frontmatter, title }, body: target.doc.body });
     return { invariant: "finish_view_action", detail: "failed, but the same write in process succeeds" };
   } catch (error) {
@@ -432,11 +433,24 @@ const STEPS: readonly Step[] = [
     homes: ["hosted"],
     exempt: true,
     async run() {
+      // Signed in, plain `catalog list` also names the hosted bundles with no folder here.
       const run = await listing();
-      const entries = (JSON.parse(run.stdout) as { entries: { label: string; folder?: unknown }[] }).entries;
-      const row = entries.find((entry) => entry.label === UNCHECKED && entry.folder === null);
-      return { failure: row ? null : { missing: [UNCHECKED] }, output: run.stdout, network: run.network };
+      const hosted = (JSON.parse(run.stdout) as { hosted?: { bundles: { bundle_id: string; folder: unknown; checkout: string }[] }[] }).hosted ?? [];
+      const row = hosted.flatMap((host) => host.bundles).find((bundle) => bundle.bundle_id === UNCHECKED && bundle.folder === null);
+      return { failure: row && /checkout team\.archive --host/.test(row.checkout) ? null : { missing: [UNCHECKED] }, output: run.stdout, network: run.network };
     },
+  },
+  {
+    name: "discover-remote",
+    surface: "mcp",
+    homes: ["hosted"],
+    exempt: true,
+    run: () =>
+      mcpCell(async () => {
+        const listed = (await (workspaceListing ??= callTool("list_workspaces", {}).then((result) => result.structuredContent))) as { reachable?: { id: string; home: string; command: string }[] };
+        const row = (listed.reachable ?? []).find((entry) => entry.id === UNCHECKED);
+        return row?.home === "hosted" && /checkout team\.archive --host/.test(row.command) ? null : { missing: [UNCHECKED] };
+      }),
   },
   {
     name: "start",
@@ -710,6 +724,42 @@ test("one session across a Git board, a local bundle and a hosted checkout: same
 
   // Invariant 4: the seeded session carried the whole run: no sign-in was asked for.
   assert.doesNotMatch(r.transcript.join("\n"), /AUTH_REQUIRED/);
+});
+
+// The checkout guard's up-front refusals, in the same session (designs/seamless-multi-backend-cli,
+// 4.3). They are not rows of the step table, where a refusal is a cell failing and every home runs
+// the same command: a copied checkout is a fourth folder, not a home, and `verified` is hosted-only.
+test("in the same session, a copied checkout and an edit of verified are refused up front, and neither reaches the host", async () => {
+  const applied = [...r.host.applied];
+  // The checkout copied to a new folder is not bound: sync and an MCP View action both refuse it,
+  // and its file is unchanged.
+  const copy = path.join(r.root, "team-copy");
+  execFileSync("cp", ["-R", folder("hosted"), copy]);
+  const synced = await cli(["sync", "--dir", copy, "--json"]);
+  assert.deepEqual(refusalOf(synced.stdout, synced.stderr), { code: "USAGE", reason: "unbound_copy" }, synced.stdout + synced.stderr);
+  assert.match(synced.stdout + synced.stderr, /checkout --adopt/);
+  await ok(["catalog", "add", "team-copy", "--dir", copy]);
+  assert.deepEqual(await viewSetTitle("team-copy", copy, "notes/beta", "Beta, edited in the copy"), { code: "FORBIDDEN", reason: "unbound_copy" });
+
+  // An edit that changes only verified (a managed field sync never sends) is refused before the
+  // file changes. No View action can make it; the served bundle is the one path every write takes.
+  const context = await createCatalogMcpWorkspaceResolver({ home: r.home }).open(r.labels.hosted);
+  const gammaFile = path.join(folder("hosted"), "notes", "gamma.md");
+  const before = await readFile(gammaFile, "utf8");
+  const gamma = await readDocVersioned({ root: folder("hosted") }, "notes/gamma");
+  await assert.rejects(
+    writeDoc(context.bundle, { id: "notes/gamma", frontmatter: { ...gamma.doc.frontmatter, verified: [{ by: "process:rehearsal", at: "2026-09-26T12:00:00Z" }] }, body: gamma.doc.body }),
+    (error: unknown) => {
+      assert.ok(error instanceof CliError, String(error));
+      const details = error.details as { reason?: string; field?: string };
+      assert.deepEqual([error.code, details.reason, details.field], ["FORBIDDEN", "not_syncable", "verified"]);
+      return true;
+    },
+  );
+  assert.equal(await readFile(gammaFile, "utf8"), before);
+
+  await ok(["sync", "--dir", r.dirs.hosted]);
+  assert.deepEqual(r.host.applied, applied, "nothing reached the host");
 });
 
 test("with the session expired, the first command that needs it gives one sign-in link and its resume command, then the session continues", async () => {

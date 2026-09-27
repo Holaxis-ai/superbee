@@ -42,11 +42,13 @@ export interface HostedAccountRequest {
   readonly otherWorkspace?: string;
   /** The client's per-request deadline, when the command needs longer than the default. */
   readonly deadlineMs?: number;
+  /** False: a signed-out person is refused (SignedOutError) rather than asked to sign in. */
+  readonly signIn?: boolean;
 }
 
 export async function connectHostedAccount(target: HostedTarget, request: HostedAccountRequest, deps: HostedAccountDeps): Promise<HostedAccount> {
   // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
-  const token = await ensureHostedAccessToken(target, { resume: request.resume }, deps.auth);
+  const token = await ensureHostedAccessToken(target, { resume: request.resume, ...(request.signIn === false ? { signIn: false } : {}) }, deps.auth);
   const client = createHostedSyncClient({
     target,
     accessToken: token.accessToken,
@@ -136,10 +138,7 @@ export interface CheckoutConnection {
  * principal checked against the one the checkout was made under before any other request.
  */
 export async function connectCheckout(binding: CheckoutBinding, request: CheckoutConnectionRequest, deps: HostedAccountDeps): Promise<CheckoutConnection> {
-  const target = resolveHostedTarget(binding.audience);
-  if (target.origin !== binding.origin) {
-    throw new CliError("RUNTIME", `the checkout binding for ${binding.path} is inconsistent`, { help: `${cliInvocation()} checkout --release ${commandToken(binding.path)}` });
-  }
+  const target = checkoutTarget(binding);
   const token = await ensureHostedAccessToken(target, { resume: request.resume, ...(request.signIn === false ? { signIn: false } : {}) }, deps.auth);
   const account = createHostedSyncClient({
     target,
@@ -158,6 +157,15 @@ export async function connectCheckout(binding: CheckoutBinding, request: Checkou
     });
   }
   return { target, client, identity };
+}
+
+/** The host a checkout's binding names, refused when its origin and audience disagree. */
+export function checkoutTarget(binding: CheckoutBinding): HostedTarget {
+  const target = resolveHostedTarget(binding.audience);
+  if (target.origin !== binding.origin) {
+    throw new CliError("RUNTIME", `the checkout binding for ${binding.path} is inconsistent`, { help: `${cliInvocation()} checkout --release ${commandToken(binding.path)}` });
+  }
+  return target;
 }
 
 /** The command that lists the hosted bundles the person can reach on this host. */

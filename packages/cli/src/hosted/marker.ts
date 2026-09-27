@@ -175,28 +175,44 @@ export async function removeCheckoutMarker(folder: string, binding: Pick<Checkou
   return true;
 }
 
-/** The `copy_of_checkout` detail a receipt carries for a folder with a marker and no binding. */
-export function unboundCopyDetail(folder: string, marker: CheckoutMarker): Record<string, unknown> {
+/** What a receipt says about a folder with a marker and no binding, and what to run next. */
+export interface UnboundCopyDetail {
+  readonly bound: false;
+  readonly host: string;
+  readonly bundle_id: string;
+  readonly workspace?: string;
+  readonly note: string;
+  readonly help: string;
+  /** True when this is not a copy but an in-place export that stopped part way: re-running it finishes it. */
+  readonly export_stopped: boolean;
+}
+
+/** The detail for a folder with a marker and no binding: a copy, or an in-place export that stopped. */
+export function unboundCopyInfo(folder: string, marker: CheckoutMarker): UnboundCopyDetail {
   if (existsSync(path.join(folder, IN_PLACE_STAGING, IN_PLACE_JOURNAL))) {
     // Not a copy: `export --in-place` removed the binding and stopped before it finished.
     return {
-      copy_of_checkout: {
-        bound: false,
-        host: marker.host,
-        bundle_id: marker.bundle_id,
-        note: "an in-place export of this checkout stopped part way; re-running it finishes it without the network",
-        help: `${cliInvocation()} export --in-place --dir ${commandToken(folder)}`,
-      },
-    };
-  }
-  return {
-    copy_of_checkout: {
       bound: false,
       host: marker.host,
       bundle_id: marker.bundle_id,
-      ...(marker.workspace ? { workspace: marker.workspace } : {}),
-      note: "this folder carries a hosted checkout marker but is not bound here (copied, moved or restored); it behaves as a local bundle until adopted",
-      help: `${cliInvocation()} checkout --adopt ${commandToken(folder)} --host ${commandToken(marker.host)}`,
-    },
+      note: "an in-place export of this checkout stopped part way; re-running it finishes it without the network",
+      help: `${cliInvocation()} export --in-place --dir ${commandToken(folder)}`,
+      export_stopped: true,
+    };
+  }
+  return {
+    bound: false,
+    host: marker.host,
+    bundle_id: marker.bundle_id,
+    ...(marker.workspace ? { workspace: marker.workspace } : {}),
+    note: "this folder carries a hosted checkout marker but is not bound here (copied, moved or restored); nothing done in it reaches the host until it is adopted",
+    help: `${cliInvocation()} checkout --adopt ${commandToken(folder)} --host ${commandToken(marker.host)}`,
+    export_stopped: false,
   };
+}
+
+/** The `copy_of_checkout` detail a receipt carries for a folder with a marker and no binding. */
+export function unboundCopyDetail(folder: string, marker: CheckoutMarker): Record<string, unknown> {
+  const { export_stopped: _stopped, ...detail } = unboundCopyInfo(folder, marker);
+  return { copy_of_checkout: detail };
 }

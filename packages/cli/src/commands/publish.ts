@@ -21,7 +21,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { runGit } from "@superbee/board-git";
-import { parseMarkdown, RemoteError } from "@superbee/core";
+import { parseMarkdown, RemoteError, stripHostText } from "@superbee/core";
 import { HostedCarrierError } from "@superbee/core/hosted-transport";
 
 import { parseLeafOrUsage } from "../args.js";
@@ -34,6 +34,8 @@ import { commandFragment, commandToken, type CommandText } from "../command-text
 import { CliError } from "../errors.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { defaultHostedAuthDeps, hostedBundleHost } from "../hosted-auth/session.js";
+import { isHostedBundleId } from "../hosted/bundle-id.js";
+import { unboundCopyRefusal } from "../hosted/refusals.js";
 import { hostedFailure } from "../hosted/client.js";
 import { connectHostedAccount, workspaceNames } from "../hosted/account.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
@@ -44,7 +46,6 @@ import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { bindFolderInPlace } from "./checkout-adopt.js";
 import { connectHostedBundle, registerInCatalog, type CheckoutDeps } from "./checkout.js";
-import { isHostedBundleId } from "../hosted/reference.js";
 
 export const PUBLISH_USAGE = `superbee publish — move a local bundle or Git board to hosted Superbee
 
@@ -128,7 +129,7 @@ async function rootTitle(folder: string): Promise<string | null> {
 
 /** The host refuses control and format characters in a name. */
 function cleanName(name: string): string {
-  return name.replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 128);
+  return stripHostText(name, 128);
 }
 
 /** Refuse a folder that is not its own authority: nested in another bundle, or bound elsewhere. */
@@ -140,10 +141,7 @@ async function assertPublishable(canonical: string, facts: BundleHomeFacts): Pro
     });
   }
   if (facts.copy) {
-    throw new CliError("FORBIDDEN", `${canonical} is a copy of a hosted checkout of '${facts.copy.marker.bundle_id}'; adopt it instead of publishing a second bundle`, {
-      details: { reason: "unbound_copy", folder: canonical, marker_host: facts.copy.marker.host, marker_bundle_id: facts.copy.marker.bundle_id },
-      help: `${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(facts.copy.marker.host)}`,
-    });
+    throw unboundCopyRefusal(facts.copy, "FORBIDDEN", `${canonical} is a copy of a hosted checkout of '${facts.copy.marker.bundle_id}'; adopt it instead of publishing a second bundle`);
   }
   if (facts.home === "git" && facts.board.channel === "in-tree") {
     throw new CliError("FORBIDDEN", `${canonical} is committed with the code on ${facts.board.branch ?? "this branch"}; publishing it would leave two authorities`, {

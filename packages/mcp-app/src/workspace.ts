@@ -32,9 +32,31 @@ export interface McpWorkspaceSummary {
   readonly home?: McpWorkspaceHome;
 }
 
+/**
+ * A workspace the person can reach that has no folder on this machine yet. It cannot be opened
+ * here: `command` is the one that brings it into a folder, or lists it (MCP tools never create
+ * folders).
+ */
+export interface McpReachableWorkspace {
+  readonly id: string;
+  readonly name: string;
+  readonly home: McpWorkspaceHome;
+  /** Where it lives, e.g. the host's origin. */
+  readonly location: string;
+  readonly command: string;
+}
+
+/** The reachable workspaces with no folder here, and a note for each place that could not be asked. */
+export interface McpReachableListing {
+  readonly workspaces: readonly McpReachableWorkspace[];
+  readonly notes: readonly string[];
+}
+
 /** Host-neutral workspace authority supplied by the CLI; implementations may know the catalog. */
 export interface McpWorkspaceResolver {
   list(): Promise<readonly McpWorkspaceSummary[]>;
+  /** Reachable workspaces with no folder here, when the host knows any; bounded and best effort. */
+  reachable?(): Promise<McpReachableListing>;
   open(selector: string): Promise<McpBundleContext>;
 }
 

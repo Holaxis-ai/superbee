@@ -181,6 +181,8 @@ test("combo 1: --establish — full receipt, origin gets the board, working-tree
     assert.equal(typeof rec.gitignore, "string");
     assert.match(rec.gitignore as string, /appended/);
     assert.deepEqual(rec.next_steps, establishNextSteps(INV));
+    // The one sync envelope: a Git board now, and the snapshot's document went out with it.
+    assert.deepEqual([rec.home, rec.sent, rec.received, rec.next], ["git", 1, 0, establishNextSteps(INV)]);
 
     // origin now genuinely carries the board branch.
     assert.equal(
@@ -213,6 +215,7 @@ test("combo 1: --establish — full receipt, origin gets the board, working-tree
     const boardCommitsBefore = git(topo.a.board, ["rev-list", "--count", "HEAD"]).trim();
     const rerun = await runSyncJson(home, ["--establish", "--dir", topo.a.root]);
     assert.equal(rerun.establish, ESTABLISH_ALREADY);
+    assert.equal(rerun.home, "git", "already established: an ordinary Git sync, reported as one");
     assert.equal(rerun.sync, "already up to date");
     const boardCommitsAfter = git(topo.a.board, ["rev-list", "--count", "HEAD"]).trim();
     assert.equal(boardCommitsAfter, boardCommitsBefore, "re-running --establish never adds a second lineage");

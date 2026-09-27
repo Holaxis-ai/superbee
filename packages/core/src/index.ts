@@ -85,6 +85,9 @@ export { readBlob, writeBlob, existsBlob, listBlobs } from "./bundle.js";
 export type { BlobKey, ReadBlobResult } from "./types.js";
 
 export { freshness, staleAfterInstant } from "./freshness.js";
+export { stripHostText } from "./host-text.js";
+// The one equality for OKF frontmatter values: what the write policy treats as unchanged.
+export { okfValuesEqual } from "./okf-authored-values.js";
 
 // OKF v0.2 trust: the one actor grammar and the one `verified` read/append policy every surface
 // (CLI receipts, status counts, list projection, the UI header) derives the trust tier through.

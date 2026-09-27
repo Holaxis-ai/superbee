@@ -83,6 +83,7 @@ import {
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded } from "./projection.js";
 import { recordPulled, recordSynced } from "./freshness.js";
+import { syncEnvelope, syncVerbNotApplicable, withSyncEnvelope, type SyncEnvelope } from "../sync-outcomes.js";
 
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
 
@@ -266,7 +267,7 @@ function parseHosted(argv: string[]): HostedValues {
   const inv = cliInvocation();
   for (const flag of GIT_ONLY_FLAGS) {
     if ((values as Record<string, unknown>)[flag] !== undefined) {
-      throw new CliError("USAGE", `--${flag} is for a Git board; a hosted checkout syncs with plain 'sync'`, { help: `${inv} sync --help` });
+      throw syncVerbNotApplicable([flag], "hosted", "it is for a Git board; a hosted checkout syncs with plain 'sync'", `${inv} sync --help`);
     }
   }
   if (values.inspect !== undefined && values.resolve !== undefined) {
@@ -907,8 +908,16 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     if (exit) failure = receiptFailure(exit, { counts });
     return record;
   });
-  if (receipt) deps.stdout(render(receipt, mode));
+  if (receipt) deps.stdout(render(withSyncEnvelope(receipt, hostedSyncEnvelope(receipt)), mode));
   if (failure) throw failure;
+}
+
+/** The one sync envelope, from a hosted run receipt's own keys (its counts, pulled and help). */
+function hostedSyncEnvelope(receipt: Record<string, unknown>): SyncEnvelope {
+  const counts = (receipt.counts ?? {}) as Record<string, number | undefined>;
+  const pulled = (receipt.pulled ?? {}) as Record<string, number | undefined>;
+  const help = Array.isArray(receipt.help) ? receipt.help.map(String) : [];
+  return syncEnvelope("hosted", { sent: counts.committed ?? 0, received: (pulled.refreshed ?? 0) + (pulled.removed ?? 0), conflicts: counts.conflict ?? 0, held: counts.held ?? 0, next: help });
 }
 
 /** What a pull-only pass did, or why it did not run. */

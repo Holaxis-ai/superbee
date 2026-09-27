@@ -902,6 +902,9 @@ test("only the sign-in commands, the hosted checkout, export, doc history and ho
         "autopull.ts",
         // The local MCP app's reads of a checkout run that checkout's automatic pull.
         path.join("hosted", "served-bundle.ts"),
+        // The signed-in listing of hosted bundles beside the folders (catalog list, list_workspaces):
+        // it reads the stored session and never starts a sign-in.
+        path.join("hosted", "reachable.ts"),
         path.join("commands", "session-start.ts"),
         path.join("commands", "turn-end.ts"),
         path.join("commands", "setup-hosted.ts"),

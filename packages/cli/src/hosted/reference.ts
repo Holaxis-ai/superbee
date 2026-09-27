@@ -4,18 +4,14 @@
 // The slug is the workspace's own (the first label of its host, as `whoami` reports it), resolved
 // by the host among the person's own workspaces. The CLI keeps the bare id everywhere a bundle id
 // is stored or compared (folder names, catalog labels, the host's answers) and sends the reference
-// only in the body of a bundle-scoped sync request (`hosted/client.ts`).
+// only in the body of a bundle-scoped sync request (`hosted/client.ts`). The bundle id part is held
+// to the one rule `hosted/bundle-id.ts` states, so a reference never carries an id a bare one could
+// not.
+
+import { isHostedBundleId } from "./bundle-id.js";
 
 /** One lowercase DNS label: the host's workspace slug grammar. */
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-/** The host's canonical bundle id grammar (at most 128 characters, all ASCII). */
-const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
-
-/** True for a hosted bundle id in its canonical form (never a reference). */
-export function isHostedBundleId(value: string): boolean {
-  return BUNDLE_ID.test(value) && value.length <= 128;
-}
-
 /** True for a workspace slug as the host reports it. */
 export function isWorkspaceSlug(value: unknown): value is string {
   return typeof value === "string" && SLUG.test(value);
