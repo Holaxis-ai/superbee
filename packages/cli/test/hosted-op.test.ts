@@ -349,10 +349,14 @@ test("op run reads within the run bound, not the descriptor's; an answer over it
 test("a result nested deeper than the run bound is the host's contract mismatch naming /run, never a crash", async () => {
   const h = await harness();
   h.host.operationsListing = [syntheticDescriptor()];
-  let deep: unknown = "leaf";
-  for (let level = 0; level < 50_000; level += 1) deep = [deep];
-  h.host.runHook = () => deep;
-  const error = await rejects(() => run(h, ["run", "bundles.synthetic.v1", "--input", '{"depth":1}']));
+  // The host's bytes, written as text: a value this deep cannot be passed through JSON.stringify
+  // on every supported Node (22 overflows its stack; the decoder's JSON.parse does not).
+  const deep = `${"[".repeat(50_000)}"leaf"${"]".repeat(50_000)}`;
+  const deepRun = (async (input: string | URL | Request, init?: RequestInit) =>
+    String(input).endsWith("/run")
+      ? new Response(`{"ok":true,"operationId":"bundles.synthetic.v1","data":${deep}}`, { status: 200, headers: { "content-type": "application/json; charset=utf-8" } })
+      : h.host.fetch(input, init)) as typeof fetch;
+  const error = await rejects(() => run(h, ["run", "bundles.synthetic.v1", "--input", '{"depth":1}'], deepRun));
   assert.equal(error.code, "RUNTIME");
   assert.equal(error.details?.route, "/sync/v1/run");
   assert.equal(error.details?.retryable, false);
