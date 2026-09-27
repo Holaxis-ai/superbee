@@ -66,6 +66,8 @@ interface FakeOptions {
   workspaces?: { tenantId: string; slug: string | null }[];
   /** The slug of the workspace holding the bundle: bundle-scoped bodies then name `<slug>/<bundle>`. */
   slug?: string;
+  /** Raw answers by route for a body naming the bundle in another workspace (`<slug>/<bundle>`), by slug. */
+  elsewhere?: Record<string, Record<string, { status: number; headers: Record<string, string>; body: string }>>;
   /** Raw answers by route, over the fixtures. */
   raw?: Record<string, { status: number; headers: Record<string, string>; body: string }>;
 }
@@ -114,11 +116,18 @@ function fakeSyncFamily(options: FakeOptions = {}) {
         data: { bundles: ids.map((bundleId) => ({ bundleId, name: bundleId, purpose: "", domains: [], lifecycle: "active", sensitivity: "internal" })) },
       });
     }
+    const named = (body as { bundleId?: string } | undefined)?.bundleId;
+    const other = typeof named === "string" && named.includes("/") ? options.elsewhere?.[named.split("/")[0]!]?.[route] : undefined;
+    if (other) return new Response(other.body, { status: other.status, headers: other.headers });
     const raw = options.raw?.[route];
     if (raw) return new Response(raw.body, { status: raw.status, headers: raw.headers });
     const name = routes[route];
     if (!name) return Response.json({ error: "not_found" }, { status: 404 });
-    assert.deepEqual(body, { bundleId: options.slug ? `${options.slug}/${BUNDLE}` : BUNDLE });
+    // Qualified by the fake's workspace, or (a read of another holder) by another of the person's
+    // workspaces, which serves the same fixture unless `elsewhere` says otherwise.
+    const ids = options.slug ? (options.workspaces ?? []).filter((w) => w.slug !== null).map((w) => `${w.slug}/${BUNDLE}`) : [BUNDLE];
+    assert.deepEqual(Object.keys(body ?? {}), ["bundleId"]);
+    assert.ok(ids.includes(named as string), `unexpected bundleId ${String(named)}`);
     const { response } = fixture(name);
     return new Response(response.status === 304 ? null : response.body, { status: response.status, headers: response.headers });
   }) as typeof fetch;
@@ -651,18 +660,53 @@ test("a checkout made bare whose id another workspace gained is bound again in p
   const before = (await bindingForPath(h.home, folder))!;
   assert.equal(before.workspace_slug, undefined);
   const listed = [`north/${BUNDLE}`, `south/${BUNDLE}`];
-  // Without --host it is refused; with it, the folder is bound to south's bundle, files kept.
+  // Without --host it is refused.
   assert.equal((await rejects(run(h, ["--adopt", folder, "--workspace", "south"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "south" })))).code, "USAGE");
-  const fake = fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "south" });
+  // A workspace whose bundle of that id shares no document version with this checkout is another
+  // bundle: refused, and the checkout is left bound as it was.
+  const other = await rejects(run(h, ["--adopt", folder, "--host", HOST, "--workspace", "north"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "north", raw: withDocs(["notes/elsewhere"]) })));
+  assert.equal(other.details?.reason, "not_this_bundle");
+  assert.equal((await bindingForPath(h.home, folder))?.checkout_id, before.checkout_id);
+  // Both workspaces' bundles share this checkout's versions (published from one source): which one
+  // it came from cannot be shown, so nothing is re-bound.
+  const both = await rejects(run(h, ["--adopt", folder, "--host", HOST, "--workspace", "south"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "south" })));
+  assert.equal(both.details?.reason, "origin_unknown");
+  assert.equal((await bindingForPath(h.home, folder))?.checkout_id, before.checkout_id);
+  // South's bundle is this checkout's and north's is another: the folder is bound to south's in place, files kept.
+  const fake = fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "south", elsewhere: { north: withDocs(["notes/elsewhere"]) } });
   const rebound = await run(h, ["--adopt", folder, "--host", HOST, "--workspace", "south"], fake);
   assert.equal(rebound.adopted, "rebound");
   assert.equal(rebound.reference, `south/${BUNDLE}`);
   const after = (await bindingForPath(h.home, folder))!;
   assert.equal(after.workspace_slug, "south");
   assert.notEqual(after.checkout_id, before.checkout_id, "a new store");
-  assert.ok(fake.requests.filter((r) => r.path.endsWith("/heads")).every((r) => (r.body as { bundleId: string }).bundleId === `south/${BUNDLE}`));
-  // Naming the same workspace again changes nothing.
+  // Every bundle request names a workspace: north's heads only for the check, the bundle itself from south.
+  const bundleBodies = fake.requests.filter((r) => !/\/(whoami|bundles)$/.test(r.path)).map((r) => `${r.path} ${(r.body as { bundleId: string }).bundleId}`);
+  assert.deepEqual(bundleBodies.filter((line) => !line.endsWith(`south/${BUNDLE}`)), [`/sync/v1/heads north/${BUNDLE}`]);
+  assert.ok(bundleBodies.includes(`/sync/v1/snapshot south/${BUNDLE}`));
+  // Naming the same workspace again changes nothing; naming another is refused, never a move.
   assert.equal((await run(h, ["--adopt", folder, "--host", HOST, "--workspace", "south"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "south" }))).adopted, "unchanged");
+  const moved = await rejects(run(h, ["--adopt", folder, "--host", HOST, "--workspace", "north"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "north" })));
+  assert.equal(moved.details?.reason, "other_workspace");
+  assert.equal((await bindingForPath(h.home, folder))?.checkout_id, after.checkout_id);
+});
+
+test("a checkout made in the person's only workspace is re-bound only to that workspace", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"], fakeSyncFamily({ tenants: ["tenant-a"], workspaces: [{ tenantId: "tenant-a", slug: "north" }] }));
+  const folder = await realpath(path.join(h.cwd, "team"));
+  const listed = [`north/${BUNDLE}`, `south/${BUNDLE}`];
+  // The person joined south, which holds the same id with the same versions: the checkout's own
+  // record names north as its workspace, so south is refused and north is taken.
+  const wrong = await rejects(run(h, ["--adopt", folder, "--host", HOST, "--workspace", "south"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "south" })));
+  assert.equal(wrong.details?.reason, "not_this_bundle");
+  const right = await run(h, ["--adopt", folder, "--host", HOST, "--workspace", "north"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "north" }));
+  assert.equal(right.adopted, "rebound");
+  // A host that names no workspaces leaves a bare checkout as it is.
+  const h2 = await harness();
+  await run(h2, [BUNDLE, "--host", HOST, "--dir", "team"], fakeSyncFamily({ tenants: ["tenant-a"] }));
+  const bare = await run(h2, ["--adopt", await realpath(path.join(h2.cwd, "team")), "--host", HOST, "--workspace", "tenant-a"], fakeSyncFamily({ tenants: ["tenant-a"] }));
+  assert.equal(bare.adopted, "unchanged");
 });
 
 test("whoami's workspaces are read strictly: absent is an older host, a mismatched list is malformed", async () => {

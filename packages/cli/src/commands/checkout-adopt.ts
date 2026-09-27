@@ -50,7 +50,8 @@ import {
   type CheckoutBinding,
 } from "../hosted/binding.js";
 import { relocateCatalogEntry } from "../catalog.js";
-import { syncRoutePrefix } from "../hosted/client.js";
+import { readBundleListing, syncRoutePrefix } from "../hosted/client.js";
+import { parseHostedBundleReference } from "../hosted/reference.js";
 import { recordPulled } from "../hosted/freshness.js";
 import { clearPublishedExtras, readPublishedExtras } from "../hosted/publish-state.js";
 import { bindingHostArgument, readCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
@@ -241,13 +242,13 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   }${options.json ? commandFragment` --json` : commandFragment``}`;
   // The marker's workspace slug is part of the reference it names; its recorded tenant id (folder
   // content, and possibly a stale default) never narrows anything. --workspace does.
-  const { identity, reader, listed: isListed, workspace, reference } = await connectHostedBundle(typed, target, options.workspace, deps, resume);
+  const connection = await connectHostedBundle(typed, target, options.workspace, deps, resume);
 
   // A conversion `publish` started and could not finish: the files it sent that a checkout does
   // not hold as documents are recorded too, so sync leaves them be.
   const published = await readPublishedExtras(home, canonical);
   const extras = published && published.host === target.origin && published.bundle_id === bundleId ? published.extras : undefined;
-  const result = await bindFolderInPlace({ canonical, target, bundleId, connection: { identity, reader, listed: isListed, workspace, reference }, deps, resume, ...(extras ? { extras } : {}) });
+  const result = await bindFolderInPlace({ canonical, target, bundleId, connection, deps, resume, ...(extras ? { extras } : {}) });
   if (published) await clearPublishedExtras(home, canonical);
   const cataloged = await registerInCatalog(home, result.binding);
   const syncHelp = `${cliInvocation()} sync --dir ${commandToken(canonical)}`;
@@ -291,29 +292,73 @@ async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, opti
     options.json ? commandFragment` --json` : commandFragment``
   }`;
   const connection = await connectHostedBundle({ slug: null, bundleId: bound.bundle_id }, target, options.workspace, deps, resume);
-  if (connection.reference.slug === null) {
-    throw new CliError("USAGE", `${target.origin} names no workspaces, so a checkout cannot name one`, {
-      details: { reason: "references_unsupported", ...bindingView(bound) },
+  const slug = connection.reference.slug;
+  // A host that names no workspaces, or the workspace this checkout already names: nothing to do.
+  if (slug === null || slug === (bound.workspace_slug ?? null)) return false;
+  if (connection.identity.principalId !== bound.principal_id) {
+    throw new CliError("FORBIDDEN", `you are signed in to ${bound.origin} as another person than the one this checkout belongs to`, {
+      details: { reason: "other_principal", folder: canonical, checkout_principal: bound.principal_id, signed_in_principal: connection.identity.principalId },
     });
   }
-  if (connection.reference.slug === (bound.workspace_slug ?? null)) return false;
-  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, bound.checkout_id) });
-  let unsent: number;
-  try {
-    unsent = (await store.listIntents(UNSETTLED_STATES)).length;
-  } finally {
-    await store.close();
+  const named = `${slug}/${bound.bundle_id}`;
+  const newFolder = `${cliInvocation()} checkout ${commandToken(named)} --host ${commandToken(bindingHostArgument(target))} --dir <new folder>`;
+  // Only a bare checkout is bound to a workspace: one that names a workspace already keeps it.
+  if (bound.workspace_slug) {
+    throw new CliError("CONFLICT", `${canonical} is a checkout of '${bound.workspace_slug}/${bound.bundle_id}', not of workspace '${slug}'`, {
+      details: { reason: "other_workspace", ...bindingView(bound) },
+      help: `to work on the other workspace's bundle, check it out into a new folder: ${newFolder}`,
+    });
   }
-  await withCheckoutLock(canonical, () => releaseCheckout(home, bound));
+  const notThis = (reason: "not_this_bundle" | "origin_unknown") =>
+    new CliError("CONFLICT", reason === "not_this_bundle" ? `'${named}' is not the bundle ${canonical} was checked out from` : `this checkout cannot show that '${named}' is the bundle it was checked out from`, {
+      details: { reason, ...bindingView(bound), workspace: slug },
+      help: `name the workspace this checkout came from; to work on '${named}' instead, check it out into a new folder: ${newFolder}`,
+    });
+  // Under the checkout lock, so no sync lands between the check and the release.
+  const unsent = await withCheckoutLock(canonical, async () => {
+    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, bound.checkout_id) });
+    let pending: number;
+    let recorded: Set<string>;
+    try {
+      pending = (await store.listIntents(UNSETTLED_STATES)).length;
+      recorded = new Set(await store.readHeads({ project: (head) => `${head.id}\0${head.version}` }));
+    } finally {
+      await store.close();
+    }
+    const shares = async (reader: typeof connection.reader) => ((await reader.heads())?.heads ?? []).some((head) => recorded.has(`${head.id}\0${head.version}`));
+    // The named workspace's bundle must be the one this checkout was made of, or the next sync would
+    // send this folder's documents into another workspace's bundle of the same id. The strongest
+    // evidence is the checkout's own: made while the person was in one workspace, it names the
+    // holder. Otherwise the named bundle must share a document version with the checkout's records,
+    // and no other workspace's bundle of that id may.
+    if (bound.workspaces.length === 1 && bound.workspace !== null) {
+      if (connection.workspace !== bound.workspace) throw notThis("not_this_bundle");
+    } else {
+      if (recorded.size === 0) throw notThis("origin_unknown");
+      if (!(await shares(connection.reader))) throw notThis("not_this_bundle");
+      const found = readBundleListing(await connection.client.bundles()).lookup({ slug: null, bundleId: bound.bundle_id });
+      const others = found.references.filter((reference) => reference !== named);
+      // A holder listed bare (a workspace with no name, or past the list cap) cannot be checked.
+      if (found.holders > found.references.length) throw notThis("origin_unknown");
+      for (const reference of others) {
+        const other = parseHostedBundleReference(reference)!;
+        if (await shares(connection.client.within(other.slug!).reader(other.bundleId))) throw notThis("origin_unknown");
+      }
+    }
+    await releaseCheckout(home, bound);
+    return pending;
+  });
   const result = await bindFolderInPlace({ canonical, target, bundleId: bound.bundle_id, connection, deps, resume });
-  const cataloged = await registerInCatalog(home, result.binding);
   deps.stdout(
     render(
       {
         adopted: "rebound",
         ...bindingView(result.binding),
-        previous: { reference: bound.bundle_id, unsent_changes: unsent },
-        catalog: cataloged,
+        previous: {
+          reference: bound.bundle_id,
+          unsent_changes: unsent,
+          ...(unsent > 0 ? { note: "the old checkout's unsent changes stay in the folder's files: an edit is now a conflict or a new document for sync, and a deletion it had not sent was placed back" } : {}),
+        },
         documents: { placed: result.placed.length, matched: result.matched.length, conflicts: result.conflicts.length, local_only: result.localOnly.length },
         ...(result.conflicts.length > 0 ? { conflicts: listed(result.conflicts) } : {}),
         ...(result.localOnly.length > 0 ? { local_only: listed(result.localOnly) } : {}),

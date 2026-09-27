@@ -48,7 +48,7 @@ import {
   writeBinding,
   type CheckoutBinding,
 } from "../hosted/binding.js";
-import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, type HostedIdentity } from "../hosted/client.js";
+import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, type HostedIdentity, type HostedSyncClient } from "../hosted/client.js";
 import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS } from "../hosted/refusals.js";
 import { digestOf, exportFresh, findPathCollision, ROOT_INDEX } from "../hosted/projection.js";
 import { writeProjection } from "../hosted/sync-scan.js";
@@ -591,6 +591,8 @@ export interface HostedBundleConnection {
   readonly workspace: string | null;
   /** The reference the checkout names the bundle by: the one typed, or the bare id qualified by `--workspace <slug>`. */
   readonly reference: HostedBundleReference;
+  /** The signed-in account's client, naming no workspace. */
+  readonly client: HostedSyncClient;
 }
 
 /**
@@ -658,7 +660,7 @@ export async function connectHostedBundle(
   if (ids.length > Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.bound.documents)) throw tooLarge(reference, target, ids.length);
   assertProjectable(ids, bundleId, target);
 
-  return { identity, reader, listed, workspace: tenantId ?? workspace, reference };
+  return { identity, reader, listed, workspace: tenantId ?? workspace, reference, client };
 }
 
 /** Catalog labels tried for a checkout: the bundle id, then `-2` to `-9` when another entry holds it. */

@@ -22,9 +22,11 @@ so its sync keeps reaching that workspace's bundle.
 If `sync`, `doc history` or `export` in a checkout answer `ambiguous_bundle`, the checkout was made
 with a bare id that another of the person's workspaces now also holds. Nothing was deleted. Ask the
 person which workspace they mean, then bind the folder again in place:
-`superbee checkout --adopt <folder> --host <url> --workspace <workspace>`. It never overwrites a
-file: an edit sync had not sent becomes a conflict (below) or a new document, and a deletion it had
-not sent is placed back.
+`superbee checkout --adopt <folder> --host <url> --workspace <workspace>`. It refuses
+(`not_this_bundle`, `origin_unknown`) unless it can show the folder came from that workspace's
+bundle; then check the one you mean out into a new folder instead. It never overwrites a file: an
+edit sync had not sent becomes a conflict (below) or a new document, and a deletion it had not sent
+is placed back.
 
 ## The folder marker, and adopting a moved or copied checkout
 
