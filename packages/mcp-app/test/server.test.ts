@@ -418,7 +418,7 @@ test("run_operation refuses a malformed id, an oversized input and an unknown fi
     async (call) => {
       for (const args of [
         { workspace: "planning", operationId: "documents.history" },
-        { workspace: "planning", operationId: "Documents.History.v1" },
+        { workspace: "planning", operationId: "Uppercase.Id.v1" },
         { workspace: "planning", operationId: "documents.history.v1", input: { documentId: "x".repeat(64 * 1024) } },
         { workspace: "planning", operationId: "documents.history.v1", extra: true },
         { workspace: "/etc/passwd", operationId: "documents.history.v1" },
