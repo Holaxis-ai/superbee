@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted dcf04932117d110389810a926e00c30c0a47b7ea (branch feature/sync-generic-operations; will be recopied from the final reviewed head)",
+  "source": "Holaxis-ai/superbee-hosted 04132198a77793d24620a77cb2ca6a76b99eb1de",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
