@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { access, cp, mkdtemp, readFile, realpath, unlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -25,6 +25,7 @@ import { sync } from "../src/commands/sync.js";
 import { CliError } from "../src/errors.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { bindingForPath } from "../src/hosted/binding.js";
+import { IN_PLACE_JOURNAL, IN_PLACE_STAGING } from "../src/hosted/export-archive.js";
 import { recordPulled } from "../src/hosted/freshness.js";
 import { assertAllowedInHostedCheckout } from "../src/hosted/refusals.js";
 import { servedBundle } from "../src/hosted/served-bundle.js";
@@ -224,6 +225,18 @@ test("an MCP write that changes verified is refused before the file changes; an 
   assert.equal(await exists(path.join(c.folder, "notes", "claimed.md")), false);
   assert.deepEqual([(await syncState(c)).state, (await syncState(c)).unsent], ["clean", 0]);
 
+  // A write made against an older version meets the version check first: a conflict the caller
+  // retries, not a final refusal (a pull may have brought the new verification in meanwhile).
+  await assert.rejects(
+    context.bundle.backend!.write("notes/alpha", { id: "notes/alpha", frontmatter: unverified, body: alpha.body }, { expectedVersion: "stale-version" }),
+    (error: unknown) => {
+      assert.ok(!(error instanceof CliError), `a version conflict, not a refusal: ${String(error)}`);
+      assert.match(String(error), /version|conflict/i);
+      return true;
+    },
+  );
+  assert.equal(await readFile(alphaFile, "utf8"), before);
+
   // An ordinary edit of the verified document carries verified forward unchanged, and is sent.
   await writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha, retitled" }, body: alpha.body });
   assert.match(await readFile(alphaFile, "utf8"), /Alpha, retitled/);
@@ -295,6 +308,48 @@ test("an unbound copy of a checkout is served for reading, and every MCP write i
   await writeDoc(local, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha, kept" }, body: alpha.body });
   assert.match(await readFile(path.join(kept, "notes", "alpha.md"), "utf8"), /Alpha, kept/);
 });
+
+test("a copy made a Git board mid-session is written as sync takes it; a stopped in-place export names its resume, not deleting the marker", async () => {
+  const c = await hostedCheckout();
+  await cp(c.folder, path.join(c.cwd, "copy"), { recursive: true });
+  const copy = await realpath(path.join(c.cwd, "copy"));
+  const bundle = await servedBundle(await openBundle(copy), { home: c.home });
+  const alpha = await readDoc(bundle, "notes/alpha");
+  await assert.rejects(writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha" }, body: "x" }), refusedAsCopy(copy));
+
+  // An in-place export that stopped part way leaves the marker and no binding: the refusal names the
+  // resume, and never suggests deleting the marker, which would abandon it.
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(path.join(copy, IN_PLACE_STAGING), { recursive: true });
+  await writeFile(path.join(copy, IN_PLACE_STAGING, IN_PLACE_JOURNAL), "{}\n");
+  await assert.rejects(writeDoc(bundle, { id: "notes/alpha", frontmatter: alpha.frontmatter, body: "x" }), (error: unknown) => {
+    assert.ok(error instanceof CliError);
+    const details = error.details as Record<string, unknown>;
+    assert.equal(details.reason, "unbound_copy");
+    assert.equal("or" in details, false);
+    assert.match(error.help ?? "", /export --in-place --dir /);
+    return true;
+  });
+  const refused = await rejects(sync(["--dir", copy], { auth: c.auth, cwd: c.cwd }));
+  assert.equal("or" in (refused.details ?? {}), false);
+  await rm(path.join(copy, IN_PLACE_STAGING), { recursive: true });
+
+  // Made a Git board (as sync --establish leaves it): sync takes it through Git, so the same served
+  // bundle writes to it with no reopen.
+  execFileSync("git", ["init", "-q", "-b", "board"], { cwd: copy, stdio: "ignore" });
+  await writeDoc(bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, title: "Alpha on the board" }, body: alpha.body });
+  assert.match(await readFile(path.join(copy, "notes", "alpha.md"), "utf8"), /Alpha on the board/);
+});
+
+async function rejects(promise: Promise<unknown>): Promise<CliError> {
+  try {
+    await promise;
+  } catch (error) {
+    assert.ok(error instanceof CliError, String(error));
+    return error;
+  }
+  throw new assert.AssertionError({ message: "expected a refusal" });
+}
 
 test("a Git board that carries a checkout marker syncs through Git, so local MCP serves it unguarded", async () => {
   const c = await hostedCheckout();

@@ -25,9 +25,8 @@
 // already wrapped, from both open paths (the catalog resolver and `mcp --dir`).
 import { homedir } from "node:os";
 import path from "node:path";
-import { isDeepStrictEqual } from "node:util";
 
-import { assertSafeConceptId, pathFromConceptId, stringifyDoc, type Bundle, type Frontmatter, type OkfDocument, type StorageBackend } from "@superbee/core";
+import { assertSafeConceptId, okfValuesEqual, pathFromConceptId, stringifyDoc, type Bundle, type Frontmatter, type OkfDocument, type StorageBackend, type WriteOptions } from "@superbee/core";
 
 import { maybeHostedAutoPull, type HostedAutoPullOptions } from "../autopull.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
@@ -36,7 +35,7 @@ import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
 import { bindingForPath, type CheckoutBinding } from "./binding.js";
 import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { HOSTED_AUTOPULL_STALE_MS } from "./freshness.js";
-import { unboundLocalCopyAt, type UnboundCopy } from "../bundle-home.js";
+import { bundleHomeAt, unboundLocalCopyAt, type UnboundCopy } from "../bundle-home.js";
 import { readCheckoutMarker } from "./marker.js";
 import { hostedHeldWriteRefusal, hostedManagedFieldRefusal, unboundCopyRefusal } from "./refusals.js";
 import { heldPathReason, unsendable, type HeldFile } from "./sync-scan.js";
@@ -96,6 +95,8 @@ export async function servedBundle(bundle: Bundle, options: ServedBundleOptions 
     const folder = backend();
     return guardedBundle(bundle, folder, checkoutGuard(binding, home, folder, options));
   }
+  // Most folders carry no marker: that one small read spares every MCP call the Git lookups below.
+  if (readCheckoutMarker(root) === null) return bundle;
   const copy = await unboundLocalCopyAt(root, { home });
   if (!copy) return bundle;
   const folder = backend();
@@ -142,9 +143,10 @@ interface CheckoutGuard {
 
 /**
  * The guard on an unbound copy. Reads are served as they are: there is no binding to pull with.
- * Each write looks again: once the folder is adopted (bound), the checkout's own guard takes over
- * for the rest of the session; while it still carries its marker, the write is refused; once the
- * marker is deleted (to keep it as a plain local bundle), the write goes through.
+ * Each write derives the folder's home again (`bundleHomeAt`): once it is adopted (bound), the
+ * checkout's own guard takes over for the rest of the session; while it is still a local copy, the
+ * write is refused; anything else (its marker deleted to keep it as a plain local bundle, or the
+ * folder made a Git board) goes through, as `sync` would take it.
  */
 function unboundCopyGuard(copy: UnboundCopy, home: string, folder: StorageBackend, options: ServedBundleOptions): CheckoutGuard {
   let adopted: CheckoutGuard | null = null;
@@ -152,13 +154,13 @@ function unboundCopyGuard(copy: UnboundCopy, home: string, folder: StorageBacken
     freshen: async () => adopted?.freshen(),
     async admit(method, args) {
       if (!adopted) {
-        const binding = await bindingForPath(home, copy.folder);
-        if (binding) adopted = checkoutGuard(binding, home, folder, options);
+        const facts = await bundleHomeAt(copy.folder, { home });
+        if (facts.home === "hosted") adopted = checkoutGuard(facts.binding, home, folder, options);
+        else if (facts.home === "local" && facts.copy) {
+          throw unboundCopyRefusal(facts.copy, "FORBIDDEN", `'mcp write' refused: ${copy.folder} is a copy of a hosted checkout of '${facts.copy.marker.bundle_id}' that is not bound here, so nothing written in it reaches the host`, { command: "mcp write" });
+        } else return;
       }
-      if (adopted) return adopted.admit(method, args);
-      const marker = readCheckoutMarker(copy.folder);
-      if (marker === null) return;
-      throw unboundCopyRefusal({ folder: copy.folder, marker }, "FORBIDDEN", `'mcp write' refused: ${copy.folder} is a copy of a hosted checkout of '${marker.bundle_id}' that is not bound here, so nothing written in it reaches the host`, { command: "mcp write" });
+      return adopted.admit(method, args);
     },
   };
 }
@@ -197,16 +199,20 @@ function checkoutGuard(binding: CheckoutBinding, home: string, folder: StorageBa
     async admit(method, args) {
       switch (method) {
         case "write": {
-          const [id, doc] = args as [string, OkfDocument];
+          const [id, doc, writeOptions] = args as [string, OkfDocument, WriteOptions | undefined];
           const rel = documentPath(id);
           const bytes = Buffer.from(stringifyDoc(doc.frontmatter, doc.body ?? ""), "utf8");
           const stored = await storedDocument(binding, home, folder, id);
           const held = unsendable(id, rel, bytes, stored.frontmatter ? { frontmatter: stored.frontmatter } : null, { bundleId: binding.bundle_id, okfVersion: stored.okfVersion });
           if (held) refuse(held);
           // Against the folder's current document, which every write carries `verified` forward
-          // from, so only a write that sets it differently is refused.
-          const current = await folder.read(id).then((read) => read.doc.frontmatter.verified, () => undefined);
-          if (!isDeepStrictEqual(doc.frontmatter.verified, current)) throw hostedManagedFieldRefusal(binding, id, "verified");
+          // from, so only a write that sets it differently is refused. A write made against an
+          // older version is left to the version check, which answers a conflict the caller can
+          // retry (a pull may have brought a new verification in meanwhile).
+          const current = await folder.read(id).then((read) => read, () => null);
+          const expected = writeOptions?.expectedVersion;
+          const stale = expected !== undefined && expected !== (current?.version ?? null);
+          if (!stale && !okfValuesEqual(doc.frontmatter.verified, current?.doc.frontmatter.verified)) throw hostedManagedFieldRefusal(binding, id);
           return;
         }
         case "delete":

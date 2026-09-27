@@ -18,7 +18,7 @@ import { commandToken } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
 import { bindingForPath, type CheckoutBinding } from "./binding.js";
 import type { UnboundCopy } from "../bundle-home.js";
-import { checkoutMarkerPath, unboundCopyDetail } from "./marker.js";
+import { checkoutMarkerPath, unboundCopyInfo } from "./marker.js";
 import { heldPathReason, type HeldFile, type HeldReason } from "./sync-scan.js";
 
 type RefusalReason = "not_syncable" | "checkout_target";
@@ -189,9 +189,9 @@ export function hostedHeldWriteRefusal(binding: CheckoutBinding, held: HeldFile)
  * managed field, so the edit would be lost; it is refused as `doc verify` is, before the file
  * changes.
  */
-export function hostedManagedFieldRefusal(binding: CheckoutBinding, id: string, field: string): CliError {
+export function hostedManagedFieldRefusal(binding: CheckoutBinding, id: string): CliError {
   const verify = HOSTED_CHECKOUT_REFUSALS.find((row) => row.words[0] === "doc" && row.words[1] === "verify")!;
-  return hostedCheckoutRefusal({ words: ["mcp"], reason: verify.reason, why: verify.why }, "mcp write", binding, { id, field });
+  return hostedCheckoutRefusal({ ...verify, words: ["mcp"] }, "mcp write", binding, { id, field: "verified" });
 }
 
 /**
@@ -203,7 +203,7 @@ export function hostedManagedFieldRefusal(binding: CheckoutBinding, id: string, 
  */
 export function unboundCopyRefusal(copy: UnboundCopy, code: "USAGE" | "FORBIDDEN" | "ALREADY_EXISTS", message: string, extra: Readonly<Record<string, string>> = {}): CliError {
   const { folder, marker } = copy;
-  const detail = unboundCopyDetail(folder, marker).copy_of_checkout as { note: string; help: string };
+  const detail = unboundCopyInfo(folder, marker);
   return new CliError(code, message, {
     details: {
       reason: "unbound_copy",
@@ -212,7 +212,8 @@ export function unboundCopyRefusal(copy: UnboundCopy, code: "USAGE" | "FORBIDDEN
       marker_host: marker.host,
       marker_bundle_id: marker.bundle_id,
       note: detail.note,
-      or: `to use it as a plain local bundle instead, delete ${checkoutMarkerPath(folder)}`,
+      // Deleting the marker of a stopped in-place export would abandon the resume the help names.
+      ...(detail.export_stopped ? {} : { or: `to use it as a plain local bundle instead, delete ${checkoutMarkerPath(folder)}` }),
     },
     help: detail.help,
   });
