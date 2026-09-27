@@ -9,12 +9,13 @@ import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { HOSTED_READ_BOUNDS } from "@superbee/core/hosted-transport";
 import { decode } from "@toon-format/toon";
 
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { init } from "../src/commands/init.js";
-import { op, OP_INPUT_BYTES } from "../src/commands/op.js";
+import { op } from "../src/commands/op.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { BUNDLE, FakeHost, HOST, syncFixture, TOKEN, type OperationDescriptor } from "./support/fake-hosted-sync.js";
 
@@ -233,11 +234,11 @@ test("--input and --input-file: one JSON object within 64 KiB, never both", asyn
     ["--input", "[1]"],
     ["--input", "not json"],
     ["--input", "null"],
-    ["--input", JSON.stringify({ documentId: "x".repeat(OP_INPUT_BYTES) })],
+    ["--input", JSON.stringify({ documentId: "x".repeat(HOSTED_READ_BOUNDS.runInputBytes) })],
   ]) {
     assert.equal((await rejects(() => run(h, ["run", "documents.history.v1", ...argv]))).code, "USAGE", argv.join(" "));
   }
-  await writeFile(file, JSON.stringify({ documentId: "y".repeat(OP_INPUT_BYTES) }));
+  await writeFile(file, JSON.stringify({ documentId: "y".repeat(HOSTED_READ_BOUNDS.runInputBytes) }));
   assert.match((await rejects(() => run(h, ["run", "documents.history.v1", "--input-file", file]))).message, /more than 65536 bytes/);
   assert.equal((await rejects(() => run(h, ["run", "Not An Id"]))).code, "USAGE");
   assert.deepEqual(h.host.requests, []);

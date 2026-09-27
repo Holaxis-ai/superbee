@@ -22,8 +22,7 @@ import {
   type HostedCarrier,
   type HostedHistoryAnswer,
   type HostedHistoryRequest,
-  type HostedOperationListing,
-  type HostedOperationRefusal,
+  type HostedOperationListingAnswer,
   type HostedOperationRun,
   type HostedReadAdapter,
   type HostedReadRoutes,
@@ -98,9 +97,6 @@ export interface OperationRouteOptions {
    */
   readonly unavailableHelp?: string;
 }
-
-/** A listing, or the refusal of the bundle it was asked for. */
-export type HostedOperationListingAnswer = { readonly ok: true; readonly listing: HostedOperationListing } | { readonly ok: false; readonly refusal: HostedOperationRefusal };
 
 export interface HostedIdentity {
   readonly principalId: string;

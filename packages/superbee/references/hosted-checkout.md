@@ -157,6 +157,12 @@ escaped; the default output removes them and adds a note. A local or Git bundle 
 `op run` is refused with `NOT_IMPLEMENTED`. A host from before these routes answers
 `NOT_IMPLEMENTED` too.
 
+The local MCP app (`superbee mcp`) offers the same two as tools for a catalog workspace:
+`list_operations` and `run_operation` (with `operationId` and an `input` object). They run as the
+checkout's own person, and refuse the folder-answered reads the same way (use `show_document`). A
+missing sign-in is a tool error carrying the one link to relay to the person; call the tool again
+after they confirm.
+
 ## Deleting documents
 
 Deleting a file (or running `superbee doc delete`) sends a delete of the version you had at the

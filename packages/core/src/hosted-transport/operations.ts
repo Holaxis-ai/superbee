@@ -113,17 +113,25 @@ export function decodeOperationListing(body: unknown, route?: string): HostedOpe
   return Object.freeze({ operations: Object.freeze(operations), notes: Object.freeze(notes) });
 }
 
+/** True when an operation input names a bundle other than `bundleId` (an input without one names none). */
+export function namesOtherBundle(input: JsonObject, bundleId: string): boolean {
+  return input.bundleId !== undefined && input.bundleId !== bundleId;
+}
+
 /**
  * The body a run sends: the bundle the request selects its tenant by, the operation, and the
  * operation's input with its `bundleId` set to that same bare bundle id (the host refuses an
  * input naming another bundle). An input that already names another bundle is refused here.
  */
 export function operationRunBody(bundleId: string, operationId: string, input: JsonObject): { bundleId: string; operationId: string; input: Record<string, unknown> } {
-  if (input.bundleId !== undefined && input.bundleId !== bundleId) throw new RangeError("the operation input names another bundle than the one the run selects");
+  if (namesOtherBundle(input, bundleId)) throw new RangeError("the operation input names another bundle than the one the run selects");
   const rest: Record<string, unknown> = { ...input };
   delete rest.bundleId;
   return { bundleId, operationId, input: { bundleId, ...rest } };
 }
+
+/** A listing, or the refusal of the bundle it was asked for. */
+export type HostedOperationListingAnswer = { readonly ok: true; readonly listing: HostedOperationListing } | { readonly ok: false; readonly refusal: HostedOperationRefusal };
 
 /** A run's `200` answer: the operation's data, or its refusal (the kernel's code, message and retry advice). */
 export type HostedOperationRun = { readonly ok: true; readonly data: unknown } | { readonly ok: false; readonly refusal: HostedOperationRefusal };
