@@ -71,8 +71,6 @@ const KNOWN_GAPS: Readonly<Record<string, { readonly slice: string; readonly fai
   "sync/cli/git": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
   "sync/cli/local": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
   "sync/cli/hosted": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
-  // S2: the Stop hook syncs only the cwd bundle, so a checkout edited with --dir stays unsent.
-  "turn-end/cli/hosted": { slice: "S2", failure: { missing: ["notes/beta"] } },
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -231,7 +229,7 @@ async function ageFreshness(): Promise<void> {
   const state = userStateDir(r.home);
   for (const checkout of await readdir(path.join(state, "hosted-checkouts"), { withFileTypes: true })) {
     const file = path.join(state, "hosted-checkouts", checkout.name, "freshness.json");
-    if (checkout.isDirectory() && (await readFile(file).then(() => true, () => false))) await age(file, ["pulled_at", "attempt_at"]);
+    if (checkout.isDirectory() && (await readFile(file).then(() => true, () => false))) await age(file, ["pulled_at", "attempt_at", "synced_at"]);
   }
   for (const entry of await readdir(path.join(state, "sync"), { withFileTypes: true })) {
     if (entry.isFile() && entry.name.endsWith(".json")) await age(path.join(state, "sync", entry.name), ["updatedAt", "autoPullAttemptAt"]);
@@ -610,8 +608,19 @@ const STEPS: readonly Step[] = [
       await ok(["doc", "update", "notes/beta", "--title", `Beta at turn end in ${home}`, "--dir", r.dirs[home]]);
       if (home === "hosted") {
         r.hostedEdits.add("notes/beta");
+        // Older than the hook's 30-second quiet period: every file and subfolder of the checkout
+        // (its own folder keeps its time, which is part of what binds it).
         const past = new Date(Date.now() - 60_000);
-        await utimes(path.join(folder(home), "notes", "beta.md"), past, past);
+        const age = async (dir: string): Promise<void> => {
+          for (const entry of await readdir(dir, { withFileTypes: true })) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) await age(full);
+            await utimes(full, past, past);
+          }
+        };
+        await age(folder(home));
+        // The edit is newer than the checkout's last sync, which ran earlier in the session.
+        await ageFreshness();
       }
       // The Stop hook `hook install --turn-end-sync --git-boards` installs, with its recorded opt-in.
       const run = await cli(["turn-end"]);
