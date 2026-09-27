@@ -9,15 +9,22 @@ import {
   createFetchCarrier,
   createHostedReadAdapter,
   decodeHistoryAnswer,
+  decodeOperationListing,
+  decodeOperationRun,
   historyInput,
   HOSTED_READ_BOUNDS,
   HostedCarrierError,
+  operationRunBody,
   readRefusal,
   type HostedCarrier,
   type HostedHistoryAnswer,
   type HostedHistoryRequest,
+  type HostedOperationListing,
+  type HostedOperationRefusal,
+  type HostedOperationRun,
   type HostedReadAdapter,
   type HostedReadRoutes,
+  type JsonObject,
 } from "@superbee/core/hosted-transport";
 import { hostedBundleReferenceText, isWorkspaceSlug, parseHostedBundleReference, type HostedBundleReference } from "./reference.js";
 import { isMalformedAnswer, RemoteError } from "@superbee/core";
@@ -66,7 +73,20 @@ export interface HostedSyncClient {
   history(bundleId: string, request: HostedHistoryRequest): Promise<HostedHistoryAnswer>;
   /** The same client, naming its bundles in the workspace with this slug ({@link qualifyingCarrier}). */
   within(slug: string): HostedSyncClient;
+  /**
+   * The reads this host runs by id for one bundle (`<prefix>/operations`). A bundle the host does
+   * not serve to this person is the refusal `bundle_not_found`, as a run answers it.
+   */
+  listOperations(bundleId: string): Promise<HostedOperationListingAnswer>;
+  /**
+   * One listed operation, run by id (`<prefix>/run`), its answer read within `maximumBytes`: the
+   * operation's data, or its refusal. `input.bundleId` is set to `bundleId`.
+   */
+  runOperation(bundleId: string, operationId: string, input: JsonObject, maximumBytes: number): Promise<HostedOperationRun>;
 }
+
+/** A listing, or the refusal of the bundle it was asked for. */
+export type HostedOperationListingAnswer = { readonly ok: true; readonly listing: HostedOperationListing } | { readonly ok: false; readonly refusal: HostedOperationRefusal };
 
 export interface HostedIdentity {
   readonly principalId: string;
@@ -307,7 +327,70 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
         throw hostedFailure(error, target, options.resume);
       }
     },
+    async listOperations(bundleId) {
+      const route = `${prefix}/operations`;
+      const answer = await send(route, { bundleId }, HOSTED_READ_BOUNDS.operationsBytes);
+      if (answer.status !== 200) {
+        const refusal = readRefusal(answer);
+        // The listing refuses a bundle as capabilities does: a 404 naming the code, never a 200.
+        if (refusal instanceof RemoteError && answer.status === 404 && refusal.code === "bundle_not_found") {
+          const error = (answer.body as { error?: { message?: unknown } }).error;
+          return { ok: false, refusal: Object.freeze({ code: refusal.code, message: typeof error?.message === "string" ? error.message : refusal.code, retryable: false }) };
+        }
+        throw hostedFailure(refusal, target, options.resume);
+      }
+      try {
+        return { ok: true, listing: decodeOperationListing(answer.body, route) };
+      } catch (error) {
+        throw hostedFailure(error, target, options.resume);
+      }
+    },
+    async runOperation(bundleId, operationId, input, maximumBytes) {
+      const route = `${prefix}/run`;
+      const answer = await send(route, operationRunBody(bundleId, operationId, input), maximumBytes);
+      if (answer.status !== 200) {
+        const refusal = readRefusal(answer);
+        if (refusal instanceof RemoteError && answer.status === 400 && refusal.code === "unknown_operation") {
+          throw new CliError("NOT_IMPLEMENTED", `${target.origin} does not offer ${operationId}`, {
+            details: { host: target.origin, operation: operationId, code: refusal.code },
+            help: `${cliInvocation()} op list shows what this host runs by id`,
+          });
+        }
+        if (refusal instanceof RemoteError && answer.status === 400 && refusal.code === "invalid_input") {
+          throw new CliError("USAGE", `${target.origin} refused the input for ${operationId}`, {
+            details: { host: target.origin, operation: operationId, code: refusal.code },
+            help: `${cliInvocation()} op list shows the inputs each operation takes`,
+          });
+        }
+        throw hostedFailure(refusal, target, options.resume);
+      }
+      try {
+        return decodeOperationRun(operationId, answer.body, route);
+      } catch (error) {
+        throw hostedFailure(error, target, options.resume);
+      }
+    },
   };
+
+  /**
+   * One request of the operations routes. A gateway from before them answers the family's
+   * unknown-route 404: this host does not run operations by id yet.
+   */
+  async function send(route: string, input: unknown, maximum: number): Promise<{ status: number; headers: Headers; body: unknown }> {
+    let answer;
+    try {
+      answer = await carrier.json(route, input, controller.signal, { maximum });
+    } catch (error) {
+      throw hostedFailure(error, target, options.resume);
+    }
+    if (answer.status === 404 && isUnknownRoute(answer.body)) {
+      throw new CliError("NOT_IMPLEMENTED", `${target.origin} does not offer operations by id yet`, {
+        details: { host: target.origin, route, status: 404 },
+        help: "a later release of the host offers them; until then use the typed verbs (doc read, doc history, list)",
+      });
+    }
+    return answer;
+  }
 }
 
 /** The sync family's answer to a route it does not have: `404 {"error":"not_found"}`, nothing else. */

@@ -878,7 +878,7 @@ test("the file store keeps the refresh token 0600 inside the private state root"
 // ---------------------------------------------------------------------------------------------
 // Boundary: no existing command reaches hosted before the transport exists
 
-test("only the sign-in commands, the hosted checkout, export, doc history and hosted sync import the hosted session module", async () => {
+test("only the sign-in commands, the hosted checkout, export, doc history, op and hosted sync import the hosted session module", async () => {
   const src = path.resolve(here, "../src");
   const offenders: string[] = [];
   async function walk(dir: string): Promise<void> {
@@ -915,6 +915,8 @@ test("only the sign-in commands, the hosted checkout, export, doc history and ho
         path.join("hosted", "account.ts"),
         // `doc history` in a hosted checkout reads the host's chain.
         path.join("commands", "doc", "history.ts"),
+        // `op list` and `op run` in a hosted checkout reach the checkout's host.
+        path.join("commands", "op.ts"),
       ];
       if (/hosted-auth\//.test(text) && !allowed.includes(path.relative(src, full))) {
         offenders.push(path.relative(src, full));

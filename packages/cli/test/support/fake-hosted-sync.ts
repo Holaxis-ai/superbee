@@ -41,6 +41,15 @@
 //   with `workspaces`, whoami names each workspace's slug; a bundle-scoped body may name the bundle
 //   `<slug>/<bundle-id>`, which reaches the bundle only when `slug` is its workspace's (another
 //   slug is absent, as for another bundle). The recorded request keeps the body as sent.
+// - `/operations` and `/run` (superbee-hosted `src/sync-v1-reads.ts`, G1): the listing is the golden
+//   `operations-200` answer (a composition pinned to `documents.history.v1`) unless a test sets
+//   `operationsListing`; another bundle's listing is the capabilities `404 bundle_not_found`. A run
+//   of an id the listing does not name is `400 unknown_operation`, a malformed envelope or an input
+//   naming another bundle is `400 invalid_input`, another bundle is the `200 bundle_not_found`
+//   result; `documents.history.v1` answers as `/history` does, and any other listed id answers
+//   `runHook`'s data in the `ok` envelope the goldens pin. `operations: false` is a gateway from
+//   before both routes: the family's unknown-route 404 on each.
+// - any other route: the family's unknown-route answer, `404 {"error":"not_found"}`.
 // Every answer shape is held to the `/sync/v1` golden exchanges captured from the real hosted
 // gateway (core's `test/fixtures/hosted-sync-v1/`) by `hosted-fake-contract.test.ts`; the export
 // answers are held to them byte for byte.
@@ -140,7 +149,12 @@ export interface FakeHostOptions {
   workspaces?: { tenantId: string; slug: string | null }[] | null;
   /** The slug of the workspace that holds the bundle (default: the first workspace's): a reference naming it reaches the bundle. */
   slug?: string;
+  /** False is a gateway from before `/operations` and `/run`: both are the family's unknown-route 404. */
+  operations?: boolean;
 }
+
+/** One operation descriptor, as the listing route answers it. */
+export type OperationDescriptor = Record<string, unknown> & { operationId: string };
 
 /** One version of a live document's lineage, as the host's history rows hold it. */
 export interface HistoryRow {
@@ -192,6 +206,10 @@ export class FakeHost {
   exportedAt: () => Date = () => new Date();
   /** What a test does to the archive bytes before they are answered (truncate, tamper). */
   exportHook: ((archive: Uint8Array) => Uint8Array | Response) | undefined;
+  /** The listing `/operations` answers, when a test sets it; otherwise the golden `operations-200` listing. */
+  operationsListing: OperationDescriptor[] | undefined;
+  /** The data a run of a listed operation other than `documents.history.v1` answers. */
+  runHook: ((operationId: string, input: Record<string, unknown>) => unknown) | undefined;
   capabilities: string;
   principal: string;
   readonly origin: string;
@@ -362,7 +380,11 @@ export class FakeHost {
         return Response.json({ ok: true, operationId: "documents.read.v1", data: { document: { id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version } });
       }
       case "history":
-        return this.history(body);
+        return this.options.history === false ? unknownRoute() : this.history(body);
+      case "operations":
+        return this.options.operations === false ? unknownRoute() : this.operations(body);
+      case "run":
+        return this.options.operations === false ? unknownRoute() : this.run(body);
       case "export":
         return this.export(body);
       case "create":
@@ -371,7 +393,7 @@ export class FakeHost {
       case "outcome":
         return this.write(route, body, headers);
       default:
-        return Response.json({ error: { code: "not_found" } }, { status: 404 });
+        return unknownRoute();
     }
   }) as typeof fetch;
 
@@ -396,8 +418,37 @@ export class FakeHost {
     return { tenantId: (this.options.tenants ?? ["tenant-a"])[0]!, bundleId: BUNDLE, revision: this.revision, files };
   }
 
+  /** The descriptors `/operations` lists. */
+  listing(): OperationDescriptor[] {
+    return this.operationsListing ?? (JSON.parse(syncFixture("operations-200").response.body) as { operations: OperationDescriptor[] }).operations;
+  }
+
+  private operations(body: Record<string, unknown>): Response {
+    if (!onlyKeys(body, ["bundleId"]) || typeof body.bundleId !== "string") return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    if (body.bundleId !== BUNDLE) return Response.json({ error: { code: "bundle_not_found", message: BUNDLE_UNAVAILABLE, retryable: false } }, { status: 404 });
+    if (this.operationsListing === undefined) {
+      const { response } = syncFixture("operations-200");
+      return new Response(response.body, { status: response.status, headers: response.headers });
+    }
+    return new Response(JSON.stringify({ operations: this.operationsListing }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
+  }
+
+  private run(body: Record<string, unknown>): Response {
+    const invalid = () => Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    const { bundleId, operationId, input } = body;
+    if (!onlyKeys(body, ["bundleId", "operationId", "input"]) || typeof bundleId !== "string" || typeof operationId !== "string" || typeof input !== "object" || input === null || Array.isArray(input)) return invalid();
+    // The listing is what the host runs by id: any other id, a write's included, is refused before anything else.
+    if (!this.listing().some((descriptor) => descriptor.operationId === operationId)) return Response.json({ error: { code: "unknown_operation" } }, { status: 400 });
+    const operationInput = input as Record<string, unknown>;
+    if (operationInput.bundleId !== bundleId) return invalid();
+    if (bundleId !== BUNDLE) return Response.json({ ok: false, operationId, error: { code: "bundle_not_found", message: BUNDLE_UNAVAILABLE, retryable: false } });
+    if (operationId === "documents.history.v1") return this.history(operationInput);
+    const data = this.runHook?.(operationId, operationInput);
+    assert.notEqual(data, undefined, `the fake lists ${operationId} but no runHook answers it`);
+    return new Response(JSON.stringify({ ok: true, operationId, data }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
+  }
+
   private history(body: Record<string, unknown>): Response {
-    if (this.options.history === false) return Response.json({ error: "not_found" }, { status: 404 });
     const operationId = "documents.history.v1";
     const { limit = 20, before, includeContent } = body;
     const int = (value: unknown, max: number) => typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= max;
@@ -412,7 +463,9 @@ export class FakeHost {
       return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
     if (body.bundleId !== BUNDLE) return Response.json({ ok: false, operationId, error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } });
     const rows = this.histories.get(body.documentId);
-    if (!rows || !this.docs.has(body.documentId)) return Response.json({ ok: false, operationId, error: { code: "document_not_found", message: "The document was not found.", retryable: false } });
+    // A kernel result, as the host answers it (a bundle refused before the kernel is plain JSON).
+    if (!rows || !this.docs.has(body.documentId))
+      return new Response(JSON.stringify({ ok: false, operationId, error: { code: "document_not_found", message: "The document was not found.", retryable: false } }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
     const older = [...rows].reverse().filter((row) => before === undefined || row.seq < (before as number));
     const page = older.slice(0, limit as number);
     const versions = page.map((row) => ({
@@ -546,6 +599,11 @@ export class FakeHost {
     return Response.json({ ...envelope, status: "refused", result: recorded.result });
   }
 }
+
+/** The family's answer to a route it does not have (a gateway from before the route). */
+const unknownRoute = () => Response.json({ error: "not_found" }, { status: 404 });
+
+const BUNDLE_UNAVAILABLE = "The bundle is unavailable for this operation. Check your bundle access with a workspace administrator.";
 
 /** The refusal of a page whose listing moved since the first page pinned it. */
 const restart = () => Response.json({ error: { code: "concurrent_change", message: "The bundle changed since the first page. Start again from the first page.", retryable: true } }, { status: 409 });
