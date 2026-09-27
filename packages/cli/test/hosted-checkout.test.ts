@@ -616,7 +616,8 @@ test("a reference, or --workspace <slug>, names the bundle in that workspace on 
   assert.equal(ambiguous.details?.reason, "ambiguous_bundle");
   assert.deepEqual(ambiguous.details?.references, listed);
   assert.deepEqual(ambiguous.details?.workspaces, ["north", "south"]);
-  assert.match(ambiguous.help ?? "", new RegExp(`checkout north/${BUNDLE.replace(".", "\\.")} `));
+  // The help never picks a workspace: it names the form to choose with.
+  assert.match(ambiguous.help ?? "", /checkout <workspace>\/<bundle-id> /);
   assert.ok(!bare.requests.some((r) => r.path.endsWith("/capabilities")));
   // A workspace the person is not in, and a reference --workspace contradicts, are refused before any bundle request.
   const stranger = await rejects(run(h, [`west/${BUNDLE}`, "--host", HOST, "--dir", "four"], bare));
@@ -627,13 +628,57 @@ test("a reference, or --workspace <slug>, names the bundle in that workspace on 
   assert.equal(bare.requests.filter((r) => r.path.endsWith("/capabilities")).length, 0);
 });
 
+test("a bare id listed once bare and once by reference, or bare twice, is ambiguous: never sent bare", async () => {
+  const h = await harness();
+  for (const listed of [[BUNDLE, `north/${BUNDLE}`], [BUNDLE, BUNDLE]]) {
+    const fake = fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed });
+    const error = await rejects(run(h, [BUNDLE, "--host", HOST, "--dir", "amb"], fake));
+    assert.equal(error.code, "CONFLICT", listed.join(","));
+    assert.equal(error.details?.reason, "ambiguous_bundle");
+    assert.ok(!fake.requests.some((r) => r.path.endsWith("/capabilities")), listed.join(","));
+  }
+});
+
+test("a checkout made bare whose id another workspace gained is bound again in place naming its workspace", async () => {
+  const h = await harness();
+  await run(h, [BUNDLE, "--host", HOST, "--dir", "team"], fakeSyncFamily(TWO_WORKSPACES));
+  const folder = await realpath(path.join(h.cwd, "team"));
+  const before = (await bindingForPath(h.home, folder))!;
+  assert.equal(before.workspace_slug, undefined);
+  const listed = [`north/${BUNDLE}`, `south/${BUNDLE}`];
+  // Without --host it is refused; with it, the folder is bound to south's bundle, files kept.
+  assert.equal((await rejects(run(h, ["--adopt", folder, "--workspace", "south"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "south" })))).code, "USAGE");
+  const fake = fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "south" });
+  const rebound = await run(h, ["--adopt", folder, "--host", HOST, "--workspace", "south"], fake);
+  assert.equal(rebound.adopted, "rebound");
+  assert.equal(rebound.reference, `south/${BUNDLE}`);
+  const after = (await bindingForPath(h.home, folder))!;
+  assert.equal(after.workspace_slug, "south");
+  assert.notEqual(after.checkout_id, before.checkout_id, "a new store");
+  assert.ok(fake.requests.filter((r) => r.path.endsWith("/heads")).every((r) => (r.body as { bundleId: string }).bundleId === `south/${BUNDLE}`));
+  // Naming the same workspace again changes nothing.
+  assert.equal((await run(h, ["--adopt", folder, "--host", HOST, "--workspace", "south"], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed, slug: "south" }))).adopted, "unchanged");
+});
+
+test("whoami's workspaces are read strictly: absent is an older host, a mismatched list is malformed", async () => {
+  const answering = (body: unknown) =>
+    createHostedSyncClient({ target: { origin: HOST, audience: `${HOST}/mcp` } as never, accessToken: TOKEN, fetch: (async () => Response.json(body)) as typeof fetch });
+  const base = { principalId: PRINCIPAL, credentialId: "cli", tenantIds: ["tenant-b", "tenant-a"], surface: "sync" };
+  assert.deepEqual((await answering(base).whoami()).workspaces, [
+    { tenantId: "tenant-a", slug: null },
+    { tenantId: "tenant-b", slug: null },
+  ]);
+  for (const workspaces of [[{ tenantId: "tenant-a", slug: "north" }], [{ tenantId: "tenant-a", slug: "North" }, { tenantId: "tenant-b", slug: null }], [{ tenantId: "tenant-a", slug: "n" }, { tenantId: "tenant-a", slug: "m" }]])
+    await assert.rejects(answering({ ...base, workspaces }).whoami(), (error: unknown) => error instanceof CliError && error.code === "RUNTIME");
+});
+
 test("the client names the bundle by its reference on exactly the bundle-scoped routes", async () => {
   const sent: { path: string; body: unknown }[] = [];
   const recorder = (async (input: string | URL | Request, init?: RequestInit) => {
     sent.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body)) });
     return Response.json({ ok: true });
   }) as typeof fetch;
-  const client = createHostedSyncClient({ target: { origin: HOST, audience: `${HOST}/mcp` } as never, accessToken: TOKEN, slug: "south", fetch: recorder });
+  const client = createHostedSyncClient({ target: { origin: HOST, audience: `${HOST}/mcp` } as never, accessToken: TOKEN, fetch: recorder }).within("south");
   const scoped = ["capabilities", "heads", "snapshot", "read", "history", "create", "replace", "delete", "outcome"];
   for (const route of [...scoped, "whoami", "bundles", "bundle-create"])
     await client.carrier.json(`/sync/v1/${route}`, { bundleId: BUNDLE, n: 1 }, client.signal, { maximum: 1024 }).catch(() => {});
@@ -644,11 +689,12 @@ test("the client names the bundle by its reference on exactly the bundle-scoped 
     assert.equal((body as { bundleId: string }).bundleId, expected, name);
   }
   assert.equal(sent.length, scoped.length + 4);
-  // A body that already names a reference, or names no bundle, is sent as it is.
+  // A body that names no bundle is sent as it is; one that already names a reference is a bug.
   sent.length = 0;
-  await client.carrier.json("/sync/v1/read", { bundleId: `north/${BUNDLE}` }, client.signal, { maximum: 1024 }).catch(() => {});
   await client.carrier.json("/sync/v1/read", { documentId: "x" }, client.signal, { maximum: 1024 }).catch(() => {});
-  assert.deepEqual(sent.map((r) => r.body), [{ bundleId: `north/${BUNDLE}` }, { documentId: "x" }]);
+  assert.deepEqual(sent.map((r) => r.body), [{ documentId: "x" }]);
+  await assert.rejects(client.carrier.json("/sync/v1/read", { bundleId: `north/${BUNDLE}` }, client.signal, { maximum: 1024 }), TypeError);
+  assert.equal(sent.length, 1);
 });
 
 function withDocs(ids: string[]) {
@@ -874,9 +920,9 @@ test("catalog list --hosted lists each reachable bundle once, with the folder of
   assert.deepEqual(receipt.workspaces, ["tenant-a", "tenant-b"]);
   assert.equal(receipt.complete, true);
   assert.deepEqual(receipt.bundles, [
-    { bundle_id: "shared.id", name: "shared.id", lifecycle: "active", folder: null, ambiguous: true },
-    { bundle_id: BUNDLE, name: BUNDLE, lifecycle: "active", folder, ambiguous: false },
-    { bundle_id: "zeta.notes", name: "zeta.notes", lifecycle: "active", folder: null, ambiguous: false },
+    { bundle_id: "shared.id", reference: "shared.id", name: "shared.id", lifecycle: "active", folder: null, ambiguous: true },
+    { bundle_id: BUNDLE, reference: BUNDLE, name: BUNDLE, lifecycle: "active", folder, ambiguous: false },
+    { bundle_id: "zeta.notes", reference: "zeta.notes", name: "zeta.notes", lifecycle: "active", folder: null, ambiguous: false },
   ]);
 
   // A checkout of the same bundle id on another host is not this host's checkout.
@@ -901,9 +947,9 @@ test("catalog list --hosted lists an id two workspaces hold by each reference, w
   const receipt = await listHosted(h, ["--host", HOST], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: listed }));
   assert.deepEqual(receipt.workspaces, ["north", "south"]);
   assert.deepEqual(receipt.bundles, [
-    { bundle_id: `north/${BUNDLE}`, name: `north/${BUNDLE}`, lifecycle: "active", folder: null, ambiguous: false },
-    { bundle_id: `south/${BUNDLE}`, name: `south/${BUNDLE}`, lifecycle: "active", folder, ambiguous: false },
-    { bundle_id: "zeta.notes", name: "zeta.notes", lifecycle: "active", folder: null, ambiguous: false },
+    { bundle_id: BUNDLE, reference: `north/${BUNDLE}`, name: `north/${BUNDLE}`, lifecycle: "active", folder: null, ambiguous: false },
+    { bundle_id: BUNDLE, reference: `south/${BUNDLE}`, name: `south/${BUNDLE}`, lifecycle: "active", folder, ambiguous: false },
+    { bundle_id: "zeta.notes", reference: "zeta.notes", name: "zeta.notes", lifecycle: "active", folder: null, ambiguous: false },
   ]);
   // Once the id is in one workspace again it is listed bare, and the checkout is still its folder.
   const single = await listHosted(h, ["--host", HOST], fakeSyncFamily({ ...TWO_WORKSPACES, bundles: [BUNDLE] }));

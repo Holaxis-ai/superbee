@@ -55,12 +55,13 @@ the Superbee app'.
 
 'catalog list --hosted' is the one catalog command that reaches the network. It signs in if
 needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then
-lists every hosted bundle you can reach on that host, across all your workspaces: its bundle_id
-(what 'checkout' takes), name and lifecycle, the folder of your checkout of it here (null when
-there is none; the first, sorted, when there are several), and ambiguous: true when two of your
-workspaces hold the same id and the host lists it bare twice (checkout refuses such an id). A host
-that names workspaces lists such an id once per workspace as <workspace>/<bundle-id>, which
-checkout takes as it is. It lists hosted bundles only, never
+lists every hosted bundle you can reach on that host, across all your workspaces: its bundle_id,
+its reference (what 'checkout' takes: the bundle id, or <workspace>/<bundle-id> for an id more than
+one of your workspaces holds), name and lifecycle, the folder of your checkout of it here (null when
+there is none; the first, sorted, when there are several), and ambiguous: true when a bare
+reference names an id more than one of your workspaces holds (checkout refuses it; a host that names
+workspaces lists such an id once per workspace by reference instead). workspaces lists your
+workspaces by name (what --workspace and a reference take), or by id for one the host names none for. It lists hosted bundles only, never
 your local entries, and caches nothing: the catalog file is unchanged. complete: false means the
 host's list stopped at its cap.
 
@@ -253,25 +254,23 @@ async function listHosted(
   );
   const listing = readBundleListing(await client.bundles());
   const folders = await liveCheckoutFolders(auth.home, target);
-  // A row names its bundle by the reference to check it out with: the bare id, or
-  // `<workspace>/<bundle-id>` for an id more than one of the person's workspaces holds. A checkout
-  // that names its workspace is the folder of either spelling of its bundle.
-  const folderOf = (listed: string): string | null => {
-    const reference = parseHostedBundleReference(listed);
-    const exact = folders.get(listed)?.[0];
-    if (exact !== undefined || !reference || reference.slug !== null) return exact ?? null;
-    const qualified = [...folders.entries()].filter(([named]) => parseHostedBundleReference(named)?.bundleId === reference.bundleId);
-    return qualified.length === 1 ? qualified[0]![1][0]! : null;
-  };
+  // Each row: its bare bundle id, and the reference to check it out with (the bare id, or
+  // `<workspace>/<bundle-id>` for an id more than one of the person's workspaces holds). A checkout
+  // is the folder of the row its reference names, or of the bare row of its id.
   const bundles = [...listing.bundles.values()]
     .sort((a, b) => (a.row.bundleId < b.row.bundleId ? -1 : a.row.bundleId > b.row.bundleId ? 1 : 0))
-    .map(({ row, workspaces }) => ({
-      bundle_id: row.bundleId,
-      name: row.name,
-      lifecycle: row.lifecycle,
-      folder: folderOf(row.bundleId),
-      ambiguous: workspaces > 1,
-    }));
+    .map(({ row, workspaces, reference }) => {
+      const bundleId = reference?.bundleId ?? row.bundleId;
+      const bare = reference?.slug === null ? [...folders.entries()].filter(([named]) => parseHostedBundleReference(named)?.bundleId === bundleId) : [];
+      return {
+        bundle_id: bundleId,
+        reference: row.bundleId,
+        name: row.name,
+        lifecycle: row.lifecycle,
+        folder: folders.get(row.bundleId)?.[0] ?? (bare.length === 1 ? bare[0]![1][0]! : null),
+        ambiguous: workspaces > 1 || (reference?.slug === null && listing.lookup(reference).holders > 1),
+      };
+    });
   stdout(
     render(
       {
@@ -289,7 +288,7 @@ async function listHosted(
         help:
           bundles.length === 0
             ? [`${cliInvocation()} publish --to hosted --host ${commandToken(host)}`]
-            : [`${cliInvocation()} checkout <bundle_id as listed> --host ${commandToken(host)}`],
+            : [`${cliInvocation()} checkout <reference> --host ${commandToken(host)}`],
       },
       resolveMode(values),
     ),

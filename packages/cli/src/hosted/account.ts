@@ -13,6 +13,7 @@ import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery
 import type { CheckoutBinding } from "./binding.js";
 import { createHostedSyncClient, type HostedIdentity, type HostedSyncClient, type HostedWorkspace } from "./client.js";
 import { readDefaultWorkspace } from "./defaults.js";
+import { hostedBundleReferenceText, type HostedBundleReference } from "./reference.js";
 
 export interface HostedAccountDeps {
   readonly auth: HostedAuthDeps;
@@ -68,6 +69,42 @@ export async function connectHostedAccount(target: HostedTarget, request: Hosted
   return { client, identity, workspace, namedSlug: named?.slug ?? null };
 }
 
+/**
+ * The reference a command names a bundle by, from what the person typed and `--workspace`: the
+ * typed reference's workspace, else the slug of the workspace `--workspace` named (by id or slug),
+ * else the bare id. A recorded default never qualifies anything. Refused before any bundle
+ * request: a typed workspace `--workspace` contradicts, a workspace the person is not in, and any
+ * workspace at all on a host from before qualified references (it names no slugs). Returns the
+ * reference and the tenant of the workspace it names (null for a bare id).
+ */
+export function resolveBundleReference(
+  typed: HostedBundleReference,
+  account: Pick<HostedAccount, "identity" | "namedSlug">,
+  target: HostedTarget,
+  command: (reference: string) => string,
+): { readonly reference: HostedBundleReference; readonly tenantId: string | null } {
+  const { identity, namedSlug } = account;
+  if (typed.slug !== null && namedSlug !== null && typed.slug !== namedSlug) {
+    throw new CliError("USAGE", `'${hostedBundleReferenceText(typed)}' names workspace '${typed.slug}', but --workspace names '${namedSlug}'`, {
+      help: command(hostedBundleReferenceText(typed)),
+    });
+  }
+  const reference: HostedBundleReference = { slug: typed.slug ?? namedSlug, bundleId: typed.bundleId };
+  if (reference.slug === null) return { reference, tenantId: null };
+  const holder = identity.workspaces.find((w) => w.slug === reference.slug);
+  if (holder) return { reference, tenantId: holder.tenantId };
+  // Only the person's own workspaces have slugs to name; a host from before qualified references reports none.
+  const slugs = identity.workspaces.some((w) => w.slug !== null);
+  throw new CliError(
+    slugs ? "NOT_FOUND" : "USAGE",
+    slugs ? `you are not a member of workspace '${reference.slug}' on ${target.origin}` : `${target.origin} does not accept <workspace>/<bundle-id> references yet`,
+    {
+      details: { reason: slugs ? "not_a_member" : "references_unsupported", workspace: reference.slug, workspaces: workspaceNames(identity) },
+      help: slugs ? hostedListCommand(target) : command(reference.bundleId),
+    },
+  );
+}
+
 /** The person's workspace a `--workspace` value names: by its id, or by its slug. Undefined when none. */
 function namedWorkspace(identity: HostedIdentity, value: string): HostedWorkspace | undefined {
   return identity.workspaces.find((w) => w.tenantId === value) ?? identity.workspaces.find((w) => w.slug === value);
@@ -104,14 +141,15 @@ export async function connectCheckout(binding: CheckoutBinding, request: Checkou
     throw new CliError("RUNTIME", `the checkout binding for ${binding.path} is inconsistent`, { help: `${cliInvocation()} checkout --release ${commandToken(binding.path)}` });
   }
   const token = await ensureHostedAccessToken(target, { resume: request.resume, ...(request.signIn === false ? { signIn: false } : {}) }, deps.auth);
-  const client = createHostedSyncClient({
+  const account = createHostedSyncClient({
     target,
     accessToken: token.accessToken,
     resume: request.resume,
-    ...(binding.workspace_slug ? { slug: binding.workspace_slug } : {}),
     ...(request.deadlineMs !== undefined ? { deadlineMs: request.deadlineMs } : {}),
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
   });
+  // A checkout that names its workspace names its bundle there on every bundle request.
+  const client = binding.workspace_slug ? account.within(binding.workspace_slug) : account;
   const identity = await client.whoami();
   if (identity.principalId !== binding.principal_id) {
     throw new CliError("FORBIDDEN", `you are signed in to ${binding.origin} as another person than the one this checkout belongs to`, {

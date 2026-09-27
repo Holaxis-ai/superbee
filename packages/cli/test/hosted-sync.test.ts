@@ -1043,7 +1043,12 @@ test("a checkout naming no workspace whose id another workspace gains is told so
   assert.equal(error.code, "CONFLICT");
   assert.equal(error.details?.reason, "ambiguous_bundle");
   assert.deepEqual(error.details?.references, [`north/${BUNDLE}`, `south/${BUNDLE}`]);
-  assert.match(error.help ?? "", new RegExp(`checkout north/${BUNDLE.replace(".", "\\.")} --host .* --dir <new folder>`));
+  assert.match(error.help ?? "", /checkout --adopt .* --host https:\/\/hosted\.example --workspace <workspace>/);
+  // Listed bare in one workspace and by reference in another, or bare twice: still ambiguous.
+  for (const shape of [[BUNDLE, `north/${BUNDLE}`], [BUNDLE, BUNDLE]]) {
+    listed.splice(0, listed.length, ...shape);
+    assert.equal((await failingSync(h)).error.details?.reason, "ambiguous_bundle", shape.join(","));
+  }
   // Gone from every workspace: the bundle is gone.
   listed.length = 0;
   assert.equal((await failingSync(h)).error.details?.reason, "bundle_deleted_remotely");

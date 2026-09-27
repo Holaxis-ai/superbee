@@ -7,11 +7,24 @@ applies changes directly under the signed-in person's own access, and nobody has
 ## Finding a bundle to check out
 
 `superbee catalog list --hosted` lists the hosted bundles the signed-in person can reach on the
-host of their last sign-in (or `--host <url>`), across all their workspaces. Each row has the
-`bundle_id` that `superbee checkout <bundle-id>` takes, its `name` and `lifecycle`, the `folder` of
-an existing checkout here (null when there is none), and `ambiguous: true` when two of their
-workspaces hold the same id, which checkout refuses. If a bundle already has a `folder`, work there
-with `--dir` instead of checking it out again. The list is read live and never cached.
+host of their last sign-in (or `--host <url>`), across all their workspaces. Each row has its
+`bundle_id`, the `reference` that `superbee checkout <reference>` takes, its `name` and
+`lifecycle`, the `folder` of an existing checkout here (null when there is none), and
+`ambiguous: true` when a bare reference names an id two of their workspaces hold, which checkout
+refuses. If a bundle already has a `folder`, work there with `--dir` instead of checking it out
+again. The list is read live and never cached.
+
+A bundle id in more than one of the person's workspaces is listed once per workspace as
+`<workspace>/<bundle-id>` (for example `north/notes` and `south/notes`), and checkout takes it that
+way. Ask the person which workspace they mean; never pick one. The checkout records the workspace,
+so its sync keeps reaching that workspace's bundle.
+
+If `sync`, `doc history` or `export` in a checkout answer `ambiguous_bundle`, the checkout was made
+with a bare id that another of the person's workspaces now also holds. Nothing was deleted. Ask the
+person which workspace they mean, then bind the folder again in place:
+`superbee checkout --adopt <folder> --host <url> --workspace <workspace>`. It never overwrites a
+file: an edit sync had not sent becomes a conflict (below) or a new document, and a deletion it had
+not sent is placed back.
 
 ## The folder marker, and adopting a moved or copied checkout
 

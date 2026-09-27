@@ -15,10 +15,14 @@
 //   * a file that differs is left as it is with no record, which sync reports as a conflict
 //     (`sync --inspect/--resolve`), because the version it was edited against is unknown;
 //   * a document only in the folder has no record either, so the next sync sends it as new.
+// - **Re-bound to a workspace.** A checkout that names no workspace, whose bundle id another of the
+//   person's workspaces gained, is bound again in place with `--workspace` (and `--host`): its old
+//   binding and store are released, and the folder is reconciled as for a copy, the bundle now
+//   named `<slug>/<bundle-id>`. Nothing in the folder is overwritten.
 import path from "node:path";
 import { lstat, realpath } from "node:fs/promises";
 
-import { bootstrap, openLocalBundle } from "@superbee/browser-local";
+import { bootstrap, openLocalBundle, UNSETTLED_STATES } from "@superbee/browser-local";
 import { conceptIdFromPath, isReservedFile, pathFromConceptId } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
@@ -38,6 +42,7 @@ import {
   indexCheckoutPath,
   movedBindingFor,
   readBinding,
+  releaseCheckout,
   sameFolder,
   newCheckoutId,
   rebindCheckout,
@@ -123,6 +128,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
         help: `${cliInvocation()} checkout --release ${commandToken(canonical)}`,
       });
     }
+    if (options.workspace !== undefined && (await rebindToWorkspace(canonical, bound, options, deps, mode))) return;
     // An older checkout has no marker yet; adopting it is the way to add one.
     const marker = await writeCheckoutMarker(canonical, bound).catch(() => null);
     deps.stdout(render({ adopted: "unchanged", ...bindingView(bound), marker: marker ? "written" : "present", help: nextSteps(canonical) }, mode));
@@ -233,8 +239,8 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   const resume: CommandText = commandFragment`${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))}${
     options.workspace !== undefined ? commandFragment` --workspace ${commandToken(options.workspace)}` : commandFragment``
   }${options.json ? commandFragment` --json` : commandFragment``}`;
-  // Only a workspace the person names here narrows the bundle; the marker's recorded one (folder
-  // content, and possibly a stale default) never does.
+  // The marker's workspace slug is part of the reference it names; its recorded tenant id (folder
+  // content, and possibly a stale default) never narrows anything. --workspace does.
   const { identity, reader, listed: isListed, workspace, reference } = await connectHostedBundle(typed, target, options.workspace, deps, resume);
 
   // A conversion `publish` started and could not finish: the files it sent that a checkout does
@@ -264,6 +270,59 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
       mode,
     ),
   );
+}
+
+/**
+ * Bind a checkout again, in place, naming the workspace `--workspace` names: for a checkout made
+ * bare whose id another of the person's workspaces gained. The old binding and store are
+ * released and the folder is reconciled as a copy (nothing is overwritten; an edit sync had not
+ * sent is a conflict or a new document, a deletion it had not sent is placed back). False when the
+ * checkout already names that workspace (the caller reports it unchanged).
+ */
+async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, options: AdoptOptions, deps: CheckoutDeps, mode: ReturnType<typeof resolveMode>): Promise<boolean> {
+  const home = deps.auth.home;
+  if (options.host === undefined) {
+    throw new CliError("USAGE", "--workspace binds a checkout again naming its workspace: name its host with --host", {
+      help: `${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(bound))} --workspace ${commandToken(options.workspace!)}`,
+    });
+  }
+  const target = resolveHostedTarget(options.host);
+  const resume: CommandText = commandFragment`${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))} --workspace ${commandToken(options.workspace!)}${
+    options.json ? commandFragment` --json` : commandFragment``
+  }`;
+  const connection = await connectHostedBundle({ slug: null, bundleId: bound.bundle_id }, target, options.workspace, deps, resume);
+  if (connection.reference.slug === null) {
+    throw new CliError("USAGE", `${target.origin} names no workspaces, so a checkout cannot name one`, {
+      details: { reason: "references_unsupported", ...bindingView(bound) },
+    });
+  }
+  if (connection.reference.slug === (bound.workspace_slug ?? null)) return false;
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, bound.checkout_id) });
+  let unsent: number;
+  try {
+    unsent = (await store.listIntents(UNSETTLED_STATES)).length;
+  } finally {
+    await store.close();
+  }
+  await withCheckoutLock(canonical, () => releaseCheckout(home, bound));
+  const result = await bindFolderInPlace({ canonical, target, bundleId: bound.bundle_id, connection, deps, resume });
+  const cataloged = await registerInCatalog(home, result.binding);
+  deps.stdout(
+    render(
+      {
+        adopted: "rebound",
+        ...bindingView(result.binding),
+        previous: { reference: bound.bundle_id, unsent_changes: unsent },
+        catalog: cataloged,
+        documents: { placed: result.placed.length, matched: result.matched.length, conflicts: result.conflicts.length, local_only: result.localOnly.length },
+        ...(result.conflicts.length > 0 ? { conflicts: listed(result.conflicts) } : {}),
+        ...(result.localOnly.length > 0 ? { local_only: listed(result.localOnly) } : {}),
+        help: [`${cliInvocation()} sync --dir ${commandToken(canonical)}`, ...nextSteps(canonical)],
+      },
+      mode,
+    ),
+  );
+  return true;
 }
 
 /** What {@link bindFolderInPlace} did to the folder. */

@@ -179,9 +179,10 @@ test("export --to writes the hosted bundle, byte for byte, into a new local bund
   // Nothing else: no manifest, no staging sibling, no binding.
   assert.deepEqual((await readdir(h.cwd)).sort(), ["copy"]);
   assert.equal(await bindingForPath(h.home, folder), null);
-  assert.deepEqual(h.host.requests.map((request) => request.path), ["/sync/v1/export"]);
-  assert.deepEqual(h.host.requests[0]!.body, { bundleId: BUNDLE });
-  assert.equal(h.host.requests[0]!.headers.get("authorization"), `Bearer ${TOKEN}`);
+  // The account first (a reference is checked against the person's workspaces), then the export.
+  assert.deepEqual(h.host.requests.map((request) => request.path), ["/sync/v1/whoami", "/sync/v1/export"]);
+  assert.deepEqual(h.host.requests[1]!.body, { bundleId: BUNDLE });
+  assert.equal(h.host.requests[1]!.headers.get("authorization"), `Bearer ${TOKEN}`);
   // The new folder is an ordinary bundle every command reads.
   assert.equal((await bundleHomeAt(await realpath(folder), { home: h.home })).home, "local");
 });
@@ -295,6 +296,8 @@ test("export names the bundle in a workspace by <workspace>/<bundle-id> or --wor
   const elsewhere = await rejects(h, [`tenant-a/${BUNDLE}`, "--host", HOST, "--to", "three"]);
   assert.equal(elsewhere.code, "NOT_FOUND");
   assert.match(elsewhere.message, new RegExp(`'tenant-a/${BUNDLE.replace(".", "\\.")}'`));
+  const stranger = await rejects(h, [`west/${BUNDLE}`, "--host", HOST, "--to", "four"]);
+  assert.equal(stranger.details?.reason, "not_a_member");
   const contradicted = await rejects(h, [`tenant-b/${BUNDLE}`, "--host", HOST, "--workspace", "tenant-a", "--to", "four"]);
   assert.equal(contradicted.code, "USAGE");
   assert.equal((await rejects(h, ["Tenant/x", "--host", HOST, "--to", "five"])).code, "USAGE");
@@ -303,6 +306,13 @@ test("export names the bundle in a workspace by <workspace>/<bundle-id> or --wor
   h.host.requests.length = 0;
   await run(h, ["--dir", path.join(h.cwd, "team"), "--to", "six"]);
   assert.deepEqual(h.host.requests.at(-1)!.body, { bundleId: `tenant-b/${BUNDLE}` });
+});
+
+test("export of a reference from a host that names no workspaces is refused before the export", async () => {
+  const h = await harness(new FakeHost({ workspaces: null }));
+  const error = await rejects(h, [`tenant-a/${BUNDLE}`, "--host", HOST, "--to", "copy"]);
+  assert.equal(error.details?.reason, "references_unsupported");
+  assert.ok(!h.host.requests.some((r) => r.path.endsWith("/export")));
 });
 
 test("export --to refuses a folder inside a bundle or a hosted checkout", async () => {

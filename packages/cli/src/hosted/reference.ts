@@ -9,7 +9,12 @@
 /** One lowercase DNS label: the host's workspace slug grammar. */
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 /** The host's canonical bundle id grammar (at most 128 characters, all ASCII). */
-export const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+
+/** True for a hosted bundle id in its canonical form (never a reference). */
+export function isHostedBundleId(value: string): boolean {
+  return BUNDLE_ID.test(value) && value.length <= 128;
+}
 
 /** True for a workspace slug as the host reports it. */
 export function isWorkspaceSlug(value: unknown): value is string {
@@ -28,7 +33,7 @@ export function parseHostedBundleReference(value: string): HostedBundleReference
   const slug = at < 0 ? null : value.slice(0, at);
   const bundleId = at < 0 ? value : value.slice(at + 1);
   if (slug !== null && !SLUG.test(slug)) return null;
-  if (!BUNDLE_ID.test(bundleId) || bundleId.length > 128) return null;
+  if (!isHostedBundleId(bundleId)) return null;
   return { slug, bundleId };
 }
 

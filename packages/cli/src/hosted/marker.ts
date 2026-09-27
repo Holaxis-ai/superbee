@@ -84,7 +84,7 @@ function isMarker(value: unknown): value is CheckoutMarker & { superbee_checkout
     record.bundle_id.length > 0 &&
     record.bundle_id.length <= 128 &&
     (record.workspace === null || record.workspace === undefined || (typeof record.workspace === "string" && record.workspace.length <= 256)) &&
-    (record.workspace_slug === undefined || isWorkspaceSlug(record.workspace_slug))
+    (record.workspace_slug === undefined || record.workspace_slug === null || isWorkspaceSlug(record.workspace_slug))
   );
 }
 
@@ -112,7 +112,7 @@ export function readCheckoutMarker(folder: string): CheckoutMarker | null {
     host: value.host,
     bundle_id: value.bundle_id,
     workspace: value.workspace ?? null,
-    ...(value.workspace_slug !== undefined ? { workspace_slug: value.workspace_slug } : {}),
+    ...(typeof value.workspace_slug === "string" ? { workspace_slug: value.workspace_slug } : {}),
   };
 }
 

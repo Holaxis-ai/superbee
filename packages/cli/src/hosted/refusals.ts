@@ -173,33 +173,41 @@ export function hostedMcpWriteRefusal(binding: CheckoutBinding, operation: strin
 }
 
 /**
- * The host answered a checkout's bundle as absent. A checkout that names no workspace, whose id
- * the host now lists by reference in two or more of the person's workspaces, was not deleted: the
- * id became ambiguous, and the answer names the references. Anything else is {@link bundleGone}.
- * The listing is read once; if that read fails, the answer is {@link bundleGone}.
+ * A bare bundle id two or more of the person's workspaces hold: no command can tell which one is
+ * meant. It lists the references the host named for it and never picks one: the help names the
+ * form to choose with, so no agent runs a command that silently selects one workspace's bundle.
+ */
+export function ambiguousBundle(bundleId: string, target: { readonly origin: string; readonly audience: string }, references: readonly string[], details: Record<string, unknown> = {}, help?: string): CliError {
+  const host = bindingHostArgument(target);
+  return new CliError("CONFLICT", `hosted bundle id '${bundleId}' is in more than one of your workspaces on ${target.origin}: name the one you mean as <workspace>/${bundleId}`, {
+    details: { reason: "ambiguous_bundle", bundle_id: bundleId, host: target.origin, ...(references.length > 0 ? { references } : {}), ...details },
+    help: help ?? `${cliInvocation()} checkout <workspace>/<bundle-id> --host ${commandToken(host)} (${cliInvocation()} catalog list --hosted --host ${commandToken(host)} lists them)`,
+  });
+}
+
+/**
+ * The host answered a checkout's bundle as absent. A checkout that names no workspace, whose id the
+ * host now lists in two or more of the person's workspaces, was not deleted: the id became
+ * ambiguous. Its folder can be bound again naming the workspace, in place (`checkout --adopt
+ * <folder> --host <host> --workspace <slug>`). Anything else is {@link bundleGone}. The listing is
+ * read once; if that read fails, the answer is {@link bundleGone}.
  */
 export async function bundleAbsent(binding: CheckoutBinding, client: Pick<HostedSyncClient, "bundles">, unsent?: number): Promise<CliError> {
   if (!binding.workspace_slug) {
-    let references: string[] = [];
+    let found: { holders: number; references: readonly string[] } | null = null;
     try {
-      references = readBundleListing(await client.bundles())
-        .lookup({ slug: null, bundleId: binding.bundle_id })
-        .references.filter((named) => named !== binding.bundle_id);
+      found = readBundleListing(await client.bundles()).lookup({ slug: null, bundleId: binding.bundle_id });
     } catch {
       // The listing could not be read: the refusal the host gave stands.
     }
-    if (references.length > 1) {
-      return new CliError("CONFLICT", `hosted bundle id '${binding.bundle_id}' is now in ${references.length} of your workspaces on ${binding.origin}, so this checkout no longer names one`, {
-        details: {
-          reason: "ambiguous_bundle",
-          bundle_id: binding.bundle_id,
-          references,
-          host: binding.origin,
-          folder: binding.path,
-          ...(unsent === undefined ? {} : { unsent_changes: unsent }),
-        },
-        help: `your files stay in ${binding.path}; check out the one you mean into a new folder, naming its workspace: ${cliInvocation()} checkout ${commandToken(references[0]!)} --host ${commandToken(bindingHostArgument(binding))} --dir <new folder>`,
-      });
+    if (found && found.holders > 1) {
+      return ambiguousBundle(
+        binding.bundle_id,
+        binding,
+        found.references,
+        { folder: binding.path, ...(unsent === undefined ? {} : { unsent_changes: unsent }) },
+        `your files stay in ${binding.path}; bind this folder to the one you mean, in place: ${cliInvocation()} checkout --adopt ${commandToken(binding.path)} --host ${commandToken(bindingHostArgument(binding))} --workspace <workspace>`,
+      );
     }
   }
   return bundleGone(binding, unsent);

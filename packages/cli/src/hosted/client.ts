@@ -93,46 +93,62 @@ export interface HostedBundleRow {
 /** The host answers at most this many bundle rows (the kernel's list cap, applied across tenants). */
 export const BUNDLE_LIST_CAP = 100;
 
+/** One listed row: the reference the host lists it by (what `checkout` takes), and that reference parsed. */
+export interface HostedListedBundle {
+  readonly row: HostedBundleRow;
+  /** Rows the host listed under this same reference: more than one only from a host from before qualified references. */
+  readonly workspaces: number;
+  /** The listed reference parsed; null for a row this CLI cannot read as one. */
+  readonly reference: HostedBundleReference | null;
+}
+
 /**
  * A bundle list read as a whole: each row under the reference it names (the bare id, or
  * `<slug>/<id>` for an id two of the person's workspaces hold), how many rows name it, and whether
  * the cap cut it.
  */
 export interface HostedBundleListing {
-  readonly bundles: ReadonlyMap<string, { readonly row: HostedBundleRow; readonly workspaces: number }>;
+  readonly bundles: ReadonlyMap<string, HostedListedBundle>;
   /** False when the host's answer reached {@link BUNDLE_LIST_CAP}, so more bundles may exist. */
   readonly complete: boolean;
   /**
-   * What the listing says about a reference: the row it names, and every listed reference whose
-   * bundle id is the reference's own, sorted. A bare id with two or more such references (or two
-   * rows, from a host from before qualified references) cannot be told apart.
+   * What the listing says about a reference: the row it names; `holders`, the rows whose bundle id
+   * is the reference's own, however listed (bare or qualified); and those rows' qualified
+   * references, sorted. A bare id with two or more holders cannot be told apart.
    */
-  lookup(reference: HostedBundleReference): { readonly row: HostedBundleRow | null; readonly workspaces: number; readonly references: readonly string[] };
+  lookup(reference: HostedBundleReference): {
+    readonly row: HostedBundleRow | null;
+    readonly holders: number;
+    readonly references: readonly string[];
+  };
 }
 
 /**
- * One reading of the host's rows. The host answers one row per workspace that serves an id, and
- * names an id two workspaces serve by each one's reference. A host from before qualified
- * references answers such an id twice, bare.
+ * One reading of the host's rows, each parsed once. The host answers one row per workspace that
+ * serves an id, and names an id two workspaces serve by each one's reference. A host from before
+ * qualified references (or a workspace with no slug, or a collision past the list cap) lists such
+ * an id bare, more than once.
  */
 export function readBundleListing(rows: readonly HostedBundleRow[]): HostedBundleListing {
-  const bundles = new Map<string, { row: HostedBundleRow; workspaces: number }>();
-  const byId = new Map<string, Set<string>>();
+  const bundles = new Map<string, HostedListedBundle>();
+  const holders = new Map<string, number>();
+  const qualified = new Map<string, Set<string>>();
   for (const row of rows) {
     const seen = bundles.get(row.bundleId);
-    bundles.set(row.bundleId, seen ? { row: seen.row, workspaces: seen.workspaces + 1 } : { row, workspaces: 1 });
-    const reference = parseHostedBundleReference(row.bundleId);
-    if (reference) byId.set(reference.bundleId, (byId.get(reference.bundleId) ?? new Set()).add(row.bundleId));
+    const reference = seen?.reference ?? parseHostedBundleReference(row.bundleId);
+    bundles.set(row.bundleId, { row: seen?.row ?? row, workspaces: (seen?.workspaces ?? 0) + 1, reference });
+    if (!reference) continue;
+    holders.set(reference.bundleId, (holders.get(reference.bundleId) ?? 0) + 1);
+    if (reference.slug !== null) qualified.set(reference.bundleId, (qualified.get(reference.bundleId) ?? new Set()).add(row.bundleId));
   }
   return {
     bundles,
     complete: rows.length < BUNDLE_LIST_CAP,
     lookup(reference) {
-      const named = bundles.get(hostedBundleReferenceText(reference));
       return {
-        row: named?.row ?? null,
-        workspaces: named?.workspaces ?? 0,
-        references: [...(byId.get(reference.bundleId) ?? [])].sort(),
+        row: bundles.get(hostedBundleReferenceText(reference))?.row ?? null,
+        holders: holders.get(reference.bundleId) ?? 0,
+        references: [...(qualified.get(reference.bundleId) ?? [])].sort(),
       };
     },
   };
@@ -165,23 +181,20 @@ export function qualifyingCarrier(carrier: HostedCarrier, prefix: string, slug: 
   const qualify = (route: string, input: unknown): unknown => {
     if (!routes.has(route) || input === null || typeof input !== "object" || Array.isArray(input)) return input;
     const bundleId = (input as { bundleId?: unknown }).bundleId;
-    if (typeof bundleId !== "string" || bundleId.includes("/")) return input;
+    if (typeof bundleId !== "string") return input;
+    // Only this wrapper qualifies: an id that already names a workspace is a caller's mistake.
+    if (bundleId.includes("/")) throw new TypeError("a qualified reference sent through a qualifying client");
     return { ...input, bundleId: hostedBundleReferenceText({ slug, bundleId }) };
   };
   return {
-    json: (route, input, signal, options) => carrier.json(route, qualify(route, input), signal, options),
-    stream: (route, input, signal) => carrier.stream(route, qualify(route, input), signal),
+    json: async (route, input, signal, options) => carrier.json(route, qualify(route, input), signal, options),
+    stream: async (route, input, signal) => carrier.stream(route, qualify(route, input), signal),
   };
 }
 
 export interface HostedClientOptions {
   readonly target: HostedTarget;
   readonly accessToken: string;
-  /**
-   * The slug of the workspace that holds the bundle, when the person named one: bundle-scoped
-   * requests then name the bundle as `<slug>/<bundle-id>` ({@link qualifyingCarrier}).
-   */
-  readonly slug?: string;
   /** The command that repeats this one, carried on an AUTH_REQUIRED so an agent can resume it. */
   readonly resume?: string;
   readonly fetch?: typeof fetch;
@@ -189,6 +202,11 @@ export interface HostedClientOptions {
 }
 
 export function createHostedSyncClient(options: HostedClientOptions): HostedSyncClient {
+  return clientIn(options, undefined);
+}
+
+/** The client, naming its bundles in the workspace with `slug` when there is one ({@link HostedSyncClient.within}). */
+function clientIn(options: HostedClientOptions, slug: string | undefined): HostedSyncClient {
   const { target } = options;
   const prefix = syncRoutePrefix(target);
   const fetchCarrier = createFetchCarrier({
@@ -197,7 +215,7 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.deadlineMs ? { deadlineMs: options.deadlineMs } : {}),
   });
-  const carrier = options.slug === undefined ? fetchCarrier : qualifyingCarrier(fetchCarrier, prefix, options.slug);
+  const carrier = slug === undefined ? fetchCarrier : qualifyingCarrier(fetchCarrier, prefix, slug);
   const controller = new AbortController();
 
   async function json(route: string, maximum: number): Promise<unknown> {
@@ -273,7 +291,7 @@ export function createHostedSyncClient(options: HostedClientOptions): HostedSync
       return createHostedReadAdapter({ carrier, bundleId, routes: syncReadRoutes(prefix) });
     },
     within(slug) {
-      return createHostedSyncClient({ ...options, slug });
+      return clientIn(options, slug);
     },
     async history(bundleId, request) {
       const route = `${prefix}/history`;

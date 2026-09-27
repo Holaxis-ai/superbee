@@ -40,11 +40,12 @@ import { render, renderUsage, resolveMode, type OutputMode } from "../output.js"
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 import { hostedCheckoutAt } from "../autopull.js";
-import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { bindingForPath, checkoutLockName, checkoutStoreDir, releaseCheckout, type CheckoutBinding } from "../hosted/binding.js";
-import { createHostedSyncClient, hostedFailure } from "../hosted/client.js";
-import { connectCheckout, connectHostedAccount, hostedListCommand } from "../hosted/account.js";
+import { hostedFailure } from "../hosted/client.js";
+import { connectCheckout, connectHostedAccount, hostedListCommand, resolveBundleReference } from "../hosted/account.js";
+import { bundleAbsent } from "../hosted/refusals.js";
 import { hostedBundleReferenceText, parseHostedBundleReference } from "../hosted/reference.js";
 import { hostedCheckoutFor } from "../hosted/sync.js";
 import { classifyCheckout, hostedStatus } from "../hosted/status.js";
@@ -172,26 +173,18 @@ function refusalCode(body: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-/** The client a named bundle is exported through: `--workspace` is checked against the person's
- * workspaces, and a slug (the reference's, or the one `--workspace` names) names the bundle in it. */
+/** The client a named bundle is exported through: the signed-in account, with the reference
+ * (typed, or qualified by `--workspace`) checked as checkout checks it (`resolveBundleReference`). */
 async function namedClient(source: Source, deps: ExportDeps, resume: CommandText) {
-  const { target, bundleId } = source;
-  if (source.workspace === null) {
-    const client = createHostedSyncClient({
-      target,
-      accessToken: (await ensureHostedAccessToken(target, { resume }, deps.auth)).accessToken,
-      resume,
-      deadlineMs: EXPORT_DEADLINE_MS,
-      ...(deps.fetch ? { fetch: deps.fetch } : {}),
-    });
-    return source.slug === null ? client : client.within(source.slug);
-  }
-  const { client, namedSlug } = await connectHostedAccount(target, { workspace: source.workspace, resume, deadlineMs: EXPORT_DEADLINE_MS }, deps);
-  if (source.slug !== null && namedSlug !== null && source.slug !== namedSlug) {
-    throw new CliError("USAGE", `'${source.slug}/${bundleId}' names workspace '${source.slug}', but --workspace names '${namedSlug}'`, { help: `${cliInvocation()} export --help` });
-  }
-  const slug = source.slug ?? namedSlug;
-  return slug === null ? client : client.within(slug);
+  const { target } = source;
+  const account = await connectHostedAccount(target, { ...(source.workspace !== null ? { workspace: source.workspace } : {}), resume, deadlineMs: EXPORT_DEADLINE_MS }, deps);
+  const { reference } = resolveBundleReference(
+    { slug: source.slug, bundleId: source.bundleId },
+    account,
+    target,
+    (named) => `${cliInvocation()} export ${commandToken(named)} --host ${commandToken(hostArgument(target))} --to <folder>`,
+  );
+  return { client: reference.slug === null ? account.client : account.client.within(reference.slug), slug: reference.slug };
 }
 
 /** The whole archive, bounded, or the CLI error the host's answer means. */
@@ -199,9 +192,9 @@ async function fetchArchive(source: Source, deps: ExportDeps, resume: CommandTex
   const { target, bundleId } = source;
   // A checkout is read as its own person (in the workspace it names); a named bundle as whoever is
   // signed in, in the workspace its reference or --workspace names.
-  const client = source.binding
-    ? (await connectCheckout(source.binding, { resume, deadlineMs: EXPORT_DEADLINE_MS }, deps)).client
-    : await namedClient(source, deps, resume);
+  const named = source.binding ? null : await namedClient(source, deps, resume);
+  const client = named ? named.client : (await connectCheckout(source.binding!, { resume, deadlineMs: EXPORT_DEADLINE_MS }, deps)).client;
+  const slug = named ? named.slug : (source.binding!.workspace_slug ?? null);
   let answer;
   try {
     answer = await client.carrier.stream(`${client.prefix}/export`, { bundleId }, client.signal);
@@ -211,9 +204,11 @@ async function fetchArchive(source: Source, deps: ExportDeps, resume: CommandTex
   if (!answer.ok) {
     const code = refusalCode(answer.body) ?? "RUNTIME";
     if (code === "bundle_not_found") {
-      const named = hostedBundleReferenceText({ slug: source.slug, bundleId });
-      throw new CliError("NOT_FOUND", `no hosted bundle '${named}' is visible to you on ${target.origin}`, {
-        details: { bundle_id: bundleId, host: target.origin },
+      // A checkout whose bare id another workspace gained is told so, as sync tells it.
+      if (source.binding) throw await bundleAbsent(source.binding, client);
+      const text = hostedBundleReferenceText({ slug, bundleId });
+      throw new CliError("NOT_FOUND", `no hosted bundle '${text}' is visible to you on ${target.origin}`, {
+        details: { bundle_id: bundleId, ...(slug !== null ? { reference: text } : {}), host: target.origin },
         help: hostedListCommand(target),
       });
     }
