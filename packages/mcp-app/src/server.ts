@@ -140,11 +140,28 @@ const workspaceSummarySchema = z
   })
   .strict();
 
+/** Text from the host's side of a listing: control and format characters stripped, length capped. */
+const hostText = (max: number) =>
+  z.string().transform((value) => value.replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, max)).pipe(z.string().min(1));
+
+const elsewhereWorkspaceSchema = z
+  .object({
+    name: hostText(200),
+    home: z.enum(MCP_WORKSPACE_HOMES),
+    source: hostText(200),
+    bring: hostText(400),
+  })
+  .strict();
+
+/** At most this many reachable workspaces with no folder here are listed. */
+export const MAX_ELSEWHERE_WORKSPACES = 50;
+
 const listWorkspacesOutputSchema = z.object({
   workspaces: z.array(workspaceSummarySchema),
   shown: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
   truncated: z.boolean(),
+  elsewhere: z.array(elsewhereWorkspaceSchema).max(MAX_ELSEWHERE_WORKSPACES).optional(),
 });
 
 function normalizeWorkspaceSummaries(
@@ -864,13 +881,23 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
           const listed = await workspaceResolver.list();
           const workspaces = normalizeWorkspaceSummaries(listed);
           const page = workspaces.slice(0, MAX_WORKSPACE_CATALOG_PAGE);
+          // Best effort: a failure here never hides the folders.
+          const elsewhere = (await workspaceResolver.elsewhere?.().catch(() => []) ?? [])
+            .slice(0, MAX_ELSEWHERE_WORKSPACES)
+            .flatMap((entry) => {
+              const parsed = elsewhereWorkspaceSchema.safeParse(entry);
+              return parsed.success ? [parsed.data] : [];
+            });
+          const text = workspaces.length === 0
+            ? "No Superbee workspaces are registered in this user's private catalog."
+            : `Found ${workspaces.length} registered Superbee workspace(s); showing ${page.length}.`;
           return {
             content: [
               {
                 type: "text",
-                text: workspaces.length === 0
-                  ? "No Superbee workspaces are registered in this user's private catalog."
-                  : `Found ${workspaces.length} registered Superbee workspace(s); showing ${page.length}.`,
+                text: elsewhere.length === 0
+                  ? text
+                  : `${text} ${elsewhere.length} more can be reached but have no folder here; each lists the command that brings it into one (tools cannot open them).`,
               },
             ],
             structuredContent: {
@@ -878,6 +905,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
               shown: page.length,
               total: workspaces.length,
               truncated: page.length < workspaces.length,
+              ...(elsewhere.length > 0 ? { elsewhere } : {}),
             },
           };
         } catch {

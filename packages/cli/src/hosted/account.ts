@@ -36,11 +36,13 @@ export interface HostedAccountRequest {
   readonly otherWorkspace?: string;
   /** The client's per-request deadline, when the command needs longer than the default. */
   readonly deadlineMs?: number;
+  /** False: a signed-out person is refused (SignedOutError) rather than asked to sign in. */
+  readonly signIn?: boolean;
 }
 
 export async function connectHostedAccount(target: HostedTarget, request: HostedAccountRequest, deps: HostedAccountDeps): Promise<HostedAccount> {
   // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
-  const token = await ensureHostedAccessToken(target, { resume: request.resume }, deps.auth);
+  const token = await ensureHostedAccessToken(target, { resume: request.resume, ...(request.signIn === false ? { signIn: false } : {}) }, deps.auth);
   const client = createHostedSyncClient({
     target,
     accessToken: token.accessToken,

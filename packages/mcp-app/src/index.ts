@@ -42,6 +42,7 @@ export {
   createMcpBundleContext,
   MCP_WORKSPACE_HOMES,
   type McpWorkspaceHome,
+  type McpElsewhereWorkspace,
   type McpBundleContext,
   type McpBundleContextOptions,
   type McpWorkspaceResolver,

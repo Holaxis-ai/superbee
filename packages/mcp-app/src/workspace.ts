@@ -32,9 +32,23 @@ export interface McpWorkspaceSummary {
   readonly home?: McpWorkspaceHome;
 }
 
+/**
+ * A workspace the person can reach that has no folder on this machine yet. It cannot be opened
+ * here: `bring` is the command that brings it into a folder (MCP tools never create folders).
+ */
+export interface McpElsewhereWorkspace {
+  readonly name: string;
+  readonly home: McpWorkspaceHome;
+  /** Where it lives, e.g. the host's origin. */
+  readonly source: string;
+  readonly bring: string;
+}
+
 /** Host-neutral workspace authority supplied by the CLI; implementations may know the catalog. */
 export interface McpWorkspaceResolver {
   list(): Promise<readonly McpWorkspaceSummary[]>;
+  /** Reachable workspaces with no folder here, when the host knows any; bounded and best effort. */
+  elsewhere?(): Promise<readonly McpElsewhereWorkspace[]>;
   open(selector: string): Promise<McpBundleContext>;
 }
 
