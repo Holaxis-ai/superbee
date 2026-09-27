@@ -20,7 +20,7 @@ import { bindingForPath, type CheckoutBinding } from "./binding.js";
 import type { UnboundCopy } from "../bundle-home.js";
 import { readBundleListing, type HostedSyncClient } from "./client.js";
 import { bindingHostArgument, checkoutMarkerPath, unboundCopyInfo } from "./marker.js";
-import { heldPathReason, type HeldFile, type HeldReason } from "./sync-scan.js";
+import { heldPathReason, isConventionId, type HeldFile, type HeldReason } from "./sync-scan.js";
 
 type RefusalReason = "not_syncable" | "checkout_target";
 
@@ -34,9 +34,24 @@ interface RefusalRow {
   readonly when?: (args: readonly string[]) => boolean;
   /** What to do instead, for a command the app cannot do either. */
   readonly instead?: string;
+  /**
+   * A command that changes the bundle's model (its Kind conventions). It runs when the host last
+   * said this person may (`definition_writes: "allowed"`), is refused with {@link DEFINITIONS_REFUSED}
+   * when the host said they may not, and is refused as the row says when the host did not say.
+   */
+  readonly definitions?: true;
 }
 
 const KINDS_INSTEAD = "to design Kinds, work in a local or Git bundle and publish it";
+
+/**
+ * The refusal for a model change by a person the host does not allow (designs/hosted-model-evolution.md
+ * section 5.2): neutral, naming no role or organization, since the permission is managed per person.
+ */
+export const DEFINITIONS_REFUSED = Object.freeze({
+  why: "you don't have permission to change this bundle's model",
+  instead: "ask whoever manages access to it",
+});
 
 /** The `--doc-key` value in argv, in either spelling; the last one wins, as the parser takes it. */
 function docKey(args: readonly string[]): string | undefined {
@@ -59,20 +74,20 @@ function heldKey(key: string): boolean {
 /** Every command a hosted checkout refuses up front. The order is the lookup order. */
 export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
   { words: ["doc", "verify"], reason: "not_syncable", why: "verification is a managed field the host records" },
-  { words: ["kind", "*"], reason: "not_syncable", why: "a hosted bundle's Kinds cannot be changed from a checkout", instead: KINDS_INSTEAD },
-  { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD },
-  { words: ["recipe", "evolve"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD },
+  { words: ["kind", "*"], reason: "not_syncable", why: "a hosted bundle's Kinds cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
+  { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
+  { words: ["recipe", "evolve"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
   { words: ["artifact", "*"], reason: "not_syncable", why: "artifacts carry blobs, which do not sync" },
   {
     words: ["promote"],
     reason: "not_syncable",
-    why: "a key that is not a .md document is stored as a blob, and blobs, reserved files and conventions do not sync",
+    why: "a key that is not a .md document is stored as a blob; blobs, reserved files and View files do not sync, and conventions change only through the kind and recipe commands",
     when: (args) => heldKey(docKey(args) ?? ""),
   },
   {
     words: ["delete"],
     reason: "not_syncable",
-    why: "a key that is not a .md document is a blob, and blobs, reserved files and conventions do not sync (delete a document with doc delete)",
+    why: "a key that is not a .md document is a blob; blobs, reserved files and View files do not sync, and conventions change only through the kind and recipe commands (delete a document with doc delete)",
     when: (args) => {
       const key = docKey(args);
       return key !== undefined && heldKey(key);
@@ -86,7 +101,7 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     when: (args) => !args.some((token) => token === "--check" || token.startsWith("--check=")),
   },
   { words: ["serve"], reason: "not_syncable", why: "the served bundle accepts writes and deletes that do not sync" },
-  { words: ["ui"], reason: "not_syncable", why: "the local app writes Views and conventions, which do not sync" },
+  { words: ["ui"], reason: "not_syncable", why: "the local app writes Views, which do not sync, and conventions outside the kind and recipe commands" },
   { words: ["init"], reason: "checkout_target", why: "the folder is a hosted checkout, not a local bundle" },
 ] satisfies RefusalRow[]).map((row): RefusalRow => Object.freeze({ ...row, words: Object.freeze([...row.words]) })));
 
@@ -133,6 +148,13 @@ export function hostedCheckoutRefusal(row: RefusalRow, words: string, binding: C
       help: "choose another folder for a local bundle",
     });
   }
+  if (row.definitions && binding.definition_writes === "refused") {
+    const { why, instead } = DEFINITIONS_REFUSED;
+    return new CliError("FORBIDDEN", `'${words}' refused: ${why} (bundle ${binding.bundle_id} on ${binding.origin}); ${instead}`, {
+      details: { ...details, reason: "definitions_refused" },
+      help: instead,
+    });
+  }
   if (row.instead) {
     return new CliError("FORBIDDEN", `'${words}' cannot sync from a hosted checkout (${row.why}): ${row.instead}`, { details, help: row.instead });
   }
@@ -158,8 +180,43 @@ export async function assertAllowedInHostedCheckout(command: string, args: reado
   if (skip) return;
   const binding = await checkoutFor(command, dir, context.home ?? homedir(), context.cwd ?? process.cwd());
   if (!binding) return;
+  // A model change by a person the host allows: the command runs, and sync sends the conventions
+  // (a recipe carrying more than Kind conventions is refused by the command, `kindOnlyRecipe`).
+  if (row.definitions && binding.definition_writes === "allowed") return;
   const sub = row.words.length > 1 ? args.find((token) => !token.startsWith("-")) : undefined;
   throw hostedCheckoutRefusal(row, sub ? `${command} ${sub}` : command, binding);
+}
+
+/**
+ * In a hosted checkout, `recipe add` and `recipe evolve` may write only Kind conventions
+ * (designs/hosted-model-evolution.md section 8): every artifact a recipe installs must be an
+ * {@link isConventionId} id. A recipe that also carries Views, their pages, References or any other
+ * document is refused before anything is written, naming them; those are published with the
+ * bundle. The up-front refusal has already let the command run only for a person the host allows.
+ * Resolves for any other target.
+ */
+export async function assertKindOnlyRecipe(
+  words: string,
+  dir: string | undefined,
+  recipe: {
+    readonly id: string;
+    readonly docs: readonly { readonly id: string }[];
+    readonly pages: readonly { readonly registry: { readonly id: string }; readonly entry: string }[];
+    readonly references: readonly { readonly doc: { readonly id: string } }[];
+  },
+  context: RefusalContext = {},
+): Promise<void> {
+  const artifacts = [...recipe.docs.map((doc) => doc.id), ...recipe.pages.flatMap((page) => [page.registry.id, page.entry]), ...recipe.references.map((reference) => reference.doc.id)];
+  const outside = artifacts.filter((id) => !isConventionId(id));
+  if (outside.length === 0) return;
+  const binding = await checkoutFor("recipe", dir, context.home ?? homedir(), context.cwd ?? process.cwd());
+  if (!binding) return;
+  throw hostedCheckoutRefusal(
+    { words: words.split(" "), reason: "not_syncable", why: `recipe '${recipe.id}' installs ${outside.length} artifact(s) outside conventions/, such as Views and References, and a checkout sends Kind conventions only`, instead: KINDS_INSTEAD },
+    words,
+    binding,
+    { recipe: recipe.id, artifacts: outside.slice(0, 20).join(", "), artifacts_total: String(outside.length) },
+  );
 }
 
 /** What to do instead of a write sync would hold, by the reason the scan records. */

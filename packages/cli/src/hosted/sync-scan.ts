@@ -24,7 +24,7 @@ import path from "node:path";
 
 import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
 import { DOCUMENT_DELETE_KIND } from "@superbee/core/journaled-backend";
-import { assertSafeConceptId, conceptIdFromPath, InvalidInputError, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, type Frontmatter, type JournaledBackend } from "@superbee/core";
+import { assertSafeConceptId, conceptIdFromPath, CONVENTIONS_PREFIX, InvalidInputError, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, type Frontmatter, type JournaledBackend } from "@superbee/core";
 import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { mintRequestId } from "@superbee/core/uncertain-write";
 import type { IntentRecord, NewIntentRecord } from "@superbee/core/journaled-backend";
@@ -38,20 +38,65 @@ const PROJECTION_SCHEMA = 2;
 const PROJECTION_BYTES = 8 * 1024 * 1024;
 /** The kernel's bound on a document's frontmatter, as JSON. */
 export const FRONTMATTER_JSON_BYTES = 16 * 1024;
-/** Folders whose documents are conventions the app edits; sync holds them. */
-const HELD_PREFIXES = ["conventions/", "views/"] as const;
+/**
+ * Folders whose documents sync holds for everyone, compared folded as the host kernel compares
+ * ids (`Views-Registry/x` lands in `views-registry/` on a case-insensitive disk): View pages, and
+ * View registrations, which the host installs and refuses as a write under every authority.
+ */
+const HELD_FOLDERS = ["views", "views-registry"] as const;
+
+/** What the host said about model changes, as the scan applies it (`null`: it did not say). */
+export type DefinitionWritesState = "allowed" | "refused" | null;
+
+/**
+ * An id the host's definition path may write: under `conventions/` exactly as spelled, the
+ * case-sensitive prefix `loadKinds` reads. A case variant (`Conventions/x`) stays held under every
+ * capability, as the kernel refuses it (it would govern unproved after a case-insensitive checkout).
+ */
+export function isConventionId(id: string): boolean {
+  return id.startsWith(CONVENTIONS_PREFIX);
+}
+
+/** True when `rel`, folded, is `folder` or under it. */
+function underFolded(rel: string, folder: string): boolean {
+  const folded = foldedPath(rel);
+  return folded === folder || folded.startsWith(`${folder}/`);
+}
 
 /**
  * Why sync holds a folder-relative path whatever its content, or null for a document path sync
  * may send: a reserved OKF file, a file that is not a `.md` document (a blob), or a document under
- * a folder of conventions the app edits. The one path rule the scan, the local MCP app's write
- * guard (`served-bundle.ts`) and the command refusals (`refusals.ts`) share.
+ * a folder the app or the host manages (`convention_folder`). `conventions/` is held unless the host
+ * said this person may change the bundle's model (`definitionWrites: "allowed"`), and then only
+ * for an {@link isConventionId} spelling; only the sync scan passes the capability, so every other
+ * caller keeps it held. The one path rule the scan, the local MCP app's write guard
+ * (`served-bundle.ts`) and the command refusals (`refusals.ts`) share. It mirrors the host
+ * kernel's fence (agent-operations `ordinary()`); the type half is {@link heldTypeReason}.
  */
-export function heldPathReason(rel: string): "reserved_file" | "not_a_document" | "convention_folder" | null {
+export function heldPathReason(rel: string, options: { readonly definitionWrites?: DefinitionWritesState } = {}): "reserved_file" | "not_a_document" | "convention_folder" | null {
   if (isReservedFile(rel)) return "reserved_file";
   if (!rel.endsWith(".md")) return "not_a_document";
-  if (HELD_PREFIXES.some((prefix) => rel.startsWith(prefix))) return "convention_folder";
+  if (HELD_FOLDERS.some((folder) => underFolded(rel, folder))) return "convention_folder";
+  if (underFolded(rel, "conventions") && !(options.definitionWrites === "allowed" && isConventionId(rel))) return "convention_folder";
   return null;
+}
+
+/**
+ * The type half of the kernel's fence, for a document at a path {@link heldPathReason} admits: a
+ * `View` is held anywhere, and a `Convention` anywhere but a convention id sync may send.
+ */
+function heldTypeReason(rel: string, type: unknown, definitionWrites: DefinitionWritesState): string | null {
+  if (type === "View") return `'${conceptIdFromPath(rel)}' is a View registration, which the host installs; it does not sync`;
+  if (type === "Convention" && !(definitionWrites === "allowed" && isConventionId(rel))) return `'${conceptIdFromPath(rel)}' is a Kind convention outside conventions/; the host reads Kinds only from conventions/`;
+  if (definitionWrites === "allowed" && isConventionId(rel) && type !== "Convention") return `'${conceptIdFromPath(rel)}' is under conventions/ but is not a Convention; only Kind conventions sync there`;
+  return null;
+}
+
+/** Why a document under a held folder (`convention_folder`) is not sent, in the person's terms. */
+export function heldPathMessage(rel: string, definitionWrites: DefinitionWritesState = null): string {
+  if (underFolded(rel, "views-registry")) return `${rel} is under views-registry/, which holds the bundle's View registrations; they are installed on the host and do not sync`;
+  if (underFolded(rel, "conventions") && definitionWrites === "refused") return `${rel} is under conventions/, which holds the bundle's model: you don't have permission to change this bundle's model; ask whoever manages access to it`;
+  return `${rel} is under ${rel.split("/")[0]}/, which holds conventions edited in the Superbee app`;
 }
 
 /** One document's accounting: the bytes the file was last known to hold, and the store version they match. */
@@ -521,6 +566,12 @@ export interface ScanContext {
    * pending here; only the journaling that a preview skips can find it.
    */
   readonly preview?: boolean;
+  /**
+   * What the host's capabilities answer said about model changes this run: `allowed` sends
+   * `conventions/` like any document; otherwise it is held (with the neutral wording under
+   * `refused`).
+   */
+  readonly definitionWrites?: DefinitionWritesState;
 }
 
 function held(id: string, rel: string, reason: HeldReason, message: string): HeldFile {
@@ -538,6 +589,12 @@ export function unsendable(
   bytes: Uint8Array,
   stored: { frontmatter: Frontmatter } | null,
   context: Pick<ScanContext, "bundleId" | "okfVersion">,
+  /**
+   * The type half of the host kernel's fence ({@link heldTypeReason}), for a document sync would
+   * send to an existing bundle: the scan and a conflict's resolution pass what the host said about
+   * model changes. Absent (`publish`, whose bundle create carries conventions and Views): no type rule.
+   */
+  fence?: { readonly definitionWrites: DefinitionWritesState },
 ): HeldFile | null {
   if (bytes.byteLength > WHOLE_DOCUMENT_BOUNDS.payloadBytes) {
     return held(id, rel, "too_large", `'${id}' is over the ${WHOLE_DOCUMENT_BOUNDS.payloadBytes / 1024} KiB a sync write carries`);
@@ -560,6 +617,8 @@ export function unsendable(
   if (Buffer.byteLength(JSON.stringify(frontmatter)) > FRONTMATTER_JSON_BYTES || Object.keys(frontmatter).length > FRONTMATTER_KEY_LIMIT) {
     return held(id, rel, "too_large", `'${id}' has more frontmatter than the host accepts (${FRONTMATTER_JSON_BYTES / 1024} KiB, ${FRONTMATTER_KEY_LIMIT} fields)`);
   }
+  const typed = fence ? heldTypeReason(rel, frontmatter.type, fence.definitionWrites) : null;
+  if (typed !== null) return held(id, rel, "not_sendable", typed);
   const storedType = stored?.frontmatter.type;
   if (typeof storedType === "string" && storedType !== frontmatter.type) {
     return held(id, rel, "type_change", `'${id}' changes type from '${storedType}' to '${String(frontmatter.type)}', which sync cannot send`);
@@ -634,11 +693,11 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
         continue;
       }
     }
-    if (heldPathReason(rel) === "convention_folder") {
-      report.held.push(held(id, rel, "convention_folder", `${rel} is under ${rel.split("/")[0]}/, which holds conventions edited in the Superbee app`));
+    if (heldPathReason(rel, { definitionWrites: context.definitionWrites ?? null }) === "convention_folder") {
+      report.held.push(held(id, rel, "convention_folder", heldPathMessage(rel, context.definitionWrites ?? null)));
       continue;
     }
-    const refusal = unsendable(id, rel, bytes, stored.document?.doc ?? null, context);
+    const refusal = unsendable(id, rel, bytes, stored.document?.doc ?? null, context, { definitionWrites: context.definitionWrites ?? null });
     if (refusal) {
       report.held.push(refusal);
       continue;
@@ -677,6 +736,11 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     if (entry.deleted || !stored.document) {
       // Deleted on both sides: nothing is left to decide.
       delete projection.files[id];
+      continue;
+    }
+    // A file under a folder sync holds is held when deleted too: the host would refuse the delete.
+    if (heldPathReason(rel, { definitionWrites: context.definitionWrites ?? null }) === "convention_folder") {
+      report.held.push(held(id, rel, "convention_folder", `${heldPathMessage(rel, context.definitionWrites ?? null)}; put the file back`));
       continue;
     }
     if (stored.intents.some((row) => row.state === "conflict")) {

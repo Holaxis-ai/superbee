@@ -24,6 +24,9 @@ import {
   decodeHostedCapabilities,
   decodeOutcomeAnswer,
   decodeDocumentHistory,
+  definitionFindingsText,
+  DEFINITION_FINDINGS_TEXT_BYTES,
+  parseWriteResult,
   decodeHistoryAnswer,
   decodeOperationListing,
   decodeOperationRun,
@@ -91,7 +94,7 @@ function answerOf(exchange: Exchange): HostedAnswer {
 }
 
 test(`golden /sync/v1 exchanges (${index.source}) are indexed as recorded`, () => {
-  assert.equal(index.exchanges.length, 62);
+  assert.equal(index.exchanges.length, 70);
   for (const entry of index.exchanges) {
     const exchange = fixture(entry.name);
     assert.equal(exchange.route, entry.route);
@@ -180,6 +183,51 @@ test("capabilities 200 decodes", () => {
   assert.equal(decoded.operations, true);
   assert.ok(decoded.root);
   assert.equal(versionOfBytes(decoded.root.content), decoded.root.version);
+});
+
+test("capabilities 200 says whether the caller may change the model: absent is null, then allowed or refused", () => {
+  assert.equal(decodeHostedCapabilities(JSON.parse(fixture("capabilities-200").response.body)).definitionWrites, null);
+  assert.equal(decodeHostedCapabilities(JSON.parse(fixture("capabilities-200-definition-writes-allowed").response.body)).definitionWrites, "allowed");
+  assert.equal(decodeHostedCapabilities(JSON.parse(fixture("capabilities-200-definition-writes-refused").response.body)).definitionWrites, "refused");
+  // A value the client does not know fails closed, and never stops the pull.
+  for (const value of ["yes", true, 1, null]) {
+    const body = { ...JSON.parse(fixture("capabilities-200-definition-writes-allowed").response.body), definitionWrites: value };
+    assert.equal(decodeHostedCapabilities(body).definitionWrites, "refused");
+  }
+});
+
+test("200 definition_incompatible carries the findings; the transport's refusal names them, never beyond the host's bounds", () => {
+  const exchange = fixture("replace-200-definition-incompatible");
+  const expected = { operationIds: ["documents.replace.v1"], documentId: "conventions/note", bundleId: BUNDLE };
+  const { row, result } = classifyWriteAnswer(answerOf(exchange), expected);
+  assert.equal(row.answer, "200 definition_incompatible");
+  assert.deepEqual([row.recorded, row.outcome], ["settled-only", "refused"]);
+  assert.ok(result && !result.ok);
+  assert.equal(
+    definitionFindingsText(result.error.definitionDetails),
+    "instance_invalid on Kind 'Note' field 'stage' (KIND_FIELD_MISSING): 1 document, notes/one",
+  );
+  const body = JSON.parse(exchange.response.body) as { error: Record<string, unknown> };
+  // The details ride only on the refusal they explain: on another code or write state the envelope is not admitted.
+  for (const bad of [{ ...body, error: { ...body.error, code: "validation_failed" } }, { ...body, error: { ...body.error, writeState: "unknown" } }]) {
+    assert.throws(() => parseWriteResult(bad, expected));
+    assert.equal(classifyWriteAnswer({ status: 200, body: bad, headers: new Headers() } as HostedAnswer, expected).row.answer, "200 other");
+  }
+  // Their contents are read leniently: a host that adds a field, or a finding the client cannot
+  // read, never makes the recorded refusal unreadable (it would stay unknown on every sync).
+  const finding = (body.error.definitionDetails as { findings: Record<string, unknown>[] }).findings[0]!;
+  const extended = { ...body, error: { ...body.error, definitionDetails: { version: 2, findings: [{ ...finding, severity: "high" }, { rule: 7 }, "x"], truncated: false, extra: true } } };
+  assert.equal(classifyWriteAnswer({ status: 200, body: extended, headers: new Headers() } as HostedAnswer, expected).row.answer, "200 definition_incompatible");
+  assert.equal(definitionFindingsText(extended.error.definitionDetails), "instance_invalid on Kind 'Note' field 'stage' (KIND_FIELD_MISSING): 1 document, notes/one");
+  for (const unreadable of [undefined, null, "x", { findings: "x" }, { findings: [{}] }]) assert.equal(definitionFindingsText(unreadable), "");
+  const many = { version: 1, findings: [{ rule: "convention_removed_in_use", conventionId: "conventions/note", type: "Note", instances: { count: 40, ids: Array.from({ length: 16 }, (_, n) => `notes/${n}`) } }], truncated: true };
+  assert.equal(definitionFindingsText(many), "convention_removed_in_use on Kind 'Note': 40 documents, notes/0, notes/1, notes/2, notes/3, notes/4, ...; and more");
+  // The text stays within its bound however large the host's findings (16 findings, every part at 256).
+  const long = "x".repeat(256);
+  const largest = { version: 1, findings: Array.from({ length: 16 }, () => ({ rule: long, type: long, field: long, detail: long, instances: { count: 99, ids: Array.from({ length: 16 }, () => long) } })), truncated: true };
+  const text = definitionFindingsText(largest);
+  assert.ok(new TextEncoder().encode(text).byteLength <= DEFINITION_FINDINGS_TEXT_BYTES, `${text.length}`);
+  assert.match(text, /and 15 more$/);
 });
 
 test("heads 200 and 304 decode through the adapter", async () => {

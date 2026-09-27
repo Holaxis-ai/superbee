@@ -49,6 +49,15 @@
 //   result; `documents.history.v1` answers as `/history` does, and any other listed id answers
 //   `runHook`'s data in the `ok` envelope the goldens pin. `operations: false` is a gateway from
 //   before both routes: the family's unknown-route 404 on each.
+// - model changes (superbee-hosted `docs/sync-v1-fixtures.md`, the definitions exchanges;
+//   designs/hosted-model-evolution.md sections 4.1 and 4.2): with `definitionWrites`, the
+//   capabilities answer carries it, and the writes follow the answer the fake serves. The kernel's
+//   fence refuses `invalid_input` a write under folded `conventions/` or `views-registry/`, or of
+//   type `Convention` or `View`, except, when the answer says `allowed`, a `Convention` under
+//   `conventions/` exactly as spelled. That write is proved against the stored documents with
+//   core's Kind rules: a Kind a stored document fails, or a removed Kind still in use, refuses
+//   `definition_incompatible` with `definitionDetails`. Document writes are validated against the
+//   stored Kinds (`validation_failed`). Without `definitionWrites` none of this applies.
 // - any other route: the family's unknown-route answer, `404 {"error":"not_found"}`.
 // Every answer shape is held to the `/sync/v1` golden exchanges captured from the real hosted
 // gateway (core's `test/fixtures/hosted-sync-v1/`) by `hosted-fake-contract.test.ts`; the export
@@ -60,7 +69,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { headsDigest, stringifyDoc } from "@superbee/core";
+import { buildKindRegistry, CONVENTIONS_PREFIX, headsDigest, stringifyDoc, validateAgainstKind, type OkfDocument } from "@superbee/core";
 import { versionOfBytes } from "@superbee/core/versioning";
 import { isAcceptedDeletionCount, isAgentLabelVia } from "@superbee/core/hosted-transport";
 import { deletionHold } from "../../src/hosted/sync-scan.js";
@@ -162,6 +171,12 @@ export interface FakeHostOptions {
   slug?: string;
   /** False is a gateway from before `/operations` and `/run`: both are the family's unknown-route 404. */
   operations?: boolean;
+  /**
+   * What the capabilities answer says about model changes: absent, a workspace without them (the
+   * answer and the writes are the fake's as before). Set, the answer carries it and the writes
+   * follow it (the model-changes item above).
+   */
+  definitionWrites?: "allowed" | "refused";
 }
 
 /** One operation descriptor, as the listing route answers it. */
@@ -362,7 +377,8 @@ export class FakeHost {
         if (body.bundleId !== BUNDLE && String(body.bundleId).startsWith("absent.")) return bundleNotFound();
         assert.equal(body.bundleId, BUNDLE);
         const { response } = fixture(this.capabilities);
-        return new Response(response.body, { status: response.status, headers: response.headers });
+        const answer = this.options.definitionWrites === undefined ? response.body : JSON.stringify({ ...JSON.parse(response.body), definitionWrites: this.options.definitionWrites });
+        return new Response(answer, { status: response.status, headers: response.headers });
       }
       case "heads": {
         if (body.bundleId !== BUNDLE && String(body.bundleId).startsWith("absent.")) return bundleNotFound();
@@ -557,7 +573,8 @@ export class FakeHost {
       if (held) return held;
     }
     if (!recorded) {
-      recorded = hooked?.kind === "record" ? { result: failure(operationId, hooked.code) } : route === "delete" ? this.applyDelete(body) : this.apply(route, operationId, body, recreate, via);
+      const model = hooked?.kind === "record" ? null : this.modelRefusal(route, operationId, body);
+      recorded = hooked?.kind === "record" ? { result: failure(operationId, hooked.code) } : model ? { result: model } : route === "delete" ? this.applyDelete(body) : this.apply(route, operationId, body, recreate, via);
       this.recorded.set(requestId, recorded);
     }
     if (hooked?.kind === "apply-then-drop") throw new TypeError("fetch failed");
@@ -576,6 +593,76 @@ export class FakeHost {
       { error: { code: "deletions_held", deletions, baseline, message: `This would make ${deletions} deletions in 24 hours of the ${baseline} documents this bundle held. Nothing was deleted; a person must confirm this mass delete.`, retryable: false, writeState: "not_applied" } },
       { status: 428 },
     );
+  }
+
+  /** What the served capabilities answer says about model changes (the one source the writes follow). */
+  private servedDefinitionWrites(): "allowed" | "refused" | null {
+    if (this.options.definitionWrites === undefined) return null;
+    const answer = JSON.parse(fixture(this.capabilities).response.body) as Record<string, unknown>;
+    return { ...answer, definitionWrites: this.options.definitionWrites }.definitionWrites === "allowed" ? "allowed" : "refused";
+  }
+
+  /** The stored Kinds, as core reads them from `conventions/`, with `change` applied (a document, or a removal). */
+  private kinds(change?: { id: string; doc: OkfDocument | null }) {
+    const conventions = [...this.docs]
+      .filter(([id, doc]) => id.startsWith(CONVENTIONS_PREFIX) && doc.frontmatter.type === "Convention" && id !== change?.id)
+      .map(([id, doc]) => ({ id, frontmatter: doc.frontmatter, body: doc.body }) as OkfDocument);
+    if (change?.doc) conventions.push(change.doc);
+    return buildKindRegistry(conventions.sort((a, b) => (a.id < b.id ? -1 : 1)));
+  }
+
+  /**
+   * The host's answer to a write the model rules refuse (the model-changes item in the header), or
+   * null when they admit it and the ordinary write runs. Only with `definitionWrites`.
+   */
+  private modelRefusal(route: "create" | "replace" | "delete", operationId: string, body: Record<string, unknown>): Record<string, unknown> | null {
+    const served = this.servedDefinitionWrites();
+    if (served === null) return null;
+    const id = String(body.documentId);
+    const folded = id.toLowerCase();
+    const under = (folder: string) => folded === folder || folded.startsWith(`${folder}/`);
+    const types = [this.docs.get(id)?.frontmatter.type, route === "delete" ? undefined : (body.frontmatter as Record<string, unknown>).type].filter((type) => type !== undefined);
+    const definition = served === "allowed" && id.startsWith(CONVENTIONS_PREFIX);
+    if (under("views-registry") || types.includes("View")) return failure(operationId, "invalid_input");
+    if (definition ? types.some((type) => type !== "Convention") : under("conventions") || types.includes("Convention")) return failure(operationId, "invalid_input");
+    const stored = (type: string) => [...this.docs].filter(([docId, doc]) => !docId.startsWith(CONVENTIONS_PREFIX) && doc.frontmatter.type === type);
+    if (definition) {
+      // The proof: the Kind this write leaves must hold every stored document of its type.
+      const candidate = route === "delete" ? null : ({ id, frontmatter: body.frontmatter, body: String(body.body) } as OkfDocument);
+      const before = this.docs.get(id);
+      const findings: Record<string, unknown>[] = [];
+      if (candidate) {
+        const kind = this.kinds({ id, doc: candidate }).kinds.get(String(candidate.frontmatter.governs));
+        const failing = new Map<string, { field?: string; detail: string; ids: string[] }>();
+        for (const [docId, doc] of kind ? stored(kind.governs) : []) {
+          for (const warning of validateAgainstKind({ id: docId, frontmatter: doc.frontmatter, body: doc.body } as OkfDocument, kind!)) {
+            const key = `${warning.code}\0${warning.field ?? ""}`;
+            const row = failing.get(key) ?? { ...(warning.field ? { field: warning.field } : {}), detail: warning.code, ids: [] };
+            if (!row.ids.includes(docId)) row.ids.push(docId);
+            failing.set(key, row);
+          }
+        }
+        for (const row of failing.values()) findings.push({ rule: "instance_invalid", conventionId: id, type: kind!.governs, ...(row.field ? { field: row.field } : {}), detail: row.detail, instances: { count: row.ids.length, ids: row.ids.slice(0, 16) } });
+      } else if (before) {
+        const governs = String(before.frontmatter.governs);
+        const using = stored(governs).map(([docId]) => docId);
+        if (using.length > 0) findings.push({ rule: "convention_removed_in_use", conventionId: id, type: governs, instances: { count: using.length, ids: using.slice(0, 16) } });
+      }
+      if (findings.length === 0) return null;
+      return {
+        ok: false,
+        operationId,
+        error: { code: "definition_incompatible", message: "The model change would break documents or other Kinds in this bundle; nothing was saved. The details name what to fix first.", retryable: false, writeState: "not_applied", definitionDetails: { version: 1, findings: findings.slice(0, 16), truncated: findings.length > 16 } },
+      };
+    }
+    // A document write is validated against the stored Kinds, as the host's kernel does.
+    if (route === "delete") return null;
+    const frontmatter = body.frontmatter as Record<string, unknown>;
+    const kind = this.kinds().kinds.get(String(frontmatter.type));
+    if (kind && validateAgainstKind({ id, frontmatter, body: String(body.body) } as OkfDocument, kind).length > 0) {
+      return { ok: false, operationId, error: { code: "validation_failed", message: "The candidate or bundle conventions failed validation; no change was saved.", retryable: false, writeState: "not_applied" } };
+    }
+    return null;
   }
 
   private applyDelete(body: Record<string, unknown>): Recorded {

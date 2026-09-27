@@ -46,6 +46,7 @@ import {
   sameFolder,
   newCheckoutId,
   rebindCheckout,
+  withDefinitionWrites,
   writeBinding,
   type CheckoutBinding,
 } from "../hosted/binding.js";
@@ -415,7 +416,7 @@ export async function bindFolderInPlace(input: {
   readonly extras?: Readonly<Record<string, string>>;
 }): Promise<BindResult> {
   const { canonical, target, bundleId, deps, resume } = input;
-  const { identity, reader, listed: isListed, workspace, reference } = input.connection;
+  const { identity, reader, listed: isListed, workspace, reference, definitionWrites } = input.connection;
   const home = deps.auth.home;
   const placedFiles = new Map<string, string>();
   return withCheckoutLock(canonical, async () => {
@@ -424,7 +425,7 @@ export async function bindFolderInPlace(input: {
     }
     const identityNow = await folderIdentity(canonical);
     if (!identityNow) throw new CliError("RUNTIME", `${canonical} disappeared while binding it`, { help: "retry the same command" });
-    const binding: CheckoutBinding = {
+    const binding: CheckoutBinding = withDefinitionWrites({
       schema: 1,
       checkout_id: newCheckoutId(),
       path: canonical,
@@ -439,7 +440,7 @@ export async function bindFolderInPlace(input: {
       created_at: new Date(deps.auth.now()).toISOString(),
       state: "hydrating",
       folder_identity: identityNow,
-    };
+    }, definitionWrites);
     await writeBinding(home, binding);
     let store: FileJournaledBackend | undefined;
     try {

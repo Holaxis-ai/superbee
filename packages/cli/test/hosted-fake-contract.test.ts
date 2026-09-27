@@ -194,6 +194,26 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("delete-428-deletions-held", sendTo(holding, "delete", heldDelete, { requestId: identity(32) }));
   await observe("delete-200-ok-accepted", sendTo(holding, "delete", heldDelete, { requestId: identity(32), acceptDeletes: "3" }));
 
+  // Model changes: the capability in both states; a Kind created, a narrowing its documents fail
+  // and its lookup, a document its Kind refuses, a convention by a person the host does not allow,
+  // and a delete of a Kind in use.
+  const modeled = new FakeHost({ definitionWrites: "allowed" });
+  await observe("capabilities-200-definition-writes-allowed", sendTo(modeled, "capabilities", { bundleId: BUNDLE }));
+  await observe("capabilities-200-definition-writes-refused", sendTo(new FakeHost({ definitionWrites: "refused" }), "capabilities", { bundleId: BUNDLE }));
+  const noteKind = (fields: Record<string, unknown>) => ({ frontmatter: { type: "Convention", title: "Note", governs: "Note", fields }, body: "# Note\n\nA note.\n" });
+  const kindCreate = { bundleId: BUNDLE, documentId: "conventions/note", expectAbsent: true, ...noteKind({ optional: ["stage"], values: { stage: ["open", "done"] } }) };
+  const kindCreated = await json(sendTo(modeled, "create", kindCreate, { requestId: identity(40) }));
+  observed.set("create-200-ok-convention", await answerOf(await sendTo(modeled, "create", kindCreate, { requestId: identity(40) })));
+  const narrowing = { bundleId: BUNDLE, documentId: "conventions/note", expectedVersion: kindCreated.data.version, ...noteKind({ required: ["stage"], values: { stage: ["open", "done"] } }) };
+  await observe("replace-200-definition-incompatible", sendTo(modeled, "replace", narrowing, { requestId: identity(41) }));
+  await observe("outcome-200-refused-definition", sendTo(modeled, "outcome", narrowing, { requestId: identity(41) }));
+  const alpha = modeled.docs.get("notes/alpha")!;
+  await observe("replace-200-validation-failed-kind", sendTo(modeled, "replace", { bundleId: BUNDLE, documentId: "notes/alpha", expectedVersion: alpha.version, frontmatter: { ...alpha.frontmatter, stage: "later" }, body: alpha.body }, { requestId: identity(42) }));
+  const idea = { bundleId: BUNDLE, documentId: "conventions/idea", expectAbsent: true, frontmatter: { type: "Convention", title: "Idea", governs: "Idea", fields: {} }, body: "# Idea\n" };
+  await observe("create-200-invalid-input-convention", sendTo(new FakeHost({ definitionWrites: "refused" }), "create", idea, { requestId: identity(43) }));
+  await observe("delete-200-definition-incompatible", sendTo(modeled, "delete", { bundleId: BUNDLE, documentId: "conventions/note", expectedVersion: kindCreated.data.version }, { requestId: identity(44) }));
+  assert.equal(modeled.docs.get("conventions/note")?.version, kindCreated.data.version, "a refused model change leaves the Kind as it was");
+
   // Pages: the three-document bundle served two to a page, then a write between pages.
   const paged = new FakeHost({ pageSize: 2 });
   const firstPage = await json(sendTo(paged, "heads", { bundleId: BUNDLE })) as unknown as { next: string };

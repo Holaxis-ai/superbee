@@ -55,6 +55,36 @@ export interface CheckoutBinding {
    * filesystem reports one.
    */
   readonly folder_identity: FolderIdentity;
+  /**
+   * Whether the host last said this person may change the bundle's model (its Kind conventions),
+   * as `sync` and `checkout` read it from the capabilities answer. Absent: the host did not say
+   * (no workspace has model changes), and a checkout refuses Kind commands as it always has. The
+   * up-front refusals read it with no request; the host stays the authority.
+   */
+  readonly definition_writes?: DefinitionWrites;
+}
+
+/** What a capabilities answer says about model changes, as a binding records it. */
+export type DefinitionWrites = "allowed" | "refused";
+
+/** The binding with `definition_writes` as the host now says it (`null`: it does not say). */
+export function withDefinitionWrites(binding: CheckoutBinding, stated: DefinitionWrites | null): CheckoutBinding {
+  const { definition_writes: _previous, ...rest } = binding;
+  return stated === null ? rest : { ...rest, definition_writes: stated };
+}
+
+/**
+ * Record what a capabilities answer said about model changes on a ready checkout's binding, the
+ * one field of the record that changes after checkout: a cache of the host's last answer for the
+ * up-front refusals, never authority. The caller holds the checkout lock; the record is re-read
+ * under it and written only when the answer changed. Returns the binding as recorded.
+ */
+export async function recordDefinitionWrites(home: string, binding: CheckoutBinding, stated: DefinitionWrites | null): Promise<CheckoutBinding> {
+  const current = (await readBinding(home, binding.checkout_id)) ?? binding;
+  if ((current.definition_writes ?? null) === stated) return current;
+  const next = withDefinitionWrites(current, stated);
+  await writeBinding(home, next);
+  return next;
 }
 
 export interface FolderIdentity {
@@ -155,7 +185,8 @@ function isBinding(value: unknown): value is CheckoutBinding {
     typeof record.principal_id === "string" &&
     (record.state === "hydrating" || record.state === "ready") &&
     typeof record.folder_identity?.dev === "number" &&
-    typeof record.folder_identity?.ino === "number"
+    typeof record.folder_identity?.ino === "number" &&
+    (record.definition_writes === undefined || record.definition_writes === "allowed" || record.definition_writes === "refused")
   );
 }
 

@@ -210,18 +210,33 @@ Superbee app, by the person.
 ## Refusals that belong to the person
 
 Some commands are refused in a hosted checkout with "do this in the Superbee app". Examples:
-artifacts and `doc verify`. Tell the person what to do in the app. Editing Kinds or recipes is
-refused too, and the app cannot do it either: a hosted bundle's Kinds cannot be changed from a
-checkout. Kinds are designed in a local or Git bundle before it is published. Do not work around a
-refusal by editing files, using another command, or copying the bundle somewhere else. Taking a
-bundle out of hosted is `superbee export` (below), and only when the person asks for it.
+artifacts and `doc verify`. Tell the person what to do in the app. Editing Kinds (`kind`) or
+applying recipes (`recipe add`, `recipe evolve`) depends on what the host says at checkout and at
+each `sync`:
+
+- Where the host allows this person to change the bundle's model, those commands run, and `sync`
+  sends the changed files under `conventions/` like any document. The host checks every change
+  against the bundle's documents: a Kind change the documents do not fit comes back `refused`
+  (`definition_incompatible`) with findings that name the rule, the field and the documents, and
+  the file stays. Fix those documents; the sync that sends them sends the Kind change again. A
+  recipe that installs anything besides Kind conventions (Views, References) is refused.
+- Where the host says the person may not, the refusal says so: ask whoever manages access to the
+  bundle. Do not suggest a workspace admin role; the permission is managed per person.
+- Where the host says nothing, a hosted bundle's Kinds cannot be changed from a checkout, and the
+  app cannot do it either: Kinds are designed in a local or Git bundle before it is published.
+
+Do not work around a refusal by editing files, using another command, or copying the bundle
+somewhere else. Taking a bundle out of hosted is `superbee export` (below), and only when the
+person asks for it.
 
 `checkout` adds the folder to the workspace catalog, where `catalog list` shows it with
 `home: hosted`. The local MCP app (`superbee mcp`) serves it through the folder, by that label or
 with the session opened in it: a document written through a View lands in the folder and reaches
 the host at the next `superbee sync`. A write sync could not send (a View save, a convention, a
 retype, a document over the size limit, a change to `verified`) is refused before the file
-changes; View saves, conventions and verification are for the person to do in the Superbee app. With a checkout of a bundle on this
+changes; View saves, conventions and verification are for the person to do in the Superbee app.
+The local MCP app never writes conventions, even where the person may change the model: that
+goes through the `kind` and `recipe` commands. With a checkout of a bundle on this
 machine, work through the folder, not also through the hosted connector's tools for that bundle.
 
 `sync_busy` means another command is working, or is just taking or releasing the lock: wait,

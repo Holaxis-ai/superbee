@@ -47,6 +47,8 @@ import {
   releaseCheckout,
   writeBinding,
   type CheckoutBinding,
+  type DefinitionWrites,
+  withDefinitionWrites,
 } from "../hosted/binding.js";
 import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, type HostedIdentity, type HostedSyncClient } from "../hosted/client.js";
 import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from "../hosted/refusals.js";
@@ -442,7 +444,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   }
   await assertStandaloneFolder(folder);
 
-  const { identity, reader, listed, workspace, reference } = await connectHostedBundle(typed, target, values.workspace, deps, resume);
+  const { identity, reader, listed, workspace, reference, definitionWrites } = await connectHostedBundle(typed, target, values.workspace, deps, resume);
   const canonical = await canonicalFolder(folder);
   let createdFolder = false;
   const placed = new Map<string, string>();
@@ -474,7 +476,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       }
       const identityNow = await folderIdentity(canonical);
       if (!identityNow) throw new CliError("RUNTIME", `${canonical} disappeared during checkout`, { help: "retry the same command" });
-      const binding: CheckoutBinding = {
+      const binding: CheckoutBinding = withDefinitionWrites({
         schema: 1,
         checkout_id: newCheckoutId(),
         path: canonical,
@@ -489,7 +491,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         created_at: new Date(deps.auth.now()).toISOString(),
         state: "hydrating",
         folder_identity: identityNow,
-      };
+      }, definitionWrites);
       await writeBinding(deps.auth.home, binding);
       let store: FileJournaledBackend | undefined;
       try {
@@ -585,6 +587,8 @@ export interface HostedBundleConnection {
   readonly reference: HostedBundleReference;
   /** The signed-in account's client, naming no workspace. */
   readonly client: HostedSyncClient;
+  /** What the capabilities answer said about model changes (`null`: it did not say); the binding records it. */
+  readonly definitionWrites: DefinitionWrites | null;
 }
 
 /**
@@ -652,7 +656,7 @@ export async function connectHostedBundle(
   if (ids.length > Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.bound.documents)) throw tooLarge(reference, target, ids.length);
   assertProjectable(ids, bundleId, target);
 
-  return { identity, reader, listed, workspace: tenantId ?? workspace, reference, client };
+  return { identity, reader, listed, workspace: tenantId ?? workspace, reference, client, definitionWrites: capabilities.definitionWrites };
 }
 
 /** Catalog labels tried for a checkout: the bundle id, then `-2` to `-9` when another entry holds it. */

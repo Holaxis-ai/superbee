@@ -47,6 +47,12 @@ export interface HostedCapabilities {
   readonly root: Readonly<{ content: string; version: string }> | null;
   /** How long the host keeps a request identity, in milliseconds (stated, or the thirty-day default). */
   readonly operationsRetentionMs: number;
+  /**
+   * Whether the caller may change this bundle's model (its Kind conventions) through the identified
+   * writes: `null` when the host does not say (a host or workspace without model changes), else
+   * what it says. Any value other than `"allowed"` reads as `"refused"`.
+   */
+  readonly definitionWrites: "allowed" | "refused" | null;
 }
 
 /** The retention window assumed for a host that states none: thirty days. */
@@ -220,6 +226,7 @@ export function decodeHostedCapabilities(value: unknown): HostedCapabilities {
     paged,
     root,
     operationsRetentionMs: retention ?? DEFAULT_OPERATIONS_RETENTION_MS,
+    definitionWrites: body.definitionWrites === undefined ? null : body.definitionWrites === "allowed" ? "allowed" : "refused",
   });
 }
 
