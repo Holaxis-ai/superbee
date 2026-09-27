@@ -166,6 +166,18 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("history-200-content", send("history", { bundleId: BUNDLE, documentId: "notes/via", limit: 1, before: 2, includeContent: true }));
   await observe("history-200-document-not-found", send("history", { bundleId: BUNDLE, documentId: "notes/absent" }));
   await observe("history-400-invalid-input", send("history", { bundleId: BUNDLE, documentId: "notes/via", extra: true }));
+  // Operations by id: the listing, another bundle's, history run by id and the run refusals.
+  const history = (documentId: string, bundleId = BUNDLE, operationId = "documents.history.v1", inputBundle = bundleId) => ({ bundleId, operationId, input: { bundleId: inputBundle, documentId } });
+  await observe("operations-200", send("operations", { bundleId: BUNDLE }));
+  await observe("operations-404-bundle-not-found", send("operations", { bundleId: "nope.a" }));
+  await observe("run-200-ok", send("run", history("notes/via")));
+  // The envelope names the workspace; the input keeps the bare id.
+  await observe("run-200-ok-qualified", send("run", history("notes/via", `tenant-a/${BUNDLE}`, "documents.history.v1", BUNDLE)));
+  await observe("run-200-document-not-found", send("run", history("notes/absent")));
+  await observe("run-200-bundle-not-found", send("run", history("notes/via", "nope.a")));
+  await observe("run-400-unknown-operation", send("run", { ...history("notes/via"), operationId: "documents.replace.v1" }));
+  await observe("run-400-invalid-input", send("run", history("notes/via", BUNDLE, "documents.history.v1", "ro.a")));
+  await observe("unknown-route-404", send("nope", {}));
   await observe("write-400-invalid-via", send("create", create("notes/x"), { requestId: identity(23), via: "Claude Code" }));
   host.hook = (call) => (call.requestId === identity(21) ? { kind: "unknown" } : undefined);
   await observe("create-200-write-outcome-unknown", send("create", create("notes/unknown"), { requestId: identity(21) }));
@@ -211,6 +223,37 @@ test("the contract catches the read answer the fake used to give, and a wrong er
   // A history row's keys are grammar: a row named with other keys (`revision`, `at`) is another answer.
   const history = golden.get("history-200-ok")!.response.body;
   assert.notDeepEqual(bodyShape(history.replaceAll('"seq"', '"revision"').replaceAll('"timestamp"', '"at"')), bodyShape(history));
+});
+
+/** The operations exchanges the fake answers with the host's exact bytes (the golden requests, sent to the fake's bundle). */
+const OPERATIONS_BY_VALUE = ["operations-200", "operations-404-bundle-not-found", "run-200-document-not-found", "run-200-bundle-not-found", "run-400-unknown-operation", "run-400-invalid-input", "unknown-route-404"];
+
+test("the fake answers the operations goldens' requests with the host's status, headers and bytes, and runs history as /history answers it", async () => {
+  const host = new FakeHost();
+  const post = (route: string, body: string) =>
+    host.fetch(`${host.origin}${route}`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${host.token}` }, body });
+  const ours = (body: string) => body.replaceAll('"notes.a"', JSON.stringify(BUNDLE));
+  for (const name of OPERATIONS_BY_VALUE) {
+    const exchange = golden.get(name)!;
+    const response = await post(exchange.route, ours(exchange.request.body));
+    assert.equal(response.status, exchange.response.status, name);
+    assert.deepEqual(Object.fromEntries(Object.keys(exchange.response.headers).map((header) => [header, response.headers.get(header)])), exchange.response.headers, `${name}: headers`);
+    assert.equal(await response.text(), exchange.response.body, `${name}: body bytes`);
+  }
+  // History run by id is the /history answer, byte for byte, as run-200-ok is history-200-ok.
+  const [id] = [...host.docs.keys()];
+  const run = await post("/sync/v1/run", JSON.stringify({ bundleId: BUNDLE, operationId: "documents.history.v1", input: { bundleId: BUNDLE, documentId: id } }));
+  const direct = await post("/sync/v1/history", JSON.stringify({ bundleId: BUNDLE, documentId: id }));
+  assert.equal(run.status, 200);
+  assert.equal(await run.text(), await direct.text());
+  assert.equal(golden.get("run-200-ok")!.response.body, golden.get("history-200-ok")!.response.body);
+  // An old gateway answers both routes with the family's unknown route.
+  const old = new FakeHost({ operations: false });
+  for (const route of ["operations", "run"]) {
+    const response = await old.fetch(`${old.origin}/sync/v1/${route}`, { method: "POST", headers: { Authorization: `Bearer ${old.token}` }, body: JSON.stringify({ bundleId: BUNDLE }) });
+    assert.equal(response.status, 404);
+    assert.equal(await response.text(), golden.get("unknown-route-404")!.response.body);
+  }
 });
 
 test("the fake answers every golden /sync/v1/export exchange with the host's exact values and bytes", async () => {

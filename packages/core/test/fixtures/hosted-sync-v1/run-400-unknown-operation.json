@@ -1,0 +1,23 @@
+{
+  "name": "run-400-unknown-operation",
+  "description": "An id the family does not run by id (a write): the same bytes as an id that does not exist.",
+  "route": "/sync/v1/run",
+  "rows": [
+    "refusal 400 unknown_operation"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"operationId\":\"documents.replace.v1\",\"input\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\",\"expectedVersion\":\"sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4\",\"frontmatter\":{\"type\":\"Note\"},\"body\":\"not by run\"}}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"unknown_operation\"}}",
+    "truncated": false
+  }
+}

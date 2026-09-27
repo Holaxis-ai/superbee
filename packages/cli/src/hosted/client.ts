@@ -9,15 +9,25 @@ import {
   createFetchCarrier,
   createHostedReadAdapter,
   decodeHistoryAnswer,
+  decodeOperationListing,
+  decodeOperationRun,
+  familyRefusal,
   historyInput,
   HOSTED_READ_BOUNDS,
   HostedCarrierError,
+  isAnswerTooLarge,
+  operationRunBody,
   readRefusal,
+  type HostedAnswer,
   type HostedCarrier,
   type HostedHistoryAnswer,
   type HostedHistoryRequest,
+  type HostedOperationListing,
+  type HostedOperationRefusal,
+  type HostedOperationRun,
   type HostedReadAdapter,
   type HostedReadRoutes,
+  type JsonObject,
 } from "@superbee/core/hosted-transport";
 import { hostedBundleReferenceText, isWorkspaceSlug, parseHostedBundleReference, type HostedBundleReference } from "./reference.js";
 import { isMalformedAnswer, RemoteError } from "@superbee/core";
@@ -66,7 +76,31 @@ export interface HostedSyncClient {
   history(bundleId: string, request: HostedHistoryRequest): Promise<HostedHistoryAnswer>;
   /** The same client, naming its bundles in the workspace with this slug ({@link qualifyingCarrier}). */
   within(slug: string): HostedSyncClient;
+  /**
+   * The reads this host runs by id for one bundle (`<prefix>/operations`). A bundle the host does
+   * not serve to this person is the refusal `bundle_not_found`, as a run answers it.
+   */
+  listOperations(bundleId: string, options?: OperationRouteOptions): Promise<HostedOperationListingAnswer>;
+  /**
+   * One operation, run by id (`<prefix>/run`) in one request, its answer read within
+   * `maximumBytes` (default: `HOSTED_READ_BOUNDS.runBytes`): the operation's data, or its refusal.
+   * The route's own `unknown_operation` (the host does not run this id) and `invalid_input` come
+   * back as refusals too. `input.bundleId` is set to `bundleId`.
+   */
+  runOperation(bundleId: string, operationId: string, input: JsonObject, options?: OperationRouteOptions & { readonly maximumBytes?: number }): Promise<HostedOperationRun>;
 }
+
+/** What a caller adds to the operations routes' answers. */
+export interface OperationRouteOptions {
+  /**
+   * Appended to the help of the `NOT_IMPLEMENTED` a gateway from before the routes is: the
+   * caller's own pointer (a command's typed verbs, say), since the client names no command.
+   */
+  readonly unavailableHelp?: string;
+}
+
+/** A listing, or the refusal of the bundle it was asked for. */
+export type HostedOperationListingAnswer = { readonly ok: true; readonly listing: HostedOperationListing } | { readonly ok: false; readonly refusal: HostedOperationRefusal };
 
 export interface HostedIdentity {
   readonly principalId: string;
@@ -287,19 +321,10 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
     },
     async history(bundleId, request) {
       const route = `${prefix}/history`;
-      let answer;
-      try {
-        answer = await carrier.json(route, historyInput(bundleId, request), controller.signal, { maximum: HOSTED_READ_BOUNDS.historyBytes });
-      } catch (error) {
-        throw hostedFailure(error, target, options.resume);
-      }
-      // A gateway from before the route answers the family's own unknown-route 404, exactly this body.
-      if (answer.status === 404 && isUnknownRoute(answer.body)) {
-        throw new CliError("NOT_IMPLEMENTED", `${target.origin} does not serve document history yet`, {
-          details: { host: target.origin, route, status: 404 },
-          help: `a later release of the host serves it; until then ${cliInvocation()} doc read ${commandToken(request.documentId)} shows the current version`,
-        });
-      }
+      const answer = await send(route, historyInput(bundleId, request), HOSTED_READ_BOUNDS.historyBytes, {
+        message: `${target.origin} does not serve document history yet`,
+        help: `a later release of the host serves it; until then ${cliInvocation()} doc read ${commandToken(request.documentId)} shows the current version`,
+      });
       if (answer.status !== 200) throw hostedFailure(readRefusal(answer), target, options.resume);
       try {
         return decodeHistoryAnswer(request, answer.body, route);
@@ -307,7 +332,67 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
         throw hostedFailure(error, target, options.resume);
       }
     },
+    async listOperations(bundleId, listOptions = {}) {
+      const route = `${prefix}/operations`;
+      const answer = await send(route, { bundleId }, HOSTED_READ_BOUNDS.operationsBytes, operationsMissing(listOptions));
+      if (answer.status !== 200) {
+        // The listing refuses a bundle as capabilities does: a 404 naming the code, never a 200.
+        const refusal = answer.status === 404 ? familyRefusal(answer) : undefined;
+        if (refusal?.code === "bundle_not_found") return { ok: false, refusal };
+        throw hostedFailure(readRefusal(answer), target, options.resume);
+      }
+      try {
+        return { ok: true, listing: decodeOperationListing(answer.body, route) };
+      } catch (error) {
+        throw hostedFailure(error, target, options.resume);
+      }
+    },
+    async runOperation(bundleId, operationId, input, runOptions = {}) {
+      const route = `${prefix}/run`;
+      const answer = await send(route, operationRunBody(bundleId, operationId, input), runOptions.maximumBytes ?? HOSTED_READ_BOUNDS.runBytes, operationsMissing(runOptions));
+      if (answer.status !== 200) {
+        // The route's own refusals of the request, before any operation ran: an id the host does
+        // not run by id, and an envelope or input it refuses. Both are typed, for the caller to word.
+        const refusal = answer.status === 400 ? familyRefusal(answer) : undefined;
+        if (refusal?.code === "unknown_operation" || refusal?.code === "invalid_input") return { ok: false, refusal };
+        throw hostedFailure(readRefusal(answer), target, options.resume);
+      }
+      try {
+        return decodeOperationRun(operationId, answer.body, route);
+      } catch (error) {
+        throw hostedFailure(error, target, options.resume);
+      }
+    },
   };
+
+  /** A gateway from before the operations routes, in words that name no command, then the caller's. */
+  function operationsMissing(routeOptions: OperationRouteOptions): { message: string; help: string } {
+    const help = "a later release of the host offers them";
+    return { message: `${target.origin} does not offer operations by id yet`, help: routeOptions.unavailableHelp ? `${help}; ${routeOptions.unavailableHelp}` : help };
+  }
+
+  /**
+   * One read request of a route a gateway may not have yet. That gateway answers the family's
+   * unknown-route 404, which is `NOT_IMPLEMENTED` in the route's own words. An answer larger than
+   * `maximum` is the host's deterministic answer, not an outage: a non-retryable RUNTIME.
+   */
+  async function send(route: string, input: unknown, maximum: number, missing: { message: string; help: string }): Promise<HostedAnswer> {
+    let answer;
+    try {
+      answer = await carrier.json(route, input, controller.signal, { maximum });
+    } catch (error) {
+      if (isAnswerTooLarge(error)) {
+        throw new CliError("RUNTIME", `${target.origin} answered ${route} with more than ${maximum} bytes`, {
+          details: { host: target.origin, route, code: "result_too_large", maximum, retryable: false },
+        });
+      }
+      throw hostedFailure(error, target, options.resume);
+    }
+    if (answer.status === 404 && isUnknownRoute(answer.body)) {
+      throw new CliError("NOT_IMPLEMENTED", missing.message, { details: { host: target.origin, route, status: 404 }, help: missing.help });
+    }
+    return answer;
+  }
 }
 
 /** The sync family's answer to a route it does not have: `404 {"error":"not_found"}`, nothing else. */

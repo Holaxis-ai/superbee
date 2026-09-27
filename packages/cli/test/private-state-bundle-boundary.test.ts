@@ -575,6 +575,15 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
       + "resolveLocalBundleTarget authority every executed row above exercises",
   },
   { leaf: "docHistory", surface: "--dir", argv: (t) => ["doc", "history", "notes/a", "--dir", t, "--json"] },
+  { leaf: "opList", surface: "--dir", argv: (t) => ["op", "list", "--dir", t, "--json"] },
+  {
+    leaf: "opRun",
+    surface: "--dir",
+    argv: (t) => ["op", "run", "documents.history.v1", "--dir", t, "--json"],
+    // A local bundle has no host operations: op run is NOT_IMPLEMENTED there (exit 2), so the
+    // benign run cannot exit 0; hosted-op.test.ts runs it in a checkout.
+    controlSkip: "a local bundle answers op run NOT_IMPLEMENTED (exit 2); hosted-op.test.ts covers the checkout run",
+  },
   { leaf: "docDelete", surface: "--dir", argv: (t) => ["doc", "delete", "probe/absent", "--dir", t, "--json"] },
   { leaf: "list", surface: "--dir", argv: (t) => ["list", "--dir", t, "--json"] },
   { leaf: "query", surface: "--dir", argv: (t) => ["query", "--dir", t, "--json"] },
@@ -713,6 +722,13 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "new", surface: "--body-file", argv: (t) => ["new", "Context Note", "probe-bf", "--title", "Probe", "--body-file", t, "--dir", ".superbee", "--json"] },
   { leaf: "promote", surface: "<0>", argv: (t) => ["promote", t, "--doc-key", "probe/leak.json", "--dir", ".superbee", "--json"] },
   { leaf: "artifactCreate", surface: "<0>", argv: (t) => ["artifact", "create", t, "--title", "Probe", "--dir", ".superbee", "--json"] },
+  {
+    // The input is read, and guarded, before the folder's home is known.
+    leaf: "opRun",
+    surface: "--input-file",
+    argv: (t) => ["op", "run", "documents.history.v1", "--input-file", t, "--dir", ".superbee", "--json"],
+    controlSkip: "a local bundle answers op run NOT_IMPLEMENTED (exit 2) after reading the input; hosted-op.test.ts reads an ordinary --input-file in a checkout",
+  },
 
   // ── Egress: the target is WRITTEN to. ───────────────────────────────────────
   { leaf: "docRead", surface: "--out", argv: (t) => ["doc", "read", "notes/a", "--out", t, "--dir", ".superbee", "--json"] },

@@ -50,3 +50,25 @@ export async function readExternalFileBytes(file: string, home?: string): Promis
   guardExternalRead(file, home);
   return await fs.readFile(file);
 }
+
+/**
+ * Guarded acquisition of caller-supplied UTF-8 text within `maxBytes`: `null` when the file holds
+ * more, read no further than one byte past the bound.
+ */
+export async function readExternalTextFileWithin(file: string, maxBytes: number, home?: string): Promise<string | null> {
+  guardExternalRead(file, home);
+  const handle = await fs.open(file, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+      if (length > maxBytes) return null;
+    }
+    return buffer.subarray(0, length).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}

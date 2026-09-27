@@ -61,6 +61,25 @@ export interface HostedCarrier {
   stream(path: string, input: unknown, signal: AbortSignal): Promise<HostedStream>;
 }
 
+/**
+ * The cause a carrier's `unavailable` carries when the answer was larger than the request's
+ * `maximum`: the host answered, and the same request gets the same answer, so a reader may report
+ * it as a deterministic refusal rather than an outage. The carrier's code stays `unavailable`.
+ */
+export class HostedAnswerTooLarge extends Error {
+  override readonly name = "HostedAnswerTooLarge";
+  readonly maximum: number;
+  constructor(maximum: number) {
+    super(`the answer is larger than ${maximum} bytes`);
+    this.maximum = maximum;
+  }
+}
+
+/** True when `error` is a carrier failure because the answer exceeded its bound. */
+export function isAnswerTooLarge(error: unknown): boolean {
+  return error instanceof HostedCarrierError && error.cause instanceof HostedAnswerTooLarge;
+}
+
 export class HostedCarrierError extends Error {
   override readonly name = "HostedCarrierError";
   readonly code: "denied" | "unavailable";
@@ -98,7 +117,7 @@ async function readBounded(response: Response, maximum: number): Promise<unknown
       const part = await reader.read();
       if (part.done) break;
       size += part.value.byteLength;
-      if (size > maximum) throw new HostedCarrierError("unavailable");
+      if (size > maximum) throw new HostedCarrierError("unavailable", { cause: new HostedAnswerTooLarge(maximum) });
       chunks.push(part.value);
     }
   } finally {

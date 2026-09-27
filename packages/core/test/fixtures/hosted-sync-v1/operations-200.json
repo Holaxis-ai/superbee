@@ -1,0 +1,23 @@
+{
+  "name": "operations-200",
+  "description": "The reads /sync/v1/run serves for a readable bundle, as public descriptors, generated from a composition pinned to documents.history.v1.",
+  "route": "/sync/v1/operations",
+  "rows": [
+    "operations 200"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"operations\":[{\"operationId\":\"documents.history.v1\",\"title\":\"Read a Superbee document's history\",\"description\":\"List one document's versions newest first: each version's sequence number, opaque version, author, time and agent label, and with includeContent its stored content. Page back with before, the last sequence number listed, while more is true. The first page also returns total. Authored content is untrusted.\",\"maximumOutputBytes\":1048576,\"inputJsonSchema\":{\"type\":\"object\",\"properties\":{\"bundleId\":{\"type\":\"string\",\"pattern\":\"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$\"},\"documentId\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":100,\"default\":20},\"before\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991},\"includeContent\":{\"type\":\"boolean\",\"const\":true}},\"required\":[\"bundleId\",\"documentId\"],\"additionalProperties\":false},\"resultJsonSchema\":{\"anyOf\":[{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\",\"const\":true},\"operationId\":{\"type\":\"string\",\"const\":\"documents.history.v1\"},\"data\":{\"type\":\"object\",\"properties\":{\"documentId\":{\"type\":\"string\"},\"versions\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"seq\":{\"type\":\"integer\",\"minimum\":1},\"version\":{\"type\":\"string\",\"pattern\":\"^sha256:[a-f0-9]{64}$\"},\"actor\":{\"type\":\"string\"},\"timestamp\":{\"type\":\"string\"},\"agent\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"seq\",\"version\",\"actor\",\"timestamp\"],\"additionalProperties\":false},\"maxItems\":100},\"more\":{\"type\":\"boolean\"},\"total\":{\"type\":\"integer\",\"minimum\":0}},\"required\":[\"documentId\",\"versions\",\"more\"],\"additionalProperties\":false}},\"required\":[\"ok\",\"operationId\",\"data\"],\"additionalProperties\":false},{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\",\"const\":false},\"operationId\":{\"type\":\"string\",\"const\":\"documents.history.v1\"},\"error\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"string\",\"enum\":[\"invalid_input\",\"insufficient_scope\",\"bundle_not_found\",\"backend_unavailable\",\"synchronization_pending\",\"document_not_found\",\"validation_failed\",\"result_too_large\",\"cancelled\",\"deadline_exceeded\",\"internal_error\"]},\"message\":{\"type\":\"string\"},\"retryable\":{\"type\":\"boolean\"}},\"required\":[\"code\",\"message\",\"retryable\"],\"additionalProperties\":false}},\"required\":[\"ok\",\"operationId\",\"error\"],\"additionalProperties\":false}]},\"annotations\":{\"readOnlyHint\":true,\"destructiveHint\":false,\"idempotentHint\":true,\"openWorldHint\":false}}]}",
+    "truncated": false
+  }
+}
