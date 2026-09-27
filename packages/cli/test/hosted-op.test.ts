@@ -126,6 +126,52 @@ test("a read that only a test-local listing names runs with no OSS change, its i
   assert.deepEqual(paths(h.host), ["/sync/v1/whoami", "/sync/v1/run"]);
 });
 
+test("a checkout naming its workspace sends <workspace>/<bundle-id> in each envelope and the bare id in the run's input", async () => {
+  const workspaces = [
+    { tenantId: "tenant-a", slug: "north" },
+    { tenantId: "tenant-b", slug: "south" },
+  ];
+  const host = new FakeHost({ tenants: ["tenant-a", "tenant-b"], workspaces, slug: "south" });
+  const home = await mkdtemp(path.join(tmpdir(), "sb-op-home-"));
+  const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-op-cwd-")));
+  const auth = defaultHostedAuthDeps(home, { env: { SUPERBEE_ACCESS_TOKEN: TOKEN }, fetch: async () => assert.fail("no sign-in") });
+  await checkout([`south/${BUNDLE}`, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth, cwd, fetch: host.fetch });
+  const h: Harness = { folder: path.join(cwd, "team"), auth, host, id: [...host.docs.keys()][0]! };
+  host.requests.length = 0;
+  const listed = await json(h, ["list"]);
+  assert.deepEqual(
+    (listed.operations as { id: string }[]).map((row) => row.id),
+    ["documents.history.v1"],
+  );
+  assert.deepEqual(host.requests.find((request) => request.path === "/sync/v1/operations")?.body, { bundleId: `south/${BUNDLE}` });
+  host.requests.length = 0;
+  const record = await json(h, ["run", "documents.history.v1", "--input", JSON.stringify({ documentId: h.id })]);
+  assert.equal(record.bundle, BUNDLE);
+  assert.deepEqual(host.requests.find((request) => request.path === "/sync/v1/run")?.body, {
+    bundleId: `south/${BUNDLE}`,
+    operationId: "documents.history.v1",
+    input: { bundleId: BUNDLE, documentId: h.id },
+  });
+});
+
+test("a checkout naming no workspace whose id another workspace gains is told so by op list and op run, not that its bundle was deleted", async () => {
+  const h = await harness();
+  const collided = (async (input: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(input)).pathname;
+    if (route === "/sync/v1/bundles")
+      return Response.json({ ok: true, operationId: "bundles.list.v1", data: { bundles: ["north", "south"].map((slug) => ({ bundleId: `${slug}/${BUNDLE}`, name: BUNDLE, purpose: "", domains: [], lifecycle: "active", sensitivity: "internal" })) } });
+    if (route === "/sync/v1/run") return answering(h, route, "run-200-bundle-not-found")(input, init);
+    if (route === "/sync/v1/operations") return answering(h, route, "operations-404-bundle-not-found")(input, init);
+    return h.host.fetch(input, init);
+  }) as typeof fetch;
+  for (const argv of [["list"], ["run", "documents.history.v1", "--input", JSON.stringify({ documentId: h.id })]]) {
+    const error = await rejects(() => run(h, argv, collided));
+    assert.equal(error.code, "CONFLICT", argv[0]);
+    assert.equal(error.details?.reason, "ambiguous_bundle", argv[0]);
+    assert.deepEqual(error.details?.references, [`north/${BUNDLE}`, `south/${BUNDLE}`]);
+  }
+});
+
 test("op list names the host's reads with their inputs and provenance, and omits the reads the folder answers", async () => {
   const h = await harness();
   const read = { ...historyDescriptor(), operationId: "documents.read.v1", title: "Read a document" };

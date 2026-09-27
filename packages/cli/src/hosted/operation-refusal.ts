@@ -24,8 +24,9 @@ export interface OperationRefusalContext {
 
 /**
  * The CLI error a refusal means: a bundle the host no longer serves is the checkout's conflict, as
- * sync reports it (`bundleAbsent`: an id now in two of the person's workspaces says so); `invalid_input` is the caller's USAGE; `document_not_found` is NOT_FOUND; every
- * other code goes through the hosted client's one translation, retryable when the kernel says so.
+ * sync reports it (`bundleAbsent`: an id now in two of the person's workspaces says so);
+ * `invalid_input` is the caller's USAGE; `document_not_found` is NOT_FOUND; every other code goes
+ * through the hosted client's one translation, retryable when the kernel says so.
  */
 export async function operationRefusalError(refusal: HostedOperationRefusal, context: OperationRefusalContext): Promise<unknown> {
   const { binding, target, subject } = context;

@@ -171,6 +171,8 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("operations-200", send("operations", { bundleId: BUNDLE }));
   await observe("operations-404-bundle-not-found", send("operations", { bundleId: "nope.a" }));
   await observe("run-200-ok", send("run", history("notes/via")));
+  // The envelope names the workspace; the input keeps the bare id.
+  await observe("run-200-ok-qualified", send("run", history("notes/via", `tenant-a/${BUNDLE}`, "documents.history.v1", BUNDLE)));
   await observe("run-200-document-not-found", send("run", history("notes/absent")));
   await observe("run-200-bundle-not-found", send("run", history("notes/via", "nope.a")));
   await observe("run-400-unknown-operation", send("run", { ...history("notes/via"), operationId: "documents.replace.v1" }));
