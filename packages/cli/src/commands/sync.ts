@@ -66,13 +66,29 @@ export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<
   }
   // The conflict verbs are one grammar for both homes: on a Git board they read the copy a
   // converged sync saved and finish its reconcile chain. The deletion verbs stay hosted-only.
-  if (requestsHostedOnlyVerb(argv)) throw hostedOnlyVerbError();
+  if (requestsHostedOnlyVerb(argv)) throw hostedOnlyVerbError(await targetHome(argv, deps.cwd ?? process.cwd(), home), argv);
   if (requestsConflictVerb(argv)) {
     await gitConflictVerb(argv, deps);
     return;
   }
   await gitSync(argv, deps);
 }
+
+/**
+ * The home a deletion verb is refused in: a Git board, or else a local bundle. A target that does
+ * not resolve is left to the refusal's own words (local).
+ */
+async function targetHome(argv: readonly string[], cwd: string, home: string): Promise<"local" | "git"> {
+  let root: string;
+  try {
+    root = (await resolveLocalBundleTarget(dirArgument(argv), cwd)).canonicalRoot;
+  } catch (error) {
+    if (error instanceof CliError) return "local";
+    throw error;
+  }
+  return (await bundleHomeAt(root, { home })).home === "git" ? "git" : "local";
+}
+
 
 /**
  * The unbound checkout copy this sync targets: a local bundle (not a Git board) whose folder

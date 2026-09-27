@@ -65,10 +65,8 @@ const SYNC_ENVELOPE = ["home", "sent", "received", "conflicts", "held", "next"] 
  * Keyed `<step>/<surface>/<home>`. Only ever shrinks; a PR that makes a cell hold deletes its row.
  */
 const KNOWN_GAPS: Readonly<Record<string, { readonly slice: string; readonly failure: Failure }>> = {
-  // S4: `sync --json` has a different shape in each home.
-  "sync/cli/git": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
-  "sync/cli/local": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
-  "sync/cli/hosted": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
+  // Empty since S4: every cell holds, so the scenario is enforced end to end. A later slice that
+  // extends the step table with a cell that does not hold yet pins it here.
 };
 
 // ---------------------------------------------------------------------------------------------

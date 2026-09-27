@@ -84,6 +84,7 @@ import {
 import type { BoundBoardOwner } from "../../bound-board-owner.js";
 import { recoverBoundBoardOwner } from "../../bound-board-recovery.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
+import { syncEnvelope, withSyncEnvelope } from "../../sync-outcomes.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -349,7 +350,8 @@ async function syncInTree(run: SyncRun): Promise<void> {
   }
   const hookHint = await hookInstallHintOnce(key, run.inv, run.deps.hookInstalled);
   if (hookHint) rec.hint = hookHint;
-  run.stdout(render(rec, run.mode));
+  // An in-tree bundle rides the code branch: this reports what is incoming, and moves nothing.
+  run.stdout(render(withSyncEnvelope(rec, syncEnvelope("git")), run.mode));
 }
 
 /**
@@ -442,8 +444,10 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
   const { values } = parseSyncArgs(argv);
   if (values.help) return { kind: "help" };
   if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined || values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined) {
-    throw new CliError("USAGE", "--inspect, --resolve, --doc, --accept-deletes, --restore-deletes and --take-host-deletions apply to a hosted checkout; this folder is not one", {
-      help: `for a Git board, see incoming changes with: ${inv} sync --show-incoming <id>`,
+    // `superbee sync` routes the conflict verbs (both homes) and the hosted-only verbs before the
+    // Git sync runs; only a caller that invokes the Git sync directly reaches this.
+    throw new CliError("USAGE", `--inspect, --resolve and --doc are handled by '${inv} sync' (the one conflict grammar for Git boards and hosted checkouts); --accept-deletes, --restore-deletes and --take-host-deletions apply to a hosted checkout only`, {
+      help: `${inv} sync --inspect --doc <id>`,
     });
   }
 
@@ -599,7 +603,7 @@ function provisionPhase(run: SyncRun): SyncBoard | null {
     return { boardPath: run.owner.bundleRoot, key: run.owner.stateKey, outcome: { kind: "already", boardPath: run.owner.bundleRoot } };
   }
   const emptyState = (rec: Record<string, unknown>): null => {
-    run.stdout(render(rec, run.mode));
+    run.stdout(render(withSyncEnvelope(rec, syncEnvelope("local")), run.mode));
     return null;
   };
   const outcome = provisionBoardWorktree(run.dir, { allowLocalBranch: false, ensureIgnore: true });
@@ -745,12 +749,14 @@ async function deltaPhase(board: SyncBoard, baseline: SyncBaseline): Promise<Syn
  * a PARTIAL envelope LEADING with the safety message, then throws `asHandled` so the bin wrapper
  * sets the exit code without a second (conflicting) error envelope.
  */
-async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta): Promise<number> {
-  if (run.pullOnly) return 0;
+async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta): Promise<{ commits: number; documents: number }> {
+  if (run.pullOnly) return { commits: 0, documents: 0 };
   const ahead = unpushedCount(board.boardPath) ?? 0;
+  // The documents the push sends: every one the unpushed commits change, this run's or earlier.
+  const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), currentHead(board.boardPath)).map((change) => change.docId)).size : 0;
   try {
     push(board.boardPath);
-    return ahead;
+    return { commits: ahead, documents: outgoing };
   } catch (err) {
     const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
     const warning = pushFailureMessage(classified);
@@ -758,7 +764,7 @@ async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
       board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote,
       classified.details,
     );
-    run.stdout(render(partial, run.mode));
+    run.stdout(render(withSyncEnvelope(partial, syncEnvelope("git", { received: delta.originDelta.length })), run.mode));
     await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
     throw asHandled(new CliError(classified.code, warning, { details: classified.details }));
   }
@@ -772,16 +778,16 @@ async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
  */
 async function receiptPhase(
   run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta,
-  pushedCount: number, establishAlreadyNote: string | undefined,
+  pushed: { commits: number; documents: number }, establishAlreadyNote: string | undefined,
 ): Promise<void> {
   await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
   const hookHint = await hookInstallHintOnce(board.key, run.inv, run.deps.hookInstalled);
   const receipt = buildSyncReceipt({
-    outcome: board.outcome, commitDocs: commitResult.docs, pushedCount,
+    outcome: board.outcome, commitDocs: commitResult.docs, pushedCount: pushed.commits,
     originDelta: delta.originDelta, limit: run.limit,
     establishAlreadyNote, reanchorNote: delta.reanchorNote, hookHint,
   });
-  run.stdout(render(receipt, run.mode));
+  run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { sent: pushed.documents, received: delta.originDelta.length })), run.mode));
 }
 
 async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {
@@ -802,7 +808,7 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   // A plain binding is a normal selected bundle, never a board owner.  Keep sync's supported
   // local-only/no-op result without probing an enclosing private or invoking checkout.
   if (run.route?.kind === "bound-local") {
-    stdout(render({ sync: "nothing to sync" }, run.mode));
+    stdout(render(withSyncEnvelope({ sync: "nothing to sync" }, syncEnvelope("local")), run.mode));
     return;
   }
 
@@ -856,6 +862,6 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   const commitResult = await commitPhase(board, run.pullOnly);
   await pullPhase(run, board, commitResult);
   const delta = await deltaPhase(board, baseline);
-  const pushedCount = await pushPhase(run, board, commitResult, delta);
-  await receiptPhase(run, board, commitResult, delta, pushedCount, establishAlreadyNote);
+  const pushed = await pushPhase(run, board, commitResult, delta);
+  await receiptPhase(run, board, commitResult, delta, pushed, establishAlreadyNote);
 }
