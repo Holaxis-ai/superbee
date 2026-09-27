@@ -65,8 +65,6 @@ const SYNC_ENVELOPE = ["home", "sent", "received", "conflicts", "held", "next"] 
  * Keyed `<step>/<surface>/<home>`. Only ever shrinks; a PR that makes a cell hold deletes its row.
  */
 const KNOWN_GAPS: Readonly<Record<string, { readonly slice: string; readonly failure: Failure }>> = {
-  // S3: plain `catalog list` shows folders only.
-  "discover-remote/cli/hosted": { slice: "S3", failure: { missing: [UNCHECKED] } },
   // S4: `sync --json` has a different shape in each home.
   "sync/cli/git": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
   "sync/cli/local": { slice: "S4", failure: { missing: [...SYNC_ENVELOPE] } },
@@ -432,11 +430,24 @@ const STEPS: readonly Step[] = [
     homes: ["hosted"],
     exempt: true,
     async run() {
+      // Signed in, plain `catalog list` also names the hosted bundles with no folder here.
       const run = await listing();
-      const entries = (JSON.parse(run.stdout) as { entries: { label: string; folder?: unknown }[] }).entries;
-      const row = entries.find((entry) => entry.label === UNCHECKED && entry.folder === null);
-      return { failure: row ? null : { missing: [UNCHECKED] }, output: run.stdout, network: run.network };
+      const hosted = (JSON.parse(run.stdout) as { hosted?: { bundles: { bundle_id: string; folder: unknown; checkout: string }[] }[] }).hosted ?? [];
+      const row = hosted.flatMap((host) => host.bundles).find((bundle) => bundle.bundle_id === UNCHECKED && bundle.folder === null);
+      return { failure: row && /checkout team\.archive --host/.test(row.checkout) ? null : { missing: [UNCHECKED] }, output: run.stdout, network: run.network };
     },
+  },
+  {
+    name: "discover-remote",
+    surface: "mcp",
+    homes: ["hosted"],
+    exempt: true,
+    run: () =>
+      mcpCell(async () => {
+        const listed = (await (workspaceListing ??= callTool("list_workspaces", {}).then((result) => result.structuredContent))) as { reachable?: { id: string; home: string; command: string }[] };
+        const row = (listed.reachable ?? []).find((entry) => entry.id === UNCHECKED);
+        return row?.home === "hosted" && /checkout team\.archive --host/.test(row.command) ? null : { missing: [UNCHECKED] };
+      }),
   },
   {
     name: "start",

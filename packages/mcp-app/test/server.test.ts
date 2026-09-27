@@ -283,6 +283,49 @@ async function callWorkspaceList(
   }
 }
 
+test("list_workspaces names reachable workspaces with no folder here: host text stripped, malformed ones dropped, capped, and never hiding the folders", async () => {
+  const folder = { id: `bnd_${"0".repeat(32)}`, label: "planning", available: true };
+  const call = async (reachable: McpWorkspaceResolver["reachable"]) => {
+    const server = createMcpAppServer({ workspaceResolver: { list: async () => [folder], open: async () => { throw new Error("not used"); }, ...(reachable ? { reachable } : {}) } });
+    const client = new Client({ name: "reachable-test", version: "test" }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      return (await client.callTool({ name: LIST_WORKSPACES_TOOL_NAME, arguments: {} })) as { isError?: boolean; structuredContent: { workspaces: unknown[]; reachable?: { id: string; name: string; command: string }[]; reachable_notes?: string[] } };
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  };
+  const good = { id: "team.archive", name: "Archive", home: "hosted" as const, location: "https://hosted.example", command: "superbee checkout team.archive --host hosted.example" };
+  const result = await call(async () => ({
+    workspaces: [
+      { ...good, name: "\u001b[31mArchive\u202e evil" },
+      { ...good, id: "blank", name: "\u200b\u0007" },
+      { ...good, id: "bad\u001bid" },
+      { ...good, id: "cmd", command: "superbee checkout x\u001b[2J" },
+      { ...good, id: "long", command: `superbee checkout ${"x".repeat(400)}` },
+      { ...good, id: "extra", unexpected: true } as never,
+      ...Array.from({ length: 60 }, (_, index) => ({ ...good, id: `bundle.${index}` })),
+    ],
+    notes: ["hosts \u202eone\u001b[0m could not be asked"],
+  }));
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.workspaces.length, 1, "the folders are listed");
+  const reachable = result.structuredContent.reachable!;
+  assert.equal(reachable[0]!.name, "[31mArchive evil", "control and format characters are stripped from host text");
+  assert.equal(reachable.length, 50, "capped");
+  assert.deepEqual(reachable.filter((entry) => ["blank", "bad\u001bid", "cmd", "long", "extra"].includes(entry.id)), [], "malformed entries are dropped, never rewritten");
+  assert.deepEqual(result.structuredContent.reachable_notes, ["hosts one[0m could not be asked"]);
+  // A resolver whose listing fails still lists the folders.
+  const failing = await call(async () => {
+    throw new Error("host down");
+  });
+  assert.equal(failing.structuredContent.workspaces.length, 1);
+  assert.equal(failing.structuredContent.reachable, undefined);
+});
+
 test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", async (t) => {
   let openCalls = 0;
   const resolver: McpWorkspaceResolver = {

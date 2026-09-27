@@ -40,6 +40,7 @@ import { wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/ho
 import type { GitBoardFacts } from "../bundle-home.js";
 import { digestOf, findPathCollision, fold } from "./projection.js";
 import { unsendable, utf8 } from "./sync-scan.js";
+import { stripHostText } from "@superbee/core";
 
 /** The host's bounds for one creation (hosted `src/person-bundle-create.ts`). */
 export const PUBLISH_BOUNDS = Object.freeze({
@@ -150,13 +151,8 @@ const HOSTED_KIND_WRITE = Object.freeze({ strict: true, persistActor: true, prod
 
 /** The host refuses control and format characters (bidi overrides, zero-width) in an author. */
 function cleanAuthor(author: string): string {
-  // The host bounds it at 200 UTF-16 units; whole characters are kept, never half a surrogate pair.
-  let out = "";
-  for (const char of author.replace(/[\p{Cc}\p{Cf}]/gu, "").trim()) {
-    if (out.length + char.length > 200) break;
-    out += char;
-  }
-  return out.trim() || "unknown";
+  // The host bounds it at 200 UTF-16 units.
+  return stripHostText(author, 200) || "unknown";
 }
 
 interface HistoryOptions {

@@ -42,6 +42,8 @@ export {
   createMcpBundleContext,
   MCP_WORKSPACE_HOMES,
   type McpWorkspaceHome,
+  type McpReachableWorkspace,
+  type McpReachableListing,
   type McpBundleContext,
   type McpBundleContextOptions,
   type McpWorkspaceResolver,

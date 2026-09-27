@@ -29,6 +29,7 @@ import { assertAllowedInHostedCheckout } from "../src/hosted/refusals.js";
 import { servedBundle } from "../src/hosted/served-bundle.js";
 import { createCatalogMcpWorkspaceResolver } from "../src/mcp-workspace-resolver.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
+import { seedHostedSession } from "./support/hosted-session.js";
 
 interface Checkout {
   home: string;
@@ -262,4 +263,108 @@ test("checkout takes the next free catalog label when the bundle id is already a
     [BUNDLE, "local", other],
     [`${BUNDLE}-2`, "hosted", folder],
   ]);
+});
+
+// ------------------------------------------------------------------------ one discovery (S3)
+
+/** `catalog list --json` with the checkout's home and the fake's fetch for the host's routes. */
+async function listCatalog(c: Checkout, extra: string[] = [], auth: HostedAuthDeps = defaultHostedAuthDeps(c.home, { env: {}, fetch: async () => { throw new Error("no sign-in may start"); } }), fetch: typeof c.host.fetch = c.host.fetch): Promise<Record<string, unknown>> {
+  let out = "";
+  await catalog(["list", ...extra, "--json"], { stdout: (text) => void (out += text), home: () => c.home, auth, fetch });
+  return JSON.parse(out) as Record<string, unknown>;
+}
+
+test("catalog list: signed out it lists the folders alone and asks no host; signed in it adds the hosted bundles with no folder here", async () => {
+  const c = await hostedCheckout();
+  // No stored sign-in (the checkout used an environment token): exactly the folders, no request.
+  const signedOut = await listCatalog(c);
+  assert.deepEqual(signedOut, await listCatalog(c, ["--local"]));
+  assert.equal("hosted" in signedOut, false);
+  assert.equal(c.host.requests.length, 0);
+  // An expired session with nothing to refresh it is signed out too: nothing starts a sign-in.
+  await seedHostedSession(c.home, { host: HOST, accessToken: TOKEN, expiresAtMs: 0 });
+  assert.equal("hosted" in (await listCatalog(c)), false);
+  assert.equal(c.host.requests.length, 0);
+
+  // An access token in the environment that is for another host: that host is not asked, and
+  // nothing is said about it.
+  const otherHostToken = defaultHostedAuthDeps(c.home, { env: { SUPERBEE_ACCESS_TOKEN: new FakeHost({ origin: "https://other.example" }).token }, fetch: async () => { throw new Error("no sign-in may start"); } });
+  assert.deepEqual(await listCatalog(c, [], otherHostToken), signedOut);
+  assert.equal(c.host.requests.length, 0);
+
+  // Signed in: the bundles the host lists that have no folder here, each with its checkout command;
+  // an id two of the person's workspaces hold gets none (checkout refuses it).
+  const signedIn = new FakeHost({ bundles: [BUNDLE, "team.archive", "team.shared", "team.shared"] });
+  await seedHostedSession(c.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  const merged = await listCatalog(c, [], undefined, signedIn.fetch);
+  assert.deepEqual((merged.entries as unknown[]).length, 1, "the checkout stays one folder entry");
+  const hosted = merged.hosted as { host: string; bundles: { bundle_id: string; folder: null; checkout: string }[] }[];
+  assert.equal(hosted.length, 1);
+  assert.equal(hosted[0]!.host, HOST);
+  assert.deepEqual(hosted[0]!.bundles.map((row) => [row.bundle_id, row.folder]), [["team.archive", null], ["team.shared", null]]);
+  assert.match(hosted[0]!.bundles[0]!.checkout, /checkout team\.archive --host /);
+  assert.equal("checkout" in hosted[0]!.bundles[1]!, false);
+  // --local never asks.
+  signedIn.requests.length = 0;
+  assert.equal("hosted" in (await listCatalog(c, ["--local"], undefined, signedIn.fetch)), false);
+  assert.equal(signedIn.requests.length, 0);
+});
+
+test("catalog list: a host that does not answer in time leaves the folders listed, with one note", async () => {
+  const c = await hostedCheckout();
+  await seedHostedSession(c.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  const hanging = (async (_input: unknown, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)))) as typeof fetch;
+  const started = Date.now();
+  const listed = await listCatalog(c, [], undefined, hanging);
+  assert.ok(Date.now() - started < 4_500, "inside the 3-second budget");
+  assert.equal((listed.entries as unknown[]).length, 1);
+  assert.deepEqual(listed.hosted, []);
+  assert.match(String(listed.note), /were not listed \(no answer in time\); list them with: .*catalog list --hosted --host/);
+});
+
+test("list_workspaces names the reachable hosted bundles with no folder here, from one answer a minute; an ambiguous id points at the full listing", async () => {
+  const c = await hostedCheckout();
+  let asked = 0;
+  let clock = 0;
+  const resolver = createCatalogMcpWorkspaceResolver({
+    home: c.home,
+    now: () => clock,
+    reachable: async () => {
+      asked += 1;
+      return {
+        hosts: [{
+          host: HOST,
+          complete: true,
+          ask: "superbee catalog list --hosted --host hosted.example",
+          bundles: [
+            { bundle_id: "team.archive", name: "Archive", lifecycle: "active", folder: null, ambiguous: false, checkout: "superbee checkout team.archive --host hosted.example" },
+            { bundle_id: "team.shared", name: "Shared", lifecycle: "active", folder: null, ambiguous: true },
+          ],
+        }],
+        notes: ["a note"],
+      };
+    },
+  });
+  assert.deepEqual(await resolver.reachable!(), {
+    workspaces: [
+      { id: "team.archive", name: "Archive", home: "hosted", location: HOST, command: "superbee checkout team.archive --host hosted.example" },
+      { id: "team.shared", name: "Shared", home: "hosted", location: HOST, command: "superbee catalog list --hosted --host hosted.example" },
+    ],
+    notes: ["a note"],
+  });
+  await resolver.reachable!();
+  assert.equal(asked, 1, "reused within the minute");
+  clock = 60_000;
+  await resolver.reachable!();
+  assert.equal(asked, 2);
+  // Such a bundle is not a workspace here: opening it by name is refused like any unknown label.
+  await assert.rejects(resolver.open("team.archive"));
+});
+
+test("catalog --local is only for list, and never with --hosted", async () => {
+  const c = await hostedCheckout();
+  for (const argv of [["add", "x", "--local"], ["resolve", BUNDLE, "--local"], ["list", "--local", "--hosted"]]) {
+    await assert.rejects(catalog(argv, { stdout: () => {}, home: () => c.home }), (error: unknown) => error instanceof CliError && error.code === "USAGE", argv.join(" "));
+  }
 });

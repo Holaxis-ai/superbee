@@ -18,14 +18,13 @@ import { render, renderErrorEnvelope, resolveMode } from "../output.js";
 import { commandFragment, commandToken } from "../command-text.js";
 import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { connectHostedAccount } from "../hosted/account.js";
-import { liveCheckoutFolders } from "../hosted/binding.js";
-import { readBundleListing } from "../hosted/client.js";
+import { hostedBundleRows, reachableHostedBundles } from "../hosted/reachable.js";
 
 export const CATALOG_USAGE = `superbee catalog — register and resolve this user's workspaces
 
 Usage:
   superbee catalog add <label> [--dir <path>]
-  superbee catalog list [--json]
+  superbee catalog list [--local] [--json]
   superbee catalog list --hosted [--host <url>] [--json]
   superbee catalog resolve <label-or-id> [--field path | --json]
 
@@ -35,13 +34,15 @@ is explicit: the catalog never crawls for or silently enrolls workspaces.
 
 Commands:
   add       Register the resolved local bundle under a unique label (idempotent for the same pair)
-  list      List registered workspaces with their currently derived availability and home;
-            --hosted lists the hosted bundles you can reach instead (see below)
+  list      List registered workspaces with their currently derived availability and home,
+            and, while you are signed in, the hosted bundles you can reach that have no folder
+            here; --hosted lists every hosted bundle you can reach instead (see below)
   resolve   Revalidate and return exactly one registered workspace
 
 Options:
   --dir <path>   add: bundle root or project directory with a direct .superbee (or legacy .agentstate-lite) bundle
   --field path   resolve: print only the canonical path plus a newline
+  --local        list: registered workspaces only; never asks a host
   --hosted       list: the hosted bundles you can reach, read live from the host
   --host <url>   list --hosted: Hosted Superbee URL (default: your last sign-in)
   --json         Emit compact JSON instead of TOON
@@ -49,11 +50,17 @@ Options:
 
 Each entry reports its home, derived from the folder now and never stored: local, git (a Git
 board) or hosted (a hosted checkout, with its host, bundle id and checked_out_at). The local MCP
-app serves a hosted entry read-only: its writes cannot sync, so they are refused with 'do this in
-the Superbee app'.
+app serves every entry through its folder; in a hosted checkout it refuses up front a write sync
+cannot send.
 
-'catalog list --hosted' is the one catalog command that reaches the network. It signs in if
-needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then
+Plain 'catalog list' asks a host only while you are signed in to it (the host of your last
+sign-in, and of every checkout here): it never starts a sign-in, waits at most 3 seconds, and
+adds 'hosted', per host, the bundles you can reach that have no folder here, each with the
+'checkout' command that brings it into one. Signed out, or with --local, it lists the folders
+alone and makes no request; when a host cannot be asked in time, a note says so. A hosted bundle
+with a Git source is refused by checkout, which names the Git route instead.
+
+'catalog list --hosted' signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then
 lists every hosted bundle you can reach on that host, across all your workspaces: its bundle_id
 (what 'checkout' takes), name and lifecycle, the folder of your checkout of it here (null when
 there is none; the first, sorted, when there are several), and ambiguous: true when two of your
@@ -64,6 +71,9 @@ host's list stopped at its cap.
 The catalog only selects a target. Pass a resolved path explicitly to ordinary commands with
 --dir; there is no process-global active workspace and no implicit cross-bundle operation.
 `;
+
+/** How long plain `catalog list` waits for the hosted bundles, sign-in refresh included. */
+export const CATALOG_HOSTED_BUDGET_MS = 3_000;
 
 export interface CatalogCliDeps {
   stdout: (s: string) => void;
@@ -123,6 +133,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
           dir: { type: "string" },
           field: { type: "string" },
           hosted: { type: "boolean" },
+          local: { type: "boolean" },
           host: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
@@ -156,6 +167,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
   if (parsed.selection.kind === "unknown") usage(`unknown catalog subcommand: ${parsed.selection.token}`);
   const { subcommand, operand } = parsed.selection.payload!;
   if (subcommand !== "list" && parsed.values.hosted) usage("--hosted is only valid with catalog list");
+  if (subcommand !== "list" && parsed.values.local) usage("--local is only valid with catalog list");
   if (!parsed.values.hosted && parsed.values.host !== undefined) usage("--host is only valid with catalog list --hosted");
   if (subcommand === "add") {
     if (parsed.values.field !== undefined) usage("--field is only valid with catalog resolve");
@@ -182,20 +194,33 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
     if (parsed.values.dir !== undefined) usage("--dir is only valid with catalog add");
     if (parsed.values.field !== undefined) usage("--field is only valid with catalog resolve");
     if (parsed.values.hosted) {
+      if (parsed.values.local) usage("--local and --hosted are mutually exclusive");
       await listHosted(parsed.values, deps, home(), stdout);
       return;
     }
     const entries = await listCatalogEntries(home());
+    // With a live sign-in, the hosted bundles with no folder here are listed too; signed out (or
+    // with --local) nothing is asked, and the listing is the folders alone.
+    const reachable = parsed.values.local
+      ? null
+      : await reachableHostedBundles({ budgetMs: CATALOG_HOSTED_BUDGET_MS, ...(deps.auth ? { auth: deps.auth } : { home: home() }), ...(deps.fetch ? { fetch: deps.fetch } : {}) }).catch(() => null);
+    const firstCheckout = reachable?.hosts.flatMap((host) => host.bundles)[0]?.checkout;
     stdout(
       render(
         {
           schema_version: 1,
           count: entries.length,
           entries,
+          ...(reachable
+            ? {
+                hosted: reachable.hosts.map((host) => ({ host: host.host, complete: host.complete, count: host.bundles.length, bundles: host.bundles })),
+                ...(reachable.notes.length > 0 ? { note: reachable.notes.join("; ") } : {}),
+              }
+            : {}),
           help:
             entries.length === 0
-              ? [`${cliInvocation()} catalog add <label> [--dir <path>]`]
-              : [`${cliInvocation()} catalog resolve <label-or-id> --field path`],
+              ? [`${cliInvocation()} catalog add <label> [--dir <path>]`, ...(firstCheckout ? [firstCheckout] : [])]
+              : [`${cliInvocation()} catalog resolve <label-or-id> --field path`, ...(firstCheckout ? [firstCheckout] : [])],
         },
         resolveMode(parsed.values),
       ),
@@ -248,17 +273,8 @@ async function listHosted(
     { resume },
     { auth, ...(deps.fetch ? { fetch: deps.fetch } : {}) },
   );
-  const listing = readBundleListing(await client.bundles());
-  const folders = await liveCheckoutFolders(auth.home, target);
-  const bundles = [...listing.bundles.values()]
-    .sort((a, b) => (a.row.bundleId < b.row.bundleId ? -1 : a.row.bundleId > b.row.bundleId ? 1 : 0))
-    .map(({ row, workspaces }) => ({
-      bundle_id: row.bundleId,
-      name: row.name,
-      lifecycle: row.lifecycle,
-      folder: folders.get(row.bundleId)?.[0] ?? null,
-      ambiguous: workspaces > 1,
-    }));
+  const { rows: bundles, complete } = await hostedBundleRows(client, target, auth.home);
+  const listing = { complete };
   stdout(
     render(
       {

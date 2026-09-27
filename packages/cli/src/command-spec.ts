@@ -283,9 +283,9 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("catalogList", "catalog list", zero, undefined, DIR_REJECTED_SURFACE),
           publicLeaf("catalogResolve", "catalog resolve", one, undefined, DIR_REJECTED_SURFACE),
         ],
-        usage: "catalog (add <label> [--dir <path>] | list [--hosted [--host <url>]] | resolve <label-or-id> [--field path])",
+        usage: "catalog (add <label> [--dir <path>] | list [--local | --hosted [--host <url>]] | resolve <label-or-id> [--field path])",
         summary:
-          "Register and deterministically resolve this user's explicitly named local workspaces; list --hosted signs in if needed and lists the hosted bundles you can reach (live, never cached), with the folder of any checkout of each here",
+          "Register and deterministically resolve this user's explicitly named local workspaces; while signed in, list also names the hosted bundles you can reach with no folder here (--local skips that); list --hosted signs in if needed and lists every hosted bundle you can reach (live, never cached), with the folder of any checkout of each here",
       },
       {
         id: "init",

@@ -85,6 +85,7 @@ export { readBlob, writeBlob, existsBlob, listBlobs } from "./bundle.js";
 export type { BlobKey, ReadBlobResult } from "./types.js";
 
 export { freshness, staleAfterInstant } from "./freshness.js";
+export { stripHostText } from "./host-text.js";
 
 // OKF v0.2 trust: the one actor grammar and the one `verified` read/append policy every surface
 // (CLI receipts, status counts, list projection, the UI header) derives the trust tier through.
