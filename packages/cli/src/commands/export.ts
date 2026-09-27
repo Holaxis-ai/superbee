@@ -43,6 +43,7 @@ import { hostedCheckoutAt } from "../autopull.js";
 import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { bindingForPath, checkoutLockName, checkoutStoreDir, releaseCheckout, type CheckoutBinding } from "../hosted/binding.js";
+import { isHostedBundleId } from "../hosted/bundle-id.js";
 import { createHostedSyncClient, hostedFailure } from "../hosted/client.js";
 import { connectCheckout, hostedListCommand } from "../hosted/account.js";
 import { hostedCheckoutFor } from "../hosted/sync.js";
@@ -125,7 +126,6 @@ function exportDeps(partial: Partial<ExportDeps>): ExportDeps {
 
 /** The export route's own window (60 s); the default 15 s read deadline would cut a large bundle. */
 const EXPORT_DEADLINE_MS = 60_000;
-const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 /** Paths shown per list in a receipt; the counts are always the totals. */
 const SHOWN = 20;
 const JOURNAL = IN_PLACE_JOURNAL;
@@ -876,7 +876,7 @@ export async function exportCommand(argv: string[], partial: Partial<ExportDeps>
   if (bundleId === undefined && (values.host !== undefined || values.workspace !== undefined)) throw usage("--host and --workspace go with a bundle id; a checkout uses its own");
   if (inPlace && bundleId !== undefined) throw usage("--in-place converts a checkout folder: pass --dir <checkout>, not a bundle id");
   if (!inPlace && values["keep-unsent"]) throw usage("--keep-unsent goes with --in-place");
-  if (bundleId !== undefined && (!BUNDLE_ID.test(bundleId) || bundleId.length > 128)) throw usage(`'${bundleId}' is not a hosted bundle id`);
+  if (bundleId !== undefined && !isHostedBundleId(bundleId)) throw usage(`'${bundleId}' is not a hosted bundle id`);
   const git = values.git === true;
   const resume: CommandText = commandFragment`${cliInvocation()} export${bundleId !== undefined ? commandFragment` ${commandToken(bundleId)}` : commandFragment``}${
     values.dir !== undefined ? commandFragment` --dir ${commandToken(path.resolve(deps.cwd, values.dir))}` : commandFragment``

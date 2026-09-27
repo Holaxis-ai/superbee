@@ -23,8 +23,9 @@ note for you and the person, never an authority: nothing reads it to decide wher
 The checkout is bound by private state, keyed by the folder's path.
 
 When `status`, `home`, `bundle locate` or `session-start` report `copy_of_checkout` (and `home:
-local`), the folder was moved, copied or restored, and it is not bound here. It behaves as a plain
-local bundle, and `sync` refuses it (`unbound_copy`). Tell the person, then:
+local`), the folder was moved, copied or restored, and it is not bound here. Nothing done in it
+reaches the host: `sync` refuses it, and so does every write through the local MCP app
+(`unbound_copy`). Tell the person, then:
 
 - `superbee checkout --adopt <folder>` binds a folder moved on the same disk back to its own
   checkout, with no network. Unsent edits and conflicts carry over.
@@ -33,6 +34,8 @@ local bundle, and `sync` refuses it (`unbound_copy`). Tell the person, then:
   documents the folder lacks and never overwrites a file. A file that differs from the host's
   version becomes a conflict (below), and a document only in the folder is sent as new by the next
   sync, so check its `local_only` list with the person first.
+- If the person wants to keep it as a plain local bundle instead, deleting its
+  `.superbee/checkout.json` does that.
 
 ## Moving a local bundle or Git board to hosted
 
@@ -178,8 +181,8 @@ bundle out of hosted is `superbee export` (below), and only when the person asks
 `home: hosted`. The local MCP app (`superbee mcp`) serves it through the folder, by that label or
 with the session opened in it: a document written through a View lands in the folder and reaches
 the host at the next `superbee sync`. A write sync could not send (a View save, a convention, a
-retype, a document over the size limit) is refused before the file changes; View saves and
-conventions are for the person to do in the Superbee app. With a checkout of a bundle on this
+retype, a document over the size limit, a change to `verified`) is refused before the file
+changes; View saves, conventions and verification are for the person to do in the Superbee app. With a checkout of a bundle on this
 machine, work through the folder, not also through the hosted connector's tools for that bundle.
 
 `sync_busy` means another command is working, or is just taking or releasing the lock: wait,

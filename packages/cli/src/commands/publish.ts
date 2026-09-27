@@ -34,6 +34,8 @@ import { commandFragment, commandToken, type CommandText } from "../command-text
 import { CliError } from "../errors.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { defaultHostedAuthDeps, hostedBundleHost } from "../hosted-auth/session.js";
+import { isHostedBundleId } from "../hosted/bundle-id.js";
+import { unboundCopyRefusal } from "../hosted/refusals.js";
 import { hostedFailure } from "../hosted/client.js";
 import { connectHostedAccount } from "../hosted/account.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
@@ -43,7 +45,7 @@ import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { bindFolderInPlace } from "./checkout-adopt.js";
-import { BUNDLE_ID, connectHostedBundle, registerInCatalog, type CheckoutDeps } from "./checkout.js";
+import { connectHostedBundle, registerInCatalog, type CheckoutDeps } from "./checkout.js";
 
 export const PUBLISH_USAGE = `superbee publish — move a local bundle or Git board to hosted Superbee
 
@@ -112,7 +114,7 @@ export function bundleIdFrom(name: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   const id = (/^[a-z]/.test(words) ? words : `bundle-${words}`).slice(0, 64).replace(/-+$/, "");
-  return BUNDLE_ID.test(id) ? id : "bundle";
+  return isHostedBundleId(id) ? id : "bundle";
 }
 
 /** The root index's `title`, or null. */
@@ -139,10 +141,7 @@ async function assertPublishable(canonical: string, facts: BundleHomeFacts): Pro
     });
   }
   if (facts.copy) {
-    throw new CliError("FORBIDDEN", `${canonical} is a copy of a hosted checkout of '${facts.copy.marker.bundle_id}'; adopt it instead of publishing a second bundle`, {
-      details: { reason: "unbound_copy", folder: canonical, marker_host: facts.copy.marker.host, marker_bundle_id: facts.copy.marker.bundle_id },
-      help: `${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(facts.copy.marker.host)}`,
-    });
+    throw unboundCopyRefusal(facts.copy, "FORBIDDEN", `${canonical} is a copy of a hosted checkout of '${facts.copy.marker.bundle_id}'; adopt it instead of publishing a second bundle`);
   }
   if (facts.home === "git" && facts.board.channel === "in-tree") {
     throw new CliError("FORBIDDEN", `${canonical} is committed with the code on ${facts.board.branch ?? "this branch"}; publishing it would leave two authorities`, {
@@ -304,7 +303,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   const derived = title ?? display.name;
   const name = cleanName(values.name ?? derived) || path.basename(canonical);
   const bundleId = values["bundle-id"] ?? bundleIdFrom(derived);
-  if (!BUNDLE_ID.test(bundleId) || bundleId.length > 128) {
+  if (!isHostedBundleId(bundleId)) {
     throw new CliError("USAGE", `'${bundleId}' is not a hosted bundle id (lower-case letters and digits, joined by . _ or -, starting with a letter)`, {
       help: `${cliInvocation()} publish --to hosted --bundle-id <id>`,
     });

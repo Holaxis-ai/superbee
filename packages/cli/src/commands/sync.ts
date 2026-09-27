@@ -8,19 +8,17 @@ export * from "./sync/show-incoming.js";
 export { ffSwallowToError, inTreeNoBasisNote, syncInTreeRefusalMessage, upstreamHelp } from "../sync-outcomes.js";
 
 import { homedir } from "node:os";
-import path from "node:path";
 
 import { CliError } from "../errors.js";
-import { cliInvocation } from "../invocation.js";
 import { renderUsage } from "../output.js";
 import type { SyncCliDeps } from "../sync-cli.js";
 import { dirArgument, hostedCheckoutFor, hostedSync, HOSTED_SYNC_USAGE, type HostedSyncDeps } from "../hosted/sync.js";
 import { gitConflictVerb, hostedOnlyVerbError, requestsConflictVerb, requestsHostedOnlyVerb } from "./sync/git-conflict.js";
 import { sync as gitSync, SYNC_USAGE } from "./sync/orchestrate.js";
-import { bundleHomeAt, type UnboundCopy } from "../bundle-home.js";
+import { bundleHomeAt, unboundLocalCopyAt, type UnboundCopy } from "../bundle-home.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
-import { commandToken } from "../command-text.js";
 import { writeCheckoutMarker } from "../hosted/marker.js";
+import { unboundCopyRefusal } from "../hosted/refusals.js";
 
 export type UnifiedSyncDeps = Partial<SyncCliDeps> & Partial<HostedSyncDeps>;
 
@@ -53,16 +51,7 @@ export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<
   // `--establish` shares the folder as a Git board: the marker does not stand in its way.
   const copy = argv.includes("--establish") ? null : await unboundCheckoutCopy(argv, deps.cwd ?? process.cwd(), home);
   if (copy) {
-    throw new CliError("USAGE", `${copy.folder} is a copy of a hosted checkout of '${copy.marker.bundle_id}' that is not bound here, so sync has nowhere to send it`, {
-      details: {
-        reason: "unbound_copy",
-        folder: copy.folder,
-        marker_host: copy.marker.host,
-        marker_bundle_id: copy.marker.bundle_id,
-        or: `to use it as a plain local bundle instead, delete ${path.join(copy.folder, ".superbee", "checkout.json")}`,
-      },
-      help: `${cliInvocation()} checkout --adopt ${commandToken(copy.folder)} --host ${commandToken(copy.marker.host)}`,
-    });
+    throw unboundCopyRefusal(copy, "USAGE", `${copy.folder} is a copy of a hosted checkout of '${copy.marker.bundle_id}' that is not bound here, so sync has nowhere to send it`);
   }
   // The conflict verbs are one grammar for both homes: on a Git board they read the copy a
   // converged sync saved and finish its reconcile chain. The deletion verbs stay hosted-only.
@@ -97,8 +86,7 @@ async function targetHome(argv: readonly string[], cwd: string, home: string): P
 async function unboundCheckoutCopy(argv: readonly string[], cwd: string, home: string): Promise<UnboundCopy | null> {
   try {
     const target = await resolveLocalBundleTarget(dirArgument(argv), cwd);
-    const facts = await bundleHomeAt(target.canonicalRoot, { home });
-    return facts.home === "local" && facts.copy ? facts.copy : null;
+    return await unboundLocalCopyAt(target.canonicalRoot, { home });
   } catch {
     return null;
   }

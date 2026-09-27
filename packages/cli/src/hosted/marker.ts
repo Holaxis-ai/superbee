@@ -179,7 +179,7 @@ export function unboundCopyDetail(folder: string, marker: CheckoutMarker): Recor
       host: marker.host,
       bundle_id: marker.bundle_id,
       ...(marker.workspace ? { workspace: marker.workspace } : {}),
-      note: "this folder carries a hosted checkout marker but is not bound here (copied, moved or restored); it behaves as a local bundle until adopted",
+      note: "this folder carries a hosted checkout marker but is not bound here (copied, moved or restored); nothing done in it reaches the host until it is adopted",
       help: `${cliInvocation()} checkout --adopt ${commandToken(folder)} --host ${commandToken(marker.host)}`,
     },
   };
