@@ -11,15 +11,18 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { decode } from "@toon-format/toon";
-import { parseMarkdown } from "@superbee/core";
+import { deleteDoc, parseMarkdown, writeDoc } from "@superbee/core";
 
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { kind } from "../src/commands/kind.js";
+import { recipe } from "../src/commands/recipe.js";
 import { sync } from "../src/commands/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { bindingForPath } from "../src/hosted/binding.js";
+import { openBundle } from "../src/bundle.js";
 import { assertAllowedInHostedCheckout, assertKindOnlyRecipe } from "../src/hosted/refusals.js";
+import { servedBundle } from "../src/hosted/served-bundle.js";
 import { heldPathReason } from "../src/hosted/sync-scan.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 
@@ -211,7 +214,6 @@ test("allowed: views-registry/, a case variant of conventions/ and a Convention 
   const h = await harness("allowed");
   await mkdir(path.join(h.folder, "views-registry"), { recursive: true });
   await writeFile(path.join(h.folder, "views-registry/board.md"), "---\ntype: View\ntitle: Board\n---\n");
-  await mkdir(path.join(h.folder, "Conventions"), { recursive: true }).catch(() => {});
   await writeFile(path.join(h.folder, "notes/kind.md"), "---\ntype: Convention\ngoverns: Idea\n---\n");
   const { rows } = await runSync(h);
   const reason = (id: string) => rows.find((row) => row.id === id)?.reason;
@@ -235,7 +237,7 @@ test("allowed: a recipe that installs anything but Kind conventions is refused b
     pages: [],
     references: [],
     ...extra,
-  });
+  }) as unknown as Parameters<typeof assertKindOnlyRecipe>[2];
   await assertKindOnlyRecipe("recipe add", h.folder, recipe({}), { home: h.home, cwd: h.cwd });
   const error = await assertKindOnlyRecipe("recipe add", h.folder, recipe({ pages: [{ registry: { id: "views-registry/board" }, entry: "views/board.html" }], references: [{ doc: { id: "references/guide" } }] }), { home: h.home, cwd: h.cwd }).then(
     () => assert.fail("the recipe was not refused"),
@@ -247,5 +249,150 @@ test("allowed: a recipe that installs anything but Kind conventions is refused b
   // Outside a checkout it is not a hosted refusal at all.
   const plain = await realpath(await mkdtemp(path.join(tmpdir(), "sb-defs-plain-")));
   await assertKindOnlyRecipe("recipe add", plain, recipe({ references: [{ doc: { id: "references/guide" } }] }), { home: h.home, cwd: h.cwd });
+  await rm(h.home, { recursive: true, force: true });
+});
+
+/** Switch what the fake's capabilities answer says (and so what its writes follow). */
+const answer = (h: Harness, definitionWrites: "allowed" | "refused" | undefined) => {
+  const options = (h.host as unknown as { options: { definitionWrites?: string } }).options;
+  if (definitionWrites === undefined) delete options.definitionWrites;
+  else options.definitionWrites = definitionWrites;
+};
+
+test("allowed recorded: the local MCP app still never writes the model, before the file changes", async () => {
+  const h = await harness("allowed");
+  const bundle = await servedBundle(await openBundle(h.folder), { home: h.home });
+  const before = await readFile(path.join(h.folder, "conventions/note.md"), "utf8");
+  const refused = (error: unknown) => {
+    assert.ok(error instanceof CliError);
+    assert.equal(error.details?.held_reason, "convention_folder");
+    assert.match(error.message, /change it with the kind and recipe commands/);
+    return true;
+  };
+  await assert.rejects(writeDoc(bundle, { id: "conventions/note", frontmatter: { ...NOTE_KIND, fields: { optional: ["stage"] } }, body: "# Note\n" }), refused);
+  await assert.rejects(deleteDoc(bundle, "conventions/note"), refused);
+  // The type half too: a Convention or a View outside the held folders is refused, not left for sync to hold.
+  for (const type of ["Convention", "View"]) {
+    await assert.rejects(writeDoc(bundle, { id: `notes/${type.toLowerCase()}`, frontmatter: { type, title: "X", governs: "X" }, body: "" }), (error: unknown) => error instanceof CliError && error.details?.held_reason === "not_sendable");
+  }
+  assert.equal(await readFile(path.join(h.folder, "conventions/note.md"), "utf8"), before);
+  await rm(h.home, { recursive: true, force: true });
+});
+
+test("allowed: a document its Kind refused lands in the same run once a widening of the Kind lands", async () => {
+  const h = await harness("allowed", PROJECTS);
+  // The document goes out first and its Kind refuses the new value; the widening follows in a later edit.
+  await rewrite(h, "projects/2026/plan", (frontmatter) => void (frontmatter.phase = "paused"));
+  const first = await runSync(h);
+  assert.deepEqual(first.rows.map((row) => [row.id, row.state, row.reason]), [["projects/2026/plan", "refused", "validation_failed"]]);
+  await rewrite(h, "conventions/project", (frontmatter) => void (frontmatter.fields = { optional: ["phase"], values: { phase: ["active", "done", "paused"] } }));
+  h.host.writes.length = 0;
+  const second = await runSync(h);
+  assert.equal(second.error, null, JSON.stringify(second.rows));
+  assert.deepEqual(sentOrder(h), ["replace conventions/project", "replace projects/2026/plan"]);
+  assert.equal(h.host.docs.get("projects/2026/plan")?.frontmatter.phase, "paused");
+  await rm(h.home, { recursive: true, force: true });
+});
+
+test("allowed: a document refused for a Kind no change in the run touches is not resent", async () => {
+  const h = await harness("allowed", { ...PROJECTS, "conventions/note": { ...NOTE_KIND, fields: { optional: ["stage"], values: { stage: ["open"] } } } });
+  await rewrite(h, "projects/2026/plan", (frontmatter) => void (frontmatter.phase = "paused"));
+  await runSync(h);
+  // A Note Kind change lands; the Project document's refusal does not depend on it.
+  await rewrite(h, "conventions/note", (frontmatter) => void (frontmatter.fields = { optional: ["stage", "owner"], values: { stage: ["open"] } }));
+  h.host.writes.length = 0;
+  const { rows } = await runSync(h);
+  assert.deepEqual(sentOrder(h), ["replace conventions/note"]);
+  assert.equal(rows.find((row) => row.id === "projects/2026/plan")?.reason, "validation_failed");
+  await rm(h.home, { recursive: true, force: true });
+});
+
+test("a convention change journaled while allowed waits, held, once the host says refused, and is never resent", async () => {
+  const h = await harness("allowed");
+  await runKind(h, ["field", "Note", "add", "stage", "--required"]);
+  const refusedOnce = await runSync(h);
+  assert.equal(refusedOnce.rows.find((row) => row.id === "conventions/note")?.reason, "definition_incompatible");
+  answer(h, "refused");
+  await rewrite(h, "notes/alpha", (frontmatter) => void (frontmatter.stage = "open"));
+  h.host.writes.length = 0;
+  await runSync(h);
+  assert.deepEqual(sentOrder(h), ["replace notes/alpha"], "a Note landing does not resend the Kind the host would now refuse");
+  // A convention intent journaled while allowed (an interrupted sync's) waits held under refused,
+  // with the neutral wording, and is not sent.
+  answer(h, "allowed");
+  await rewrite(h, "conventions/note", (frontmatter) => void (frontmatter.title = "Notes"));
+  h.host.hook = (call) => (String(call.body.documentId) === "conventions/note" ? { kind: "drop" } : undefined);
+  await runSync(h);
+  h.host.hook = undefined;
+  answer(h, "refused");
+  h.host.writes.length = 0;
+  const waiting = await runSync(h);
+  assert.equal(sentOrder(h).filter((line) => line.endsWith("conventions/note")).length, 0);
+  const row = waiting.rows.find((candidate) => candidate.id === "conventions/note")!;
+  assert.deepEqual([row.state, row.reason], ["held", "convention_folder"]);
+  assert.match(row.message, /you don't have permission to change this bundle's model; ask whoever manages access to it/);
+  await rm(h.home, { recursive: true, force: true });
+});
+
+test("deleted files under held folders are held and no delete is sent", async () => {
+  const h = await harness("refused", { "conventions/note": NOTE_KIND, "views-registry/board": { type: "View", title: "Board" } });
+  await unlink(path.join(h.folder, "conventions/note.md"));
+  await unlink(path.join(h.folder, "views-registry/board.md"));
+  const { rows } = await runSync(h);
+  const held = Object.fromEntries(rows.map((row) => [row.id, [row.state, row.reason]]));
+  assert.deepEqual(held["conventions/note"], ["held", "convention_folder"]);
+  assert.deepEqual(held["views-registry/board"], ["held", "convention_folder"]);
+  assert.equal(h.host.writes.length, 0);
+  // Never held forever: the host's version is placed back, and the next sync is clean.
+  for (const file of ["conventions/note.md", "views-registry/board.md"]) await readFile(path.join(h.folder, file), "utf8");
+  assert.deepEqual((await runSync(h)).rows, []);
+  // views-registry/ is held under every answer.
+  answer(h, "allowed");
+  await unlink(path.join(h.folder, "views-registry/board.md"));
+  h.host.writes.length = 0;
+  const allowed = await runSync(h);
+  assert.equal(allowed.rows.find((row) => row.id === "views-registry/board")?.reason, "convention_folder");
+  assert.equal(h.host.writes.length, 0);
+  await rm(h.home, { recursive: true, force: true });
+});
+
+test("allowed: a retry that fails again leaves the Kind refused, sent exactly twice, and nothing unrelated resends it", async () => {
+  const h = await harness("allowed");
+  await runKind(h, ["field", "Note", "add", "stage", "--required"]);
+  // Only one of the two documents gets the field: the retry is sent, and refused again.
+  await rewrite(h, "notes/alpha", (frontmatter) => void (frontmatter.stage = "open"));
+  const { rows } = await runSync(h);
+  assert.equal(sentOrder(h).filter((line) => line.endsWith("conventions/note")).length, 2);
+  assert.equal(rows.find((row) => row.id === "conventions/note")?.reason, "definition_incompatible");
+  // A write of another type lands: the refused Kind does not depend on it and is not resent.
+  await rewrite(h, "projects/2026/plan", (frontmatter) => void (frontmatter.title = "Plan, revised"));
+  h.host.writes.length = 0;
+  await runSync(h);
+  assert.deepEqual(sentOrder(h), ["replace projects/2026/plan"]);
+  await rm(h.home, { recursive: true, force: true });
+});
+
+test("allowed: recipe add refuses a recipe with a View end to end, before anything is written", async () => {
+  const h = await harness("allowed");
+  const dir = await mkdtemp(path.join(tmpdir(), "sb-defs-recipe-"));
+  await mkdir(path.join(dir, "conventions"), { recursive: true });
+  await mkdir(path.join(dir, "views-registry"), { recursive: true });
+  await mkdir(path.join(dir, "views"), { recursive: true });
+  await writeFile(path.join(dir, "recipe.md"), '---\ntype: Recipe\nid: view-recipe\ntitle: View recipe\nversion: "1"\nsummary: A View package.\ncontent_policy: definitions-only\npages:\n  - registry: views-registry/board.md\n    entry: views/board.html\n---\n');
+  await writeFile(path.join(dir, "conventions/term.md"), "---\ntype: Convention\ngoverns: Term\n---\n# Term\n");
+  await writeFile(path.join(dir, "views-registry/board.md"), "---\ntype: View\ntitle: Board\nentry: views/board.html\naccess: bundle-read\n---\nA board.\n");
+  await writeFile(path.join(dir, "views/board.html"), "<!doctype html><title>Board</title>");
+  const argv = ["add", dir, "--dir", h.folder];
+  await assertAllowedInHostedCheckout("recipe", argv, { home: h.home, cwd: h.cwd });
+  const previousHome = process.env.HOME;
+  process.env.HOME = h.home;
+  try {
+    await assert.rejects(recipe(argv, { stdout: () => {} }), (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN" && /views-registry\/board, views\/board\.html/.test(String(error.details?.artifacts)));
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+  await assert.rejects(readFile(path.join(h.folder, "conventions/term.md"), "utf8"), "nothing was written");
+  await rm(dir, { recursive: true, force: true });
   await rm(h.home, { recursive: true, force: true });
 });

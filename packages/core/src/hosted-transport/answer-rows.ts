@@ -17,6 +17,7 @@
  */
 
 import { isContentVersion } from "../version-transport.js";
+import { stripHostText } from "../host-text.js";
 import type { Version } from "../types.js";
 import type { HostedAnswer } from "./carrier.js";
 
@@ -243,7 +244,12 @@ const FINDING_IDS_SHOWN = 5;
 /** The bound on the findings text: the refusal message is journaled, so it stays small. */
 export const DEFINITION_FINDINGS_TEXT_BYTES = 2048;
 
-const findingText = (value: unknown): string | undefined => (typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined);
+/** One part of a finding as text to show: host text, stripped of control and format characters; absent when not short text. */
+const findingText = (value: unknown): string | undefined => {
+  if (typeof value !== "string" || value.length > 256) return undefined;
+  const text = stripHostText(value, 256);
+  return text.length > 0 ? text : undefined;
+};
 
 /**
  * A model-change refusal's findings (`definitionDetails`) as text a person reads: one clause per
@@ -329,8 +335,9 @@ export function parseWriteResult(raw: unknown, expected: { operationIds: readonl
       (error.code === "deletions_held"
         ? operationId !== DELETE_OPERATION_ID || error.writeState !== "not_applied" || !count(error.deletions) || !count(error.baseline)
         : error.deletions !== undefined || error.baseline !== undefined) ||
-      // The findings ride only on the refusal they explain; their contents are read where they are shown.
-      (error.definitionDetails !== undefined && (error.code !== "definition_incompatible" || error.writeState !== "not_applied"))) throw refuse();
+      // A model-change refusal says nothing was applied; its findings ride on it alone.
+      (error.code === "definition_incompatible" && error.writeState !== "not_applied") ||
+      (error.definitionDetails !== undefined && error.code !== "definition_incompatible")) throw refuse();
   return { ok: false, operationId, error: { ...(error as WriteFailure["error"]) } };
 }
 

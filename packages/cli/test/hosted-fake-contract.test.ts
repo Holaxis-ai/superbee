@@ -40,7 +40,7 @@ const NOT_MODELED: Readonly<Record<string, string>> = Object.freeze({
 const VERSION = /^sha256:[a-f0-9]{64}$/;
 
 /** String keys whose value selects a row or an outcome, and so must equal the host's. */
-const DISCRIMINATORS: ReadonlySet<string> = new Set(["operationId", "code", "writeState", "status", "kind", "surface", "scope", "encoding", "consistency", "error"]);
+const DISCRIMINATORS: ReadonlySet<string> = new Set(["operationId", "code", "writeState", "status", "kind", "surface", "scope", "encoding", "consistency", "error", "definitionWrites", "rule"]);
 
 /**
  * A value's shape: keys and types all the way down, with the value itself wherever it is a

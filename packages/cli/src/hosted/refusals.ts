@@ -12,6 +12,9 @@ import { homedir } from "node:os";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 
+import { isConventionId } from "@superbee/core";
+import type { LoadedRecipe } from "@superbee/core/recipes";
+
 import { resolveLocalBundleTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { commandToken } from "../command-text.js";
@@ -20,7 +23,7 @@ import { bindingForPath, type CheckoutBinding } from "./binding.js";
 import type { UnboundCopy } from "../bundle-home.js";
 import { readBundleListing, type HostedSyncClient } from "./client.js";
 import { bindingHostArgument, checkoutMarkerPath, unboundCopyInfo } from "./marker.js";
-import { heldPathReason, isConventionId, type HeldFile, type HeldReason } from "./sync-scan.js";
+import { DEFINITIONS_REFUSED, heldPathReason, type HeldFile, type HeldReason } from "./sync-scan.js";
 
 type RefusalReason = "not_syncable" | "checkout_target";
 
@@ -44,14 +47,6 @@ interface RefusalRow {
 
 const KINDS_INSTEAD = "to design Kinds, work in a local or Git bundle and publish it";
 
-/**
- * The refusal for a model change by a person the host does not allow (designs/hosted-model-evolution.md
- * section 5.2): neutral, naming no role or organization, since the permission is managed per person.
- */
-export const DEFINITIONS_REFUSED = Object.freeze({
-  why: "you don't have permission to change this bundle's model",
-  instead: "ask whoever manages access to it",
-});
 
 /** The `--doc-key` value in argv, in either spelling; the last one wins, as the parser takes it. */
 function docKey(args: readonly string[]): string | undefined {
@@ -181,7 +176,7 @@ export async function assertAllowedInHostedCheckout(command: string, args: reado
   const binding = await checkoutFor(command, dir, context.home ?? homedir(), context.cwd ?? process.cwd());
   if (!binding) return;
   // A model change by a person the host allows: the command runs, and sync sends the conventions
-  // (a recipe carrying more than Kind conventions is refused by the command, `kindOnlyRecipe`).
+  // (a recipe carrying more than Kind conventions is refused by the command, `assertKindOnlyRecipe`).
   if (row.definitions && binding.definition_writes === "allowed") return;
   const sub = row.words.length > 1 ? args.find((token) => !token.startsWith("-")) : undefined;
   throw hostedCheckoutRefusal(row, sub ? `${command} ${sub}` : command, binding);
@@ -198,12 +193,7 @@ export async function assertAllowedInHostedCheckout(command: string, args: reado
 export async function assertKindOnlyRecipe(
   words: string,
   dir: string | undefined,
-  recipe: {
-    readonly id: string;
-    readonly docs: readonly { readonly id: string }[];
-    readonly pages: readonly { readonly registry: { readonly id: string }; readonly entry: string }[];
-    readonly references: readonly { readonly doc: { readonly id: string } }[];
-  },
+  recipe: Pick<LoadedRecipe, "id" | "docs" | "pages" | "references">,
   context: RefusalContext = {},
 ): Promise<void> {
   const artifacts = [...recipe.docs.map((doc) => doc.id), ...recipe.pages.flatMap((page) => [page.registry.id, page.entry]), ...recipe.references.map((reference) => reference.doc.id)];

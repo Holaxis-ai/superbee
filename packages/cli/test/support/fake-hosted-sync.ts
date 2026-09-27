@@ -69,7 +69,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildKindRegistry, CONVENTIONS_PREFIX, headsDigest, stringifyDoc, validateAgainstKind, type OkfDocument } from "@superbee/core";
+import { buildKindRegistry, CONVENTION_TYPE, headsDigest, isConventionId, stringifyDoc, validateAgainstKind, type OkfDocument } from "@superbee/core";
 import { versionOfBytes } from "@superbee/core/versioning";
 import { isAcceptedDeletionCount, isAgentLabelVia } from "@superbee/core/hosted-transport";
 import { deletionHold } from "../../src/hosted/sync-scan.js";
@@ -377,7 +377,7 @@ export class FakeHost {
         if (body.bundleId !== BUNDLE && String(body.bundleId).startsWith("absent.")) return bundleNotFound();
         assert.equal(body.bundleId, BUNDLE);
         const { response } = fixture(this.capabilities);
-        const answer = this.options.definitionWrites === undefined ? response.body : JSON.stringify({ ...JSON.parse(response.body), definitionWrites: this.options.definitionWrites });
+        const answer = this.definitionWrites === null ? response.body : JSON.stringify({ ...JSON.parse(response.body), definitionWrites: this.definitionWrites });
         return new Response(answer, { status: response.status, headers: response.headers });
       }
       case "heads": {
@@ -595,17 +595,15 @@ export class FakeHost {
     );
   }
 
-  /** What the served capabilities answer says about model changes (the one source the writes follow). */
-  private servedDefinitionWrites(): "allowed" | "refused" | null {
-    if (this.options.definitionWrites === undefined) return null;
-    const answer = JSON.parse(fixture(this.capabilities).response.body) as Record<string, unknown>;
-    return { ...answer, definitionWrites: this.options.definitionWrites }.definitionWrites === "allowed" ? "allowed" : "refused";
+  /** What the capabilities answer says about model changes: the one value the answer serves and the writes follow. */
+  private get definitionWrites(): "allowed" | "refused" | null {
+    return this.options.definitionWrites ?? null;
   }
 
   /** The stored Kinds, as core reads them from `conventions/`, with `change` applied (a document, or a removal). */
   private kinds(change?: { id: string; doc: OkfDocument | null }) {
     const conventions = [...this.docs]
-      .filter(([id, doc]) => id.startsWith(CONVENTIONS_PREFIX) && doc.frontmatter.type === "Convention" && id !== change?.id)
+      .filter(([id, doc]) => isConventionId(id) && doc.frontmatter.type === CONVENTION_TYPE && id !== change?.id)
       .map(([id, doc]) => ({ id, frontmatter: doc.frontmatter, body: doc.body }) as OkfDocument);
     if (change?.doc) conventions.push(change.doc);
     return buildKindRegistry(conventions.sort((a, b) => (a.id < b.id ? -1 : 1)));
@@ -616,16 +614,16 @@ export class FakeHost {
    * null when they admit it and the ordinary write runs. Only with `definitionWrites`.
    */
   private modelRefusal(route: "create" | "replace" | "delete", operationId: string, body: Record<string, unknown>): Record<string, unknown> | null {
-    const served = this.servedDefinitionWrites();
+    const served = this.definitionWrites;
     if (served === null) return null;
     const id = String(body.documentId);
     const folded = id.toLowerCase();
     const under = (folder: string) => folded === folder || folded.startsWith(`${folder}/`);
     const types = [this.docs.get(id)?.frontmatter.type, route === "delete" ? undefined : (body.frontmatter as Record<string, unknown>).type].filter((type) => type !== undefined);
-    const definition = served === "allowed" && id.startsWith(CONVENTIONS_PREFIX);
+    const definition = served === "allowed" && isConventionId(id);
     if (under("views-registry") || types.includes("View")) return failure(operationId, "invalid_input");
-    if (definition ? types.some((type) => type !== "Convention") : under("conventions") || types.includes("Convention")) return failure(operationId, "invalid_input");
-    const stored = (type: string) => [...this.docs].filter(([docId, doc]) => !docId.startsWith(CONVENTIONS_PREFIX) && doc.frontmatter.type === type);
+    if (definition ? types.some((type) => type !== CONVENTION_TYPE) : under("conventions") || types.includes(CONVENTION_TYPE)) return failure(operationId, "invalid_input");
+    const stored = (type: string) => [...this.docs].filter(([docId, doc]) => !isConventionId(docId) && doc.frontmatter.type === type);
     if (definition) {
       // The proof: the Kind this write leaves must hold every stored document of its type.
       const candidate = route === "delete" ? null : ({ id, frontmatter: body.frontmatter, body: String(body.body) } as OkfDocument);

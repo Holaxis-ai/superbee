@@ -1,6 +1,6 @@
 {
   "name": "replace-200-validation-failed-kind",
-  "description": "A document write that its Kind refuses (a value outside the field's enumeration): refused validation_failed with the Kind's diagnostics.",
+  "description": "A document write that its Kind refuses (a value outside the field's enumeration): refused validation_failed, nothing saved.",
   "route": "/sync/v1/replace",
   "rows": [
     "200 validation_failed"

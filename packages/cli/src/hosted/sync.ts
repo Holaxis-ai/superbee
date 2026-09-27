@@ -37,7 +37,7 @@ import {
   type LocalBundle,
   type PullReport,
 } from "@superbee/browser-local";
-import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
+import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
 import {
@@ -72,8 +72,6 @@ import {
   inboundLinks,
   folderMatchesProjection,
   heldPathMessage,
-  heldPathReason,
-  isConventionId,
   readProjection,
   removeGuarded,
   scanCheckout,
@@ -522,14 +520,17 @@ async function withSession<T>(
  * to the bundle's model brackets them (designs/hosted-model-evolution.md section 5.3): convention
  * creates and replaces go before every document, so a widening lands before the documents that
  * use it, and convention deletes go last, after the document deletes that leave the Kind unused.
- * A create in `blocked` is not offered to the push at all, whatever its folder.
+ * A create in `blocked` is not offered to the push at all, whatever its folder; nor, unless the
+ * host answers `allowed` now (`models`), is a convention change journaled while it did.
  */
-function createsFirst(store: JournaledBackend, blocked: ReadonlySet<string>): JournaledBackend {
+function createsFirst(store: JournaledBackend, blocked: ReadonlySet<string>, models: boolean): JournaledBackend {
   return new Proxy(store, {
     get(inner, prop) {
       if (prop === "listIntents") {
         return async (state?: Parameters<JournaledBackend["listIntents"]>[0]) => {
-          const rows = (await inner.listIntents(state)).filter((row) => !(state === "pending" && row.base === null && row.kind !== DOCUMENT_DELETE_KIND && blocked.has(row.target)));
+          const rows = (await inner.listIntents(state)).filter(
+            (row) => !(state === "pending" && ((row.base === null && row.kind !== DOCUMENT_DELETE_KIND && blocked.has(row.target)) || (!models && isConventionId(row.target)))),
+          );
           if (state !== "pending") return rows;
           const deleting = (row: (typeof rows)[number]) => row.kind === DOCUMENT_DELETE_KIND;
           const model = (row: (typeof rows)[number]) => isConventionId(row.target);
@@ -612,7 +613,7 @@ interface Landed {
   readonly types: Set<string>;
   /** The types whose governing convention was written or deleted. */
   readonly governed: Set<string>;
-  /** A convention was replaced or deleted: the registry another convention is proved against moved. */
+  /** A convention was written or deleted: the registry another convention is proved against moved. */
   conventionChanged: boolean;
 }
 
@@ -620,7 +621,7 @@ function recordLanded(landed: Landed, row: IntentRecord, okfVersion: "0.1" | "0.
   const frontmatter = intentFrontmatter(row, okfVersion);
   if (isConventionId(row.target)) {
     if (typeof frontmatter?.governs === "string") landed.governed.add(frontmatter.governs);
-    if (row.base !== null) landed.conventionChanged = true;
+    landed.conventionChanged = true;
   } else if (typeof frontmatter?.type === "string") landed.types.add(frontmatter.type);
 }
 
@@ -632,10 +633,11 @@ function recordLanded(landed: Landed, row: IntentRecord, okfVersion: "0.1" | "0.
  * the documents in a later sync lands the Kind without touching its file. Anything else is not
  * resent: each resend spends the person's sync capacity.
  */
-function definitionRetry(row: IntentRecord, landed: Landed, okfVersion: "0.1" | "0.2" | undefined): boolean {
+function definitionRetry(row: IntentRecord, landed: Landed, okfVersion: "0.1" | "0.2" | undefined, models: boolean): boolean {
   const code = row.refusal?.code;
   if (isConventionId(row.target)) {
-    if (code !== "definition_incompatible") return false;
+    // Only while the host answers `allowed`: otherwise the resend could only be refused.
+    if (!models || code !== "definition_incompatible") return false;
     const governs = intentFrontmatter(row, okfVersion)?.governs;
     return landed.conventionChanged || (typeof governs === "string" && landed.types.has(governs));
   }
@@ -723,7 +725,18 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
       heldSink.value ??= { deletions, baseline };
     },
   });
-  const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)));
+  // A convention change journaled while the host allowed it waits, held, while it does not: the
+  // host would refuse it, and each refusal spends the person's sync capacity.
+  const models = session.capabilities.definitionWrites === "allowed";
+  const withheld: HeldFile[] = models
+    ? []
+    : [...new Set((await store.listIntents("pending")).filter((row) => isConventionId(row.target)).map((row) => row.target))].map((id) => ({
+        id,
+        path: `${id}.md`,
+        reason: "convention_folder" as const,
+        message: heldPathMessage(`${id}.md`, session.capabilities.definitionWrites),
+      }));
+  const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)), models);
   let signInRequired = false;
   const landed: Landed = { types: new Set(), governed: new Set(), conventionChanged: false };
   // A model-change refusal is resent at most once per document per run.
@@ -750,7 +763,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     const model = new Set<string>();
     const requeued = await requeueRefused(store, (row) => {
       if (busyRefusal(row)) return true;
-      if (retried.has(row.target) || !definitionRetry(row, landed, session.okfVersion)) return false;
+      if (retried.has(row.target) || !definitionRetry(row, landed, session.okfVersion, models)) return false;
       model.add(row.target);
       return true;
     });
@@ -758,7 +771,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     for (const id of requeued) if (model.has(id)) retried.add(id);
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions, via };
+  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via };
 }
 
 /**
@@ -1401,10 +1414,7 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
 /** Refuse a file sync cannot send as the resolved version. */
 async function assertSendable(session: Session, id: string, file: string, bytes: Buffer, resumeCommand: CommandText): Promise<void> {
   const stored = await session.store.readWithJournal(id);
-  const held =
-    heldPathReason(`${id}.md`, { definitionWrites: session.capabilities.definitionWrites }) === "convention_folder"
-      ? { reason: "convention_folder", message: heldPathMessage(`${id}.md`, session.capabilities.definitionWrites) }
-      : unsendable(id, `${id}.md`, bytes, stored.document?.doc ?? null, { bundleId: session.binding.bundle_id, okfVersion: session.okfVersion }, { definitionWrites: session.capabilities.definitionWrites });
+  const held = unsendable(id, `${id}.md`, bytes, stored.document?.doc ?? null, { bundleId: session.binding.bundle_id, okfVersion: session.okfVersion }, { definitionWrites: session.capabilities.definitionWrites });
   if (held) throw new CliError("CONFLICT", `${file} cannot be sent: ${held.message}`, { details: { reason: held.reason, id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
 }
 

@@ -30,6 +30,9 @@ import { stripHostText } from "../host-text.js";
 import { HostedCarrierError, type HostedAnswer, type HostedCarrier } from "./carrier.js";
 import { decodeHeadsPage, HEADS_PAGE_ATTEMPTS, HeadsPages, isPageRestart, pageRestartDelay, pause, stitchSnapshotPages } from "./paged-reads.js";
 
+/** What a capabilities answer says about changing the bundle's model (its Kind conventions). */
+export type HostedDefinitionWrites = "allowed" | "refused";
+
 /** What the capabilities route states about one bundle, beyond the wire booleans. */
 export interface HostedCapabilities {
   readonly heads: boolean;
@@ -52,7 +55,7 @@ export interface HostedCapabilities {
    * writes: `null` when the host does not say (a host or workspace without model changes), else
    * what it says. Any value other than `"allowed"` reads as `"refused"`.
    */
-  readonly definitionWrites: "allowed" | "refused" | null;
+  readonly definitionWrites: HostedDefinitionWrites | null;
 }
 
 /** The retention window assumed for a host that states none: thirty days. */

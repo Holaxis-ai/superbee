@@ -209,7 +209,13 @@ test("200 definition_incompatible carries the findings; the transport's refusal 
   );
   const body = JSON.parse(exchange.response.body) as { error: Record<string, unknown> };
   // The details ride only on the refusal they explain: on another code or write state the envelope is not admitted.
-  for (const bad of [{ ...body, error: { ...body.error, code: "validation_failed" } }, { ...body, error: { ...body.error, writeState: "unknown" } }]) {
+  const { definitionDetails: _details, ...bareError } = body.error;
+  for (const bad of [
+    { ...body, error: { ...body.error, code: "validation_failed" } },
+    { ...body, error: { ...body.error, writeState: "unknown" } },
+    // A model-change refusal always says nothing was applied, with or without its findings.
+    { ...body, error: { ...bareError, writeState: "unknown" } },
+  ]) {
     assert.throws(() => parseWriteResult(bad, expected));
     assert.equal(classifyWriteAnswer({ status: 200, body: bad, headers: new Headers() } as HostedAnswer, expected).row.answer, "200 other");
   }
@@ -220,6 +226,8 @@ test("200 definition_incompatible carries the findings; the transport's refusal 
   assert.equal(classifyWriteAnswer({ status: 200, body: extended, headers: new Headers() } as HostedAnswer, expected).row.answer, "200 definition_incompatible");
   assert.equal(definitionFindingsText(extended.error.definitionDetails), "instance_invalid on Kind 'Note' field 'stage' (KIND_FIELD_MISSING): 1 document, notes/one");
   for (const unreadable of [undefined, null, "x", { findings: "x" }, { findings: [{}] }]) assert.equal(definitionFindingsText(unreadable), "");
+  // Host text: control and format characters never reach the journal or the terminal.
+  assert.equal(definitionFindingsText({ findings: [{ rule: "instance_invalid", type: "No\u001b[31mte\u202e", instances: { count: 1, ids: ["a\u0007b"] } }] }), "instance_invalid on Kind 'No[31mte': 1 document, ab");
   const many = { version: 1, findings: [{ rule: "convention_removed_in_use", conventionId: "conventions/note", type: "Note", instances: { count: 40, ids: Array.from({ length: 16 }, (_, n) => `notes/${n}`) } }], truncated: true };
   assert.equal(definitionFindingsText(many), "convention_removed_in_use on Kind 'Note': 40 documents, notes/0, notes/1, notes/2, notes/3, notes/4, ...; and more");
   // The text stays within its bound however large the host's findings (16 findings, every part at 256).
