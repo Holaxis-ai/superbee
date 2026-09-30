@@ -32,7 +32,7 @@ import {
   SKILL_CAPABILITY_PATTERNS,
   SKILL_COMMAND_RESOURCES,
 } from "../src/distribution-resources.js";
-import { renderNpm } from "../src/skill-render.js";
+import { renderNpm, renderDevin } from "../src/skill-render.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(here, "../../..");
@@ -261,11 +261,18 @@ test("the npm Skill progressively discloses one focused modeling reference", () 
   assert.match(renderedNpm, /Read only what the accepted work requires/);
 });
 
-test("site publishing routes to one Portal authority with explicit access and write choices", () => {
+test("private Portal guidance is internal-only and preserves both generated projections", () => {
   const guide = "https://github.com/Holaxis-ai/superbee-portal/blob/main/docs/publishing-guide.md";
-  assert.equal(renderedNpm.split(guide).length - 1, 1);
-  assert.match(renderedNpm, /local\/Git snapshots or hosted authority, public or protected reads, and a separate authenticated-write path/);
-  assert.doesNotMatch(renderedNpm, /\$REFS\/publishing-guide/);
+  const internal = renderDevin();
+  assert.doesNotMatch(renderedNpm, /superbee-portal|Portal publishing guide/);
+  assert.equal(internal.split(guide).length - 1, 1);
+  assert.match(internal, /For internal Holaxis site publishing/);
+  assert.match(internal, /local\/Git snapshots or hosted authority, public or protected reads, and a separate authenticated-write path/);
+  assert.ok(internal.split("\n").length <= 109);
+  for (const [file, expected] of [["packages/superbee/SKILL.md", renderedNpm], [".cognition/skills/superbee/SKILL.md", internal]] as const) {
+    assert.equal(readFileSync(path.join(REPO_ROOT, file), "utf8"), expected);
+  }
+  assert.equal(internal.replace(/^For internal Holaxis site publishing.*$/m, "Read only what the accepted work requires."), renderedNpm);
 });
 
 test("the focused modeling reference calibrates structure and pins a verified delivery loop", () => {
