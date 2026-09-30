@@ -42,6 +42,21 @@ or runtime state into snapshots. A later refresh requires an explicit reviewed c
 Both the new and previous pinned commits must be present in the producer's Git objects when
 refreshing; missing old objects block replacement, rather than trusting the old digest label.
 
+Catchable replacement failures restore the previous target. Abrupt process termination such as
+SIGKILL cannot run that rollback: the target may be absent while the parent directory preserves
+`.package-verification-<id>.previous`, `.package-verification-<id>`, and the target's `.export-lock`.
+Retry refuses the stale lock. No automatic recovery or deletion authority is implied.
+
+For this crash state, first confirm the writer has stopped and identify the exact intended target
+and previous producer commit from the interrupted invocation. Use the canonical producer checker
+with `--check --target <preserved-previous-directory>` to verify that backup's inventory, digests,
+and actual source bytes at its recorded commit; require that commit to equal the intended previous
+commit. Restore only that verified backup by renaming it into the still-missing intended target.
+Check the restored target against the producer again. Only then remove the matching staged
+directory and owned stale `.export-lock`, and retry with the same expected previous commit. If the
+target is present, a backup is ambiguous, or provenance cannot be established, retain all bytes
+and stop for operator inspection. Never clear a lock merely because a retry failed.
+
 `verifySnapshotIntegrity` proves local bytes and inventory only. `verifySnapshotProvenance` compares
 those bytes against actual Git objects in the canonical producer repository at the pinned commit.
 Consumer CI performs that comparison before installation; a digest record and SHA label alone are
