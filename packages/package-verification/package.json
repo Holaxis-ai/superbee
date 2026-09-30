@@ -1,0 +1,11 @@
+{
+  "name": "@superbee/package-verification",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Dependency-free build-only package verification primitives.",
+  "exports": {".": "./src/harness.mjs", "./preflight": "./src/preflight.mjs", "./snapshot": "./src/snapshot.mjs"},
+  "scripts": {"test": "node --test test/*.test.mjs"},
+  "engines": {"node": ">=20"}
+}
