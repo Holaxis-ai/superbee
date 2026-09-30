@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -78,9 +78,10 @@ export async function exportSnapshot({ source, target, commit, expected }) {
   assert.equal((await git(source, ["rev-parse", "HEAD"])).trim(), commit, "export requires exact producer checkout");
   assert.equal((await git(source, ["status", "--porcelain"])).trim(), "", "export requires clean producer checkout");
   const bytes = await producerBytes(source, commit);
+  const producerRoot = await realpath((await git(source, ["rev-parse", "--show-toplevel"])).trim());
   await noSymlinks(target);
   const absolute = path.resolve(target), parent = path.dirname(absolute);
-  assert.ok(!absolute.startsWith(`${path.resolve(source)}${path.sep}`), "snapshot cannot overwrite producer content");
+  assert.ok(absolute !== producerRoot && !absolute.startsWith(`${producerRoot}${path.sep}`), "snapshot cannot overwrite producer content");
   await mkdir(parent, { recursive: true });
   const lock = `${absolute}.export-lock`;
   await mkdir(lock);

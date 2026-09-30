@@ -20,6 +20,7 @@ test("snapshot export is exact, owned and refuses stale/dirty/symlink targets", 
       const destination = path.join(source,"packages/package-verification",file);
       await mkdir(path.dirname(destination),{recursive:true}); await cp(path.join(packageRoot,file),destination);
     }
+    await writeFile(path.join(source,".gitignore"),"out/\n");
     await git(source,"init");await git(source,"remote","add","origin","https://github.com/Holaxis-ai/superbee.git");
     await git(source,"add",".");await git(source,"commit","-m","fixture source");
     const commit = await git(source,"rev-parse","HEAD");
@@ -29,6 +30,9 @@ test("snapshot export is exact, owned and refuses stale/dirty/symlink targets", 
     await assert.rejects(exportSnapshot({source,target,commit,expected:"0".repeat(40)}));
     assert.deepEqual(await readFile(path.join(target,"snapshot.json")),before);
     await exportSnapshot({source,target,commit,expected:commit});
+    const sourceAlias=path.join(workspace.root,"source-alias");await symlink(source,sourceAlias);
+    await assert.rejects(exportSnapshot({source:sourceAlias,target:path.join(source,"out/snapshot"),commit}),/overwrite producer/);
+    await assert.rejects(exportSnapshot({source,target:source,commit}),/overwrite producer/);
     await writeFile(path.join(source,"dirty"),"untracked");
     await assert.rejects(exportSnapshot({source,target,commit,expected:commit}),/clean producer/);
     await rm(path.join(source,"dirty"));
