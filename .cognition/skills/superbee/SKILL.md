@@ -75,7 +75,7 @@ copied command manual. Use `--body-file` for multiline Markdown.
 
 Focused shipped material is available under `$REFS/recipes/` for portable examples,
 `$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop.
-Read only what the accepted work requires.
+Before publishing a site, use the [Portal publishing guide](https://github.com/Holaxis-ai/superbee-portal/blob/main/docs/publishing-guide.md) to choose local/Git snapshots or hosted authority, public or protected reads, and a separate authenticated-write path. Read only what the accepted work requires.
 
 ## Make the value visible
 

@@ -95,7 +95,7 @@ export function renderNpm(input: {packageName:string;binName:string} = {packageN
   lines.push("");
   lines.push("Focused shipped material is available under `$REFS/recipes/` for portable examples,");
   lines.push("`$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop.");
-  lines.push("Read only what the accepted work requires.");
+  lines.push("Before publishing a site, use the [Portal publishing guide](https://github.com/Holaxis-ai/superbee-portal/blob/main/docs/publishing-guide.md) to choose local/Git snapshots or hosted authority, public or protected reads, and a separate authenticated-write path. Read only what the accepted work requires.");
   lines.push("");
   lines.push("## Make the value visible");
   lines.push("");

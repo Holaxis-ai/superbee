@@ -261,6 +261,13 @@ test("the npm Skill progressively discloses one focused modeling reference", () 
   assert.match(renderedNpm, /Read only what the accepted work requires/);
 });
 
+test("site publishing routes to one Portal authority with explicit access and write choices", () => {
+  const guide = "https://github.com/Holaxis-ai/superbee-portal/blob/main/docs/publishing-guide.md";
+  assert.equal(renderedNpm.split(guide).length - 1, 1);
+  assert.match(renderedNpm, /local\/Git snapshots or hosted authority, public or protected reads, and a separate authenticated-write path/);
+  assert.doesNotMatch(renderedNpm, /\$REFS\/publishing-guide/);
+});
+
 test("the focused modeling reference calibrates structure and pins a verified delivery loop", () => {
   const reference = readFileSync(
     path.join(REPO_ROOT, "examples/references/modeling-and-delivery.md"),
