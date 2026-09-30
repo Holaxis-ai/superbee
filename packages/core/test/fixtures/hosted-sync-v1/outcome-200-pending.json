@@ -1,0 +1,25 @@
+{
+  "name": "outcome-200-pending",
+  "description": "The lookup of that create's identity: reserved, never settled.",
+  "route": "/sync/v1/outcome",
+  "rows": [
+    "200 pending"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000015",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/unknown\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"new\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"schemaVersion\":1,\"requestId\":\"4a2f9c1e-8b3d-4e6f-9a1b-000000000015\",\"binding\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"status\":\"pending\"}",
+    "truncated": false
+  }
+}

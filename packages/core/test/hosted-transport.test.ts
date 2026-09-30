@@ -15,6 +15,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  readHistoryListing,
+  type HostedHistoryAnswer,
+  type HostedHistoryRequest,
+  type HostedHistoryVersion,
   classifyWriteAnswer,
   createFetchCarrier,
   createHostedReadAdapter,
@@ -31,6 +35,7 @@ import {
   capacityScopeOf,
   HostedCarrierError,
   HostedOutcomeError,
+  isAgentLabelVia,
   OUTCOME_ANSWER_ROWS,
   READ_ANSWER_ROWS,
   UPDATE_ANSWER_ROWS,
@@ -468,6 +473,33 @@ test("whole-document transport: an unsettled transient refusal is settled by one
   assert.deepEqual(requests[1]!.options, { maximum: 2 * 1024 * 1024, writeRequest: REQUEST_ID, binding: BINDING });
 });
 
+test("whole-document transport: a settled busy refusal settles from the answer only when it says not_applied; one whose write state is unknown is looked up", async () => {
+  const intent = intentOf(BASE);
+  const busy = (code: string, writeState: string) => (): HostedAnswer => ({
+    status: 200,
+    headers: new Headers({ "x-superbee-write-settled": REQUEST_ID }),
+    body: { ok: false, operationId: "documents.replace.v1", error: { code, message: "busy", retryable: false, writeState } },
+  });
+  const storedUnknown = (code: string) => (): HostedAnswer => ({
+    status: 200,
+    headers: new Headers(),
+    body: { schemaVersion: 1, requestId: REQUEST_ID, binding: BINDING, status: "refused", result: { ok: false, operationId: "documents.replace.v1", error: { code, message: "busy", retryable: false, writeState: "unknown" } } },
+  });
+  for (const code of ["concurrent_change", "backend_unavailable", "internal_error", "deadline_exceeded", "cancelled"]) {
+    const recorded = transportOver({ "/sync/v1/replace": [busy(code, "not_applied")] }, intent);
+    assert.deepEqual((await recorded.deliver()).outcome, { kind: "refused", code, message: "busy" }, code);
+    assert.deepEqual(recorded.requests.map((request) => request.path), ["/sync/v1/replace"], code);
+    // The write may have landed: the lookup decides, and a committed record is a commit, never a refusal.
+    const landed = transportOver({ "/sync/v1/replace": [busy(code, "unknown")], "/sync/v1/outcome": [fixture("outcome-200-committed")] }, intent);
+    const result = await landed.deliver();
+    assert.equal(result.outcome.kind, "committed", code);
+    assert.deepEqual(landed.requests.map((request) => request.path), ["/sync/v1/replace", "/sync/v1/outcome"], code);
+    // A stored refusal that is not definitive is no evidence: unknown, never refused.
+    const vague = transportOver({ "/sync/v1/replace": [busy(code, "unknown")], "/sync/v1/outcome": [storedUnknown(code), storedUnknown(code), storedUnknown(code)] }, intent);
+    assert.deepEqual((await vague.deliver()).outcome, { kind: "unknown" }, code);
+  }
+});
+
 for (const name of ["update-200-write-outcome-unknown", "update-401-write-outcome-unknown", "update-503-write-outcome-unknown"]) {
   test(`whole-document transport: ${name} may have applied, so the primitive looks it up and settles from the recorded result`, async () => {
     const intent = intentOf(BASE);
@@ -770,4 +802,141 @@ test("fetch carrier: credential, identity and binding headers ride every request
   await assert.rejects(signedOut.json("/sync/v1/heads", {}, new AbortController().signal, { maximum: 1024 }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
   await assert.rejects(carrier.json("/sync/v1/replace", {}, new AbortController().signal, { maximum: 1024, writeRequest: "not-a-uuid" }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
   assert.equal(seen.length, before);
+});
+
+test("via: the agent a client names rides each write and its lookup exactly as the golden exchange sends it, and an invalid token never leaves", async () => {
+  const golden = JSON.parse(readFileSync(path.join(HERE, "fixtures", "hosted-sync-v1", "create-200-ok-via.json"), "utf8")) as Exchange;
+  const sent: { path: string; headers: Headers }[] = [];
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    sent.push({ path: new URL(String(input)).pathname, headers: new Headers(init?.headers) });
+    return new Response(golden.response.body, { status: golden.response.status, headers: golden.response.headers });
+  }) as typeof globalThis.fetch;
+  const carrier = createFetchCarrier({ baseUrl: "https://hosted.example", fetch, credentials: async () => ({ Authorization: "Bearer token" }) });
+  const content = stringifyDoc({ type: "Note" } as never, "via");
+  // The golden request's own identity and binding, so every superbee header can be compared whole.
+  const requestId = golden.request.headers["x-superbee-write-request"]!;
+  const binding = golden.request.headers["x-superbee-checkout"]!;
+  const intent: OperationIntent = { requestId, kind: "document.write", target: "notes/via", base: null, local: versionOfBytes(content), content, createdAt: new Date(NOW).toISOString(), attempts: 0, state: "pending" };
+  const over = (via?: string) => createWholeDocumentTransport({ carrier, bundleId: "notes.a", binding, intentFor: async () => intent, remote: { read: async () => assert.fail("no read"), operationsRetentionMs: async () => 2_592_000_000 }, now: () => NOW, ...(via === undefined ? {} : { via }) });
+  const superbee = (headers: Headers | Record<string, string>) => [...new Headers(headers)].filter(([name]) => name.startsWith("x-superbee-"));
+  // The write carries the same superbee headers the host was sent, the via token included.
+  await over("claude-code").submit(intent);
+  assert.equal(sent[0]!.path, "/sync/v1/create");
+  assert.deepEqual(superbee(sent[0]!.headers), superbee(golden.request.headers));
+  assert.equal(sent[0]!.headers.get("x-superbee-via"), "claude-code");
+  // Its lookup carries it too; without a token, nothing is sent.
+  await over("claude-code").lookup(requestId).catch(() => null);
+  assert.deepEqual([sent[1]!.path, sent[1]!.headers.get("x-superbee-via")], ["/sync/v1/outcome", "claude-code"]);
+  await over().submit(intent);
+  assert.equal(sent[2]!.headers.get("x-superbee-via"), null);
+  // The grammar is the host's: these it accepts, and every token its tests refuse is refused here.
+  for (const via of ["a", "0", "codex", "claude-code", "gpt-5.1", "my_agent", "a".repeat(32)]) assert.equal(isAgentLabelVia(via), true, via);
+  const refused = ["", "Claude-Code", "Codex", "claude code", "a".repeat(33), "superbee", "superbee-cli", "superbee.cli", "superbee_cli", "superbeecli", "a;via=b", "a/b", "claude-code, codex"];
+  // A token the host would refuse is never sent: the transport refuses to be built, the carrier to send.
+  for (const via of refused) {
+    assert.equal(isAgentLabelVia(via), false, via);
+    assert.throws(() => over(via), TypeError, via);
+    await assert.rejects(carrier.json("/sync/v1/create", {}, new AbortController().signal, { maximum: 1024, via }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied", via);
+  }
+  assert.equal(sent.length, 3);
+});
+
+// ── history pages ────────────────────────────────────────────────────────────────────────────
+
+/** A lineage served as the host pages it: newest first, `total` on the first page, content on request. */
+function lineage(length: number, tag = "a") {
+  const rows: HostedHistoryVersion[] = [];
+  const append = (n: number) => {
+    for (let index = 0; index < n; index += 1) {
+      const seq = rows.length + 1;
+      rows.push({ seq, version: `sha256:${(tag + seq.toString(16)).padStart(64, "0").slice(-64)}`, actor: "person:a", timestamp: `2030-01-01T00:00:${String(seq % 60).padStart(2, "0")}.000Z` });
+    }
+  };
+  append(length);
+  const requests: HostedHistoryRequest[] = [];
+  const state = { rows, append, requests, absent: false, onRequest: undefined as ((request: HostedHistoryRequest) => void) | undefined };
+  const read = async (request: HostedHistoryRequest): Promise<HostedHistoryAnswer> => {
+    requests.push(request);
+    state.onRequest?.(request);
+    if (state.absent) return { ok: false, refusal: { code: "document_not_found", message: "gone", retryable: false } };
+    const older = [...state.rows].reverse().filter((row) => request.before === undefined || row.seq < request.before);
+    const versions = older.slice(0, request.limit).map((row) => (request.includeContent ? { ...row, content: `content ${row.seq}` } : row));
+    return { ok: true, page: { documentId: request.documentId, versions, more: older.length > versions.length, ...(request.before === undefined ? { total: state.rows.length } : {}) } };
+  };
+  return { state, read };
+}
+
+const listing = (read: (request: HostedHistoryRequest) => Promise<HostedHistoryAnswer>, wanted: number, extra: { includeContent?: boolean; pageSize?: number } = {}, sleeps: number[] = []) =>
+  readHistoryListing(read, { documentId: "notes/a", wanted, ...extra }, { signal: new AbortController().signal, sleep: async (ms) => void sleeps.push(ms) });
+
+test("history pages: one page is one request; more pages follow `before` and re-read the newest version by its seq", async () => {
+  const one = lineage(3);
+  assert.deepEqual(await listing(one.read, 20), { status: "listed", versions: [...one.state.rows].reverse(), total: 3 });
+  assert.equal(one.state.requests.length, 1);
+
+  const many = lineage(7);
+  const listed = await listing(many.read, 20, { pageSize: 3, includeContent: true });
+  assert.equal(listed.status, "listed");
+  if (listed.status !== "listed") return;
+  assert.deepEqual(listed.versions.map((row) => row.seq), [7, 6, 5, 4, 3, 2, 1]);
+  assert.ok(listed.versions.every((row) => row.content === `content ${row.seq}`), "content passes through on every page");
+  assert.deepEqual(
+    many.state.requests.map(({ limit, before, includeContent }) => [limit, before, includeContent]),
+    [
+      [3, undefined, true],
+      [3, 5, true],
+      [3, 2, true],
+      [1, 8, undefined],
+    ],
+  );
+  // `wanted` bounds the listing, and the last page asks only for what is left.
+  const capped = lineage(7);
+  const five = await listing(capped.read, 5, { pageSize: 3 });
+  assert.deepEqual(five.status === "listed" && [five.versions.length, five.total], [5, 7]);
+  assert.deepEqual(capped.state.requests.map(({ limit, before }) => [limit, before]), [[3, undefined], [2, 5], [1, 8]]);
+});
+
+test("history pages: a write that only appends keeps the listing; a new lineage starts it again, and one that keeps changing is moved", async () => {
+  const appended = lineage(5);
+  appended.state.onRequest = (request) => {
+    if (request.before !== undefined && request.limit > 1) appended.state.append(1);
+  };
+  const kept = await listing(appended.read, 20, { pageSize: 2 });
+  assert.equal(kept.status, "listed");
+  assert.deepEqual(kept.status === "listed" && [kept.total, kept.versions.map((row) => row.seq)], [5, [5, 4, 3, 2, 1]]);
+
+  // Deleted and recreated after the first page of the first attempt: a lineage with other versions.
+  const recreated = lineage(5);
+  let swapped = false;
+  recreated.state.onRequest = (request) => {
+    if (!swapped && request.before !== undefined) {
+      swapped = true;
+      recreated.state.rows.splice(0, recreated.state.rows.length, ...lineage(6, "b").state.rows);
+    }
+  };
+  const sleeps: number[] = [];
+  const again = await listing(recreated.read, 20, { pageSize: 2 }, sleeps);
+  assert.deepEqual(again.status === "listed" && [again.total, again.versions[0]!.version], [6, recreated.state.rows[5]!.version]);
+  assert.equal(sleeps.length, 1, "one pause before starting again");
+
+  const churning = lineage(4);
+  let generation = 0;
+  churning.state.onRequest = (request) => {
+    if (request.before !== undefined && request.limit > 1) churning.state.rows.splice(0, churning.state.rows.length, ...lineage(4, `c${(generation += 1)}`).state.rows);
+  };
+  assert.deepEqual(await listing(churning.read, 20, { pageSize: 2 }), { status: "moved" });
+
+  // A later page that answers document_not_found: the lineage ended between pages.
+  const deleted = lineage(4);
+  deleted.state.onRequest = (request) => void (deleted.state.absent = request.before !== undefined);
+  assert.deepEqual(await listing(deleted.read, 20, { pageSize: 2 }), { status: "moved" });
+});
+
+test("history pages: absence on the first page is the answer, and any other refusal passes through", async () => {
+  const gone = lineage(2);
+  gone.state.absent = true;
+  assert.deepEqual(await listing(gone.read, 20), { status: "absent" });
+  const refusal = { code: "insufficient_scope", message: "no", retryable: false };
+  assert.deepEqual(await listing(async () => ({ ok: false, refusal }), 20), { status: "refused", refusal });
+  await assert.rejects(listing(lineage(1).read, 20, { pageSize: 101 }), RangeError);
 });

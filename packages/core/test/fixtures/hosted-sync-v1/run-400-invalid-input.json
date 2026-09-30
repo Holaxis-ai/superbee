@@ -1,0 +1,23 @@
+{
+  "name": "run-400-invalid-input",
+  "description": "An input naming another bundle than the one the request selects its tenant by.",
+  "route": "/sync/v1/run",
+  "rows": [
+    "refusal 400 invalid_input"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"operationId\":\"documents.history.v1\",\"input\":{\"bundleId\":\"ro.a\",\"documentId\":\"notes/via\"}}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

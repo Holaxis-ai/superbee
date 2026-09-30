@@ -1,0 +1,23 @@
+{
+  "name": "operations-404-bundle-not-found",
+  "description": "The listing for a bundle the bearer cannot reach: the capabilities refusal.",
+  "route": "/sync/v1/operations",
+  "rows": [
+    "refusal 404 bundle_not_found"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"nope.a\"}"
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"bundle_not_found\",\"message\":\"The bundle is unavailable for this operation. Check your bundle access with a workspace administrator.\",\"retryable\":false}}",
+    "truncated": false
+  }
+}

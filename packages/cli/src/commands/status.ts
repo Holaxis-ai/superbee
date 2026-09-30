@@ -66,7 +66,7 @@ import { cliInvocation } from "../invocation.js";
 import { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE } from "../bundle-name.js";
 import { homedir } from "node:os";
 import { realpath } from "node:fs/promises";
-import { bundleHomeAt, gitBoardSyncBlock } from "../bundle-home.js";
+import { bundleHomeAt, gitBoardSyncBlock, unboundCopyOf } from "../bundle-home.js";
 import { commandFragment, commandToken } from "../command-text.js";
 
 export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
@@ -848,7 +848,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const facts = await bundleHomeAt(await realpath(bundle.root), { home });
   if (facts.home === "git") {
     const block = await gitBoardSyncBlock(facts.board);
-    const record: Record<string, unknown> = { home: "git", sync: block, ...out };
+    const record: Record<string, unknown> = { home: "git", sync: block, ...unboundCopyOf(facts), ...out };
     if (block.state !== "clean") {
       record.help = [
         values.dir === undefined
@@ -859,5 +859,5 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     stdout(render(record, resolveMode(values)));
     return;
   }
-  stdout(render({ home: "local", sync: "none (local only)", ...out }, resolveMode(values)));
+  stdout(render({ home: "local", sync: "none (local only)", ...unboundCopyOf(facts), ...out }, resolveMode(values)));
 }

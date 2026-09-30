@@ -53,6 +53,7 @@ import { syncOutcomeError, withSharingDetails } from "../../sync-outcomes.js";
 import { clearStaleCommittedMarker, establishCommitted } from "./establish-committed.js";
 import { assertBundleOutsidePrivateState } from "../../private-state-bundle-boundary.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
+import { syncEnvelope, withSyncEnvelope } from "../../sync-outcomes.js";
 
 export const ESTABLISH_DONE =
   "the shared board is live — the project bundle now syncs over the 'board' branch";
@@ -255,7 +256,8 @@ async function renderEstablished(
   receipt.next_steps = establishNextSteps(inv);
   const hint = await hookInstallHintOnce(key, inv, deps.hookInstalled);
   if (hint) receipt.hint = hint;
-  stdout(render(receipt, mode));
+  // Every document of the snapshot went out on the new board branch.
+  stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { sent: snapshot.docs.length, next: establishNextSteps(inv) })), mode));
   return { already: false };
 }
 

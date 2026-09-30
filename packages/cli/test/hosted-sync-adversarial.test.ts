@@ -510,7 +510,7 @@ test("RF4 sign-in expires after some writes landed: AUTH_REQUIRED, resume sends 
   for (const id of ["notes/alpha", "notes/beta", "notes/gamma"]) assert.equal(applyCount(h, id), 1, id);
 });
 
-test("RF5 locally refused commands in a checkout: Kinds, ui, mcp (a delete now syncs)", async () => {
+test("RF5 locally refused commands in a checkout: Kinds, ui (a delete now syncs; mcp serves the folder and guards its writes)", async () => {
   const h = await harness();
   const refused = async (name: string, args: string[]) => {
     try {
@@ -523,7 +523,6 @@ test("RF5 locally refused commands in a checkout: Kinds, ui, mcp (a delete now s
   const cases: [string, string[]][] = [
     ["kind", ["add", "Thing", "--dir", h.folder]],
     ["ui", ["--dir", h.folder]],
-    ["mcp", ["--dir", h.folder]],
     // Flag-first spellings (`doc --dir X delete`) slip past matchRow, but the CLI's own parser
     // rejects them (RF5b), so they are not probed here.
   ];

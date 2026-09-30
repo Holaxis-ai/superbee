@@ -28,6 +28,7 @@ import {
   FINISH_VIEW_ACTION_TOOL_NAME,
   MCP_DOCUMENT_RESOURCE_URI,
   MCP_VIEW_RESOURCE_URI,
+  LIST_OPERATIONS_TOOL_NAME,
   LIST_VIEWS_TOOL_NAME,
   LIST_WORKSPACES_TOOL_NAME,
   MAX_WORKSPACE_CATALOG_PAGE,
@@ -36,6 +37,7 @@ import {
   RESUME_DURABLE_VIEW_TOOL_NAME,
   RESOLVE_DOCUMENT_TOOL_NAME,
   RESOLVE_LAUNCH_TOOL_NAME,
+  RUN_OPERATION_TOOL_NAME,
   SAVE_TRANSIENT_VIEW_TOOL_NAME,
   SHOW_DOCUMENT_TOOL_NAME,
   SHOW_VIEW_TOOL_NAME,
@@ -282,6 +284,203 @@ async function callWorkspaceList(
     await server.close();
   }
 }
+
+test("list_workspaces names reachable workspaces with no folder here: host text stripped, malformed ones dropped, capped, and never hiding the folders", async () => {
+  const folder = { id: `bnd_${"0".repeat(32)}`, label: "planning", available: true };
+  const call = async (reachable: McpWorkspaceResolver["reachable"]) => {
+    const server = createMcpAppServer({ workspaceResolver: { list: async () => [folder], open: async () => { throw new Error("not used"); }, ...(reachable ? { reachable } : {}) } });
+    const client = new Client({ name: "reachable-test", version: "test" }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      return (await client.callTool({ name: LIST_WORKSPACES_TOOL_NAME, arguments: {} })) as { isError?: boolean; structuredContent: { workspaces: unknown[]; reachable?: { id: string; name: string; command: string }[]; reachable_notes?: string[] } };
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  };
+  const good = { id: "team.archive", name: "Archive", home: "hosted" as const, location: "https://hosted.example", command: "superbee checkout team.archive --host hosted.example" };
+  const result = await call(async () => ({
+    workspaces: [
+      { ...good, name: "\u001b[31mArchive\u202e evil" },
+      { ...good, id: "blank", name: "\u200b\u0007" },
+      { ...good, id: "bad\u001bid" },
+      { ...good, id: "cmd", command: "superbee checkout x\u001b[2J" },
+      { ...good, id: "long", command: `superbee checkout ${"x".repeat(400)}` },
+      { ...good, id: "extra", unexpected: true } as never,
+      ...Array.from({ length: 60 }, (_, index) => ({ ...good, id: `bundle.${index}` })),
+    ],
+    notes: ["hosts \u202eone\u001b[0m could not be asked"],
+  }));
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.workspaces.length, 1, "the folders are listed");
+  const reachable = result.structuredContent.reachable!;
+  assert.equal(reachable[0]!.name, "[31mArchive evil", "control and format characters are stripped from host text");
+  assert.equal(reachable.length, 50, "capped");
+  assert.deepEqual(reachable.filter((entry) => ["blank", "bad\u001bid", "cmd", "long", "extra"].includes(entry.id)), [], "malformed entries are dropped, never rewritten");
+  assert.deepEqual(result.structuredContent.reachable_notes, ["hosts one[0m could not be asked"]);
+  // A resolver whose listing fails still lists the folders.
+  const failing = await call(async () => {
+    throw new Error("host down");
+  });
+  assert.equal(failing.structuredContent.workspaces.length, 1);
+  assert.equal(failing.structuredContent.reachable, undefined);
+});
+
+type OperationsAnswer = { isError?: boolean; content: { type: string; text: string }[]; structuredContent?: Record<string, unknown> };
+
+async function withOperations(
+  resolver: Partial<McpWorkspaceResolver>,
+  body: (call: (name: string, args: Record<string, unknown>) => Promise<OperationsAnswer>, names: string[]) => Promise<void>,
+): Promise<void> {
+  const server = createMcpAppServer({ workspaceResolver: { list: async () => [], open: async () => { throw new Error("not used"); }, ...resolver } });
+  const client = new Client({ name: "operations-test", version: "test" }, { capabilities: {} });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const tools = await client.listTools();
+    assertToolSchemasUse202012(tools.tools);
+    await body(async (name, args) => (await client.callTool({ name, arguments: args })) as OperationsAnswer, tools.tools.map((tool) => tool.name));
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
+const HISTORY_DESCRIPTOR = {
+  operationId: "documents.history.v1",
+  title: "Document history",
+  description: "Lists a document's versions.",
+  maximumOutputBytes: 1048576,
+  annotations: { readOnlyHint: true },
+  inputJsonSchema: { type: "object", properties: { bundleId: { type: "string" }, documentId: { type: "string" } }, required: ["bundleId", "documentId"], additionalProperties: false },
+  resultJsonSchema: { type: "object" },
+};
+
+test("list_operations and run_operation exist only when the resolver offers both methods, and pass the resolver's answers through", async () => {
+  await withOperations({}, async (_call, names) => {
+    assert.equal(names.includes(LIST_OPERATIONS_TOOL_NAME) || names.includes(RUN_OPERATION_TOOL_NAME), false);
+  });
+  await withOperations({ listOperations: async () => ({ ok: true, listing: { operations: [], notes: [] } }) }, async (_call, names) => {
+    assert.equal(names.includes(LIST_OPERATIONS_TOOL_NAME), false, "one method alone registers neither");
+  });
+  const calls: unknown[][] = [];
+  await withOperations(
+    {
+      listOperations: async (...args) => {
+        calls.push(["list", ...args]);
+        return { ok: true, listing: { operations: [HISTORY_DESCRIPTOR], notes: ["dropped the host's operation #2"] } };
+      },
+      runOperation: async (...args) => {
+        calls.push(["run", ...args]);
+        return { ok: true, data: { versions: [{ version: "sha256:1", note: "bell\u0007 and \u202e flip" }] } };
+      },
+    },
+    async (call, names) => {
+      assert.ok(names.includes(LIST_OPERATIONS_TOOL_NAME) && names.includes(RUN_OPERATION_TOOL_NAME));
+      const listed = await call(LIST_OPERATIONS_TOOL_NAME, { workspace: "planning" });
+      assert.deepEqual(listed.structuredContent, {
+        workspace: "planning",
+        operations: [{ ...HISTORY_DESCRIPTOR, inputJsonSchema: { type: "object", properties: { documentId: { type: "string" } }, required: ["documentId"], additionalProperties: false } }],
+        notes: ["dropped the host's operation #2"],
+      });
+      assert.doesNotMatch(listed.content[0]!.text.split("\n")[0]!, /Document history/, "the summary line carries no host text");
+      const ran = await call(RUN_OPERATION_TOOL_NAME, { workspace: "planning", operationId: "documents.history.v1", input: { documentId: "notes/a" } });
+      assert.deepEqual(ran.structuredContent, {
+        workspace: "planning",
+        operationId: "documents.history.v1",
+        result: { versions: [{ version: "sha256:1", note: "bell and  flip" }] },
+        notes: ["removed control and format characters from the host's result"],
+      });
+      const bare = await call(RUN_OPERATION_TOOL_NAME, { workspace: "planning", operationId: "documents.history.v1" });
+      assert.equal(bare.isError, undefined);
+    },
+  );
+  assert.deepEqual(calls, [
+    ["list", "planning"],
+    ["run", "planning", "documents.history.v1", { documentId: "notes/a" }],
+    ["run", "planning", "documents.history.v1", {}],
+  ]);
+});
+
+test("run_operation refuses a malformed id, an oversized input and an unknown field before the resolver is asked", async () => {
+  let asked = 0;
+  await withOperations(
+    {
+      listOperations: async () => ({ ok: true, listing: { operations: [], notes: [] } }),
+      runOperation: async () => {
+        asked += 1;
+        return { ok: true, data: {} };
+      },
+    },
+    async (call) => {
+      for (const args of [
+        { workspace: "planning", operationId: "documents.history" },
+        { workspace: "planning", operationId: "Uppercase.Id.v1" },
+        { workspace: "planning", operationId: "documents.history.v1", input: { documentId: "x".repeat(64 * 1024) } },
+        { workspace: "planning", operationId: "documents.history.v1", extra: true },
+        { workspace: "/etc/passwd", operationId: "documents.history.v1" },
+      ]) {
+        const answer = await call(RUN_OPERATION_TOOL_NAME, args);
+        assert.equal(answer.isError, true, JSON.stringify(args).slice(0, 80));
+      }
+    },
+  );
+  assert.equal(asked, 0);
+});
+
+test("operation stops, host refusals and resolver failures are tool errors in this server's words: no resolver text, links only when safe", async () => {
+  const answers: Array<() => Promise<never> | Promise<unknown>> = [];
+  const next = async () => answers.shift()!();
+  await withOperations(
+    { listOperations: next as never, runOperation: next as never },
+    async (call) => {
+      const run = (operationId = "documents.history.v1") => call(RUN_OPERATION_TOOL_NAME, { workspace: "planning", operationId });
+      const text = (answer: OperationsAnswer) => {
+        assert.equal(answer.isError, true);
+        return answer.content[0]!.text;
+      };
+
+      answers.push(async () => ({ stop: "no_host_operations", home: "git" }));
+      assert.deepEqual((await call(LIST_OPERATIONS_TOOL_NAME, { workspace: "planning" })).structuredContent, {
+        workspace: "planning",
+        operations: [],
+        notes: ["a Git bundle has no host operations; use show_document, list_views and show_view"],
+      });
+      answers.push(async () => ({ stop: "no_host_operations", home: "local" }));
+      assert.match(text(await run()), /is a local bundle: it has no host operations\. Use show_document/);
+      answers.push(async () => ({ stop: "folder_answers", operationId: "documents.read.v1" }));
+      assert.match(text(await run("documents.read.v1")), /answers documents\.read\.v1 from its folder.*show_document/);
+
+      answers.push(async () => ({ stop: "sign_in_required", signInUrl: "https://issuer.example/activate?user_code=ABCD-EFGH", userCode: "ABCD-EFGH" }));
+      assert.equal(
+        text(await run()),
+        "Sign-in to the host of workspace 'planning' is required: ask the person to open https://issuer.example/activate?user_code=ABCD-EFGH and confirm the code ABCD-EFGH, then call run_operation again.",
+      );
+      for (const [signInUrl, userCode] of [["javascript:alert(1)", "ABCD"], ["http://issuer.example/activate", "ABCD"], ["https://issuer.example/\u202eactivate", "ABCD"], ["https://issuer.example/activate", "AB CD\u0007"]]) {
+        answers.push(async () => ({ stop: "sign_in_required", signInUrl, userCode }));
+        const said = text(await run());
+        assert.match(said, /ask the person to sign in to the workspace's host on this machine, then call run_operation again\.$/, signInUrl);
+        assert.doesNotMatch(said, /issuer\.example|javascript/);
+      }
+
+      answers.push(async () => ({ ok: false, refusal: { code: "document_not_found", message: "no \u001b[31mdoc", retryable: false } }));
+      assert.equal(text(await run()), "The host of workspace 'planning' refused documents.history.v1 (document_not_found): no [31mdoc Check the document id; a document created in this workspace reaches the host at its next sync.");
+      answers.push(async () => ({ ok: false, refusal: { code: "unavailable", message: "", retryable: true } }));
+      assert.equal(text(await run()), "The host of workspace 'planning' refused documents.history.v1 (unavailable, retryable).");
+      answers.push(async () => ({ ok: false, refusal: { code: "bundle_not_found", message: "gone", retryable: false } }));
+      assert.match(text(await call(LIST_OPERATIONS_TOOL_NAME, { workspace: "planning" })), /refused the operation listing \(bundle_not_found\): gone The host no longer serves/);
+
+      const failure = Object.assign(new Error("workspace \"planning\" is unavailable at /Users/someone/private/planning"), { code: "TRANSIENT", details: { retryable: true, folder: "/Users/someone/private/planning" }, help: "retry /Users/someone" });
+      answers.push(async () => { throw failure; });
+      assert.equal(text(await run()), "Could not run documents.history.v1 for workspace 'planning' (TRANSIENT, retryable). Retry the same call.");
+      answers.push(async () => { throw Object.assign(new Error("/secret/path"), { code: "lower_case" }); });
+      assert.equal(text(await call(LIST_OPERATIONS_TOOL_NAME, { workspace: "planning" })), "Could not list the host's operations for workspace 'planning'.");
+    },
+  );
+});
 
 test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", async (t) => {
   let openCalls = 0;

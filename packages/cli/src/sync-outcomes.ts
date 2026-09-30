@@ -849,3 +849,57 @@ export function ffSwallowToError(reason: string, inv: CommandPrefix, boardPath?:
       return syncOutcomeError("ff.unclassified", { reason });
   }
 }
+
+// ── One sync receipt shape across homes (designs/seamless-multi-backend-cli, S4) ─────────────────
+
+/** The version of the sync run receipt that carries {@link SYNC_ENVELOPE_KEYS}; the unversioned shape was 1. */
+export const SYNC_RECEIPT_SCHEMA_VERSION = 2;
+/** The keys every sync run receipt carries, in every home and both output modes, after its own keys. */
+export const SYNC_ENVELOPE_KEYS = ["home", "sent", "received", "conflicts", "held", "next"] as const;
+
+export type SyncHome = "local" | "git" | "hosted";
+
+/**
+ * The home-neutral summary of one sync run: documents sent and received, conflicts and held files
+ * left for the person, and what to do next (a hosted receipt's `help`, an establish receipt's
+ * `next_steps`; both keep their own keys too).
+ */
+export interface SyncEnvelope {
+  readonly home: SyncHome;
+  readonly sent: number;
+  readonly received: number;
+  readonly conflicts: number;
+  readonly held: number;
+  readonly next: readonly string[];
+}
+
+/** An envelope with every count not given at zero. */
+export function syncEnvelope(home: SyncHome, counts: Partial<Omit<SyncEnvelope, "home">> = {}): SyncEnvelope {
+  return { home, sent: counts.sent ?? 0, received: counts.received ?? 0, conflicts: counts.conflicts ?? 0, held: counts.held ?? 0, next: counts.next ?? [] };
+}
+
+/**
+ * A sync run receipt with the envelope added, before it is rendered (TOON or JSON alike): every key
+ * the receipt already has stays, in order and unchanged, then `schema_version` and each envelope key
+ * the receipt does not already carry.
+ */
+export function withSyncEnvelope(receipt: Record<string, unknown>, envelope: SyncEnvelope): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...receipt };
+  if (!("schema_version" in out)) out.schema_version = SYNC_RECEIPT_SCHEMA_VERSION;
+  for (const key of SYNC_ENVELOPE_KEYS) if (!(key in out)) out[key] = envelope[key];
+  return out;
+}
+
+/**
+ * The one answer for a sync verb that belongs to another home: `--accept-deletes`,
+ * `--restore-deletes` and `--take-host-deletions` in a Git board or a local bundle (only hosted sync
+ * has a mass-delete guard), and `--establish`, `--pull-only`, `--show-incoming` and the like in a
+ * hosted checkout (it has no Git branch to share or read).
+ */
+export function syncVerbNotApplicable(flags: readonly string[], home: SyncHome, why: string, help: string): CliError {
+  const spelled = flags.map((flag) => "--" + flag);
+  return new CliError("USAGE", `${spelled.join(", ")} ${flags.length === 1 ? "is" : "are"} not applicable in a ${home} bundle: ${why}`, {
+    details: { reason: "not_applicable", home, flags: spelled },
+    help,
+  });
+}

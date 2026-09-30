@@ -65,7 +65,7 @@ import { stringifyDoc } from "@superbee/core/document-codec";
 import { performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
-import { JournalGuardConflict, JournalSnapshotConflict } from "@superbee/core/journaled-backend";
+import { JournalGuardConflict, JournalSnapshotConflict, assertJournalGuard, type JournalGuard, type MetaExpectation } from "@superbee/core/journaled-backend";
 import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
   validateBodyResolutionReceipt, validateBodyRecord, BODY_MODE_KEY, BODY_RUNTIME_LIMITS, jsonBytes, BodyRuntimeError,
   type BodyDeliveryOptions, type BodyRecord, type BodyMode, type BodyResolutionReceipt, type BodySnapshot } from "./body-journal.js";
@@ -181,6 +181,8 @@ function bundleOf(target: LocalTarget): Bundle {
 const BOOTSTRAP_KEY = "bootstrap";
 const SYNC_KEY = "sync";
 const PULL_KEY = "pull";
+/** When the latest acknowledgement settled; see {@link lastKnownDigest}. */
+const ACKNOWLEDGED_KEY = "acknowledged";
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
 /** Meta key for the shared base of one document. */
@@ -251,6 +253,16 @@ export interface SyncControl {
   since?: string;
 }
 
+interface AcknowledgedMarker {
+  at: string;
+  /**
+   * Fresh for every acknowledgement, so each one rewrites the row to a value no earlier one had,
+   * even at the same clock reading: a fenced pull detects an acknowledgement by the row changing.
+   * Absent on rows written by older code.
+   */
+  token?: string;
+}
+
 export interface PullMarker {
   startedAt: string;
   completedAt: string | null;
@@ -261,6 +273,12 @@ export interface PullMarker {
   headsDigest?: string;
   /** The deletions this pull refused to apply; see {@link DeletionRefusal}. */
   refused?: DeletionRefusal;
+  /**
+   * The token of the exact-mode pull that wrote this marker, fresh for every pull, so two pulls
+   * never write the same marker and each can tell whether the marker is still its own. Absent on
+   * markers written by body mode, by an adapter without `journalSnapshotCas`, or by older code.
+   */
+  run?: string;
 }
 
 /** States in which an intent still describes a local edit the authority has not accepted. */
@@ -420,6 +438,13 @@ function acceptsRefusal(refused: DeletionRefusal, accepted: DeletionRefusal | un
  * authority answers the edit with a conflict whose actual version is `null`. A document whose
  * version moved under a plain local write between the read and the deletion is likewise held,
  * as a refresh treats it. This is the one reconciliation pull and a snapshot bootstrap share.
+ *
+ * Given a `fence` (an exact-mode pull's; bootstrap passes none), each deletion is guarded by a
+ * snapshot of the document, its journal, its base, and the fence rows, so it applies only while
+ * the pull still owns its marker and no acknowledgement has settled since the pull marked. A
+ * deletion whose fence no longer holds is not made: the result says `superseded` and nothing
+ * further is deleted. One whose snapshot moved under a fence that still holds is held, and
+ * `moved` says the working copy is not the listing's state unless an unsettled intent holds it.
  */
 async function reconcileDeletions(
   backend: JournaledBackend,
@@ -428,7 +453,8 @@ async function reconcileDeletions(
   accept?: DeletionRefusal,
   premises?: BodyRefreshPremises,
   beforeDelete?: () => Promise<void>,
-): Promise<{ deleted: ConceptId[]; held: ConceptId[]; refused?: DeletionRefusal }> {
+  fence?: PullFence,
+): Promise<{ deleted: ConceptId[]; held: ConceptId[]; refused?: DeletionRefusal; superseded?: true; moved?: true }> {
   const present = await backend.list();
   const candidates = present.filter((id) => !listed.has(id));
   const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
@@ -437,14 +463,17 @@ async function reconcileDeletions(
   if (refused && !acceptsRefusal(refused, accept)) return { deleted: [], held: [], refused };
   const deleted: ConceptId[] = [];
   const held: ConceptId[] = [];
+  let moved = false;
   for (const id of candidates) {
-    const previous = await backend.readMeta<SharedBase>(baseKey(id));
+    const fenced = fence ? await fencedSnapshot(backend, id, fence) : undefined;
+    if (fenced === null) return { deleted, held, superseded: true, ...(moved ? { moved: true } : {}) };
+    const previous = fenced ? fenced.base : await backend.readMeta<SharedBase>(baseKey(id));
     // The premise is the version just listed; a document gone since is answered as absent.
-    const expectedVersion = await localVersion(backend, id);
+    const expectedVersion = fenced ? fenced.version : await localVersion(backend, id);
     try {
       await beforeDelete?.();
       const result = await backend.deleteJournaled(id, {
-        ...(premises ? { guard: premises.guard(id) } : {}),
+        ...(premises ? { guard: premises.guard(id) } : fenced ? { guard: fenced.guard } : {}),
         ...(expectedVersion === null ? {} : { expectedVersion }),
         requireSettled: true,
         removeMeta: [baseKey(id)],
@@ -453,11 +482,18 @@ async function reconcileDeletions(
       if (result.outcome === "held") held.push(id);
       else if (result.outcome === "deleted") deleted.push(id);
     } catch (error) {
+      if (fence && error instanceof JournalGuardConflict) {
+        const standing = await fenceStanding(backend, id, fence);
+        if (standing === "superseded") return { deleted, held, superseded: true, ...(moved ? { moved: true } : {}) };
+        if (standing === "moved") moved = true;
+        held.push(id);
+        continue;
+      }
       if ((error as { name?: unknown })?.name !== "VersionConflict") throw error;
       held.push(id);
     }
   }
-  return { deleted, held };
+  return { deleted, held, ...(moved ? { moved: true } : {}) };
 }
 
 // ── wire features ──────────────────────────────────────────────────────────────────────────
@@ -725,6 +761,32 @@ export interface CommitResult extends DocumentMutationResult {
 }
 
 /**
+ * The intent a change journals in place of one the authority never applied (never sent, or
+ * refused): a fresh identity on the superseded intent's premise, its base, its base content and
+ * the predecessor it waited on. A write over a never-applied delete is a replace against that
+ * base, never a delete and a re-create, and a write over a never-applied create keeps the
+ * deletion that create re-creates. A deletion over a never-applied create has nothing to delete
+ * at the authority, so it collapses to no intent. {@link composeIntent}, {@link deleteLocal} and
+ * push's fold of a refused chain all take the premise from here, so they cannot disagree on it.
+ */
+function supersedingIntent(kind: "document.write", superseded: IntentRecord, now: string): NewIntentRecord;
+function supersedingIntent(kind: "document.write" | typeof DOCUMENT_DELETE_KIND, superseded: IntentRecord, now: string): NewIntentRecord | undefined;
+function supersedingIntent(kind: "document.write" | typeof DOCUMENT_DELETE_KIND, superseded: IntentRecord, now: string): NewIntentRecord | undefined {
+  const deleting = kind === DOCUMENT_DELETE_KIND;
+  if (deleting && superseded.base === null) return undefined;
+  return {
+    requestId: mintRequestId(),
+    kind,
+    target: superseded.target,
+    base: superseded.base,
+    baseContent: superseded.baseContent,
+    createdAt: now,
+    ...(superseded.after !== undefined ? { after: superseded.after } : {}),
+    ...(!deleting && superseded.recreates !== undefined && superseded.base === null ? { recreates: superseded.recreates } : {}),
+  };
+}
+
+/**
  * How a new local edit relates to the intents already journaled for its target.
  *
  * Compose-per-id: when the latest intent for the id is `pending` and has never been submitted
@@ -739,7 +801,9 @@ export interface CommitResult extends DocumentMutationResult {
  * resolution, its content and identity are frozen: the new edit becomes a separate intent whose
  * base is the predecessor's local version and whose `after` names it. Push delivers it only
  * once the predecessor is acknowledged, and the predecessor's acknowledgement can never clear
- * it, because it is its own record with its own identity.
+ * it, because it is its own record with its own identity. If the authority instead refuses the
+ * predecessor on its content, push folds the never-sent successor into it by the same
+ * supersede rule (see {@link push}).
  */
 async function composeIntent(backend: JournaledBackend, id: ConceptId, now: string): Promise<{ intent: NewIntentRecord; supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number } }> {
   const unsettled = (await backend.listIntents(UNSETTLED_STATES)).filter((row) => row.target === id);
@@ -763,19 +827,8 @@ async function composeIntent(backend: JournaledBackend, id: ConceptId, now: stri
   }
   const neverDelivered = latest.state === "pending" && latest.attempts === 0;
   if (neverDelivered || latest.state === "refused") {
-    // A write over a never-delivered delete collapses the two into one change against the base:
-    // a replace, never a delete and a re-create.
     return {
-      intent: {
-        requestId: mintRequestId(),
-        kind: "document.write",
-        target: id,
-        base: latest.base,
-        baseContent: latest.baseContent,
-        createdAt: now,
-        ...(latest.after !== undefined ? { after: latest.after } : {}),
-        ...(latest.recreates !== undefined && latest.base === null ? { recreates: latest.recreates } : {}),
-      },
+      intent: supersedingIntent("document.write", latest, now),
       supersede: { requestId: latest.requestId, expectedState: latest.state, expectedAttempts: latest.attempts },
     };
   }
@@ -909,9 +962,7 @@ export async function deleteLocal(local: LocalTarget, id: ConceptId, options: { 
       if (shared?.version) intent = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: id, base: shared.version, baseContent: shared.content, createdAt: now };
     } else if ((latest.state === "pending" && latest.attempts === 0) || latest.state === "refused") {
       supersede = { requestId: latest.requestId, expectedState: latest.state, expectedAttempts: latest.attempts };
-      if (latest.base !== null) {
-        intent = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: id, base: latest.base, baseContent: latest.baseContent, createdAt: now, ...(latest.after !== undefined ? { after: latest.after } : {}) };
-      }
+      intent = supersedingIntent(DOCUMENT_DELETE_KIND, latest, now);
     } else if (latest.state === "conflict") {
       throw new InvalidInputError(`'${id}' has a conflict to resolve before it can be deleted.`);
     } else {
@@ -1035,7 +1086,12 @@ async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promis
   }
 }
 
-/** A refused head is resolvable only when the refusal was about the content; lost permission keeps the resume path. */
+/**
+ * A refused head is resolvable, and push folds a never-sent successor into it, only when the
+ * refusal is outside the authorization codes: the content was refused, or the authority was busy
+ * ({@link BUSY_REFUSAL_CODES}). Either way the authority recorded it as not applied. Lost
+ * permission and a spent quota keep the resume path.
+ */
 function isContentRefusal(row: IntentRecord): boolean {
   return row.state === "refused" && row.refusal !== undefined && !AUTHORIZATION_REFUSAL_CODES.has(row.refusal.code);
 }
@@ -1045,7 +1101,7 @@ function isContentRefusal(row: IntentRecord): boolean {
  * recorded conflict (or, with `admitRefused`, a content refusal), continued only by dependent
  * edits, whose latest bytes are the working document. Body mode admits the refused head, since
  * a refused body update cannot be superseded by a later edit; exact mode keeps its rule, where
- * a later edit supersedes a refused request.
+ * a later edit supersedes a refused request and push folds a never-sent successor into it.
  */
 function conflictChain(id: ConceptId, snapshot: JournaledReadResult, admitRefused: boolean) {
   const intents = snapshot.intents.filter(row => row.state !== "acknowledged");
@@ -1367,6 +1423,22 @@ export interface PushReport {
   paused: boolean;
   settled: Array<{ requestId: string; target: ConceptId; state: OperationState }>;
   skipped: Array<{ requestId: string; target: ConceptId; reason: "blocked" | "claimed-elsewhere" | "settled-elsewhere" }>;
+  /**
+   * The refused chains this run folded (see {@link push}), present only when it folded one. A
+   * host that showed a refusal reads here why that row is gone.
+   */
+  rebased?: PushRebase[];
+}
+
+/** One chain push folded: a content or busy refusal and the never-sent edit that waited on it. */
+export interface PushRebase {
+  target: ConceptId;
+  /** The retired identities, the refused head first. Neither is ever sent again. */
+  retired: string[];
+  /** The fresh intent that carries the edit, or `null` when a deletion of a create that never landed left nothing to send. */
+  requestId: string | null;
+  /** The refusal the head recorded. */
+  refusal: { code: string; message: string };
 }
 
 /** Read the shared head for a conflict record; absence is a real answer (`null`), a failure is unknown. */
@@ -1413,6 +1485,8 @@ export async function settleIntent(
   outcome = settleAgainstIntent(outcome, current);
   switch (outcome.kind) {
     case "committed": {
+      // Recorded with the acknowledgement itself, so no pull can offer an older digest after it.
+      const acknowledged: MetaRecord = { key: ACKNOWLEDGED_KEY, value: { at: new Date().toISOString(), token: mintRequestId() } satisfies AcknowledgedMarker };
       if (current.kind === DOCUMENT_DELETE_KIND) {
         // The document left the authority. Its version is the deletion's tombstone, which a
         // create recorded later acknowledges; the deletion version itself says none is known.
@@ -1421,7 +1495,7 @@ export async function settleIntent(
           requestId,
           "in_flight",
           { state: "acknowledged", attempts, acknowledgedVersion: outcome.version },
-          { meta: [baseRow(current.target, { version: null, content: null, ...(tombstone !== undefined ? { tombstone } : {}) })] },
+          { meta: [baseRow(current.target, { version: null, content: null, ...(tombstone !== undefined ? { tombstone } : {}) }), acknowledged] },
         );
       }
       const finding = outcome.version === current.local ? undefined : `acknowledged version ${outcome.version} differs from local version ${current.local}`;
@@ -1429,7 +1503,7 @@ export async function settleIntent(
         requestId,
         "in_flight",
         { state: "acknowledged", attempts, acknowledgedVersion: outcome.version, ...(finding ? { finding } : {}) },
-        { meta: [baseRow(current.target, { version: outcome.version, content: current.content })] },
+        { meta: [baseRow(current.target, { version: outcome.version, content: current.content }), acknowledged] },
       );
     }
     case "conflict": {
@@ -1527,6 +1601,57 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
 }
 
 /**
+ * Refusal codes that say the authority was busy, not that the content is wrong. The host
+ * records each as not applied, but the identity can only answer that refusal again, so a caller
+ * resends a lone refused change under a fresh identity (the CLI's hosted sync does). A busy head
+ * with a never-sent successor is folded by push like a content refusal: the fresh intent is that
+ * resend, carrying the later edit.
+ */
+export const BUSY_REFUSAL_CODES: ReadonlySet<string> = new Set(["concurrent_change", "backend_unavailable", "internal_error", "deadline_exceeded", "cancelled"]);
+
+/**
+ * Fold a never-sent intent into the refusal it waits on (a content or busy refusal, see
+ * {@link isContentRefusal}). The authority recorded the head as refused, so it never applied it,
+ * and it never saw the successor; the pair is the state a later edit over a refused latest
+ * intent composes away, reached instead because the edit
+ * landed while the head was in flight (or, in a checkout, after its answer was lost). Retires
+ * exactly that complete unsettled journal, `[head refused, successor pending with no attempt]`,
+ * and journals one fresh intent of the successor's kind on the head's premise
+ * ({@link supersedingIntent}) over the working document as it is, in one guarded
+ * `writeJournaled` or `deleteJournaled` with `resolveIntents`. The document's bytes are
+ * unchanged, so its version is too. A deletion of a create that never landed retires the chain
+ * and journals nothing.
+ *
+ * Returns `null` and writes nothing when the journal is any other shape, when the working
+ * document is not the successor's own bytes (absent, for a deletion), or when another realm
+ * moved the journal or the document between the read and the write; the caller reports the
+ * intent `blocked` and the next push reads again.
+ */
+async function foldRefusedChain(backend: JournaledBackend, listed: IntentRecord): Promise<{ retired: IntentRecord[]; intent: IntentRecord | null } | null> {
+  const snapshot = await backend.readWithJournal(listed.target);
+  const chain = snapshot.intents.filter(row => row.state !== "acknowledged");
+  const [head, successor] = chain;
+  if (chain.length !== 2 || !head || !successor || !isContentRefusal(head) || successor.requestId !== listed.requestId ||
+      successor.state !== "pending" || successor.attempts !== 0 || successor.after !== head.requestId) return null;
+  const deleting = successor.kind === DOCUMENT_DELETE_KIND;
+  if (deleting ? snapshot.document !== null : !snapshot.document || successor.local !== snapshot.document.version || successor.content !== snapshot.raw) return null;
+  const intent = supersedingIntent(deleting ? DOCUMENT_DELETE_KIND : "document.write", head, new Date().toISOString());
+  const resolveIntents = { expected: chain };
+  try {
+    if (deleting) {
+      // A deletion chain holds no working document: its compare-and-swap is on absence.
+      const deleted = await backend.deleteJournaled(listed.target, { expectedVersion: null as unknown as Version, resolveIntents, ...(intent ? { intent } : {}) });
+      return { retired: chain, intent: deleted.outcome === "held" ? null : deleted.intent ?? null };
+    }
+    const written = await backend.writeJournaled(listed.target, snapshot.document!.doc, { expectedVersion: snapshot.document!.version, resolveIntents, intent: intent! });
+    return { retired: chain, intent: written.intent };
+  } catch (error) {
+    if (error instanceof JournalSnapshotConflict || error instanceof IntentStateConflict || (error as { name?: unknown })?.name === "VersionConflict") return null;
+    throw error;
+  }
+}
+
+/**
  * Deliver pending intents in local commit order through the uncertain-write primitive. Each
  * intent is claimed (`pending` to `in_flight`) by compare-and-swap, so two realms cannot both
  * deliver it, and settled by {@link settleIntent}. A chained intent waits for its predecessor's
@@ -1537,6 +1662,15 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
  * it may have been delivered, so {@link reclaimInFlight} and the next push treat it that way.
  * The primitive itself receives the count of attempts completed before this claim, so a first
  * delivery is a submission and a repeated one starts with a lookup.
+ *
+ * A never-sent intent whose predecessor the authority refused on its content or because it was
+ * busy (a refusal outside {@link AUTHORIZATION_REFUSAL_CODES}) would otherwise wait forever, so
+ * push folds the two, as a later edit supersedes a refused latest intent: see
+ * {@link foldRefusedChain}. The fresh intent is delivered in the same run and the fold is
+ * listed in {@link PushReport.rebased}. A head refused for lost permission or a spent quota
+ * keeps the resume path and a conflict keeps resolution; neither is folded, nor is a successor
+ * that was ever claimed for delivery. Body delivery has no
+ * fold: its refused head is resolved.
  */
 export async function push(local: LocalTarget, transport: OperationTransport, options: PushOptions = {}): Promise<PushReport> {
   const mode = await admitBodyMode(backendOf(local));
@@ -1548,7 +1682,10 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
     report.paused = true;
     return report;
   }
-  for (const intent of await backend.listIntents("pending")) {
+  // A queue, not a snapshot: an intent a fold journals is delivered in this same run.
+  const queue = await backend.listIntents("pending");
+  for (let index = 0; index < queue.length; index++) {
+    const intent = queue[index]!;
     if (mode) {
       const settled = await pushBodyIntent(backendOf(local), mode, intent.requestId, options);
       if (!settled) { report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" }); continue; }
@@ -1560,7 +1697,14 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
     if (intent.after !== undefined) {
       const predecessor = await backend.readIntent(intent.after);
       if (predecessor && predecessor.state !== "acknowledged") {
-        report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" });
+        const folded = intent.attempts === 0 && isContentRefusal(predecessor) ? await foldRefusedChain(backend, intent) : null;
+        if (!folded) {
+          report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" });
+          continue;
+        }
+        const head = folded.retired[0]!;
+        (report.rebased ??= []).push({ target: intent.target, retired: folded.retired.map(row => row.requestId), requestId: folded.intent?.requestId ?? null, refusal: head.refusal! });
+        if (folded.intent) queue.push(folded.intent);
         continue;
       }
       if (predecessor && intent.attempts === 0) rebase = chainedPremise(intent, predecessor);
@@ -1643,6 +1787,76 @@ export interface PullReport {
   deleted: ConceptId[];
   /** Present when the heads listing implied deletions this pull refused to apply; see {@link DeletionRefusal}. */
   refused?: DeletionRefusal;
+  /**
+   * Present when another realm's pull marked, or an acknowledgement settled, after this pull
+   * marked, so this exact-mode pull stopped writing: what it lists is what it wrote before
+   * then, each write under its own fence, and it did not complete its marker: the marker is the
+   * superseding pull's, or, after an acknowledgement, still this pull's unfinished one, which
+   * offers no digest. Not a failure; nothing it wrote is stale. The next pull asks
+   * unconditionally unless a later pull completed with a digest. Never set in body
+   * mode or over an adapter without `journalSnapshotCas`, where pull runs unfenced.
+   */
+  superseded?: true;
+}
+
+/**
+ * What an exact-mode pull holds while it writes: its own in-progress marker and the
+ * acknowledgement row as it stood when the pull marked. Another pull's mark replaces the first;
+ * every acknowledgement rewrites the second; either ends this pull's ownership.
+ */
+interface PullFence {
+  marker: PullMarker;
+  acknowledged: MetaExpectation;
+}
+
+/** Attempts to mark a pull against the marker its digest was read from before marking without one. */
+const PULL_MARK_ATTEMPTS = 3;
+
+function metaExpectation(meta: ReadonlyMap<string, unknown>, key: string): MetaExpectation {
+  return meta.has(key) ? { present: true, value: meta.get(key) } : { present: false };
+}
+
+function fencePremises(fence: PullFence): JournalGuard["meta"] {
+  return [{ key: PULL_KEY, expected: { present: true, value: fence.marker } }, { key: ACKNOWLEDGED_KEY, expected: fence.acknowledged }];
+}
+
+/** True while `meta`, read in one transaction, still shows the fence's marker and acknowledgement. */
+function fenceHolds(meta: ReadonlyMap<string, unknown>, fence: PullFence): boolean {
+  const premise = (rows: JournalGuard["meta"]): JournalGuard => ({ target: PULL_KEY, document: null, intents: [], meta: rows });
+  try {
+    assertJournalGuard(premise(fencePremises(fence)), premise([PULL_KEY, ACKNOWLEDGED_KEY].map((key) => ({ key, expected: metaExpectation(meta, key) }))));
+    return true;
+  } catch (error) {
+    if (error instanceof JournalGuardConflict) return false;
+    throw error;
+  }
+}
+
+/**
+ * One snapshot of `id` for a fenced pull write: its document, journal and base, with a guard
+ * pinning all of them and the fence rows, so the write applies only if nothing it read has
+ * moved and the pull still owns its marker. `null` when the fence no longer holds.
+ */
+async function fencedSnapshot(backend: JournaledBackend, id: ConceptId, fence: PullFence): Promise<{ guard: JournalGuard; base: SharedBase | undefined; version: Version | null } | null> {
+  const read = await backend.readWithJournal(id, { meta: [baseKey(id), PULL_KEY, ACKNOWLEDGED_KEY] });
+  if (!fenceHolds(read.meta, fence)) return null;
+  const document = read.document === null ? null : { version: read.document.version, raw: read.raw! };
+  return {
+    base: read.meta.get(baseKey(id)) as SharedBase | undefined,
+    version: document?.version ?? null,
+    guard: { target: id, document, intents: read.intents, meta: [{ key: baseKey(id), expected: metaExpectation(read.meta, baseKey(id)) }, ...fencePremises(fence)] },
+  };
+}
+
+/**
+ * Why a fenced write's guard refused it: the fence no longer holds, an unsettled intent now
+ * holds the document, or the document or its base moved otherwise, so the working copy is not
+ * the listing's state.
+ */
+async function fenceStanding(backend: JournaledBackend, id: ConceptId, fence: PullFence): Promise<"superseded" | "held" | "moved"> {
+  const read = await backend.readWithJournal(id, { meta: [PULL_KEY, ACKNOWLEDGED_KEY] });
+  if (!fenceHolds(read.meta, fence)) return "superseded";
+  return read.intents.some((row) => row.state !== "acknowledged") ? "held" : "moved";
 }
 
 /**
@@ -1652,16 +1866,25 @@ export interface PullReport {
  * without a digest (a refused listing, a pull by list, or an interrupted pull) means the
  * working copy no longer matches any digest the authority could be asked about. Falling back
  * to the bootstrap's digest there would let the authority answer `304` to a copy that has
- * moved past it.
+ * moved past it. An acknowledgement settled at or after the start of the pull or bootstrap that
+ * recorded the digest moves the copy past it too: the authority took the change, and another
+ * writer returning it to exactly that digest would otherwise draw a `304` forever. The pull
+ * marker comes back as read, first, so a pull can mark only over the marker its digest names.
  */
-async function lastKnownDigest(backend: JournaledBackend): Promise<string | undefined> {
+async function lastKnownDigest(backend: JournaledBackend): Promise<{ digest: string | undefined; lastPull: MetaExpectation }> {
+  const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
+  const read: MetaExpectation = lastPull === undefined ? { present: false } : { present: true, value: lastPull };
   const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
   // An incomplete bootstrap has changed the working copy past whatever any digest described:
   // no conditional request until a bootstrap completes again.
-  if (marker?.complete !== true || marker.completedAt === undefined) return undefined;
-  const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
-  if (lastPull !== undefined && lastPull.startedAt >= marker.completedAt) return lastPull.completedAt === null ? undefined : lastPull.headsDigest;
-  return marker.headsDigest;
+  if (marker?.complete !== true || marker.completedAt === undefined) return { digest: undefined, lastPull: read };
+  const acknowledged = await backend.readMeta<AcknowledgedMarker>(ACKNOWLEDGED_KEY);
+  if (lastPull !== undefined && lastPull.startedAt >= marker.completedAt) {
+    if (lastPull.completedAt === null || (acknowledged !== undefined && acknowledged.at >= lastPull.startedAt)) return { digest: undefined, lastPull: read };
+    return { digest: lastPull.headsDigest, lastPull: read };
+  }
+  if (acknowledged !== undefined && acknowledged.at >= marker.startedAt) return { digest: undefined, lastPull: read };
+  return { digest: marker.headsDigest, lastPull: read };
 }
 
 /**
@@ -1691,30 +1914,83 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<string | unde
  *
  * Batches travel concurrently (see {@link FetchOptions}) and each is written as it arrives; the
  * pull marker records completion, and the digest now matched, only after every batch has been
- * written.
+ * written. A listed document the authority no longer holds when it is fetched is answered as
+ * absent and reconciled like an unlisted one, and the digest is recorded only when every
+ * fetched document read back at the version the listing named: otherwise the working copy is
+ * not that listing's state, and the next pull asks unconditionally.
+ *
+ * In exact mode over an adapter with `journalSnapshotCas`, a pull is fenced by its own marker.
+ * It marks with a fresh `run` token as a compare-and-swap over the marker its digest was read
+ * from (re-reading on a race, and after {@link PULL_MARK_ATTEMPTS} races marking with no digest
+ * to offer). Every refresh and deletion is guarded by one snapshot of the document, its journal,
+ * its base, the pull marker and the acknowledgement row, and completion is a compare-and-swap
+ * on the pull's own marker. Once another realm's pull has marked, or an acknowledgement has
+ * settled, since this pull marked, the pull writes nothing more and returns its report with
+ * `superseded`; a pull that finished listing before another one marked can therefore never
+ * write a stale document, delete a document an acknowledgement just brought in, or record its
+ * digest over another pull's writes. Body mode and adapters without `journalSnapshotCas` pull
+ * unfenced, as before.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
   const concurrency = concurrencyOf(options);
   const backend = await runtimeBackend(local);
   const bodyMode = await admitBodyMode(backendOf(local));
   const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
-  // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
-  const known = await lastKnownDigest(backend);
+  // Taken before the digest is read: an acknowledgement that settles after that read is then at
+  // or after this start, so it drops whatever digest this pull records (see lastKnownDigest).
   const startedAt = new Date().toISOString();
-  await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false } satisfies PullMarker);
+  let known: string | undefined;
+  let fence: PullFence | undefined;
+  if (!bodyMode && backend.journalSnapshotCas === true) {
+    const acknowledged = await backend.readMeta<AcknowledgedMarker>(ACKNOWLEDGED_KEY);
+    const marker: PullMarker = { startedAt, completedAt: null, refreshed: 0, unchanged: false, run: mintRequestId() };
+    for (let attempt = 0; ; attempt++) {
+      // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
+      const last = await lastKnownDigest(backend);
+      // Past the bound the pull marks over whatever is there and offers no digest, so a
+      // conditional request can never be answered for a marker it did not read.
+      const blind = attempt >= PULL_MARK_ATTEMPTS;
+      known = blind ? undefined : last.digest;
+      try {
+        await backend.writeMeta(PULL_KEY, marker, blind ? {} : { expected: last.lastPull });
+        break;
+      } catch (error) {
+        if (!(error instanceof JournalGuardConflict) || blind) throw error;
+      }
+    }
+    fence = { marker, acknowledged: acknowledged === undefined ? { present: false } : { present: true, value: acknowledged } };
+  } else {
+    // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
+    known = (await lastKnownDigest(backend)).digest;
+    await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false } satisfies PullMarker);
+  }
   if (bodyMode) { await assertBodyEdition(backendOf(local), bodyMode); await assertBodyRemoteEdition(remote, bodyMode); }
   const report: PullReport = { refreshed: [], held: [], unchanged: [], deleted: [] };
   const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
+  /** Set once the fence no longer holds: nothing further is written and no marker is recorded. */
+  let superseded = false;
+  const stop = (): PullReport => {
+    report.superseded = true;
+    return report;
+  };
   const complete = async (headsDigest: string | undefined, unchanged: boolean): Promise<PullReport> => {
     await validateReadSide?.();
-    await backend.writeMeta(PULL_KEY, {
+    if (superseded) return stop();
+    const marker: PullMarker = {
       startedAt,
       completedAt: new Date().toISOString(),
       refreshed: report.refreshed.length,
       unchanged,
       ...(headsDigest === undefined ? {} : { headsDigest }),
       ...(report.refused === undefined ? {} : { refused: report.refused }),
-    } satisfies PullMarker);
+      ...(fence ? { run: fence.marker.run } : {}),
+    };
+    try {
+      await backend.writeMeta(PULL_KEY, marker, fence ? { expected: { present: true, value: fence.marker } } : {});
+    } catch (error) {
+      if (fence && error instanceof JournalGuardConflict) return stop();
+      throw error;
+    }
     return report;
   };
 
@@ -1723,15 +1999,21 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     if (bodyMode) await assertBodyRemoteEdition(remote, bodyMode);
     const id = head.doc.id;
     await premises?.check(id);
-    const base = await backend.readMeta<SharedBase>(baseKey(id));
+    if (superseded) return;
+    const fenced = fence ? await fencedSnapshot(backend, id, fence) : undefined;
+    if (fenced === null) {
+      superseded = true;
+      return;
+    }
+    const base = fenced ? fenced.base : await backend.readMeta<SharedBase>(baseKey(id));
     if (base?.version === head.version) {
       report.unchanged.push(id);
       return;
     }
-    const expectedVersion = await localVersion(backend, id);
+    const expectedVersion = fenced ? fenced.version : await localVersion(backend, id);
     try {
       await backend.writeJournaled(id, head.doc, {
-        ...(premises ? { guard: premises.guard(id) } : {}),
+        ...(premises ? { guard: premises.guard(id) } : fenced ? { guard: fenced.guard } : {}),
         expectedVersion,
         requireSettled: true,
         meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
@@ -1744,13 +2026,43 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
         report.held.push(id);
         return;
       }
+      if (fence && error instanceof JournalGuardConflict) {
+        const standing = await fenceStanding(backend, id, fence);
+        if (standing === "superseded") {
+          superseded = true;
+          return;
+        }
+        if (standing === "moved") consistent = false;
+        report.held.push(id);
+        return;
+      }
       throw error;
     }
   };
-  const fetchAndApply = (candidates: ConceptId[]): Promise<void> =>
+  let consistent = true;
+  /**
+   * Fetch and apply `candidates`. Given the listing, a document gone since it was listed is
+   * dropped from the listed ids and answered as absent, and `consistent` is cleared when
+   * any document did not read back at its listed version: the working copy is then not that
+   * listing's state, so its digest must not be recorded.
+   */
+  const fetchAndApply = (candidates: ConceptId[], listing?: { listed: Set<ConceptId>; versions: Map<ConceptId, Version> }): Promise<void> =>
     forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
+      if (superseded) return;
       const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
-      for (const head of await remote.readMany(batch)) await apply(head, premises);
+      if (!listing) {
+        for (const head of await remote.readMany(batch)) await apply(head, premises);
+        return;
+      }
+      const { found, absent } = await readPresent(remote, batch);
+      for (const id of absent) {
+        listing.listed.delete(id);
+        consistent = false;
+      }
+      for (const head of found) {
+        if (head.version !== listing.versions.get(head.doc.id)) consistent = false;
+        await apply(head, premises);
+      }
     });
 
   const wire = await wireFor(remote, local, "heads", options);
@@ -1774,6 +2086,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
   }
   const candidates: ConceptId[] = [];
   const listed = new Set<ConceptId>();
+  const versions = new Map<ConceptId, Version>();
   for (const head of answer.heads) {
     listed.add(head.id);
     if (heldTargets.has(head.id)) {
@@ -1782,18 +2095,24 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     }
     const base = await backend.readMeta<SharedBase>(baseKey(head.id));
     if (base?.version === head.version) report.unchanged.push(head.id);
-    else candidates.push(head.id);
+    else {
+      candidates.push(head.id);
+      versions.set(head.id, head.version);
+    }
   }
-  await fetchAndApply(candidates);
+  await fetchAndApply(candidates, { listed, versions });
   await validateReadSide?.();
-  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions, premises, validateReadSide);
+  if (superseded) return stop();
+  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions, premises, validateReadSide, fence);
   report.deleted = reconciled.deleted;
   report.held.push(...reconciled.held);
+  if (reconciled.superseded) return stop();
+  if (reconciled.moved) consistent = false;
   if (reconciled.refused) {
     report.refused = reconciled.refused;
     return complete(undefined, false);
   }
-  return complete(answer.digest, false);
+  return complete(consistent ? answer.digest : undefined, false);
 }
 
 // ── status and control ─────────────────────────────────────────────────────────────────────

@@ -17,16 +17,17 @@
 // device authorization, persists it, and returns AUTH_REQUIRED carrying one link to relay. Running
 // the same command again polls once and, when the person has confirmed, completes sign-in and
 // carries on.
-import { mkdir, unlink } from "node:fs/promises";
+import { mkdir, realpath, stat, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { FilesystemMutationLockError } from "@superbee/core";
 
 import { CliError } from "../errors.js";
+import { bindingHostArgument } from "../hosted/marker.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
-import { withCliFilesystemMutationLock } from "../filesystem-runtime.js";
+import { cliFilesystemRuntime, withCliFilesystemMutationLock } from "../filesystem-runtime.js";
 import { ensureUserStateRoot, readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
 import {
   REQUESTED_SCOPE,
@@ -69,6 +70,16 @@ export const REFRESH_REUSE_LEEWAY_MS = 30_000;
  * past this still get a retryable TRANSIENT.
  */
 export const SESSION_LOCK_WAIT_MS = 65_000;
+/**
+ * A session lock that has stood this long is far past any hold SESSION_LOCK_WAIT_MS allows for, so
+ * its holder is gone even when its PID now names another process or it was taken on another host.
+ */
+export const SESSION_LOCK_ORPHAN_MS = 10 * 60_000;
+/**
+ * An owner-less session lock younger than this may be a claim caught between its directory and its
+ * owner record; older, it was left by a process killed while taking it.
+ */
+const SESSION_LOCK_CLAIM_GRACE_MS = 5_000;
 const HTTP_TIMEOUT_MS = 10_000;
 const MAX_RECORD_BYTES = 64 * 1024;
 const SESSION_FILE = "session.json";
@@ -169,7 +180,7 @@ export function hostedAuthRoot(home: string): string {
 }
 
 /** The credential-store account for a target; also the session's identity. */
-export function sessionAccount(target: HostedTarget): string {
+export function sessionAccount(target: Pick<HostedTarget, "origin" | "audience">): string {
   return `${target.origin} ${target.audience}`;
 }
 
@@ -179,8 +190,8 @@ export function sessionDirFor(home: string, account: string): string {
 }
 
 /** The shortest `--host` value that selects this target. */
-export function hostArgument(target: HostedTarget): string {
-  return target.audience === `${target.origin}/mcp` ? target.origin : target.audience;
+export function hostArgument(target: Pick<HostedTarget, "origin" | "audience">): string {
+  return bindingHostArgument(target);
 }
 
 async function readRecord<T>(home: string, file: string): Promise<T | null> {
@@ -209,11 +220,30 @@ async function removeFile(file: string): Promise<boolean> {
   }
 }
 
-export async function readSession(home: string, target: HostedTarget): Promise<SessionRecord | null> {
+export async function readSession(home: string, target: Pick<HostedTarget, "origin" | "audience">): Promise<SessionRecord | null> {
   const record = await readRecord<SessionRecord>(home, join(sessionDirFor(home, sessionAccount(target)), SESSION_FILE));
   if (!record || record.schema !== 1 || record.audience !== target.audience || record.host !== target.origin) return null;
   if (typeof record.access_token !== "string" || typeof record.access_token_expires_at_ms !== "number") return null;
   return record;
+}
+
+/**
+ * Whether a command for this host may have to ask the person to sign in, from the stored session
+ * record alone (no network, no lock): no record, or an access token at or near its expiry with no
+ * refresh token to renew it. An access token in the environment answers no. "May": a refresh token
+ * the issuer has since revoked is only found out by using it.
+ */
+export async function storedSessionMayNeedSignIn(
+  home: string,
+  target: Pick<HostedTarget, "origin" | "audience">,
+  env: NodeJS.ProcessEnv = process.env,
+  now: number = Date.now(),
+): Promise<boolean> {
+  if (env[ACCESS_TOKEN_ENV]) return false;
+  const session = await readSession(home, target).catch(() => null);
+  if (!session) return true;
+  // The same margin the token cache uses: a token that close to expiry is renewed, not used.
+  return session.access_token_expires_at_ms - now <= REFRESH_SKEW_MS && !session.has_refresh_token;
 }
 
 export async function readPending(home: string, target: HostedTarget): Promise<PendingRecord | null> {
@@ -234,6 +264,22 @@ export async function readDefaultHost(home: string): Promise<string | null> {
 
 export async function writeDefaultHost(home: string, host: string): Promise<void> {
   await writeUserStateFileAtomic0600(home, hostedAuthRoot(home), DEFAULT_HOST_FILE, `${JSON.stringify({ host })}\n`);
+}
+
+/**
+ * The host a command on a hosted bundle (checkout, export, publish, `catalog list --hosted`) uses:
+ * `--host`, else the host of the last sign-in, else null. SUPERBEE_HOST alone never selects it, so
+ * a bundle is always bound to a host the person chose.
+ */
+export async function hostedBundleHost(flag: string | undefined, home: string): Promise<string | null> {
+  return flag || (await readDefaultHost(home));
+}
+
+/** {@link hostedBundleHost}, refusing when there is none. */
+export async function requireHostedBundleHost(flag: string | undefined, home: string): Promise<HostedTarget> {
+  const chosen = await hostedBundleHost(flag, home);
+  if (!chosen) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
+  return resolveHostedTarget(chosen);
 }
 
 /** `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in. */
@@ -283,19 +329,69 @@ export async function withSessionLock<T>(target: HostedTarget, deps: HostedAuthD
   await ensureUserStateRoot(deps.home);
   const dir = sessionDirFor(deps.home, sessionAccount(target));
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  let entered = false;
+  let bodyError: { readonly error: unknown } | undefined;
   try {
-    return await withCliFilesystemMutationLock(join(dir, "session"), body, {
-      waitMs: deps.lockWaitMs ?? SESSION_LOCK_WAIT_MS,
-    });
+    return await withCliFilesystemMutationLock(
+      join(dir, "session"),
+      async () => {
+        entered = true;
+        try {
+          return await body();
+        } catch (error) {
+          bodyError = { error };
+          throw error;
+        }
+      },
+      { waitMs: deps.lockWaitMs ?? SESSION_LOCK_WAIT_MS },
+    );
   } catch (error) {
-    if (error instanceof FilesystemMutationLockError) {
-      throw new CliError("TRANSIENT", `another Superbee process is refreshing the ${target.origin} session`, {
-        details: { reason: "session_busy", retryable: true, host: target.origin },
-        help: "retry the same command",
-      });
-    }
-    throw error;
+    if (!(error instanceof FilesystemMutationLockError) || bodyError?.error === error) throw error;
+    if (entered) throw sessionLockReleaseFailure(error, target);
+    // A refused lock root (not a private directory of this user) is not the session lock being
+    // held, and its age says nothing about a holder: pass the refusal through unchanged.
+    if (!(await namesSessionLock(error.lockPath, dir))) throw error;
+    throw await sessionLockFailure(error, target);
   }
+}
+
+/** Whether a claim failure names the session lock itself rather than the lock root around it. */
+async function namesSessionLock(lockPath: string, sessionDir: string): Promise<boolean> {
+  const canonical = await realpath(sessionDir).then((real) => join(real, "session"), () => null);
+  return canonical !== null && basename(cliFilesystemRuntime().mutationLockPath(canonical)) === basename(lockPath);
+}
+
+/** Why the session lock could not be taken: busy while its holder may still finish, else orphaned. */
+async function sessionLockFailure(error: FilesystemMutationLockError, target: HostedTarget): Promise<CliError> {
+  const changed = await stat(error.lockPath).then((info) => info.mtimeMs, () => null);
+  const now = Date.now();
+  const orphaned =
+    changed !== null &&
+    (error.malformed
+      ? now - changed >= SESSION_LOCK_CLAIM_GRACE_MS
+      : // A directory's mtime can be old while its holder is live (a restored or skewed filesystem),
+        // so the holder's own claim time must agree before a person is told to remove the lock. A
+        // claim time far ahead of this clock is skew, not a recent claim, and must not keep a lock
+        // whose holder is gone reading as busy until this clock catches up.
+        now - changed >= SESSION_LOCK_ORPHAN_MS && (error.owner === null || Math.abs(now - error.owner.created_at_ms) >= SESSION_LOCK_ORPHAN_MS));
+  if (orphaned) {
+    return new CliError("CONFLICT", `the ${target.origin} sign-in session lock was left by a command that is gone`, {
+      details: { reason: "session_lock_orphaned", host: target.origin, lock: error.lockPath, retryable: false },
+      help: `confirm no superbee command is using the ${target.origin} sign-in session, remove ${error.lockPath}, then retry the same command`,
+    });
+  }
+  return new CliError("TRANSIENT", `another Superbee process is refreshing the ${target.origin} session`, {
+    details: { reason: "session_busy", retryable: true, host: target.origin },
+    help: "retry the same command",
+  });
+}
+
+/** The session work finished but its lock was not released as its own: a person must look. */
+function sessionLockReleaseFailure(error: FilesystemMutationLockError, target: HostedTarget): CliError {
+  return new CliError("RUNTIME", `the ${target.origin} sign-in session lock could not be released: ${error.message}`, {
+    details: { reason: "session_lock_release_failed", host: target.origin, lock: error.lockPath, retryable: false },
+    help: `inspect ${error.lockPath} before retrying the same command`,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1,0 +1,23 @@
+{
+  "name": "history-400-invalid-input",
+  "description": "A history input the schema refuses.",
+  "route": "/sync/v1/history",
+  "rows": [
+    "refusal 400 invalid_input"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/via\",\"extra\":true}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "run-200-document-not-found",
+  "description": "documents.history.v1 run by id for an absent document: the operation's refusal.",
+  "route": "/sync/v1/run",
+  "rows": [
+    "run 200 document_not_found"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"operationId\":\"documents.history.v1\",\"input\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/absent\"}}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.history.v1\",\"error\":{\"code\":\"document_not_found\",\"message\":\"The document was not found.\",\"retryable\":false}}",
+    "truncated": false
+  }
+}

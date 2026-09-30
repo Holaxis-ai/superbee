@@ -1,0 +1,25 @@
+{
+  "name": "bundle-create-200-history",
+  "description": "Created with one imported, unverified history row.",
+  "route": "/sync/v1/bundle-create",
+  "rows": [
+    "200 ok"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c3"
+    },
+    "body": "{\"workspace\":\"tenant:a\",\"bundleId\":\"hist.notes\",\"documents\":[{\"id\":\"notes/alpha\",\"frontmatter\":{\"type\":\"Note\",\"title\":\"Alpha\"},\"body\":\"Alpha body é.\\n\"},{\"id\":\"projects/plan\",\"frontmatter\":{\"type\":\"Project\",\"title\":\"Plan\"},\"body\":\"# Plan\\n\"}],\"reserved\":[{\"dir\":\"\",\"name\":\"index.md\",\"content\":\"---\\nokf_version: \\\"0.2\\\"\\ntitle: Mine\\n---\\n# Mine\\n\"}],\"blobs\":[{\"key\":\"assets/logo.txt\",\"contentType\":\"text/plain\",\"base64\":\"bG9nbw==\"}],\"history\":[{\"documentId\":\"notes/alpha\",\"label\":\"imported:git/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"author\":\"Ada <ada@example.com>\",\"authoredAt\":\"2026-01-02T03:04:05.000Z\",\"frontmatter\":{\"type\":\"Note\",\"title\":\"Alpha\"},\"body\":\"Alpha v0.\\n\"}]}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c3"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"bundles.create.v1\",\"data\":{\"workspace\":\"tenant:a\",\"bundleId\":\"hist.notes\",\"access\":\"write\",\"documents\":2,\"reserved\":1,\"blobs\":1,\"history\":{\"imported\":1,\"verified\":false}}}",
+    "truncated": false
+  }
+}

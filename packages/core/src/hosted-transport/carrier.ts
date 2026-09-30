@@ -31,14 +31,71 @@ export interface HostedRequestOptions {
    * lookup must carry exactly what the write carried.
    */
   recreate?: string;
+  /**
+   * The agent the client runs under, such as `claude-code` (`X-Superbee-Via`): the unverified
+   * `;via=` part of the host's agent label for this write. Attribution only, never authority, and
+   * not part of the request identity. Only the whole-document transport's write and outcome
+   * requests carry it, and only a token {@link isAgentLabelVia} admits is ever sent.
+   */
+  via?: string;
+  /**
+   * A person's typed acknowledgment of the host's mass-delete hold (`X-Superbee-Accept-Deletes`):
+   * the deletions they confirmed the bundle's 24-hour window may hold, from 1 to 100,000. Sent on
+   * a delete only, and never without that confirmation. Admission only, not part of the request
+   * identity.
+   */
+  acceptDeletes?: number;
+}
+
+/** The header that carries {@link HostedRequestOptions.acceptDeletes}. */
+export const ACCEPT_DELETES_HEADER = "X-Superbee-Accept-Deletes";
+
+/** The largest acknowledgment the host admits. */
+export const MAXIMUM_ACCEPTED_DELETIONS = 100000;
+
+/** Whether `value` is an acknowledgment count the host admits: an integer from 1 to 100,000. */
+export function isAcceptedDeletionCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= MAXIMUM_ACCEPTED_DELETIONS;
 }
 
 /** The header that carries {@link HostedRequestOptions.recreate}. */
 export const RECREATE_HEADER = "X-Superbee-Recreate";
 
+/** The header that carries {@link HostedRequestOptions.via}. */
+export const VIA_HEADER = "X-Superbee-Via";
+
+/**
+ * Whether `value` is a `via` token the host admits: 1 to 32 characters of `[a-z0-9._-]`, never
+ * starting with `superbee` (Superbee's own names). The same rule as the host's `isAgentLabelVia`;
+ * the `/sync/v1` golden exchanges (`create-200-ok-via`, `write-400-invalid-via`) pin the header
+ * and the host's refusal. A token the host refused would make every write a terminal 400.
+ */
+export function isAgentLabelVia(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9._-]{1,32}$/.test(value) && !value.startsWith("superbee");
+}
+
 export interface HostedCarrier {
   json(path: string, input: unknown, signal: AbortSignal, options: HostedRequestOptions): Promise<HostedAnswer>;
   stream(path: string, input: unknown, signal: AbortSignal): Promise<HostedStream>;
+}
+
+/**
+ * The cause a carrier's `unavailable` carries when the answer was larger than the request's
+ * `maximum`: the host answered, and the same request gets the same answer, so a reader may report
+ * it as a deterministic refusal rather than an outage. The carrier's code stays `unavailable`.
+ */
+export class HostedAnswerTooLarge extends Error {
+  override readonly name = "HostedAnswerTooLarge";
+  readonly maximum: number;
+  constructor(maximum: number) {
+    super(`the answer is larger than ${maximum} bytes`);
+    this.maximum = maximum;
+  }
+}
+
+/** True when `error` is a carrier failure because the answer exceeded its bound. */
+export function isAnswerTooLarge(error: unknown): boolean {
+  return error instanceof HostedCarrierError && error.cause instanceof HostedAnswerTooLarge;
 }
 
 export class HostedCarrierError extends Error {
@@ -78,7 +135,7 @@ async function readBounded(response: Response, maximum: number): Promise<unknown
       const part = await reader.read();
       if (part.done) break;
       size += part.value.byteLength;
-      if (size > maximum) throw new HostedCarrierError("unavailable");
+      if (size > maximum) throw new HostedCarrierError("unavailable", { cause: new HostedAnswerTooLarge(maximum) });
       chunks.push(part.value);
     }
   } finally {
@@ -157,10 +214,14 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
       if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
       if (request.binding !== undefined && !BINDING.test(request.binding)) throw new HostedCarrierError("denied");
       if (request.recreate !== undefined && !BINDING.test(request.recreate)) throw new HostedCarrierError("denied");
+      if (request.via !== undefined && !isAgentLabelVia(request.via)) throw new HostedCarrierError("denied");
+      if (request.acceptDeletes !== undefined && !isAcceptedDeletionCount(request.acceptDeletes)) throw new HostedCarrierError("denied");
       const extra: Record<string, string> = {};
       if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
       if (request.binding !== undefined) extra[bindingHeader] = request.binding;
       if (request.recreate !== undefined) extra[RECREATE_HEADER] = request.recreate;
+      if (request.via !== undefined) extra[VIA_HEADER] = request.via;
+      if (request.acceptDeletes !== undefined) extra[ACCEPT_DELETES_HEADER] = String(request.acceptDeletes);
       const deadline = AbortSignal.timeout(deadlineMs);
       const response = await send(path, input, signal, extra, deadline);
       let body: unknown;

@@ -17,15 +17,15 @@ under test. The honest breakdown is below — read it before depending on anythi
 
 **Requirements: macOS or Linux, and Node.js 20 or newer.**
 
-The current test release is on npm's `next` prerelease channel; `latest` provides the stable
-release. Install the prerelease with:
+Stable releases publish on npm's `latest` channel and prereleases on `next`. Install the
+stable release with:
 
 ```sh
-npm install -g superbee@next
+npm install -g superbee
 superbee setup
 ```
 
-`npm install -g superbee` installs the stable channel. The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
+The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
 how to use the installed command without carrying another copy of the executable. OpenCode uses
 its documented Claude-compatible Skill discovery, so it shares Claude Code's Skill bytes unless a
 custom Claude config root requires separate documented host paths.

@@ -231,8 +231,9 @@ in batches of 50 as it streams. Either way the client pays one round trip.
 
 A write over a network has three answers, not two: applied, refused, or lost before the client
 learned which. A document `PUT` or `DELETE` that carries an `Idempotency-Key` header is an
-identified write: the authority applies it at most once under that key and keeps the answer, so a
-client whose response was lost can look the answer up instead of guessing.
+identified write: the authority applies it at most once under that key for as long as it keeps the
+answer (see Retention below), so a client whose response was lost can look the answer up instead
+of guessing.
 
 - The key is 1 to 128 printable ASCII characters with no space; anything else is `400 USAGE`.
   Identity is scoped per bundle and per key.
@@ -264,16 +265,34 @@ client whose response was lost can look the answer up instead of guessing.
   `@superbee/core/uncertain-write` without `unknown`). It requires write access: the caller must
   hold the right to make the write in order to learn its outcome. `404 NOT_FOUND` means the
   authority holds nothing under that key; an invalid key is `400 USAGE`.
-- Retention. The reference store keeps an outcome for a window, 24 hours by default and
-  configurable with an injectable clock. A host states its window. A `404` after expiry is
-  indistinguishable from never recorded. A resubmission after expiry is safe only because the
-  write carries its compare-and-swap premise: a committed write resubmitted after expiry answers
-  `412` whose `actual` equals the client's own committed version. The client's uncertain-write
-  primitive (`performUncertainWrite` in `@superbee/core/uncertain-write`) returns that outcome as
+- Retention. The reference store keeps an outcome for a window, 24 hours by default and configurable
+  with an injectable clock. A host states its window. A `404` after expiry is indistinguishable from
+  never recorded, and so is a `404` from the reference memory store after a restart, which loses
+  every record at once. Past that point the key no longer makes the write at-most-once; only its
+  compare-and-swap premise guards a resubmission, which is why `createRemoteOperationTransport`
+  always sends the intent's base as that premise. A committed write resubmitted after expiry, with
+  nothing written to the document since, answers `412` whose `actual` equals the client's own
+  committed version. The client's uncertain-write primitive (`performUncertainWrite` in
+  `@superbee/core/uncertain-write`) returns that outcome as
   `{ "kind": "committed", "version": actual }`, so the intent is acknowledged at its own version
   and its shared base moves, exactly as a `200` would have settled it; a `412` naming any other
-  version, or a deleted target, stays a conflict. That property is what makes expiry safe, and
-  it is why an identified write is always a guarded write.
+  version, or a deleted target, stays a conflict.
+- The premise does not make expiry safe. Versions are content hashes, so when the document has
+  returned to exactly the state the premise names, the resubmission is indistinguishable from a
+  first delivery and is applied again: after a third party restores the base's exact bytes, a `PUT`
+  with `If-Match` overwrites that revert; after a third party deletes a created document, a `PUT`
+  with `If-None-Match: *` re-creates it; after a byte-identical re-create, a `DELETE` with
+  `If-Match` deletes it again. Each answers as a first application, so the client sees its write
+  succeed and nothing reports the lost change. This requires that neither the write's answer nor a
+  lookup reached the client while the record existed. `performUncertainWrite` resubmits on a `null`
+  lookup, and the reference wire transport (`createRemoteOperationTransport` over `RemoteBackend`)
+  maps every lookup `404` to `null`, so it is exposed. The hosted whole-document transport does not
+  resubmit once the intent is older than the host's stated window, less a skew margin: an absent
+  record then reads as unknown for a write, and a delete with no record is settled by reading the
+  document back. A client that must not overwrite such a revert resolves an unknown outcome by
+  lookup inside the window, and past it treats an absent record as unknown and reconciles against
+  the served head rather than resubmitting. A host that promises its window across restarts needs an
+  outcome store that survives them.
 - `GET /v0/capabilities` reports `operations: true` exactly when the host records outcomes. A
   host without a store answers any request carrying `Idempotency-Key`, and the lookup route, with
   `400 USAGE` "request identity is not supported by this host".
@@ -302,10 +321,34 @@ failed or interrupted claim to apply again. The reference memory store has no re
 - Other non-2xx responses become `RemoteError` with the wire code and HTTP status. A missing or
   malformed envelope uses a status-derived fallback.
 - Network failures and only `500`, `502`, `503`, and `504` are retried by default, with bounded
-  exponential backoff and jitter. A real 4xx, including `401` and `412`, is never retried. A guarded
-  write whose response was lost may surface a conservative conflict after retry. `RemoteBackend`
-  also permits unconditional writes; because a retry after an ambiguous transport failure can repeat
-  one, callers that require lost-update safety must supply `If-Match`/expect-absent semantics.
+  exponential backoff and jitter. A real 4xx, including `401` and `412`, is never retried. Every
+  retry of a request carries the same headers.
+- A guarded document write (a `PUT` with `If-Match` or `If-None-Match: *`, or a `DELETE` whose
+  `If-Match` is a content version) carries an `Idempotency-Key`: the caller's `requestId`, or else,
+  when the host reports `operations`, one `RemoteBackend` mints for that call. To learn that,
+  `RemoteBackend` asks `GET /v0/capabilities` before its first guarded document write without a
+  `requestId`, and concurrent writes share the one pending question. Only a `2xx` reporting
+  `operations: true` mints a key; any other answer sends the write without one, and a transport
+  failure rejects the write before it is sent. The answer is kept for the backend's lifetime, except
+  that a transport failure, a transient status still returned after retries, and a kept
+  `operations: true` that the host later refutes are not: when the host refuses a minted key with
+  `400 USAGE` "request identity is not supported by this host", the write is sent once more without
+  a key. A
+  caller's `requestId` is never dropped that way; its refusal is the answer. While the host keeps
+  the record, each retry is answered from it, so a retry after a lost response neither applies the
+  write again nor surfaces a conflict against its own first application. A host that loses the
+  record between attempts, as the reference memory store does across a restart, treats the retry as
+  a first delivery.
+- Every other guarded write is retried as a plain resubmission: a guarded document write sent
+  without a key (to a host without `operations`, after a capability question that ended in a
+  transient status, or resent after that refusal), a `DELETE` whose `If-Match` is not a content
+  version, and every guarded reserved-file or blob write, none of which the wire identifies. One
+  whose response was lost may surface a conservative conflict after retry. If another writer
+  returns the document to exactly the state the premise names before a retry arrives (the same
+  bytes, so the same version), the retry is applied again and silently overwrites that change.
+  `RemoteBackend` also permits unconditional writes, and mints no key for them; because a retry
+  after an ambiguous transport failure can repeat one, callers that require lost-update safety must
+  supply `If-Match`/expect-absent semantics.
 - Full-frontmatter list pagination supplies the optional `queryHeads` push-down. Core re-applies
   query semantics, so a foreign backend may over-return but cannot redefine matches.
 - `RemoteBackend.heads()` and `RemoteBackend.snapshot()` are the client half of "Heads and
@@ -326,7 +369,9 @@ failed or interrupted claim to apply again. The reference memory store has no re
   write are true replays. `RemoteBackend.lookupOperation(requestId)` reads the outcome route and
   maps `404` to `null`. `createRemoteOperationTransport` in `@superbee/core/remote-operations`
   is the uncertain-write transport over those two calls: a `document.write` intent becomes an
-  identified guarded `PUT`, and a lost answer is resolved by lookup before any resubmission.
+  identified guarded `PUT`, and a lost answer is resolved by lookup before any resubmission. An
+  intent it cannot send (any other kind, or content that does not parse) is refused `USAGE`
+  before any request leaves, never left unknown.
 
 ## Behavior evidence
 
@@ -350,7 +395,7 @@ suites exercise the semantics through the router, `RemoteBackend`, and a real so
 | WIRE-PROOF-07 | Reference server is loopback by default and unauthenticated. | `packages/server/src/serve.ts::NO AUTH in v0` | `packages/core/test/wire-protocol.test.ts::serve() boots a real node:http listener` |
 | WIRE-PROOF-08 | Remote canonical export differs from an original-byte guarantee. | `packages/cli/src/commands/doc/common.ts::canonical OKF re-serialization` | `packages/cli/test/remote.test.ts::canonical re-serialization is byte-identical` |
 | WIRE-PROOF-09 | Missing version transport fails closed. | `packages/core/src/remote-backend.ts::VERSION_MISSING` | `packages/cli/test/remote-auth.test.ts::response stripped of BOTH version headers` |
-| WIRE-PROOF-10 | Identified writes apply once, replay their record, and are looked up by key. | `packages/server/src/router.ts::id: "operation-lookup"`; `packages/server/src/operation-outcomes.ts::class MemoryOperationOutcomeStore` | `packages/core/test/wire-protocol.test.ts::identified PUT is applied once`; `packages/browser-local/test/sync.test.ts::lost acknowledgement: the fixture applies then drops the response` |
+| WIRE-PROOF-10 | Identified writes apply once while their record is kept, replay it, and are looked up by key; past retention a premise that matches again is applied again. | `packages/server/src/router.ts::id: "operation-lookup"`; `packages/server/src/operation-outcomes.ts::class MemoryOperationOutcomeStore` | `packages/core/test/wire-protocol.test.ts::identified PUT is applied once`; `packages/browser-local/test/sync.test.ts::lost acknowledgement: the fixture applies then drops the response`; `packages/core/test/wire-protocol.test.ts::a byte-identical revert to the premise's content lets a resubmission apply a second time`; `packages/core/test/wire-protocol.test.ts::a guarded write whose answer is lost is retried under the same minted Idempotency-Key` |
 | WIRE-PROOF-11 | Heads digest, `304` on `If-None-Match`, and deletions visible as missing ids. | `packages/server/src/router.ts::id: "docs-heads"`; `packages/core/src/heads-digest.ts::export function headsDigest` | `packages/core/test/wire-protocol.test.ts::GET /heads lists every id and version under the documented digest`; `packages/core/test/wire-protocol.test.ts::RemoteBackend.heads maps 304 to null` |
 | WIRE-PROOF-12 | Snapshot streams terminated NDJSON; a cut body or count mismatch is truncation. | `packages/server/src/router.ts::id: "docs-snapshot"`; `packages/server/src/serve.ts::pipeline(Readable.fromWeb` | `packages/core/test/wire-protocol.test.ts::GET /snapshot streams header, docs in id order, and end`; `packages/core/test/wire-protocol.test.ts::a snapshot cut after 40 lines`; `packages/core/test/wire-protocol.test.ts::serve() streams a 500-document snapshot` |
 
@@ -374,8 +419,10 @@ These are current limitations, not promises that a client may paper over:
 8. `backlinks` is reported false and has no wire endpoint; clients derive graph results from reads.
 9. Transient retry applies at the transport boundary, including unconditional writes. The storage
    seam permits those writes, so a caller that needs lost-update protection must provide a CAS premise.
-   Only an identified write turns a retry into a replay; an unidentified guarded write retried
-   after a lost response may still surface a conservative conflict.
+   Only an identified write turns a retry into a replay. `RemoteBackend` identifies guarded document
+   writes on a host with `operations`; any guarded write it sends without a key, including every
+   guarded reserved-file or blob write, retried after a lost response may still surface a
+   conservative conflict or apply again over a byte-identical revert.
 10. Request identity covers document `PUT` and `DELETE` only. Reserved-file and blob writes carry
     no identity yet, and the reference outcome store is in-memory: a restarted reference server
     holds no records, which a client observes as `404` on lookup.

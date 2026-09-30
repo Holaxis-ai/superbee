@@ -2,6 +2,7 @@ import {
   MemoryBackend,
   readDocVersioned,
   versionOfBytes,
+  stripHostText,
   type Bundle,
 } from "@superbee/core";
 import {
@@ -58,12 +59,14 @@ import { randomBytes } from "node:crypto";
 import { PendingClaimRegistry, PendingLaunchRegistry } from "./pending-launches.js";
 import {
   createMcpBundleContext,
+  MCP_WORKSPACE_HOMES,
   type McpBundleContext,
   type McpBundleContextOptions,
   type McpWorkspaceResolver,
   type McpWorkspaceSummary,
 } from "./workspace.js";
 import { McpServer202012 } from "./mcp-server-2020-12.js";
+import { registerOperationTools } from "./operations.js";
 
 // MCP Apps hosts may preload/cache resources by URI. Keep one URI immutable to one exact shell
 // byte sequence so a newly built server cannot silently execute stale trusted-shell code.
@@ -135,14 +138,36 @@ const workspaceSummarySchema = z
       .max(200)
       .optional(),
     available: z.boolean(),
+    home: z.enum(MCP_WORKSPACE_HOMES).optional(),
   })
   .strict();
+
+/** Text from the host's side of a listing, as `stripHostText` makes it safe to show; empty is refused. */
+const hostText = (max: number) => z.string().transform((value) => stripHostText(value, max)).pipe(z.string().min(1));
+/** Text that must already be plain (an id, a command): refused, never cut or rewritten, when it is not. */
+const plainText = (max: number) => z.string().min(1).max(max).refine((value) => stripHostText(value, max) === value);
+
+const reachableWorkspaceSchema = z
+  .object({
+    id: plainText(256),
+    name: hostText(200),
+    home: z.enum(MCP_WORKSPACE_HOMES),
+    location: hostText(200),
+    command: plainText(400),
+  })
+  .strict();
+
+/** At most this many reachable workspaces with no folder here, and notes, are listed. */
+export const MAX_REACHABLE_WORKSPACES = 50;
+const MAX_REACHABLE_NOTES = 10;
 
 const listWorkspacesOutputSchema = z.object({
   workspaces: z.array(workspaceSummarySchema),
   shown: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
   truncated: z.boolean(),
+  reachable: z.array(reachableWorkspaceSchema).max(MAX_REACHABLE_WORKSPACES).optional(),
+  reachable_notes: z.array(z.string()).max(MAX_REACHABLE_NOTES).optional(),
 });
 
 function normalizeWorkspaceSummaries(
@@ -846,7 +871,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       {
         title: "List Superbee workspaces",
         description:
-          "List the bounded private catalog of Superbee workspaces available for explicit selection. Results contain only stable IDs, labels, display names, and availability; they never expose filesystem paths.",
+          "List the bounded private catalog of Superbee workspaces available for explicit selection. Results contain only stable IDs, labels, display names, availability, and each workspace's home (local, git, or hosted, all read and written through their folder); they never expose filesystem paths.",
         inputSchema: z.object({}).strict(),
         outputSchema: listWorkspacesOutputSchema,
         annotations: {
@@ -862,13 +887,25 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
           const listed = await workspaceResolver.list();
           const workspaces = normalizeWorkspaceSummaries(listed);
           const page = workspaces.slice(0, MAX_WORKSPACE_CATALOG_PAGE);
+          // Best effort: a failure here never hides the folders, and a malformed entry is dropped.
+          const listing = await workspaceResolver.reachable?.().catch(() => undefined);
+          const reachable = (listing?.workspaces ?? [])
+            .flatMap((entry) => {
+              const parsed = reachableWorkspaceSchema.safeParse(entry);
+              return parsed.success ? [parsed.data] : [];
+            })
+            .slice(0, MAX_REACHABLE_WORKSPACES);
+          const notes = (listing?.notes ?? []).map((note) => stripHostText(String(note), 400)).filter(Boolean).slice(0, MAX_REACHABLE_NOTES);
+          const text = workspaces.length === 0
+            ? "No Superbee workspaces are registered in this user's private catalog."
+            : `Found ${workspaces.length} registered Superbee workspace(s); showing ${page.length}.`;
           return {
             content: [
               {
                 type: "text",
-                text: workspaces.length === 0
-                  ? "No Superbee workspaces are registered in this user's private catalog."
-                  : `Found ${workspaces.length} registered Superbee workspace(s); showing ${page.length}.`,
+                text: reachable.length === 0
+                  ? text
+                  : `${text} ${reachable.length} more can be reached but have no folder here; each names the command that brings it into one (tools cannot open them).`,
               },
             ],
             structuredContent: {
@@ -876,6 +913,8 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
               shown: page.length,
               total: workspaces.length,
               truncated: page.length < workspaces.length,
+              ...(reachable.length > 0 ? { reachable } : {}),
+              ...(notes.length > 0 ? { reachable_notes: notes } : {}),
             },
           };
         } catch {
@@ -964,6 +1003,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       },
     );
 
+    registerOperationTools(server, workspaceResolver, workspaceSelectorSchema);
   }
 
   if (fixedRuntime) registerAppTool(

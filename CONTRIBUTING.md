@@ -154,6 +154,12 @@ shell, second-order Git/Hg, and path-injection classes; product tests and review
 non-shell option injection, containment, symbolic-link, permission, atomicity, and destructive-scope
 invariants.
 
+The `TLA+ specs` workflow in `.github/workflows/tla-specs.yml` model-checks the specifications under
+`specs/tla` with a pinned, checksum-verified TLC release on pull requests, pushes to `main`, and
+manual dispatch. It is not a required lane and is outside the lane projection above.
+[`specs/tla/README.md`](specs/tla/README.md) owns how to run the models, what each config checks,
+and which fixed configs model changes that have not merged.
+
 Minimum iteration lanes by reach:
 
 | Touched surface | Run at minimum |
@@ -164,6 +170,7 @@ Minimum iteration lanes by reach:
 | Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts`; for CodeQL-only iteration, start with `node --test scripts/workflow-codeql-topology.test.mjs` |
 | Host-class-dependent tests (case or normalization fixtures, the identity lock) | `npm run ci:aliasing-host` |
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
+| `specs/tla` or `.github/workflows/tla-specs.yml` | `specs/tla/run-tlc.sh` on the touched area's configs |
 
 A CI topology change must update `scripts/ci-lanes.json` and this table in the same unit; never
 add path skipping without a separately reviewed fail-closed classifier. Automatic CI runs on Linux

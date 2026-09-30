@@ -80,6 +80,9 @@ import {
 import { testInvocation } from "./support/command-prefix.js";
 import { rendered } from "./support/rendered-command.js";
 
+/** The one sync envelope (S4) as TOON appends it to a receipt that moved nothing. */
+const envelopeToon = (home: "local" | "git") => `schema_version: 2\nhome: ${home}\nsent: 0\nreceived: 0\nconflicts: 0\nheld: 0\nnext: []\n`;
+
 // ── test scaffolding ───────────────────────────────────────────────────────────
 
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
@@ -521,7 +524,7 @@ test("sync: no git repo at all -> the definitive 'nothing to sync' empty state, 
   try {
     const { out, err } = await runSync(homes[0]!, ["--dir", plainDir]);
     assert.equal(err, undefined);
-    assert.equal(out, "sync: nothing to sync\n");
+    assert.equal(out, `sync: nothing to sync\n${envelopeToon("local")}`);
   } finally {
     await cleanup();
     await rm(plainDir, { recursive: true, force: true });
@@ -535,7 +538,7 @@ test("sync: a git repo with no board branch anywhere AND no bundle is ALSO 'noth
     git(lone, ["init", "-b", "main"]);
     const { out, err } = await runSync(homes[0]!, ["--dir", lone]);
     assert.equal(err, undefined);
-    assert.equal(out, "sync: nothing to sync\n");
+    assert.equal(out, `sync: nothing to sync\n${envelopeToon("local")}`);
   } finally {
     await cleanup();
     await rm(lone, { recursive: true, force: true });
@@ -696,7 +699,7 @@ test("sync: standalone board-branch root checkout commits, pushes, pulls, and st
 
     const clean = await runSync(homes[0]!, ["--dir", directA]);
     assert.equal(clean.err, undefined, clean.err?.message);
-    assert.equal(clean.out, "sync: already up to date\n");
+    assert.equal(clean.out, `sync: already up to date\n${envelopeToon("git")}`);
     assert.equal(existsSync(path.join(directA, BUNDLE_DIR)), false, "sync never creates a nested worktree");
 
     await cliDocWrite(directA, "notes/from-slack-agent", [
@@ -729,7 +732,7 @@ test("sync: standalone board-branch root checkout commits, pushes, pulls, and st
       .then((content) => content.includes("# Direct checkout")), true);
 
     const again = await runSync(homes[1]!, ["--dir", directB, "--pull-only"]);
-    assert.equal(again.out, "sync: already up to date\n");
+    assert.equal(again.out, `sync: already up to date\n${envelopeToon("git")}`);
   } finally {
     await cleanup();
     await topo.cleanup();
@@ -948,6 +951,25 @@ test("sync: root OKF bundle on the wrong branch fails closed before nested workt
   }
 });
 
+test("sync: a run that pushes commits left from an earlier run counts their documents as sent", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    // Two documents committed on the board earlier and never pushed (a push that failed).
+    await cliDocWrite(topo.a.board, "notes/one", ["--type", "Note", "--title", "One", "--body", "# one\n"]);
+    await cliDocWrite(topo.a.board, "notes/two", ["--type", "Note", "--title", "Two", "--body", "# two\n"]);
+    git(topo.a.board, ["add", "-A"]);
+    git(topo.a.board, ["commit", "-q", "-m", "earlier run"]);
+    const retried = await runSync(homes[0]!, ["--dir", topo.a.root, "--json"]);
+    assert.equal(retried.err, undefined, retried.err?.message);
+    const receipt = JSON.parse(retried.out) as Record<string, unknown>;
+    assert.deepEqual([receipt.committed, receipt.pushed, receipt.home, receipt.sent], [0, 1, "git", 2]);
+  } finally {
+    await topo.cleanup();
+    await cleanup();
+  }
+});
+
 test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees the attributed delta, both idempotent", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);
@@ -962,6 +984,8 @@ test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees 
     assert.match(first.out, /committed: 1/);
     assert.match(first.out, /pushed: 1/);
     assert.match(first.out, /actor: "human:mike"/);
+    // The one sync envelope, appended: the document sent, nothing received.
+    assert.match(first.out, /\nhome: git\nsent: 1\nreceived: 0\nconflicts: 0\nheld: 0\n/);
     // Finding 2: A is the AUTHOR of notes/founder, not a recipient of it — A's own receipt must
     // report pulled:0 and must NOT list its own just-committed doc as "incoming" (nothing arrived
     // FROM ORIGIN this run; see the dedicated finding-2 regression test below for the isolated case).
@@ -970,7 +994,7 @@ test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees 
 
     // Idempotent re-run on A: nothing new, definitive "already up to date".
     const again = await runSync(homeA!, ["--dir", topo.a.root]);
-    assert.equal(again.out, "sync: already up to date\n");
+    assert.equal(again.out, `sync: already up to date\n${envelopeToon("git")}`);
 
     // B's FIRST-EVER sync (no stored cursor yet) — must still see the attributed delta, not an
     // empty one, since the diff baseline falls back to B's own pre-sync HEAD.
@@ -979,12 +1003,13 @@ test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees 
     assert.match(bFirst.out, /committed: 0/);
     assert.match(bFirst.out, /pushed: 0/);
     assert.match(bFirst.out, /pulled: 1/);
+    assert.match(bFirst.out, /\nhome: git\nsent: 0\nreceived: 1\n/);
     assert.match(bFirst.out, /notes\/founder/);
     assert.match(bFirst.out, /human:mike/);
 
     // Idempotent re-run on B: nothing new.
     const bAgain = await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"]);
-    assert.equal(bAgain.out, "sync: already up to date\n");
+    assert.equal(bAgain.out, `sync: already up to date\n${envelopeToon("git")}`);
 
     // The awareness cache/cursor really landed under B's own home (U4's future read path).
     const key = bundleKey({ remoteUrl: topo.origin, subpath: "", checkoutRoot: topo.b.board });
@@ -1515,7 +1540,7 @@ test("sync: cross-clone isolation — clone A's clean sync must NOT erase clone 
     await rm(hookPath);
     const aResult = await runSync(home, ["--dir", topo.a.root]);
     assert.equal(aResult.err, undefined, aResult.err?.message);
-    assert.equal(aResult.out, "sync: already up to date\n");
+    assert.equal(aResult.out, `sync: already up to date\n${envelopeToon("git")}`);
 
     // A got its OWN state file under its OWN key…
     const keyA = bundleKey({ remoteUrl: topo.origin, subpath: "", checkoutRoot: topo.a.board });
@@ -1683,7 +1708,7 @@ test("sync: loud provisioning — THE MOUNT-MOVE FIELD FINDING end-to-end — a 
 
     // Steady-state re-run from the (now healthy) moved location: NEITHER announcement key appears.
     const again = await runSync(homes[0]!, ["--dir", movedRoot]);
-    assert.equal(again.out, "sync: already up to date\n", "no provisioned/repaired key on a steady-state re-run");
+    assert.equal(again.out, `sync: already up to date\n${envelopeToon("git")}`, "no provisioned/repaired key on a steady-state re-run");
   } finally {
     await cleanup();
     await topo.cleanup();
@@ -1720,7 +1745,7 @@ test("sync: steady state carries NEITHER 'provisioned' NOR 'repaired' — an alr
   try {
     const result = await runSync(homes[0]!, ["--dir", topo.a.root]);
     assert.equal(result.err, undefined, result.err?.message);
-    assert.equal(result.out, "sync: already up to date\n");
+    assert.equal(result.out, `sync: already up to date\n${envelopeToon("git")}`);
     assert.ok(!result.out.includes("provisioned:"));
     assert.ok(!result.out.includes("repaired:"));
   } finally {

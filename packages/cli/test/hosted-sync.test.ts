@@ -135,6 +135,33 @@ test("an edited file is sent as one whole document, then the checkout is up to d
   assert.equal(h.host.writes.length, 0);
 });
 
+test("writes name the agent the sync runs under (X-Superbee-Via), and a token the host would refuse is never sent", async () => {
+  for (const [env, via, ignored] of [
+    [{}, null, false],
+    [{ CLAUDECODE: "1" }, "claude-code", false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "codex" }, "codex", false],
+    [{ CLAUDECODE: "1", SUPERBEE_NO_VIA: "1" }, null, false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "codex", SUPERBEE_NO_VIA: "1" }, null, false],
+    [{ CLAUDECODE: "true" }, null, false],
+    [{ SUPERBEE_VIA: " codex " }, "codex", false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "" }, "claude-code", false],
+    [{ CLAUDECODE: "1", SUPERBEE_VIA: "Claude Code" }, null, true],
+    [{ SUPERBEE_VIA: "superbee-cli" }, null, true],
+  ] as const) {
+    const h = await harness(new FakeHost(), { SUPERBEE_ACCESS_TOKEN: TOKEN, ...env });
+    await edit(h, "notes/alpha", (doc) => void (doc.body = "Alpha body, revised.\n"));
+    const receipt = await runSync(h);
+    assert.equal(receipt.status, "synced", JSON.stringify(env));
+    assert.deepEqual(
+      h.host.writes.map((call) => call.via),
+      [via],
+      JSON.stringify(env),
+    );
+    // A dropped token is named in the receipt; the sync itself runs as usual.
+    assert.equal(typeof receipt.via_ignored === "string", ignored, JSON.stringify(env));
+  }
+});
+
 test("a new file is created against absence, and creates are sent before replaces", async () => {
   const h = await harness();
   await edit(h, "notes/alpha", (doc) => void (doc.body = "Links to [Gamma](gamma.md).\n"));
@@ -787,6 +814,74 @@ test("a change recorded as busy (concurrent_change) is resent under a fresh iden
   assert.notEqual(replaces[0]!.requestId, replaces[1]!.requestId);
 });
 
+test("a lost answer, then an edit, then a content refusal of the first change: the edit is sent in its place in the same run", async () => {
+  const h = await harness();
+  const original = hostDoc(h, "notes/alpha").version;
+  let lost = true;
+  let first: string | null = null;
+  h.host.hook = (call) => {
+    if (call.route === "outcome") return lost ? { kind: "drop" } : undefined;
+    if (call.route !== "replace") return undefined;
+    first ??= call.requestId;
+    if (lost) return { kind: "drop" };
+    return call.requestId === first ? { kind: "record", code: "validation_failed" } : undefined;
+  };
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "First.\n"));
+  const unknown = await failingSync(h);
+  assert.equal(rowFor(unknown.receipt, "notes/alpha")?.state, "unknown");
+
+  // The next edit chains behind the possibly delivered change; the host then refuses that change.
+  lost = false;
+  h.host.writes.length = 0;
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Second.\n"));
+  const receipt = await runSync(h);
+  assert.equal(receipt.status, "synced");
+  assert.equal(rowFor(receipt, "notes/alpha")?.state, "committed");
+  assert.equal(hostDoc(h, "notes/alpha").body, "Second.\n");
+  const replaces = h.host.writes.filter((call) => call.route === "replace");
+  assert.deepEqual(replaces.map((call) => [call.requestId === first, call.body.body, call.body.expectedVersion]), [
+    [true, "First.\n", original],
+    [false, "Second.\n", original],
+  ], "the refused change once, then the edit alone against the version the host still holds");
+  assert.deepEqual(h.host.applied, ["notes/alpha"]);
+});
+
+test("a lost answer, then an edit, then a busy refusal (concurrent_change) of the first change: the edit is sent in its place in the same run, and the first change never lands", async () => {
+  const h = await harness();
+  const original = hostDoc(h, "notes/alpha").version;
+  let lost = true;
+  let first: string | null = null;
+  h.host.hook = (call) => {
+    if (call.route === "outcome") return lost ? { kind: "drop" } : undefined;
+    if (call.route !== "replace") return undefined;
+    first ??= call.requestId;
+    if (lost) return { kind: "drop" };
+    return call.requestId === first ? { kind: "record", code: "concurrent_change" } : undefined;
+  };
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "First.\n"));
+  const unknown = await failingSync(h);
+  assert.equal(rowFor(unknown.receipt, "notes/alpha")?.state, "unknown");
+
+  // The next edit chains behind the possibly delivered change; the host then answers that change busy.
+  lost = false;
+  h.host.writes.length = 0;
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Second.\n"));
+  const receipt = await runSync(h);
+  assert.equal(receipt.status, "synced", JSON.stringify(receipt));
+  assert.equal(rowFor(receipt, "notes/alpha")?.state, "committed");
+  assert.equal(hostDoc(h, "notes/alpha").body, "Second.\n");
+  const replaces = h.host.writes.filter((call) => call.route === "replace");
+  assert.deepEqual(replaces.map((call) => [call.requestId === first, call.body.body, call.body.expectedVersion]), [
+    [true, "First.\n", original],
+    [false, "Second.\n", original],
+  ], "the busy change once, then the edit alone against the version the host still holds");
+  assert.deepEqual(h.host.applied, ["notes/alpha"], "one application: the edit, never the busy change");
+
+  const after = await runSync(h);
+  assert.ok(["synced", "up_to_date"].includes(String(after.status)), JSON.stringify(after));
+  assert.equal(h.host.writes.filter((call) => call.route === "replace").length, 2, "nothing is sent again");
+});
+
 test("held files stay as they are and nothing is sent for them", async () => {
   const h = await harness();
   await edit(h, "notes/alpha", (doc) => void (doc.frontmatter.type = "Decision"));
@@ -870,13 +965,12 @@ test("one sync command: Git-only flags are refused in a checkout, hosted verbs o
   assert.match(help.join(""), /--resolve keep\|take\|revise --doc <id>/);
 });
 
-test("sync is no longer refused in a checkout; ui and mcp (View writes) are", async () => {
+test("sync and mcp are not refused in a checkout; ui (View writes) is", async () => {
   const h = await harness();
   const context = { home: h.home, cwd: h.cwd };
   await assertAllowedInHostedCheckout("sync", ["--dir", h.folder], context);
-  for (const [command, args] of [["ui", ["--dir", h.folder]], ["mcp", ["--dir", h.folder]]] as const) {
-    await assert.rejects(assertAllowedInHostedCheckout(command, [...args], context), (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN" && error.details?.do_this_in === "app");
-  }
+  await assert.rejects(assertAllowedInHostedCheckout("ui", ["--dir", h.folder], context), (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN" && error.details?.do_this_in === "app");
+  await assertAllowedInHostedCheckout("mcp", ["--dir", h.folder], context);
   await assertAllowedInHostedCheckout("mcp", ["status", "--dir", h.folder], context);
   assert.ok(HOSTED_CHECKOUT_REFUSALS.every((row) => row.words[0] !== "sync"));
 });
@@ -924,4 +1018,37 @@ test("checkout into a symlinked --dir binds the real folder, and sync finds it t
   const synced = decode(out.at(-1)!.trim()) as Record<string, unknown>;
   assert.equal(rowFor(synced, "notes/alpha")?.state, "committed");
   assert.equal(host.docs.get("notes/alpha")!.body, "Through the link.\n");
+});
+
+test("a checkout naming no workspace whose id another workspace gains is told so, not that its bundle was deleted", async () => {
+  const h = await harness();
+  // The host now serves the id in two of the person's workspaces: the bare id selects neither,
+  // and the list names each by its reference.
+  const listed: string[] = [];
+  h.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(input)).pathname.slice("/sync/v1/".length);
+    if (route === "capabilities") return Response.json({ error: { code: "bundle_not_found", message: "The bundle is unavailable for this operation.", retryable: false } }, { status: 404 });
+    if (route === "bundles") {
+      return Response.json({
+        ok: true,
+        operationId: "bundles.list.v1",
+        data: { bundles: listed.map((bundleId) => ({ bundleId, name: bundleId, purpose: "", domains: [], lifecycle: "active", sensitivity: "internal" })) },
+      });
+    }
+    return h.host.fetch(input, init);
+  }) as typeof fetch;
+  listed.push(`north/${BUNDLE}`, `south/${BUNDLE}`);
+  const { error } = await failingSync(h);
+  assert.equal(error.code, "CONFLICT");
+  assert.equal(error.details?.reason, "ambiguous_bundle");
+  assert.deepEqual(error.details?.references, [`north/${BUNDLE}`, `south/${BUNDLE}`]);
+  assert.match(error.help ?? "", /checkout --adopt .* --host https:\/\/hosted\.example --workspace <workspace>/);
+  // Listed bare in one workspace and by reference in another, or bare twice: still ambiguous.
+  for (const shape of [[BUNDLE, `north/${BUNDLE}`], [BUNDLE, BUNDLE]]) {
+    listed.splice(0, listed.length, ...shape);
+    assert.equal((await failingSync(h)).error.details?.reason, "ambiguous_bundle", shape.join(","));
+  }
+  // Gone from every workspace: the bundle is gone.
+  listed.length = 0;
+  assert.equal((await failingSync(h)).error.details?.reason, "bundle_deleted_remotely");
 });

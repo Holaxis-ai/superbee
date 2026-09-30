@@ -8,22 +8,16 @@
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { isolatedUserEnv } from "./support/user-env.js";
+import { ensureBuiltCli, readNetworkLog, runSandboxed, sandboxEnv } from "./support/network-sandbox.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliPackageRoot = path.resolve(here, "../../superbee");
-const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
-const preload = path.join(here, "fixtures", "deny-network.mjs");
 
-before(() => {
-  if (!existsSync(cliBin)) execFileSync("node", ["build.mjs", "local-dev"], { cwd: cliPackageRoot, stdio: "inherit" });
-});
+before(ensureBuiltCli);
 
 interface Sandbox {
   root: string;
@@ -38,24 +32,12 @@ async function sandbox(): Promise<Sandbox> {
   await mkdir(home, { recursive: true });
   await writeFile(path.join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n");
   const log = path.join(root, "network.log");
-  const env = isolatedUserEnv(home, {
-    SUPERBEE_TEST_NETWORK_LOG: log,
-    SUPERBEE_NO_UPDATE_CHECK: "1",
-    SUPERBEE_ACTOR: "process:zero-network",
-    NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
-  });
-  for (const key of Object.keys(env)) {
-    if (key === "AGENTSTATE_LITE_REMOTE" || key === "SUPERBEE_ACCESS_TOKEN" || key.startsWith("SUPERBEE_HOST")) delete env[key];
-  }
+  const env = sandboxEnv(home, { log });
   return { root, home, log, env };
 }
 
 function run(box: Sandbox, args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    execFile("node", [cliBin, ...args], { cwd, env: box.env, encoding: "utf8", timeout: 60_000 }, (error, stdout, stderr) => {
-      resolve({ code: typeof error?.code === "number" ? error.code : error ? 1 : 0, stdout, stderr });
-    });
-  });
+  return runSandboxed(args, cwd, box.env);
 }
 
 function git(cwd: string, box: Sandbox, ...args: string[]): void {
@@ -63,19 +45,16 @@ function git(cwd: string, box: Sandbox, ...args: string[]): void {
 }
 
 async function networkLog(box: Sandbox): Promise<string[]> {
-  try {
-    return (await readFile(box.log, "utf8")).split("\n").filter(Boolean);
-  } catch {
-    return [];
-  }
+  return (await readNetworkLog(box.log)).map((line) => JSON.stringify(line));
 }
 
 /**
  * Every read, write and sync verb a persona-A session uses, in one bundle, and the exit code each
- * must return: 0, except `whoami` with no hosted host selected (USAGE, 2).
+ * must return: 0, except `whoami` with no hosted host selected (USAGE, 2) and `op run`, which a
+ * local or Git bundle answers NOT_IMPLEMENTED (exit 2).
  */
 function expectedCode(args: string[]): number {
-  return args[0] === "whoami" ? 2 : 0;
+  return args[0] === "whoami" || (args[0] === "op" && args[1] === "run") ? 2 : 0;
 }
 
 /** Run one command and require its expected exit code and no refused network call. */
@@ -110,6 +89,11 @@ function localCommands(): string[][] {
     ["session-start"],
     ["turn-end"],
     ["whoami"],
+    // Not a hosted checkout: nothing to convert, and nothing is fetched.
+    ["export", "--in-place"],
+    // No host operations here: none listed, none run, nothing fetched.
+    ["op", "list"],
+    ["op", "run", "documents.history.v1", "--input", '{"documentId":"notes/first"}'],
     ["sync"],
     ["sync", "--pull-only"],
   ];
@@ -205,6 +189,77 @@ test("a Git board makes zero network calls across establish, join, sync, pull an
     const status = JSON.parse((await run(box, ["status", "--json"], teammate)).stdout) as { home: string; sync: { state: string } };
     assert.equal(status.home, "git");
     assert.equal(status.sync.state, "clean");
+    assert.deepEqual(await networkLog(box), []);
+  } finally {
+    await rm(box.root, { recursive: true, force: true });
+  }
+});
+
+test("session-start's other-bundle listing and the opt-in Git turn end make zero network calls", async () => {
+  const box = await sandbox();
+  try {
+    const origin = path.join(box.root, "origin.git");
+    const founder = path.join(box.root, "founder");
+    const personal = path.join(box.root, "personal");
+    execFileSync("git", ["init", "-q", "--bare", origin], { env: { ...box.env, NODE_OPTIONS: "" } });
+    await mkdir(founder);
+    await mkdir(personal);
+    git(founder, box, "init", "-q");
+    git(founder, box, "remote", "add", "origin", origin);
+    git(founder, box, "commit", "-q", "--allow-empty", "-m", "init");
+    git(founder, box, "push", "-q", "origin", "HEAD:main");
+    for (const [cwd, args] of [
+      [founder, ["init", "--dir", ".superbee", "--recipe", "none"]],
+      [founder, ["sync", "--establish"]],
+      [founder, ["catalog", "add", "team"]],
+      [personal, ["init", "--recipe", "none"]],
+      [personal, ["catalog", "add", "personal"]],
+    ] as Array<[string, string[]]>) await runExpecting(box, args, cwd);
+
+    const started = JSON.parse((await runExpecting(box, ["session-start", "--json"], personal)).stdout) as { workspaces: { entries: { label: string; home: string }[] } };
+    assert.deepEqual(started.workspaces.entries.map((entry) => [entry.label, entry.home]), [["team", "git"]]);
+
+    await runExpecting(box, ["doc", "write", "notes/turn", "--type", "Note", "--title", "Turn"], founder);
+    await runExpecting(box, ["turn-end", "--git-boards"], founder);
+    const pushed = execFileSync("git", ["--git-dir", origin, "ls-tree", "-r", "--name-only", "board"], { env: { ...box.env, NODE_OPTIONS: "" }, encoding: "utf8" });
+    assert.match(pushed, /^notes\/turn\.md$/m, "the turn end committed and pushed the board");
+    assert.deepEqual(await networkLog(box), []);
+  } finally {
+    await rm(box.root, { recursive: true, force: true });
+  }
+});
+
+test("a Git board conflict makes zero network calls across --inspect and --resolve", async () => {
+  const box = await sandbox();
+  try {
+    const origin = path.join(box.root, "origin.git");
+    const founder = path.join(box.root, "founder");
+    const teammate = path.join(box.root, "teammate");
+    execFileSync("git", ["init", "-q", "--bare", origin], { env: { ...box.env, NODE_OPTIONS: "" } });
+    await mkdir(founder);
+    git(founder, box, "init", "-q");
+    git(founder, box, "remote", "add", "origin", origin);
+    git(founder, box, "commit", "-q", "--allow-empty", "-m", "init");
+    git(founder, box, "push", "-q", "origin", "HEAD:main");
+    for (const args of [
+      ["init", "--dir", ".superbee", "--recipe", "none"],
+      ["sync", "--establish"],
+      ["doc", "write", "notes/shared", "--type", "Note", "--title", "Shared", "--body", "Base."],
+      ["sync"],
+    ]) await runExpecting(box, args, founder);
+    execFileSync("git", ["clone", "-q", origin, teammate], { env: { ...box.env, NODE_OPTIONS: "" } });
+    await runExpecting(box, ["sync"], teammate);
+    await runExpecting(box, ["doc", "update", "notes/shared", "--body", "Teammate's."], teammate);
+    await runExpecting(box, ["sync"], teammate);
+    await runExpecting(box, ["doc", "update", "notes/shared", "--body", "Founder's."], founder);
+
+    const converged = await run(box, ["sync"], founder);
+    assert.equal(converged.code, 5, converged.stdout + converged.stderr);
+    const inspected = await run(box, ["sync", "--inspect", "--doc", "notes/shared", "--json"], founder);
+    assert.equal(inspected.code, 0, inspected.stdout + inspected.stderr);
+    assert.equal((JSON.parse(inspected.stdout) as { reason: string }).reason, "changed_remotely");
+    await runExpecting(box, ["sync", "--resolve", "keep", "--doc", "notes/shared"], founder);
+    await runExpecting(box, ["sync"], founder);
     assert.deepEqual(await networkLog(box), []);
   } finally {
     await rm(box.root, { recursive: true, force: true });

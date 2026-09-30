@@ -113,7 +113,7 @@ function validateContributorAuthority(
   ]) {
     assert.equal(meaningfulChangeTimeValue({ generated, timestamp: "legacy" }), expected);
   }
-  assert.match(sources.linkSource, /return `\$\{rel\}\.md`;/);
+  assert.match(sources.linkSource, /return relativePosix\(fromDir, `\$\{targetId\}\.md`\);/);
   assert.match(sources.sampleOkfReference, /description: A version-scoped OKF v0\.1 interop reference/);
   assert.match(sources.sampleOkfReference, /This reference is scoped to OKF v0\.1 interop/);
 

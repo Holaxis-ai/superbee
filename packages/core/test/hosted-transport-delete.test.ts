@@ -21,6 +21,8 @@ import {
   createWholeDocumentTransport,
   decodeOutcomeAnswer,
   HostedOutcomeError,
+  ACCEPT_DELETES_HEADER,
+  DELETIONS_HELD_REFUSAL_CODE,
   RECREATE_HEADER,
   SYNC_WRITE_ROUTES,
   wholeDocumentRequest,
@@ -31,7 +33,7 @@ import {
 } from "../src/hosted-transport/index.js";
 import { stringifyDoc } from "../src/frontmatter.js";
 import { DELETION_CONTENT, DELETION_VERSION } from "../src/journaled-backend.js";
-import { performUncertainWrite, type OperationIntent } from "../src/uncertain-write.js";
+import { AUTHORIZATION_REFUSAL_CODES, performUncertainWrite, type OperationIntent } from "../src/uncertain-write.js";
 import { versionOfBytes } from "../src/versioning.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -73,7 +75,7 @@ function createIntent(overrides: Partial<OperationIntent> = {}): OperationIntent
   return { requestId: REQUEST_ID, kind: "document.write", target: "notes/alpha", base: null, local: versionOfBytes(content), content, createdAt: new Date(NOW - 60_000).toISOString(), attempts: 0, state: "pending", ...overrides };
 }
 
-function over(script: Record<string, (Exchange | (() => HostedAnswer))[]>, intent: OperationIntent, options: { head?: string; now?: number; readFails?: boolean } = {}) {
+function over(script: Record<string, (Exchange | (() => HostedAnswer))[]>, intent: OperationIntent, options: { head?: string; now?: number; readFails?: boolean; transport?: Partial<Parameters<typeof createWholeDocumentTransport>[0]> } = {}) {
   const requests: { path: string; input: unknown; options: HostedRequestOptions }[] = [];
   const reads: string[] = [];
   const carrier: HostedCarrier = {
@@ -101,6 +103,7 @@ function over(script: Record<string, (Exchange | (() => HostedAnswer))[]>, inten
       operationsRetentionMs: async () => RETENTION,
     },
     now: () => options.now ?? NOW,
+    ...options.transport,
   });
   const deliver = (candidate = intent) => performUncertainWrite(transport, candidate, { settlement: transport.settlement, sleep: async () => {}, lookupDelayMs: 0 });
   return { transport, deliver, requests, reads };
@@ -331,4 +334,70 @@ test("document ids: unsettled, the refusal is confirmed by one lookup of the rec
     assert.deepEqual(result.outcome, { kind: "refused", code, message: ID_REFUSALS[code] }, code);
     assert.deepEqual(requests.map((request) => request.path), ["/sync/v1/create", "/sync/v1/outcome"]);
   }
+});
+
+// ── the host's mass-delete hold (superbee-hosted designs/server-side-mass-delete-hold) ──────────
+
+/** The golden exchanges superbee-hosted generates, copied under `fixtures/hosted-sync-v1/`. */
+const golden = (name: string): Exchange => JSON.parse(readFileSync(path.join(HERE, "fixtures", "hosted-sync-v1", `${name}.json`), "utf8")) as Exchange;
+
+test("mass-delete hold: 428 deletions_held classifies on its own row with the bundle's counts, and only on a delete", () => {
+  const held = golden("delete-428-deletions-held");
+  const body = JSON.parse(held.request.body) as { bundleId: string; documentId: string };
+  const expected = { operationIds: ["documents.delete.v1"], documentId: body.documentId, bundleId: body.bundleId };
+  const { row, result } = classifyWriteAnswer(answerOf(held), expected);
+  assert.equal(row.answer, "428 deletions_held");
+  assert.deepEqual([row.recorded, row.outcome], ["no", "refused"]);
+  assert.equal(result?.ok === false && result.error.deletions, 3);
+  assert.equal(result?.ok === false && result.error.baseline, 4);
+  // A delete's success acknowledged by the person is an ordinary commit.
+  assert.equal(classifyWriteAnswer(answerOf(golden("delete-200-ok-accepted")), expected).row.answer, "200 ok");
+  // Not a shape the client admits: without counts, or on another operation.
+  const bare = JSON.parse(held.response.body);
+  delete bare.error.baseline;
+  assert.equal(classifyWriteAnswer({ status: 428, headers: new Headers(), body: bare }, expected).row.answer, "other status");
+  // Parsed as the host sends it: a 428 that does not say it applied nothing is not the hold.
+  const unstated = JSON.parse(held.response.body);
+  delete unstated.error.writeState;
+  assert.equal(classifyWriteAnswer({ status: 428, headers: new Headers(), body: unstated }, expected).row.answer, "other status");
+  assert.equal(classifyWriteAnswer(answerOf(held), { ...expected, operationIds: ["documents.create.v1"] }).row.answer, "other status");
+});
+
+test("mass-delete hold: a held delete is refused without pausing and without a lookup, and its counts are reported", async () => {
+  const held: unknown[] = [];
+  const { deliver, requests } = over({ "/sync/v1/delete": [golden("delete-428-deletions-held")] }, deleteIntent({ target: "notes/three" }), {
+    transport: { onDeletionsHeld: (report) => held.push(report) },
+  });
+  const result = await deliver();
+  assert.equal(result.outcome.kind, "refused");
+  assert.equal(result.outcome.kind === "refused" && result.outcome.code, DELETIONS_HELD_REFUSAL_CODE);
+  // Only a person releases it: it is not one of the refusals a resume requeues.
+  assert.equal(AUTHORIZATION_REFUSAL_CODES.has(DELETIONS_HELD_REFUSAL_CODE), false);
+  assert.equal(requests.length, 1, "nothing was recorded, so nothing is looked up");
+  assert.deepEqual(held, [{ requestId: REQUEST_ID, target: "notes/three", deletions: 3, baseline: 4 }]);
+});
+
+test("mass-delete hold: the acknowledgment rides a delete write only, never a lookup or another write, and a bad count sends nothing", async () => {
+  const { deliver, requests } = over({ "/sync/v1/delete": [fixture("delete-200-ok")] }, deleteIntent(), { transport: { acceptDeletes: 3 } });
+  await deliver();
+  assert.deepEqual(requests[0]!.options, { maximum: 65536, writeRequest: REQUEST_ID, binding: BINDING, acceptDeletes: 3 });
+  const create = over({ "/sync/v1/create": [fixture("create-200-tombstoned")] }, createIntent(), { transport: { acceptDeletes: 3 } });
+  await create.deliver();
+  assert.equal(create.requests[0]!.options.acceptDeletes, undefined);
+  for (const acceptDeletes of [0, 1.5, 100001])
+    assert.throws(() => over({}, deleteIntent(), { transport: { acceptDeletes } }), TypeError);
+  const seen: Headers[] = [];
+  const carrier = createFetchCarrier({
+    baseUrl: "https://hosted.example",
+    credentials: async () => ({ Authorization: "Bearer t" }),
+    fetch: (async (_url: URL, init: RequestInit) => {
+      seen.push(new Headers(init.headers));
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch,
+  });
+  await carrier.json("/sync/v1/delete", {}, new AbortController().signal, { maximum: 1024, writeRequest: REQUEST_ID, binding: BINDING, acceptDeletes: 3 });
+  assert.equal(seen[0]!.get(ACCEPT_DELETES_HEADER), "3");
+  assert.equal(golden("delete-200-ok-accepted").request.headers["x-superbee-accept-deletes"], "3");
+  await assert.rejects(carrier.json("/sync/v1/delete", {}, new AbortController().signal, { maximum: 1024, acceptDeletes: 0 }));
+  assert.equal(seen.length, 1);
 });

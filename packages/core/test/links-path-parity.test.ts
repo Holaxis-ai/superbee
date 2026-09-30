@@ -60,9 +60,7 @@ function referenceRelativeHref(fromId: string, target: string): string {
   const targetId = t;
   const slash = fromId.lastIndexOf("/");
   const fromDir = slash >= 0 ? fromId.slice(0, slash) : "";
-  let rel = path.posix.relative(fromDir, targetId);
-  if (rel === "") rel = path.posix.basename(targetId);
-  return `${rel}.md`;
+  return path.posix.relative(fromDir, `${targetId}.md`);
 }
 
 const RESOLVE_CASES: Array<[string, string]> = [
@@ -111,6 +109,10 @@ const RELATIVE_CASES: Array<[string, string]> = [
   ["a/b/c", "a/x"],
   ["a/b", "a/b"],
   ["deep/nest/from", "top"],
+  // Ancestor hubs: the target id equals or prefixes the source's directory.
+  ["projects/a", "projects"],
+  ["a/b/c", "a"],
+  ["a/b/c", "a/b"],
   ["x", "https://example.com/keep"],
 ];
 

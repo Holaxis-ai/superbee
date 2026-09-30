@@ -9,10 +9,10 @@
     "method": "POST",
     "headers": {
       "content-type": "application/json",
-      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-100000000009",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-00000000010a",
       "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     },
-    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"n/9\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"new\"}"
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"n/10\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"new\"}"
   },
   "response": {
     "status": 429,

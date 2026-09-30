@@ -9,10 +9,11 @@
 //   hosted-checkouts/<checkout id>/store/         the working copy's log store (`FileJournaledBackend`)
 //   hosted-checkouts/paths/<sha256 of path>.json  the path index: folder path -> checkout id
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, rm, stat, unlink } from "node:fs/promises";
+import { lstat, readdir, rm, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
+import { hostedBundleReferenceText, isWorkspaceSlug, type HostedBundleReference } from "./reference.js";
 
 export const BINDING_SCHEMA = 1;
 const MAX_RECORD_BYTES = 64 * 1024;
@@ -34,6 +35,13 @@ export interface CheckoutBinding {
   /** Every workspace the identity reached at checkout, sorted. */
   readonly workspaces: readonly string[];
   readonly bundle_id: string;
+  /**
+   * The slug of the workspace that holds the bundle, when the checkout names it: every
+   * bundle-scoped request then names the bundle `<slug>/<bundle_id>`, so another of the person's
+   * workspaces gaining the same id never makes it ambiguous. Absent (older checkouts) or null: the
+   * bare id.
+   */
+  readonly workspace_slug?: string | null;
   /** The principal the gateway named at checkout; later commands refuse any other. */
   readonly principal_id: string;
   readonly created_at: string;
@@ -143,6 +151,7 @@ function isBinding(value: unknown): value is CheckoutBinding {
     (record.workspace === null || typeof record.workspace === "string") &&
     Array.isArray(record.workspaces) &&
     typeof record.bundle_id === "string" &&
+    (record.workspace_slug === undefined || record.workspace_slug === null || isWorkspaceSlug(record.workspace_slug)) &&
     typeof record.principal_id === "string" &&
     (record.state === "hydrating" || record.state === "ready") &&
     typeof record.folder_identity?.dev === "number" &&
@@ -207,4 +216,101 @@ export async function releaseCheckout(home: string, binding: CheckoutBinding): P
 /** Remove a checkout's private state (binding and store). Used only for a checkout that never became ready. */
 export async function discardCheckoutState(home: string, checkoutId: string): Promise<void> {
   await rm(checkoutDir(home, checkoutId), { recursive: true, force: true });
+}
+
+/** Every ready binding in private state, in no particular order. Unreadable records are skipped. */
+export async function listReadyBindings(home: string): Promise<CheckoutBinding[]> {
+  let names: string[];
+  try {
+    names = await readdir(hostedCheckoutsRoot(home));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return [];
+    throw error;
+  }
+  const out: CheckoutBinding[] = [];
+  for (const name of names) {
+    if (!/^[0-9a-f-]{36}$/.test(name)) continue;
+    const binding = await readBinding(home, name).catch(() => null);
+    if (binding && binding.state === "ready") out.push(binding);
+  }
+  return out;
+}
+
+/** A host as a binding records it: its origin and token audience (a `HostedTarget` has both). */
+export interface HostIdentity {
+  readonly origin: string;
+  readonly audience: string;
+}
+
+/** The reference a checkout names its bundle by: `<workspace_slug>/<bundle_id>`, or the bare id. */
+export function bindingReference(binding: CheckoutBinding): HostedBundleReference {
+  return { slug: binding.workspace_slug ?? null, bundleId: binding.bundle_id };
+}
+
+/** True when a binding is a checkout of this bundle reference on this host and audience. */
+export function bindsBundle(binding: CheckoutBinding, target: HostIdentity, reference: HostedBundleReference): boolean {
+  return (
+    binding.origin === target.origin &&
+    binding.audience === target.audience &&
+    binding.bundle_id === reference.bundleId &&
+    (binding.workspace_slug ?? null) === reference.slug
+  );
+}
+
+/**
+ * The live checkout folders of each bundle on this host and audience, keyed by the checkout's
+ * reference (`bindingReference`), sorted: a ready binding
+ * whose folder is still the one it was made for ({@link bindingForPath}). A deleted, moved or
+ * replaced folder is not a checkout here.
+ */
+export async function liveCheckoutFolders(home: string, target: HostIdentity): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  for (const binding of await listReadyBindings(home)) {
+    if (!bindsBundle(binding, target, bindingReference(binding))) continue;
+    const live = await bindingForPath(home, binding.path).catch(() => null);
+    if (live?.checkout_id !== binding.checkout_id) continue;
+    const reference = hostedBundleReferenceText(bindingReference(binding));
+    out.set(reference, [...(out.get(reference) ?? []), binding.path].sort());
+  }
+  return out;
+}
+
+/**
+ * The ready binding whose folder was moved to this canonical path: the folder here has the
+ * identity the binding recorded (a rename keeps it), and the binding's own path no longer holds
+ * that folder. A copy or a restore has a new identity and never matches. Null when none does.
+ *
+ * Stricter than {@link sameFolder}: both identities must carry a birth time. Device and inode
+ * alone cannot tell a moved folder from a restored one that reuses a freed inode, and a restore
+ * taken for a move would be synced against the old store as though its stale files were edits.
+ */
+export async function movedBindingFor(home: string, canonicalPath: string): Promise<CheckoutBinding | null> {
+  const identity = await folderIdentity(canonicalPath);
+  if (!identity?.birth) return null;
+  for (const binding of await listReadyBindings(home)) {
+    if (binding.path === canonicalPath || !binding.folder_identity.birth || !sameFolder(identity, binding.folder_identity)) continue;
+    const there = await folderIdentity(binding.path);
+    if (there && sameFolder(there, binding.folder_identity)) continue;
+    return binding;
+  }
+  return null;
+}
+
+/**
+ * Move a ready binding to the folder's new canonical path: the record is rewritten with the new
+ * path first, then the new path is indexed, then the old index entry is removed. The private store
+ * and projection are keyed by the checkout id, so they carry over untouched.
+ */
+export async function rebindCheckout(home: string, binding: CheckoutBinding, canonicalPath: string): Promise<CheckoutBinding> {
+  const moved: CheckoutBinding = { ...binding, path: canonicalPath };
+  await writeBinding(home, moved);
+  await indexCheckoutPath(home, moved);
+  const oldEntry = join(pathIndexDir(home), `${pathKey(binding.path)}.json`);
+  const entry = (await readJson(home, oldEntry)) as { checkout_id?: unknown } | null;
+  if (entry && entry.checkout_id === binding.checkout_id) {
+    await unlink(oldEntry).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+  }
+  return moved;
 }

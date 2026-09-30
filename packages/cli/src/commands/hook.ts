@@ -77,11 +77,12 @@ import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 import { readRegularFileTextNoFollowSync } from "../nofollow-read.js";
 import { inspectHookLaunchAvailability, type HookLaunchAvailability } from "../hook-launch-availability.js";
 import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
+import { readTurnEndGitBoards, recordTurnEndGitBoards } from "./turn-end.js";
 
 export const HOOK_USAGE = `superbee hook — manage the SessionStart board-aware hook
 
 Usage:
-  superbee hook install   [--scope project|user] [--turn-end-sync]
+  superbee hook install   [--scope project|user] [--turn-end-sync [--git-boards]]
   superbee hook status    [--scope project|user]
   superbee hook uninstall [--scope project|user] [--turn-end-sync]
 
@@ -100,12 +101,17 @@ In a hosted checkout (made by \`checkout\`), session-start pulls from the host i
 End-of-turn sync is a separate opt-in: \`hook install --turn-end-sync\` also installs a Stop hook
 that runs \`turn-end\` (one sync of a hosted checkout when the agent's turn ends; nothing anywhere
 else) for Claude Code and Codex. OpenCode has no Stop hook, so there it is not installed.
+A Git board is never synced by the Stop hook unless you also pass \`--git-boards\`, which records
+the opt-in for this user, whatever the --scope: then every installed Stop hook of yours, in any
+project, also syncs (commits, pulls, pushes) the shared board its session is in at turn end. \`hook install --turn-end-sync\` without it switches the Git sync back
+off; a plain \`hook install\` keeps the current choice.
 \`hook uninstall --turn-end-sync\` removes only the Stop hook; plain \`hook uninstall\` removes both.
 SUPERBEE_NO_TURN_SYNC=<any value> turns the Stop hook off without uninstalling it, and
 SUPERBEE_NO_AUTOPULL=<any value> turns off the automatic hosted pulls (reads and session start).
 
 Options:
   --turn-end-sync   install: also install the end-of-turn Stop hook; uninstall: remove only it
+  --git-boards      With install --turn-end-sync: the Stop hook also syncs a shared Git board
   --scope project   Write to the CURRENT project (default): .claude/, .codex/, .config/opencode/
   --scope user      Write to each host's configured user home (environment override or default)
   --json            Emit compact JSON instead of TOON
@@ -269,6 +275,13 @@ export function computeTurnEndHookUninstall(settings: HookSettings): [HookSettin
   if (next.length === 0) delete updated.hooks!.Stop;
   else updated.hooks!.Stop = next as NonNullable<HookSettings["hooks"]>["SessionStart"];
   return [updated, true];
+}
+
+/** `hook status`'s end-of-turn report: per host, plus the Git opt-in only while a Stop hook would act on it. */
+async function turnEndStatus(claude: HookSettings, codex: HookSettings, userHome: string): Promise<Record<string, unknown>> {
+  const hosts = { claude_code: turnEndHookInstalled(claude), codex: turnEndHookInstalled(codex) };
+  const git = (hosts.claude_code || hosts.codex) && (await readTurnEndGitBoards(userHome));
+  return { ...hosts, ...(git ? { git_boards: true } : {}) };
 }
 
 /** True when the managed Stop hook is installed in this settings file. */
@@ -1217,6 +1230,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         options: {
           scope: { type: "string" },
           "turn-end-sync": { type: "boolean" },
+          "git-boards": { type: "boolean" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -1270,6 +1284,13 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       help: `${cliInvocation()} hook status`,
     });
   }
+  const gitBoards = values["git-boards"] === true;
+  if (gitBoards && (sub !== "install" || !turnEndSync)) {
+    throw new CliError("USAGE", "--git-boards applies only to hook install --turn-end-sync", {
+      help: `${cliInvocation()} hook install --turn-end-sync --git-boards`,
+    });
+  }
+  const userHome = deps.home ?? homedir();
 
   if (sub === "status") {
     const inspection = inspectHookStatus(scope, deps);
@@ -1284,10 +1305,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
             claude_code: claude.installed,
             codex: codex.installed,
             opencode: opencode.installed,
-            turn_end_sync: {
-              claude_code: turnEndHookInstalled(readSettings(inspection.targets.claudeSettings)),
-              codex: turnEndHookInstalled(readSettings(inspection.targets.codexHooks)),
-            },
+            turn_end_sync: await turnEndStatus(readSettings(inspection.targets.claudeSettings), readSettings(inspection.targets.codexHooks), userHome),
             ...(inspection.displayCommand !== undefined ? { command: inspection.displayCommand } : {}),
             hosts: {
               claude_code: {
@@ -1438,6 +1456,17 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     } catch (err) {
       failTarget(targets.opencodePlugin, err);
     }
+    // The Git opt-in lives in private state, not in the hook command, so every CLI that can read
+    // the hook still recognizes it. --turn-end-sync sets it from the flag; a plain install keeps it.
+    let gitOptIn = await readTurnEndGitBoards(userHome);
+    if (turnEndSync && gitOptIn !== gitBoards) {
+      try {
+        await recordTurnEndGitBoards(userHome, gitBoards);
+        gitOptIn = gitBoards;
+      } catch (err) {
+        refusals.push(`the Git board opt-in could not be recorded (${err instanceof Error ? err.message : String(err)})`);
+      }
+    }
     if (refusals.length > 0) {
       throw new CliError(
         "RUNTIME",
@@ -1455,7 +1484,13 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       installed: true,
       command,
       turn_end_sync: stopHosts.length > 0
-        ? { installed: true, hosts: stopHosts, command: turnEndHookCommand(launch, deps.platform), opt_out: `${cliInvocation()} hook uninstall --turn-end-sync` }
+        ? {
+            installed: true,
+            hosts: stopHosts,
+            command: turnEndHookCommand(launch, deps.platform),
+            git_boards: gitOptIn,
+            opt_out: `${cliInvocation()} hook uninstall --turn-end-sync`,
+          }
         : { installed: false, opt_in: `${cliInvocation()} hook install --turn-end-sync` },
       ...lifecycle,
       targets: {

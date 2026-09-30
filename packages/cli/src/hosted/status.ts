@@ -6,38 +6,30 @@
 // classified by the sync scan itself (`scanCheckout` in preview), so status and sync never
 // disagree about what a file is.
 import { UNSETTLED_STATES, openLocalBundle } from "@superbee/browser-local";
-import { parseMarkdown, type JournaledBackend } from "@superbee/core";
-import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
-import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
+import type { JournaledBackend } from "@superbee/core";
 
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
-import { checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./binding.js";
+import type { CheckoutBinding } from "./binding.js";
+import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { ageMs, describeAge, HOSTED_STALE_WARNING_MS, readFreshness } from "./freshness.js";
 import { readProjection, scanCheckout, type HeldReason } from "./sync-scan.js";
 
 /** Ids shown per category; the counts are always the totals. */
 export const STATUS_IDS_SHOWN = 5;
 
-interface Classified {
+export interface Classified {
   readonly unsent: Set<string>;
   readonly conflicts: Set<string>;
   readonly held: Map<string, HeldReason>;
   readonly heldDeletions: Set<string>;
 }
 
-async function storeOkfVersion(store: JournaledBackend): Promise<"0.1" | "0.2" | undefined> {
-  const root = await store.readReserved("", "index.md");
-  if (!root) return undefined;
-  try {
-    const version = parseMarkdown(root.content, "index").frontmatter.okf_version;
-    return version === "0.1" || version === "0.2" ? version : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function classify(binding: CheckoutBinding, home: string, store: JournaledBackend): Promise<Classified> {
+/**
+ * Every document with local state the host does not have, by category, read from the store and a
+ * preview scan. The caller holds the checkout lock (or accepts a racing sync).
+ */
+export async function classifyCheckout(binding: CheckoutBinding, home: string, store: JournaledBackend): Promise<Classified> {
   const result: Classified = { unsent: new Set(), conflicts: new Set(), held: new Map(), heldDeletions: new Set() };
 
   // Changes already journaled: the first unsettled intent per document says what it is (as sync's rows do).
@@ -60,6 +52,8 @@ async function classify(binding: CheckoutBinding, home: string, store: Journaled
     if (row.reason === "bulk_deletion") result.heldDeletions.add(row.id);
     else result.held.set(row.id, row.reason);
   }
+  // The held set also names the deletes the host held: journaled, but a plain sync never sends them.
+  for (const id of report.hold?.ids ?? []) result.heldDeletions.add(id);
 
   // One category per document: a conflict needs the person first, then a held file.
   for (const id of result.conflicts) {
@@ -88,15 +82,7 @@ export async function hostedStatus(binding: CheckoutBinding, home: string, now: 
   const freshness = await readFreshness(home, binding.checkout_id);
   const age = ageMs(freshness.pulled_at, now);
   const stale = age === null || age > HOSTED_STALE_WARNING_MS;
-  const classified = await filesystemPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {
-    if (!lock) return null;
-    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id), readOnly: true });
-    try {
-      return await classify(binding, home, store);
-    } finally {
-      await store.close();
-    }
-  });
+  const classified = await withIdleCheckoutStore(binding, home, (store) => classifyCheckout(binding, home, store));
 
   const sync: Record<string, unknown> = {
     bundle_id: binding.bundle_id,

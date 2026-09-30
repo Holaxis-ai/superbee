@@ -510,6 +510,156 @@ test("a zero-wait delayed reclaimer diagnoses the live replacement, not its stal
   }
 });
 
+/**
+ * Seeds a same-host lock owned by a live `sleep` process and arranges that, right after the
+ * claimer under test reads that owner's record for the `triggerRead`-th time, the owner releases
+ * and exits and a replacement claimer in this process takes the free key.
+ */
+async function handOffAfterOwnerRead(triggerRead: number) {
+  const harness = await isolatedLockPaths();
+  await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+  const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+  const ownerFile = path.join(lockPath, "owner.json");
+  const holder = spawn("sleep", ["30"], { stdio: "ignore" });
+  const holderExited = new Promise<void>((resolve) => holder.once("exit", () => resolve()));
+  const holderToken = "released-live-holder";
+  await fs.mkdir(lockPath, { mode: 0o700 });
+  await fs.writeFile(
+    ownerFile,
+    JSON.stringify({
+      pid: holder.pid,
+      hostname: hostname(),
+      created_at_ms: Date.now(),
+      token: holderToken,
+      target: harness.target,
+    }),
+  );
+
+  const options = { portableRoot: harness.portableRoot, lockRoot: harness.lockRoot, waitMs: 0, pollMs: 2 };
+  const state: { releaseReplacement?: () => Promise<void>; replacementToken?: string } = {};
+  const originalReadFile = fs.readFile;
+  let reads = 0;
+  const restoreReadFile = replaceFsMethod("readFile", async (...args) => {
+    const content = await originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    if (String(args[0]) === ownerFile && ++reads === triggerRead) {
+      await fs.rm(lockPath, { recursive: true, force: true });
+      holder.kill("SIGKILL");
+      await holderExited;
+      state.releaseReplacement = await acquireFilesystemMutationLock(harness.target, options);
+      state.replacementToken = parseFilesystemMutationLockOwner(
+        JSON.parse(await originalReadFile(ownerFile, "utf8")),
+      )?.token;
+    }
+    return content;
+  });
+  const cleanup = async () => {
+    restoreReadFile();
+    holder.kill("SIGKILL");
+    await state.releaseReplacement?.().catch(() => {});
+    await fs.rm(harness.root, { recursive: true, force: true });
+  };
+  return { harness, lockPath, ownerFile, holderToken, options, state, cleanup };
+}
+
+test("a reclaimer whose dead-owner snapshot changed hands never quarantines the new live lock", async () => {
+  const { harness, ownerFile, options, state, cleanup } = await handOffAfterOwnerRead(1);
+  let releaseReclaimer: (() => Promise<void>) | undefined;
+  try {
+    const reclaim = acquireFilesystemMutationLock(harness.target, options).then((release) => {
+      releaseReclaimer = release;
+      return release;
+    });
+    await assert.rejects(reclaim, (err: unknown) => {
+      assert.ok(err instanceof FilesystemMutationLockError);
+      assert.equal(err.stale, false);
+      assert.equal(err.owner?.token, state.replacementToken);
+      return true;
+    });
+    assert.ok(state.replacementToken);
+    const current = parseFilesystemMutationLockOwner(JSON.parse(await fs.readFile(ownerFile, "utf8")));
+    assert.equal(current?.token, state.replacementToken, "the replacement must still hold its lock");
+    assert.deepEqual((await fs.readdir(harness.lockRoot)).filter((entry) => entry.includes(".stale-")), []);
+  } finally {
+    await releaseReclaimer?.().catch(() => {});
+    await cleanup();
+  }
+});
+
+test("a timeout reports stale only while the lock still carries the dead owner's record", async () => {
+  const { harness, lockPath, options, state, cleanup } = await handOffAfterOwnerRead(2);
+  try {
+    await assert.rejects(acquireFilesystemMutationLock(harness.target, options), (err: unknown) => {
+      assert.ok(err instanceof FilesystemMutationLockError);
+      // The lock changed hands after the snapshot: the diagnosis names the holder there now, never
+      // the released owner whose PID no longer holds anything.
+      assert.ok(state.replacementToken);
+      assert.equal(err.owner?.token, state.replacementToken);
+      assert.equal(err.owner?.pid, process.pid);
+      assert.equal(err.stale, false);
+      assert.equal(err.malformed, false);
+      assert.match(err.message, new RegExp(`held by PID ${process.pid} `));
+      assert.doesNotMatch(err.message, /stale filesystem mutation lock|Inspect and remove/);
+      return true;
+    });
+    assert.ok(state.replacementToken);
+    assert.ok(await fs.lstat(lockPath));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a reclaimer never quarantines an owner-less claim that replaced its dead-owner snapshot", async () => {
+  const harness = await isolatedLockPaths();
+  await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+  const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+  const ownerFile = path.join(lockPath, "owner.json");
+  await fs.mkdir(lockPath, { mode: 0o700 });
+  await fs.writeFile(
+    ownerFile,
+    JSON.stringify({
+      pid: 999_999,
+      hostname: hostname(),
+      created_at_ms: Date.now() - 60_000,
+      token: "replaced-dead-owner",
+      target: harness.target,
+    }),
+  );
+
+  // After the claimer's first owner read, the dead lock is gone and a competitor has made the
+  // directory but not yet written its owner record.
+  const originalReadFile = fs.readFile;
+  let reads = 0;
+  const restoreReadFile = replaceFsMethod("readFile", async (...args) => {
+    const content = await originalReadFile(...(args as Parameters<typeof fs.readFile>));
+    if (String(args[0]) === ownerFile && ++reads === 1) {
+      await fs.rm(lockPath, { recursive: true, force: true });
+      await fs.mkdir(lockPath, { mode: 0o700 });
+    }
+    return content;
+  });
+  try {
+    await assert.rejects(
+      acquireFilesystemMutationLock(harness.target, {
+        portableRoot: harness.portableRoot,
+        lockRoot: harness.lockRoot,
+        waitMs: 0,
+        pollMs: 2,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.equal(err.malformed, true);
+        assert.equal(err.stale, false);
+        return true;
+      },
+    );
+    assert.equal((await fs.lstat(lockPath)).isDirectory(), true, "the in-progress claim must stay in place");
+    assert.deepEqual((await fs.readdir(harness.lockRoot)).filter((entry) => entry.includes(".stale-")), []);
+  } finally {
+    restoreReadFile();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("competing stale-lock reclaimers serialize without stealing one another's live claim", async () => {
   const harness = await isolatedLockPaths();
   await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
@@ -896,6 +1046,133 @@ test("pin: timeout diagnosis distinguishes held vs foreign-host vs malformed in 
   assert.equal(malformed.malformed, true);
   assert.match(malformed.message, /owner metadata is missing or malformed/);
   assert.match(malformed.message, /only after confirming no process is mutating the target/);
+});
+
+/** A live process of this user that is not this one: a holder id that exists but did not claim the lock. */
+function liveProcess(): { pid: number; stop(): Promise<void> } {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  return {
+    pid: child.pid!,
+    stop: async () => {
+      child.kill("SIGKILL");
+      await exited;
+    },
+  };
+}
+
+/** Plant a well-formed owner record in the harness target's lock, as a holder that never released it leaves it. */
+async function plantLockOwner(
+  harness: Awaited<ReturnType<typeof isolatedLockPaths>>,
+  owner: { pid: number; hostname: string; created_at_ms: number; token: string },
+): Promise<string> {
+  const release = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot });
+  const entry = (await fs.readdir(harness.lockRoot)).find((name) => name.endsWith(".lock"));
+  await release();
+  const lockPath = path.join(harness.lockRoot, entry!);
+  await fs.mkdir(lockPath);
+  await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ ...owner, target: harness.target }));
+  return lockPath;
+}
+
+async function plantedToken(lockPath: string): Promise<string> {
+  return (JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as { token: string }).token;
+}
+
+test("a same-host holder whose process id is live is diagnosed as possibly reused, naming the lock, and is never reclaimed", async () => {
+  const harness = await isolatedLockPaths();
+  const reuser = liveProcess();
+  try {
+    const lockPath = await plantLockOwner(harness, { pid: reuser.pid, hostname: hostname(), created_at_ms: Date.now() - 10 * 24 * 60 * 60 * 1000, token: "reused" });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 20, pollMs: 5 }),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.equal(err.lockPath, lockPath);
+        assert.equal(err.stale, false);
+        assert.equal(err.malformed, false);
+        assert.ok(err.message.includes(`'${lockPath}' held by PID ${reuser.pid} `), err.message);
+        assert.match(err.message, new RegExp(`PID ${reuser.pid} may no longer be the process that claimed it`));
+        assert.match(err.message, /remove the lock only after confirming no process is mutating the target/);
+        return true;
+      },
+    );
+    assert.equal(await plantedToken(lockPath), "reused");
+  } finally {
+    await reuser.stop();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a holder recorded on another host is diagnosed as needing a person, naming the lock, and is never reclaimed", async () => {
+  const harness = await isolatedLockPaths();
+  try {
+    const lockPath = await plantLockOwner(harness, { pid: 999_999, hostname: "renamed-host", created_at_ms: Date.now() - 60_000, token: "renamed" });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 20, pollMs: 5 }),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.equal(err.lockPath, lockPath);
+        assert.equal(err.stale, false);
+        assert.equal(err.malformed, false);
+        assert.ok(err.message.includes(`'${lockPath}' is held by PID 999999 on renamed-host, which is not this host (${hostname()})`), err.message);
+        assert.match(err.message, /never reclaimed automatically\. A person must check it/);
+        assert.doesNotMatch(err.message, /retry the mutation/);
+        return true;
+      },
+    );
+    assert.equal(await plantedToken(lockPath), "renamed");
+  } finally {
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a record naming this process's own id is reclaimed only when an earlier process wrote it", async () => {
+  const harness = await isolatedLockPaths();
+  const options = { lockRoot: harness.lockRoot, waitMs: 20, pollMs: 5 };
+  const held = (err: unknown) => err instanceof FilesystemMutationLockError && !err.stale && !err.malformed && err.owner?.pid === process.pid;
+  try {
+    // Left by an earlier process that had this id (a container entry point after a restart): reclaimed.
+    const lockPath = await plantLockOwner(harness, { pid: process.pid, hostname: hostname(), created_at_ms: Date.now() - 10 * 24 * 60 * 60 * 1000, token: "earlier-process" });
+    const release = await acquireFilesystemMutationLock(harness.target, options);
+    assert.ok((await fs.readdir(harness.lockRoot)).some((entry) => entry.startsWith(`${path.basename(lockPath)}.stale-`)), "the earlier process's lock is quarantined");
+    assert.notEqual(await plantedToken(lockPath), "earlier-process");
+
+    // This process's own claim stays held even when its record looks older than this process.
+    const record = JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as Record<string, unknown>;
+    await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ ...record, created_at_ms: Date.now() - 10 * 24 * 60 * 60 * 1000 }));
+    await assert.rejects(() => acquireFilesystemMutationLock(harness.target, options), held);
+    await release();
+
+    // A record this process did not write but that is younger than this process is not provably an
+    // earlier process's, so it stays held.
+    const younger = await plantLockOwner(harness, { pid: process.pid, hostname: hostname(), created_at_ms: Date.now(), token: "younger" });
+    await assert.rejects(() => acquireFilesystemMutationLock(harness.target, options), held);
+    assert.equal(await plantedToken(younger), "younger");
+  } finally {
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a claim by another copy of the lock module in this process stays held after the wall clock jumps past it", async () => {
+  const harness = await isolatedLockPaths();
+  const copy = (await import(new URL("../src/filesystem-lock.ts?second-copy", import.meta.url).href)) as typeof import("../src/filesystem-lock.js");
+  assert.notEqual(copy.acquireFilesystemMutationLock, acquireFilesystemMutationLock);
+  const realNow = Date.now;
+  try {
+    const release = await acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot });
+    // A suspend or a forward clock step: the wall clock moves while this process's uptime does not.
+    Date.now = () => realNow() + 60 * 60 * 1000;
+    await assert.rejects(
+      () => copy.acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot, waitMs: 20, pollMs: 5 }),
+      (err: unknown) => err instanceof copy.FilesystemMutationLockError && !err.stale && err.owner?.pid === process.pid,
+    );
+    Date.now = realNow;
+    await release();
+  } finally {
+    Date.now = realNow;
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
 });
 
 test("an explicit lock root isolates runtime state while preserving the portable-root boundary", async () => {

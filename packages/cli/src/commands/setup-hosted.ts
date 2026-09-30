@@ -17,14 +17,13 @@ import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import {
   defaultHostedAuthDeps,
-  ensureHostedAccessToken,
   hostArgument,
   resolveHostSelection,
   writeDefaultHost,
   type HostedAuthDeps,
 } from "../hosted-auth/session.js";
-import { createHostedSyncClient } from "../hosted/client.js";
-import { readDefaultWorkspace, writeDefaultWorkspace } from "../hosted/defaults.js";
+import { connectHostedAccount, hostedListCommand } from "../hosted/account.js";
+import { writeDefaultWorkspace } from "../hosted/defaults.js";
 
 export const SETUP_HOSTED_USAGE = `superbee setup hosted — sign in to hosted Superbee and choose your default workspace
 
@@ -90,21 +89,13 @@ export async function setupHosted(argv: string[], partial: Partial<SetupHostedDe
   }${values.json ? commandFragment` --json` : commandFragment``}`;
 
   // AUTH_REQUIRED passes through unchanged with its one link; the resume is this command.
-  const token = await ensureHostedAccessToken(target, { resume }, auth);
-  const client = createHostedSyncClient({ target, accessToken: token.accessToken, resume, ...(partial.fetch ? { fetch: partial.fetch } : {}) });
-  const identity = await client.whoami();
+  const { identity, workspace: chosen } = await connectHostedAccount(
+    target,
+    { workspace: values.workspace, resume, otherWorkspace: `${cliInvocation()} setup hosted --url ${commandToken(host)} --workspace <id>` },
+    { auth, ...(partial.fetch ? { fetch: partial.fetch } : {}) },
+  );
   await writeDefaultHost(auth.home, host);
-
   const workspaces = identity.tenantIds;
-  const remembered = await readDefaultWorkspace(auth.home, target.origin);
-  if (values.workspace !== undefined && !workspaces.includes(values.workspace)) {
-    throw new CliError("NOT_FOUND", `you are not a member of workspace '${values.workspace}' on ${target.origin}`, {
-      details: { workspace: values.workspace, workspaces },
-      help: `${cliInvocation()} setup hosted --url ${commandToken(host)} --workspace <id>`,
-    });
-  }
-  const chosen =
-    values.workspace ?? (workspaces.length === 1 ? workspaces[0]! : remembered !== null && workspaces.includes(remembered) ? remembered : null);
   const base = {
     host: target.origin,
     signed_in: true,
@@ -152,7 +143,7 @@ export async function setupHosted(argv: string[], partial: Partial<SetupHostedDe
           ...base,
           status: "ready",
           workspace: chosen,
-          help: [`${cliInvocation()} checkout <bundle-id>`],
+          help: [hostedListCommand(target), `${cliInvocation()} checkout <bundle-id>`],
         },
       },
       mode,

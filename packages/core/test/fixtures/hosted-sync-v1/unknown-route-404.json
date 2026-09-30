@@ -1,0 +1,23 @@
+{
+  "name": "unknown-route-404",
+  "description": "A route the family does not have: what a gateway from before a route (operations and run, for example) answers.",
+  "route": "/sync/v1/nope",
+  "rows": [
+    "404 unknown route"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{}"
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":\"not_found\"}",
+    "truncated": false
+  }
+}

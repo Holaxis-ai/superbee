@@ -33,6 +33,7 @@ export type {
   TransientShowViewInput,
   TransientViewLaunchPayload,
 } from "./contract.js";
+export { LIST_OPERATIONS_TOOL_NAME, RUN_OPERATION_TOOL_NAME } from "./operations.js";
 export {
   DOCUMENT_PRESENTATION_SCHEMA_VERSION,
   parseDocumentPresentationPayload,
@@ -40,8 +41,13 @@ export {
 } from "./document-contract.js";
 export {
   createMcpBundleContext,
+  MCP_WORKSPACE_HOMES,
+  type McpWorkspaceHome,
+  type McpReachableWorkspace,
+  type McpReachableListing,
   type McpBundleContext,
   type McpBundleContextOptions,
+  type McpOperationsStop,
   type McpWorkspaceResolver,
   type McpWorkspaceSummary,
 } from "./workspace.js";

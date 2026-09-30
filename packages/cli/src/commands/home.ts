@@ -78,7 +78,7 @@ import { deriveOffers, OFFERS_HELP, type OfferRow } from "../offers.js";
 import { parseArgs } from "node:util";
 import path from "node:path";
 import { realpath } from "node:fs/promises";
-import { bundleHomeAt, type BundleHome } from "../bundle-home.js";
+import { bundleHomeAt, unboundCopyOf, type BundleHome } from "../bundle-home.js";
 import {
   BOARD_BRANCH,
   BOARD_REF,
@@ -197,6 +197,8 @@ export interface BundleSummary {
   okfVersion?: string | null;
   /** Where the bundle lives (`bundle-home.ts`); injected test fakes may omit it (the block omits the field then). */
   home?: BundleHome;
+  /** A hosted checkout marker with no binding here: what it says and the adopt command (`bundle-home.ts`). */
+  copyOfCheckout?: Record<string, unknown>;
 }
 
 /**
@@ -232,9 +234,14 @@ export interface HomeBindingNote {
   recovery?: string;
 }
 
-/** The deliberately small user-scoped catalog projection shown during agent orientation. */
+/**
+ * The deliberately small user-scoped catalog projection shown during agent orientation. `home`
+ * reads only the label; `session-start` adds where each other bundle lives and how fresh it is.
+ */
 export interface HomeWorkspace {
   label: string;
+  home?: string;
+  freshness?: string;
 }
 
 export type HomeWorkspacesBlock =
@@ -255,7 +262,7 @@ const HOME_RECENT_LIMIT = 5;
 /** Catalog orientation must remain a cheap hint even when an entry points at a slow filesystem. */
 export const HOME_WORKSPACES_BUDGET_MS = 500;
 /** Cap the always-on workspace orientation block; the full catalog remains one explicit read away. */
-const HOME_WORKSPACES_LIMIT = 15;
+export const HOME_WORKSPACES_LIMIT = 15;
 
 /** Injectable seam so the offline view is unit-testable without real I/O. */
 export interface HomeDeps {
@@ -404,8 +411,9 @@ export async function defaultSummarizeBundle(
     // as the v0.1 compatibility fallback, exactly as the mutation service resolves it.
     const okfVersion = await readBundleOkfVersion(bundle);
     // Local Git and private state only, like the rest of this render; unreadable evidence reads as local.
-    const bundleHome = (await bundleHomeAt(await realpath(bundle.root).catch(() => bundle.root))).home;
-    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }), home: bundleHome };
+    const facts = await bundleHomeAt(await realpath(bundle.root).catch(() => bundle.root));
+    const copy = unboundCopyOf(facts).copy_of_checkout as Record<string, unknown> | undefined;
+    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }), home: facts.home, ...(copy ? { copyOfCheckout: copy } : {}) };
   } catch {
     // A bundle root exists but could not be read — DISTINCT from "no bundle" (see UnreadableBundle).
     return { root: collapseHomeDirectory(bundle.root), unreadable: true };
@@ -913,6 +921,8 @@ export function buildHomeView(
     const bundleBlock: Record<string, unknown> = {};
     // Where it lives comes first: every later line (sync, refusals, conflicts) depends on it.
     if (summary.home) bundleBlock.home = summary.home;
+    // A copied, moved or restored hosted checkout: local until adopted, and the one command that binds it.
+    if (summary.copyOfCheckout) bundleBlock.copy_of_checkout = summary.copyOfCheckout;
     // Identity: the derived project name, so a conventional
     // conventional bundle reads as ITS project, not as the folder name every project shares.
     if (summary.name) {
