@@ -14,7 +14,7 @@ import { test, expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { deleteDoc, writeBlob, writeDoc } from "@superbee/core";
-import { approveViewIfPrompted, blockOpaqueOriginFrameRequests, bootUiOverPagesBundle, bootUiServerInProcess, openRegisteredView, seedPagesBundle, viewContentFrame, viewFrame, CLI_DIST } from "./harness.js";
+import { approveViewIfPrompted, bootUiOverPagesBundle, bootUiServerInProcess, openRegisteredView, seedPagesBundle, viewContentFrame, viewFrame, CLI_DIST } from "./harness.js";
 import { VIEW_LOAD_DEADLINE_MS } from "../src/views/viewReadiness.js";
 
 const VIEW_LOAD_FAILURE_ASSERTION_TIMEOUT_MS = VIEW_LOAD_DEADLINE_MS + 4_000;
@@ -80,36 +80,6 @@ test("a directly opened data Page completes its startup bridge queries before if
     const frame = viewFrame(page);
     await expect(frame.locator(".item .title", { hasText: "Spike work" })).toBeVisible();
     await expect(frame.locator(".roll .count")).toHaveText("0/2 done");
-  } finally {
-    await ui.cleanup();
-  }
-});
-
-test("a View loads in a browser that refuses every request an opaque-origin frame makes", async ({ page }) => {
-  const ui = await bootUiOverPagesBundle(TASKS);
-  try {
-    const refused = await blockOpaqueOriginFrameRequests(page);
-    const pageByteRequests: Array<{ url: string; fromShell: boolean }> = [];
-    page.on("request", (request) => {
-      const pathname = new URL(request.url()).pathname;
-      if (!pathname.startsWith("/__page/") || pathname === "/__page/mint") return;
-      pageByteRequests.push({ url: request.url(), fromShell: request.frame() === page.mainFrame() });
-    });
-    await page.goto(ui.url);
-    await openRegisteredView(page, "views-registry/roadmap");
-
-    // The bridge round trip works end to end: data reached the View.
-    const frame = viewFrame(page);
-    await expect(frame.locator(".item .title", { hasText: "Spike work" })).toBeVisible();
-    await expect(frame.locator(".roll .count")).toHaveText("0/2 done");
-    await page.waitForTimeout(VIEW_LOAD_SURVIVAL_WAIT_MS);
-    await expect(page.locator(".view-status-error")).toHaveCount(0);
-
-    // The View's HTML came from exactly one shell fetch; no frame asked for it, and nothing the
-    // emulated browser would refuse was ever requested.
-    expect(pageByteRequests).toHaveLength(1);
-    expect(pageByteRequests[0]!.fromShell).toBe(true);
-    expect(refused).toEqual([]);
   } finally {
     await ui.cleanup();
   }

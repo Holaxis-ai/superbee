@@ -391,6 +391,9 @@ export function PageFrame({ pageId }: { pageId: string }) {
       const frame = iframeRef.current;
       if (!frame || ev.source !== frame.contentWindow) return;
       if (activeFrameSeqRef.current !== loadSeqRef.current) return;
+      // The host is opaque by its response policy. A host that arrives with a real origin lost
+      // that policy (a stripped header, a proxy) and must never receive View bytes or broker.
+      if (ev.origin !== "null") return;
       const hostEvent = parseViewHostEvent(ev.data);
       if (hostEvent === null) return;
       // Capture the shell epoch at receipt. The server independently resolves the launch,
@@ -412,6 +415,12 @@ export function PageFrame({ pageId }: { pageId: string }) {
           "*",
           [bytes],
         );
+        return;
+      }
+      if (hostEvent.type === "failed") {
+        const delivery = deliveryRef.current;
+        if (!delivery || delivery.seq !== seq || hostEvent.deliveryId !== delivery.deliveryId) return;
+        revoke(`This browser refused to show the View (${hostEvent.reason}). ${REGULAR_BROWSER_HINT}`);
         return;
       }
       if (hostEvent.type === "loaded") {
@@ -528,7 +537,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [clearFrameReadiness, discardPendingAction, markFrameReady, pageId, probeFrameDelivery]);
+  }, [clearFrameReadiness, discardPendingAction, markFrameReady, pageId, probeFrameDelivery, revoke]);
 
   // Live: push doc changes to the subscribed page; REVOKE when this page's registry doc is
   // removed (P1 — an open frame must not keep reading through the bridge after its page is

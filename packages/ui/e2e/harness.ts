@@ -84,6 +84,8 @@ async function initiatedByOpaqueFrame(page: Page, request: Request): Promise<boo
     return false;
   }
   if (frame === page.mainFrame()) return false;
+  // Local schemes (blob:, data:) never reach the network; WebKit merely routes them too.
+  if (!/^https?:$/.test(new URL(request.url()).protocol)) return false;
   if (!request.isNavigationRequest()) return (await frameOrigin(frame)) === "null";
   const element = await frame.frameElement().catch(() => null);
   const sandbox = element ? await element.getAttribute("sandbox") : null;

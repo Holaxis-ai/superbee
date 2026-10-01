@@ -119,7 +119,7 @@ function viewMessage(message: unknown) {
 }
 
 function sendFromHost(iframe: HTMLIFrameElement, data: unknown) {
-  window.dispatchEvent(new MessageEvent("message", { source: iframe.contentWindow, data }));
+  window.dispatchEvent(new MessageEvent("message", { origin: "null", source: iframe.contentWindow, data }));
 }
 
 /** Play the host: ask for this generation's bytes, then report that the child frame loaded them. */
@@ -177,7 +177,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
 
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
     expect(iframe).toBeTruthy();
-    act(() => window.dispatchEvent(new MessageEvent("message", {
+    act(() => window.dispatchEvent(new MessageEvent("message", { origin: "null",
       source: iframe.contentWindow,
       data: viewMessage({ bridge: "v0", id: "hello-1", type: "hello" }),
     })));
@@ -203,7 +203,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
 
       const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
       expect(iframe).toBeTruthy();
-      act(() => window.dispatchEvent(new MessageEvent("message", {
+      act(() => window.dispatchEvent(new MessageEvent("message", { origin: "null",
         source: iframe.contentWindow,
         data: viewMessage({ bridge: "v0", id: "hello-before-load", type: "hello" }),
       })));
@@ -230,7 +230,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     expect(iframe).toBeTruthy();
 
     // Generation 1 proves itself by message, then fires load: no probe.
-    act(() => window.dispatchEvent(new MessageEvent("message", {
+    act(() => window.dispatchEvent(new MessageEvent("message", { origin: "null",
       source: iframe.contentWindow,
       data: viewMessage({ bridge: "v0", id: "hello-gen1", type: "hello" }),
     })));
@@ -278,7 +278,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     });
     expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
 
-    act(() => window.dispatchEvent(new MessageEvent("message", {
+    act(() => window.dispatchEvent(new MessageEvent("message", { origin: "null",
       source: window,
       data: viewMessage({ bridge: "v0", id: "wrong-source", type: "hello" }),
     })));
@@ -477,7 +477,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     // real. Post-fix, `loadPage` pre-revokes synchronously before its first `await`.
     act(() => {
       window.dispatchEvent(
-        new MessageEvent("message", { data: viewMessage({ bridge: "v0", id: "q1", type: "query", params: {} }), source: contentWindow }),
+        new MessageEvent("message", { origin: "null", data: viewMessage({ bridge: "v0", id: "q1", type: "query", params: {} }), source: contentWindow }),
       );
     });
     await flush();
@@ -511,7 +511,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(listAllHeads).mockImplementationOnce(() => pendingQuery.promise);
     act(() => {
       window.dispatchEvent(
-        new MessageEvent("message", { data: viewMessage({ bridge: "v0", id: "q1", type: "query", params: {} }), source: firstContentWindow }),
+        new MessageEvent("message", { origin: "null", data: viewMessage({ bridge: "v0", id: "q1", type: "query", params: {} }), source: firstContentWindow }),
       );
     });
     await flush();
@@ -584,7 +584,7 @@ describe("PageFrame: registered Page navigation", () => {
   it("allows a bridge:none Page to navigate through the shell", async () => {
     const source = await mount({ access: "none" });
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
+      window.dispatchEvent(new MessageEvent("message", { origin: "null", source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
       await flush();
     });
     expect(resolvePageTarget).toHaveBeenCalledWith("pages-registry/target");
@@ -636,8 +636,8 @@ describe("PageFrame: registered Page navigation", () => {
     vi.mocked(resolvePageTarget).mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
     const push = vi.spyOn(window.history, "pushState");
     act(() => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/first" }) }));
-      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/second" }) }));
+      window.dispatchEvent(new MessageEvent("message", { origin: "null", source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/first" }) }));
+      window.dispatchEvent(new MessageEvent("message", { origin: "null", source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/second" }) }));
     });
     await act(async () => { second.resolve(true); await flush(); });
     await act(async () => { first.resolve(true); await flush(); });
@@ -649,11 +649,11 @@ describe("PageFrame: registered Page navigation", () => {
     const source = await mount();
     const push = vi.spyOn(window.history, "pushState");
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/first" }) }));
+      window.dispatchEvent(new MessageEvent("message", { origin: "null", source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/first" }) }));
       await flush();
     });
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/second" }) }));
+      window.dispatchEvent(new MessageEvent("message", { origin: "null", source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/second" }) }));
       await flush();
     });
     expect(resolvePageTarget).toHaveBeenCalledTimes(1);
@@ -665,7 +665,7 @@ describe("PageFrame: registered Page navigation", () => {
     const source = await mount();
     const push = vi.spyOn(window.history, "pushState");
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/p" }) }));
+      window.dispatchEvent(new MessageEvent("message", { origin: "null", source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/p" }) }));
       await flush();
     });
     expect(push).not.toHaveBeenCalled();
@@ -699,7 +699,7 @@ describe("PageFrame: registered Page navigation", () => {
     });
 
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", {
+      window.dispatchEvent(new MessageEvent("message", { origin: "null",
         source,
         data: viewMessage({
           bridge: "v1",
@@ -748,7 +748,7 @@ describe("PageFrame: registered Page navigation", () => {
     const pending = deferred<boolean>();
     vi.mocked(resolvePageTarget).mockImplementationOnce(() => pending.promise);
     const push = vi.spyOn(window.history, "pushState");
-    act(() => window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) })));
+    act(() => window.dispatchEvent(new MessageEvent("message", { origin: "null", source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) })));
     const reload = deferred<ReturnType<typeof pageDoc>>();
     vi.mocked(getDoc).mockImplementationOnce(() => reload.promise);
     act(() => vi.mocked(subscribeToChanges).mock.calls[0]![0]({ docs: { changed: [{ id: "pages-registry/p", version: "v2" }], removed: [] }, blobs: { changed: [], removed: [] } }));
@@ -766,7 +766,7 @@ describe("PageFrame: registered Page navigation", () => {
     act(() => vi.mocked(subscribeToChanges).mock.calls[0]![0]({ docs: { changed: [{ id: "pages-registry/p", version: "v2" }], removed: [] }, blobs: { changed: [], removed: [] } }));
 
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
+      window.dispatchEvent(new MessageEvent("message", { origin: "null", source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
       await flush();
     });
     expect(resolvePageTarget).not.toHaveBeenCalled();
@@ -846,13 +846,13 @@ describe("PageFrame: shell-fetched View delivery", () => {
   it("ignores a ready or View message from any window but the current host", async () => {
     const iframe = (await mount())!;
     const postSpy = vi.spyOn(iframe.contentWindow!, "postMessage");
-    act(() => window.dispatchEvent(new MessageEvent("message", { source: window, data: { protocol: VIEW_HOST_PROTOCOL, type: "ready" } })));
+    act(() => window.dispatchEvent(new MessageEvent("message", { origin: "null", source: window, data: { protocol: VIEW_HOST_PROTOCOL, type: "ready" } })));
     expect(postSpy).not.toHaveBeenCalled();
     // A View that posts straight to the top window (bypassing its host) is not the host.
     const stray = document.createElement("iframe");
     document.body.appendChild(stray);
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source: stray.contentWindow, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
+      window.dispatchEvent(new MessageEvent("message", { origin: "null", source: stray.contentWindow, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
       await flush();
     });
     stray.remove();
@@ -912,5 +912,67 @@ describe("PageFrame: shell-fetched View delivery", () => {
     await mount();
     expect(fetchViewBytes).not.toHaveBeenCalled();
     expect(container.querySelector("iframe")).toBeNull();
+  });
+});
+
+describe("PageFrame: host fail-closed checks", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetInterceptorForTests();
+    window.history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  async function mount() {
+    vi.mocked(getDoc).mockResolvedValue(pageDoc({ access: "bundle-read" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await flush();
+    });
+    return container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+  }
+
+  it("never sends bytes to, or brokers for, a host that is not opaque", async () => {
+    const iframe = await mount();
+    const postSpy = vi.spyOn(iframe.contentWindow!, "postMessage");
+    for (const origin of [window.location.origin, "", "http://127.0.0.1:1"]) {
+      await act(async () => {
+        window.dispatchEvent(new MessageEvent("message", { origin, source: iframe.contentWindow, data: { protocol: VIEW_HOST_PROTOCOL, type: "ready" } }));
+        window.dispatchEvent(new MessageEvent("message", { origin, source: iframe.contentWindow, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
+        await flush();
+      });
+    }
+    expect(postSpy).not.toHaveBeenCalled();
+    expect(resolvePageTarget).not.toHaveBeenCalled();
+  });
+
+  it("shows the host's reported refusal instead of a blank frame", async () => {
+    const iframe = await mount();
+    const spy = vi.spyOn(iframe.contentWindow!, "postMessage");
+    act(() => sendFromHost(iframe, { protocol: VIEW_HOST_PROTOCOL, type: "ready" }));
+    const load = spy.mock.calls.map(([m]) => m as { type?: string; deliveryId?: string }).find((m) => m.type === "load")!;
+    spy.mockRestore();
+    await act(async () => {
+      sendFromHost(iframe, { protocol: VIEW_HOST_PROTOCOL, type: "failed", deliveryId: "other", reason: "ignored" });
+      await flush();
+    });
+    expect(container.querySelector("iframe")).toBeTruthy();
+    await act(async () => {
+      sendFromHost(iframe, { protocol: VIEW_HOST_PROTOCOL, type: "failed", deliveryId: load.deliveryId, reason: "the browser refused to load the View frame (frame-src)" });
+      await flush();
+    });
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(container.textContent).toContain("refused to show the View");
+    expect(container.textContent).toContain("open the URL that `superbee ui` printed in a regular browser");
   });
 });

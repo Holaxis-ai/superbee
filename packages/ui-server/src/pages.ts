@@ -43,6 +43,7 @@ export function pageCsp(): string {
     "img-src data:",
     "font-src data:",
     "connect-src 'none'",
+    "worker-src 'none'",
     "form-action 'none'",
     "base-uri 'none'",
     "frame-ancestors 'self'",

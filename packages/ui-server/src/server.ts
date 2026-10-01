@@ -378,7 +378,9 @@ function viewHostResponse(): Response {
     status: 200,
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "content-security-policy": viewHostCsp(pageCsp()),
+      "content-security-policy": viewHostCsp(viewChildCsp()),
+      // The host's own framing guard. Unlike `frame-ancestors`, the blob child does not inherit it.
+      "x-frame-options": "SAMEORIGIN",
       "x-content-type-options": "nosniff",
       "cache-control": "no-store",
       "referrer-policy": "no-referrer",

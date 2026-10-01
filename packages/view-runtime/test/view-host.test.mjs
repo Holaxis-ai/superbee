@@ -28,7 +28,15 @@ test("parseViewHostEvent accepts only the three enveloped host events", () => {
     type: "view-message",
     message,
   });
+  assert.deepEqual(parseViewHostEvent({ protocol: VIEW_HOST_PROTOCOL, type: "failed", deliveryId: "d1", reason: "refused" }), {
+    protocol: VIEW_HOST_PROTOCOL,
+    type: "failed",
+    deliveryId: "d1",
+    reason: "refused",
+  });
   for (const rejected of [
+    { protocol: VIEW_HOST_PROTOCOL, type: "failed", deliveryId: "", reason: "x" },
+    { protocol: VIEW_HOST_PROTOCOL, type: "failed", deliveryId: "d1" },
     null,
     "ready",
     [],
@@ -61,7 +69,10 @@ test("the host policy is opaque-origin, keeps every View directive, and frames o
   const csp = viewHostCsp(VIEW_POLICY);
   assert.match(csp, /^sandbox allow-scripts; /);
   assert.doesNotMatch(csp, /allow-same-origin/);
-  assert.ok(csp.includes(VIEW_POLICY));
+  assert.ok(csp.includes("default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'"));
+  // The blob child inherits this policy and its opaque ancestor can never match 'self', so
+  // frame-ancestors would stop WebKit from rendering any View.
+  assert.doesNotMatch(csp, /frame-ancestors/);
   assert.match(csp, /frame-src blob:/);
   assert.match(csp, /child-src blob:/);
 });
@@ -77,5 +88,7 @@ test("the host document sandboxes its child, pins the child policy, revokes the 
   assert.match(html, /URL\.revokeObjectURL\(url\)/);
   assert.match(html, /event\.source === view\.contentWindow/);
   assert.match(html, /event\.source !== parent \|\| event\.origin !== shellOrigin/);
+  assert.match(html, /securitypolicyviolation/);
+  assert.match(html, /type: "failed"/);
   assert.equal(html.split("</script>").length, 2, "exactly one inline script");
 });

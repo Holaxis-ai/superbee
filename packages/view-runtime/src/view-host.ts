@@ -21,10 +21,15 @@ export const VIEW_HOST_PROTOCOL = "superbee-view-host/v1";
 /** Shell-relative path the loopback UI serves the host document at. */
 export const VIEW_HOST_PATH = "/__ui/view-host";
 
-/** Host -> shell. `loaded` echoes the shell's per-delivery id once the View frame loaded the blob. */
+/**
+ * Host -> shell. `loaded` echoes the shell's per-delivery id once the View frame fired `load`
+ * (which a refused navigation also fires, so it is not proof of render); `failed` reports a
+ * refusal the host could observe, such as a CSP violation on the child's blob navigation.
+ */
 export type ViewHostEvent =
   | { protocol: typeof VIEW_HOST_PROTOCOL; type: "ready" }
   | { protocol: typeof VIEW_HOST_PROTOCOL; type: "loaded"; deliveryId: string }
+  | { protocol: typeof VIEW_HOST_PROTOCOL; type: "failed"; deliveryId: string; reason: string }
   | { protocol: typeof VIEW_HOST_PROTOCOL; type: "view-message"; message: unknown };
 
 /** Shell -> host. One `load` per host document; `deliver` forwards a message to the View. */
@@ -50,6 +55,12 @@ export function parseViewHostEvent(data: unknown): ViewHostEvent | null {
   if (data.type === "loaded" && typeof data.deliveryId === "string" && data.deliveryId.length > 0) {
     return { protocol: VIEW_HOST_PROTOCOL, type: "loaded", deliveryId: data.deliveryId };
   }
+  if (
+    data.type === "failed" && typeof data.deliveryId === "string" && data.deliveryId.length > 0 &&
+    typeof data.reason === "string"
+  ) {
+    return { protocol: VIEW_HOST_PROTOCOL, type: "failed", deliveryId: data.deliveryId, reason: data.reason.slice(0, 200) };
+  }
   if (data.type === "view-message" && "message" in data) {
     return { protocol: VIEW_HOST_PROTOCOL, type: "view-message", message: data.message };
   }
@@ -72,10 +83,20 @@ export function viewHostDeliver(message: unknown): ViewHostCommand {
 /**
  * The host's own response policy: the View policy (which the blob child inherits), a `sandbox`
  * directive giving the host an opaque origin, and `frame-src blob:` so it can mount the child.
- * `viewPolicy` must not contain `frame-src`, `child-src`, or `sandbox`.
+ * `viewPolicy` must not contain `frame-src`, `child-src`, or `sandbox`, and should set
+ * `worker-src` itself: otherwise workers fall back to `child-src blob:` here.
+ *
+ * `frame-ancestors` is removed: the child inherits this policy, and its ancestor (this opaque
+ * host) can never match `'self'`, so WebKit would refuse to render the View. The serving host
+ * protects the host document itself with `X-Frame-Options: SAMEORIGIN`, which a local-scheme
+ * child does not inherit.
  */
 export function viewHostCsp(viewPolicy: string): string {
-  return ["sandbox allow-scripts", viewPolicy, "frame-src blob:", "child-src blob:"].join("; ");
+  const inherited = viewPolicy
+    .split(";")
+    .map((directive) => directive.trim())
+    .filter((directive) => directive !== "" && !/^frame-ancestors(\s|$)/i.test(directive));
+  return ["sandbox allow-scripts", ...inherited, "frame-src blob:", "child-src blob:"].join("; ");
 }
 
 /**
@@ -90,7 +111,21 @@ export function viewHostDocument(childPolicy: string): string {
   var CHILD_POLICY = ${JSON.stringify(childPolicy)};
   var shellOrigin = new URL(location.href).origin;
   var view = null;
+  var pending = null;
   function toShell(message) { parent.postMessage(message, shellOrigin); }
+  function fail(reason) {
+    if (pending === null) return;
+    var deliveryId = pending;
+    pending = null;
+    toShell({ protocol: PROTOCOL, type: "failed", deliveryId: deliveryId, reason: String(reason).slice(0, 200) });
+  }
+  // A refused blob navigation still fires the child's load event; a violation of this host's own
+  // policy is the refusal it can observe.
+  document.addEventListener("securitypolicyviolation", function (event) {
+    if (/^blob/.test(String(event.blockedURI)) || /^(frame|child)-src/.test(event.effectiveDirective)) {
+      fail("the browser refused to load the View frame (" + event.effectiveDirective + ")");
+    }
+  });
   window.addEventListener("message", function (event) {
     if (view !== null && event.source === view.contentWindow) {
       toShell({ protocol: PROTOCOL, type: "view-message", message: event.data });
@@ -107,6 +142,7 @@ export function viewHostDocument(childPolicy: string): string {
     if (!(data.bytes instanceof ArrayBuffer) || typeof data.contentType !== "string" ||
         typeof data.deliveryId !== "string" || typeof data.title !== "string") return;
     var deliveryId = data.deliveryId;
+    pending = deliveryId;
     var url = URL.createObjectURL(new Blob([data.bytes], { type: data.contentType }));
     view = document.createElement("iframe");
     view.setAttribute("sandbox", "allow-scripts");
@@ -115,7 +151,12 @@ export function viewHostDocument(childPolicy: string): string {
     view.setAttribute("title", data.title);
     view.addEventListener("load", function () {
       URL.revokeObjectURL(url);
-      toShell({ protocol: PROTOCOL, type: "loaded", deliveryId: deliveryId });
+      // Let a violation reported for this navigation arrive first.
+      setTimeout(function () {
+        if (pending !== deliveryId) return;
+        pending = null;
+        toShell({ protocol: PROTOCOL, type: "loaded", deliveryId: deliveryId });
+      }, 0);
     }, { once: true });
     view.src = url;
     document.body.appendChild(view);
