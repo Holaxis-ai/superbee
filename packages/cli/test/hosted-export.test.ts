@@ -246,6 +246,30 @@ test("a bundle that changes between pages is read again from its first page, and
   assert.deepEqual(await readdir(again.cwd), []);
 });
 
+test("a host that repeats a page is refused at that page, and a busy page is asked for once more", async () => {
+  const h = await harness();
+  h.host.exportPageObjects = 2;
+  let first: Uint8Array | undefined;
+  h.host.exportHook = (archive) => (first ??= archive);
+  const repeated = await rejects(h, [BUNDLE, "--host", HOST, "--to", "copy"]);
+  assert.equal(repeated.details?.reason, "export_manifest_mismatch");
+  assert.equal(h.host.requests.filter((request) => request.path === "/sync/v1/export").length, 2);
+  assert.deepEqual(await readdir(h.cwd), []);
+
+  // The host's one export slot is busy for the second page once: the same cursor is asked for again.
+  const busy = await harness();
+  busy.host.exportPageObjects = 2;
+  let calls = 0;
+  busy.host.exportHook = (archive) =>
+    (calls += 1) === 2
+      ? Response.json({ error: { code: "backend_unavailable", message: "Another export is running. Try again in a moment.", retryable: true } }, { status: 503 })
+      : archive;
+  const receipt = await run(busy, [BUNDLE, "--host", HOST, "--to", "copy"]);
+  assert.equal(receipt.export, "created");
+  const cursors = busy.host.requests.filter((request) => request.path === "/sync/v1/export").map((request) => (request.body as { cursor?: string }).cursor);
+  assert.deepEqual(cursors, [undefined, `${busy.host.revision}.2`, `${busy.host.revision}.2`]);
+});
+
 test("pages that leave a gap, overlap, mix revisions or end early are refused when joined", () => {
   const state = {
     tenantId: "tenant-a",

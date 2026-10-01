@@ -292,6 +292,7 @@ test("the fake answers every golden /sync/v1/export exchange with the host's exa
     "export-200",
     "export-200-page-first",
     "export-200-page-last",
+    "export-400-invalid-cursor",
     "export-400-invalid-input",
     "export-401-unauthenticated",
     "export-404-bundle-not-found",

@@ -57,7 +57,7 @@ import {
   ExportArchiveError,
   IN_PLACE_JOURNAL,
   IN_PLACE_STAGING,
-  joinExportPages,
+  ExportPageChain,
   MAX_EXPORT_BYTES,
   verifyExport,
   type ArchiveEntry,
@@ -191,14 +191,22 @@ async function namedClient(source: Source, deps: ExportDeps, resume: CommandText
 
 /** How many times a paged export starts again from its first page when the bundle moves under it. */
 const PAGED_EXPORT_ATTEMPTS = 3;
+/** The pause before each restart, so a burst of writes can settle (with jitter). */
+const PAGED_EXPORT_RESTART_MS: readonly number[] = [500, 1500];
+/** The pause before asking for a page again after a busy host or a page it stopped part way. */
+const PAGE_RETRY_MS = 1000;
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * The bundle's verified export. A host that pages the export (`{ paged: true }`) answers it a page
  * at a time, each page a whole archive inside the host's export window, so a bundle of any size
- * staged creation allows is exported; the pages are verified one by one and joined
- * (`joinExportPages`). A host from before paging refuses the paged request's body as
- * `invalid_input`, and the whole bundle is then read as one archive, as before. A bundle that
- * changes between pages (`concurrent_change`) is read again from its first page, a few times.
+ * staged creation allows is exported; each page is verified and checked against the pages before
+ * it as it arrives, and the pages are joined (`ExportPageChain`). A host from before paging refuses
+ * the paged request's body as `invalid_input`, and the whole bundle is then read as one archive, as
+ * before. A bundle that changes between pages (`concurrent_change`) is read again from its first
+ * page, a few times. A page the host was too busy for (`backend_unavailable`, its one export slot)
+ * or stopped part way is asked for once more before the export fails.
  */
 async function fetchExport(source: Source, deps: ExportDeps, resume: CommandText): Promise<VerifiedExport> {
   const { bundleId, target } = source;
@@ -209,20 +217,33 @@ async function fetchExport(source: Source, deps: ExportDeps, resume: CommandText
   const slug = named ? named.slug : (source.binding!.workspace_slug ?? null);
   const request = { client, slug, source, resume };
   for (let attempt = 1; ; attempt += 1) {
-    const pages: VerifiedExport[] = [];
+    const chain = new ExportPageChain();
     let bytes = 0;
     let cursor: string | undefined;
+    let moved = false;
     for (;;) {
-      const answer = await exportAnswer(request, { bundleId, paged: true, ...(cursor !== undefined ? { cursor } : {}) });
-      if (answer.refused === "invalid_input" && cursor === undefined) return verified(await readArchive(await wholeAnswer(request), source), source);
-      if (answer.refused === "concurrent_change") break;
-      if (answer.refused !== undefined) throw await exportRefusal(request, answer.refused, answer.status);
-      const page = verified(await readArchive(answer.ok, source), source, { paged: true });
-      bytes += page.bytes;
-      if (bytes > MAX_EXPORT_BYTES) throw exportTooLarge(source);
-      pages.push(page);
-      cursor = page.page!.next;
-      if (cursor === undefined) return joined(pages, source);
+      let page: VerifiedExport | undefined;
+      for (let tries = 1; page === undefined; tries += 1) {
+        const answer = await exportAnswer(request, { bundleId, paged: true, ...(cursor !== undefined ? { cursor } : {}) });
+        // Only the very first request can meet a host from before paging.
+        if (answer.refused === "invalid_input" && cursor === undefined && attempt === 1) return verified(await readArchive(await wholeAnswer(request), source, MAX_EXPORT_BYTES), source);
+        if (answer.refused === "concurrent_change") {
+          moved = true;
+          break;
+        }
+        try {
+          if (answer.refused !== undefined) throw await exportRefusal(request, answer.refused, answer.status);
+          page = verified(await readArchive(answer.ok, source, MAX_EXPORT_BYTES - bytes), source, { paged: true });
+        } catch (error) {
+          const again = error instanceof CliError && (error.details?.reason === "export_incomplete" || (answer.refused === "backend_unavailable" && error.code === "TRANSIENT"));
+          if (!again || tries >= 2) throw error;
+          await pause(PAGE_RETRY_MS);
+        }
+      }
+      if (moved) break;
+      bytes += page!.bytes;
+      cursor = joining(source, () => chain.add(page!));
+      if (cursor === undefined) return joining(source, () => chain.joined());
     }
     if (attempt >= PAGED_EXPORT_ATTEMPTS) {
       throw new CliError("TRANSIENT", `'${bundleId}' kept changing on ${target.origin} while it was exported; nothing was written`, {
@@ -230,6 +251,8 @@ async function fetchExport(source: Source, deps: ExportDeps, resume: CommandText
         help: "retry the same command once the bundle is not being edited",
       });
     }
+    const base = PAGED_EXPORT_RESTART_MS[attempt - 1]!;
+    await pause(Math.round(base / 2 + (Math.random() * base) / 2));
   }
 }
 
@@ -294,8 +317,8 @@ async function exportRefusal({ client, slug, source, resume }: ExportRequest, co
   return hostedFailure(new RemoteError(`hosted export answered ${status}`, code, status), target, resume);
 }
 
-/** One archive's body, read whole and bounded. */
-async function readArchive(body: ReadableStream<Uint8Array>, source: Source): Promise<Uint8Array> {
+/** One archive's body, read whole and bounded by `budget` (what the export may still hold). */
+async function readArchive(body: ReadableStream<Uint8Array>, source: Source, budget: number): Promise<Uint8Array> {
   const { target, bundleId } = source;
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -305,7 +328,7 @@ async function readArchive(body: ReadableStream<Uint8Array>, source: Source): Pr
       const part = await reader.read();
       if (part.done) break;
       size += part.value.byteLength;
-      if (size > MAX_EXPORT_BYTES) throw exportTooLarge(source);
+      if (size > budget) throw exportTooLarge(source);
       chunks.push(part.value);
     }
   } catch (error) {
@@ -330,11 +353,11 @@ function verified(archive: Uint8Array, source: Source, options: { readonly paged
   return refusingArchive(source, () => verifyExport(archive, source.bundleId, options));
 }
 
-function joined(pages: readonly VerifiedExport[], source: Source): VerifiedExport {
-  return refusingArchive(source, () => joinExportPages(pages));
+function joining<T>(source: Source, join: () => T): T {
+  return refusingArchive(source, join);
 }
 
-function refusingArchive(source: Source, verify: () => VerifiedExport): VerifiedExport {
+function refusingArchive<T>(source: Source, verify: () => T): T {
   try {
     return verify();
   } catch (error) {
