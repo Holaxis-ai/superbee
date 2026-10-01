@@ -248,8 +248,8 @@ test("signed in to two hosts, publish without --host previews a blocker and refu
   await publish(["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], { stdout: (text) => h.out.push(text), stderr: (text) => stderr.push(text), auth: h.auth, cwd: h.cwd, fetch: fake.fetch });
   const receipt = decode(h.out.at(-1)!.trim()) as Record<string, unknown>;
   assert.equal(receipt.host, HOST);
-  assert.equal(receipt.host_from, "--host");
-  assert.match(stderr[0] ?? "", new RegExp(`^publish: creating 'team-notes' on ${HOST.replace(/[.]/g, "\\.")} \\(host from --host\\)`));
+  assert.equal(receipt.host_from, "flag");
+  assert.match(stderr[0] ?? "", new RegExp(`^publish: creating 'team-notes' on ${HOST.replace(/[.]/g, "\\.")} \\(host from --host\\)\\n$`));
 });
 
 test("one host signed in: publish --yes without --host uses it and names it before sending", async () => {
@@ -264,7 +264,7 @@ test("one host signed in: publish --yes without --host uses it and names it befo
   const receipt = JSON.parse(h.out.at(-1)!) as Record<string, unknown>;
   assert.equal(receipt.published, "created");
   assert.equal(receipt.host, HOST);
-  assert.match(String(receipt.host_from), /last sign-in/);
+  assert.equal(receipt.host_from, "last-sign-in");
   assert.deepEqual(JSON.parse(stderr[0]!), { event: "publish.target", host: HOST, host_from: "last-sign-in", bundle_id: "team-notes" });
 });
 

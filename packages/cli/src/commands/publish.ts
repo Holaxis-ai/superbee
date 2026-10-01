@@ -36,7 +36,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
-import { defaultHostedAuthDeps, hostedWriteHost, type HostedWriteHost } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, hostedWriteHost, hostSourceText, type HostedWriteHost } from "../hosted-auth/session.js";
 import { isHostedBundleId } from "../hosted/bundle-id.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
@@ -308,17 +308,12 @@ interface SendContext {
   readonly json: boolean;
 }
 
-/** One staged creation's progress line: words, or a JSON event with --json. */
-/** Where a publish's host came from, as a receipt shows it. */
-function hostFrom(chosen: HostedWriteHost): string {
-  return chosen.source === "flag" ? "--host" : "your last sign-in (the only host signed in)";
-}
-
 function targetLine(chosen: HostedWriteHost, bundleId: string, json: boolean): string {
   if (json) return `${JSON.stringify({ event: "publish.target", host: chosen.target.origin, host_from: chosen.source, bundle_id: bundleId })}\n`;
-  return `publish: creating '${bundleId}' on ${chosen.target.origin} (host from ${hostFrom(chosen)})\n`;
+  return `publish: creating '${bundleId}' on ${chosen.target.origin} (host from ${hostSourceText(chosen.source)})\n`;
 }
 
+/** One staged creation's progress line: words, or a JSON event with --json. */
 function progressLine(event: StagedProgress, json: boolean): string {
   if (json) return `${JSON.stringify({ event: "publish.progress", ...event })}\n`;
   const mib = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
@@ -537,7 +532,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           home: facts.home,
           to: {
             host: target?.origin ?? null,
-            ...(chosen ? { host_from: hostFrom(chosen) } : ambiguous ? { signed_in_hosts: ambiguous.details?.hosts } : {}),
+            ...(chosen ? { host_from: chosen.source } : ambiguous ? { signed_in_hosts: ambiguous.details?.hosts } : {}),
             bundle_id: bundleId,
             name,
             workspace: values.workspace ?? "chosen at --yes: your only workspace, or your default one",
@@ -559,7 +554,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           help: blockers.length === 0
             ? [String(yesCommand)]
             : ambiguous
-              ? ((ambiguous.details?.commands as string[] | undefined) ?? [])
+              ? [...((ambiguous.details?.commands as string[] | undefined) ?? []), ...(blockers.length > 1 ? ["fix the blocking files, then preview again"] : [])]
               : !target
                 ? [`${cliInvocation()} login --host <url>`]
                 : ["fix the blocking files, then preview again"],
@@ -612,7 +607,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           bundle_id: bundleId,
           name,
           host: target.origin,
-          host_from: hostFrom(chosen!),
+          host_from: chosen!.source,
           workspace,
           access: "write (only you, until you share it in the app)",
           sent: {
@@ -685,7 +680,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         bundle_id: bundleId,
         name,
         host: target.origin,
-        host_from: hostFrom(chosen!),
+        host_from: chosen!.source,
         workspace,
         access: "write (only you, until you share it in the app)",
         sent: {

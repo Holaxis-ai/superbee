@@ -307,40 +307,71 @@ export async function storedSessionHosts(home: string): Promise<string[]> {
   return [...hosts].sort();
 }
 
-/** Where a hosted write's host came from: named on the command, or the remembered last sign-in. */
-export type HostSource = "flag" | "last-sign-in";
+/**
+ * Where a hosted write's host came from: named on the command; the remembered last sign-in, the one
+ * host holding a session; the one host holding a session, with no sign-in remembered; or the
+ * remembered last sign-in, which holds no session now (the write starts a sign-in to it).
+ */
+export type HostSource = "flag" | "last-sign-in" | "only-session" | "last-sign-in-signed-out";
 
 export interface HostedWriteHost {
   readonly target: HostedTarget;
   readonly source: HostSource;
 }
 
+/** A receipt's words for {@link HostSource}. */
+export function hostSourceText(source: HostSource): string {
+  switch (source) {
+    case "flag":
+      return "--host";
+    case "last-sign-in":
+      return "your last sign-in, the only host with a session";
+    case "only-session":
+      return "the only host with a session";
+    case "last-sign-in-signed-out":
+      return "your last sign-in; no session for it now";
+  }
+}
+
 /**
  * The host a hosted write that is not bound to one yet (`publish --yes`, a new `checkout`) sends
- * to: `--host`, else the host of the last sign-in, but only when that choice is unambiguous. When
- * this machine user holds sessions for more than one host (or the remembered host is not the one
- * session held), the last sign-in is not a choice the person made for this write, so the command
- * refuses and names the hosts. SUPERBEE_HOST never selects it, as for {@link hostedBundleHost}.
- * Null when there is no host at all.
+ * to: `--host`, else the one host this choice cannot confuse. The candidates are every host with a
+ * stored session plus the remembered last sign-in; with more than one, the last sign-in is not a
+ * choice the person made for this write, so the command refuses, naming the hosts and which of
+ * them has no session. SUPERBEE_HOST never selects it, as for {@link hostedBundleHost}. Null when
+ * there is no host at all.
  */
 export async function hostedWriteHost(flag: string | undefined, home: string, retry: (host: string) => string): Promise<HostedWriteHost | null> {
-  if (flag) return { target: resolveHostedTarget(flag), source: "flag" };
+  if (flag !== undefined) {
+    if (flag.trim() === "") throw new CliError("USAGE", "--host is empty: name the hosted Superbee URL", { help: retry("<url>") });
+    return { target: resolveHostedTarget(flag), source: "flag" };
+  }
   const remembered = await readDefaultHost(home);
   const stored = await storedSessionHosts(home);
   const candidates = new Set(stored);
-  let rememberedTarget: HostedTarget | null = null;
+  let rememberedHost: string | null = null;
   if (remembered) {
-    rememberedTarget = resolveHostedTarget(remembered);
-    candidates.add(hostArgument(rememberedTarget));
+    rememberedHost = hostArgument(resolveHostedTarget(remembered));
+    candidates.add(rememberedHost);
   }
   if (candidates.size > 1) {
     const hosts = [...candidates].sort();
-    throw new CliError("USAGE", `signed in to more than one hosted Superbee host (${hosts.join(", ")}); name the one this write is for with --host`, {
-      details: { reason: "ambiguous_host", hosts, ...(rememberedTarget ? { last_sign_in: hostArgument(rememberedTarget) } : {}), commands: hosts.map(retry) },
-      help: `re-run with --host set to the host you mean (one of: ${hosts.join(", ")}); the last sign-in is not used when more than one host is signed in`,
+    const signedOut = hosts.filter((host) => !stored.includes(host));
+    throw new CliError("USAGE", `more than one hosted Superbee host could be meant (${hosts.join(", ")}); name the one this write is for with --host`, {
+      details: {
+        reason: "ambiguous_host",
+        hosts,
+        ...(rememberedHost ? { last_sign_in: rememberedHost } : {}),
+        with_session: stored,
+        ...(signedOut.length > 0 ? { no_session: signedOut } : {}),
+        commands: hosts.map(retry),
+      },
+      help: `re-run with --host set to the host you mean (one of: ${hosts.join(", ")}); the last sign-in is not used when sessions are held for more than one host or it has none`,
     });
   }
-  return rememberedTarget ? { target: rememberedTarget, source: "last-sign-in" } : null;
+  if (rememberedHost) return { target: resolveHostedTarget(rememberedHost), source: stored.length === 0 ? "last-sign-in-signed-out" : "last-sign-in" };
+  if (stored.length === 1) return { target: resolveHostedTarget(stored[0]!), source: "only-session" };
+  return null;
 }
 
 /** `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in. */

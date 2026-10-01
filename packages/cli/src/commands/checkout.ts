@@ -374,7 +374,7 @@ async function checkoutHost(
   flag: string | undefined,
   folder: string,
   typed: HostedBundleReference,
-  values: { readonly dir?: string; readonly workspace?: string; readonly json?: boolean },
+  values: { readonly workspace?: string; readonly json?: boolean },
   home: string,
 ): Promise<HostedTarget> {
   if (flag === undefined) {
@@ -384,7 +384,7 @@ async function checkoutHost(
   }
   const retry = (host: string) =>
     String(
-      commandFragment`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(host)}${values.dir !== undefined ? commandFragment` --dir ${commandToken(values.dir)}` : commandFragment``}${
+      commandFragment`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(host)} --dir ${commandToken(folder)}${
         values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
       }${values.json ? commandFragment` --json` : commandFragment``}`,
     );

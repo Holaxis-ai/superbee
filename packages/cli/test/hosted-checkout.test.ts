@@ -28,7 +28,7 @@ import { readCheckoutMarker } from "../src/hosted/marker.js";
 import { folderConflicts, readProjection } from "../src/hosted/sync-scan.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { createHostedSyncClient } from "../src/hosted/client.js";
-import { hostedAuthRoot, storedSessionHosts } from "../src/hosted-auth/session.js";
+import { hostedAuthRoot, hostedWriteHost, storedSessionHosts, writeDefaultHost } from "../src/hosted-auth/session.js";
 import { seedHostedSession } from "./support/hosted-session.js";
 import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
 import { assertAllowedInHostedCheckout, HOSTED_CHECKOUT_REFUSALS } from "../src/hosted/refusals.js";
@@ -274,7 +274,9 @@ test("signed in to two hosts, a checkout without --host refuses and names both; 
   assert.equal(error.details?.last_sign_in, OTHER);
   assert.match(error.message, /hosted\.example.*other-host\.example/);
   const commands = error.details?.commands as string[];
-  assert.ok(commands.some((command) => command.includes(`--host ${HOST}`) && command.includes("--dir team")), commands.join("\n"));
+  assert.ok(commands.some((command) => command.includes(`--host ${HOST}`) && command.includes(`--dir ${path.join(h.cwd, "team")}`)), commands.join("\n"));
+  assert.deepEqual(error.details?.with_session, [HOST, OTHER]);
+  assert.equal(error.details?.no_session, undefined);
   assert.equal(fake.requests.length, 0, "no host is asked");
   assert.deepEqual(await readdir(h.cwd), [], "no folder is made");
 
@@ -294,6 +296,47 @@ test("one host signed in: a checkout without --host uses it, as before", async (
   const receipt = await run(h, [BUNDLE]);
   assert.equal(receipt.checkout, "created");
   assert.equal(receipt.host, HOST);
+});
+
+test("the implicit write host: every way it is chosen or refused, from stored sessions and the last sign-in alone", async () => {
+  const OTHER = "https://other-host.example";
+  const retry = (host: string) => `publish --host ${host}`;
+  const live = Date.now() + 3_600_000;
+  const fresh = async () => (await harness()).home;
+
+  // Nothing: no host.
+  assert.equal(await hostedWriteHost(undefined, await fresh(), retry), null);
+  // --host "" is not "no --host".
+  assert.equal((await rejects(hostedWriteHost("", await fresh(), retry))).code, "USAGE");
+
+  // One session, no remembered sign-in: that host.
+  let home = await fresh();
+  await seedHostedSession(home, { host: HOST, accessToken: TOKEN, expiresAtMs: live });
+  assert.deepEqual(await hostedWriteHost(undefined, home, retry).then((c) => [c?.target.origin, c?.source]), [HOST, "only-session"]);
+
+  // The same host in another spelling is one host, not two.
+  home = await fresh();
+  await seedHostedSession(home, { host: `${HOST}/mcp/`, accessToken: TOKEN, expiresAtMs: live });
+  await writeDefaultHost(home, HOST);
+  assert.deepEqual(await hostedWriteHost(undefined, home, retry).then((c) => [c?.target.origin, c?.source]), [HOST, "last-sign-in"]);
+
+  // Signed out of everything, a sign-in still remembered: that host, labeled as having no session.
+  home = await fresh();
+  await writeDefaultHost(home, OTHER);
+  assert.deepEqual(await hostedWriteHost(undefined, home, retry).then((c) => [c?.target.origin, c?.source]), [OTHER, "last-sign-in-signed-out"]);
+
+  // Signed out of the last sign-in's host but still holding another's session: refused, naming which has none.
+  await seedHostedSession(home, { host: HOST, accessToken: TOKEN, expiresAtMs: live });
+  const error = await rejects(hostedWriteHost(undefined, home, retry));
+  assert.equal(error.details?.reason, "ambiguous_host");
+  assert.deepEqual(error.details?.hosts, [HOST, OTHER]);
+  assert.deepEqual(error.details?.with_session, [HOST]);
+  assert.deepEqual(error.details?.no_session, [OTHER]);
+  assert.equal(error.details?.last_sign_in, OTHER);
+  assert.deepEqual(error.details?.commands, [`publish --host ${HOST}`, `publish --host ${OTHER}`]);
+
+  // Named, it is always the host named.
+  assert.deepEqual(await hostedWriteHost(OTHER, home, retry).then((c) => [c?.target.origin, c?.source]), [OTHER, "flag"]);
 });
 
 test("a session record copied into another session's directory does not count as a signed-in host", async () => {
