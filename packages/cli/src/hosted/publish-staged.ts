@@ -10,8 +10,10 @@
 // request id (the pending-create record) resumes: a killed upload re-stages only what never
 // arrived, and a killed commit goes on committing. A status answer whose `missing` is empty means
 // "commit again". A plan hash the host holds no manifest for (its expiry sweep removed it) is
-// answered by sending begin again. A `503` is retried here a few times; past that, and on a
-// dropped connection, the run stops TRANSIENT and the same command resumes it.
+// answered by sending begin again; a retryable `request_conflict` from begin (an earlier commit of
+// the request may still be running) waits a minute and begins again. A `503` is retried here a
+// few times; past that, and on a dropped connection, the run stops TRANSIENT and the same command
+// resumes it.
 import { MalformedAnswer, RemoteError } from "@superbee/core";
 import { HostedCarrierError, type HostedAnswer } from "@superbee/core/hosted-transport";
 
@@ -30,14 +32,17 @@ const RETRY_DELAYS_MS = Object.freeze([500, 1_000, 2_000, 4_000]);
 const MAXIMUM_ROUNDS = 5_000;
 /** Rounds that stage what `missing` names without it shrinking, before the run stops. */
 const MAXIMUM_STALLS = 3;
-const NO_MANIFEST = /no staged manifest/i;
+/** Waits before begin is sent again after a retryable `request_conflict`, and how often. */
+const CONFLICT_RETRY_MS = 60_000;
+const CONFLICT_RETRIES = 5;
 
 /** What a staged creation reports as it goes. */
 export type StagedProgress =
   | { readonly phase: "begin"; readonly state: string; readonly versions: number; readonly staged: number; readonly blobs: number; readonly stagedBlobs: number }
   | { readonly phase: "stage"; readonly part: number; readonly parts: number; readonly objects: number }
   | { readonly phase: "blob"; readonly blob: number; readonly blobs: number; readonly key: string; readonly bytes: number }
-  | { readonly phase: "commit"; readonly call: number; readonly state: string; readonly written?: Readonly<Record<string, number>> };
+  | { readonly phase: "commit"; readonly call: number; readonly state: string; readonly written?: Readonly<Record<string, number>> }
+  | { readonly phase: "wait"; readonly seconds: number; readonly reason: string };
 
 /** A refusal the host answered: the caller words it, as it words the one-shot's. */
 export class StagedRefusal extends Error {
@@ -117,18 +122,20 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
     }
   }
 
-  /** The answer's `data`, `no_manifest`, or the refusal it names. */
-  function read(name: string, answer: HostedAnswer): Record<string, unknown> | "no_manifest" {
-    const envelope = (answer.body ?? {}) as { ok?: unknown; data?: unknown; error?: { code?: unknown; message?: unknown } };
+  /**
+   * The answer's `data`; `no_manifest` when the host holds no manifest under the plan hash (its
+   * expiry sweep removed it, or a begin replaced it); `busy` for a retryable `request_conflict` (a
+   * commit of the request's earlier manifest may still be running); or the refusal it names.
+   */
+  function read(name: string, answer: HostedAnswer): Record<string, unknown> | "no_manifest" | "busy" {
+    const envelope = (answer.body ?? {}) as { ok?: unknown; data?: unknown; error?: { code?: unknown; message?: unknown; retryable?: unknown } };
     const code = typeof envelope.error?.code === "string" ? envelope.error.code : null;
     const message = typeof envelope.error?.message === "string" ? envelope.error.message : "";
     if (answer.status === 200 && envelope.ok === true && typeof envelope.data === "object" && envelope.data !== null) return envelope.data as Record<string, unknown>;
-    // The host holds no manifest under this plan hash (its expiry sweep removed it): begin again.
     if (answer.status === 200 && envelope.ok === false && code === "staged_manifest_missing") return "no_manifest";
+    if (answer.status === 200 && envelope.ok === false && code === "request_conflict" && envelope.error?.retryable === true) return "busy";
     if (answer.status === 200 && envelope.ok === false && code !== null) throw new StagedRefusal(code, message, reserved);
     if (answer.status === 429 && code === "bundle_create_limit") throw new StagedRefusal(code, message, reserved);
-    // The host's only answer for a plan hash it holds no manifest for: begin again.
-    if (answer.status === 400 && code === "invalid_input" && NO_MANIFEST.test(message)) return "no_manifest";
     if (answer.status === 400 && !reserved) throw new StagedRefusal(code ?? "invalid_input", message || `the host refused ${name} as malformed`, false);
     throw hostedFailure(new RemoteError(`hosted ${name} answered ${answer.status}`, code ?? "RUNTIME", answer.status), client.target, request.resume);
   }
@@ -155,7 +162,13 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
 
   const manifest = manifestBody(content, target);
   async function begin(): Promise<Status> {
-    const data = read("bundle-create-begin", await send("bundle-create-begin", manifest));
+    let data = read("bundle-create-begin", await send("bundle-create-begin", manifest));
+    for (let retry = 0; data === "busy"; retry++) {
+      if (retry >= CONFLICT_RETRIES) throw new StagedRefusal("request_conflict", "A commit of this request's earlier contents is still running.", reserved);
+      progress({ phase: "wait", seconds: CONFLICT_RETRY_MS / 1000, reason: "an earlier commit of this creation may still be running" });
+      await sleep(CONFLICT_RETRY_MS);
+      data = read("bundle-create-begin", await send("bundle-create-begin", manifest));
+    }
     if (data === "no_manifest") throw hostedFailure(new MalformedAnswer("begin answered that no manifest is staged", route("bundle-create-begin")), client.target, request.resume);
     const answer = status("bundle-create-begin", data);
     progress({ phase: "begin", state: answer.state, versions: content.objects.size, staged: answer.staged.versions, blobs: content.blobBytes.size, stagedBlobs: answer.staged.blobVersions });
@@ -187,7 +200,7 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
             "X-Superbee-Plan-Hash": planHash,
           }),
         );
-        if (data === "no_manifest") {
+        if (data === "no_manifest" || data === "busy") {
           gone = true;
           return;
         }
@@ -203,7 +216,7 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
         "bundle-create-stage",
         await send("bundle-create-stage", { workspace: target.workspace, bundleId: target.bundleId, planHash, documents: part.documents, reserved: part.reserved, history: part.history }),
       );
-      if (data === "no_manifest") return "no_manifest";
+      if (data === "no_manifest" || data === "busy") return "no_manifest";
       last = status("bundle-create-stage", data);
       progress({ phase: "stage", part: index + 1, parts: parts.length, objects: part.versions.length });
     }
@@ -239,12 +252,14 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
     commits += 1;
     const answer = await send("bundle-create-commit", { workspace: target.workspace, bundleId: target.bundleId, planHash });
     const data = read("bundle-create-commit", answer);
-    if (data === "no_manifest") {
+    // No manifest (swept, or replaced by a begin): begin again with this folder's manifest, then go on.
+    if (data === "no_manifest" || data === "busy") {
       current = await begin();
       continue;
     }
     if (typeof data.state !== "string") {
-      // The one-shot's own success answer: the creation is done.
+      // The one-shot's own success answer: the creation is done. A repeat after created may count
+      // the stored bundle (edited since) rather than the manifest; the counts are reported, not checked.
       return data;
     }
     current = status("bundle-create-commit", data);

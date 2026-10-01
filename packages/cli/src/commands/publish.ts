@@ -308,6 +308,8 @@ function progressLine(event: StagedProgress, json: boolean): string {
       return `publish: sent file ${event.blob}/${event.blobs} ${event.key} (${mib(event.bytes)})\n`;
     case "commit":
       return `publish: commit ${event.call}: ${event.state}${event.written ? ` (written: ${Object.entries(event.written).map(([kind, count]) => `${count} ${kind}`).join(", ")})` : ""}\n`;
+    case "wait":
+      return `publish: waiting ${event.seconds} s: ${event.reason}\n`;
   }
 }
 

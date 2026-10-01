@@ -20,8 +20,9 @@
 //   overlap what is staged (`validation_failed`), and keep the part bounds (500 objects, 3 MiB,
 //   400 parts), raw blobs of exactly their declared size and version (else `400 invalid_input`),
 //   then commits that answer `staging` with what is `missing`, reserve, answer `importing` for
-//   `commitSteps` calls, and finish with the one-shot's own success answer. A plan hash with no
-//   manifest is the host's `400 invalid_input` "Send bundle-create-begin again". Tests reach in
+//   `commitSteps` calls, and finish with the one-shot's own success answer (a repeat confirms it,
+//   kept manifest or not). A plan hash with no manifest is the refusal `staged_manifest_missing`;
+//   `busyBegins` answers begin the retryable `request_conflict`. Tests reach in
 //   with `failNextCommit` (503 after reserving), `sweepStaging()` (the host's expiry sweep:
 //   manifests and staged content go), `dropStagedBlobs()`, `interrupt` (the connection drops
 //   at a given request, before or after the host applied it) and `onRequest`;
@@ -169,6 +170,8 @@ export class FakeCreateHost {
   commitSteps = 0;
   /** Drop the connection once, at one request (see {@link FakeInterrupt}). */
   interrupt: FakeInterrupt | null = null;
+  /** Begins answered the retryable `request_conflict` (an earlier commit may still be running) before one is served. */
+  busyBegins = 0;
   /** Runs before the host answers each request: the route and its count so far, this one included. */
   onRequest: ((route: string, count: number) => void) | null = null;
   /** Staged creations by request id. */
@@ -473,6 +476,13 @@ export class FakeCreateHost {
   private begin(text: string, body: Record<string, unknown>, headers: Headers, tenants: readonly string[]): Response {
     const requestId = this.stagedRequest(headers);
     if (!requestId) return invalidInput();
+    if (this.busyBegins > 0) {
+      this.busyBegins -= 1;
+      return new Response(
+        JSON.stringify({ ok: false, operationId: OPERATION, error: { code: "request_conflict", message: "A commit of this request's earlier manifest may still be running. Wait a minute and begin again.", retryable: true, writeState: "not_applied" } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     if (utf8Bytes(text) > FAKE_STAGE_BOUNDS.manifestBytes) return refusal("result_too_large", "The manifest exceeds 3 MiB, the staged creation bound. Publish without history, or with fewer files. Nothing was created.");
     const m = this.manifestOf(body);
     if (m instanceof Response) return m;
@@ -526,6 +536,8 @@ export class FakeCreateHost {
     if (refused) return refused;
     const creation = this.staged.get(requestId);
     if (creation && (creation.planHash !== planHash || creation.manifest.bundleId !== bundleId) && creation.reserved) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
+    // A created creation is confirmed from the ledger, whether or not its manifest is kept.
+    if (creation?.created && creation.planHash === planHash && creation.manifest.bundleId === bundleId) return creation;
     if (!creation || !creation.kept || creation.planHash !== planHash) return noManifest();
     if (creation.manifest.bundleId !== bundleId) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
     return creation;

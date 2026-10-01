@@ -363,3 +363,39 @@ test("a qualifying client sends the staged routes unqualified, and raw bytes onl
   ]);
   await assert.rejects(carrier.bytes!("/sync/v1/heads", new Uint8Array(1), signal, { maximum: 1 }), TypeError);
 });
+
+test("a retryable request_conflict from begin waits a minute and begins again; past five it is final", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "big");
+  await writeBigBundle(folder, 50);
+  const fake = new FakeCreateHost();
+  fake.busyBegins = 2;
+  slept.length = 0;
+  const receipt = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "big.notes", "--yes"], fake);
+  assert.equal(receipt.published, "created");
+  assert.deepEqual(slept, [60_000, 60_000]);
+  assert.equal(h.err.filter((line) => line.startsWith("publish: waiting 60 s:")).length, 2);
+  const other = path.join(h.cwd, "other");
+  await writeBigBundle(other, 50);
+  fake.busyBegins = 6;
+  const conflict = await rejects(run(h, ["--to", "hosted", "--dir", other, "--host", HOST, "--bundle-id", "other.notes", "--yes"], fake));
+  assert.equal(conflict.code, "CONFLICT");
+  assert.ok(await readPendingCreate(h.home, other, "other.notes"), "the request id is kept to finish it");
+});
+
+test("the created answer lost on the way, the same command confirms the creation and converts the folder", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "big");
+  await writeBigBundle(folder, 50);
+  const fake = new FakeCreateHost();
+  fake.interrupt = { route: "bundle-create-commit", after: 0, applied: true };
+  const argv = ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "big.notes", "--yes"];
+  assert.equal((await rejects(run(h, argv, fake))).code, "TRANSIENT");
+  assert.equal(fake.stagedState([...requestIds(fake)][0]!), "created");
+  fake.sweepStaging();
+  const sent = fake.requests.length;
+  const receipt = await run(h, argv, fake);
+  assert.equal(receipt.published, "created");
+  assert.deepEqual(routesOf(fake).slice(sent).filter((route) => route.startsWith("bundle-create")), ["bundle-create-begin", "bundle-create-commit"]);
+  await assertCheckout(h, folder);
+});
