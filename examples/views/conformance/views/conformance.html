@@ -123,8 +123,8 @@
 })();
 
 // Conformance run. One row per request type, in the order docs/VIEW-PROTOCOL.md lists them, a
-// query-newest row when the host declares query.newest, and one burst row that keeps 12 reads in flight at once: a host may cap concurrency but must queue
-// or refuse the excess with an error reply, never drop it, so the row expects every result.
+// query-newest row when the host declares query.newest, and one burst row that keeps 12 reads in
+// flight at once: a host may cap concurrency but must queue or refuse the excess with an error reply, never drop it, so the row expects every result.
 // Statuses: answered (a result reply), refused (an error reply, code named in the summary),
 // sent (no reply expected and none arrived), skipped (a precondition was missing), failed
 // (a wrong shape, a wrong code, or no reply within the window). Other hosts byte-copy this

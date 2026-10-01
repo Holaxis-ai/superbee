@@ -56,7 +56,8 @@ client below wraps all of them.
 `hello.result.grant` is `"read"` for `bundle-read` and `"propose"` for `bundle-propose`. Read
 `hello.result.host.capabilities` to learn what this host honors (for example `query.field-or`,
 `query.open`, `edges`, `graph`, `subscribe-deltas`) instead of assuming; every host refuses what it
-does not offer with a `FORBIDDEN` error, never silently.
+does not offer with an error (`FORBIDDEN` for request types, `USAGE` for query params), never
+silently.
 
 Query rows come in canonical id order. On a host that declares `query.newest`, pass
 `order: "newest"` to get CLI `list` order instead (newest `generated.at` or `timestamp` first, rows

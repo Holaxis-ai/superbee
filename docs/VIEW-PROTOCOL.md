@@ -357,8 +357,8 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `record.open` | the host opens its own reader for one document | `host` input `{ documentId }`; output `{ opened: true }`; `NOT_FOUND` for a missing document |
 | `frame.resize` | the host sizes the View's frame to the reported document height, bounded by `host.frame.maxHeight` | `host` input exactly `{ height }` (a finite CSS pixel count, at least 0; no other keys); output `{ height }` as applied after the host's floor, `maxHeight` and damping (see `host.frame`); `USAGE` for any other input. Answered at once; touches no bundle data, so a host may answer it for any launch it admits. Declared only with `host.frame` |
 
-A host without a query capability still answers `query`; it just honors less. A host without
-`edges`, `graph` or `render-document` answers those requests with `FORBIDDEN`.
+A host without a query capability still answers `query`; it just honors less. The exception is
+`order`, which a host without `query.newest` refuses with `USAGE`. A host without `edges`, `graph` or `render-document` answers those requests with `FORBIDDEN`.
 
 ## Conformance levels
 
@@ -543,8 +543,8 @@ service over a fixture bundle and asserts every row.
 
 `bridge: "v0"` and `"v1"` name wire envelopes, not a semantic version. Additions in this document
 are compatible with every existing v0 View: new reply fields (`host`), new request types (`graph`,
-`host`), new optional request params behind a capability (`order`) and new error semantics for requests that were never valid before. A change that alters an
-existing reply or request shape needs a new envelope value and a change here first.
+`host`), new optional request params behind a capability (`order`) and new error semantics for
+requests that were never valid before. A change that alters an existing reply or request shape needs a new envelope value and a change here first.
 
 ### Body proposals
 
