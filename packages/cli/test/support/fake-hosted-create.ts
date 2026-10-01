@@ -13,17 +13,19 @@
 //   (paths that fold together), `429 bundle_create_limit`, and `503 write_outcome_unknown` once
 //   when `failNextCreate` is set (the same request then completes);
 // - the staged creation (`bundle-create-begin`, `-stage`, `-blob`, `-commit`, superbee-hosted
-//   `src/sync-v1-bundle-stage.ts`): a manifest under the same request id (another manifest is
-//   `request_conflict`; at most 3 open per workspace, else `429 bundle_create_limit`), parts whose
+//   `src/sync-v1-bundle-stage.ts`): a manifest under the same request id (another manifest
+//   replaces it until the commit reserves, then is `request_conflict`; at most 3 open per
+//   workspace, else `429 bundle_create_limit`), parts whose
 //   every object must be its manifest entry's version and size (`validation_failed`), never
 //   overlap what is staged (`validation_failed`), and keep the part bounds (500 objects, 3 MiB,
 //   400 parts), raw blobs of exactly their declared size and version (else `400 invalid_input`),
 //   then commits that answer `staging` with what is `missing`, reserve, answer `importing` for
-//   `commitSteps` calls, and finish with the one-shot's own success answer. A plan hash with no
-//   manifest is the host's `400 invalid_input` "Send bundle-create-begin again". Tests reach in
+//   `commitSteps` calls, and finish with the one-shot's own success answer (a repeat confirms it,
+//   kept manifest or not). A plan hash with no manifest is the refusal `staged_manifest_missing`;
+//   `busyBegins` answers begin the retryable `request_conflict`. Tests reach in
 //   with `failNextCommit` (503 after reserving), `sweepStaging()` (the host's expiry sweep:
-//   manifests and staged content go), `dropStagedBlobs()` and `interrupt` (the connection drops
-//   at a given request, before or after the host applied it);
+//   manifests and staged content go), `dropStagedBlobs()`, `interrupt` (the connection drops
+//   at a given request, before or after the host applied it) and `onRequest`;
 // - the created bundle is then served over whoami, bundles, capabilities (with its root), heads
 //   and snapshot, in the host's own serialization (the managed `superbee_updated_by` field added).
 import assert from "node:assert/strict";
@@ -168,6 +170,10 @@ export class FakeCreateHost {
   commitSteps = 0;
   /** Drop the connection once, at one request (see {@link FakeInterrupt}). */
   interrupt: FakeInterrupt | null = null;
+  /** Begins answered the retryable `request_conflict` (an earlier commit may still be running) before one is served. */
+  busyBegins = 0;
+  /** Runs before the host answers each request: the route and its count so far, this one included. */
+  onRequest: ((route: string, count: number) => void) | null = null;
   /** Staged creations by request id. */
   readonly staged = new Map<string, StagedCreation>();
   /** Requests per route, for {@link interrupt}. */
@@ -190,6 +196,7 @@ export class FakeCreateHost {
     const route = url.pathname.replace(/^\/sync\/v1\//, "");
     const count = (this.routeCounts.get(route) ?? 0) + 1;
     this.routeCounts.set(route, count);
+    this.onRequest?.(route, count);
     const cut = this.interrupt !== null && this.interrupt.route === route && count === this.interrupt.after + 1 ? this.interrupt : null;
     if (cut) {
       this.interrupt = null;
@@ -469,6 +476,13 @@ export class FakeCreateHost {
   private begin(text: string, body: Record<string, unknown>, headers: Headers, tenants: readonly string[]): Response {
     const requestId = this.stagedRequest(headers);
     if (!requestId) return invalidInput();
+    if (this.busyBegins > 0) {
+      this.busyBegins -= 1;
+      return new Response(
+        JSON.stringify({ ok: false, operationId: OPERATION, error: { code: "request_conflict", message: "A commit of this request's earlier manifest may still be running. Wait a minute and begin again.", retryable: true, writeState: "not_applied" } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     if (utf8Bytes(text) > FAKE_STAGE_BOUNDS.manifestBytes) return refusal("result_too_large", "The manifest exceeds 3 MiB, the staged creation bound. Publish without history, or with fewer files. Nothing was created.");
     const m = this.manifestOf(body);
     if (m instanceof Response) return m;
@@ -478,8 +492,13 @@ export class FakeCreateHost {
     const sorted = <T>(list: readonly T[], key: (item: T) => string) => [...list].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
     const digest = versionOfBytes(JSON.stringify([m.workspace, m.bundleId, m.name, m.root, sorted(m.conventions, (c) => c.id), sorted(m.documents, (d) => d.id), sorted(m.reserved, (r) => `${r.dir}/${r.name}`), sorted(m.blobs, (b) => b.key), sorted(m.history, (h) => `${h.documentId}\n${String(h.ordinal).padStart(8, "0")}`)]));
     const planHash = versionOfBytes(JSON.stringify(["plan", m.bundleId, m.name, m.documents.map((d) => [d.id, d.version]).sort(), m.history.map((h) => [h.documentId, h.ordinal, h.label, h.authoredAt, h.version])]));
-    const prior = this.staged.get(requestId);
-    if ((prior && prior.digest !== digest) || this.reservedDigests.has(requestId)) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
+    let prior = this.staged.get(requestId);
+    // Another manifest under the request id replaces an unreserved one; a reserved one is the request's.
+    if ((prior?.reserved && prior.digest !== digest) || this.reservedDigests.has(requestId)) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
+    if (prior && prior.digest !== digest) {
+      this.staged.delete(requestId);
+      prior = undefined;
+    }
     if (prior) {
       // After the sweep removed it, the manifest is kept again under the same plan.
       prior.kept = true;
@@ -517,6 +536,8 @@ export class FakeCreateHost {
     if (refused) return refused;
     const creation = this.staged.get(requestId);
     if (creation && (creation.planHash !== planHash || creation.manifest.bundleId !== bundleId) && creation.reserved) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
+    // A created creation is confirmed from the ledger, whether or not its manifest is kept.
+    if (creation?.created && creation.planHash === planHash && creation.manifest.bundleId === bundleId) return creation;
     if (!creation || !creation.kept || creation.planHash !== planHash) return noManifest();
     if (creation.manifest.bundleId !== bundleId) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
     return creation;

@@ -10,7 +10,7 @@
 //                                 `checkout --adopt` that finishes an interrupted conversion
 //                                 records them too
 import { createHash } from "node:crypto";
-import { unlink } from "node:fs/promises";
+import { readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
@@ -42,6 +42,15 @@ export interface PendingCreate {
   readonly workspace: string;
   readonly bundle_id: string;
   readonly digest: string;
+  /** A staged creation (absent: one request). */
+  readonly staged?: boolean;
+  /** The folder it publishes, for naming it to the person. */
+  readonly folder?: string;
+  /**
+   * The host has reserved the bundle id for this request (a staged creation answered `importing`
+   * or `created`): only this request id can finish it, so the record is kept until it succeeds.
+   */
+  readonly reserved?: boolean;
 }
 
 function pendingSuffix(bundleId: string): string {
@@ -54,6 +63,26 @@ export function readPendingCreate(home: string, canonical: string, bundleId: str
 
 export async function writePendingCreate(home: string, canonical: string, pending: PendingCreate): Promise<void> {
   await writeUserStateFileAtomic0600(home, recordDir(home), recordName(canonical, pendingSuffix(pending.bundle_id)), `${JSON.stringify(pending)}\n`);
+}
+
+/** Every pending record, whatever folder it publishes (a record that does not read is skipped). */
+export async function listPendingCreates(home: string): Promise<PendingCreate[]> {
+  let names: string[];
+  try {
+    names = await readdir(recordDir(home));
+  } catch {
+    return [];
+  }
+  const records: PendingCreate[] = [];
+  for (const name of names.filter((entry) => /^[0-9a-f]{64}-[0-9a-f]{64}\.json$/.test(entry))) {
+    try {
+      const value = JSON.parse(await readUserStateFile(home, path.join(recordDir(home), name), 1024 * 1024)) as Partial<PendingCreate>;
+      if (typeof value.request_id === "string" && typeof value.bundle_id === "string" && typeof value.host === "string") records.push(value as PendingCreate);
+    } catch {
+      // Unreadable: not one to name.
+    }
+  }
+  return records;
 }
 
 export function clearPendingCreate(home: string, canonical: string, bundleId: string): Promise<void> {
