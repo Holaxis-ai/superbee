@@ -4,7 +4,7 @@
 // `hosted-create-fake-contract.test.ts`). No request leaves the process.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -19,7 +19,9 @@ import { bindingForPath, checkoutStoreDir } from "../src/hosted/binding.js";
 import { qualifyingCarrier } from "../src/hosted/client.js";
 import { readCheckoutMarker } from "../src/hosted/marker.js";
 import { readPendingCreate } from "../src/hosted/publish-state.js";
-import { stagedBlockers, STAGED_PUBLISH_BOUNDS, type CreateHistory, type PlanContent } from "../src/hosted/publish-plan.js";
+import { stagedBlockers, stagedContent, STAGED_PUBLISH_BOUNDS, type CreateHistory, type PlanContent } from "../src/hosted/publish-plan.js";
+import { stringifyDoc } from "@superbee/core";
+import { versionOfBytes } from "@superbee/core/versioning";
 import { folderConflicts, folderMatchesProjection, readProjection } from "../src/hosted/sync-scan.js";
 import { FakeCreateHost, FAKE_STAGE_BOUNDS } from "./support/fake-hosted-create.js";
 import { HOST, TOKEN } from "./support/fake-hosted-sync.js";
@@ -131,6 +133,13 @@ test("the preview names the staged path past one request's bounds; a small bundl
   assert.match(String(((await run(h, ["--to", "hosted", "--dir", small, "--host", HOST], fake)).travels as Record<string, unknown>).sent), /^staged: a file over 1 MB \(big\.bin\)/);
   await writeFile(path.join(small, "big.bin"), "tiny");
   assert.equal(((await run(h, ["--to", "hosted", "--dir", small, "--host", HOST], fake)).travels as Record<string, unknown>).sent, "one request");
+  // Two files that are one on a case- or compatibility-folding disk block, naming the rule.
+  await writeFile(path.join(small, "f.txt"), "a");
+  await writeFile(path.join(small, "\uff46.txt"), "b");
+  const folded = await run(h, ["--to", "hosted", "--dir", small, "--host", HOST], fake);
+  assert.equal(folded.ready, false);
+  assert.ok((folded.blockers as { rows: { reason: string }[] }).rows.some((row) => row.reason === "path_collision"), JSON.stringify(folded.blockers));
+  await rm(path.join(small, "\uff46.txt"));
   // A file over 16 MiB blocks either way.
   await writeFile(path.join(small, "big.bin"), Buffer.alloc(STAGED_PUBLISH_BOUNDS.blobBytes + 1));
   const blocked = await run(h, ["--to", "hosted", "--dir", small, "--host", HOST], fake);
@@ -304,7 +313,8 @@ test("staged refusals map to the CLI taxonomy: an id taken at commit, too many o
   };
   const exists = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "big.notes", "--yes"], taken));
   assert.equal(exists.code, "ALREADY_EXISTS");
-  assert.equal(await readPendingCreate(h.home, folder, "big.notes"), null);
+  // Only begin's refusals settle a creation; this one is kept, and the next run's begin settles it.
+  assert.ok(await readPendingCreate(h.home, folder, "big.notes"));
   // Three unfinished staged creations already open in the workspace.
   const busy = new FakeCreateHost();
   for (const id of ["a.one", "a.two", "a.three"]) {
@@ -315,6 +325,9 @@ test("staged refusals map to the CLI taxonomy: an id taken at commit, too many o
   assert.equal(open.code, "FORBIDDEN");
   assert.equal(open.details?.reason, "bundle_create_limit");
   assert.match(open.message, /unfinished large publishes/);
+  // It names the unfinished ones this machine started, and where from.
+  for (const id of ["a.one", "a.two", "a.three"]) assert.match(open.help ?? "", new RegExp(`'${id.replace(".", "\\.")}' from `));
+  assert.ok(await readPendingCreate(h.home, folder, "a.four"), "a refusal that settles nothing keeps the request id");
 });
 
 test("the staged preview blocks past 5,000 earlier versions and past a 3 MiB manifest, naming the remedy", () => {
@@ -364,7 +377,7 @@ test("a qualifying client sends the staged routes unqualified, and raw bytes onl
   await assert.rejects(carrier.bytes!("/sync/v1/heads", new Uint8Array(1), signal, { maximum: 1 }), TypeError);
 });
 
-test("a retryable request_conflict from begin waits a minute and begins again; past five it is final", async () => {
+test("a retryable request_conflict from begin waits a minute and begins again; past five the run stops, to re-run later", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "big");
   await writeBigBundle(folder, 50);
@@ -379,7 +392,9 @@ test("a retryable request_conflict from begin waits a minute and begins again; p
   await writeBigBundle(other, 50);
   fake.busyBegins = 6;
   const conflict = await rejects(run(h, ["--to", "hosted", "--dir", other, "--host", HOST, "--bundle-id", "other.notes", "--yes"], fake));
-  assert.equal(conflict.code, "CONFLICT");
+  assert.equal(conflict.code, "TRANSIENT");
+  assert.equal(conflict.details?.reason, "commit_running");
+  assert.match(conflict.help ?? "", /re-run the same command in a minute/);
   assert.ok(await readPendingCreate(h.home, other, "other.notes"), "the request id is kept to finish it");
 });
 
@@ -398,4 +413,102 @@ test("the created answer lost on the way, the same command confirms the creation
   assert.equal(receipt.published, "created");
   assert.deepEqual(routesOf(fake).slice(sent).filter((route) => route.startsWith("bundle-create")), ["bundle-create-begin", "bundle-create-commit"]);
   await assertCheckout(h, folder);
+});
+
+/** The fake's fetch, with `answer` replacing the host's answer to the requests it returns one for. */
+function intercepting(fake: FakeCreateHost, answer: (route: string, count: number) => Response | null): FakeCreateHost {
+  const counts = new Map<string, number>();
+  const inner = fake.fetch;
+  const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(input)).pathname.replace(/^\/sync\/v1\//, "");
+    const count = (counts.get(route) ?? 0) + 1;
+    counts.set(route, count);
+    return answer(route, count) ?? inner(input, init);
+  }) as typeof fetch;
+  return Object.assign(Object.create(Object.getPrototypeOf(fake) as object) as FakeCreateHost, fake, { fetch: wrapped });
+}
+const refusalAnswer = (code: string, message: string) =>
+  new Response(JSON.stringify({ ok: false, operationId: "bundles.create.v1", error: { code, message, retryable: false, writeState: "not_applied" } }), { status: 200, headers: { "content-type": "application/json" } });
+
+test("a refusal after the host reserved the id keeps the request id, and the same command then finishes the creation", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "big");
+  await writeBigBundle(folder, 100);
+  const fake = new FakeCreateHost();
+  fake.commitSteps = 2;
+  // The workspace's switch is turned off while the creation is importing.
+  const off = intercepting(fake, (route, count) => (route === "bundle-create-commit" && count === 3 ? refusalAnswer("bundle_create_unavailable", "switched off") : null));
+  const argv = ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "big.notes", "--yes"];
+  const refused = await rejects(run(h, argv, off));
+  assert.equal(refused.details?.reason, "bundle_create_unavailable");
+  const requestId = [...fake.staged.keys()][0]!;
+  assert.equal(fake.stagedState(requestId), "importing");
+  const pending = await readPendingCreate(h.home, folder, "big.notes");
+  assert.equal(pending?.request_id, requestId);
+  assert.equal(pending?.reserved, true);
+  assert.equal(pending?.staged, true);
+  const receipt = await run(h, argv, fake);
+  assert.equal(receipt.published, "created");
+  assert.equal(fake.stagedState(requestId), "created");
+  assert.equal(await readPendingCreate(h.home, folder, "big.notes"), null);
+  // A refusal from begin that settles the unreserved creation forgets the request id.
+  const other = path.join(h.cwd, "other");
+  await writeBigBundle(other, 100);
+  const taken = await rejects(run(h, ["--to", "hosted", "--dir", other, "--host", HOST, "--bundle-id", "held.id", "--yes"], new FakeCreateHost({ taken: ["held.id"] })));
+  assert.equal(taken.code, "ALREADY_EXISTS");
+  assert.equal(await readPendingCreate(h.home, other, "held.id"), null);
+});
+
+test("a file the host never keeps stops the run as a stall after a bounded number of uploads", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "big");
+  await writeBigBundle(folder, 20);
+  const fake = new FakeCreateHost();
+  fake.onRequest = (route) => {
+    if (route === "bundle-create-commit") fake.dropStagedBlobs();
+  };
+  const stalled = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "big.notes", "--yes"], fake));
+  assert.equal(stalled.code, "RUNTIME");
+  assert.equal(stalled.details?.reason, "staged_stall");
+  assert.match(stalled.message, /keeps naming the same objects as missing after they were sent 3 times/);
+  // Three files: the first round, then the same missing files named three times at most.
+  assert.equal(fake.routeCounts.get("bundle-create-blob"), 3 * 4);
+  assert.ok(await readPendingCreate(h.home, folder, "big.notes"), "the request id is kept to resume");
+});
+
+test("an object the host stores at another version is a contract mismatch, not the person's to fix, and keeps the request id", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "big");
+  await writeBigBundle(folder, 20);
+  const fake = intercepting(new FakeCreateHost(), (route) =>
+    route === "bundle-create-stage" ? refusalAnswer("validation_failed", 'A staged object\'s version or size is not the manifest\'s: "notes/n00000". Nothing was created.') : null,
+  );
+  const mismatch = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "big.notes", "--yes"], fake));
+  assert.equal(mismatch.code, "RUNTIME");
+  assert.equal(mismatch.details?.reason, "staged_mismatch");
+  assert.match(mismatch.help ?? "", /upgrade Superbee/);
+  assert.ok(await readPendingCreate(h.home, folder, "big.notes"));
+});
+
+test("one file's failure stops the other upload worker before its next file", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "big");
+  await writeBigBundle(folder, 20);
+  for (let i = 0; i < 6; i++) await writeFile(path.join(folder, "assets", `more-${i}.bin`), Buffer.alloc(1_100_000, i + 20));
+  const fake = new FakeCreateHost();
+  const failing = intercepting(fake, (route, count) => (route === "bundle-create-blob" && count === 1 ? new Response(JSON.stringify({ error: { code: "unauthenticated" } }), { status: 401 }) : null));
+  const denied = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "big.notes", "--yes"], failing));
+  assert.equal(denied.code, "AUTH_REQUIRED");
+  // The first failed; the other worker finished the file it had started and took no other.
+  assert.ok((fake.routeCounts.get("bundle-create-blob") ?? 0) <= 1, `${fake.routeCounts.get("bundle-create-blob")} uploads reached the host`);
+});
+
+test("versions are computed from the frontmatter the host receives, after JSON", () => {
+  const root = { dir: "", name: "index.md", content: ROOT };
+  const sent = { id: "a", frontmatter: { type: "Note", gone: undefined, when: new Date(Date.UTC(2026, 0, 1)) } as Record<string, unknown>, body: "x\n" };
+  const content = stagedContent({ documents: [sent], reserved: [root], blobs: [], history: [] });
+  const received = JSON.parse(JSON.stringify(sent.frontmatter)) as Record<string, unknown>;
+  assert.equal(content.documents[0]!.version, versionOfBytes(stringifyDoc(received as never, "x\n")));
+  const object = content.objects.get(content.documents[0]!.version);
+  assert.deepEqual(object?.value, { ...sent, frontmatter: received });
 });

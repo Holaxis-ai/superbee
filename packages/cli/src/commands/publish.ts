@@ -43,8 +43,8 @@ import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
 import { connectHostedAccount, hostedListCommand, workspaceNames } from "../hosted/account.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
 import { createBody, manifestBody, planDigest, planPublish, stagedContent, type PublishPlan } from "../hosted/publish-plan.js";
-import { runStagedCreate, StagedRefusal, type StagedProgress } from "../hosted/publish-staged.js";
-import { clearPendingCreate, clearPublishedExtras, readPendingCreate, writePendingCreate, writePublishedExtras } from "../hosted/publish-state.js";
+import { isFinalBeforeReservation, runStagedCreate, StagedRefusal, type StagedProgress } from "../hosted/publish-staged.js";
+import { clearPendingCreate, clearPublishedExtras, listPendingCreates, readPendingCreate, writePendingCreate, writePublishedExtras, type PendingCreate } from "../hosted/publish-state.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
@@ -251,7 +251,11 @@ function summary(plan: PublishPlan): Record<string, unknown> {
 }
 
 /** One refusal answer of `bundles.create.v1`, as the CLI taxonomy names it. */
-function createRefusal(code: string, message: string, context: { bundleId: string; workspace: string; target: HostedTarget; resume: CommandText; folder: string }): CliError {
+function createRefusal(
+  code: string,
+  message: string,
+  context: { bundleId: string; workspace: string; target: HostedTarget; resume: CommandText; folder: string; openCreations?: readonly PendingCreate[] },
+): CliError {
   const details = { reason: code, bundle_id: context.bundleId, workspace: context.workspace, host: context.target.origin, host_message: message };
   switch (code) {
     case "bundle_exists":
@@ -269,7 +273,16 @@ function createRefusal(code: string, message: string, context: { bundleId: strin
           : code === "bundle_create_limit"
             ? `your bundle creation limit in ${context.workspace} is used up`
             : `${context.workspace} does not offer bundle creation to this client`,
-        { details, help: open ? "finish one by re-running its publish, or wait for it to expire 7 days after it began" : "ask a workspace admin in the Superbee app" },
+        {
+          details: open && context.openCreations ? { ...details, open: context.openCreations.map((record) => ({ bundle_id: record.bundle_id, ...(record.folder ? { folder: record.folder } : {}) })) } : details,
+          help: open
+            ? `finish one by re-running its publish${
+                context.openCreations && context.openCreations.length > 0
+                  ? ` (unfinished from here: ${context.openCreations.map((record) => `'${record.bundle_id}'${record.folder ? ` from ${record.folder}` : ""}`).join(", ")})`
+                  : ""
+              }, or wait for one to expire 7 days after it began`
+            : "ask a workspace admin in the Superbee app",
+        },
       );
     }
     case "request_conflict":
@@ -330,7 +343,10 @@ async function sendCreation(plan: PublishPlan, context: SendContext): Promise<Re
   const earlier = await readPendingCreate(home, canonical, bundleId);
   const resumes = earlier !== null && earlier.host === target.origin && earlier.workspace === workspace;
   const requestId = resumes ? earlier.request_id : randomUUID();
-  if (!resumes) await writePendingCreate(home, canonical, { request_id: requestId, host: target.origin, workspace, bundle_id: bundleId, digest });
+  const record: PendingCreate = resumes
+    ? { ...earlier, ...(staged ? { staged: true, folder: canonical } : {}) }
+    : { request_id: requestId, host: target.origin, workspace, bundle_id: bundleId, digest, ...(staged ? { staged: true, folder: canonical } : {}) };
+  if (!resumes || (staged && earlier.staged !== true)) await writePendingCreate(home, canonical, record);
   const refusalContext = { bundleId, workspace, target, resume: yesCommand, folder: canonical };
 
   if (staged) {
@@ -344,11 +360,21 @@ async function sendCreation(plan: PublishPlan, context: SendContext): Promise<Re
         resume: String(yesCommand),
         progress: (event) => context.deps.stderr(progressLine(event, context.json)),
         ...(context.deps.sleep ? { sleep: context.deps.sleep } : {}),
+        // Once the host holds the id for this request, only this request id can finish it.
+        onReserved: async () => {
+          if (record.reserved !== true) await writePendingCreate(home, canonical, { ...record, reserved: true });
+        },
       });
     } catch (error) {
       if (error instanceof StagedRefusal) {
-        if (error.code !== "request_conflict") await clearPendingCreate(home, canonical, bundleId);
-        throw createRefusal(error.code, error.hostMessage, refusalContext);
+        // Only a refusal that settles an unreserved creation forgets its request id; any other
+        // (a switch turned off, a workspace gone, the limit) is kept, so a re-run finishes it.
+        if (record.reserved !== true && isFinalBeforeReservation(error)) await clearPendingCreate(home, canonical, bundleId);
+        const openCreations =
+          error.code === "bundle_create_limit"
+            ? (await listPendingCreates(home)).filter((other) => other.staged === true && other.host === target.origin && other.workspace === workspace && other.request_id !== requestId)
+            : undefined;
+        throw createRefusal(error.code, error.hostMessage, { ...refusalContext, ...(openCreations ? { openCreations } : {}) });
       }
       throw error;
     }
@@ -456,6 +482,10 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   }${values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``} --bundle-id ${commandToken(bundleId)}${
     values.name !== undefined ? commandFragment` --name ${commandToken(name)}` : commandFragment``
   }${withHistory ? commandFragment` --with-history` : commandFragment``} --yes${values.json ? commandFragment` --json` : commandFragment``}`;
+  // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents: a larger bundle is created and the
+  // folder is left as it is (a Git board stays bound), to use in the app.
+  const converts = plan.documents.length <= CHECKOUT_DOCUMENT_LIMIT;
+  const uncheckable = `leave this folder as it is${board ? " (still bound to the Git board)" : ""}: a hosted checkout holds at most ${CHECKOUT_DOCUMENT_LIMIT} documents, so use the bundle in the app; from then on, edits here do not reach the hosted bundle, nor its edits here`;
   const gitPlan = board
     ? {
         branch: board.branch,
@@ -465,14 +495,11 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         ...(boardState && ((boardState.block.ahead as number | null) ?? 0) + ((boardState.block.uncommitted as number | null) ?? 0) > 0
           ? { not_on_branch: { ahead: boardState.block.ahead, uncommitted: boardState.block.uncommitted, note: "these travel to hosted but not to the board branch teammates still sync" } }
           : {}),
-        will: "unbind this folder from the board branch; the branch and its commits stay, locally and on origin",
+        will: converts
+          ? "unbind this folder from the board branch; the branch and its commits stay, locally and on origin"
+          : "keep this folder bound to the board branch: the board and the hosted bundle then diverge, and neither's edits reach the other",
       }
     : null;
-
-  // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents: a larger bundle is created and the
-  // folder is left as it is (a Git board stays bound), to use in the app.
-  const converts = plan.documents.length <= CHECKOUT_DOCUMENT_LIMIT;
-  const uncheckable = `leave this folder as it is${board ? " (still bound to the Git board)" : ""}: a hosted checkout holds at most ${CHECKOUT_DOCUMENT_LIMIT} documents, so use the bundle in the app`;
 
   if (!values.yes) {
     const blockers = [...plan.blockers.map((b) => ({ path: b.path, reason: b.reason, message: b.message })), ...(boardState?.blocker ? [boardState.blocker] : [])];
@@ -562,6 +589,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           folder: canonical,
           home: facts.home,
           checkout: `not converted: ${uncheckable}`,
+          diverges: `this folder${board ? " and its Git board" : ""} and the hosted bundle '${bundleId}' are now separate copies: edits here do not reach the hosted bundle`,
           help: [hostedListCommand(target)],
         },
         mode,

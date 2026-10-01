@@ -28,9 +28,15 @@ const ANSWER_BYTES = 256 * 1024;
 const BLOBS_IN_FLIGHT = 2;
 /** Delays before each retry of a `503` answer. */
 const RETRY_DELAYS_MS = Object.freeze([500, 1_000, 2_000, 4_000]);
-/** Requests one run makes at most before it stops (a host that never finishes). */
-const MAXIMUM_ROUNDS = 5_000;
-/** Rounds that stage what `missing` names without it shrinking, before the run stops. */
+/**
+ * What one run may send before it stops (a host that never finishes): requests, a fixed allowance
+ * plus a few for each object, and bytes, a few times the content plus slack.
+ */
+const REQUEST_ALLOWANCE = 2_000;
+const REQUESTS_PER_OBJECT = 4;
+const BYTES_PER_CONTENT_BYTE = 3;
+const BYTES_ALLOWANCE = 64 * 1024 * 1024;
+/** Times the host may name the same objects missing after they were sent, before the run stops. */
 const MAXIMUM_STALLS = 3;
 /** Waits before begin is sent again after a retryable `request_conflict`, and how often. */
 const CONFLICT_RETRY_MS = 60_000;
@@ -50,13 +56,31 @@ export class StagedRefusal extends Error {
   readonly hostMessage: string;
   /** True when the creation was reserved: the request id must be kept to finish it. */
   readonly reserved: boolean;
-  constructor(code: string, hostMessage: string, reserved: boolean) {
+  /** The route that answered it. */
+  readonly route: string;
+  constructor(code: string, hostMessage: string, reserved: boolean, route: string) {
     super(`${code}: ${hostMessage}`);
     this.code = code;
     this.hostMessage = hostMessage;
     this.reserved = reserved;
+    this.route = route;
   }
 }
+
+/**
+ * Refusals that settle a staged creation the host has not reserved: answered by begin, nothing is
+ * held, and the same contents get the same answer, so the request id need not be kept.
+ */
+export function isFinalBeforeReservation(refusal: StagedRefusal): boolean {
+  return (
+    !refusal.reserved &&
+    refusal.route === "bundle-create-begin" &&
+    ["bundle_exists", "document_id_collision", "document_id_not_canonical", "validation_failed", "result_too_large"].includes(refusal.code)
+  );
+}
+
+/** The host refused a staged object as not the version or size the manifest lists. */
+const VERSION_MISMATCH = /version or size is not the manifest's/i;
 
 interface Status {
   readonly state: "staging" | "importing" | "created";
@@ -75,6 +99,8 @@ export interface StagedCreateRequest {
   readonly resume: string;
   readonly progress?: (event: StagedProgress) => void;
   readonly sleep?: (ms: number) => Promise<void>;
+  /** Called once, the first time an answer shows the host reserved the id (`importing` or `created`). */
+  readonly onReserved?: () => Promise<void>;
 }
 
 const VERSION = /^sha256:[0-9a-f]{64}$/;
@@ -93,6 +119,12 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
   const route = (name: (typeof STAGED_CREATE_ROUTES)[number]) => `${client.prefix}/${name}`;
   let reserved = false;
   let planHash = "";
+  let requests = 0;
+  let bytesSent = 0;
+  const objects = content.objects.size + content.blobBytes.size;
+  const contentBytes = [...content.objects.values()].reduce((sum, object) => sum + Buffer.byteLength(JSON.stringify(object.value)), 0) + [...content.blobBytes.values()].reduce((sum, blob) => sum + blob.bytes.byteLength, 0);
+  const maximumRequests = REQUEST_ALLOWANCE + REQUESTS_PER_OBJECT * objects;
+  const maximumBytes = BYTES_ALLOWANCE + BYTES_PER_CONTENT_BYTE * contentBytes;
 
   const unknownOutcome = (why: string) =>
     new CliError("TRANSIENT", `${why}; the bundle may be partly created`, {
@@ -103,6 +135,11 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
   /** One request, with a `503` retried; a dropped connection stops the run. */
   async function send(name: (typeof STAGED_CREATE_ROUTES)[number], body: Record<string, unknown> | Uint8Array, headers?: Record<string, string>): Promise<HostedAnswer> {
     for (let attempt = 0; ; attempt++) {
+      requests += 1;
+      bytesSent += body instanceof Uint8Array ? body.byteLength : 0;
+      if (requests > maximumRequests || bytesSent > maximumBytes) {
+        throw unknownOutcome(`${client.target.origin} did not finish the creation within ${maximumRequests} requests and ${Math.ceil(maximumBytes / (1024 * 1024))} MiB sent`);
+      }
       let answer: HostedAnswer;
       try {
         if (body instanceof Uint8Array) {
@@ -134,13 +171,21 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
     if (answer.status === 200 && envelope.ok === true && typeof envelope.data === "object" && envelope.data !== null) return envelope.data as Record<string, unknown>;
     if (answer.status === 200 && envelope.ok === false && code === "staged_manifest_missing") return "no_manifest";
     if (answer.status === 200 && envelope.ok === false && code === "request_conflict" && envelope.error?.retryable === true) return "busy";
-    if (answer.status === 200 && envelope.ok === false && code !== null) throw new StagedRefusal(code, message, reserved);
-    if (answer.status === 429 && code === "bundle_create_limit") throw new StagedRefusal(code, message, reserved);
-    if (answer.status === 400 && !reserved) throw new StagedRefusal(code ?? "invalid_input", message || `the host refused ${name} as malformed`, false);
+    if (answer.status === 200 && envelope.ok === false && code === "validation_failed" && VERSION_MISMATCH.test(message)) {
+      // The host computed another version or size for an object than this CLI did: the two
+      // disagree on how a document is stored, and re-sending never helps.
+      throw new CliError("RUNTIME", `${client.target.origin} stores an object differently from this CLI (client/host contract mismatch)`, {
+        details: { reason: "staged_mismatch", route: name, host_message: message, host: client.target.origin, request_id: requestId, retryable: false },
+        help: `upgrade Superbee (npm install -g superbee), then re-run the same command, which resumes this creation: ${request.resume}`,
+      });
+    }
+    if (answer.status === 200 && envelope.ok === false && code !== null) throw new StagedRefusal(code, message, reserved, name);
+    if (answer.status === 429 && code === "bundle_create_limit") throw new StagedRefusal(code, message, reserved, name);
+    if (answer.status === 400 && !reserved) throw new StagedRefusal(code ?? "invalid_input", message || `the host refused ${name} as malformed`, false, name);
     throw hostedFailure(new RemoteError(`hosted ${name} answered ${answer.status}`, code ?? "RUNTIME", answer.status), client.target, request.resume);
   }
 
-  function status(name: string, data: Record<string, unknown>): Status {
+  async function status(name: string, data: Record<string, unknown>): Promise<Status> {
     const missing = data.missing as { versions?: unknown; blobs?: unknown } | undefined;
     const staged = data.staged as { versions?: unknown; blobVersions?: unknown } | undefined;
     if (
@@ -156,7 +201,10 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
     }
     const answer = data as unknown as Status;
     planHash = answer.planHash;
-    if (answer.state !== "staging") reserved = true;
+    if (answer.state !== "staging" && !reserved) {
+      reserved = true;
+      await request.onReserved?.();
+    }
     return answer;
   }
 
@@ -164,13 +212,18 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
   async function begin(): Promise<Status> {
     let data = read("bundle-create-begin", await send("bundle-create-begin", manifest));
     for (let retry = 0; data === "busy"; retry++) {
-      if (retry >= CONFLICT_RETRIES) throw new StagedRefusal("request_conflict", "A commit of this request's earlier contents is still running.", reserved);
+      if (retry >= CONFLICT_RETRIES) {
+        throw new CliError("TRANSIENT", `an earlier commit of this creation may still be running on ${client.target.origin}`, {
+          details: { reason: "commit_running", bundle_id: target.bundleId, workspace: target.workspace, host: client.target.origin, request_id: requestId, retryable: true },
+          help: `re-run the same command in a minute: ${request.resume}`,
+        });
+      }
       progress({ phase: "wait", seconds: CONFLICT_RETRY_MS / 1000, reason: "an earlier commit of this creation may still be running" });
       await sleep(CONFLICT_RETRY_MS);
       data = read("bundle-create-begin", await send("bundle-create-begin", manifest));
     }
     if (data === "no_manifest") throw hostedFailure(new MalformedAnswer("begin answered that no manifest is staged", route("bundle-create-begin")), client.target, request.resume);
-    const answer = status("bundle-create-begin", data);
+    const answer = await status("bundle-create-begin", data);
     progress({ phase: "begin", state: answer.state, versions: content.objects.size, staged: answer.staged.versions, blobs: content.blobBytes.size, stagedBlobs: answer.staged.blobVersions });
     return answer;
   }
@@ -188,6 +241,15 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
     let next = 0;
     let gone = false;
     const upload = async () => {
+      try {
+        await uploadEach();
+      } catch (error) {
+        // One worker's failure stops the other before its next file.
+        gone = true;
+        throw error;
+      }
+    };
+    const uploadEach = async () => {
       for (let at = next++; at < blobs.length && !gone; at = next++) {
         const version = blobs[at]!;
         const blob = content.blobBytes.get(version)!;
@@ -207,7 +269,10 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
         progress({ phase: "blob", blob: at + 1, blobs: blobs.length, key: blob.key, bytes: blob.bytes.byteLength });
       }
     };
-    await Promise.all(Array.from({ length: Math.min(BLOBS_IN_FLIGHT, blobs.length) }, upload));
+    let failure: unknown = null;
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(BLOBS_IN_FLIGHT, blobs.length) }, upload));
+    for (const result of settled) if (result.status === "rejected" && failure === null) failure = result.reason;
+    if (failure !== null) throw failure;
     if (gone) return "no_manifest";
     const parts = packParts(content, from.missing.versions);
     let last: Status | null = null;
@@ -217,7 +282,7 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
         await send("bundle-create-stage", { workspace: target.workspace, bundleId: target.bundleId, planHash, documents: part.documents, reserved: part.reserved, history: part.history }),
       );
       if (data === "no_manifest" || data === "busy") return "no_manifest";
-      last = status("bundle-create-stage", data);
+      last = await status("bundle-create-stage", data);
       progress({ phase: "stage", part: index + 1, parts: parts.length, objects: part.versions.length });
     }
     // Blobs alone answer no status: commit says what is still missing, or goes on.
@@ -227,24 +292,28 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
   const outstanding = (s: Status) => s.missing.versions.length + s.missing.blobs.length;
   const missingKey = (s: Status) => `${outstanding(s)}:${s.missing.versions[0] ?? ""}:${s.missing.blobs[0] ?? ""}`;
   let current: Status | null = await begin();
+  // The missing objects the last fill sent: the host naming the same ones again, whether in the
+  // fill's own last answer or in the commit after a round of files, is a stall.
+  let lastFilled: string | null = null;
   let stalls = 0;
   let commits = 0;
-  for (let round = 0; round < MAXIMUM_ROUNDS; round++) {
+  for (;;) {
     if (current !== null && current.state !== "created" && outstanding(current) > 0) {
-      const before = missingKey(current);
+      const key = missingKey(current);
+      stalls = key === lastFilled ? stalls + 1 : 0;
+      if (stalls >= MAXIMUM_STALLS) {
+        throw new CliError("RUNTIME", `${client.target.origin} keeps naming the same objects as missing after they were sent ${MAXIMUM_STALLS} times`, {
+          details: { reason: "staged_stall", missing: { versions: current.missing.versions.slice(0, 5), blobs: current.missing.blobs.slice(0, 5) }, host: client.target.origin, request_id: requestId, retryable: true },
+          help: `re-run the same command later; it resumes this creation: ${request.resume}`,
+        });
+      }
+      lastFilled = key;
       const after = await fill(current);
       if (after === "no_manifest") {
         current = await begin();
         continue;
       }
       if (after !== null && outstanding(after) > 0) {
-        stalls = missingKey(after) === before ? stalls + 1 : 0;
-        if (stalls >= MAXIMUM_STALLS) {
-          throw new CliError("RUNTIME", `${client.target.origin} keeps naming the same objects as missing after they were sent`, {
-            details: { reason: "staged_stall", missing: after.missing, host: client.target.origin, request_id: requestId, retryable: true },
-            help: `re-run the same command later: ${request.resume}`,
-          });
-        }
         current = after;
         continue;
       }
@@ -262,8 +331,7 @@ export async function runStagedCreate(request: StagedCreateRequest): Promise<Rec
       // the stored bundle (edited since) rather than the manifest; the counts are reported, not checked.
       return data;
     }
-    current = status("bundle-create-commit", data);
+    current = await status("bundle-create-commit", data);
     progress({ phase: "commit", call: commits, state: current.state, ...(current.written ? { written: current.written } : {}) });
   }
-  throw unknownOutcome(`${client.target.origin} did not finish the creation within ${MAXIMUM_ROUNDS} requests`);
 }

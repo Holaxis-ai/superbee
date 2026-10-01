@@ -428,14 +428,14 @@ export async function planPublish(folder: string, options: { history: false } | 
   // every path the host claims, documents, reserved files and files together.
   const collision = findPathCollision(documents.map((doc) => doc.id));
   if (collision) {
-    blockers.push({ path: collision.first, reason: "sendPathcollision", message: `'${collision.first}' and '${collision.second}' differ only in letter case` });
+    blockers.push({ path: collision.first, reason: "path_collision", message: `'${collision.first}' and '${collision.second}' differ only in letter case` });
   } else {
     const claimed = new Map<string, string>();
     for (const file of [...documents.map((doc) => `${doc.id}.md`), ...reserved.map((r) => (r.dir === "" ? r.name : `${r.dir}/${r.name}`)), ...blobs.map((b) => b.key)]) {
       const key = file.split("/").map(fold).join("/");
       const other = claimed.get(key);
       if (other !== undefined) {
-        blockers.push({ path: file, reason: "sendPathcollision", message: `'${other}' and '${file}' would be one file on a case-insensitive disk` });
+        blockers.push({ path: file, reason: "path_collision", message: `'${other}' and '${file}' would be one file on a case-insensitive disk` });
         break;
       }
       claimed.set(key, file);
@@ -511,6 +511,10 @@ export function stagedBlockers(plan: PlanContent): PublishBlocker[] {
   if (current > bounds.currentBytes) blockers.push({ path: ".", reason: "too_large", message: `the bundle's current files are ${Math.ceil(current / MiB)} MiB; a creation carries at most ${bounds.currentBytes / MiB} MiB` });
   const history = distinctBytes(content.history);
   if (history > bounds.historyBytes) blockers.push({ path: ".", reason: "too_much_history", message: `the earlier versions are ${Math.ceil(history / MiB)} MiB; a creation carries at most ${bounds.historyBytes / MiB} MiB: ${noHistory}` });
+  // Within the other bounds the packing needs about 140 parts at most (128 MiB in parts of about
+  // 1 MiB); checked anyway, since the host refuses a creation's 401st part.
+  const parts = packParts(content, content.objects.keys()).length;
+  if (parts > bounds.parts) blockers.push({ path: ".", reason: "too_many_parts", message: `the bundle needs ${parts} parts; a creation holds at most ${bounds.parts}: ${plan.history.length > 0 ? noHistory : "publish fewer files"}` });
   const manifest = Buffer.byteLength(JSON.stringify(manifestBody(content, WIDEST_TARGET)));
   if (manifest > bounds.manifestBytes) {
     blockers.push({
@@ -579,13 +583,17 @@ export interface StagedContent {
 }
 
 export function stagedContent(plan: PlanContent): StagedContent {
+  // Versions are computed from what the host receives: frontmatter after JSON (a value JSON drops
+  // or changes, such as undefined or a Date, would otherwise hash differently on each side).
+  const wire = <T extends { frontmatter: Record<string, unknown> }>(object: T): T => ({ ...object, frontmatter: JSON.parse(JSON.stringify(object.frontmatter)) as Record<string, unknown> });
   const objects = new Map<string, StagedObject>();
   const keep = (version: string, object: StagedObject) => {
     if (!objects.has(version)) objects.set(version, object);
   };
   const stored = (text: string) => ({ version: versionOfBytes(text), bytes: Buffer.byteLength(text, "utf8") });
   const conventions: CreateDocument[] = [];
-  const documents = plan.documents.map((doc) => {
+  const documents = plan.documents.map((sent) => {
+    const doc = wire(sent);
     const text = stringifyDoc(doc.frontmatter as OkfDocument["frontmatter"], doc.body);
     const entry = stored(text);
     keep(entry.version, { kind: "documents", value: doc });
@@ -599,7 +607,8 @@ export function stagedContent(plan: PlanContent): StagedContent {
     return { dir: file.dir, name: file.name, ...entry };
   });
   const ordinals = new Map<string, number>();
-  const history = plan.history.map((row) => {
+  const history = plan.history.map((sent) => {
+    const row = wire(sent);
     const ordinal = (ordinals.get(row.documentId) ?? 0) + 1;
     ordinals.set(row.documentId, ordinal);
     const entry = stored(stringifyDoc(row.frontmatter as OkfDocument["frontmatter"], row.body));
