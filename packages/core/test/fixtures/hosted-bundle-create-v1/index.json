@@ -121,15 +121,6 @@
       "status": 200
     },
     {
-      "name": "bundle-create-begin-200-request-conflict",
-      "file": "bundle-create-begin-200-request-conflict.json",
-      "route": "/sync/v1/bundle-create-begin",
-      "rows": [
-        "200 request_conflict"
-      ],
-      "status": 200
-    },
-    {
       "name": "bundle-create-stage-200-staging",
       "file": "bundle-create-stage-200-staging.json",
       "route": "/sync/v1/bundle-create-stage",
@@ -148,13 +139,13 @@
       "status": 200
     },
     {
-      "name": "bundle-create-stage-400-no-manifest",
-      "file": "bundle-create-stage-400-no-manifest.json",
+      "name": "bundle-create-stage-200-staged-manifest-missing",
+      "file": "bundle-create-stage-200-staged-manifest-missing.json",
       "route": "/sync/v1/bundle-create-stage",
       "rows": [
-        "400 invalid_input"
+        "200 staged_manifest_missing"
       ],
-      "status": 400
+      "status": 200
     },
     {
       "name": "bundle-create-blob-200-ok",
@@ -162,6 +153,15 @@
       "route": "/sync/v1/bundle-create-blob",
       "rows": [
         "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-begin-200-request-conflict",
+      "file": "bundle-create-begin-200-request-conflict.json",
+      "route": "/sync/v1/bundle-create-begin",
+      "rows": [
+        "200 request_conflict"
       ],
       "status": 200
     },

@@ -69,7 +69,7 @@ const SITUATIONS: Readonly<Record<string, { options?: FakeCreateHostOptions; bef
   "bundle-create-begin-200-request-conflict": { before: ["bundle-create-begin-200-staging"] },
   "bundle-create-stage-200-staging": { before: ["bundle-create-begin-200-staging"] },
   "bundle-create-stage-200-validation-failed": { before: ["bundle-create-begin-200-staging"] },
-  "bundle-create-stage-400-no-manifest": { before: ["bundle-create-begin-200-staging"] },
+  "bundle-create-stage-200-staged-manifest-missing": { before: ["bundle-create-begin-200-staging"] },
   "bundle-create-blob-200-ok": { before: ["bundle-create-begin-200-staging"] },
   // Reserved and written but for the blob, which the host then finds gone.
   "bundle-create-commit-200-importing": {

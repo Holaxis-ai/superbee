@@ -1,6 +1,6 @@
 {
   "name": "bundle-create-begin-200-request-conflict",
-  "description": "The same request id with another manifest.",
+  "description": "The same request id with another plan, once the ledger holds the first.",
   "route": "/sync/v1/bundle-create-begin",
   "rows": [
     "200 request_conflict"

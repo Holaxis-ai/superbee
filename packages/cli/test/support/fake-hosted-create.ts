@@ -128,8 +128,7 @@ const onlyKeys = (value: unknown, keys: readonly string[]): value is Record<stri
 const size = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
 const invalidInput = () => Response.json({ error: { code: "invalid_input" } }, { status: 400 });
-const noManifest = () =>
-  Response.json({ error: { code: "invalid_input", message: "No staged manifest for this creation and plan hash. Send bundle-create-begin again, then retry." } }, { status: 400 });
+const noManifest = () => refusal("staged_manifest_missing", "No staged manifest for this creation and plan hash. Send bundle-create-begin again, then retry.");
 const outcomeUnknown = () =>
   Response.json({ error: { code: "write_outcome_unknown", message: "The bundle may be partly created. Send the same request again to finish or confirm it." } }, { status: 503 });
 const limitRefusal = (message: string) => Response.json({ error: { code: "bundle_create_limit", message, retryable: false, writeState: "not_applied" } }, { status: 429 });
