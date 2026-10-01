@@ -1,11 +1,14 @@
-// The plan `superbee publish --to hosted` shows and sends: the whole bundle as one
-// `bundles.create.v1` request (hosted `docs/person-bundle-create.md`), every bound the host
-// enforces checked here first, and what will not travel. Reads the folder and local Git only.
+// The plan `superbee publish --to hosted` shows and sends (hosted `docs/person-bundle-create.md`):
+// the whole bundle as one `bundles.create.v1` request when it fits that request's bounds, and
+// otherwise as a staged creation (a manifest, parts of about 1 MiB, raw blobs, then commits; the
+// "Staged creation" section there), every bound the host enforces checked here first, and what
+// will not travel. Reads the folder and local Git only.
 //
 // What travels:
 //   documents       every `.md` file that is not a reserved file, as `{id, frontmatter, body}`
 //   reserved        `index.md` and `log.md` at any level, as their exact text
-//   blobs           every other plain file, base64, with a content type from its extension
+//   blobs           every other plain file, with a content type from its extension (base64 in
+//                   the one-shot request, raw bytes in a staged creation)
 //   history         with `--with-history` on a Git board: each earlier Git version of each document,
 //                   labeled `imported:git/<commit>` and unverified (Mike's decision D2)
 // What does not: dot-files and dot-folders (`.git`, the checkout marker), symbolic links, and
@@ -17,6 +20,7 @@ import path from "node:path";
 import { readDocBytesAtRef, runGit } from "@superbee/board-git";
 import {
   assertSafeBlobKey,
+  blobVersion,
   assertSafeConceptId,
   buildKindRegistry,
   conceptIdFromPath,
@@ -36,13 +40,16 @@ import {
   type OkfDocument,
 } from "@superbee/core";
 import { wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
+import { versionOfBytes } from "@superbee/core/versioning";
 
 import type { GitBoardFacts } from "../bundle-home.js";
 import { digestOf, findPathCollision, fold } from "./projection.js";
 import { unsendable, utf8 } from "./sync-scan.js";
 import { stripHostText } from "@superbee/core";
 
-/** The host's bounds for one creation (hosted `src/person-bundle-create.ts`). */
+const MiB = 1024 * 1024;
+
+/** The host's bounds for one creation in one request (hosted `src/person-bundle-create.ts`). */
 export const PUBLISH_BOUNDS = Object.freeze({
   objects: 1500,
   documents: 1000,
@@ -51,7 +58,29 @@ export const PUBLISH_BOUNDS = Object.freeze({
   history: 1000,
   reservedBytes: 64 * 1024,
   blobBytes: 1_000_000,
-  requestBytes: 3 * 1024 * 1024,
+  requestBytes: 3 * MiB,
+});
+
+/**
+ * The host's bounds for a staged creation (hosted `src/person-bundle-stage.ts`,
+ * `PERSON_BUNDLE_STAGE_BOUNDS`): a bundle past {@link PUBLISH_BOUNDS} is sent this way. Per
+ * document, frontmatter and reserved file the bounds are the one-shot's. Byte totals count each
+ * distinct version once, as the host does.
+ */
+export const STAGED_PUBLISH_BOUNDS = Object.freeze({
+  documents: 10_000,
+  reserved: 1_000,
+  blobs: 1_000,
+  history: 5_000,
+  blobBytes: 16 * MiB,
+  currentBytes: 64 * MiB,
+  historyBytes: 64 * MiB,
+  manifestBytes: 3 * MiB,
+  /** The host's cap on one part's body; parts are packed to {@link partTargetBytes}. */
+  partBytes: 3 * MiB,
+  partTargetBytes: 1 * MiB,
+  partObjects: 500,
+  parts: 400,
 });
 
 export interface CreateDocument {
@@ -64,10 +93,11 @@ export interface CreateReserved {
   readonly name: string;
   readonly content: string;
 }
-export interface CreateBlob {
+/** One file that is not a document, as the plan holds it. */
+export interface PlannedBlob {
   readonly key: string;
   readonly contentType: string;
-  readonly base64: string;
+  readonly bytes: Buffer;
 }
 export interface CreateHistory {
   readonly documentId: string;
@@ -85,11 +115,18 @@ export interface PublishBlocker {
   readonly message: string;
 }
 
+/**
+ * How the plan travels: `one-shot`, one `bundle-create` request, when it fits
+ * {@link PUBLISH_BOUNDS}; `staged` otherwise, with `why` naming the first one-shot bound it passes.
+ */
+export type PublishPath = { readonly mode: "one-shot" } | { readonly mode: "staged"; readonly why: string };
+
 export interface PublishPlan {
   readonly documents: CreateDocument[];
   readonly reserved: CreateReserved[];
-  readonly blobs: CreateBlob[];
+  readonly blobs: PlannedBlob[];
   readonly history: CreateHistory[];
+  readonly path: PublishPath;
   /** Files that stay in the folder and are not sent: dot-files, links, anything but a plain file. */
   readonly skipped: { path: string; reason: string }[];
   readonly blockers: PublishBlocker[];
@@ -294,7 +331,7 @@ function kindBlockers(documents: readonly CreateDocument[], okfVersion: "0.1" | 
 export async function planPublish(folder: string, options: { history: false } | ({ history: true } & Partial<HistoryOptions>)): Promise<PublishPlan> {
   const documents: CreateDocument[] = [];
   const reserved: CreateReserved[] = [];
-  const blobs: CreateBlob[] = [];
+  const blobs: PlannedBlob[] = [];
   const skipped: { path: string; reason: string }[] = [];
   const blockers: PublishBlocker[] = [];
   const extras: Record<string, string> = {};
@@ -345,11 +382,11 @@ export async function planPublish(folder: string, options: { history: false } | 
         blockers.push({ path: entry.rel, reason: "unsafe_path", message: `${entry.rel} cannot be a file key (${(error as Error).message})` });
         continue;
       }
-      if (bytes.byteLength > PUBLISH_BOUNDS.blobBytes) {
-        blockers.push({ path: entry.rel, reason: "too_large", message: `${entry.rel} is over the 1 MB a file may hold` });
+      if (bytes.byteLength > STAGED_PUBLISH_BOUNDS.blobBytes) {
+        blockers.push({ path: entry.rel, reason: "too_large", message: `${entry.rel} is over the 16 MiB a file may hold` });
         continue;
       }
-      blobs.push({ key: entry.rel, contentType: contentTypeOf(entry.rel), base64: bytes.toString("base64") });
+      blobs.push({ key: entry.rel, contentType: contentTypeOf(entry.rel), bytes });
       extras[entry.rel] = digest(bytes);
       continue;
     }
@@ -391,22 +428,20 @@ export async function planPublish(folder: string, options: { history: false } | 
   // every path the host claims, documents, reserved files and files together.
   const collision = findPathCollision(documents.map((doc) => doc.id));
   if (collision) {
-    blockers.push({ path: collision.first, reason: "path_collision", message: `'${collision.first}' and '${collision.second}' differ only in letter case` });
+    blockers.push({ path: collision.first, reason: "sendPathcollision", message: `'${collision.first}' and '${collision.second}' differ only in letter case` });
   } else {
     const claimed = new Map<string, string>();
     for (const file of [...documents.map((doc) => `${doc.id}.md`), ...reserved.map((r) => (r.dir === "" ? r.name : `${r.dir}/${r.name}`)), ...blobs.map((b) => b.key)]) {
       const key = file.split("/").map(fold).join("/");
       const other = claimed.get(key);
       if (other !== undefined) {
-        blockers.push({ path: file, reason: "path_collision", message: `'${other}' and '${file}' would be one file on a case-insensitive disk` });
+        blockers.push({ path: file, reason: "sendPathcollision", message: `'${other}' and '${file}' would be one file on a case-insensitive disk` });
         break;
       }
       claimed.set(key, file);
     }
   }
-  if (documents.length > PUBLISH_BOUNDS.documents) blockers.push({ path: ".", reason: "too_many_documents", message: `${documents.length} documents; a hosted bundle is created with at most ${PUBLISH_BOUNDS.documents}` });
   if (reserved.length > PUBLISH_BOUNDS.reserved) blockers.push({ path: ".", reason: "too_many_reserved", message: `${reserved.length} reserved files; at most ${PUBLISH_BOUNDS.reserved}` });
-  if (blobs.length > PUBLISH_BOUNDS.blobs) blockers.push({ path: ".", reason: "too_many_files", message: `${blobs.length} files that are not documents; at most ${PUBLISH_BOUNDS.blobs}` });
 
   let history: CreateHistory[] = [];
   let historyPlan: PublishPlan["historyPlan"] = { mode: "current-only", versions: 0, skipped: 0, note: "history starts at publish" };
@@ -426,35 +461,81 @@ export async function planPublish(folder: string, options: { history: false } | 
         skipped: skippedVersions,
         note: "earlier Git versions are imported as labeled, unverified history (imported:git/<commit>); nothing reads them back yet",
       };
-      if (history.length > PUBLISH_BOUNDS.history || documents.length + reserved.length + blobs.length + history.length > PUBLISH_BOUNDS.objects) {
-        blockers.push({
-          path: ".",
-          reason: "too_much_history",
-          message: `${history.length} earlier versions: one creation carries at most ${PUBLISH_BOUNDS.history} versions and ${PUBLISH_BOUNDS.objects} objects in all; publish without --with-history`,
-        });
-      }
     }
   }
-  if (documents.length + reserved.length + blobs.length + history.length > PUBLISH_BOUNDS.objects && !blockers.some((b) => b.reason === "too_much_history")) {
-    blockers.push({ path: ".", reason: "too_many_objects", message: `one creation carries at most ${PUBLISH_BOUNDS.objects} documents, reserved files and files in all` });
+  const draft = { documents, reserved, blobs, history };
+  const sendPath = publishPath(draft);
+  if (sendPath.mode === "staged") blockers.push(...stagedBlockers(draft));
+  return { documents, reserved, blobs, history, path: sendPath, skipped, blockers, historyPlan, extras };
+}
+
+export type PlanContent = Pick<PublishPlan, "documents" | "reserved" | "blobs" | "history">;
+
+/** Placeholders as long as the host admits, so a size check holds for any target. */
+const WIDEST_TARGET = Object.freeze({ workspace: "w".repeat(64), bundleId: "b".repeat(128), name: "n".repeat(128) });
+
+/** Whether the plan fits one `bundle-create` request, and if not, the first bound it passes. */
+function publishPath(plan: PlanContent): PublishPath {
+  const bounds = PUBLISH_BOUNDS;
+  const objects = plan.documents.length + plan.reserved.length + plan.blobs.length + plan.history.length;
+  const why =
+    plan.documents.length > bounds.documents
+      ? `${plan.documents.length} documents (one request carries at most ${bounds.documents})`
+      : plan.blobs.length > bounds.blobs
+        ? `${plan.blobs.length} other files (one request carries at most ${bounds.blobs})`
+        : plan.history.length > bounds.history
+          ? `${plan.history.length} earlier versions (one request carries at most ${bounds.history})`
+          : objects > bounds.objects
+            ? `${objects} objects in all (one request carries at most ${bounds.objects})`
+            : plan.blobs.some((blob) => blob.bytes.byteLength > bounds.blobBytes)
+              ? `a file over 1 MB (${plan.blobs.find((blob) => blob.bytes.byteLength > bounds.blobBytes)!.key})`
+              : null;
+  if (why !== null) return { mode: "staged", why };
+  // Base64 alone past the bound decides without building the request.
+  const base64 = plan.blobs.reduce((sum, blob) => sum + Math.ceil(blob.bytes.byteLength / 3) * 4, 0);
+  const bytes = base64 > bounds.requestBytes ? base64 : Buffer.byteLength(JSON.stringify(createBody(plan, WIDEST_TARGET)));
+  if (bytes > bounds.requestBytes) return { mode: "staged", why: `${Math.ceil(bytes / 1024)} KiB as one request (one request carries at most ${bounds.requestBytes / MiB} MiB)` };
+  return { mode: "one-shot" };
+}
+
+/** The staged creation's own bounds, each naming its remedy. */
+export function stagedBlockers(plan: PlanContent): PublishBlocker[] {
+  const bounds = STAGED_PUBLISH_BOUNDS;
+  const blockers: PublishBlocker[] = [];
+  const noHistory = "publish without --with-history, or with fewer earlier versions";
+  if (plan.documents.length > bounds.documents) blockers.push({ path: ".", reason: "too_many_documents", message: `${plan.documents.length} documents; a hosted bundle is created with at most ${bounds.documents}` });
+  if (plan.blobs.length > bounds.blobs) blockers.push({ path: ".", reason: "too_many_files", message: `${plan.blobs.length} files that are not documents; at most ${bounds.blobs}` });
+  if (plan.history.length > bounds.history) blockers.push({ path: ".", reason: "too_much_history", message: `${plan.history.length} earlier versions; a creation carries at most ${bounds.history}: ${noHistory}` });
+  const content = stagedContent(plan);
+  const current = distinctBytes([...content.documents, ...content.reserved, ...content.blobs]);
+  if (current > bounds.currentBytes) blockers.push({ path: ".", reason: "too_large", message: `the bundle's current files are ${Math.ceil(current / MiB)} MiB; a creation carries at most ${bounds.currentBytes / MiB} MiB` });
+  const history = distinctBytes(content.history);
+  if (history > bounds.historyBytes) blockers.push({ path: ".", reason: "too_much_history", message: `the earlier versions are ${Math.ceil(history / MiB)} MiB; a creation carries at most ${bounds.historyBytes / MiB} MiB: ${noHistory}` });
+  const manifest = Buffer.byteLength(JSON.stringify(manifestBody(content, WIDEST_TARGET)));
+  if (manifest > bounds.manifestBytes) {
+    blockers.push({
+      path: ".",
+      reason: "manifest_too_large",
+      message: `the list of everything sent is ${Math.ceil(manifest / 1024)} KiB; the host takes at most ${bounds.manifestBytes / MiB} MiB: ${plan.history.length > 0 ? noHistory : "publish fewer files"}`,
+    });
   }
-  const plan: PublishPlan = { documents, reserved, blobs, history, skipped, blockers, historyPlan, extras };
-  const bytes = Buffer.byteLength(JSON.stringify(createBody(plan, { workspace: "w".repeat(64), bundleId: "b".repeat(128), name: "n".repeat(128) })));
-  if (bytes > PUBLISH_BOUNDS.requestBytes) {
-    blockers.push({ path: ".", reason: "request_too_large", message: `the bundle is ${Math.ceil(bytes / 1024)} KiB as one request; the host takes at most ${PUBLISH_BOUNDS.requestBytes / 1024 / 1024} MiB` });
-  }
-  return plan;
+  return blockers;
+}
+
+/** The stored size of distinct versions, each counted once (as the host charges and bounds them). */
+function distinctBytes(entries: readonly { version: string; bytes: number }[]): number {
+  return [...new Map(entries.map((entry) => [entry.version, entry.bytes])).values()].reduce((sum, bytes) => sum + bytes, 0);
 }
 
 /** The `bundles.create.v1` request body. */
-export function createBody(plan: PublishPlan, target: { workspace: string; bundleId: string; name: string }): Record<string, unknown> {
+export function createBody(plan: PlanContent, target: { workspace: string; bundleId: string; name: string }): Record<string, unknown> {
   return {
     workspace: target.workspace,
     bundleId: target.bundleId,
     name: target.name,
     documents: plan.documents,
     reserved: plan.reserved,
-    blobs: plan.blobs,
+    blobs: plan.blobs.map((blob) => ({ key: blob.key, contentType: blob.contentType, base64: blob.bytes.toString("base64") })),
     ...(plan.history.length > 0 ? { history: plan.history } : {}),
   };
 }
@@ -462,4 +543,128 @@ export function createBody(plan: PublishPlan, target: { workspace: string; bundl
 /** A digest of what the request carries, so a retry reuses its request id only for the same contents. */
 export function planDigest(body: Record<string, unknown>): string {
   return digest(Buffer.from(JSON.stringify(body), "utf8"));
+}
+
+/** A manifest entry: an object's stored version and stored size in bytes. */
+export interface StagedEntry {
+  readonly version: string;
+  readonly bytes: number;
+}
+
+/** One object a part stages, in the one-shot's own shape (`ordinal` added on history). */
+export type StagedObject =
+  | { readonly kind: "documents"; readonly value: CreateDocument }
+  | { readonly kind: "reserved"; readonly value: CreateReserved }
+  | { readonly kind: "history"; readonly value: CreateHistory & { readonly ordinal: number } };
+
+/**
+ * The plan as a staged creation sends it: every object's stored version and size, as the host
+ * computes them from the one-shot shapes (a document and an imported version are their
+ * `stringifyDoc` bytes, a reserved file its text, a blob its raw bytes), imported history numbered
+ * 1, 2, … per document in the one-shot's order (the plan hash follows it), the root index and the
+ * Kind conventions in full, and one object for each distinct non-blob version (a part stages a
+ * version once, whichever entries share it).
+ */
+export interface StagedContent {
+  readonly root: string;
+  readonly conventions: readonly CreateDocument[];
+  readonly documents: readonly (StagedEntry & { readonly id: string })[];
+  readonly reserved: readonly (StagedEntry & { readonly dir: string; readonly name: string })[];
+  readonly blobs: readonly (StagedEntry & { readonly key: string; readonly contentType: string })[];
+  readonly history: readonly (StagedEntry & { readonly documentId: string; readonly ordinal: number; readonly label: string; readonly author: string; readonly authoredAt: string })[];
+  /** By version, in manifest order. */
+  readonly objects: ReadonlyMap<string, StagedObject>;
+  /** Each blob version's bytes and the first key that holds it. */
+  readonly blobBytes: ReadonlyMap<string, { readonly key: string; readonly bytes: Buffer }>;
+}
+
+export function stagedContent(plan: PlanContent): StagedContent {
+  const objects = new Map<string, StagedObject>();
+  const keep = (version: string, object: StagedObject) => {
+    if (!objects.has(version)) objects.set(version, object);
+  };
+  const stored = (text: string) => ({ version: versionOfBytes(text), bytes: Buffer.byteLength(text, "utf8") });
+  const conventions: CreateDocument[] = [];
+  const documents = plan.documents.map((doc) => {
+    const text = stringifyDoc(doc.frontmatter as OkfDocument["frontmatter"], doc.body);
+    const entry = stored(text);
+    keep(entry.version, { kind: "documents", value: doc });
+    // A Kind convention as the host's registry reads it: the stored round trip.
+    if (matchesFilter({ id: doc.id, frontmatter: parseMarkdown(text, doc.id).frontmatter }, { prefix: CONVENTIONS_PREFIX, type: CONVENTION_TYPE })) conventions.push(doc);
+    return { id: doc.id, ...entry };
+  });
+  const reserved = plan.reserved.map((file) => {
+    const entry = stored(file.content);
+    keep(entry.version, { kind: "reserved", value: file });
+    return { dir: file.dir, name: file.name, ...entry };
+  });
+  const ordinals = new Map<string, number>();
+  const history = plan.history.map((row) => {
+    const ordinal = (ordinals.get(row.documentId) ?? 0) + 1;
+    ordinals.set(row.documentId, ordinal);
+    const entry = stored(stringifyDoc(row.frontmatter as OkfDocument["frontmatter"], row.body));
+    keep(entry.version, { kind: "history", value: { ...row, ordinal } });
+    return { documentId: row.documentId, ordinal, label: row.label, author: row.author, authoredAt: row.authoredAt, ...entry };
+  });
+  const blobBytes = new Map<string, { key: string; bytes: Buffer }>();
+  const blobs = plan.blobs.map((blob) => {
+    const version = blobVersion(blob.bytes);
+    if (!blobBytes.has(version)) blobBytes.set(version, { key: blob.key, bytes: blob.bytes });
+    return { key: blob.key, contentType: blob.contentType, version, bytes: blob.bytes.byteLength };
+  });
+  const root = plan.reserved.find((file) => file.dir === "" && file.name === "index.md")?.content ?? "";
+  return { root, conventions, documents, reserved, blobs, history, objects, blobBytes };
+}
+
+/** The `bundle-create-begin` request body: the manifest. */
+export function manifestBody(content: StagedContent, target: { workspace: string; bundleId: string; name: string }): Record<string, unknown> {
+  return {
+    workspace: target.workspace,
+    bundleId: target.bundleId,
+    name: target.name,
+    root: content.root,
+    conventions: content.conventions,
+    documents: content.documents,
+    reserved: content.reserved,
+    blobs: content.blobs,
+    history: content.history,
+  };
+}
+
+/** One part's objects, by kind. */
+export interface StagedPart {
+  readonly documents: CreateDocument[];
+  readonly reserved: CreateReserved[];
+  readonly history: (CreateHistory & { readonly ordinal: number })[];
+  readonly versions: string[];
+}
+
+/**
+ * Packs the objects of `versions` (each staged once) into parts of about
+ * `STAGED_PUBLISH_BOUNDS.partTargetBytes` of JSON and at most `partObjects` objects, so every part
+ * stays far under the host's 3 MiB body cap. A version the content does not hold is skipped.
+ */
+export function packParts(content: StagedContent, versions: Iterable<string>): StagedPart[] {
+  const bounds = STAGED_PUBLISH_BOUNDS;
+  const parts: StagedPart[] = [];
+  let part: StagedPart | null = null;
+  let size = 0;
+  // The envelope: workspace, bundle id, plan hash and the three lists.
+  const envelope = 512;
+  for (const version of new Set(versions)) {
+    const object = content.objects.get(version);
+    if (!object) continue;
+    const bytes = Buffer.byteLength(JSON.stringify(object.value)) + 1;
+    if (part === null || part.versions.length >= bounds.partObjects || size + bytes > bounds.partTargetBytes) {
+      part = { documents: [], reserved: [], history: [], versions: [] };
+      parts.push(part);
+      size = envelope;
+    }
+    if (object.kind === "documents") part.documents.push(object.value);
+    else if (object.kind === "reserved") part.reserved.push(object.value);
+    else part.history.push(object.value);
+    part.versions.push(version);
+    size += bytes;
+  }
+  return parts;
 }

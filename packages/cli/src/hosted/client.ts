@@ -186,11 +186,21 @@ export function readBundleListing(rows: readonly HostedBundleRow[]): HostedBundl
 
 /**
  * The sync routes whose body never names one bundle by reference: `whoami` and `bundles` span the
- * person's workspaces, and `bundle-create` names its workspace in the body. Every other route under
+ * person's workspaces, and `bundle-create` and the staged creation's four routes name their
+ * workspace in the body (the blob route in its headers) and a bundle that does not exist yet.
+ * Every other route under
  * the family's prefix is bundle-scoped, the host's own rule, so a route added later (`operations`
  * and `run`, say) is qualified by default rather than read as an absent bundle once an id collides.
  */
-const UNSCOPED_ROUTES = Object.freeze(["whoami", "bundles", "bundle-create"] as const);
+const UNSCOPED_ROUTES = Object.freeze([
+  "whoami",
+  "bundles",
+  "bundle-create",
+  "bundle-create-begin",
+  "bundle-create-stage",
+  "bundle-create-blob",
+  "bundle-create-commit",
+] as const);
 
 /**
  * The carrier with a workspace: every bundle-scoped request names its bundle as
@@ -208,9 +218,19 @@ export function qualifyingCarrier(carrier: HostedCarrier, prefix: string, slug: 
     if (bundleId.includes("/")) throw new TypeError("a qualified reference sent through a qualifying client");
     return { ...input, bundleId: hostedBundleReferenceText({ slug, bundleId }) };
   };
+  const bytes = carrier.bytes?.bind(carrier);
   return {
     json: async (route, input, signal, options) => carrier.json(route, qualify(route, input), signal, options),
     stream: async (route, input, signal) => carrier.stream(route, qualify(route, input), signal),
+    // A raw body names no bundle in a body; only unscoped routes carry one.
+    ...(bytes
+      ? {
+          bytes: async (route: string, body: Uint8Array, signal: AbortSignal, options: Parameters<NonNullable<HostedCarrier["bytes"]>>[3]) => {
+            if (scoped(route)) throw new TypeError(`a raw body sent to the bundle-scoped route ${route} through a qualifying client`);
+            return bytes(route, body, signal, options);
+          },
+        }
+      : {}),
   };
 }
 
