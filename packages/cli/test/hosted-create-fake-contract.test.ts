@@ -66,7 +66,10 @@ const SITUATIONS: Readonly<Record<string, { options?: FakeCreateHostOptions; bef
   "bundle-create-503-write-outcome-unknown": { failNext: true },
   "bundle-create-200-resumed": { failNext: true, before: ["bundle-create-503-write-outcome-unknown"] },
   "bundle-create-begin-200-staging": {},
-  "bundle-create-begin-200-request-conflict": { before: ["bundle-create-begin-200-staging"] },
+  // Reserved first: until then another manifest under the request id replaces the first.
+  "bundle-create-begin-200-request-conflict": {
+    before: ["bundle-create-begin-200-staging", "bundle-create-stage-200-staging", "bundle-create-blob-200-ok", (host) => (host.commitSteps = 1), "bundle-create-commit-200-importing"],
+  },
   "bundle-create-stage-200-staging": { before: ["bundle-create-begin-200-staging"] },
   "bundle-create-stage-200-validation-failed": { before: ["bundle-create-begin-200-staging"] },
   "bundle-create-stage-200-staged-manifest-missing": { before: ["bundle-create-begin-200-staging"] },

@@ -146,6 +146,7 @@ test("the preview makes no request and lists what travels, what stays, and the n
     documents: 2,
     reserved_files: 2,
     other_files: 1,
+    sent: "one request",
     history: { mode: "current-only", versions: 0, note: "history starts at publish" },
   });
   assert.equal((preview.stays as { total: number }).total, 1);
