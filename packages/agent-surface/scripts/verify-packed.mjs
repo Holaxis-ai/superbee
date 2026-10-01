@@ -13,11 +13,16 @@ assert.ok(process.argv[2], "Provide an existing tarball; this proof does not bui
 const digest = () => createHash("sha256").update(readFileSync(tarball)).digest("hex");
 const expectedDigest = digest();
 const entries = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" }).trim().split("\n");
-assert.ok(entries.every(entry => /^package\/(dist\/|package\.json$|README\.md$|LICENSE$)/.test(entry)), "Only public outputs may ship");
+assert.ok(entries.every(entry => /^package\/(dist\/|package\.json$|README\.md$|LICENSE$|NOTICE$)/.test(entry)), "Only public outputs may ship");
+for (const file of ["LICENSE", "NOTICE"]) assert.ok(entries.includes(`package/${file}`), `Missing packed ${file}`);
 const fixture = mkdtempSync(join(tmpdir(), "superbee-agent-surface-consumer-"));
 try {
   writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "external-surface-consumer", private: true, type: "module" }));
   execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--offline", tarball], { cwd: fixture, stdio: "pipe" });
+  for (const file of ["LICENSE", "NOTICE"]) {
+    assert.deepEqual(readFileSync(join(fixture, "node_modules/@superbee/agent-surface", file)), readFileSync(join(repo, file)), `Packed ${file} must equal the repository original`);
+    assert.deepEqual(readFileSync(join(repo, "packages/agent-surface", file)), readFileSync(join(repo, file)), `Package ${file} must equal the repository original`);
+  }
   const manifest = JSON.parse(readFileSync(join(fixture, "node_modules/@superbee/agent-surface/package.json"), "utf8"));
   assert.equal(manifest.name, "@superbee/agent-surface");
   assert.deepEqual(Object.keys(manifest.exports), ["."]);
@@ -57,7 +62,7 @@ void transport;
   const browser = await build({ stdin: { contents: "export * from '@superbee/agent-surface'", resolveDir: fixture }, bundle: true, platform: "browser", format: "esm", write: false, metafile: true });
   assert.ok(Object.keys(browser.metafile.inputs).every(name => !name.includes("node_modules") || name.includes("@superbee/agent-surface")));
   assert.equal(digest(), expectedDigest, "The retained artifact changed during verification");
-  console.log(JSON.stringify({ tarball, sha256: expectedDigest, verified: ["offline external install", "inert ESM import", "direct invocation", "declaration imports", "browser bundle"] }));
+  console.log(JSON.stringify({ tarball, sha256: expectedDigest, verified: ["LICENSE/NOTICE presence and exact repository bytes", "offline external install", "inert ESM import", "direct invocation", "declaration imports", "browser bundle"] }));
 } finally {
   rmSync(fixture, { recursive: true, force: true });
 }
