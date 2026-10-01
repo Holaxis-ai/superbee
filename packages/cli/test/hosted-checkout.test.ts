@@ -34,6 +34,7 @@ import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
 import { assertAllowedInHostedCheckout, HOSTED_CHECKOUT_REFUSALS } from "../src/hosted/refusals.js";
 import { findPathCollision, placeNew, replaceGuarded } from "../src/hosted/projection.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
+import { FakeHost } from "./support/fake-hosted-sync.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -879,6 +880,24 @@ test("ids that differ only in letter case are refused before any file is written
   assert.equal(error.details?.reason, "path_collision");
   assert.deepEqual(await readdir(h.cwd), []);
   assert.ok(!fake.requests.some((r) => r.path.endsWith("/snapshot")));
+});
+
+test("a bundle past one working copy page checks out whole, its heads and snapshot read a page at a time", async () => {
+  const h = await harness();
+  const host = new FakeHost();
+  for (let index = host.docs.size; index <= 1_000; index += 1) host.put(`bulk/n${String(index).padStart(4, "0")}`, { type: "Note" }, `n${index}\n`);
+  assert.equal(host.docs.size, 1_001);
+  await checkout([BUNDLE, "--host", HOST, "--dir", "big"], { stdout: (text) => h.out.push(text), auth: h.auth, cwd: h.cwd, fetch: host.fetch });
+  const receipt = decode(h.out.at(-1)!.trim()) as Record<string, unknown>;
+  assert.equal(receipt.checkout, "created");
+  assert.equal(receipt.documents, 1_001);
+  const folder = path.join(h.cwd, "big");
+  for (const [id, doc] of host.docs) assert.equal(await readFile(path.join(folder, `${id}.md`), "utf8"), doc.raw, id);
+  // The host's page is 1,000 documents: each listing took two pages, the second by its cursor.
+  for (const route of ["heads", "snapshot"]) {
+    const pages = host.requests.filter((request) => request.path === `/sync/v1/${route}`);
+    assert.ok(pages.some((request) => typeof (request.body as { cursor?: unknown }).cursor === "string"), `${route} followed a cursor`);
+  }
 });
 
 test("the client-side document limit refuses a heads listing over it", async () => {

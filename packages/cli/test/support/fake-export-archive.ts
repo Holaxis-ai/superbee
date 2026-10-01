@@ -125,8 +125,15 @@ function declaredEdition(root: Uint8Array | undefined): string | null {
   }
 }
 
-/** The archive entries (manifest last) for a bundle state, in the host's order. */
-export function exportEntries(state: ExportState, exportedAt: Date): ZipEntryInput[] {
+/** Where one page of a paged export starts, and how many objects a page carries. */
+export interface ExportPageRequest {
+  readonly from: number;
+  readonly size: number;
+}
+
+/** The archive entries (manifest last) for a bundle state, in the host's order: the whole bundle,
+ * or with `page` the slice a paged export's page carries, its manifest stating the page. */
+export function exportEntries(state: ExportState, exportedAt: Date, page?: ExportPageRequest): ZipEntryInput[] {
   const reservedKey = (file: string) => {
     const slash = file.lastIndexOf("/");
     return slash < 0 ? `/${file}` : `${file.slice(0, slash)}/${file.slice(slash + 1)}`;
@@ -135,7 +142,9 @@ export function exportEntries(state: ExportState, exportedAt: Date): ZipEntryInp
   const reserved = paths.filter((file) => isReservedFile(file)).sort((a, b) => compareStorageKeys(reservedKey(a), reservedKey(b)));
   const documents = paths.filter((file) => file.endsWith(".md") && !isReservedFile(file)).sort((a, b) => compareStorageKeys(a.slice(0, -3), b.slice(0, -3)));
   const blobs = paths.filter((file) => !file.endsWith(".md")).sort(compareStorageKeys);
-  const ordered = [...reserved, ...documents, ...blobs];
+  const inventory = [...reserved, ...documents, ...blobs];
+  const ordered = page ? inventory.slice(page.from, page.from + page.size) : inventory;
+  const end = page ? page.from + ordered.length : inventory.length;
   const manifest = {
     format: "superbee-export/1",
     source: { tenantId: state.tenantId, bundleId: state.bundleId, revision: state.revision, okfEdition: declaredEdition(state.files.get("index.md")) },
@@ -144,6 +153,7 @@ export function exportEntries(state: ExportState, exportedAt: Date): ZipEntryInp
     entries: ordered
       .map((file) => ({ path: file, bytes: state.files.get(file)!.byteLength, sha256: createHash("sha256").update(state.files.get(file)!).digest("hex") }))
       .sort((a, b) => compareStorageKeys(a.path, b.path)),
+    ...(page ? { page: { from: page.from, count: ordered.length, total: inventory.length, ...(end < inventory.length ? { next: `${state.revision}.${end}` } : {}) } } : {}),
   };
   return [
     ...ordered.map((file) => ({ name: file, bytes: state.files.get(file)! })),
@@ -151,6 +161,11 @@ export function exportEntries(state: ExportState, exportedAt: Date): ZipEntryInp
   ];
 }
 
-export function exportArchive(state: ExportState, exportedAt: Date): Uint8Array {
-  return storedZip(exportEntries(state, exportedAt), exportedAt);
+export function exportArchive(state: ExportState, exportedAt: Date, page?: ExportPageRequest): Uint8Array {
+  return storedZip(exportEntries(state, exportedAt, page), exportedAt);
+}
+
+/** The inventory size of a bundle state: documents, reserved files and blobs together. */
+export function exportInventorySize(state: ExportState): number {
+  return state.files.size;
 }

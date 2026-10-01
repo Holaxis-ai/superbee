@@ -60,10 +60,12 @@ import { adopt } from "./checkout-adopt.js";
 import { hostedBundleReferenceText, parseHostedBundleReference, type HostedBundleReference } from "../hosted/reference.js";
 
 /**
- * Checkout refuses a bundle over this many documents until paged heads and snapshot land: the
- * host's working copy routes answer one unpaged listing, bounded at this size.
+ * The most documents a checkout holds: the paged working copy's inventory bound, which is also the
+ * most documents a staged creation makes (so `publish` converts every folder it creates). A host
+ * that pages heads and snapshot states its own bound (`paged.documents`); one from before paging
+ * serves only its unpaged bound (`bound.documents`), and checkout holds the lower of the two.
  */
-export const CHECKOUT_DOCUMENT_LIMIT = 1000;
+export const CHECKOUT_DOCUMENT_LIMIT = 10_000;
 
 export const CHECKOUT_USAGE = `superbee checkout — mirror a hosted bundle into a local folder
 
@@ -225,12 +227,12 @@ export function capabilityRefusal(error: unknown, named: HostedBundleReference |
   return hostedFailure(error, target, resume);
 }
 
-export function tooLarge(named: HostedBundleReference | string, target: HostedTarget, count: number | null): CliError {
+export function tooLarge(named: HostedBundleReference | string, target: HostedTarget, count: number | null, limit = CHECKOUT_DOCUMENT_LIMIT): CliError {
   const reference = typeof named === "string" ? { slug: null, bundleId: named } : named;
   const text = hostedBundleReferenceText(reference);
-  return new CliError("FORBIDDEN", `hosted bundle '${text}' is too large to check out (over ${CHECKOUT_DOCUMENT_LIMIT} documents)`, {
-    details: { reason: "bundle_too_large", bundle_id: reference.bundleId, ...(reference.slug !== null ? { reference: text } : {}), host: target.origin, limit: CHECKOUT_DOCUMENT_LIMIT, ...(count === null ? {} : { documents: count }) },
-    help: "use the Superbee app for this bundle; paged checkout is not available yet",
+  return new CliError("FORBIDDEN", `hosted bundle '${text}' is too large to check out (over ${limit} documents)`, {
+    details: { reason: "bundle_too_large", bundle_id: reference.bundleId, ...(reference.slug !== null ? { reference: text } : {}), host: target.origin, limit, ...(count === null ? {} : { documents: count }) },
+    help: "use the Superbee app for this bundle",
   });
 }
 
@@ -684,7 +686,10 @@ export async function connectHostedBundle(
   } catch (error) {
     throw capabilityRefusal(error, reference, target, listed, resume);
   }
-  if (ids.length > Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.bound.documents)) throw tooLarge(reference, target, ids.length);
+  // The heads were read a page at a time from a host that pages (`reader.heads()` follows `next`);
+  // the snapshot is too, during the bootstrap.
+  const limit = Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.paged?.documents ?? capabilities.bound.documents);
+  if (ids.length > limit) throw tooLarge(reference, target, ids.length, limit);
   assertProjectable(ids, bundleId, target);
 
   return { identity, reader, listed, workspace: tenantId ?? workspace, reference, client, definitionWrites: capabilities.definitionWrites };

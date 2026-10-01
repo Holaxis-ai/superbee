@@ -191,12 +191,13 @@ test("--yes stages the bundle: begin, files, disjoint bounded parts, commits, th
   // The host names at most 1,000 missing versions: the first commit names the rest, which are staged then.
   assert.equal(h.err.find((line) => line.startsWith("publish: commit 1:")), "publish: commit 1: staging\n");
   assert.ok(h.err.some((line) => /^publish: commit 2: importing \(written: /.test(line)));
-  // Past what a checkout holds, the folder is left as it is, and the receipt says why.
+  // Past one working copy page (1,000 documents), the folder still converts in place: the
+  // checkout reads heads and snapshot a page at a time, and no file is rewritten.
   assert.deepEqual(await readFile(path.join(folder, "notes", "n00000.md")), before);
-  assert.equal(readCheckoutMarker(folder), null);
-  assert.equal(await bindingForPath(h.home, folder), null);
-  assert.equal(receipt.home, "local");
-  assert.match(String(receipt.checkout), /^not converted: .* at most 1000 documents/);
+  assert.equal(readCheckoutMarker(folder)?.bundle_id, "big.notes");
+  assert.equal((await bindingForPath(h.home, folder))?.bundle_id, "big.notes");
+  assert.equal(receipt.home, "hosted");
+  assert.deepEqual(receipt.checkout, { matched: 1_200, placed: 0, conflicts: 0, local_only: 0 });
   assert.equal(await readPendingCreate(h.home, folder, "big.notes"), null);
   const bundle = fake.bundles.get("big.notes")!;
   assert.equal(bundle.docs.size, 1_200);

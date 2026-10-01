@@ -500,8 +500,9 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   const plan = await planPublish(canonical, withHistory ? { history: true, ...(board ? { board } : {}), now: deps.auth.now() } : { history: false });
 
   const yesCommand = yesCommandFor(target ? bindingHostArgument(target) : null);
-  // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents: a larger bundle is created and the
-  // folder is left as it is (a Git board stays bound), to use in the app.
+  // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents, read a page at a time, which is also
+  // staged creation's own document bound; a larger bundle (never one this command creates) would be
+  // created and the folder left as it is (a Git board stays bound), to use in the app.
   const converts = plan.documents.length <= CHECKOUT_DOCUMENT_LIMIT;
   const uncheckable = `leave this folder as it is${board ? " (still bound to the Git board)" : ""}: a hosted checkout holds at most ${CHECKOUT_DOCUMENT_LIMIT} documents, so use the bundle in the app; from then on, edits here do not reach the hosted bundle, nor its edits here`;
   const gitPlan = board
