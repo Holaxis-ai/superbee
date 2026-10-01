@@ -15,7 +15,8 @@ import { hostedCheckoutAt } from "../src/autopull.js";
 import { bundleHomeAt } from "../src/bundle-home.js";
 import { publish, bundleIdFrom } from "../src/commands/publish.js";
 import { CliError } from "../src/errors.js";
-import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
+import { defaultHostedAuthDeps, writeDefaultHost, type HostedAuthDeps } from "../src/hosted-auth/session.js";
+import { seedHostedSession } from "./support/hosted-session.js";
 import { bindingForPath, checkoutStoreDir } from "../src/hosted/binding.js";
 import { readCheckoutMarker } from "../src/hosted/marker.js";
 import { folderConflicts, folderMatchesProjection, readProjection, scanCheckout } from "../src/hosted/sync-scan.js";
@@ -43,7 +44,7 @@ async function harness(): Promise<Harness> {
 }
 
 async function run(h: Harness, argv: string[], fake: FakeCreateHost): Promise<Record<string, unknown>> {
-  await publish(argv, { stdout: (text) => h.out.push(text), auth: h.auth, cwd: h.cwd, fetch: fake.fetch });
+  await publish(argv, { stdout: (text) => h.out.push(text), stderr: () => {}, auth: h.auth, cwd: h.cwd, fetch: fake.fetch });
   return decode(h.out.at(-1)!.trim()) as Record<string, unknown>;
 }
 
@@ -214,6 +215,57 @@ test("--yes creates the bundle and converts the folder in place, rewriting nothi
   // Publishing again is refused: it is already hosted.
   const again = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], fake));
   assert.equal(again.details?.reason, "already_hosted");
+});
+
+test("signed in to two hosts, publish without --host previews a blocker and refuses --yes; it never follows the last sign-in", async () => {
+  const OTHER = "https://other-host.example";
+  const h = await harness();
+  await seedHostedSession(h.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  await seedHostedSession(h.home, { host: OTHER, accessToken: "other-token", expiresAtMs: Date.now() + 3_600_000 });
+  await writeDefaultHost(h.home, OTHER);
+  const folder = path.join(h.cwd, "notes-bundle");
+  await writeBundle(folder);
+  const fake = new FakeCreateHost();
+
+  const preview = await run(h, ["--to", "hosted", "--dir", folder], fake);
+  assert.equal(preview.ready, false);
+  assert.equal((preview.to as Record<string, unknown>).host, null);
+  assert.deepEqual((preview.to as Record<string, unknown>).signed_in_hosts, [HOST, OTHER]);
+  assert.ok(JSON.stringify(preview.blockers).includes("ambiguous_host"));
+  const help = preview.help as string[];
+  assert.equal(help.length, 2);
+  assert.ok(help.every((command) => command.includes("--host ") && command.includes("--yes")), help.join("\n"));
+
+  const error = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--yes"], fake));
+  assert.equal(error.code, "USAGE");
+  assert.equal(error.details?.reason, "ambiguous_host");
+  assert.deepEqual(error.details?.hosts, [HOST, OTHER]);
+  assert.equal(fake.requests.length, 0, "nothing is sent to either host");
+  assert.equal(await bindingForPath(h.home, folder), null);
+
+  // Named, it goes to the host named, and says so before sending.
+  const stderr: string[] = [];
+  await publish(["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], { stdout: (text) => h.out.push(text), stderr: (text) => stderr.push(text), auth: h.auth, cwd: h.cwd, fetch: fake.fetch });
+  const receipt = decode(h.out.at(-1)!.trim()) as Record<string, unknown>;
+  assert.equal(receipt.host, HOST);
+  assert.equal(receipt.host_from, "--host");
+  assert.match(stderr[0] ?? "", new RegExp(`^publish: creating 'team-notes' on ${HOST.replace(/[.]/g, "\\.")} \\(host from --host\\)`));
+});
+
+test("one host signed in: publish --yes without --host uses it and names it before sending", async () => {
+  const h = await harness();
+  await seedHostedSession(h.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  await writeDefaultHost(h.home, HOST);
+  const folder = path.join(h.cwd, "notes-bundle");
+  await writeBundle(folder);
+  const fake = new FakeCreateHost();
+  const stderr: string[] = [];
+  await publish(["--to", "hosted", "--dir", folder, "--yes", "--json"], { stdout: (text) => h.out.push(text), stderr: (text) => stderr.push(text), auth: h.auth, cwd: h.cwd, fetch: fake.fetch });
+  const receipt = JSON.parse(h.out.at(-1)!) as Record<string, unknown>;
+  assert.equal(receipt.published, "created");
+  assert.equal(receipt.host, HOST);
+  assert.match(String(receipt.host_from), /last sign-in/);
+  assert.deepEqual(JSON.parse(stderr[0]!), { event: "publish.target", host: HOST, host_from: "last-sign-in", bundle_id: "team-notes" });
 });
 
 test("an unknown outcome is TRANSIENT, and the retry re-sends the same request", async () => {

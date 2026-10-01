@@ -183,7 +183,9 @@ test("--yes stages the bundle: begin, files, disjoint bounded parts, commits, th
   assert.equal(seen.size, 1_200 + 2);
   // Progress on stderr, one line per event; stdout is the one receipt.
   assert.equal(h.out.length, 1);
-  assert.match(h.err[0]!, /^publish: staging: 0\/1202 objects and 0\/3 files on the host\n$/);
+  // The host is named before anything is sent, then the progress follows.
+  assert.equal(h.err[0], `publish: creating 'big.notes' on ${HOST} (host from --host)\n`);
+  assert.match(h.err[1]!, /^publish: staging: 0\/1202 objects and 0\/3 files on the host\n$/);
   assert.ok(h.err.some((line) => /^publish: sent part 1\/\d+ \(\d+ objects\)\n$/.test(line)));
   assert.ok(h.err.some((line) => /^publish: sent file \d\/3 assets\/\S+ \(2\.0 MiB\)\n$/.test(line)));
   // The host names at most 1,000 missing versions: the first commit names the rest, which are staged then.
@@ -208,7 +210,8 @@ test("--json reports progress as JSON lines on stderr; a staged bundle a checkou
   const fake = new FakeCreateHost();
   const receipt = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes", "--json"], fake);
   assert.equal(receipt.published, "created");
-  const events = h.err.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const [first, ...events] = h.err.map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.deepEqual(first, { event: "publish.target", host: HOST, host_from: "flag", bundle_id: "big-notes" });
   assert.ok(events.every((event) => event.event === "publish.progress"));
   assert.deepEqual([...new Set(events.map((event) => event.phase))], ["begin", "blob", "stage"]);
   assert.deepEqual(events[0], { event: "publish.progress", phase: "begin", state: "staging", versions: 602, staged: 0, blobs: 3, stagedBlobs: 0 });

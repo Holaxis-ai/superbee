@@ -28,8 +28,8 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
-import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
-import { connectHostedAccount, hostedListCommand, resolveBundleReference, workspaceNames } from "../hosted/account.js";
+import { defaultHostedAuthDeps, hostArgument, hostedWriteHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { checkoutTarget, connectHostedAccount, hostedListCommand, resolveBundleReference, workspaceNames } from "../hosted/account.js";
 import { recordPulled } from "../hosted/freshness.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
 import {
@@ -75,7 +75,9 @@ Usage:
 'superbee catalog list --hosted' lists the bundle ids you can check out. Signs in if needed
 (AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then copies the
 hosted bundle into --dir (default: ./<bundle-id>), which must be new or empty. The host is --host,
-else the host of your last sign-in (never SUPERBEE_HOST alone); the receipt names the host it
+else, for a folder that is already a checkout, its own host, else the host of your last sign-in
+when it is the only host you are signed in to (never SUPERBEE_HOST alone); signed in to more than
+one host, a checkout without --host is refused and names them. The receipt names the host it
 bound. The folder holds plain bundle files, so every command runs on it with --dir <folder>. The
 link to the host is kept in private state, keyed by the folder's path, never in the folder.
 Re-running for the same folder and bundle is a no-op. A checkout whose folder was deleted, or
@@ -119,7 +121,7 @@ id another workspace gains is bound again in place with --adopt <folder> --host 
 <workspace>.
 
 Options:
-  --host <url>        Hosted Superbee URL (an origin, or an agent connection URL); default: your last sign-in
+  --host <url>        Hosted Superbee URL (an origin, or an agent connection URL); default: your last sign-in, when it is the only host signed in
   --dir <folder>      Checkout folder (default: ./<bundle-id>)
   --workspace <id>    Your workspace that holds the bundle, by name or id: checked against your
                       memberships, recorded in the binding, and (on a host that names workspaces)
@@ -364,6 +366,33 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
   );
 }
 
+/**
+ * The host a `checkout <bundle-id>` binds: --host; else the folder's own host when it is already a
+ * checkout; else the last sign-in when it is the one host signed in.
+ */
+async function checkoutHost(
+  flag: string | undefined,
+  folder: string,
+  typed: HostedBundleReference,
+  values: { readonly dir?: string; readonly workspace?: string; readonly json?: boolean },
+  home: string,
+): Promise<HostedTarget> {
+  if (flag === undefined) {
+    const real = await realpath(folder).catch(() => null);
+    const bound = real ? await bindingForPath(home, real).catch(() => null) : null;
+    if (bound) return checkoutTarget(bound);
+  }
+  const retry = (host: string) =>
+    String(
+      commandFragment`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(host)}${values.dir !== undefined ? commandFragment` --dir ${commandToken(values.dir)}` : commandFragment``}${
+        values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
+      }${values.json ? commandFragment` --json` : commandFragment``}`,
+    );
+  const chosen = await hostedWriteHost(flag, home, retry);
+  if (!chosen) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
+  return chosen.target;
+}
+
 export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = {}): Promise<void> {
   const deps = checkoutDeps(partial);
   const { values, positionals } = parseLeafOrUsage(
@@ -410,11 +439,13 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
     throw new CliError("USAGE", `'${positionals[0]!}' is not a hosted bundle id or <workspace>/<bundle-id>`, { help: `${cliInvocation()} checkout --help` });
   }
   const bundleId = typed.bundleId;
-  // The chosen host is fixed in the binding and echoed in the receipt.
-  const target = await requireHostedBundleHost(values.host, deps.auth.home);
-  const prefix = syncRoutePrefix(target);
   const folder = path.resolve(deps.cwd, values.dir ?? bundleId);
   assertBundleOutsidePrivateState(folder, deps.auth.home);
+  // The chosen host is fixed in the binding and echoed in the receipt. Without --host, a folder
+  // that is already a checkout keeps its own host; a new one takes the last sign-in only when it
+  // is the one host signed in.
+  const target = await checkoutHost(values.host, folder, typed, values, deps.auth.home);
+  const prefix = syncRoutePrefix(target);
   const resume: CommandText = commandFragment`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(hostArgument(target))} --dir ${commandToken(folder)}${
     values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
   }${values.json ? commandFragment` --json` : commandFragment``}`;

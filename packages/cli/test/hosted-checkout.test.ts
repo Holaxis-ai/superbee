@@ -28,7 +28,8 @@ import { readCheckoutMarker } from "../src/hosted/marker.js";
 import { folderConflicts, readProjection } from "../src/hosted/sync-scan.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { createHostedSyncClient } from "../src/hosted/client.js";
-import { hostedAuthRoot } from "../src/hosted-auth/session.js";
+import { hostedAuthRoot, storedSessionHosts } from "../src/hosted-auth/session.js";
+import { seedHostedSession } from "./support/hosted-session.js";
 import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
 import { assertAllowedInHostedCheckout, HOSTED_CHECKOUT_REFUSALS } from "../src/hosted/refusals.js";
 import { findPathCollision, placeNew, replaceGuarded } from "../src/hosted/projection.js";
@@ -256,6 +257,51 @@ test("the host defaults to the last sign-in, never to SUPERBEE_HOST alone", asyn
   const receipt = await run(h, [BUNDLE]);
   assert.equal(receipt.checkout, "created");
   assert.equal(receipt.host, HOST);
+});
+
+test("signed in to two hosts, a checkout without --host refuses and names both; it never follows the last sign-in", async () => {
+  const OTHER = "https://other-host.example";
+  const h = await harness();
+  await seedHostedSession(h.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  await seedHostedSession(h.home, { host: OTHER, accessToken: "other-token", expiresAtMs: Date.now() + 3_600_000 });
+  // The last sign-in was the other host.
+  await writeUserStateFileAtomic0600(h.home, hostedAuthRoot(h.home), "default-host.json", `${JSON.stringify({ host: OTHER })}\n`);
+  const fake = fakeSyncFamily();
+  const error = await rejects(run(h, [BUNDLE, "--dir", "team"], fake));
+  assert.equal(error.code, "USAGE");
+  assert.equal(error.details?.reason, "ambiguous_host");
+  assert.deepEqual(error.details?.hosts, [HOST, OTHER]);
+  assert.equal(error.details?.last_sign_in, OTHER);
+  assert.match(error.message, /hosted\.example.*other-host\.example/);
+  const commands = error.details?.commands as string[];
+  assert.ok(commands.some((command) => command.includes(`--host ${HOST}`) && command.includes("--dir team")), commands.join("\n"));
+  assert.equal(fake.requests.length, 0, "no host is asked");
+  assert.deepEqual(await readdir(h.cwd), [], "no folder is made");
+
+  // Named, it binds the host it names, and the folder then keeps that host without --host.
+  const receipt = await run(h, [BUNDLE, "--host", HOST, "--dir", "team"], fake);
+  assert.equal(receipt.checkout, "created");
+  assert.equal(receipt.host, HOST);
+  const again = await run(h, [BUNDLE, "--dir", "team"], fake);
+  assert.equal(again.checkout, "unchanged");
+  assert.equal(again.host, HOST);
+});
+
+test("one host signed in: a checkout without --host uses it, as before", async () => {
+  const h = await harness();
+  await seedHostedSession(h.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  await writeUserStateFileAtomic0600(h.home, hostedAuthRoot(h.home), "default-host.json", `${JSON.stringify({ host: HOST })}\n`);
+  const receipt = await run(h, [BUNDLE]);
+  assert.equal(receipt.checkout, "created");
+  assert.equal(receipt.host, HOST);
+});
+
+test("a session record copied into another session's directory does not count as a signed-in host", async () => {
+  const h = await harness();
+  const file = await seedHostedSession(h.home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+  await mkdir(path.join(hostedAuthRoot(h.home), "elsewhere"), { recursive: true });
+  await writeFile(path.join(hostedAuthRoot(h.home), "elsewhere", "session.json"), (await readFile(file, "utf8")).replace(HOST, "https://other-host.example"));
+  assert.deepEqual(await storedSessionHosts(h.home), [HOST]);
 });
 
 test("AUTH_REQUIRED from sign-in passes through with its link and a resume command that re-runs checkout", async () => {

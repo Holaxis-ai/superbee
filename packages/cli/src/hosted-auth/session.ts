@@ -17,7 +17,7 @@
 // device authorization, persists it, and returns AUTH_REQUIRED carrying one link to relay. Running
 // the same command again polls once and, when the person has confirmed, completes sign-in and
 // carries on.
-import { mkdir, realpath, stat, unlink } from "node:fs/promises";
+import { mkdir, readdir, realpath, stat, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 
@@ -280,6 +280,67 @@ export async function requireHostedBundleHost(flag: string | undefined, home: st
   const chosen = await hostedBundleHost(flag, home);
   if (!chosen) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
   return resolveHostedTarget(chosen);
+}
+
+/**
+ * The hosts this machine user holds a stored sign-in session for, each once, as `--host` values,
+ * sorted. Read from the session records alone (no network, no lock, no credential store); an
+ * unreadable or inconsistent record is skipped.
+ */
+export async function storedSessionHosts(home: string): Promise<string[]> {
+  const root = hostedAuthRoot(home);
+  let names: string[];
+  try {
+    names = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+  const hosts = new Set<string>();
+  for (const name of names) {
+    const record = await readRecord<Partial<SessionRecord>>(home, join(root, name, SESSION_FILE)).catch(() => null);
+    if (!record || record.schema !== 1 || typeof record.host !== "string" || typeof record.audience !== "string") continue;
+    const target = { origin: record.host, audience: record.audience };
+    // A record copied into another session's directory names a session that is not stored there.
+    if (sessionDirFor(home, sessionAccount(target)) !== join(root, name)) continue;
+    hosts.add(hostArgument(target));
+  }
+  return [...hosts].sort();
+}
+
+/** Where a hosted write's host came from: named on the command, or the remembered last sign-in. */
+export type HostSource = "flag" | "last-sign-in";
+
+export interface HostedWriteHost {
+  readonly target: HostedTarget;
+  readonly source: HostSource;
+}
+
+/**
+ * The host a hosted write that is not bound to one yet (`publish --yes`, a new `checkout`) sends
+ * to: `--host`, else the host of the last sign-in, but only when that choice is unambiguous. When
+ * this machine user holds sessions for more than one host (or the remembered host is not the one
+ * session held), the last sign-in is not a choice the person made for this write, so the command
+ * refuses and names the hosts. SUPERBEE_HOST never selects it, as for {@link hostedBundleHost}.
+ * Null when there is no host at all.
+ */
+export async function hostedWriteHost(flag: string | undefined, home: string, retry: (host: string) => string): Promise<HostedWriteHost | null> {
+  if (flag) return { target: resolveHostedTarget(flag), source: "flag" };
+  const remembered = await readDefaultHost(home);
+  const stored = await storedSessionHosts(home);
+  const candidates = new Set(stored);
+  let rememberedTarget: HostedTarget | null = null;
+  if (remembered) {
+    rememberedTarget = resolveHostedTarget(remembered);
+    candidates.add(hostArgument(rememberedTarget));
+  }
+  if (candidates.size > 1) {
+    const hosts = [...candidates].sort();
+    throw new CliError("USAGE", `signed in to more than one hosted Superbee host (${hosts.join(", ")}); name the one this write is for with --host`, {
+      details: { reason: "ambiguous_host", hosts, ...(rememberedTarget ? { last_sign_in: hostArgument(rememberedTarget) } : {}), commands: hosts.map(retry) },
+      help: `re-run with --host set to the host you mean (one of: ${hosts.join(", ")}); the last sign-in is not used when more than one host is signed in`,
+    });
+  }
+  return rememberedTarget ? { target: rememberedTarget, source: "last-sign-in" } : null;
 }
 
 /** `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in. */
