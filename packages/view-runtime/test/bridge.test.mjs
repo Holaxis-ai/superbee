@@ -17,10 +17,14 @@ import {
   SessionViewAuthorizationStore,
 } from "../dist/index.js";
 import {
+  FilesystemBackend,
   MemoryBackend,
   queryEdges,
   writeDoc,
 } from "@superbee/core";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const TEST_HOST = {
   kind: "oss",
@@ -194,6 +198,50 @@ test("edge selectors preserve exact nonblank UTF-8 bytes and retain transport bo
       null,
       JSON.stringify(params),
     );
+  }
+});
+
+test("BridgeService query, edges, graph and subscribe skip one malformed document and name it instead of failing the View", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "bridge-malformed-"));
+  try {
+    const bundle = { root, backend: new FilesystemBackend(root) };
+    await writeDoc(bundle, {
+      id: "tasks/good",
+      frontmatter: { type: "Task", title: "Good", timestamp: "2026-08-08T00:00:00.000Z" },
+      body: "[other](/tasks/other.md)",
+    });
+    // An agent's raw edit: an unquoted ': ' makes the YAML invalid.
+    await writeFile(path.join(root, "tasks", "bad.md"), "---\ntype: Task\ntitle: Import: archive upload\n---\nbody\n");
+    const bridge = new BridgeService({
+      bundle,
+      launches: {
+        async resolve(launchId) {
+          return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
+        },
+        revoke() {},
+      },
+      config: async () => ({ root: null, name: "Test", mode: "test" }),
+      renderDocument: ({ body }) => ({ html: body, bounded: false }),
+      host: TEST_HOST,
+      enablePolling: true,
+    });
+    const requests = [
+      { bridge: "v0", type: "query", id: "q", params: { type: "Task" } },
+      { bridge: "v0", type: "edges", id: "e", params: {} },
+      { bridge: "v0", type: "graph", id: "g", includeBodies: false },
+    ];
+    for (const request of requests) {
+      const outcome = await bridge.handle("launch", request);
+      assert.equal(outcome.reply?.type, `${request.type}:result`, `${request.type}: ${JSON.stringify(outcome.reply?.error)}`);
+      assert.deepEqual(outcome.reply.result.skipped.map((row) => row.id), ["tasks/bad"], request.type);
+      assert.match(outcome.reply.result.skipped[0].reason, /mapping/, request.type);
+    }
+    const query = await bridge.handle("launch", requests[0]);
+    assert.deepEqual(query.reply.result.rows.map((row) => row.id), ["tasks/good"]);
+    const subscribed = await bridge.handle("launch", { bridge: "v0", type: "subscribe", id: "s" });
+    assert.equal(subscribed.reply?.type, "subscribe:result", JSON.stringify(subscribed.reply?.error));
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

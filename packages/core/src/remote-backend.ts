@@ -45,6 +45,7 @@
 
 import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
 import { InvalidInputError } from "./errors.js";
+import { MalformedDocumentError } from "./frontmatter-contract.js";
 import { encodeRemoteDocument } from "./remote-document-codec.js";
 import { RemoteError, malformed } from "./remote-error.js";
 import { SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream, type HeadsResult, type RemoteSnapshot } from "./remote-parsers.js";
@@ -74,7 +75,12 @@ interface ErrorEnvelope {
   error: {
     code: string;
     message: string;
-    details?: { expected?: Version | null; actual?: Version | null; missing?: string[] };
+    details?: {
+      expected?: Version | null;
+      actual?: Version | null;
+      missing?: string[];
+      malformed?: { id?: string; reason?: string };
+    };
   };
 }
 
@@ -248,6 +254,17 @@ function etagForm(token: string): string {
  */
 const RETRIABLE_STATUS = new Set([500, 502, 503, 504]);
 
+/** A `500` naming a stored document that does not parse: a retry reads the same bytes again. */
+async function namesMalformedDocument(res: Response): Promise<boolean> {
+  if (res.status !== 500) return false;
+  try {
+    const envelope = (await res.clone().json()) as ErrorEnvelope | null;
+    return typeof envelope?.error?.details?.malformed?.reason === "string";
+  } catch {
+    return false;
+  }
+}
+
 /** Retry-backoff timing: exponential base doubling, capped, with jitter to avoid a thundering herd. */
 const RETRY_BASE_MS = 150;
 const RETRY_CAP_MS = 2000;
@@ -350,7 +367,7 @@ export class RemoteBackend implements StorageBackend {
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await this.fetchImpl(new Request(url, init));
-        if (RETRIABLE_STATUS.has(res.status) && attempt < this.maxRetries) {
+        if (RETRIABLE_STATUS.has(res.status) && attempt < this.maxRetries && !(await namesMalformedDocument(res))) {
           await delay(retryDelayMs(attempt));
           continue;
         }
@@ -377,6 +394,15 @@ export class RemoteBackend implements StorageBackend {
       const expected = envelope?.error?.details?.expected ?? null;
       const actual = envelope?.error?.details?.actual ?? null;
       return new VersionConflict(fallbackId, expected, actual);
+    }
+    const malformedDoc = envelope?.error?.details?.malformed;
+    if (malformedDoc && typeof malformedDoc.reason === "string") {
+      // The server could read the request but not the stored document: the same failure a local
+      // scan raises, so `onSkip` callers can set this one document aside.
+      return new MalformedDocumentError(
+        typeof malformedDoc.id === "string" ? malformedDoc.id : fallbackId,
+        new Error(malformedDoc.reason),
+      );
     }
     const message = envelope?.error?.message ?? `wire request failed with status ${res.status}`;
     // The envelope's own `code` wins when present (every route in this repo's servers emits
@@ -610,6 +636,7 @@ export class RemoteBackend implements StorageBackend {
     baseParams: URLSearchParams,
     mapRow: (row: { id: ConceptId; version: Version; frontmatter: Frontmatter }) => Row,
     errorContext: string,
+    skipped?: Map<ConceptId, string>,
   ): Promise<Row[]> {
     const rows: Row[] = [];
     let cursor: string | undefined;
@@ -622,8 +649,15 @@ export class RemoteBackend implements StorageBackend {
       const payload = (await res.json()) as {
         docs: Array<{ id: ConceptId; version: Version; frontmatter: Frontmatter }>;
         next_cursor: string | null;
+        skipped?: unknown;
       };
       for (const row of payload.docs) rows.push(mapRow(row));
+      if (skipped && Array.isArray(payload.skipped)) {
+        for (const entry of payload.skipped as Array<{ id?: unknown; reason?: unknown }>) {
+          if (typeof entry?.id !== "string") continue;
+          skipped.set(entry.id, typeof entry.reason === "string" ? entry.reason : "malformed frontmatter");
+        }
+      }
       if (!payload.next_cursor) break;
       cursor = payload.next_cursor;
     }
@@ -633,7 +667,11 @@ export class RemoteBackend implements StorageBackend {
   async list(prefix?: string): Promise<ConceptId[]> {
     const params = new URLSearchParams();
     if (prefix) params.set("prefix", prefix);
-    return (await this.pageDocs(params, (row) => row.id, prefix ?? "")).sort(compareStorageKeys);
+    // A document the server could not parse still exists: it is listed, and reading it raises
+    // the same MalformedDocumentError a local read does.
+    const skipped = new Map<ConceptId, string>();
+    const ids = await this.pageDocs(params, (row) => row.id, prefix ?? "", skipped);
+    return [...new Set([...ids, ...skipped.keys()])].sort(compareStorageKeys);
   }
 
   /**
@@ -647,17 +685,30 @@ export class RemoteBackend implements StorageBackend {
    * `docs/WIRE-PROTOCOL.md`); the engine's `queryHeads` re-filter covers it, per the
    * seam contract (over-returning is fine; semantics live in core).
    */
-  async queryHeads(filter: QueryFilter = {}): Promise<HeadResult[]> {
+  async queryHeads(
+    filter: QueryFilter = {},
+    options: { onSkip?: (skip: { id: ConceptId; reason: string }) => void } = {},
+  ): Promise<HeadResult[]> {
     const params = new URLSearchParams();
     params.set("fields", "frontmatter");
     if (filter.prefix) params.set("prefix", filter.prefix);
     if (filter.type) params.set("type", filter.type);
     for (const tag of filter.tags ?? []) params.append("tag", tag);
-    return this.pageDocs(
+    const skipped = new Map<ConceptId, string>();
+    const rows = await this.pageDocs(
       params,
       (row) => ({ id: row.id, frontmatter: row.frontmatter, version: row.version }),
       filter.prefix ?? "",
+      skipped,
     );
+    // The server leaves a malformed document out of the listing and names it. A caller that
+    // asked for no skip report keeps the scan's fail-loud contract.
+    const named = [...skipped].sort(([a], [b]) => compareStorageKeys(a, b));
+    if (named.length > 0 && !options.onSkip) {
+      throw new MalformedDocumentError(named[0]![0], new Error(named[0]![1]));
+    }
+    for (const [id, reason] of named) options.onSkip?.({ id, reason });
+    return rows;
   }
 
   async versions(id: ConceptId): Promise<VersionInfo[]> {

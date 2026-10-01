@@ -1429,6 +1429,63 @@ test("sync: the central happy path — a genuine local commit AND a real remote 
   }
 });
 
+test("sync: a raw-edited document with invalid frontmatter is held — named, never pushed — while the rest of the board syncs", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    // An agent's plain file write: an unquoted ': ' in the title is invalid YAML.
+    const badBytes = "---\ntype: Note\ntitle: Import bundles: archive upload\n---\nbody\n";
+    await writeFile(path.join(topo.b.board, "notes", "bad.md"), badBytes);
+    await writeBoardDoc(topo.b, "notes/fine", { frontmatter: { type: "Note", title: "Fine", actor: "brian" }, body: "# ok\n" });
+
+    const result = await runSync(homes[0]!, ["--dir", topo.b.root]);
+    assert.equal(result.err?.code, "CONFLICT", "a held document needs the writer: exit 5");
+    assert.match(result.err!.message, /held, not published: invalid frontmatter in notes\/bad/);
+    assert.match(result.out, /held: 1/);
+    assert.match(result.out, /notes\/bad,malformed_frontmatter/);
+    assert.match(result.out, /pushed: 1/, "the valid document still published");
+    const pushed = git(topo.origin, ["ls-tree", "-r", "--name-only", BOARD_BRANCH]);
+    assert.ok(pushed.includes("notes/fine.md"));
+    assert.ok(!pushed.includes("notes/bad.md"), "the malformed document never reaches origin/board");
+    assert.equal(await readBoardFile(topo.b, "notes/bad.md"), badBytes, "the writer's bytes stay in place to fix");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: a held edit is set aside around the rebase — kept when the board left it alone, saved aside when a teammate changed it", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    // A teammate changes tasks/seed-one; B breaks both seed docs locally without committing.
+    await modifyBoardDoc(topo.a, "tasks/seed-one", { body: "# tasks/seed-one\n\nchanged by A\n" });
+    commitBoard(topo.a, "board: A edits tasks/seed-one", { author: { name: "alice", email: "alice@example.invalid" } });
+    pushBoard(topo.a);
+    const brokenOne = "---\ntype: Task\ntitle: One: broken\n---\nB's edit\n";
+    const brokenTwo = "---\ntype: Task\ntitle: Two: broken\n---\nB's edit\n";
+    await writeFile(path.join(topo.b.board, "tasks", "seed-one.md"), brokenOne);
+    await writeFile(path.join(topo.b.board, "tasks", "seed-two.md"), brokenTwo);
+
+    const result = await runSync(homes[0]!, ["--dir", topo.b.root, "--json"]);
+    assert.equal(result.err?.code, "CONFLICT", result.err?.message);
+    const receipt = JSON.parse(result.out) as { pulled: number; held: number; held_documents: { id: string; saved_at?: string }[] };
+    assert.equal(receipt.pulled, 1, "the teammate's edit still arrived");
+    assert.equal(receipt.held, 2);
+    const one = receipt.held_documents.find((row) => row.id === "tasks/seed-one")!;
+    const two = receipt.held_documents.find((row) => row.id === "tasks/seed-two")!;
+    assert.equal(two.saved_at, undefined, "an untouched path gets the writer's bytes back");
+    assert.equal(await readBoardFile(topo.b, "tasks/seed-two.md"), brokenTwo);
+    assert.ok(one.saved_at, "a path the pull changed is never overwritten by the held bytes");
+    assert.match(await readBoardFile(topo.b, "tasks/seed-one.md"), /changed by A/);
+    assert.equal(await readFile(one.saved_at!, "utf8"), brokenOne, "the writer's version is kept at saved_at");
+    assert.ok(!isMidRebase(topo.b), "the rebase completed");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("sync: FINDING 3 — a commit that lands, then a fetch failure, still gets the safety framing + an honest cache write (stranded-commit path)", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(1);

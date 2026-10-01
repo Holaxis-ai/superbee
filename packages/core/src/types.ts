@@ -388,11 +388,14 @@ export interface StorageBackend {
    * a facet it chooses to honor. A backend that does not implement this method
    * (FilesystemBackend / MemoryBackend — both local to their data, where a head projection
    * saves nothing) is served by the engine's fallback (`list` +
-   * `readMany`, bodies read then dropped), which additionally honors the scan's
-   * malformed-doc resilience (`QueryOptions.onSkip`); the push-down path does not — a
-   * malformed doc fails the server-side scan, exactly as the wire `list` always has.
+   * `readMany`, bodies read then dropped). Both paths honor the scan's malformed-doc
+   * resilience: given `onSkip`, a backend reports each document it could not parse there and
+   * leaves it out; without it, a malformed document fails the scan.
    */
-  queryHeads?(filter?: QueryFilter): Promise<HeadResult[]>;
+  queryHeads?(
+    filter?: QueryFilter,
+    options?: { onSkip?: (skip: { id: ConceptId; reason: string }) => void },
+  ): Promise<HeadResult[]>;
 
   /**
    * OPTIONAL capabilities self-declaration. `StorageBackend` carries

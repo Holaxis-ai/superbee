@@ -449,7 +449,7 @@ async function handleMint(req: Request, runtime: UiRuntime, options: UiServerOpt
     }
     const matches: string[] = [];
     try {
-      const heads = await queryHeads(options.bundle, { type: "View" });
+      const heads = await queryHeads(options.bundle, { type: "View" }, { onSkip: () => {} });
       for (const head of heads) {
         const registration = parseRegistration(head.id, head.frontmatter);
         if (registration?.entry === legacyKey) matches.push(registration.id);
@@ -670,13 +670,14 @@ async function edgesResponse(options: UiServerOptions, url: URL): Promise<Respon
   if (text) filter.text = text;
 
   let links: Awaited<ReturnType<typeof queryEdges>>;
+  const skipped: Array<{ id: string; reason: string }> = [];
   try {
-    links = await queryEdges(options.bundle, filter);
+    links = await queryEdges(options.bundle, filter, { onSkip: ({ id, reason }) => skipped.push({ id, reason }) });
   } catch {
     return jsonError(502, "RUNTIME", "could not read the bundle's edges");
   }
   const edges = links.map((l) => ({ from: l.from, to: l.to, text: l.text }));
-  return new Response(JSON.stringify({ edges, count: edges.length }), {
+  return new Response(JSON.stringify({ edges, count: edges.length, ...(skipped.length > 0 ? { skipped } : {}) }), {
     status: 200,
     headers: { "content-type": "application/json; charset=utf-8" },
   });

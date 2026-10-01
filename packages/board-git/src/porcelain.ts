@@ -60,6 +60,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  MalformedDocumentError,
   conceptIdFromPath,
   isReservedFile,
   mutationActorFromFrontmatter,
@@ -1547,6 +1548,46 @@ export interface CommitResult {
   subject?: string;
   /** The enriched per-doc changes that were committed (empty for a reserved-file-only commit). */
   docs: DocChange[];
+  /**
+   * Added or edited documents left out of the commit because their frontmatter does not parse.
+   * They stay in the worktree, uncommitted, until they parse; absent when none were held.
+   */
+  held?: HeldDocument[];
+}
+
+/** An outgoing document sync did not commit, and why. */
+export interface HeldDocument {
+  /** The document id. */
+  id: string;
+  /** Its path, relative to the board worktree. */
+  relPath: string;
+  /** Always `malformed_frontmatter` today: the YAML between the `---` lines does not parse. */
+  reason: "malformed_frontmatter";
+  /** The parser's first line, e.g. where the YAML broke. */
+  detail: string;
+}
+
+/**
+ * Outgoing (added or edited) documents in the stage whose frontmatter does not parse. Read from
+ * the stage (`:0:`), the exact bytes a commit would publish. Publishing one would break every
+ * reader of the shared board, so the caller unstages it instead.
+ */
+function malformedStagedDocuments(boardPath: string, rows: Array<{ letter: string; relPath: string }>): HeldDocument[] {
+  const held: HeldDocument[] = [];
+  for (const { letter, relPath } of rows) {
+    if (!isConceptDocPath(relPath)) continue;
+    const verb = verbOf(letter);
+    if (verb === null || verb === "deleted") continue;
+    const shown = runGit(boardPath, ["show", `:0:${relPath}`]);
+    if (shown.status !== 0) continue;
+    try {
+      parseMarkdown(shown.stdout, relPath);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      held.push({ id: conceptIdFromPath(relPath), relPath, reason: "malformed_frontmatter", detail: error.detail });
+    }
+  }
+  return held;
 }
 
 /**
@@ -1593,7 +1634,18 @@ export function stageAndCommit(boardPath: string): CommitResult {
     return { committed: false, docs: [] };
   }
 
-  const rows = nameStatusRows(mustGit(boardPath, ["diff", "--cached", "--name-status", "--no-renames", "-z"]));
+  let rows = nameStatusRows(mustGit(boardPath, ["diff", "--cached", "--name-status", "--no-renames", "-z"]));
+  const held = malformedStagedDocuments(boardPath, rows);
+  if (held.length > 0) {
+    // Unstage each held document: the stage returns to HEAD's version (or drops a new file), and
+    // the person's bytes stay in the worktree for them to fix.
+    mustGit(boardPath, ["reset", "-q", "--", ...held.map((doc) => doc.relPath)]);
+    const heldPaths = new Set(held.map((doc) => doc.relPath));
+    rows = rows.filter((row) => !heldPaths.has(row.relPath));
+    if (runGit(boardPath, ["diff", "--cached", "--quiet"]).status === 0) {
+      return { committed: false, docs: [], held };
+    }
+  }
   const docs: DocChange[] = [];
   for (const { letter, relPath } of rows) {
     if (!isConceptDocPath(relPath)) continue;
@@ -1616,7 +1668,65 @@ export function stageAndCommit(boardPath: string): CommitResult {
     { input: message },
   );
   const sha = mustGit(boardPath, ["rev-parse", "HEAD"]).trim();
-  return { committed: true, sha, subject, docs };
+  return { committed: true, sha, subject, docs, ...(held.length > 0 ? { held } : {}) };
+}
+
+/**
+ * Run `fn` (a rebase or fast-forward) with the held documents set aside, so their uncommitted
+ * bytes neither block it nor are overwritten by it. Each held file's bytes are first copied to
+ * `<exportDir>/.held/<relPath>` (a durable copy outside the worktree), then the worktree path is reset
+ * to HEAD (or removed, for a file HEAD does not have). Afterwards, whether `fn` succeeded or not:
+ * when HEAD's version of the path is unchanged the person's bytes are put back exactly; when the
+ * pull changed it, the incoming version stays and the held row gains `savedAt`, the export path,
+ * so a later fix can never silently overwrite a teammate's newer version.
+ */
+export function withHeldDocumentsSetAside<T>(
+  boardPath: string,
+  held: readonly HeldDocument[],
+  exportDir: string,
+  fn: () => T,
+): { result: T; held: HeldSetAside[] } {
+  const blobAt = (relPath: string): string | null => {
+    const r = runGit(boardPath, ["rev-parse", "--verify", "--quiet", `HEAD:${relPath}`]);
+    return r.status === 0 ? r.stdout.trim() : null;
+  };
+  const saved = held.map((doc) => {
+    const file = path.join(boardPath, doc.relPath);
+    const bytes = readFileSync(file);
+    // `.held/` keeps these apart from conflict exports of the same path: no document id has a
+    // dot-prefixed segment.
+    const savedAt = path.join(exportDir, ".held", doc.relPath);
+    mkdirSync(path.dirname(savedAt), { recursive: true, mode: 0o700 });
+    writeFileSync(savedAt, bytes, { mode: 0o600 });
+    const before = blobAt(doc.relPath);
+    if (before === null) rmSync(file, { force: true });
+    else mustGit(boardPath, ["checkout", "-q", "HEAD", "--", doc.relPath]);
+    return { doc, file, bytes, before, savedAt };
+  });
+  const restore = (): HeldSetAside[] =>
+    saved.map(({ doc, file, bytes, before, savedAt }) => {
+      if (blobAt(doc.relPath) === before) {
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, bytes);
+        rmSync(savedAt, { force: true });
+        return { ...doc };
+      }
+      return { ...doc, savedAt };
+    });
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  return { result, held: restore() };
+}
+
+/** A held document after a set-aside pull: `savedAt` is present only when the pull changed its path. */
+export interface HeldSetAside extends HeldDocument {
+  /** Where the person's unsent bytes were kept because the incoming version replaced them. */
+  savedAt?: string;
 }
 
 /** A root commit assembled from a plain bundle without touching the real index or worktree. */

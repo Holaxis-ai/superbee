@@ -530,6 +530,60 @@ test("ui --dir: prints a tokenized receipt, boots a real listener enforcing the 
   }
 });
 
+test("ui --dir with one document whose frontmatter is invalid YAML: the list, the View catalog and edges still load, and name the bad document", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  try {
+    await writeDoc({ root: dir }, { id: "tasks/good", frontmatter: { type: "Task", title: "Good" }, body: "[bad](/tasks/bad.md)" });
+    await writeDoc({ root: dir }, {
+      id: "views-registry/board",
+      frontmatter: { type: "View", title: "Board", entry: "views/board.html", access: "bundle-read" },
+      body: "",
+    });
+    await mkdir(path.join(dir, "views"), { recursive: true });
+    await writeFile(path.join(dir, "views", "board.html"), "<!doctype html><title>Board</title>");
+    // The incident's raw edit: an unquoted ': ' in a title.
+    await writeFile(path.join(dir, "tasks", "bad.md"), "---\ntype: Task\ntitle: Import large bundles: archive upload\n---\nbody\n");
+
+    let out = "";
+    let resolveShutdown!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      resolveShutdown = resolve;
+    });
+    const run = ui(["--dir", dir, "--port", "0", "--json"], {
+      stdout: (s) => (out += s),
+      bootUiServer,
+      waitForShutdown: () => shutdown,
+      openBrowser: () => {},
+      writeUrlFile: async () => {},
+      clearUrlFile: async () => {},
+    });
+    while (!out) await new Promise((r) => setTimeout(r, 5));
+    const receipt = JSON.parse(out) as { url: string };
+    const origin = new URL(receipt.url).origin;
+    const cookie = ((await fetch(receipt.url)).headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+    const get = (route: string) => fetch(origin + route, { headers: { cookie } });
+
+    const list = await get("/v0/bundles/default/docs?fields=frontmatter");
+    assert.equal(list.status, 200, "one malformed document must not 500 the document list");
+    const listed = (await list.json()) as { docs: { id: string }[]; skipped: { id: string; reason: string }[] };
+    assert.ok(listed.docs.some((row) => row.id === "tasks/good"));
+    assert.deepEqual(listed.skipped.map((row) => row.id), ["tasks/bad"]);
+
+    const views = await get("/__ui/views");
+    assert.equal(views.status, 200);
+    assert.match(await views.text(), /views-registry\/board/, "the registered View still lists");
+
+    const edges = await get("/__ui/edges?from=tasks/good");
+    assert.equal(edges.status, 200);
+    assert.deepEqual(((await edges.json()) as { skipped: { id: string }[] }).skipped.map((row) => row.id), ["tasks/bad"]);
+
+    resolveShutdown();
+    await run;
+  } finally {
+    await cleanup();
+  }
+});
+
 test("ui --dir over a CONVENTIONAL bundle: /__ui/config names the PROJECT (parent dir), and an explicit docs/bundle doc overrides it live (tasks/bundle-display-name)", async () => {
   // The field report's exact shape: the bundle rooted at `<project>/.agentstate-lite/`, which
   // used to make EVERY project's shell header/bridge hello read ".agentstate-lite".

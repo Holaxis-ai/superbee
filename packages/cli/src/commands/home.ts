@@ -199,7 +199,16 @@ export interface BundleSummary {
   home?: BundleHome;
   /** A hosted checkout marker with no binding here: what it says and the adopt command (`bundle-home.ts`). */
   copyOfCheckout?: Record<string, unknown>;
+  /**
+   * Documents whose frontmatter does not parse, left out of every count above. Rendered first in
+   * the bundle block so an agent that broke a file with a raw edit learns it at the next session
+   * start or turn, not when a reader fails. Absent when every document parses.
+   */
+  malformed?: { id: string; reason: string }[];
 }
+
+/** Malformed rows rendered in the home view before the overflow is summarized as a count. */
+const MALFORMED_SHOWN = 5;
 
 /**
  * A bundle root WAS discovered from the CWD, but reading it failed (e.g. a malformed/unreadable
@@ -403,7 +412,8 @@ export async function defaultSummarizeBundle(
     return { root, unreadable: true };
   }
   try {
-    const docs = await queryHeads(bundle);
+    const malformed: { id: string; reason: string }[] = [];
+    const docs = await queryHeads(bundle, {}, { onSkip: ({ id, reason }) => malformed.push({ id, reason }) });
     // ONE extra known-id read (absent-tolerant, never throws, fs-only for home's always-local
     // bundle) — the same display-name chain the ui server's config uses (bundle-name.ts).
     const { name, source } = await deriveBundleDisplayName(bundle);
@@ -413,7 +423,11 @@ export async function defaultSummarizeBundle(
     // Local Git and private state only, like the rest of this render; unreadable evidence reads as local.
     const facts = await bundleHomeAt(await realpath(bundle.root).catch(() => bundle.root));
     const copy = unboundCopyOf(facts).copy_of_checkout as Record<string, unknown> | undefined;
-    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }), home: facts.home, ...(copy ? { copyOfCheckout: copy } : {}) };
+    return {
+      name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }), home: facts.home,
+      ...(copy ? { copyOfCheckout: copy } : {}),
+      ...(malformed.length > 0 ? { malformed: malformed.sort((a, b) => a.id.localeCompare(b.id)) } : {}),
+    };
   } catch {
     // A bundle root exists but could not be read — DISTINCT from "no bundle" (see UnreadableBundle).
     return { root: collapseHomeDirectory(bundle.root), unreadable: true };
@@ -936,6 +950,17 @@ export function buildHomeView(
       }
     }
     bundleBlock.root = summary.root;
+    if (summary.malformed && summary.malformed.length > 0) {
+      bundleBlock.malformed_docs = {
+        shown: Math.min(summary.malformed.length, MALFORMED_SHOWN),
+        total: summary.malformed.length,
+        rows: summary.malformed.slice(0, MALFORMED_SHOWN),
+      };
+      bundleBlock.malformed_help =
+        `these documents' frontmatter is invalid YAML, so every reader and sync skips them — fix the ` +
+        `lines between the --- markers (quote a value that contains ': '), then confirm with ` +
+        `\`${deps.invocation()} status\``;
+    }
     bundleBlock.docs = summary.docs;
     bundleBlock.by_type = summary.byType;
     if (summary.trust) bundleBlock.trust = summary.trust;

@@ -40,7 +40,9 @@ import {
   runGit,
   stageAndCommit,
   unpushedCount,
+  withHeldDocumentsSetAside,
   type CommitResult,
+  type HeldSetAside,
   type DocChange,
   type FetchRebaseResolvingOutcome,
   type ProvisionOutcome,
@@ -695,7 +697,16 @@ async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
     throwPostCommitFailure(withProvisionAnnouncement(err, outcome), commitResult.committed, key, boardPath);
   let rebaseOutcome: FetchRebaseResolvingOutcome;
   try {
-    rebaseOutcome = fetchRebaseResolving(boardPath, defaultSyncStore.exportsDir(key));
+    const exportDir = defaultSyncStore.exportsDir(key);
+    const held = commitResult.held ?? [];
+    if (held.length === 0) {
+      rebaseOutcome = fetchRebaseResolving(boardPath, exportDir);
+    } else {
+      // A held document's uncommitted bytes would refuse the rebase; set them aside around it.
+      const setAside = withHeldDocumentsSetAside(boardPath, held, exportDir, () => fetchRebaseResolving(boardPath, exportDir));
+      rebaseOutcome = setAside.result;
+      commitResult.held = setAside.held;
+    }
   } catch (rawErr) {
     throw await fail(withUpstreamHelp(toCliError(rawErr, "rebase"), run.inv));
   }
@@ -787,7 +798,47 @@ async function receiptPhase(
     originDelta: delta.originDelta, limit: run.limit,
     establishAlreadyNote, reanchorNote: delta.reanchorNote, hookHint,
   });
-  run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { sent: pushed.documents, received: delta.originDelta.length })), run.mode));
+  const held = commitResult.held ?? [];
+  if (held.length > 0) Object.assign(receipt, heldReceipt(held, run.inv));
+  const envelope = syncEnvelope("git", {
+    sent: pushed.documents, received: delta.originDelta.length, held: held.length,
+    ...(held.length > 0 ? { next: [`${run.inv} sync`] } : {}),
+  });
+  run.stdout(render(withSyncEnvelope(receipt, envelope), run.mode));
+  if (held.length > 0) {
+    // The rest of the board synced; the held documents need the writer. Exit 5 like a hosted
+    // hold, after the receipt (not a second envelope), so the turn-end hook hands it back.
+    throw new CliError("CONFLICT", heldMessage(held), {
+      help: `fix the frontmatter of ${held.map((doc) => doc.relPath).join(", ")} (quote any value that contains ': '), then run ${run.inv} sync`,
+      details: { held: held.map((doc) => doc.id) },
+      handled: true,
+    });
+  }
+}
+
+/** Held rows plus the fix, for the receipt. */
+function heldReceipt(held: readonly HeldSetAside[], inv: string): Record<string, unknown> {
+  return {
+    held_documents: held.map((doc) => ({
+      id: doc.id,
+      reason: doc.reason,
+      detail: doc.detail,
+      ...(doc.savedAt ? { saved_at: doc.savedAt } : {}),
+    })),
+    held_help:
+      `not published: the YAML frontmatter of these documents does not parse, and publishing it would ` +
+      `break every reader of the board. Fix the lines between the --- markers (quote any value that ` +
+      `contains ': '), check with ${inv} status, then run ${inv} sync` +
+      (held.some((doc) => doc.savedAt)
+        ? `. A row with saved_at changed on the board meanwhile: the file now has the board's version, ` +
+          `and your unsent version is at saved_at — merge it into the file before syncing`
+        : ""),
+  };
+}
+
+function heldMessage(held: readonly HeldSetAside[]): string {
+  const ids = held.map((doc) => doc.id).join(", ");
+  return `${held.length} document(s) held, not published: invalid frontmatter in ${ids}`;
 }
 
 async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {

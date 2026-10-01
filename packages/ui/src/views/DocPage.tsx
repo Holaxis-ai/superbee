@@ -15,7 +15,7 @@
  */
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getDoc, listAllHeads, ApiError } from "../api/client.js";
+import { getDoc, listAllHeadsReport, ApiError } from "../api/client.js";
 import { fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { navigate } from "../routing.js";
@@ -69,7 +69,7 @@ export function DocPage({ docId }: { docId: string }) {
   });
   // Head projections give id → title for the inline "verb → title" edge rows. Heads-only (cheap),
   // and the browse surface shares this cache.
-  const headsQuery = useQuery({ queryKey: ["all-heads"], queryFn: () => listAllHeads({}) });
+  const headsQuery = useQuery({ queryKey: ["all-heads"], queryFn: () => listAllHeadsReport({}) });
 
   useEffect(() => {
     return subscribeToChanges((e) => {
@@ -172,7 +172,7 @@ export function DocPage({ docId }: { docId: string }) {
   // id → title for the inline edge rows; a target without a title (or not yet loaded) falls back to
   // its id in markdown.tsx.
   const titleById = new Map<string, string>();
-  for (const head of headsQuery.data ?? []) {
+  for (const head of headsQuery.data?.heads ?? []) {
     const t = head.frontmatter.title;
     if (typeof t === "string" && t.trim()) titleById.set(head.id, t);
   }

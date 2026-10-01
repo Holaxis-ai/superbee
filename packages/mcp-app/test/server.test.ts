@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 import {
+  FilesystemBackend,
   MemoryBackend,
   deleteDoc,
   readBlob,
@@ -2089,6 +2092,45 @@ test("registered Roadmap View runs from unchanged source through the authorized 
     arguments: { launchId: view.launch.launchId },
   });
   assert.deepEqual(closed.structuredContent, { closed: true });
+});
+
+test("show_view still loads and queries a registered View when one document has invalid frontmatter; the bad one is named", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "mcp-app-malformed-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bundle: Bundle = { root, backend: new FilesystemBackend(root) };
+  await seed(bundle);
+  // The 2026-10-01 incident shape: a raw file write with an unquoted ': ' in its title.
+  await writeFile(path.join(root, "tasks", "broken.md"), "---\ntype: Task\ntitle: Import large bundles: archive upload\nstatus: todo\n---\nbody\n");
+  const authorization = new SessionViewAuthorizationStore();
+  const server = createMcpAppServer({ bundle, version: "test", bundleName: "Proof bundle", viewAuthorization: authorization });
+  const client = new Client({ name: "test-client", version: "test" }, { capabilities: {} });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const listed = await client.callTool({ name: LIST_VIEWS_TOOL_NAME, arguments: {} });
+  assert.equal(listed.isError, undefined);
+  assert.match(JSON.stringify(listed.structuredContent), /views-registry\/roadmap/);
+  const shown = await client.callTool({ name: SHOW_VIEW_TOOL_NAME, arguments: { viewId: "views-registry/roadmap" } });
+  assert.equal(shown.isError, undefined);
+  const launchId = (shown.structuredContent as { launch: { launchId: string } }).launch.launchId;
+  const approved = await client.callTool({ name: AUTHORIZE_DURABLE_VIEW_TOOL_NAME, arguments: { launchId } });
+  assert.equal(approved.isError, undefined);
+
+  const queried = await client.callTool({
+    name: DURABLE_VIEW_BRIDGE_TOOL_NAME,
+    arguments: { launchId, request: { bridge: "v0", type: "query", id: "q", params: { type: "Task" } } },
+  });
+  const reply = (queried.structuredContent as {
+    outcome: { reply: { type: string; error?: unknown; result: { rows: { id: string }[]; skipped: { id: string; reason: string }[] } } };
+  }).outcome.reply;
+  assert.equal(reply.type, "query:result", JSON.stringify(reply.error));
+  assert.deepEqual(reply.result.rows.map((row) => row.id), ["tasks/alpha", "tasks/beta", "tasks/gamma"]);
+  assert.deepEqual(reply.result.skipped.map((row) => row.id), ["tasks/broken"]);
 });
 
 test("transient HTML uses the registered active-View bridge without a synthetic registration", async (t) => {

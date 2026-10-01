@@ -79,7 +79,7 @@ operation route is exactly one.
 | Method | Path | Success contract |
 | --- | --- | --- |
 | GET | `/v0/capabilities` | `200` capability booleans: `history`, `enforced_cas`, `projections`, `backlinks`, `blobs`, `operations`, `heads`, `snapshot`. |
-| GET | `/v0/bundles/{bundle}/docs` | `200 { count, docs, next_cursor }`; filters/pagination below. |
+| GET | `/v0/bundles/{bundle}/docs` | `200 { count, docs, next_cursor, skipped? }`; filters/pagination below. |
 | POST | `/v0/bundles/{bundle}/docs:read-many` | JSON `{ ids: string[] }`; `200 { results }`, or all-or-nothing `404` with `details.missing`. |
 | GET | `/v0/bundles/{bundle}/heads` | `200 { count, digest, heads }` with the digest as `ETag`, or bodyless `304` when `If-None-Match` names it; see "Heads and snapshot". |
 | GET | `/v0/bundles/{bundle}/snapshot` | `200` NDJSON stream of every document between a header and an `end` line, digest as `ETag`; see "Heads and snapshot". |
@@ -107,6 +107,15 @@ limit also selects 50. `count` is the total filtered count before cursor paginat
 is `{ id, version, type, title, timestamp }`; `fields=frontmatter` returns
 `{ id, version, frontmatter }`. The `fields` name is therefore a projection selector on the wire,
 not the CLI/core `QueryFilter.fields` equality filter.
+
+A document whose stored frontmatter does not parse is left out of `docs` and `count`, and every page
+of that listing names it in `skipped: [{ id, reason }]` (absent when every document parsed), so one
+bad file never fails the listing. `RemoteBackend.queryHeads` reports those rows through the scan's
+`onSkip`, and without one keeps the scan's fail-loud contract by raising `MalformedDocumentError`;
+`RemoteBackend.list` still lists their ids, since the documents exist. Reading such a document, or
+any route that cannot leave it out (heads and snapshot, where a missing id means a deletion),
+answers `500 RUNTIME` with `details.malformed: { id, reason }`, which `RemoteBackend` raises as
+`MalformedDocumentError` without retrying.
 
 Blob list accepts `prefix`, `limit`, and `cursor` with the same page-size and envelope semantics.
 Both cursors are the last returned ID/key. If that cursor vanished, the next page resumes using the
@@ -215,7 +224,7 @@ response also carries it as `ETag`. Reserved files are not part of a snapshot: a
 `index.md` through the reserved route as today.
 
 The body streams. The reference router produces the heads listing first (so a malformed document
-fails the request before any byte of the response exists, exactly as it fails a list), then reads
+fails the request, naming it, before any byte of the response exists), then reads
 bodies in batches of 50 and encodes each batch as it is produced; the `node:http` bootstrap pipes
 the body to the socket. A document deleted between the listing and its batch errors the stream,
 which the client observes as truncation. A document changed in that window errors the stream the
@@ -409,8 +418,8 @@ These are current limitations, not promises that a client may paper over:
    subresource.
 3. There is no original-document-byte endpoint. Canonical JSON reconstruction is the only remote
    document export; blobs are raw but cannot use `.md` keys.
-4. A malformed document still fails a list. The wire has no `skipped` row/envelope to express the
-   CLI's local quarantine-style partial result.
+4. A malformed document still fails heads and snapshot: a working copy reads an id missing from
+   heads as a deletion, so those routes cannot skip it. The document list skips and names it.
 5. Wire `fields` selects a projection and cannot express core's arbitrary field-equality filter.
 6. `requestFromIncomingMessage` supports a maximum body size, but reference `serve()` currently
    supplies no cap.

@@ -8,7 +8,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DocumentBrowser, GROUP_CAP } from "./DocumentBrowser.js";
-import { listAllHeads } from "../api/client.js";
+import { listAllHeadsReport } from "../api/client.js";
 import { fetchKinds } from "../api/pages.js";
 import { navigate } from "../routing.js";
 
@@ -16,7 +16,7 @@ import { navigate } from "../routing.js";
 
 vi.mock("../api/client.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../api/client.js")>();
-  return { ...original, listAllHeads: vi.fn(async () => []) };
+  return { ...original, listAllHeadsReport: vi.fn(async () => ({ heads: [], skipped: [] })) };
 });
 vi.mock("../api/pages.js", () => ({ fetchKinds: vi.fn(async () => []), invalidateKinds: vi.fn() }));
 vi.mock("../pages/pageEvents.js", () => ({
@@ -43,8 +43,8 @@ describe("DocumentBrowser", () => {
   let root: Root;
 
   beforeEach(() => {
-    vi.mocked(listAllHeads).mockReset();
-    vi.mocked(listAllHeads).mockResolvedValue(HEADS as never);
+    vi.mocked(listAllHeadsReport).mockReset();
+    vi.mocked(listAllHeadsReport).mockResolvedValue({ heads: HEADS, skipped: [] } as never);
     vi.mocked(fetchKinds).mockReset();
     vi.mocked(fetchKinds).mockResolvedValue(KINDS as never);
     vi.mocked(navigate).mockReset();
@@ -72,6 +72,18 @@ describe("DocumentBrowser", () => {
 
   const groupByKind = (kind: string): HTMLElement =>
     [...container.querySelectorAll(".browse-group")].find((g) => g.querySelector(".browse-group-kind")?.textContent === kind) as HTMLElement;
+
+  it("names a document the listing skipped for invalid frontmatter, above the rest of the bundle", async () => {
+    vi.mocked(listAllHeadsReport).mockResolvedValue({
+      heads: HEADS,
+      skipped: [{ id: "tasks/broken", reason: "bad indentation of a mapping entry" }],
+    } as never);
+    await render();
+    const alert = container.querySelector(".browse-unreadable")!;
+    expect(alert.textContent).toContain("1 document could not be read");
+    expect(alert.textContent).toContain("tasks/broken: bad indentation of a mapping entry");
+    expect(groupByKind("Task").querySelector(".browse-count")!.textContent).toBe("8");
+  });
 
   it("groups by kind; an expanded kind shows its rows, a browse_collapsed kind starts CLOSED", async () => {
     await render();
