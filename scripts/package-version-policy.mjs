@@ -4,8 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// cli and agent-surface are versioned independently of the core/server pair.
-const names = ['core', 'server', 'markdown-renderer', 'cli', 'agent-surface'];
+// cli is versioned independently of the core/server pair.
+const names = ['core', 'server', 'markdown-renderer', 'cli'];
 export const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$(?![\s\S])/;
 
 // This is the renderer's intentionally bounded policy, not a general semver engine:
