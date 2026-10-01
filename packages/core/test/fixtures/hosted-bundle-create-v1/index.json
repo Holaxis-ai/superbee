@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "Golden bundles.create.v1 exchanges (POST /sync/v1/bundle-create) generated from the real hosted gateway app (createApp: real bearer admission, the creation ledger, Miniflare D1 and R2; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type and x-superbee-write-settled.",
-  "source": "Holaxis-ai/superbee-hosted 2fb7144e116dd546ab8bd2ab242dae5ae98b7437",
+  "description": "Golden bundles.create.v1 exchanges (POST /sync/v1/bundle-create, and the staged bundle-create-begin, -stage, -blob and -commit) generated from the real hosted gateway app (createApp: real bearer admission, the creation ledger, Miniflare D1 and R2; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z (the staged routes on the real clock: their answers carry no time). Each file is one request and the exact answer bytes; response headers are limited to content-type and x-superbee-write-settled.",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
@@ -107,6 +106,78 @@
       "name": "bundle-create-200-resumed",
       "file": "bundle-create-200-resumed.json",
       "route": "/sync/v1/bundle-create",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-begin-200-staging",
+      "file": "bundle-create-begin-200-staging.json",
+      "route": "/sync/v1/bundle-create-begin",
+      "rows": [
+        "200 staging"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-begin-200-request-conflict",
+      "file": "bundle-create-begin-200-request-conflict.json",
+      "route": "/sync/v1/bundle-create-begin",
+      "rows": [
+        "200 request_conflict"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-stage-200-staging",
+      "file": "bundle-create-stage-200-staging.json",
+      "route": "/sync/v1/bundle-create-stage",
+      "rows": [
+        "200 staging"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-stage-200-validation-failed",
+      "file": "bundle-create-stage-200-validation-failed.json",
+      "route": "/sync/v1/bundle-create-stage",
+      "rows": [
+        "200 validation_failed"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-stage-400-no-manifest",
+      "file": "bundle-create-stage-400-no-manifest.json",
+      "route": "/sync/v1/bundle-create-stage",
+      "rows": [
+        "400 invalid_input"
+      ],
+      "status": 400
+    },
+    {
+      "name": "bundle-create-blob-200-ok",
+      "file": "bundle-create-blob-200-ok.json",
+      "route": "/sync/v1/bundle-create-blob",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-commit-200-importing",
+      "file": "bundle-create-commit-200-importing.json",
+      "route": "/sync/v1/bundle-create-commit",
+      "rows": [
+        "200 importing"
+      ],
+      "status": 200
+    },
+    {
+      "name": "bundle-create-commit-200-created",
+      "file": "bundle-create-commit-200-created.json",
+      "route": "/sync/v1/bundle-create-commit",
       "rows": [
         "200 ok"
       ],

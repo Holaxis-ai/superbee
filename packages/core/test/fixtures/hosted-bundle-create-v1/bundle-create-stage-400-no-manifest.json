@@ -1,0 +1,25 @@
+{
+  "name": "bundle-create-stage-400-no-manifest",
+  "description": "A part under a plan hash with no manifest: begin again.",
+  "route": "/sync/v1/bundle-create-stage",
+  "rows": [
+    "400 invalid_input"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-0000000000d1",
+      "content-length": "269"
+    },
+    "body": "{\"workspace\":\"tenant:a\",\"bundleId\":\"staged.notes\",\"planHash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"documents\":[{\"id\":\"notes/alpha\",\"frontmatter\":{\"type\":\"Note\",\"title\":\"Alpha\"},\"body\":\"Alpha body é.\\n\"}],\"reserved\":[],\"history\":[]}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\",\"message\":\"No staged manifest for this creation and plan hash. Send bundle-create-begin again, then retry.\"}}",
+    "truncated": false
+  }
+}

@@ -74,9 +74,32 @@ export function isAgentLabelVia(value: unknown): value is string {
   return typeof value === "string" && /^[a-z0-9._-]{1,32}$/.test(value) && !value.startsWith("superbee");
 }
 
+/**
+ * A raw-bytes request ({@link HostedCarrier.bytes}), such as one blob of a staged bundle creation
+ * (`bundle-create-blob`): the body travels as `application/octet-stream` with its exact
+ * `Content-Length`, and the route's own fields travel as headers.
+ */
+export interface HostedBytesRequestOptions {
+  /** Largest answer body admitted, in bytes; a larger or undecodable body is `unavailable`. */
+  maximum: number;
+  /** The request identity of the identified write the bytes belong to. */
+  writeRequest?: string;
+  /**
+   * The route's own fields (`X-Superbee-Workspace`, say): `X-Superbee-` names only, and never a
+   * header the carrier owns (the request identity, the binding, `recreate`, `via`, the deletion
+   * acknowledgment) or a credential. Values are printable ASCII.
+   */
+  headers?: Readonly<Record<string, string>>;
+}
+
 export interface HostedCarrier {
   json(path: string, input: unknown, signal: AbortSignal, options: HostedRequestOptions): Promise<HostedAnswer>;
   stream(path: string, input: unknown, signal: AbortSignal): Promise<HostedStream>;
+  /**
+   * One `POST` whose body is `body` exactly, answered as {@link json} answers. Optional: a carrier
+   * without it (the browser's) cannot send raw bytes, and a caller that needs them says so.
+   */
+  bytes?(path: string, body: Uint8Array, signal: AbortSignal, options: HostedBytesRequestOptions): Promise<HostedAnswer>;
 }
 
 /**
@@ -109,6 +132,8 @@ export class HostedCarrierError extends Error {
 
 const WRITE_REQUEST = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BINDING = /^sha256:[a-f0-9]{64}$/;
+const ROUTE_HEADER = /^x-superbee-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const ROUTE_HEADER_VALUE = /^[\x20-\x7e]{0,1024}$/;
 
 export interface FetchCarrierOptions {
   /** The host's origin, e.g. `https://superbee.example`; paths are resolved against it. */
@@ -176,10 +201,20 @@ function idleBounded(body: ReadableStream<Uint8Array>, deadlineMs: number, abort
   );
 }
 
+/** A request's headers: its own fields, then the credential and the content headers, which always win. */
+function requestHeaders(credentials: Record<string, string>, extra: Record<string, string>, type: string): Headers {
+  const headers = new Headers(extra);
+  for (const [name, value] of Object.entries(credentials)) headers.set(name, value);
+  headers.set("Content-Type", type);
+  headers.set("Accept", "application/json");
+  return headers;
+}
+
 /**
  * A carrier over `fetch` with caller-supplied credential headers: the shape the CLI's bearer
- * carrier takes. Requests are `POST` with a JSON body, never follow redirects, and are refused
- * before sending when the identity or binding is malformed.
+ * carrier takes. Requests are `POST` with a JSON body (or, through `bytes`, a raw one), never follow
+ * redirects, and are refused before sending when the identity, binding or a route header is
+ * malformed.
  */
 export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier {
   const fetcher = options.fetch ?? fetch;
@@ -187,7 +222,7 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
   const bindingHeader = options.bindingHeader ?? "X-Superbee-Checkout";
   const base = new URL(options.baseUrl);
 
-  async function send(path: string, input: unknown, signal: AbortSignal, extra: Record<string, string>, deadline: AbortSignal): Promise<Response> {
+  async function send(path: string, body: { readonly type: string; readonly content: string | Uint8Array }, signal: AbortSignal, extra: Record<string, string>, deadline: AbortSignal): Promise<Response> {
     if (!path.startsWith("/")) throw new TypeError(`hosted route '${path}' must be absolute`);
     let credentials: Record<string, string>;
     try {
@@ -200,13 +235,32 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
       return await fetcher(new URL(path, base), {
         method: "POST",
         redirect: "error",
-        headers: { ...credentials, ...extra, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(input),
+        headers: requestHeaders(credentials, extra, body.type),
+        body: body.content,
         signal: AbortSignal.any([signal, deadline]),
       });
     } catch (cause) {
       throw new HostedCarrierError("unavailable", { cause });
     }
+  }
+
+  const jsonBody = (input: unknown) => ({ type: "application/json", content: JSON.stringify(input) });
+  // Headers the carrier sets itself, which a route's own fields never name.
+  const owned = new Set(["x-superbee-write-request", bindingHeader.toLowerCase(), RECREATE_HEADER.toLowerCase(), VIA_HEADER.toLowerCase(), ACCEPT_DELETES_HEADER.toLowerCase()]);
+
+  async function answer(path: string, body: { readonly type: string; readonly content: string | Uint8Array }, signal: AbortSignal, extra: Record<string, string>, maximum: number): Promise<HostedAnswer> {
+    const deadline = AbortSignal.timeout(deadlineMs);
+    const response = await send(path, body, signal, extra, deadline);
+    let read: unknown;
+    try {
+      read = await readBounded(response, maximum);
+    } catch (error) {
+      // A refusal's envelope is best effort: its status already decides, and an unreadable
+      // body must never read as "not applied".
+      if (response.ok) throw error instanceof HostedCarrierError ? error : new HostedCarrierError("unavailable", { cause: error });
+      read = undefined;
+    }
+    return { status: response.status, headers: response.headers, body: read };
   }
 
   return {
@@ -222,25 +276,27 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
       if (request.recreate !== undefined) extra[RECREATE_HEADER] = request.recreate;
       if (request.via !== undefined) extra[VIA_HEADER] = request.via;
       if (request.acceptDeletes !== undefined) extra[ACCEPT_DELETES_HEADER] = String(request.acceptDeletes);
-      const deadline = AbortSignal.timeout(deadlineMs);
-      const response = await send(path, input, signal, extra, deadline);
-      let body: unknown;
-      try {
-        body = await readBounded(response, request.maximum);
-      } catch (error) {
-        // A refusal's envelope is best effort: its status already decides, and an unreadable
-        // body must never read as "not applied".
-        if (response.ok) throw error instanceof HostedCarrierError ? error : new HostedCarrierError("unavailable", { cause: error });
-        body = undefined;
+      return answer(path, jsonBody(input), signal, extra, request.maximum);
+    },
+    async bytes(path, body, signal, request) {
+      if (!(body instanceof Uint8Array)) throw new HostedCarrierError("denied");
+      if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
+      const extra: Record<string, string> = {};
+      for (const [name, value] of Object.entries(request.headers ?? {})) {
+        const lower = name.toLowerCase();
+        if (!ROUTE_HEADER.test(lower) || owned.has(lower) || lower in extra || typeof value !== "string" || !ROUTE_HEADER_VALUE.test(value)) throw new HostedCarrierError("denied");
+        extra[lower] = value;
       }
-      return { status: response.status, headers: response.headers, body };
+      if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
+      // The body is sent as given; `fetch` derives its exact Content-Length from the bytes.
+      return answer(path, { type: "application/octet-stream", content: body }, signal, extra, request.maximum);
     },
     async stream(path, input, signal) {
       const idle = new AbortController();
       const firstByte = setTimeout(() => idle.abort(), deadlineMs);
       let response: Response;
       try {
-        response = await send(path, input, signal, {}, idle.signal);
+        response = await send(path, jsonBody(input), signal, {}, idle.signal);
       } finally {
         clearTimeout(firstByte);
       }
