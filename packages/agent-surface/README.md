@@ -77,3 +77,43 @@ Consumers may use the exact local artifact for a disposable integration proof. C
 consumers require an exact compatible registry version after the maintainer's package bootstrap;
 machine-specific paths and private sibling checkouts are not a distribution mechanism. No release
 workflow or authenticated npm mutation is introduced by this package.
+
+### Maintainer publication handoff
+
+The first candidate is `@superbee/agent-surface@0.1.0-pre.1`, public access, channel `next`.
+This package is versioned independently and has no runtime or peer dependencies. The existing
+core/server and CLI release workflows do not publish it. Use the repository's manual literal-tarball
+process, also used by browser-local. These instructions do not authorize publication or release tags.
+
+1. Review and merge the preparation change. Record its actual merged source SHA and require green
+   `CI required lanes` on that exact SHA. Obtain the maintainer's explicit release authorization and
+   verify package publish access and npm's required interactive human approval. Refresh registry
+   versions and dist-tags read-only; if this version already exists, compare its bytes and stop on
+   divergence. Never reuse a published version for different bytes. First package creation needs a
+   human bootstrap because npm staging cannot create a package.
+2. From a clean checkout of that approved source, install with `npm ci`, run root build/typecheck,
+   package tests and the standing packed consumer proof in `npm run test:scripts`. Pack the candidate
+   once into a fresh artifact directory, retaining the npm JSON receipt:
+
+   ```sh
+   npm pack --workspace @superbee/agent-surface --json --pack-destination <artifact-directory>
+   node packages/agent-surface/scripts/verify-packed.mjs <literal-tarball>
+   ```
+
+   Record source SHA, package/version, tarball SHA-256, receipt integrity and the verification result
+   in the publisher handoff. The verifier checks legal-document bytes, the file allowlist, offline
+   installation, ESM/declaration imports, direct invocation and browser bundling. Preserve those
+   exact bytes through approval and publication; do not rebuild or repack an approved candidate.
+3. Only the expressly authorized maintainer or publisher may publish the approved literal tarball
+   with public access and `next`, including required interactive human approval. The workspace's
+   `prepublishOnly` refusal is an accident-prevention guard; bypass it only for that separately
+   approved literal artifact. No npm credential is supplied by this preparation. Manual artifacts
+   do not acquire the other release workflows' attestations.
+4. After publication, anonymously retrieve the exact registry version, compare downloaded bytes
+   and registry integrity with the retained candidate, inspect exports/dependencies/access, and
+   confirm the intended dist-tag. Record the evidence in the project bundle's Release record.
+   Unexpected tag state requires an explicit maintainer decision; do not republish to repair it.
+5. Prepare a separate consumer repin to the verified exact registry version in each manifest and
+   lockfile. Verify clean installation without local tarball paths or dependency overrides, then
+   complete the consumer's independent review, required CI and in-app proof. Publication alone
+   does not complete integration or authorize production activation.
