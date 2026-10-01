@@ -43,8 +43,12 @@
 import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
 import { spawnSync } from "node:child_process";
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -1659,13 +1663,8 @@ export function malformedOutgoingDocuments(boardPath: string): HeldDocument[] {
     const relPath = record.slice(3);
     if (code.includes("D") || !isConceptDocPath(relPath)) continue;
     const file = path.join(boardPath, relPath);
-    let content: string;
-    try {
-      if (!lstatSync(file).isFile()) continue;
-      content = readFileSync(file, "utf8");
-    } catch {
-      continue;
-    }
+    const content = readRegularFile(file);
+    if (content === null) continue;
     try {
       parseMarkdown(content, relPath);
     } catch (error) {
@@ -1674,6 +1673,28 @@ export function malformedOutgoingDocuments(boardPath: string): HeldDocument[] {
     }
   }
   return held.sort((a, b) => a.relPath.localeCompare(b.relPath));
+}
+
+/**
+ * A regular file's text, or null for a symlink, a non-file or a path that vanished. One open
+ * (never following a final symlink where the platform supports it) and a stat of that same
+ * descriptor, so the bytes read are the bytes judged.
+ */
+function readRegularFile(file: string): string | null {
+  let fd: number;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch {
+    return null;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    return readFileSync(fd, "utf8");
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
