@@ -633,6 +633,7 @@ export {
   BRIDGE_ERROR_CODES,
   BRIDGE_HOST_CAPABILITIES,
   BRIDGE_PROTOCOL,
+  BRIDGE_QUERY_ORDERS,
   BRIDGE_SERVICE_CAPABILITIES,
   BRIDGE_SERVICE_LIMITS,
   BridgeService,
@@ -657,6 +658,8 @@ export {
   type BridgeLaunchAuthority,
   type BridgeOutcome,
   type BridgePollOutcome,
+  type BridgeQueryOrder,
+  type BridgeQueryParams,
   type BridgeServiceOptions,
   type EdgeParams,
 } from "./bridge.js";

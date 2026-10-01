@@ -106,7 +106,7 @@ import { defaultSyncStore, type AwarenessCache, type AwarenessDeltaRow } from ".
 import { hookNeedsUpdate } from "./hook.js";
 import { skillRefreshScopes } from "./skill.js";
 import type { InstallScope } from "../install-scope.js";
-import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "../meaningful-change-order.js";
+import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "@superbee/core/query-order";
 import { loadCatalog } from "../catalog.js";
 import { staticBuildIdentity, type ArtifactChannel } from "../build-identity.js";
 import {

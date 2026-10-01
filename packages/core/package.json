@@ -75,6 +75,10 @@
       "types": "./dist/publication-filesystem.d.ts",
       "default": "./dist/publication-filesystem.js"
     },
+    "./query-order": {
+      "types": "./dist/query-order.d.ts",
+      "default": "./dist/query-order.js"
+    },
     "./query-filter": {
       "types": "./dist/query-filter.d.ts",
       "default": "./dist/query-filter.js"
