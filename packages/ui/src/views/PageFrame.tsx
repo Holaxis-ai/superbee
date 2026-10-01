@@ -1,34 +1,41 @@
 /**
- * PageFrame (tasks/ui-pages-spike): render one bundle page in a sandboxed iframe and broker its
- * bridge. The iframe is `sandbox="allow-scripts"` with NO `allow-same-origin`, so it runs at an
- * opaque origin — it cannot fetch the data API even if a token leaked, and its scripts talk to the
- * shell ONLY via postMessage. This component:
+ * PageFrame (tasks/ui-pages-spike): render one bundle page in a sandboxed frame and broker its
+ * bridge. The View runs in a `sandbox="allow-scripts"` frame with NO `allow-same-origin`, so it
+ * runs at an opaque origin — it cannot fetch the data API even if a token leaked, and its scripts
+ * talk to the shell ONLY via postMessage. This component:
  *   1. Asks the server to resolve the registry doc and exact HTML into one immutable launch.
  *      Active data-bearing Views mount only after the trusted shell confirms that exact launch
  *      (unchanged approvals are remembered locally by the CLI host).
- *   2. Listens for the page's postMessage requests, VALIDATING `event.source` is this iframe, and
+ *   2. Fetches that launch's bytes ONCE itself (same origin, session-authorized), verifies them
+ *      against the launch's content version, and hands them to the View host frame, which mounts
+ *      them as a `blob:` URL. The View frame never requests its own HTML, so browsers that refuse
+ *      network requests from opaque-origin frames still load it (see view-runtime's view-host).
+ *   3. Listens for host-enveloped View messages, VALIDATING `event.source` is this host frame, and
  *      forwards opaque requests to the server-owned bridge; `bundle-propose` may additionally
  *      prepare one v1 action for explicit confirmation in trusted shell chrome.
- *   3. Fans SSE doc changes into the subscribed page as bridge `change` events, and HOT-RELOADS the
- *      iframe (fresh nonce) when the page's own HTML blob changes.
+ *   4. Fans SSE doc changes into the subscribed page as bridge `change` events, and HOT-RELOADS the
+ *      frame (fresh launch) when the page's own HTML blob changes.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   authorizeViewLaunch,
   cancelTrustedAction,
   commitTrustedAction,
+  fetchViewBytes,
   mintPageNonce,
   prepareTrustedAction,
   invalidateKinds,
   sendViewBridge,
   verifyViewDelivery,
   verifyViewLaunch,
+  ViewBytesMismatchError,
   type ActionConfirmation,
   type MintedView,
 } from "../api/pages.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { navigate } from "../routing.js";
 import { actionError, actionReply, parseActionBridgeMessage } from "@superbee/view-runtime/action-bridge";
+import { VIEW_HOST_PATH, parseViewHostEvent, viewHostDeliver, viewHostLoad } from "@superbee/view-runtime/view-host";
 import { VIEW_DELIVERY_RETRY_MS, VIEW_LOAD_DEADLINE_MS } from "./viewReadiness.js";
 
 const ACTION_CONFIRMATION_ARM_MS = 500;
@@ -49,6 +56,17 @@ interface PendingAction {
   inFlight: boolean;
 }
 
+/** Verified bytes waiting for (or already handed to) the current host frame generation. */
+interface FrameDelivery {
+  seq: number;
+  launchId: string;
+  deliveryId: string;
+  bytes: ArrayBuffer;
+  contentType: string;
+  title: string;
+  sent: boolean;
+}
+
 interface FrameDeliveryProbe {
   frame: HTMLIFrameElement;
   launchId: string;
@@ -59,8 +77,28 @@ function scalarLabel(value: string | number | boolean | null): string {
   return value === null ? "(not set)" : JSON.stringify(value);
 }
 
+const REGULAR_BROWSER_HINT =
+  "If it keeps failing, this browser may block sandboxed frames (some embedded and strict-privacy browsers do): open the URL that `superbee ui` printed in a regular browser.";
+
 const VIEW_LOAD_FAILURE =
-  "The shell could not confirm that this View finished loading. Its local HTML request may have been blocked, or its launch may have changed or expired. Reopen the View, and check browser content-blocking or privacy settings if the problem continues.";
+  `The shell could not confirm that this View finished loading in its sandboxed frame. Reopen the View. ${REGULAR_BROWSER_HINT}`;
+
+function viewDeliveryFailure(error: unknown): string {
+  if (error instanceof ViewBytesMismatchError) return `The View's HTML did not match the version that was approved. Reopen the View from the launcher.`;
+  const detail = error instanceof Error ? error.message : String(error);
+  return `The shell could not fetch this View's HTML (${detail}). Reopen the View. ${REGULAR_BROWSER_HINT}`;
+}
+
+function newDeliveryId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Every message to the View goes through its host frame, which forwards it to the child. */
+function postToView(frame: HTMLIFrameElement | null | undefined, message: Record<string, unknown>): void {
+  frame?.contentWindow?.postMessage(viewHostDeliver(message), "*");
+}
 
 export function PageFrame({ pageId }: { pageId: string }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -81,7 +119,9 @@ export function PageFrame({ pageId }: { pageId: string }) {
   const loadSeqRef = useRef(0);
   const launchIdRef = useRef<string | null>(null);
   const pendingActionRef = useRef<PendingAction | null>(null);
-  const [src, setSrc] = useState<string | null>(null);
+  const deliveryRef = useRef<FrameDelivery | null>(null);
+  // The current host frame's React key (generation + launch id); null while nothing is mounted.
+  const [frameKey, setFrameKey] = useState<string | null>(null);
   const [frameSeq, setFrameSeq] = useState<number | null>(null);
   const [entryKey, setEntryKey] = useState<string | null>(null);
   const [title, setTitle] = useState<string>(pageId);
@@ -163,9 +203,10 @@ export function PageFrame({ pageId }: { pageId: string }) {
     frameReadySeqRef.current = null;
     subscribedRef.current = false;
     launchIdRef.current = null;
+    deliveryRef.current = null;
     setPendingLaunch(null);
     setAuthorizationBusy(false);
-    setSrc(null);
+    setFrameKey(null);
     setFrameSeq(null);
     setEntryKey(null);
     setError(reason);
@@ -235,13 +276,40 @@ export function PageFrame({ pageId }: { pageId: string }) {
 
   useEffect(() => {
     clearFrameLoadTimer();
-    if (src === null || frameSeq === null || frameReadySeqRef.current === frameSeq) return;
+    if (frameKey === null || frameSeq === null || frameReadySeqRef.current === frameSeq) return;
     frameLoadTimerRef.current = window.setTimeout(
       () => failFrameLoad(frameSeq),
       VIEW_LOAD_DEADLINE_MS,
     );
     return clearFrameLoadTimer;
-  }, [clearFrameLoadTimer, failFrameLoad, frameSeq, src]);
+  }, [clearFrameLoadTimer, failFrameLoad, frameSeq, frameKey]);
+
+  /**
+   * Fetch the launch's bytes once, prove them against its content version, and only then mount a
+   * host frame for them. Any failure is terminal for this generation and names its cause.
+   */
+  const mountLaunch = useCallback(async (minted: MintedView, seq: number) => {
+    let view: Awaited<ReturnType<typeof fetchViewBytes>>;
+    try {
+      view = await fetchViewBytes(minted.url, minted.authorization.contentVersion);
+    } catch (e) {
+      if (seq === loadSeqRef.current) revoke(viewDeliveryFailure(e));
+      return;
+    }
+    if (seq !== loadSeqRef.current || launchIdRef.current !== minted.launchId) return;
+    deliveryRef.current = {
+      seq,
+      launchId: minted.launchId,
+      deliveryId: newDeliveryId(),
+      bytes: view.bytes,
+      contentType: view.contentType,
+      title: minted.title,
+      sent: false,
+    };
+    setFrameSeq(seq);
+    // One host document per generation: a fresh element always asks for its bytes again.
+    setFrameKey(`${seq}:${minted.launchId}`);
+  }, [revoke]);
 
   /**
    * Resolve registry doc -> entry key -> nonce URL and (re)load the frame. The ONE path for
@@ -262,6 +330,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
     // through the mint round-trip (P1).
     subscribedRef.current = false;
     launchIdRef.current = null;
+    deliveryRef.current = null;
     setPendingLaunch(null);
     setAuthorizationBusy(false);
 
@@ -276,17 +345,16 @@ export function PageFrame({ pageId }: { pageId: string }) {
       if (minted.authorization.required && !minted.authorization.authorized) {
         setPendingLaunch(minted);
         setFrameSeq(null);
-        setSrc(null);
+        setFrameKey(null);
       } else {
-        setFrameSeq(seq);
-        setSrc(minted.url);
+        await mountLaunch(minted, seq);
       }
     } catch (e) {
       if (seq !== loadSeqRef.current) return;
       subscribedRef.current = false;
       launchIdRef.current = null;
       setPendingLaunch(null);
-      setSrc(null);
+      setFrameKey(null);
       setFrameSeq(null);
       setEntryKey(null);
       // A mint 403 is not necessarily a dead session: `/__page/mint` also rejects malformed
@@ -297,7 +365,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
       // with the WRONG advice over what's really just a dismissable per-view error.
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [clearFrameReadiness, discardPendingAction, pageId]);
+  }, [clearFrameReadiness, discardPendingAction, mountLaunch, pageId]);
 
   // Resolve registry doc -> entry key -> nonce URL on mount / page switch. Launch revocation
   // happens unconditionally at the TOP of loadPage itself (every re-resolution path
@@ -305,7 +373,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
   // newly-selected page never shows the outgoing page's stale content while it resolves.
   useEffect(() => {
     subscribedRef.current = false;
-    setSrc(null);
+    setFrameKey(null);
     setFrameSeq(null);
     setError(null);
     void loadPage();
@@ -323,6 +391,8 @@ export function PageFrame({ pageId }: { pageId: string }) {
       const frame = iframeRef.current;
       if (!frame || ev.source !== frame.contentWindow) return;
       if (activeFrameSeqRef.current !== loadSeqRef.current) return;
+      const hostEvent = parseViewHostEvent(ev.data);
+      if (hostEvent === null) return;
       // Capture the shell epoch at receipt. The server independently resolves the launch,
       // authorization, and current bytes before AND after the request; this browser fence ensures
       // a slow reply is not delivered into a later iframe generation. The SAME
@@ -330,16 +400,39 @@ export function PageFrame({ pageId }: { pageId: string }) {
       // flight, so without this check a reply computed for the OLD page could cross the revoke
       // boundary (P1).
       const seq = loadSeqRef.current;
-      // Any message from the exact current opaque-origin frame proves its own script loaded.
-      // Scriptless access:none Views use the separate host delivery receipt below.
+      if (hostEvent.type === "ready") {
+        // The host generation asks for its bytes exactly once; they were verified before mount.
+        const delivery = deliveryRef.current;
+        if (!delivery || delivery.seq !== seq || delivery.sent || !frame.contentWindow) return;
+        delivery.sent = true;
+        const bytes = delivery.bytes;
+        delivery.bytes = new ArrayBuffer(0);
+        frame.contentWindow.postMessage(
+          viewHostLoad(delivery.deliveryId, bytes, delivery.contentType, delivery.title),
+          "*",
+          [bytes],
+        );
+        return;
+      }
+      if (hostEvent.type === "loaded") {
+        // The child frame loaded this generation's blob. Scriptless access:none Views prove
+        // readiness only this way, confirmed by the host's receipt of the shell's byte fetch.
+        const delivery = deliveryRef.current;
+        if (!delivery || delivery.seq !== seq || hostEvent.deliveryId !== delivery.deliveryId) return;
+        if (frameReadySeqRef.current === seq) return;
+        probeFrameDelivery(frame, seq, delivery.launchId);
+        return;
+      }
+      const data = hostEvent.message;
+      // Any View message relayed by the exact current host proves the View's own script loaded.
       markFrameReady(seq);
 
-      const actionMessage = parseActionBridgeMessage(ev.data);
+      const actionMessage = parseActionBridgeMessage(data);
       if (actionMessage !== null) {
         const post = (reply: Record<string, unknown>): void => {
-          if (seq === loadSeqRef.current && frame.contentWindow) frame.contentWindow.postMessage(reply, "*");
+          if (seq === loadSeqRef.current) postToView(frame, reply);
         };
-        const raw = ev.data as { id?: unknown; requestId?: unknown };
+        const raw = data as { id?: unknown; requestId?: unknown };
         if (!actionMessage.ok) {
           if (typeof raw.requestId === "string") {
             post(actionReply(raw.requestId, { status: "rejected", action: "document.set-field", message: actionMessage.message }));
@@ -405,7 +498,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
 
       const launchId = launchIdRef.current;
       if (!launchId) return;
-      void sendViewBridge(launchId, ev.data).then(
+      void sendViewBridge(launchId, data).then(
         (outcome) => {
           if (seq !== loadSeqRef.current) return; // frame reloaded/revoked since receipt — drop it
           if (outcome.openPageId) {
@@ -423,22 +516,19 @@ export function PageFrame({ pageId }: { pageId: string }) {
             return;
           }
           if (outcome.subscribed) subscribedRef.current = true;
-          if (outcome.reply && frame.contentWindow) frame.contentWindow.postMessage(outcome.reply, "*");
+          if (outcome.reply) postToView(frame, outcome.reply);
         },
         (error) => {
-          const raw = ev.data as { id?: unknown };
+          const raw = data as { id?: unknown } | null;
           if (seq === loadSeqRef.current && typeof raw?.id === "string") {
-            frame.contentWindow?.postMessage(
-              actionError(raw.id, error instanceof Error ? error.message : String(error)),
-              "*",
-            );
+            postToView(frame, actionError(raw.id, error instanceof Error ? error.message : String(error)));
           }
         },
       );
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [clearFrameReadiness, discardPendingAction, markFrameReady, pageId]);
+  }, [clearFrameReadiness, discardPendingAction, markFrameReady, pageId, probeFrameDelivery]);
 
   // Live: push doc changes to the subscribed page; REVOKE when this page's registry doc is
   // removed (P1 — an open frame must not keep reading through the bridge after its page is
@@ -464,10 +554,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
               subscribedRef.current &&
               iframeRef.current?.contentWindow
             ) {
-              iframeRef.current.contentWindow.postMessage(
-                changeMessage(e.docs.changed, e.docs.removed),
-                "*",
-              );
+              postToView(iframeRef.current, changeMessage(e.docs.changed, e.docs.removed));
             }
           },
           () => {
@@ -512,15 +599,15 @@ export function PageFrame({ pageId }: { pageId: string }) {
       pendingActionRef.current = null;
       setConfirmation(null);
       setActionBusy(false);
-      iframeRef.current?.contentWindow?.postMessage(actionReply(pending.requestId, result), "*");
+      postToView(iframeRef.current, actionReply(pending.requestId, result));
     } catch (error) {
       if (seq !== loadSeqRef.current || pendingActionRef.current !== pending) return;
       pendingActionRef.current = null;
       setConfirmation(null);
       setActionBusy(false);
-      iframeRef.current?.contentWindow?.postMessage(
+      postToView(
+        iframeRef.current,
         actionReply(pending.requestId, { status: "failed", action: "document.set-field", message: error instanceof Error ? error.message : String(error) }),
-        "*",
       );
     }
   }, [actionArmed]);
@@ -541,16 +628,16 @@ export function PageFrame({ pageId }: { pageId: string }) {
       if (!status.authorized) throw new Error("the View was not authorized");
       setPendingLaunch(null);
       setAuthorizationBusy(false);
-      setFrameSeq(seq);
-      setSrc(pending.url);
     } catch (error) {
       if (seq !== loadSeqRef.current || pendingLaunch !== pending) return;
       setPendingLaunch(null);
       setAuthorizationBusy(false);
       launchIdRef.current = null;
       setError(error instanceof Error ? error.message : String(error));
+      return;
     }
-  }, [authorizationArmed, authorizationBusy, pendingLaunch]);
+    await mountLaunch(pending, seq);
+  }, [authorizationArmed, authorizationBusy, mountLaunch, pendingLaunch]);
 
   return (
     <div className="page-frame">
@@ -568,23 +655,19 @@ export function PageFrame({ pageId }: { pageId: string }) {
         <p className="view-status view-status-error">Could not open page: {error}</p>
       ) : pendingLaunch ? (
         <p className="view-status">Waiting for local View approval…</p>
-      ) : src ? (
-        // allow-scripts ONLY — no allow-same-origin: opaque origin, no data-API reach. And NO
-        // referrer: the shell's URL (which carried ?token= before the scrub) must never reach the
-        // untrusted page as document.referrer (tasks/ui-pages-spike P1).
+      ) : frameKey ? (
+        // The View host. It has no sandbox ATTRIBUTE on purpose: some browsers refuse every
+        // request from an attribute-sandboxed frame, including its own navigation. Its response
+        // policy (`sandbox allow-scripts`, no allow-same-origin) makes it an opaque origin, and
+        // the View itself runs in the host's attribute-sandboxed blob child. NO referrer: the
+        // shell's URL (which carried ?token= before the scrub) must never reach the host or View.
         <iframe
-          key={src}
+          key={frameKey}
           ref={ownFrame}
           className="page-frame-iframe"
-          sandbox="allow-scripts"
           referrerPolicy="no-referrer"
-          src={src}
+          src={VIEW_HOST_PATH}
           title={title}
-          onLoad={(event) => {
-            const launchId = launchIdRef.current;
-            if (frameSeq === null || !launchId || frameReadySeqRef.current === frameSeq) return;
-            probeFrameDelivery(event.currentTarget, frameSeq, launchId);
-          }}
           onError={() => {
             if (frameSeq !== null) failFrameLoad(frameSeq, true);
           }}

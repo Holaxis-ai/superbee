@@ -405,12 +405,19 @@ View treats any unlisted code like `RUNTIME`.
 ## Trust model
 
 Approving a View means approving its exact bytes and declared `access`; changed bytes or expanded
-access ask again. The View never receives a credential, session token or data endpoint. The OSS
-web shell serves entry bytes at `/__page/<nonce>` for a short-lived nonce and forwards every bridge
-request to `POST /__ui/views/bridge` with an opaque launch id; the launch is re-resolved before and
-after each request, and a change between the two answers `REVOKED`. Hosts with their own approval
-model (slot pins, artifact digests) enforce the same rule at their seam. A transport receipt the
-shell may collect after frame load proves delivery, not authorization.
+access ask again. The View never receives a credential, session token or data endpoint. In the OSS
+web shell the View frame makes no network request of its own: the shell fetches the entry bytes
+once from `/__page/<nonce>` (short-lived, single-use, session-gated), checks their SHA-256 against
+the approved content version, and posts them to a static View host (`/__ui/view-host`), which
+mounts them as a `blob:` URL in a `sandbox="allow-scripts"` child and revokes the URL after load.
+The host is opaque by its own response policy (`sandbox allow-scripts` plus the View CSP, which the
+blob child inherits) and relays enveloped messages only between the shell and that child, so
+`window.parent` for the View is the host. This keeps Views working in browsers that refuse every
+request from an opaque-origin frame. The shell forwards every bridge request to
+`POST /__ui/views/bridge` with an opaque launch id; the launch is re-resolved before and after each
+request, and a change between the two answers `REVOKED`. Hosts with their own approval model (slot
+pins, artifact digests) enforce the same rule at their seam. The delivery receipt the shell checks
+after the child loads proves the server handed the launch's bytes to the shell, not authorization.
 
 Startup messages are optional: a View may stay quiet until human input and never has to send
 `hello` to prove it loaded.

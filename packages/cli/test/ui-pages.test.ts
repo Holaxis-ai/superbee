@@ -14,7 +14,7 @@ import { connect } from "node:net";
 
 import { deleteDoc, initBundle, readDoc, writeBlob, writeDoc, RemoteBackend, type Bundle } from "@superbee/core";
 import { createRouter, serve, type ServerHandle } from "@superbee/server";
-import { bootUiServer, escapeHtml, pageError, type UiServerHandle } from "../src/ui/server.js";
+import { bootUiServer, type UiServerHandle } from "../src/ui/server.js";
 import {
   PageLaunchRegistry,
   SseHub,
@@ -22,9 +22,11 @@ import {
   isEmptyChange,
   pageCsp,
   snapshotBundle,
+  viewChildCsp,
   startWatcher,
   type Snapshot,
 } from "@superbee/ui-server";
+import { VIEW_HOST_PATH } from "@superbee/view-runtime/view-host";
 import { writeUiUrlFile, clearUiUrlFile, uiUrlFilePath } from "../src/ui/url-file.js";
 
 // ── PageLaunchRegistry ───────────────────────────────────────────────────────
@@ -85,24 +87,14 @@ test("PageLaunchRegistry: the byte nonce expires quickly without breaking an alr
   assert.equal(reg.resolveLaunch(launch.launchId)?.entryKey, "pages/a.html", "the loaded frame can still propose until its longer launch TTL");
 });
 
-test("XSS pin: pageError HTML-escapes its message — script tags, quotes, and ampersands arrive as text, never markup", async () => {
-  assert.equal(escapeHtml(`<script>alert("x")</script> & 'quotes'`), "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;quotes&#39;");
-
-  // Exercise the TEMPLATE exactly as served: a hostile message (the shape a remote's error text
-  // could take on the serve path) must reach the iframe escaped, with the page content-type + CSP.
-  const hostile = `remote said <script>alert("x")</script> & 'gotcha'`;
-  const res = pageError(502, hostile);
-  assert.equal(res.status, 502);
-  assert.match(res.headers.get("content-type") ?? "", /text\/html/);
-  assert.match(res.headers.get("content-security-policy") ?? "", /connect-src 'none'/);
-  const body = await res.text();
-  assert.ok(!body.includes("<script>"), "raw markup from the message must never reach the page body");
-  assert.ok(
-    body.includes("remote said &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;gotcha&#39;"),
-    "the human message stays legible in escaped form",
-  );
-  // The template's own chrome is intact around the escaped payload.
-  assert.match(body, /<title>page unavailable<\/title>/);
+test("PageLaunchRegistry: consumeNonce hands a launch's bytes out once, without ending the launch", () => {
+  const reg = new PageLaunchRegistry();
+  const launch = reg.mint(launchInput("pages/a.html"));
+  assert.equal(reg.consumeNonce(launch.nonce)?.launchId, launch.launchId);
+  assert.equal(reg.consumeNonce(launch.nonce), null, "a delivered nonce cannot fetch the bytes again");
+  assert.equal(reg.resolveNonce(launch.nonce), null);
+  assert.equal(reg.resolveLaunch(launch.launchId)?.entryKey, "pages/a.html", "the delivered View keeps its launch");
+  assert.equal(reg.consumeNonce("never-minted"), null);
 });
 
 test("pageCsp: locks the page to inert bytes — connect-src 'none', frame-ancestors 'self'", () => {
@@ -110,6 +102,7 @@ test("pageCsp: locks the page to inert bytes — connect-src 'none', frame-ances
   assert.match(csp, /connect-src 'none'/);
   assert.match(csp, /default-src 'none'/);
   assert.match(csp, /frame-ancestors 'self'/);
+  assert.equal(viewChildCsp(), csp.replace("; frame-ancestors 'self'", ""), "the blob child gets the same policy minus the one directive a local document cannot use");
 });
 
 // ── ui-url re-entry file (B6) ─────────────────────────────────────────────────
@@ -307,6 +300,8 @@ test("startWatcher: a --remote upstream whose BOOT snapshot never responds REJEC
 // ── privilege split (end-to-end over a real listener) ─────────────────────────
 
 const SECRET = "test-session-secret-pages-spike";
+/** How the shell fetches a launch's bytes: its session cookie plus the X-Requested-With belt. */
+const SHELL_FETCH = { headers: { cookie: `aslite_ui_session=${SECRET}`, "x-requested-with": "superbee-ui" } };
 
 async function bootPagesServer(): Promise<{ handle: UiServerHandle; origin: string; dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-ui-pages-"));
@@ -409,11 +404,17 @@ test("REQUIRED: a page nonce is rejected by every data route (it is not the sess
       403,
     );
 
-    // But the nonce DOES serve its one page's bytes, WITHOUT any session cookie (opaque-origin iframe).
-    const page = await fetch(`${origin}${url}`);
+    // The nonce alone serves nothing: no session, or a plain navigation without
+    // X-Requested-With, is refused — and neither attempt spends the nonce.
+    assert.equal((await fetch(`${origin}${url}`, { headers: { "x-requested-with": "superbee-ui" } })).status, 403);
+    assert.equal((await fetch(`${origin}${url}`, { headers: { cookie: `aslite_ui_session=${SECRET}` } })).status, 403);
+
+    // The shell (session + X-Requested-With) fetches its one page's bytes exactly once.
+    const page = await fetch(`${origin}${url}`, SHELL_FETCH);
     assert.equal(page.status, 200);
     assert.match(page.headers.get("content-type") ?? "", /text\/html/);
-    assert.match(page.headers.get("content-security-policy") ?? "", /connect-src 'none'/);
+    assert.match(page.headers.get("content-security-policy") ?? "", /^sandbox allow-scripts; .*connect-src 'none'/);
+    assert.equal((await fetch(`${origin}${url}`, SHELL_FETCH)).status, 403, "the nonce is single-use");
   } finally {
     await cleanup();
   }
@@ -423,7 +424,7 @@ test("the session token does NOT open the page route to arbitrary keys (it is no
   const { origin, cleanup } = await bootPagesServer();
   try {
     // Presenting the session secret where a nonce is expected resolves to no key -> 403.
-    assert.equal((await fetch(`${origin}/__page/${SECRET}`)).status, 403);
+    assert.equal((await fetch(`${origin}/__page/${SECRET}`, SHELL_FETCH)).status, 403);
   } finally {
     await cleanup();
   }
@@ -511,8 +512,8 @@ test("LOCATION-SURVIVAL + REJECTION PIN: a View mints from either folder generat
     assert.equal(mint.status, 200, "a registered View entry must mint");
     const { url } = (await mint.json()) as { url: string };
 
-    // ...and its bytes serve through the nonce route with the page CSP (renders in the iframe).
-    const page = await fetch(`${origin}${url}`);
+    // ...and the shell fetches its bytes through the nonce route, still under the View CSP.
+    const page = await fetch(`${origin}${url}`, SHELL_FETCH);
     assert.equal(page.status, 200);
     assert.match(page.headers.get("content-type") ?? "", /text\/html/);
     assert.match(page.headers.get("content-security-policy") ?? "", /connect-src 'none'/);
@@ -572,7 +573,6 @@ test("ONE-PREDICATE: serve-time re-verification rides the same predicate — an 
     });
     assert.equal(mint.status, 200);
     const { url } = (await mint.json()) as { url: string };
-    assert.equal((await fetch(`${origin}${url}`)).status, 200);
 
     // Remove the VALID registration and re-declare the same entry from an INVALID one (a type
     // View doc outside the registry namespace). The launcher rejects that doc; serve-time
@@ -580,7 +580,7 @@ test("ONE-PREDICATE: serve-time re-verification rides the same predicate — an 
     const bundle: Bundle = { root: dir };
     await deleteDoc(bundle, "pages-registry/test");
     await writeDoc(bundle, { id: "notes/test-slot", frontmatter: { type: "View", title: "Squatter", entry: "pages/test.html" }, body: "" });
-    assert.equal((await fetch(`${origin}${url}`)).status, 403, "an invalid registration must not resurrect a revoked entry");
+    assert.equal((await fetch(`${origin}${url}`, SHELL_FETCH)).status, 403, "an invalid registration must not resurrect a revoked entry");
   } finally {
     await cleanup();
   }
@@ -849,6 +849,30 @@ test("B1: the shell asset CSP explicitly confines framing to same-origin (frame-
   }
 });
 
+test("the View host is session-gated, opaque by its own response policy, and passes the View policy on to its blob child", async () => {
+  const { origin, cleanup } = await bootPagesServer();
+  try {
+    assert.equal((await fetch(`${origin}${VIEW_HOST_PATH}`)).status, 403, "no session, no host");
+    const host = await fetch(`${origin}${VIEW_HOST_PATH}`, { headers: { cookie: `aslite_ui_session=${SECRET}` } });
+    assert.equal(host.status, 200);
+    assert.match(host.headers.get("content-type") ?? "", /^text\/html/);
+    const csp = host.headers.get("content-security-policy") ?? "";
+    // The response — not a frame attribute — makes the host an opaque origin, so a browser that
+    // refuses requests from attribute-sandboxed frames still loads it.
+    assert.match(csp, /^sandbox allow-scripts;/);
+    assert.doesNotMatch(csp, /allow-same-origin/);
+    for (const directive of pageCsp().split("; ")) assert.ok(csp.includes(directive), `host policy keeps ${directive}`);
+    assert.match(csp, /frame-src blob:/);
+    const body = await host.text();
+    assert.ok(!body.includes(SECRET), "the host carries no session material");
+    assert.ok(body.includes(JSON.stringify(viewChildCsp())), "the child frame is pinned to the View policy");
+    assert.match(body, /setAttribute\("sandbox", "allow-scripts"\)/);
+    assert.match(body, /URL\.revokeObjectURL/);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("P1: deleting a page's registry doc revokes its LIVE nonce — page bytes stop serving immediately, not at TTL expiry", async () => {
   const { origin, dir, cleanup } = await bootPagesServer();
   try {
@@ -860,12 +884,9 @@ test("P1: deleting a page's registry doc revokes its LIVE nonce — page bytes s
     assert.equal(mint.status, 200);
     const { url } = (await mint.json()) as { url: string };
 
-    // The nonce serves while the registry doc lives...
-    assert.equal((await fetch(`${origin}${url}`)).status, 200);
-
-    // ...and stops the moment the doc is gone, with the nonce still inside its TTL.
+    // The unspent nonce stops serving the moment the doc is gone, still inside its TTL.
     await deleteDoc({ root: dir }, "pages-registry/test");
-    const revoked = await fetch(`${origin}${url}`);
+    const revoked = await fetch(`${origin}${url}`, SHELL_FETCH);
     assert.equal(revoked.status, 403);
   } finally {
     await cleanup();
@@ -883,10 +904,7 @@ test("P1: retargeting a page's registry doc revokes its OLD nonce — the old ke
     assert.equal(mint.status, 200);
     const { url: oldUrl } = (await mint.json()) as { url: string };
 
-    // The old nonce serves while its key is still the registry doc's entry...
-    assert.equal((await fetch(`${origin}${oldUrl}`)).status, 200);
-
-    // ...retarget the SAME registry doc to a DIFFERENT blob (mirrors a `doc update` that changes
+    // Retarget the SAME registry doc to a DIFFERENT blob (mirrors a `doc update` that changes
     // `entry`, not a delete) — the mechanism is identical to the delete-revocation path above
     // (`registeredPageEntries` re-derives the live set at SERVE time), so this closes the
     // coverage gap between "doc removed" and "doc's entry moved out from under a live nonce".
@@ -897,7 +915,7 @@ test("P1: retargeting a page's registry doc revokes its OLD nonce — the old ke
     // The OLD nonce now 403s — its key is no longer any Page's entry — even though it's still
     // inside its TTL and the registry doc it was minted from still exists (just retargeted, not
     // deleted).
-    const revoked = await fetch(`${origin}${oldUrl}`);
+    const revoked = await fetch(`${origin}${oldUrl}`, SHELL_FETCH);
     assert.equal(revoked.status, 403);
 
     // The new entry key mints and serves fine — retargeting isn't a one-way break.
@@ -908,7 +926,7 @@ test("P1: retargeting a page's registry doc revokes its OLD nonce — the old ke
     });
     assert.equal(remint.status, 200);
     const { url: newUrl } = (await remint.json()) as { url: string };
-    assert.equal((await fetch(`${origin}${newUrl}`)).status, 200);
+    assert.equal((await fetch(`${origin}${newUrl}`, SHELL_FETCH)).status, 200);
   } finally {
     await cleanup();
   }
@@ -928,9 +946,13 @@ test("P1: shell assets AND page bytes both send Referrer-Policy: no-referrer (th
     });
     assert.equal(mint.status, 200);
     const { url } = (await mint.json()) as { url: string };
-    const page = await fetch(`${origin}${url}`);
+    const page = await fetch(`${origin}${url}`, SHELL_FETCH);
     assert.equal(page.status, 200);
     assert.equal(page.headers.get("referrer-policy"), "no-referrer");
+
+    const host = await fetch(`${origin}${VIEW_HOST_PATH}`, { headers: { cookie: `aslite_ui_session=${SECRET}` } });
+    assert.equal(host.status, 200);
+    assert.equal(host.headers.get("referrer-policy"), "no-referrer");
   } finally {
     await cleanup();
   }

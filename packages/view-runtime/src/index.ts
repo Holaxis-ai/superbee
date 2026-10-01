@@ -241,6 +241,13 @@ export class PageLaunchRegistry {
     return launch;
   }
 
+  /** Resolve a nonce and retire it: a launch's HTML bytes are handed out at most once. */
+  consumeNonce(nonce: string): PageLaunch | null {
+    const launch = this.resolveNonce(nonce);
+    this.byNonce.delete(nonce);
+    return launch;
+  }
+
   revoke(launchId: string): void {
     const launch = this.byLaunch.get(launchId);
     if (!launch) return;

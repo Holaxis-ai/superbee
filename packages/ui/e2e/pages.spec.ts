@@ -1,6 +1,8 @@
 /**
  * Pages-spike browser E2E (tasks/ui-pages-spike): the FULL experience the HTTP-level tests can't
- * prove — the launcher listing, the sandboxed opaque-origin iframe, the postMessage bridge
+ * prove — the launcher listing, the shell-fetched View delivered through the View host into a
+ * sandboxed opaque-origin blob frame (also under a browser that refuses opaque-frame requests),
+ * the postMessage bridge
  * round-trip delivering data INTO the page, the structural network lock (a page's own fetch is
  * CSP-blocked), and a live update moving a card without a reload. Drives the REAL built CLI over a
  * fresh bundle seeded with the actual `examples/views` seed views (`harness.ts`) — Pulse/Roadmap
@@ -12,7 +14,7 @@ import { test, expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { deleteDoc, writeBlob, writeDoc } from "@superbee/core";
-import { approveViewIfPrompted, bootUiOverPagesBundle, bootUiServerInProcess, openRegisteredView, seedPagesBundle, CLI_DIST } from "./harness.js";
+import { approveViewIfPrompted, blockOpaqueOriginFrameRequests, bootUiOverPagesBundle, bootUiServerInProcess, openRegisteredView, seedPagesBundle, viewContentFrame, viewFrame, CLI_DIST } from "./harness.js";
 import { VIEW_LOAD_DEADLINE_MS } from "../src/views/viewReadiness.js";
 
 const VIEW_LOAD_FAILURE_ASSERTION_TIMEOUT_MS = VIEW_LOAD_DEADLINE_MS + 4_000;
@@ -62,13 +64,20 @@ test("a directly opened data Page completes its startup bridge queries before if
 
     const iframe = page.locator("iframe.page-frame-iframe");
     await expect(iframe).toBeVisible();
-    // Opaque origin: allow-scripts and NOTHING else (no allow-same-origin).
-    expect(await iframe.getAttribute("sandbox")).toBe("allow-scripts");
+    // The View child: allow-scripts and NOTHING else (no allow-same-origin), loaded from a blob.
+    const viewElement = page.frameLocator("iframe.page-frame-iframe").locator("iframe");
+    expect(await viewElement.getAttribute("sandbox")).toBe("allow-scripts");
+    const view = await viewContentFrame(page);
+    expect(view.url()).toMatch(/^blob:/);
+    expect(await view.evaluate(() => self.origin)).toBe("null");
+    // The host is opaque too — by its response policy, not by a frame attribute.
+    expect(await iframe.getAttribute("sandbox")).toBeNull();
+    expect(await (await (await iframe.elementHandle())!.contentFrame())!.evaluate(() => self.origin)).toBe("null");
 
     // These requests are posted by Roadmap's inline startup script, before the parent sees the
     // iframe load event. The bridge round-tripped BOTH the Roadmap Item query and `edges` request:
     // item renders, and its rollup counts the two seeded (non-terminal) tasks it `contains`.
-    const frame = page.frameLocator("iframe.page-frame-iframe");
+    const frame = viewFrame(page);
     await expect(frame.locator(".item .title", { hasText: "Spike work" })).toBeVisible();
     await expect(frame.locator(".roll .count")).toHaveText("0/2 done");
   } finally {
@@ -76,7 +85,37 @@ test("a directly opened data Page completes its startup bridge queries before if
   }
 });
 
-test("a browser-blocked View request becomes an actionable shell error instead of a blank frame", async ({ page }) => {
+test("a View loads in a browser that refuses every request an opaque-origin frame makes", async ({ page }) => {
+  const ui = await bootUiOverPagesBundle(TASKS);
+  try {
+    const refused = await blockOpaqueOriginFrameRequests(page);
+    const pageByteRequests: Array<{ url: string; fromShell: boolean }> = [];
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (!pathname.startsWith("/__page/") || pathname === "/__page/mint") return;
+      pageByteRequests.push({ url: request.url(), fromShell: request.frame() === page.mainFrame() });
+    });
+    await page.goto(ui.url);
+    await openRegisteredView(page, "views-registry/roadmap");
+
+    // The bridge round trip works end to end: data reached the View.
+    const frame = viewFrame(page);
+    await expect(frame.locator(".item .title", { hasText: "Spike work" })).toBeVisible();
+    await expect(frame.locator(".roll .count")).toHaveText("0/2 done");
+    await page.waitForTimeout(VIEW_LOAD_SURVIVAL_WAIT_MS);
+    await expect(page.locator(".view-status-error")).toHaveCount(0);
+
+    // The View's HTML came from exactly one shell fetch; no frame asked for it, and nothing the
+    // emulated browser would refuse was ever requested.
+    expect(pageByteRequests).toHaveLength(1);
+    expect(pageByteRequests[0]!.fromShell).toBe(true);
+    expect(refused).toEqual([]);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test("a blocked View byte fetch becomes an actionable shell error that points at a regular browser", async ({ page }) => {
   const ui = await bootUiOverPagesBundle(TASKS);
   try {
     await page.route("**/__page/**", async (route) => {
@@ -88,26 +127,18 @@ test("a browser-blocked View request becomes an actionable shell error instead o
     await openRegisteredView(page, "views-registry/roadmap");
 
     const failure = page.locator(".view-status-error");
-    await expect(failure).toContainText("could not confirm that this View finished loading", {
-      timeout: VIEW_LOAD_FAILURE_ASSERTION_TIMEOUT_MS,
-    });
-    await expect(failure).toContainText("local HTML request may have been blocked");
-    await expect(failure).toContainText("launch may have changed or expired");
-    await expect(failure).toContainText("content-blocking or privacy settings");
+    await expect(failure).toContainText("could not fetch this View's HTML");
+    await expect(failure).toContainText("open the URL that `superbee ui` printed in a regular browser");
     await expect(page.locator("iframe.page-frame-iframe")).toHaveCount(0);
   } finally {
     await ui.cleanup();
   }
 });
 
-test("a browser-blocked access:none View request also becomes an actionable shell error", async ({ page }) => {
+test("a blocked View host becomes an actionable shell error instead of a blank frame", async ({ page }) => {
   const ui = await bootUiOverPagesBundle([]);
   try {
-    await page.route("**/__page/**", async (route) => {
-      const pathname = new URL(route.request().url()).pathname;
-      if (pathname === "/__page/mint") await route.continue();
-      else await route.abort("blockedbyclient");
-    });
+    await page.route("**/__ui/view-host", (route) => route.abort("blockedbyclient"));
     await page.goto(ui.url);
     await openRegisteredView(page, "pages-registry/about");
 
@@ -115,8 +146,8 @@ test("a browser-blocked access:none View request also becomes an actionable shel
     await expect(failure).toContainText("could not confirm that this View finished loading", {
       timeout: VIEW_LOAD_FAILURE_ASSERTION_TIMEOUT_MS,
     });
-    await expect(failure).toContainText("local HTML request may have been blocked");
-    await expect(failure).toContainText("launch may have changed or expired");
+    await expect(failure).toContainText("may block sandboxed frames");
+    await expect(failure).toContainText("open the URL that `superbee ui` printed in a regular browser");
     await expect(page.locator("iframe.page-frame-iframe")).toHaveCount(0);
   } finally {
     await ui.cleanup();
@@ -131,7 +162,7 @@ test("a static access:none View with script-src none remains rendered after the 
     await page.goto(ui.url);
     await openRegisteredView(page, "pages-registry/about");
 
-    const frame = page.frameLocator("iframe.page-frame-iframe");
+    const frame = viewFrame(page);
     await expect(frame.getByRole("heading", { name: "CSP-static View" })).toBeVisible();
     await page.waitForTimeout(VIEW_LOAD_SURVIVAL_WAIT_MS);
     await expect(frame.getByRole("heading", { name: "CSP-static View" })).toBeVisible();
@@ -167,7 +198,7 @@ test("a quiet data-bearing View remains rendered after the readiness deadline", 
     await page.goto(ui.url);
     await openRegisteredView(page, "views-registry/quiet-data");
 
-    const frame = page.frameLocator("iframe.page-frame-iframe");
+    const frame = viewFrame(page);
     await expect(frame.getByRole("heading", { name: "Quiet data View" })).toBeVisible();
     await page.waitForTimeout(VIEW_LOAD_SURVIVAL_WAIT_MS);
     await expect(frame.getByRole("heading", { name: "Quiet data View" })).toBeVisible();
@@ -182,7 +213,7 @@ test("an access:none View is denied every data-bearing v0 bridge request through
   try {
     await page.goto(ui.url);
     await openRegisteredView(page, "pages-registry/about");
-    const about = page.frameLocator("iframe.page-frame-iframe");
+    const about = viewFrame(page);
     await expect(about.getByRole("heading", { name: "About this bundle" })).toBeVisible();
 
     const replies = await about.locator("body").evaluate(async () => {
@@ -237,7 +268,7 @@ test("a bundle-propose View can change one governed scalar only after trusted-sh
   try {
     await page.goto(ui.url);
     await openRegisteredView(page, "views-registry/trusted-action");
-    const frame = page.frameLocator("iframe.page-frame-iframe");
+    const frame = viewFrame(page);
     await expect(frame.locator("#status")).toHaveText("todo");
 
     // Simulate a hostile View timing the proposal so the user's next click lands on the shell's
@@ -283,7 +314,7 @@ test("About navigation opens Roadmap and its startup bridge queries under the ta
   try {
     await page.goto(ui.url);
     await openRegisteredView(page, "pages-registry/about");
-    const about = page.frameLocator("iframe.page-frame-iframe");
+    const about = viewFrame(page);
     await expect(about.getByRole("heading", { name: "About this bundle" })).toBeVisible();
 
     // Malformed/nonexistent targets stay put; the shell never constructs a route from them.
@@ -297,15 +328,15 @@ test("About navigation opens Roadmap and its startup bridge queries under the ta
     await about.getByRole("button", { name: "Open the Roadmap view" }).click();
     await approveViewIfPrompted(page);
     await expect(page).toHaveURL(/view=page&id=views-registry%2Froadmap/);
-    const roadmap = page.frameLocator("iframe.page-frame-iframe");
+    const roadmap = viewFrame(page);
     // Target capability is resolved independently: Roadmap receives bundle data although About
     // was access: none.
     await expect(roadmap.locator(".item .title", { hasText: "Spike work" })).toBeVisible();
 
     await page.goBack();
-    await expect(page.frameLocator("iframe.page-frame-iframe").getByRole("heading", { name: "About this bundle" })).toBeVisible();
+    await expect(viewFrame(page).getByRole("heading", { name: "About this bundle" })).toBeVisible();
     await page.goForward();
-    await expect(page.frameLocator("iframe.page-frame-iframe").locator(".item .title", { hasText: "Spike work" })).toBeVisible();
+    await expect(viewFrame(page).locator(".item .title", { hasText: "Spike work" })).toBeVisible();
   } finally {
     await ui.cleanup();
   }
@@ -316,9 +347,7 @@ test("the sandboxed page is structurally blocked from reaching the data API (con
   try {
     await page.goto(ui.url);
     await openRegisteredView(page, "views-registry/roadmap");
-    const handle = await page.waitForSelector("iframe.page-frame-iframe");
-    const frame = await handle.contentFrame();
-    if (!frame) throw new Error("iframe had no content frame");
+    const frame = await viewContentFrame(page);
     // From inside the page's own context, any network call is CSP-blocked -> fetch rejects.
     const outcome = await frame.evaluate(async () => {
       try {
@@ -334,12 +363,13 @@ test("the sandboxed page is structurally blocked from reaching the data API (con
   }
 });
 
-test("the sandboxed page cannot navigate its frame (or the top) to an external origin (frame-src 'self' + sandbox)", async ({ page }) => {
+test("the sandboxed page cannot navigate its frame (or the top) to an external origin (host frame-src blob: + sandbox)", async ({ page }) => {
   const ui = await bootUiOverPagesBundle(TASKS);
   try {
-    // frame-src 'self' reports a CSP violation to the shell's console when the framed page tries to
-    // navigate anywhere off-origin — capture it as the definitive proof the escape was BLOCKED (the
-    // request never leaves; the frame lands on a chrome-error page, NOT example.com).
+    // The View host's frame-src admits only blob: children, so it reports a CSP violation when the
+    // framed page tries to navigate anywhere off-origin — capture it as the definitive proof the
+    // escape was BLOCKED (the request never leaves; the frame lands on a chrome-error page, NOT
+    // example.com).
     const frameSrcViolations: string[] = [];
     page.on("console", (m) => {
       if (/frame-src/i.test(m.text())) frameSrcViolations.push(m.text());
@@ -348,13 +378,15 @@ test("the sandboxed page cannot navigate its frame (or the top) to an external o
     await page.goto(ui.url);
     const topOriginBefore = new URL(page.url()).origin;
     await openRegisteredView(page, "views-registry/roadmap");
-    const handle = await page.waitForSelector("iframe.page-frame-iframe");
-    const frame = await handle.contentFrame();
-    if (!frame) throw new Error("iframe had no content frame");
-    await expect(page.frameLocator("iframe.page-frame-iframe").locator(".item").first()).toBeVisible();
+    const frame = await viewContentFrame(page);
+    await expect(viewFrame(page).locator(".item").first()).toBeVisible();
+    const exampleRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("example.com")) exampleRequests.push(request.url());
+    });
 
     // From inside the page, attempt to escape to an external origin — self-nav (blocked by the
-    // shell's frame-src 'self') and top-nav (blocked by the sandbox: no allow-top-navigation).
+    // host's frame-src blob:) and top-nav (blocked by the sandbox: no allow-top-navigation).
     await frame.evaluate(() => {
       try {
         (window.top as Window).location.href = "https://example.com/";
@@ -369,12 +401,11 @@ test("the sandboxed page cannot navigate its frame (or the top) to an external o
     });
     await page.waitForTimeout(800);
 
-    // The frame's off-origin navigation was blocked by frame-src 'self' (request never sent)...
-    expect(frameSrcViolations.join("\n")).toMatch(/frame-src 'self'/);
-    // ...the frame never reached example.com...
-    const frameHandleNow = await page.$("iframe.page-frame-iframe");
-    const frameNow = frameHandleNow ? await frameHandleNow.contentFrame() : null;
-    expect(frameNow?.url() ?? "").not.toContain("example.com");
+    // The frame's off-origin navigation was blocked by the host's frame-src (request never sent)...
+    expect(frameSrcViolations.join("\n")).toMatch(/frame-src/);
+    expect(exampleRequests).toEqual([]);
+    // ...no frame ever reached example.com...
+    expect(page.frames().map((f) => f.url()).join("\n")).not.toContain("example.com");
     // ...and the top page never left the ui origin (sandbox blocked top-nav).
     expect(new URL(page.url()).origin).toBe(topOriginBefore);
   } finally {
@@ -395,7 +426,7 @@ test("P1: an SSE outage self-heals — a change made while the stream was down a
   try {
     await page.goto(`http://127.0.0.1:${first.port}/?token=${secret}`);
     await openRegisteredView(page, "views-registry/roadmap");
-    const frame = page.frameLocator("iframe.page-frame-iframe");
+    const frame = viewFrame(page);
     const spike = frame.locator(".item", { hasText: "Spike work" });
     // Neither seeded task is done/canceled yet.
     await expect(spike.locator(".roll .count")).toHaveText("0/2 done");
@@ -519,7 +550,7 @@ test("P1: deleting an open page's registry doc revokes the frame — the iframe 
       response.request().postDataJSON()?.registryId === "views-registry/roadmap",
     );
     await openRegisteredView(page, "views-registry/roadmap");
-    const frame = page.frameLocator("iframe.page-frame-iframe");
+    const frame = viewFrame(page);
     await expect(frame.locator(".item .title", { hasText: "Spike work" })).toBeVisible();
     const { launchId } = await (await minted).json();
     const readThroughLaunch = async () => {
@@ -550,7 +581,7 @@ test("a status change streams live into the open page (roadmap rollup updates, n
     await page.goto(ui.url);
     await openRegisteredView(page, "views-registry/roadmap");
 
-    const frame = page.frameLocator("iframe.page-frame-iframe");
+    const frame = viewFrame(page);
     const spike = frame.locator(".item", { hasText: "Spike work" });
     // Neither seeded task (alpha: todo, beta: blocked) is done/canceled yet.
     await expect(spike.locator(".roll .count")).toHaveText("0/2 done");

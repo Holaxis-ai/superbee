@@ -1,7 +1,8 @@
 /**
  * PageFrame launch-revocation race tests. A reload must revoke the old launch synchronously, and
  * an asynchronous server-bridge reply must remain fenced to the iframe generation that requested
- * it. These component tests control both gaps with real iframe/postMessage boundaries.
+ * it. These component tests control both gaps with real iframe/postMessage boundaries. The iframe
+ * the shell owns is the View host; tests play the host's side of the envelope protocol.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
@@ -9,7 +10,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { PageFrame } from "./PageFrame.js";
 import { VIEW_DELIVERY_RETRY_MS, VIEW_LOAD_DEADLINE_MS } from "./viewReadiness.js";
 import { getDoc, listAllHeads } from "../api/client.js";
-import { authorizeViewLaunch, cancelTrustedAction, commitTrustedAction, mintPageNonce, prepareTrustedAction, resolvePageTarget, verifyViewDelivery } from "../api/pages.js";
+import { authorizeViewLaunch, cancelTrustedAction, commitTrustedAction, fetchViewBytes, mintPageNonce, prepareTrustedAction, resolvePageTarget, verifyViewDelivery, ViewBytesMismatchError } from "../api/pages.js";
+import { VIEW_HOST_PATH, VIEW_HOST_PROTOCOL } from "@superbee/view-runtime/view-host";
 import { subscribeToChanges } from "../pages/pageEvents.js";
 import { __resetInterceptorForTests } from "../query/interceptor.js";
 
@@ -40,6 +42,11 @@ vi.mock("../api/pages.js", () => ({
       authorization: { required: capability !== "none", authorized: true, contentVersion: "bv1" },
     };
   }),
+  fetchViewBytes: vi.fn(async () => ({
+    bytes: new TextEncoder().encode("<!doctype html><p>view</p>").buffer,
+    contentType: "text/html; charset=utf-8",
+  })),
+  ViewBytesMismatchError: class ViewBytesMismatchError extends Error {},
   authorizeViewLaunch: vi.fn(async () => ({ required: true, authorized: true })),
   verifyViewLaunch: vi.fn(async () => ({ required: true, authorized: true })),
   verifyViewDelivery: vi.fn(async () => ({ delivered: true })),
@@ -101,6 +108,35 @@ async function flush() {
   await new Promise((r) => setTimeout(r, 0));
 }
 
+/** Drain the mint -> byte fetch -> mount chain under fake timers. */
+async function microtasks(turns = 8) {
+  for (let turn = 0; turn < turns; turn++) await Promise.resolve();
+}
+
+/** A View message as its host relays it to the shell. */
+function viewMessage(message: unknown) {
+  return { protocol: VIEW_HOST_PROTOCOL, type: "view-message", message };
+}
+
+function sendFromHost(iframe: HTMLIFrameElement, data: unknown) {
+  window.dispatchEvent(new MessageEvent("message", { source: iframe.contentWindow, data }));
+}
+
+/** Play the host: ask for this generation's bytes, then report that the child frame loaded them. */
+async function completeHostLoad(iframe: HTMLIFrameElement) {
+  const spy = vi.spyOn(iframe.contentWindow!, "postMessage");
+  act(() => sendFromHost(iframe, { protocol: VIEW_HOST_PROTOCOL, type: "ready" }));
+  const load = spy.mock.calls
+    .map(([message]) => message as { type?: string; deliveryId?: string })
+    .find((message) => message.type === "load");
+  spy.mockRestore();
+  expect(load?.deliveryId).toEqual(expect.any(String));
+  await act(async () => {
+    sendFromHost(iframe, { protocol: VIEW_HOST_PROTOCOL, type: "loaded", deliveryId: load!.deliveryId });
+    await Promise.resolve();
+  });
+}
+
 describe("PageFrame: bridge revocation race (P1)", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -136,16 +172,14 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
 
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
     expect(iframe).toBeTruthy();
     act(() => window.dispatchEvent(new MessageEvent("message", {
       source: iframe.contentWindow,
-      data: { bridge: "v0", id: "hello-1", type: "hello" },
+      data: viewMessage({ bridge: "v0", id: "hello-1", type: "hello" }),
     })));
     act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
 
@@ -164,21 +198,16 @@ describe("PageFrame: bridge revocation race (P1)", () => {
       vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
       await act(async () => {
         root.render(<PageFrame pageId="pages-registry/p" />);
-        await Promise.resolve();
-        await Promise.resolve();
-        await Promise.resolve();
+        await microtasks();
       });
 
       const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
       expect(iframe).toBeTruthy();
       act(() => window.dispatchEvent(new MessageEvent("message", {
         source: iframe.contentWindow,
-        data: { bridge: "v0", id: "hello-before-load", type: "hello" },
+        data: viewMessage({ bridge: "v0", id: "hello-before-load", type: "hello" }),
       })));
-      await act(async () => {
-        iframe.dispatchEvent(new Event("load"));
-        await Promise.resolve();
-      });
+      await completeHostLoad(iframe);
       act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
 
       expect(verifyViewDelivery).not.toHaveBeenCalled();
@@ -195,9 +224,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
     expect(iframe).toBeTruthy();
@@ -205,12 +232,9 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     // Generation 1 proves itself by message, then fires load: no probe.
     act(() => window.dispatchEvent(new MessageEvent("message", {
       source: iframe.contentWindow,
-      data: { bridge: "v0", id: "hello-gen1", type: "hello" },
+      data: viewMessage({ bridge: "v0", id: "hello-gen1", type: "hello" }),
     })));
-    await act(async () => {
-      iframe.dispatchEvent(new Event("load"));
-      await Promise.resolve();
-    });
+    await completeHostLoad(iframe);
     expect(verifyViewDelivery).not.toHaveBeenCalled();
 
     // A blob hot reload of this page's own HTML runs loadPage() -> generation 2 on the same DOM
@@ -225,18 +249,15 @@ describe("PageFrame: bridge revocation race (P1)", () => {
         docs: { changed: [], removed: [] },
         blobs: { changed: [{ key: "pages/p.html" }], removed: [] },
       } as never);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     const reloaded = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
     expect(reloaded).toBeTruthy();
     expect(vi.mocked(getDoc).mock.calls.length).toBeGreaterThan(mintsBefore); // the generation really bumped
 
-    // Generation 2 is QUIET (no message): its load event MUST start a receipt probe.
+    // Generation 2 is QUIET (no View message): its host's loaded report MUST start a receipt probe.
+    await completeHostLoad(reloaded);
     await act(async () => {
-      reloaded.dispatchEvent(new Event("load"));
-      await Promise.resolve();
       await Promise.resolve();
     });
     expect(verifyViewDelivery).toHaveBeenCalledTimes(1);
@@ -253,15 +274,13 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
 
     act(() => window.dispatchEvent(new MessageEvent("message", {
       source: window,
-      data: { bridge: "v0", id: "wrong-source", type: "hello" },
+      data: viewMessage({ bridge: "v0", id: "wrong-source", type: "hello" }),
     })));
 
     act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
@@ -278,17 +297,12 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "none" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
     expect(iframe).toBeTruthy();
 
-    await act(async () => {
-      iframe.dispatchEvent(new Event("load"));
-      await Promise.resolve();
-    });
+    await completeHostLoad(iframe);
     await act(async () => {
       vi.advanceTimersByTime(VIEW_DELIVERY_RETRY_MS);
       await Promise.resolve();
@@ -306,17 +320,12 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "none" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
     expect(iframe).toBeTruthy();
 
-    await act(async () => {
-      iframe.dispatchEvent(new Event("load"));
-      await Promise.resolve();
-    });
+    await completeHostLoad(iframe);
     act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
 
     expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
@@ -329,16 +338,11 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
 
-    await act(async () => {
-      iframe.dispatchEvent(new Event("load"));
-      await Promise.resolve();
-    });
+    await completeHostLoad(iframe);
     act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
 
     expect(verifyViewDelivery).toHaveBeenCalledWith("launch-pages-registry/p");
@@ -357,14 +361,12 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
 
+    await completeHostLoad(iframe);
     await act(async () => {
-      iframe.dispatchEvent(new Event("load"));
       await Promise.resolve();
       vi.advanceTimersByTime(VIEW_DELIVERY_RETRY_MS);
       await Promise.resolve();
@@ -381,28 +383,20 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValue(pageDoc({ access: "bundle-read" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     const oldFrame = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
-    await act(async () => {
-      oldFrame.dispatchEvent(new Event("load"));
-      await Promise.resolve();
-    });
+    await completeHostLoad(oldFrame);
 
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/replacement" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     act(() => vi.advanceTimersByTime(VIEW_DELIVERY_RETRY_MS));
 
     expect(verifyViewDelivery).toHaveBeenCalledTimes(1);
-    expect(container.querySelector("iframe")?.getAttribute("src")).toBe(
-      "/__page/nonce-pages-registry/replacement",
-    );
+    expect(container.querySelector("iframe")?.getAttribute("src")).toBe(VIEW_HOST_PATH);
+    expect(fetchViewBytes).toHaveBeenLastCalledWith("/__page/nonce-pages-registry/replacement", "bv1");
   });
 
   it("does not let a stale delivery result settle a replacement generation", async () => {
@@ -412,18 +406,14 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValue(pageDoc({ access: "bundle-read" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     const oldFrame = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
-    act(() => oldFrame.dispatchEvent(new Event("load")));
+    await completeHostLoad(oldFrame);
 
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/replacement" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
       oldDelivery.resolve({ delivered: true });
       await Promise.resolve();
     });
@@ -439,13 +429,11 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await microtasks();
     });
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    await completeHostLoad(iframe);
     await act(async () => {
-      iframe.dispatchEvent(new Event("load"));
       await Promise.resolve();
       root.unmount();
     });
@@ -489,7 +477,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     // real. Post-fix, `loadPage` pre-revokes synchronously before its first `await`.
     act(() => {
       window.dispatchEvent(
-        new MessageEvent("message", { data: { bridge: "v0", id: "q1", type: "query", params: {} }, source: contentWindow }),
+        new MessageEvent("message", { data: viewMessage({ bridge: "v0", id: "q1", type: "query", params: {} }), source: contentWindow }),
       );
     });
     await flush();
@@ -497,7 +485,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     // The old document is no longer active as soon as reload advances the generation: no dep and
     // no diagnostic reply cross the boundary.
     expect(listAllHeads).not.toHaveBeenCalled();
-    expect(postSpy.mock.calls.find(([msg]) => (msg as { id?: string }).id === "q1")).toBeUndefined();
+    expect(postSpy.mock.calls.find(([msg]) => (msg as { message?: { id?: string } }).message?.id === "q1")).toBeUndefined();
 
     // Let the reload settle so no promise is left dangling.
     pending.resolve(pageDoc({ access: "none" }));
@@ -523,7 +511,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     vi.mocked(listAllHeads).mockImplementationOnce(() => pendingQuery.promise);
     act(() => {
       window.dispatchEvent(
-        new MessageEvent("message", { data: { bridge: "v0", id: "q1", type: "query", params: {} }, source: firstContentWindow }),
+        new MessageEvent("message", { data: viewMessage({ bridge: "v0", id: "q1", type: "query", params: {} }), source: firstContentWindow }),
       );
     });
     await flush();
@@ -560,7 +548,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
 
     // The stale reply must never reach the (new, downgraded) frame — post-fix, the epoch check
     // drops it before `postMessage` is ever called for it.
-    const leaked = postSpy.mock.calls.find(([msg]) => (msg as { id?: string; type?: string }).id === "q1");
+    const leaked = postSpy.mock.calls.find(([msg]) => (msg as { message?: { id?: string } }).message?.id === "q1");
     expect(leaked).toBeUndefined();
   });
 });
@@ -596,7 +584,7 @@ describe("PageFrame: registered Page navigation", () => {
   it("allows a bridge:none Page to navigate through the shell", async () => {
     const source = await mount({ access: "none" });
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: { bridge: "v0", type: "open-page", pageId: "pages-registry/target" } }));
+      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
       await flush();
     });
     expect(resolvePageTarget).toHaveBeenCalledWith("pages-registry/target");
@@ -637,7 +625,8 @@ describe("PageFrame: registered Page navigation", () => {
       await flush();
     });
     expect(authorizeViewLaunch).toHaveBeenCalledWith("launch-new-active-view");
-    expect(container.querySelector("iframe")?.getAttribute("src")).toBe("/__page/new-active-view");
+    expect(fetchViewBytes).toHaveBeenCalledWith("/__page/new-active-view", "sha256:new-html");
+    expect(container.querySelector("iframe")?.getAttribute("src")).toBe(VIEW_HOST_PATH);
   });
 
   it("navigates at most once per source generation when resolutions race", async () => {
@@ -647,8 +636,8 @@ describe("PageFrame: registered Page navigation", () => {
     vi.mocked(resolvePageTarget).mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
     const push = vi.spyOn(window.history, "pushState");
     act(() => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: { bridge: "v0", type: "open-page", pageId: "pages-registry/first" } }));
-      window.dispatchEvent(new MessageEvent("message", { source, data: { bridge: "v0", type: "open-page", pageId: "pages-registry/second" } }));
+      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/first" }) }));
+      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/second" }) }));
     });
     await act(async () => { second.resolve(true); await flush(); });
     await act(async () => { first.resolve(true); await flush(); });
@@ -660,11 +649,11 @@ describe("PageFrame: registered Page navigation", () => {
     const source = await mount();
     const push = vi.spyOn(window.history, "pushState");
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: { bridge: "v0", type: "open-page", pageId: "pages-registry/first" } }));
+      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/first" }) }));
       await flush();
     });
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: { bridge: "v0", type: "open-page", pageId: "pages-registry/second" } }));
+      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/second" }) }));
       await flush();
     });
     expect(resolvePageTarget).toHaveBeenCalledTimes(1);
@@ -676,7 +665,7 @@ describe("PageFrame: registered Page navigation", () => {
     const source = await mount();
     const push = vi.spyOn(window.history, "pushState");
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: { bridge: "v0", type: "open-page", pageId: "pages-registry/p" } }));
+      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/p" }) }));
       await flush();
     });
     expect(push).not.toHaveBeenCalled();
@@ -712,12 +701,12 @@ describe("PageFrame: registered Page navigation", () => {
     await act(async () => {
       window.dispatchEvent(new MessageEvent("message", {
         source,
-        data: {
+        data: viewMessage({
           bridge: "v1",
           type: "action.propose",
           requestId: "action-1",
           action: { kind: "document.set-field", docId: "tasks/alpha", field: "status", value: "done", expectedVersion: "dv1" },
-        },
+        }),
       }));
       await flush();
     });
@@ -745,7 +734,11 @@ describe("PageFrame: registered Page navigation", () => {
     expect(commitTrustedAction).toHaveBeenCalledWith("shell-secret-token");
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(postSpy.mock.calls).toContainEqual([
-      expect.objectContaining({ bridge: "v1", requestId: "action-1", type: "action.result", result: expect.objectContaining({ status: "committed", version: "dv2" }) }),
+      {
+        protocol: VIEW_HOST_PROTOCOL,
+        type: "deliver",
+        message: expect.objectContaining({ bridge: "v1", requestId: "action-1", type: "action.result", result: expect.objectContaining({ status: "committed", version: "dv2" }) }),
+      },
       "*",
     ]);
   });
@@ -755,7 +748,7 @@ describe("PageFrame: registered Page navigation", () => {
     const pending = deferred<boolean>();
     vi.mocked(resolvePageTarget).mockImplementationOnce(() => pending.promise);
     const push = vi.spyOn(window.history, "pushState");
-    act(() => window.dispatchEvent(new MessageEvent("message", { source, data: { bridge: "v0", type: "open-page", pageId: "pages-registry/target" } })));
+    act(() => window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) })));
     const reload = deferred<ReturnType<typeof pageDoc>>();
     vi.mocked(getDoc).mockImplementationOnce(() => reload.promise);
     act(() => vi.mocked(subscribeToChanges).mock.calls[0]![0]({ docs: { changed: [{ id: "pages-registry/p", version: "v2" }], removed: [] }, blobs: { changed: [], removed: [] } }));
@@ -773,7 +766,7 @@ describe("PageFrame: registered Page navigation", () => {
     act(() => vi.mocked(subscribeToChanges).mock.calls[0]![0]({ docs: { changed: [{ id: "pages-registry/p", version: "v2" }], removed: [] }, blobs: { changed: [], removed: [] } }));
 
     await act(async () => {
-      window.dispatchEvent(new MessageEvent("message", { source, data: { bridge: "v0", type: "open-page", pageId: "pages-registry/target" } }));
+      window.dispatchEvent(new MessageEvent("message", { source, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
       await flush();
     });
     expect(resolvePageTarget).not.toHaveBeenCalled();
@@ -792,5 +785,132 @@ describe("PageFrame: registered Page navigation", () => {
     expect(mintPageNonce).toHaveBeenCalledWith("pages-registry/p");
     expect(container.querySelector("iframe")).toBeNull();
     expect(container.textContent).toContain("not a usable registered Page");
+  });
+});
+
+describe("PageFrame: shell-fetched View delivery", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetInterceptorForTests();
+    window.history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  async function mount(overrides: Record<string, unknown> = {}) {
+    vi.mocked(getDoc).mockResolvedValue(pageDoc(overrides));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await flush();
+    });
+    return container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement | null;
+  }
+
+  it("fetches the launch's bytes against its approved version and mounts an unsandboxed-by-attribute host, never the nonce URL", async () => {
+    const iframe = await mount();
+    expect(fetchViewBytes).toHaveBeenCalledTimes(1);
+    expect(fetchViewBytes).toHaveBeenCalledWith("/__page/nonce-pages-registry/p", "bv1");
+    expect(iframe?.getAttribute("src")).toBe(VIEW_HOST_PATH);
+    expect(iframe?.hasAttribute("sandbox")).toBe(false);
+    expect(iframe?.getAttribute("referrerpolicy")).toBe("no-referrer");
+  });
+
+  it("hands the verified bytes to the current host exactly once, by transfer, with a per-delivery id", async () => {
+    const iframe = (await mount())!;
+    const host = iframe.contentWindow!;
+    const postSpy = vi.spyOn(host, "postMessage");
+    act(() => sendFromHost(iframe, { protocol: VIEW_HOST_PROTOCOL, type: "ready" }));
+    act(() => sendFromHost(iframe, { protocol: VIEW_HOST_PROTOCOL, type: "ready" }));
+    const loads = postSpy.mock.calls.filter(([message]) => (message as { type?: string }).type === "load");
+    expect(loads).toHaveLength(1);
+    const [message, targetOrigin, transfer] = loads[0] as unknown as [unknown, string, unknown[]];
+    const load = message as { bytes: ArrayBuffer; contentType: string; deliveryId: string; title: string };
+    expect(targetOrigin).toBe("*");
+    expect(transfer).toEqual([load.bytes]);
+    expect(new TextDecoder().decode(load.bytes)).toBe("<!doctype html><p>view</p>");
+    expect(load.contentType).toBe("text/html; charset=utf-8");
+    expect(load.deliveryId).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.stringify(postSpy.mock.calls)).not.toContain("launch-pages-registry/p");
+  });
+
+  it("ignores a ready or View message from any window but the current host", async () => {
+    const iframe = (await mount())!;
+    const postSpy = vi.spyOn(iframe.contentWindow!, "postMessage");
+    act(() => window.dispatchEvent(new MessageEvent("message", { source: window, data: { protocol: VIEW_HOST_PROTOCOL, type: "ready" } })));
+    expect(postSpy).not.toHaveBeenCalled();
+    // A View that posts straight to the top window (bypassing its host) is not the host.
+    const stray = document.createElement("iframe");
+    document.body.appendChild(stray);
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { source: stray.contentWindow, data: viewMessage({ bridge: "v0", type: "open-page", pageId: "pages-registry/target" }) }));
+      await flush();
+    });
+    stray.remove();
+    expect(resolvePageTarget).not.toHaveBeenCalled();
+    // Unenveloped data from the host itself is not a View message either.
+    await act(async () => {
+      sendFromHost(iframe, { bridge: "v0", type: "open-page", pageId: "pages-registry/target" });
+      await flush();
+    });
+    expect(resolvePageTarget).not.toHaveBeenCalled();
+  });
+
+  it("does not probe delivery for a loaded report carrying another delivery id", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getDoc).mockResolvedValue(pageDoc({ access: "none" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await microtasks();
+    });
+    const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    act(() => sendFromHost(iframe, { protocol: VIEW_HOST_PROTOCOL, type: "ready" }));
+    await act(async () => {
+      sendFromHost(iframe, { protocol: VIEW_HOST_PROTOCOL, type: "loaded", deliveryId: "forged" });
+      await Promise.resolve();
+    });
+    expect(verifyViewDelivery).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(container.textContent).toContain("could not confirm that this View finished loading");
+    expect(container.textContent).toContain("open the URL that `superbee ui` printed in a regular browser");
+  });
+
+  it("refuses bytes that do not match the approved version and never mounts a host", async () => {
+    vi.mocked(fetchViewBytes).mockRejectedValueOnce(new ViewBytesMismatchError());
+    const iframe = await mount();
+    expect(iframe).toBeNull();
+    expect(container.textContent).toContain("did not match the version that was approved");
+  });
+
+  it("names a failed byte fetch and points at a regular browser", async () => {
+    vi.mocked(fetchViewBytes).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const iframe = await mount();
+    expect(iframe).toBeNull();
+    expect(container.textContent).toContain("could not fetch this View's HTML (Failed to fetch)");
+    expect(container.textContent).toContain("open the URL that `superbee ui` printed in a regular browser");
+  });
+
+  it("fetches an unapproved data-bearing View's bytes only after approval", async () => {
+    vi.mocked(mintPageNonce).mockResolvedValueOnce({
+      url: "/__page/pending",
+      launchId: "launch-pending",
+      title: "P",
+      entry: "pages/p.html",
+      capability: "bundle-read",
+      authorization: { required: true, authorized: false, contentVersion: "sha256:pending" },
+    });
+    await mount();
+    expect(fetchViewBytes).not.toHaveBeenCalled();
+    expect(container.querySelector("iframe")).toBeNull();
   });
 });
