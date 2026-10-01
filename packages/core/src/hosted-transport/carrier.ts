@@ -249,6 +249,8 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
   const owned = new Set(["x-superbee-write-request", bindingHeader.toLowerCase(), RECREATE_HEADER.toLowerCase(), VIA_HEADER.toLowerCase(), ACCEPT_DELETES_HEADER.toLowerCase()]);
 
   async function answer(path: string, body: { readonly type: string; readonly content: string | Uint8Array }, signal: AbortSignal, extra: Record<string, string>, maximum: number): Promise<HostedAnswer> {
+    // An answer is always read within a bound: an unset or nonsensical maximum refuses before sending.
+    if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new HostedCarrierError("denied");
     const deadline = AbortSignal.timeout(deadlineMs);
     const response = await send(path, body, signal, extra, deadline);
     let read: unknown;

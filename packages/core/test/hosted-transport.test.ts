@@ -801,6 +801,11 @@ test("fetch carrier: credential, identity and binding headers ride every request
   const before = seen.length;
   await assert.rejects(signedOut.json("/sync/v1/heads", {}, new AbortController().signal, { maximum: 1024 }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
   await assert.rejects(carrier.json("/sync/v1/replace", {}, new AbortController().signal, { maximum: 1024, writeRequest: "not-a-uuid" }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
+  // An unbounded answer is never read: a missing or nonsensical maximum refuses before sending.
+  for (const maximum of [Number.NaN, 0, Number.POSITIVE_INFINITY, undefined as unknown as number]) {
+    await assert.rejects(carrier.json("/sync/v1/replace", {}, new AbortController().signal, { maximum }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
+    await assert.rejects(carrier.bytes!("/sync/v1/bundle-create-blob", new Uint8Array([1]), new AbortController().signal, { maximum }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
+  }
   assert.equal(seen.length, before);
 });
 
