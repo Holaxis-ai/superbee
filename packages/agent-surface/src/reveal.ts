@@ -76,8 +76,16 @@ export function createRevealPolicy<Input, Target>(options: {
           lifetime, hostSignal, options.screenSignal(), disposal.signal,
           ...(resolved.signal ? [resolved.signal] : []),
         ]);
-        const navigated = await surface.navigate(target, { signal: navigationSignal, admitCommit: invocation?.admitCommit });
-        // Successful navigation intentionally changes the old screen revision.
+        let committed = false;
+        const guardCommit = invocation?.admitCommit;
+        const admitCommit = guardCommit && (() => {
+          if (navigationSignal.aborted || !guardCommit()) return false;
+          committed = true;
+          return true;
+        });
+        const navigated = await surface.navigate(target, { signal: navigationSignal, admitCommit });
+        // Cancellation after an admitted, successful commit cannot undo the side effect.
+        if (navigated && committed) return { ok: true, navigated: true, target };
         if (disposed || lifetime.aborted || hostSignal.aborted) return refusal("unavailable");
         return navigated ? { ok: true, navigated: true, target } : refusal("unavailable");
       }

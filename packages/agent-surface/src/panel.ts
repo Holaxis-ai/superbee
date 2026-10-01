@@ -185,10 +185,10 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
       catch { outcome = signal.aborted ? "cancelled" : "unsupported"; }
     }
     const after = options.context();
-    const deliberate = committed && outcome === "navigated" && !stopped && !turnSignal.aborted &&
+    const deliberate = committed && outcome === "navigated" && !stopped &&
       generation === epoch && request.sessionId === session?.sessionId &&
       after?.surfaceId === request.surfaceId && after.bindingId === request.bindingId;
-    if ((!current() && !deliberate) || (outcome === "navigated" && turnSignal.aborted)) return;
+    if ((!current() && !deliberate) || (outcome === "navigated" && turnSignal.aborted && !committed)) return;
     if (signal.aborted && outcome !== "navigated") outcome = "cancelled";
     try { await transport.receipt(request, outcome, lifetime.signal); }
     catch { if (current()) status.textContent = "The navigation result could not be recorded."; }

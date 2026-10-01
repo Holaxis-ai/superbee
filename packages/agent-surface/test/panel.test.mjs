@@ -55,6 +55,29 @@ function offeredNavigation(t) {
   } });
   return { ...f, visible: () => visible, consume: () => consume() };
 }
+function composedFollow(t, { beforeCommit, afterCommit } = {}) {
+  const lifetime = new AbortController(), screen = new AbortController();
+  let commits = 0, result;
+  const policy = createRevealPolicy({ lifetime: lifetime.signal, screenSignal: () => screen.signal,
+    resolve: target => ({ target }), surface: { mode: () => "follow", async navigate(_, navigation) {
+      if (beforeCommit) await beforeCommit;
+      if (navigation.signal.aborted || !navigation.admitCommit()) return false;
+      commits++;
+      // No await separates admission from the route commit's context replacement.
+      f.context({ ...selection(), contextRevision: "mount:2" });
+      const refreshed = f.panel.refresh();
+      await refreshed;
+      if (afterCommit) await afterCommit;
+      return true;
+    } },
+  });
+  t.after(() => policy.dispose());
+  const f = fixture(t, {}, { async navigate(request, signal, admitCommit) {
+    result = await policy.execute(request.target, { signal, admitCommit });
+    return result.ok && result.navigated ? "navigated" : "cancelled";
+  } });
+  return { ...f, commits: () => commits, result: () => result };
+}
 function answer(f, start = 1) {
   f.event(start, "turn.accepted", { turnId: "turn-one", text: "What is the launch date?" });
   f.event(start + 1, "agent.text", { turnId: "turn-one", text: "October 5 <script>untrusted()</script>" });
@@ -205,19 +228,48 @@ for (const next of [selection("bundle-two"), { ...selection(), contextRevision: 
   });
 }
 
-test("an admitted intentional SPA commit records its original navigation receipt after the revision changes", async t => {
-  const f = fixture(t, {}, { async navigate(_, signal, admitCommit) {
-    assert.equal(signal.aborted, false);
-    assert.equal(admitCommit(), true);
-    f.context({ ...selection(), contextRevision: "mount:2" });
-    await f.panel.refresh();
-    assert.equal(signal.aborted, true);
-    return "navigated";
-  } });
-  f.panel.show(); await tick();
-  f.event(1, "navigation.requested", navigationRequest()); await tick();
+test("composed panel -> reveal -> admitted SPA commit preserves success across its own context refresh", async t => {
+  const f = composedFollow(t); f.panel.show(); await tick();
+  f.event(1, "turn.accepted", { turnId: "turn-one", text: "Question" });
+  f.event(2, "navigation.requested", navigationRequest()); await tick();
+  assert.equal(f.commits(), 1);
+  assert.equal(f.result().navigated, true);
   assert.deepEqual(f.receipts, [["nav-one", "navigated"]]);
 });
+
+for (const transition of ["Stop", "binding replacement", "disposal"]) {
+  test(`composed ${transition} before commit prevents navigation`, async t => {
+    const pending = deferred();
+    const f = composedFollow(t, { beforeCommit: pending.promise });
+    f.panel.show(); await tick();
+    f.event(1, "turn.accepted", { turnId: "turn-one", text: "Question" });
+    f.event(2, "navigation.requested", navigationRequest());
+    if (transition === "Stop") f.root.querySelector(".assistant-actions button:nth-child(2)").click();
+    else if (transition === "binding replacement") { f.context(selection("bundle-two")); await f.panel.refresh(); }
+    else f.panel.dispose();
+    pending.resolve(); await tick();
+    assert.equal(f.commits(), 0);
+    assert.equal(f.result().ok, false);
+    assert.deepEqual(f.receipts, transition === "Stop" ? [["nav-one", "cancelled"]] : []);
+  });
+}
+
+for (const transition of ["Stop", "binding replacement", "disposal"]) {
+  test(`composed ${transition} after commit preserves truthful success without reviving replaced panels`, async t => {
+    const pending = deferred();
+    const f = composedFollow(t, { afterCommit: pending.promise });
+    f.panel.show(); await tick();
+    f.event(1, "turn.accepted", { turnId: "turn-one", text: "Question" });
+    f.event(2, "navigation.requested", navigationRequest()); await tick();
+    assert.equal(f.commits(), 1);
+    if (transition === "Stop") f.root.querySelector(".assistant-actions button:nth-child(2)").click();
+    else if (transition === "binding replacement") { f.context(selection("bundle-two")); await f.panel.refresh(); }
+    else f.panel.dispose();
+    pending.resolve(); await tick();
+    assert.equal(f.result().navigated, true);
+    assert.deepEqual(f.receipts, transition === "Stop" ? [["nav-one", "navigated"]] : []);
+  });
+}
 
 test("a cancel response from a replaced source cannot change the current conversation status", async t => {
   const pending = deferred();

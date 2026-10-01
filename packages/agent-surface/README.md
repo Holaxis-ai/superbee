@@ -49,7 +49,9 @@ accepting an offer.
 For SPA navigation, call `admitCommit()` immediately before the normal router's commit, after
 awaited admission/draft guards; refuse if it returns false. Return `navigated` only for actual success.
 The panel then records the initiating origin's receipt across that deliberate revision change,
-provided the session, binding and turn remain live. Unmarked late results from unrelated context
+provided the session and binding remain live. Cancellation before the host commits prevents
+navigation; cancellation after an admitted, successful commit cannot undo it and does not relabel
+that effect as failure. Replaced or disposed panels do not issue the old origin's receipt. Unmarked late results from unrelated context
 changes cannot issue receipts. A reveal adapter can pass the callback in `execute(input,
 {signal, admitCommit})`; follow hosts receive it in `RevealNavigationContext` and invoke it at the
 actual route commit. Suggestions and off never need to invoke it.
