@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { mountAssistantPanel } from "../dist/index.js";
+import { mountAssistantPanel, createRevealPolicy } from "../dist/index.js";
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const selection = (bindingId = "bundle-one") => ({ bundleId: bindingId, bindingId, surfaceId: "tab-one", contextRevision: "mount:1", label: "Saved workspace documents" });
-function fixture(t, overrides = {}) {
+function fixture(t, overrides = {}, options = {}) {
   const dom = new JSDOM("<aside></aside>");
   t.after(() => dom.window.close());
   const root = dom.window.document.querySelector("aside");
@@ -26,7 +26,7 @@ function fixture(t, overrides = {}) {
     ...overrides,
   };
   const panel = mountAssistantPanel({ root, context: () => context, transport,
-    async navigate(request) { navigations.push(request); return "navigated"; },
+    navigate: options.navigate ?? (async request => { navigations.push(request); return "navigated"; }),
     async openSource() {},
   });
   t.after(() => panel.dispose());
@@ -38,6 +38,22 @@ function fixture(t, overrides = {}) {
       root.querySelector("form").dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
     },
   };
+}
+const navigationRequest = () => ({ sessionId: "bundle-one", turnId: "turn-one", toolCallId: "nav-one", surfaceId: "tab-one", bindingId: "bundle-one", contextRevision: "mount:1", target: { kind: "document", bundleId: "bundle-one", documentId: "notes/launch" }, expiresAt: Date.now() + 60000 });
+function offeredNavigation(t) {
+  const lifetime = new AbortController(), screen = new AbortController();
+  let visible = false, consume;
+  const policy = createRevealPolicy({ lifetime: lifetime.signal, screenSignal: () => screen.signal,
+    resolve: target => ({ target }), surface: { mode: () => "suggestions", offer(_, consumed) {
+      visible = true; consume = consumed; return { dispose() { visible = false; } };
+    } },
+  });
+  t.after(() => policy.dispose());
+  const f = fixture(t, {}, { async navigate(request, signal, admitCommit) {
+    const result = await policy.execute(request.target, { signal, admitCommit });
+    return result.ok ? "offered" : "cancelled";
+  } });
+  return { ...f, visible: () => visible, consume: () => consume() };
 }
 function answer(f, start = 1) {
   f.event(start, "turn.accepted", { turnId: "turn-one", text: "What is the launch date?" });
@@ -137,6 +153,70 @@ test("terminal event preceding a cancel response keeps Ready status", async t =>
   pending.resolve(); await tick();
   assert.match(f.root.querySelector('[role="status"]').textContent, /Ready/);
   assert.equal(f.root.querySelector(".assistant-actions button:nth-child(2)").disabled, true);
+});
+
+test("Stop immediately retires a same-turn offered navigation", async t => {
+  const f = offeredNavigation(t); f.panel.show(); await tick();
+  f.event(1, "turn.accepted", { turnId: "turn-one", text: "Question" });
+  f.event(2, "navigation.requested", navigationRequest()); await tick();
+  assert.equal(f.visible(), true);
+  f.root.querySelector(".assistant-actions button:nth-child(2)").click();
+  assert.equal(f.visible(), false);
+});
+
+test("a successful end_turn preserves its offer until the person consumes it", async t => {
+  const f = offeredNavigation(t); f.panel.show(); await tick();
+  f.event(1, "turn.accepted", { turnId: "turn-one", text: "Question" });
+  f.event(2, "navigation.requested", navigationRequest()); await tick();
+  f.event(3, "turn.ended", { turnId: "turn-one", stopReason: "end_turn" });
+  assert.equal(f.visible(), true);
+  f.consume(); assert.equal(f.visible(), false);
+});
+
+for (const [type, payload] of [
+  ["turn.ended", { turnId: "turn-one", stopReason: "interrupted" }],
+  ["tool.cancelled", { turnId: "turn-one", toolCallId: "nav-one" }],
+  ["session.fenced", { reason: "revoked" }],
+]) {
+  test(`${type} retires the turn's outstanding navigation offer`, async t => {
+    const f = offeredNavigation(t); f.panel.show(); await tick();
+    f.event(1, "turn.accepted", { turnId: "turn-one", text: "Question" });
+    f.event(2, "navigation.requested", navigationRequest()); await tick();
+    assert.equal(f.visible(), true);
+    f.event(3, type, payload);
+    assert.equal(f.visible(), false);
+  });
+}
+
+for (const next of [selection("bundle-two"), { ...selection(), contextRevision: "mount:2" }]) {
+  test(`replacing the navigation ${next.bindingId === "bundle-one" ? "revision" : "binding"} fences a delayed host result and receipt`, async t => {
+    const pending = deferred(); let signal, commit;
+    const f = fixture(t, {}, { async navigate(_, capturedSignal, admitCommit) {
+      signal = capturedSignal; commit = admitCommit;
+      await pending.promise; return "navigated";
+    } });
+    f.panel.show(); await tick();
+    f.event(1, "navigation.requested", navigationRequest());
+    f.context(next); await f.panel.refresh();
+    assert.equal(signal.aborted, true);
+    assert.equal(commit(), false);
+    pending.resolve(); await tick();
+    assert.deepEqual(f.receipts, []);
+  });
+}
+
+test("an admitted intentional SPA commit records its original navigation receipt after the revision changes", async t => {
+  const f = fixture(t, {}, { async navigate(_, signal, admitCommit) {
+    assert.equal(signal.aborted, false);
+    assert.equal(admitCommit(), true);
+    f.context({ ...selection(), contextRevision: "mount:2" });
+    await f.panel.refresh();
+    assert.equal(signal.aborted, true);
+    return "navigated";
+  } });
+  f.panel.show(); await tick();
+  f.event(1, "navigation.requested", navigationRequest()); await tick();
+  assert.deepEqual(f.receipts, [["nav-one", "navigated"]]);
 });
 
 test("a cancel response from a replaced source cannot change the current conversation status", async t => {

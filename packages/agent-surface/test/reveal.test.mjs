@@ -79,6 +79,48 @@ test("an expired offer removes its invocation cancellation listener", async () =
   f.policy.dispose();
 });
 
+test("independent target invalidation retires an offer without a screen transition", async () => {
+  const lifetime = new AbortController(), screen = new AbortController(), target = new AbortController();
+  let disposed = 0;
+  const policy = createRevealPolicy({ lifetime: lifetime.signal, screenSignal: () => screen.signal,
+    resolve: value => ({ target: value, ...(value === "one" ? { signal: target.signal } : {}) }),
+    surface: { mode: () => "suggestions", offer() { return { dispose() { disposed++; } }; } },
+  });
+  assert.equal((await policy.execute("one")).offered, true);
+  assert.equal(getEventListeners(target.signal, "abort").length, 1);
+  target.abort();
+  assert.equal(screen.signal.aborted, false);
+  assert.equal(disposed, 1);
+  assert.equal(getEventListeners(target.signal, "abort").length, 0);
+  assert.equal((await policy.execute("two")).offered, true);
+  policy.dispose();
+});
+
+test("the default clock observes current Date.now rather than its construction-time function", async () => {
+  const original = Date.now;
+  const lifetime = new AbortController(), screen = new AbortController();
+  const policy = createRevealPolicy({ lifetime: lifetime.signal, screenSignal: () => screen.signal,
+    resolve: target => ({ target }), surface: { mode: () => "suggestions", offer() { return { dispose() {} }; } },
+  });
+  try {
+    Date.now = () => 123;
+    assert.equal((await policy.execute("target")).expiresAt, 123 + OFFER_MS);
+  } finally { Date.now = original; policy.dispose(); }
+});
+
+test("a follow host receives the optional panel commit guard only through its navigation context", async () => {
+  const lifetime = new AbortController(), screen = new AbortController();
+  let commits = 0;
+  const policy = createRevealPolicy({ lifetime: lifetime.signal, screenSignal: () => screen.signal,
+    resolve: target => ({ target }), surface: { mode: () => "follow", async navigate(_, context) {
+      return context.admitCommit();
+    } },
+  });
+  assert.equal((await policy.execute("target", { admitCommit() { commits++; return true; } })).navigated, true);
+  assert.equal(commits, 1);
+  policy.dispose();
+});
+
 test("follow stamps failed attempts, throttles quiet screens, degrades busy screens and resets on preference changes", async () => {
   const f = fixture();
   f.mode("follow");

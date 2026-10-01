@@ -3,7 +3,11 @@ import { SurfaceContextError } from "./context.js";
 export type RevealMode = "off" | "suggestions" | "follow";
 export const FOLLOW_MS = 6_000;
 export const OFFER_MS = 60_000;
-export type RevealNavigationContext = { signal: AbortSignal };
+export type RevealNavigationContext = {
+  signal: AbortSignal;
+  /** Optional panel-origin guard, called immediately before the normal router commits. */
+  admitCommit?: () => boolean;
+};
 export type RevealSurface<Target> = {
   mode: () => RevealMode;
   quiet?: () => boolean;
@@ -29,7 +33,7 @@ export function createRevealPolicy<Input, Target>(options: {
 }) {
   const { surface, lifetime } = options;
   const clock = options.clock ?? {
-    now: Date.now,
+    now: () => Date.now(),
     schedule(callback: () => void, milliseconds: number) {
       const timer = setTimeout(callback, milliseconds);
       return () => clearTimeout(timer);
@@ -46,7 +50,7 @@ export function createRevealPolicy<Input, Target>(options: {
     record?.dispose();
   };
   lifetime.addEventListener("abort", clear, { once: true });
-  async function execute(input: Input, invocation?: { signal?: AbortSignal }): Promise<RevealResult<Target>> {
+  async function execute(input: Input, invocation?: { signal?: AbortSignal; admitCommit?: () => boolean }): Promise<RevealResult<Target>> {
     const hostSignal = invocation?.signal ?? lifetime;
     const refusal = (code: string): RevealResult<Target> => ({ ok: false, error: { code } });
     try {
@@ -72,7 +76,7 @@ export function createRevealPolicy<Input, Target>(options: {
           lifetime, hostSignal, options.screenSignal(), disposal.signal,
           ...(resolved.signal ? [resolved.signal] : []),
         ]);
-        const navigated = await surface.navigate(target, { signal: navigationSignal });
+        const navigated = await surface.navigate(target, { signal: navigationSignal, admitCommit: invocation?.admitCommit });
         // Successful navigation intentionally changes the old screen revision.
         if (disposed || lifetime.aborted || hostSignal.aborted) return refusal("unavailable");
         return navigated ? { ok: true, navigated: true, target } : refusal("unavailable");
@@ -88,9 +92,9 @@ export function createRevealPolicy<Input, Target>(options: {
       };
       const offer = surface.offer(target, consume);
       if (!offer) return refusal("unsupported_host");
-      if (consumed || disposed || lifetime.aborted || hostSignal.aborted || screenSignal.aborted) {
+      if (consumed || disposed || lifetime.aborted || hostSignal.aborted || screenSignal.aborted || resolved.signal?.aborted) {
         offer.dispose();
-        return refusal(screenSignal.aborted ? "context_changed" : "unavailable");
+        return refusal(screenSignal.aborted || resolved.signal?.aborted ? "context_changed" : "unavailable");
       }
       let cancelTimer = () => {};
       record = {
@@ -99,6 +103,7 @@ export function createRevealPolicy<Input, Target>(options: {
           cancelTimer();
           screenSignal.removeEventListener("abort", consume);
           hostSignal.removeEventListener("abort", consume);
+          resolved.signal?.removeEventListener("abort", consume);
           offer.dispose();
         },
       };
@@ -106,6 +111,7 @@ export function createRevealPolicy<Input, Target>(options: {
       cancelTimer = clock.schedule(consume, OFFER_MS);
       screenSignal.addEventListener("abort", consume, { once: true });
       hostSignal.addEventListener("abort", consume, { once: true });
+      resolved.signal?.addEventListener("abort", consume, { once: true });
       return { ok: true, offered: true, target, expiresAt: record.expiresAt };
     } catch (error) {
       return refusal(error instanceof SurfaceContextError ? error.code : "unavailable");

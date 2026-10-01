@@ -11,6 +11,8 @@ export type AssistantPanelContext = {
   label: string;
 };
 export type AssistantPanelSession = { sessionId: string; status: string };
+/** Mark the initiating surface admitted immediately before the normal router commits. */
+export type AssistantNavigationCommit = () => boolean;
 export type AssistantPanelTransport = {
   start(context: AssistantPanelContext, signal: AbortSignal): Promise<AssistantPanelSession>;
   send(sessionId: string, text: string, context: AssistantPanelContext, signal: AbortSignal): Promise<{ turnId: string }>;
@@ -24,7 +26,7 @@ export type AssistantPanelOptions = {
   context: () => AssistantPanelContext | undefined;
   transport: AssistantPanelTransport;
   /** Host-owned routing, admission, preference, and draft protection. */
-  navigate: (request: NavigationRequest, signal: AbortSignal) => Promise<NavigationOutcome>;
+  navigate: (request: NavigationRequest, signal: AbortSignal, admitCommit: AssistantNavigationCommit) => Promise<NavigationOutcome>;
   openSource: (source: AssistantSourceRef) => Promise<void>;
   /** Safe host renderer; absent renderers show literal model text. */
   renderText?: (container: HTMLElement, text: string) => (() => void) | void;
@@ -52,12 +54,21 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
   let sending = false;
   let polling = false;
   let epoch = 0;
+  let navigationContext = new AbortController();
+  let navigationContextIdentity: string | undefined;
   let renderDisposals: (() => void)[] = [];
   const turns = new Map<string, { answer: HTMLElement; text: string; sources: HTMLElement }>();
   const tools = new Map<string, HTMLElement>();
   const endedTurns = new Set<string>();
   const sources = new Map<string, AssistantSourceRef>();
   const seenNavigation = new Set<string>();
+  const navigationTurns = new Map<string, AbortController>();
+  function navigationTurn(turnId: string) {
+    let controller = navigationTurns.get(turnId);
+    if (!controller) { controller = new AbortController(); navigationTurns.set(turnId, controller); }
+    return controller;
+  }
+  function cancelNavigationTurn(turnId: string) { navigationTurn(turnId).abort(); }
   const element = <Tag extends keyof HTMLElementTagNameMap>(tag: Tag, text?: string) => {
     const node = doc.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -110,6 +121,8 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
     cancel.disabled = unavailable || !activeTurn;
   }
   function clearTranscript() {
+    navigationTurns.forEach(controller => controller.abort());
+    navigationTurns.clear();
     renderDisposals.forEach((dispose) => dispose());
     renderDisposals = [];
     transcript.replaceChildren();
@@ -150,14 +163,35 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
     // Another viewer, previous mount, or changed source can read the transcript but cannot move this surface.
     if (!context || request.surfaceId !== context.surfaceId || request.bindingId !== context.bindingId ||
         request.contextRevision !== context.contextRevision || request.sessionId !== session?.sessionId) return;
+    const generation = epoch;
+    const capturedContext = navigationContext;
+    const turnSignal = navigationTurn(request.turnId).signal;
+    const signal = AbortSignal.any([lifetime.signal, capturedContext.signal, turnSignal]);
+    let committed = false;
+    const current = () => {
+      const currentContext = options.context();
+      return !stopped && generation === epoch && capturedContext === navigationContext &&
+        request.sessionId === session?.sessionId && currentContext?.surfaceId === request.surfaceId &&
+        currentContext.bindingId === request.bindingId && currentContext.contextRevision === request.contextRevision;
+    };
     let outcome: NavigationOutcome = "stale";
-    if (request.expiresAt > Date.now() && !lifetime.signal.aborted) {
-      try { outcome = await options.navigate(request, lifetime.signal); }
-      catch { outcome = lifetime.signal.aborted ? "cancelled" : "unsupported"; }
+    if (signal.aborted) outcome = "cancelled";
+    else if (request.expiresAt > Date.now()) {
+      try { outcome = await options.navigate(request, signal, () => {
+        if (!current() || signal.aborted) return false;
+        committed = true;
+        return true;
+      }); }
+      catch { outcome = signal.aborted ? "cancelled" : "unsupported"; }
     }
-    if (lifetime.signal.aborted) return;
+    const after = options.context();
+    const deliberate = committed && outcome === "navigated" && !stopped && !turnSignal.aborted &&
+      generation === epoch && request.sessionId === session?.sessionId &&
+      after?.surfaceId === request.surfaceId && after.bindingId === request.bindingId;
+    if ((!current() && !deliberate) || (outcome === "navigated" && turnSignal.aborted)) return;
+    if (signal.aborted && outcome !== "navigated") outcome = "cancelled";
     try { await transport.receipt(request, outcome, lifetime.signal); }
-    catch { status.textContent = "The navigation result could not be recorded."; }
+    catch { if (current()) status.textContent = "The navigation result could not be recorded."; }
   }
   function receive(event: AssistantEvent) {
     if (stopped || !Number.isSafeInteger(event.seq) || event.seq <= cursor) return;
@@ -180,10 +214,13 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
     } else if (event.type === "tool.started" && turnId && typeof payload.toolCallId === "string") {
       const activity = element("p", "Reading: " + (string(payload.operationId) ?? "source"));
       activity.className = "assistant-tool";
+      activity.dataset.turnId = turnId;
       turn(turnId).answer.before(activity);
       tools.set(payload.toolCallId, activity);
     } else if ((event.type === "tool.finished" || event.type === "tool.cancelled") && typeof payload.toolCallId === "string") {
       const activity = tools.get(payload.toolCallId);
+      const cancelledTurn = turnId ?? activity?.dataset.turnId;
+      if (event.type === "tool.cancelled" && cancelledTurn) cancelNavigationTurn(cancelledTurn);
       if (activity) activity.textContent += event.type === "tool.cancelled" ? " — stopped" : payload.ok === true ? " — complete" : " — unavailable";
     } else if (event.type === "source.read" && turnId) {
       const ref = source(payload.source);
@@ -205,6 +242,8 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
       status.textContent = payload.outcome === "navigated" ? "Opened the requested destination." : "Navigation: " + String(payload.outcome);
     } else if (event.type === "turn.ended" && turnId) {
       endedTurns.add(turnId);
+      // Successful offers remain available for the person's choice until host TTL/dismissal.
+      if (payload.stopReason !== "end_turn") cancelNavigationTurn(turnId);
       if (activeTurn === turnId) activeTurn = undefined;
       const row = turns.get(turnId);
       if (row && options.renderText) {
@@ -240,6 +279,10 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
     if (stopped) return;
     const context = options.context();
     sourceLabel.textContent = context?.label ?? "Choose a bundle to ask a question.";
+    const identity = context && JSON.stringify([context.bindingId, context.surfaceId, context.contextRevision]);
+    if (identity !== navigationContextIdentity) {
+      navigationContext.abort(); navigationContext = new AbortController(); navigationContextIdentity = identity;
+    }
     if (context && sourceBinding === context.bindingId &&
         (session || (opening && openingRevision === context.contextRevision && openingSurface === context.surfaceId))) {
       controls(); return;
@@ -281,6 +324,7 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
   function fence(message: string) {
     stopped = true;
     epoch++;
+    navigationContext.abort();
     opening?.abort(); opening = undefined;
     stream?.abort();
     lifetime.abort();
@@ -298,6 +342,7 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
     if (!text || !context || !session || sending || stopped || context.bindingId !== sourceBinding) return;
     const generation = epoch;
     const sessionId = session.sessionId;
+    if (activeTurn) cancelNavigationTurn(activeTurn);
     sending = true;
     controls();
     try {
@@ -323,6 +368,7 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
     const generation = epoch;
     const sessionId = session.sessionId;
     const turnId = activeTurn;
+    cancelNavigationTurn(turnId);
     const current = () => !stopped && generation === epoch && session?.sessionId === sessionId &&
       activeTurn === turnId && !endedTurns.has(turnId);
     cancel.disabled = true;
