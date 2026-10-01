@@ -405,12 +405,30 @@ View treats any unlisted code like `RUNTIME`.
 ## Trust model
 
 Approving a View means approving its exact bytes and declared `access`; changed bytes or expanded
-access ask again. The View never receives a credential, session token or data endpoint. The OSS
-web shell serves entry bytes at `/__page/<nonce>` for a short-lived nonce and forwards every bridge
-request to `POST /__ui/views/bridge` with an opaque launch id; the launch is re-resolved before and
-after each request, and a change between the two answers `REVOKED`. Hosts with their own approval
-model (slot pins, artifact digests) enforce the same rule at their seam. A transport receipt the
-shell may collect after frame load proves delivery, not authorization.
+access ask again. The View never receives a credential, session token or data endpoint. In the OSS
+web shell the View frame makes no network request of its own: the shell fetches the entry bytes
+once from `/__page/<nonce>` (short-lived, single-use, session-gated), checks their SHA-256 against
+the approved content version, and posts them to a static View host (`/__ui/view-host`), which
+mounts them as a `blob:` URL in a `sandbox="allow-scripts"` child and revokes the URL after load.
+The host is opaque by its own response policy (`sandbox allow-scripts` plus the View CSP, which the
+blob child inherits; the View CSP includes `worker-src 'none'`) and relays enveloped messages only
+between the shell and that child, so `window.parent` for the View is the host. The host guards its
+own framing with `X-Frame-Options: SAMEORIGIN` rather than `frame-ancestors`, which the child would
+inherit and which its opaque ancestor could never satisfy. The shell refuses to deliver bytes to a
+host whose messages do not come from an opaque origin. This keeps Views working in browsers that
+refuse every request from an opaque-origin frame.
+
+Two consequences for View authors: the View's own HTML has no network URL and its blob URL is
+revoked once it loads, so a View that reloads or re-navigates its own frame ends up blank — re-query
+through the bridge instead. And the child's `load` event, which the host reports to the shell, also
+fires when a browser refuses the blob navigation; the host reports a refusal it can observe (a
+violation of its own policy) as a failure, but a quiet View rendered blank by a refusal the host
+cannot see is not distinguishable from one that loaded. The shell forwards every bridge request to
+`POST /__ui/views/bridge` with an opaque launch id; the launch is re-resolved before and after each
+request, and a change between the two answers `REVOKED`. Hosts with their own approval model (slot
+pins, artifact digests) enforce the same rule at their seam. The delivery receipt the shell checks
+after the child loads proves the server handed the launch's bytes to the shell — not that the View
+rendered, and not authorization.
 
 Startup messages are optional: a View may stay quiet until human input and never has to send
 `hello` to prove it loaded.

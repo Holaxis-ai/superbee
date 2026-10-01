@@ -43,12 +43,14 @@ const BROWSER_PREFLIGHT = `      - name: Verify baked Playwright browser artifac
           const chromium = browser("chromium");
           const headless = browser("chromium-headless-shell");
           const ffmpeg = browser("ffmpeg");
+          const webkit = browser("webkit");
           assert.equal(chromium.revision, headless.revision, "Chromium revisions must stay aligned");
           const required = [
             [path.join(root, \`chromium-\${chromium.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`chromium-\${chromium.revision}\`, "chrome-linux64", "chrome"), constants.X_OK],
             [path.join(root, \`chromium_headless_shell-\${headless.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`chromium_headless_shell-\${headless.revision}\`, "chrome-headless-shell-linux64", "chrome-headless-shell"), constants.X_OK],
+            [path.join(root, \`webkit-\${webkit.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`ffmpeg-\${ffmpeg.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`ffmpeg-\${ffmpeg.revision}\`, "ffmpeg-linux"), constants.X_OK],
           ];
@@ -238,7 +240,7 @@ function validateBrowserScripts(packages) {
   );
   assert.equal(
     uiCommand,
-    "playwright install chromium && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts --project=chromium",
+    "playwright install chromium webkit && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts e2e/view-delivery.spec.ts --project=chromium && playwright test e2e/view-delivery.spec.ts --project=webkit",
     "UI browser coverage must retain its complete reviewed command",
   );
   assert.equal(
