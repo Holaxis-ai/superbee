@@ -342,6 +342,7 @@ test("static View bridge reuses canonical read semantics and rejects mismatched 
         "query.count",
         "query.field-or",
         "query.kind-projection",
+        "query.newest",
         "query.open",
         "render-document",
       ],

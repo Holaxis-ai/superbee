@@ -43,7 +43,7 @@ client below wraps all of them.
 | request | ask | answer |
 | --- | --- | --- |
 | `hello` | who is hosting me | `{ bundle: { root, name }, mode, protocol, grant, host: { kind, capabilities, limits } }` |
-| `query` | `{ type?, prefix?, field?, open?, limit? }` | `{ rows: [{ id, version, frontmatter }], count }` |
+| `query` | `{ type?, prefix?, field?, open?, limit?, order? }` | `{ rows: [{ id, version, frontmatter }], count }` |
 | `read` | `docId` | `{ id, frontmatter, body }` |
 | `read-versioned` | `docId` | `{ doc, version }` |
 | `render-document` | `docId` | `{ document: { id, version }, html, bounded }` |
@@ -57,6 +57,11 @@ client below wraps all of them.
 `hello.result.host.capabilities` to learn what this host honors (for example `query.field-or`,
 `query.open`, `edges`, `graph`, `subscribe-deltas`) instead of assuming; every host refuses what it
 does not offer with a `FORBIDDEN` error, never silently.
+
+Query rows come in canonical id order. On a host that declares `query.newest`, pass
+`order: "newest"` to get CLI `list` order instead (newest `generated.at` or `timestamp` first, rows
+without a usable time last); the cap then keeps the most recently changed rows. A host without
+`query.newest` answers `order` with `USAGE`, so check the capability first and fall back.
 
 Use `render-document` for canonical Markdown presentation: the returned `html` is inert markup
 whose internal links carry `data-aslite-doc-id`. Style it inside the View and insert it unmodified;

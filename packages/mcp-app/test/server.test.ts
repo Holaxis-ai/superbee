@@ -1891,6 +1891,7 @@ test("registered Roadmap View runs from unchanged source through the authorized 
           "query.count",
           "query.field-or",
           "query.kind-projection",
+          "query.newest",
           "query.open",
           "render-document",
           "subscribe-deltas",
