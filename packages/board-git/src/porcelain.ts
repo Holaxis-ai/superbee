@@ -1548,6 +1548,8 @@ export interface CommitResult {
   subject?: string;
   /** The enriched per-doc changes that were committed (empty for a reserved-file-only commit). */
   docs: DocChange[];
+  /** Present when nothing was committed because a staged document's frontmatter does not parse. */
+  held?: HeldDocument[];
 }
 
 /**
@@ -1595,6 +1597,13 @@ export function stageAndCommit(boardPath: string): CommitResult {
   }
 
   const rows = nameStatusRows(mustGit(boardPath, ["diff", "--cached", "--name-status", "--no-renames", "-z"]));
+  // The exact bytes being committed: a file rewritten after sync's worktree check is caught here.
+  // Unstaging leaves every file as it is.
+  const held = malformedDocumentsIn(boardPath, rows, ":0");
+  if (held.length > 0) {
+    mustGit(boardPath, ["reset", "-q"]);
+    return { committed: false, docs: [], held };
+  }
   const docs: DocChange[] = [];
   for (const { letter, relPath } of rows) {
     if (!isConceptDocPath(relPath)) continue;
@@ -1637,7 +1646,8 @@ export interface HeldDocument {
  * worktree bytes `git add -A` would commit (`status -z`, every untracked file, no renames) without
  * touching the index or any file: sync uses it to hold everything outgoing before it stages, so a
  * malformed document never reaches the shared board, where it would break every reader. A symlink
- * or a path that vanished is not a document to judge here.
+ * or a path that vanished is not a document to judge here (a symlinked `.md` is committed as a
+ * link, unchecked, as before).
  */
 export function malformedOutgoingDocuments(boardPath: string): HeldDocument[] {
   const listed = runGit(boardPath, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
@@ -1658,6 +1668,36 @@ export function malformedOutgoingDocuments(boardPath: string): HeldDocument[] {
     }
     try {
       parseMarkdown(content, relPath);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      held.push({ id: conceptIdFromPath(relPath), relPath, reason: "malformed_frontmatter", detail: error.detail });
+    }
+  }
+  return held.sort((a, b) => a.relPath.localeCompare(b.relPath));
+}
+
+/**
+ * Documents a push would publish whose frontmatter does not parse: those added or changed between
+ * `base` and `ref` (normally `origin/board` and `HEAD`), read at `ref`. Catches a malformed
+ * document already in an unpushed local commit (made by hand, or by an older client whose push
+ * failed), which the worktree check cannot see.
+ */
+export function malformedCommittedDocuments(boardPath: string, base: string, ref: string): HeldDocument[] {
+  const rows = nameStatusRows(mustGit(boardPath, ["diff", "--name-status", "--no-renames", "-z", base, ref]));
+  return malformedDocumentsIn(boardPath, rows, ref);
+}
+
+/** The added or edited concept documents among `rows` whose frontmatter at `rev` does not parse. */
+function malformedDocumentsIn(boardPath: string, rows: Array<{ letter: string; relPath: string }>, rev: string): HeldDocument[] {
+  const held: HeldDocument[] = [];
+  for (const { letter, relPath } of rows) {
+    if (!isConceptDocPath(relPath)) continue;
+    const verb = verbOf(letter);
+    if (verb === null || verb === "deleted") continue;
+    const shown = runGit(boardPath, ["show", `${rev}:${relPath}`]);
+    if (shown.status !== 0) continue;
+    try {
+      parseMarkdown(shown.stdout, relPath);
     } catch (error) {
       if (!(error instanceof MalformedDocumentError)) throw error;
       held.push({ id: conceptIdFromPath(relPath), relPath, reason: "malformed_frontmatter", detail: error.detail });

@@ -1914,3 +1914,22 @@ test("malformedOutgoingDocuments names added and edited documents whose frontmat
     await topo.cleanup();
   }
 });
+
+test("stageAndCommit commits nothing when a staged document's frontmatter does not parse, and leaves every file as it is", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    const board = topo.a.board;
+    const bad = "---\ntype: Note\ntitle: A: b\n---\nx\n";
+    await writeFile(path.join(board, "notes", "late.md"), bad);
+    await writeFile(path.join(board, "notes", "fine.md"), "---\ntype: Note\ntitle: Fine\n---\nx\n");
+    const head = runGit(board, ["rev-parse", "HEAD"]).stdout;
+    const result = stageAndCommit(board);
+    assert.equal(result.committed, false);
+    assert.deepEqual(result.held?.map((doc) => doc.id), ["notes/late"]);
+    assert.equal(runGit(board, ["rev-parse", "HEAD"]).stdout, head);
+    assert.equal(runGit(board, ["diff", "--cached", "--name-only"]).stdout, "", "nothing left staged");
+    assert.equal(readFileSync(path.join(board, "notes", "late.md"), "utf8"), bad);
+  } finally {
+    await topo.cleanup();
+  }
+});

@@ -1477,6 +1477,31 @@ test("sync: a raw-edited document with invalid frontmatter holds everything outg
   }
 });
 
+test("sync: a malformed document already in an unpushed local commit is held — nothing is pushed until a fix is committed on top", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    // A hand-made commit, or one an older client could not push.
+    await writeFile(path.join(topo.b.board, "notes", "bad.md"), "---\ntype: Note\ntitle: Import: archive upload\n---\nx\n");
+    commitBoard(topo.b, "manual commit", { author: { name: "bob", email: "bob@example.invalid" } });
+    const before = originBoardHead(topo);
+
+    const held = await runSync(homes[0]!, ["--dir", topo.b.root, "--json"]);
+    assert.equal(held.err?.code, "CONFLICT");
+    assert.match(held.err!.message, /invalid frontmatter \(notes\/bad\)/);
+    assert.match((JSON.parse(held.out) as { sync: string }).sync, /local commits carry these documents/);
+    assert.equal(originBoardHead(topo), before, "nothing was pushed");
+
+    await writeFile(path.join(topo.b.board, "notes", "bad.md"), "---\ntype: Note\ntitle: 'Import: archive upload'\n---\nx\n");
+    const fixed = await runSync(homes[0]!, ["--dir", topo.b.root]);
+    assert.equal(fixed.err, undefined, fixed.err?.message);
+    assert.match(git(topo.origin, ["show", `${BOARD_BRANCH}:notes/bad.md`]), /'Import: archive upload'/);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("sync: a held edit whose path a teammate also changed is never overwritten — the board is not pulled", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(1);
