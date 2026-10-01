@@ -447,6 +447,12 @@ test("a refusal after the host reserved the id keeps the request id, and the sam
   assert.equal(pending?.request_id, requestId);
   assert.equal(pending?.reserved, true);
   assert.equal(pending?.staged, true);
+  // Shrunk to fit one request, a refusal on that path still keeps the reserved request id.
+  await rm(path.join(folder, "assets"), { recursive: true });
+  const oneShotOff = intercepting(fake, (route) => (route === "bundle-create" ? refusalAnswer("bundle_create_unavailable", "switched off") : null));
+  await rejects(run(h, argv, oneShotOff));
+  assert.equal((await readPendingCreate(h.home, folder, "big.notes"))?.reserved, true, "a reserved request id survives a one-request refusal");
+  await writeBigBundle(folder, 100);
   const receipt = await run(h, argv, fake);
   assert.equal(receipt.published, "created");
   assert.equal(fake.stagedState(requestId), "created");

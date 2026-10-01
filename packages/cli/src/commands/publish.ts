@@ -403,16 +403,18 @@ async function sendCreation(plan: PublishPlan, context: SendContext): Promise<Re
       help: `re-run the same command; it re-sends the same request, which finishes or confirms the creation: ${yesCommand}`,
     });
   }
+  // A record a staged run marked reserved is never forgotten here: only its request id can finish it.
+  const forgettable = record.reserved !== true;
   if (answer.status === 429 && code === "bundle_create_limit") {
-    await clearPendingCreate(home, canonical, bundleId);
+    if (forgettable) await clearPendingCreate(home, canonical, bundleId);
     throw createRefusal(code, hostMessage, refusalContext);
   }
   if (answer.status === 200 && envelope.ok === false && code !== null) {
-    if (code !== "request_conflict") await clearPendingCreate(home, canonical, bundleId);
+    if (code !== "request_conflict" && forgettable) await clearPendingCreate(home, canonical, bundleId);
     throw createRefusal(code, hostMessage, refusalContext);
   }
   if (answer.status !== 200 || envelope.ok !== true || typeof envelope.data !== "object" || envelope.data === null) {
-    if (answer.status === 400) await clearPendingCreate(home, canonical, bundleId);
+    if (answer.status === 400 && forgettable) await clearPendingCreate(home, canonical, bundleId);
     throw hostedFailure(new RemoteError(`hosted bundle-create answered ${answer.status}`, code ?? "RUNTIME", answer.status), target, yesCommand);
   }
   await clearPendingCreate(home, canonical, bundleId);
