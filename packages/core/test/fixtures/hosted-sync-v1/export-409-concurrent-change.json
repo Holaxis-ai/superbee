@@ -1,0 +1,23 @@
+{
+  "name": "export-409-concurrent-change",
+  "description": "A page whose cursor pins a revision the bundle has moved past: start again from the first page.",
+  "route": "/sync/v1/export",
+  "rows": [
+    "refusal 409 concurrent_change"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"paged\":true,\"cursor\":\"1.1\"}"
+  },
+  "response": {
+    "status": 409,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"concurrent_change\",\"message\":\"The bundle changed since the first page. Start again from the first page.\",\"retryable\":true}}",
+    "truncated": false
+  }
+}

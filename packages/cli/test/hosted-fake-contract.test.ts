@@ -288,7 +288,15 @@ test("the fake answers the operations goldens' requests with the host's status, 
 
 test("the fake answers every golden /sync/v1/export exchange with the host's exact values and bytes", async () => {
   const exchanges = [...golden.values()].filter(isExport);
-  assert.deepEqual(exchanges.map((exchange) => exchange.name).sort(), ["export-200", "export-400-invalid-input", "export-401-unauthenticated", "export-404-bundle-not-found"]);
+  assert.deepEqual(exchanges.map((exchange) => exchange.name).sort(), [
+    "export-200",
+    "export-200-page-first",
+    "export-200-page-last",
+    "export-400-invalid-input",
+    "export-401-unauthenticated",
+    "export-404-bundle-not-found",
+    "export-409-concurrent-change",
+  ]);
   const captured = golden.get("export-200")!;
   const archive = Buffer.from(captured.response.bodyBase64!, "base64");
   // The bundle the captured archive holds, as the fake's storage: the files are the input, and
@@ -302,6 +310,8 @@ test("the fake answers every golden /sync/v1/export exchange with the host's exa
     files: new Map([...exported.entries].reverse().map((entry) => [entry.path, entry.bytes])),
   };
   host.exportedAt = () => new Date(exported.exportedAt);
+  // The golden pages are generated one object a page.
+  host.exportPageObjects = 1;
 
   for (const exchange of exchanges) {
     const bearer = exchange.name === "export-401-unauthenticated" ? "not-a-token" : host.token;
