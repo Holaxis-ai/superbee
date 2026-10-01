@@ -887,7 +887,8 @@ test("a bundle past one working copy page checks out whole, its heads and snapsh
   const host = new FakeHost();
   for (let index = host.docs.size; index <= 1_000; index += 1) host.put(`bulk/n${String(index).padStart(4, "0")}`, { type: "Note" }, `n${index}\n`);
   assert.equal(host.docs.size, 1_001);
-  const receipt = await run(h, [BUNDLE, "--host", HOST, "--dir", "big"], host);
+  await checkout([BUNDLE, "--host", HOST, "--dir", "big"], { stdout: (text) => h.out.push(text), auth: h.auth, cwd: h.cwd, fetch: host.fetch });
+  const receipt = decode(h.out.at(-1)!.trim()) as Record<string, unknown>;
   assert.equal(receipt.checkout, "created");
   assert.equal(receipt.documents, 1_001);
   const folder = path.join(h.cwd, "big");
