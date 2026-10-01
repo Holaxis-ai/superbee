@@ -1429,57 +1429,72 @@ test("sync: the central happy path — a genuine local commit AND a real remote 
   }
 });
 
-test("sync: a raw-edited document with invalid frontmatter is held — named, never pushed — while the rest of the board syncs", async () => {
+test("sync: a raw-edited document with invalid frontmatter holds everything outgoing — named, nothing committed or pushed, files untouched — while incoming still arrives", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(1);
   try {
-    // An agent's plain file write: an unquoted ': ' in the title is invalid YAML.
-    const badBytes = "---\ntype: Note\ntitle: Import bundles: archive upload\n---\nbody\n";
-    await writeFile(path.join(topo.b.board, "notes", "bad.md"), badBytes);
+    await modifyBoardDoc(topo.a, "tasks/seed-two", { body: "# tasks/seed-two\n\nchanged by A\n" });
+    commitBoard(topo.a, "board: A edits tasks/seed-two", { author: { name: "alice", email: "alice@example.invalid" } });
+    pushBoard(topo.a);
+    const originBefore = originBoardHead(topo);
+    // An agent's plain file writes: an unquoted ': ' in a title is invalid YAML (one new file, one edit).
+    const badNew = "---\ntype: Note\ntitle: Import bundles: archive upload\n---\nbody\n";
+    const badEdit = "---\ntype: Task\ntitle: Seed one: broken\n---\nB's edit\n";
+    await mkdir(path.join(topo.b.board, "notes", "deep"), { recursive: true });
+    await writeFile(path.join(topo.b.board, "notes", "deep", "bad[1].md"), badNew);
+    await writeFile(path.join(topo.b.board, "tasks", "seed-one.md"), badEdit);
     await writeBoardDoc(topo.b, "notes/fine", { frontmatter: { type: "Note", title: "Fine", actor: "brian" }, body: "# ok\n" });
+    const headBefore = boardHead(topo.b);
 
-    const result = await runSync(homes[0]!, ["--dir", topo.b.root]);
+    const result = await runSync(homes[0]!, ["--dir", topo.b.root, "--json"]);
     assert.equal(result.err?.code, "CONFLICT", "a held document needs the writer: exit 5");
-    assert.match(result.err!.message, /held, not published: invalid frontmatter in notes\/bad/);
-    assert.match(result.out, /held: 1/);
-    assert.match(result.out, /notes\/bad,malformed_frontmatter/);
-    assert.match(result.out, /pushed: 1/, "the valid document still published");
-    const pushed = git(topo.origin, ["ls-tree", "-r", "--name-only", BOARD_BRANCH]);
-    assert.ok(pushed.includes("notes/fine.md"));
-    assert.ok(!pushed.includes("notes/bad.md"), "the malformed document never reaches origin/board");
-    assert.equal(await readBoardFile(topo.b, "notes/bad.md"), badBytes, "the writer's bytes stay in place to fix");
+    assert.match(result.err!.message, /invalid frontmatter \(notes\/deep\/bad\[1\], tasks\/seed-one\); nothing was published/);
+    assert.match(result.err!.help ?? "", /quote any value that contains ': '/);
+    const receipt = JSON.parse(result.out) as { held: number; pulled: number; held_documents: { id: string; reason: string }[] };
+    assert.equal(receipt.held, 2);
+    assert.deepEqual(receipt.held_documents.map((row) => [row.id, row.reason]), [
+      ["notes/deep/bad[1]", "malformed_frontmatter"],
+      ["tasks/seed-one", "malformed_frontmatter"],
+    ]);
+    assert.equal(receipt.pulled, 1, "the teammate's edit to another document still arrived");
+    assert.equal(originBoardHead(topo), originBefore, "nothing reached origin/board");
+    assert.notEqual(boardHead(topo.b), headBefore, "the board fast-forwarded");
+    assert.equal(git(topo.b.board, ["log", "--format=%an", "-1"]).trim(), "alice", "no local commit was made");
+    assert.equal(await readBoardFile(topo.b, "notes/deep/bad[1].md"), badNew, "the writer's bytes stay untouched");
+    assert.equal(await readBoardFile(topo.b, "tasks/seed-one.md"), badEdit);
+    assert.match(await readBoardFile(topo.b, "notes/fine.md"), /Fine/, "the valid edit waits, uncommitted, for the next sync");
+
+    // Fixed: the next sync publishes everything that waited.
+    await writeFile(path.join(topo.b.board, "notes", "deep", "bad[1].md"), badNew.replace("Import bundles: archive upload", "'Import bundles: archive upload'"));
+    await writeFile(path.join(topo.b.board, "tasks", "seed-one.md"), badEdit.replace("Seed one: broken", "'Seed one: fixed'"));
+    const fixed = await runSync(homes[0]!, ["--dir", topo.b.root]);
+    assert.equal(fixed.err, undefined, fixed.err?.message);
+    const published = git(topo.origin, ["ls-tree", "-r", "--name-only", BOARD_BRANCH]);
+    assert.ok(published.includes("notes/deep/bad[1].md") && published.includes("notes/fine.md"));
   } finally {
     await cleanup();
     await topo.cleanup();
   }
 });
 
-test("sync: a held edit is set aside around the rebase — kept when the board left it alone, saved aside when a teammate changed it", async () => {
+test("sync: a held edit whose path a teammate also changed is never overwritten — the board is not pulled", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(1);
   try {
-    // A teammate changes tasks/seed-one; B breaks both seed docs locally without committing.
     await modifyBoardDoc(topo.a, "tasks/seed-one", { body: "# tasks/seed-one\n\nchanged by A\n" });
     commitBoard(topo.a, "board: A edits tasks/seed-one", { author: { name: "alice", email: "alice@example.invalid" } });
     pushBoard(topo.a);
-    const brokenOne = "---\ntype: Task\ntitle: One: broken\n---\nB's edit\n";
-    const brokenTwo = "---\ntype: Task\ntitle: Two: broken\n---\nB's edit\n";
-    await writeFile(path.join(topo.b.board, "tasks", "seed-one.md"), brokenOne);
-    await writeFile(path.join(topo.b.board, "tasks", "seed-two.md"), brokenTwo);
+    const badEdit = "---\ntype: Task\ntitle: Seed one: broken\n---\nB's edit\n";
+    await writeFile(path.join(topo.b.board, "tasks", "seed-one.md"), badEdit);
+    const headBefore = boardHead(topo.b);
 
     const result = await runSync(homes[0]!, ["--dir", topo.b.root, "--json"]);
-    assert.equal(result.err?.code, "CONFLICT", result.err?.message);
-    const receipt = JSON.parse(result.out) as { pulled: number; held: number; held_documents: { id: string; saved_at?: string }[] };
-    assert.equal(receipt.pulled, 1, "the teammate's edit still arrived");
-    assert.equal(receipt.held, 2);
-    const one = receipt.held_documents.find((row) => row.id === "tasks/seed-one")!;
-    const two = receipt.held_documents.find((row) => row.id === "tasks/seed-two")!;
-    assert.equal(two.saved_at, undefined, "an untouched path gets the writer's bytes back");
-    assert.equal(await readBoardFile(topo.b, "tasks/seed-two.md"), brokenTwo);
-    assert.ok(one.saved_at, "a path the pull changed is never overwritten by the held bytes");
-    assert.match(await readBoardFile(topo.b, "tasks/seed-one.md"), /changed by A/);
-    assert.equal(await readFile(one.saved_at!, "utf8"), brokenOne, "the writer's version is kept at saved_at");
-    assert.ok(!isMidRebase(topo.b), "the rebase completed");
+    assert.equal(result.err?.code, "CONFLICT");
+    const receipt = JSON.parse(result.out) as { pull?: string };
+    assert.match(receipt.pull ?? "", /not pulled \(dirty\)/);
+    assert.equal(boardHead(topo.b), headBefore);
+    assert.equal(await readBoardFile(topo.b, "tasks/seed-one.md"), badEdit, "the writer's bytes are never replaced");
+    assert.ok(!isMidRebase(topo.b));
   } finally {
     await cleanup();
     await topo.cleanup();

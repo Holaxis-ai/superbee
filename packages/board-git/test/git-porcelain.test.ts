@@ -75,6 +75,7 @@ import {
   detectStaleRebase,
   abortStaleRebase,
   stageAndCommit,
+  malformedOutgoingDocuments,
   fetchRebase,
   push,
   ffPull,
@@ -1885,6 +1886,30 @@ test("F-D1: clearGitDirMarkerVerified reports the POST-CLEAR truth (never claims
         execFileSync("chflags", ["nouchg", markerFile]);
       }
     }
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("malformedOutgoingDocuments names added and edited documents whose frontmatter does not parse, reading without touching the index", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    const board = topo.a.board;
+    await mkdir(path.join(board, "notes", "deep"), { recursive: true });
+    await writeFile(path.join(board, "notes", "deep", "new*.md"), "---\ntype: Note\ntitle: A: b\n---\nx\n");
+    await writeFile(path.join(board, "tasks", "seed-one.md"), "---\ntype: Task\ntitle: [unclosed\n---\nx\n");
+    await writeFile(path.join(board, "notes", "fine.md"), "---\ntype: Note\ntitle: 'A: b'\n---\nx\n");
+    await rm(path.join(board, "tasks", "seed-two.md"));
+    await symlink("/nonexistent/target.md", path.join(board, "notes", "link.md"));
+    const index = runGit(board, ["ls-files", "-s"]).stdout;
+
+    const held = malformedOutgoingDocuments(board);
+    assert.deepEqual(held.map((doc) => [doc.id, doc.relPath, doc.reason]), [
+      ["notes/deep/new*", "notes/deep/new*.md", "malformed_frontmatter"],
+      ["tasks/seed-one", "tasks/seed-one.md", "malformed_frontmatter"],
+    ]);
+    assert.ok(held.every((doc) => doc.detail.length > 0));
+    assert.equal(runGit(board, ["ls-files", "-s"]).stdout, index, "the index is untouched");
   } finally {
     await topo.cleanup();
   }

@@ -38,11 +38,11 @@ import {
   resolveOriginRef,
   retargetBoardInterior,
   runGit,
+  malformedOutgoingDocuments,
   stageAndCommit,
   unpushedCount,
-  withHeldDocumentsSetAside,
   type CommitResult,
-  type HeldSetAside,
+  type HeldDocument,
   type DocChange,
   type FetchRebaseResolvingOutcome,
   type ProvisionOutcome,
@@ -697,16 +697,7 @@ async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
     throwPostCommitFailure(withProvisionAnnouncement(err, outcome), commitResult.committed, key, boardPath);
   let rebaseOutcome: FetchRebaseResolvingOutcome;
   try {
-    const exportDir = defaultSyncStore.exportsDir(key);
-    const held = commitResult.held ?? [];
-    if (held.length === 0) {
-      rebaseOutcome = fetchRebaseResolving(boardPath, exportDir);
-    } else {
-      // A held document's uncommitted bytes would refuse the rebase; set them aside around it.
-      const setAside = withHeldDocumentsSetAside(boardPath, held, exportDir, () => fetchRebaseResolving(boardPath, exportDir));
-      rebaseOutcome = setAside.result;
-      commitResult.held = setAside.held;
-    }
+    rebaseOutcome = fetchRebaseResolving(boardPath, defaultSyncStore.exportsDir(key));
   } catch (rawErr) {
     throw await fail(withUpstreamHelp(toCliError(rawErr, "rebase"), run.inv));
   }
@@ -798,47 +789,39 @@ async function receiptPhase(
     originDelta: delta.originDelta, limit: run.limit,
     establishAlreadyNote, reanchorNote: delta.reanchorNote, hookHint,
   });
-  const held = commitResult.held ?? [];
-  if (held.length > 0) Object.assign(receipt, heldReceipt(held, run.inv));
-  const envelope = syncEnvelope("git", {
-    sent: pushed.documents, received: delta.originDelta.length, held: held.length,
-    ...(held.length > 0 ? { next: [`${run.inv} sync`] } : {}),
+  run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { sent: pushed.documents, received: delta.originDelta.length })), run.mode));
+}
+
+/**
+ * A sync with an outgoing document whose frontmatter does not parse. Publishing it would break
+ * every reader of the shared board, so nothing outgoing moves: no commit, no push, no file set
+ * aside. Incoming changes still arrive when the board fast-forwards (Git itself refuses a
+ * fast-forward that would overwrite a local edit). The receipt names each held document with the
+ * fix, and the run exits 5 so the turn-end hook hands it back to the writer.
+ */
+async function heldRun(run: SyncRun, board: SyncBoard, baseline: SyncBaseline, held: readonly HeldDocument[]): Promise<void> {
+  const pulled = ffPull(board.boardPath);
+  const delta = await deltaPhase(board, baseline);
+  await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
+  const receipt = buildSyncReceipt({
+    outcome: board.outcome, commitDocs: [], pushedCount: 0,
+    originDelta: delta.originDelta, limit: run.limit, reanchorNote: delta.reanchorNote,
   });
+  receipt.sync = "held: nothing was committed or pushed";
+  if (pulled.swallowed) receipt.pull = `not pulled (${pulled.swallowed}); the next sync after the fix pulls`;
+  receipt.held_documents = held.map((doc) => ({ id: doc.id, path: doc.relPath, reason: doc.reason, detail: doc.detail }));
+  const fix = `fix the lines between the --- markers of ${held.map((doc) => doc.relPath).join(", ")} ` +
+    `(quote any value that contains ': '), check with ${run.inv} status, then run ${run.inv} sync`;
+  receipt.held_help =
+    `not published: the YAML frontmatter of these documents does not parse, and publishing it would ` +
+    `break every reader of the board, so this sync sent nothing. Your files are untouched; ${fix}`;
+  const envelope = syncEnvelope("git", { received: delta.originDelta.length, held: held.length, next: [`${run.inv} sync`] });
   run.stdout(render(withSyncEnvelope(receipt, envelope), run.mode));
-  if (held.length > 0) {
-    // The rest of the board synced; the held documents need the writer. Exit 5 like a hosted
-    // hold, after the receipt (not a second envelope), so the turn-end hook hands it back.
-    throw new CliError("CONFLICT", heldMessage(held), {
-      help: `fix the frontmatter of ${held.map((doc) => doc.relPath).join(", ")} (quote any value that contains ': '), then run ${run.inv} sync`,
-      details: { held: held.map((doc) => doc.id) },
-      handled: true,
-    });
-  }
-}
-
-/** Held rows plus the fix, for the receipt. */
-function heldReceipt(held: readonly HeldSetAside[], inv: string): Record<string, unknown> {
-  return {
-    held_documents: held.map((doc) => ({
-      id: doc.id,
-      reason: doc.reason,
-      detail: doc.detail,
-      ...(doc.savedAt ? { saved_at: doc.savedAt } : {}),
-    })),
-    held_help:
-      `not published: the YAML frontmatter of these documents does not parse, and publishing it would ` +
-      `break every reader of the board. Fix the lines between the --- markers (quote any value that ` +
-      `contains ': '), check with ${inv} status, then run ${inv} sync` +
-      (held.some((doc) => doc.savedAt)
-        ? `. A row with saved_at changed on the board meanwhile: the file now has the board's version, ` +
-          `and your unsent version is at saved_at — merge it into the file before syncing`
-        : ""),
-  };
-}
-
-function heldMessage(held: readonly HeldSetAside[]): string {
-  const ids = held.map((doc) => doc.id).join(", ");
-  return `${held.length} document(s) held, not published: invalid frontmatter in ${ids}`;
+  throw new CliError(
+    "CONFLICT",
+    `${held.length} document(s) have invalid frontmatter (${held.map((doc) => doc.id).join(", ")}); nothing was published`,
+    { help: fix, details: { held: held.map((doc) => doc.id) }, handled: true },
+  );
 }
 
 async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {
@@ -910,6 +893,13 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   assertBundleOutsidePrivateState(board.boardPath);
 
   const baseline = await baselinePhase(board);
+  if (!run.pullOnly) {
+    const held = malformedOutgoingDocuments(board.boardPath);
+    if (held.length > 0) {
+      await heldRun(run, board, baseline, held);
+      return;
+    }
+  }
   const commitResult = await commitPhase(board, run.pullOnly);
   await pullPhase(run, board, commitResult);
   const delta = await deltaPhase(board, baseline);

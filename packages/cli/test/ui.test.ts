@@ -549,36 +549,40 @@ test("ui --dir with one document whose frontmatter is invalid YAML: the list, th
     const shutdown = new Promise<void>((resolve) => {
       resolveShutdown = resolve;
     });
-    const run = ui(["--dir", dir, "--port", "0", "--json"], {
-      stdout: (s) => (out += s),
-      bootUiServer,
-      waitForShutdown: () => shutdown,
-      openBrowser: () => {},
-      writeUrlFile: async () => {},
-      clearUrlFile: async () => {},
-    });
-    while (!out) await new Promise((r) => setTimeout(r, 5));
-    const receipt = JSON.parse(out) as { url: string };
-    const origin = new URL(receipt.url).origin;
-    const cookie = ((await fetch(receipt.url)).headers.get("set-cookie") ?? "").split(";")[0] ?? "";
-    const get = (route: string) => fetch(origin + route, { headers: { cookie } });
+    let run: Promise<void> | undefined;
+    try {
+      run = ui(["--dir", dir, "--port", "0", "--json"], {
+        stdout: (s) => (out += s),
+        bootUiServer,
+        waitForShutdown: () => shutdown,
+        openBrowser: () => {},
+        writeUrlFile: async () => {},
+        clearUrlFile: async () => {},
+      });
+      while (!out) await new Promise((r) => setTimeout(r, 5));
+      const receipt = JSON.parse(out) as { url: string };
+      const origin = new URL(receipt.url).origin;
+      const cookie = ((await fetch(receipt.url)).headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+      const get = (route: string) => fetch(origin + route, { headers: { cookie } });
 
-    const list = await get("/v0/bundles/default/docs?fields=frontmatter");
-    assert.equal(list.status, 200, "one malformed document must not 500 the document list");
-    const listed = (await list.json()) as { docs: { id: string }[]; skipped: { id: string; reason: string }[] };
-    assert.ok(listed.docs.some((row) => row.id === "tasks/good"));
-    assert.deepEqual(listed.skipped.map((row) => row.id), ["tasks/bad"]);
+      // The Documents browser's own request (`listHeadsPage` asks for malformed=skip).
+      const list = await get("/v0/bundles/default/docs?fields=frontmatter&malformed=skip");
+      assert.equal(list.status, 200, "one malformed document must not 500 the document list");
+      const listed = (await list.json()) as { docs: { id: string }[]; skipped: { id: string; reason: string }[] };
+      assert.ok(listed.docs.some((row) => row.id === "tasks/good"));
+      assert.deepEqual(listed.skipped.map((row) => row.id), ["tasks/bad"]);
 
-    const views = await get("/__ui/views");
-    assert.equal(views.status, 200);
-    assert.match(await views.text(), /views-registry\/board/, "the registered View still lists");
+      const views = await get("/__ui/views");
+      assert.equal(views.status, 200);
+      assert.match(await views.text(), /views-registry\/board/, "the registered View still lists");
 
-    const edges = await get("/__ui/edges?from=tasks/good");
-    assert.equal(edges.status, 200);
-    assert.deepEqual(((await edges.json()) as { skipped: { id: string }[] }).skipped.map((row) => row.id), ["tasks/bad"]);
-
-    resolveShutdown();
-    await run;
+      const edges = await get("/__ui/edges?from=tasks/good");
+      assert.equal(edges.status, 200);
+      assert.deepEqual(((await edges.json()) as { skipped: { id: string }[] }).skipped.map((row) => row.id), ["tasks/bad"]);
+    } finally {
+      resolveShutdown();
+      await run;
+    }
   } finally {
     await cleanup();
   }

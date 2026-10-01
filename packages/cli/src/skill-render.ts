@@ -87,7 +87,7 @@ function renderSkill(input: {packageName:string;binName:string}, internal: boole
   lines.push("  explicit publication decision.");
   lines.push("- Never silently rewrite an established Kind, recipe, or its instances. Inspect dependencies and");
   lines.push("  explain migration consequences first.");
-  lines.push("- Writes carry an actor (`--actor`/`SUPERBEE_ACTOR`); OKF v0.2 bundles accept only `human:<id>`, `process:<id>`, or `<producer>/<version>` (e.g. `openai/codex`); a bare name is refused with the fix. After a raw file edit, run `superbee status`: it names a document whose frontmatter no longer parses (quote values containing `: `); sync holds that document back.");
+  lines.push("- Writes carry an actor (`--actor`/`SUPERBEE_ACTOR`); OKF v0.2 bundles accept only `human:<id>`, `process:<id>`, or `<producer>/<version>` (e.g. `openai/codex`); a bare name is refused with the fix. After a raw file edit, run `superbee status`: it names a document whose frontmatter no longer parses (quote values containing `: `); sync publishes nothing until it parses.");
   lines.push("");
   lines.push("## Deliver after acceptance");
   lines.push("");

@@ -957,7 +957,7 @@ export function buildHomeView(
         rows: summary.malformed.slice(0, MALFORMED_SHOWN),
       };
       bundleBlock.malformed_help =
-        `these documents' frontmatter is invalid YAML, so every reader and sync skips them — fix the ` +
+        `these documents' frontmatter is invalid YAML: readers skip them and sync publishes nothing until they parse — fix the ` +
         `lines between the --- markers (quote a value that contains ': '), then confirm with ` +
         `\`${deps.invocation()} status\``;
     }

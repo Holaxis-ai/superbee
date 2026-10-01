@@ -642,6 +642,8 @@ export class RemoteBackend implements StorageBackend {
     let cursor: string | undefined;
     for (;;) {
       const params = new URLSearchParams(baseParams);
+      // Ask the server to leave an unparsable document out and name it, rather than fail the page.
+      if (skipped) params.set("malformed", "skip");
       if (cursor) params.set("cursor", cursor);
       const qs = params.toString();
       const res = await this.send(`/docs${qs ? `?${qs}` : ""}`, { method: "GET" });

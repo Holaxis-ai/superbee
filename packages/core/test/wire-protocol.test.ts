@@ -1669,7 +1669,7 @@ test("wire: GET /heads lists every id and version under the documented digest; I
   assert.equal(deleted.digest, documentedDigest(deleted.heads));
 });
 
-test("wire: GET /docs leaves a malformed document out and names it in skipped; heads and snapshot still fail, naming it", async () => {
+test("wire: GET /docs with malformed=skip leaves a malformed document out and names it in skipped; without it, and on heads and snapshot, it fails naming the document", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "wire-heads-malformed-"));
   try {
     await mkdir(path.join(root, "notes"), { recursive: true });
@@ -1677,7 +1677,13 @@ test("wire: GET /docs leaves a malformed document out and names it in skipped; h
     await writeFile(path.join(root, "notes", "bad.md"), "---\ntype: [unclosed\ntitle: bad\n---\nbody\n");
     const router = createRouter({ root, backend: new ServerFilesystemBackend(root) });
 
-    const list = await router(new Request("http://wire.local/v0/bundles/test/docs?fields=frontmatter"));
+    // A client that cannot read `skipped` (no malformed=skip) still gets a failure, never a
+    // listing that silently lost a document; the failure names it.
+    const strict = await router(new Request("http://wire.local/v0/bundles/test/docs?fields=frontmatter"));
+    assert.equal(strict.status, 500);
+    assert.equal(((await strict.json()) as { error: { details: { malformed: { id: string } } } }).error.details.malformed.id, "notes/bad");
+
+    const list = await router(new Request("http://wire.local/v0/bundles/test/docs?fields=frontmatter&malformed=skip"));
     assert.equal(list.status, 200, "one malformed document never fails the listing");
     const listBody = (await list.json()) as { count: number; docs: { id: string }[]; skipped: { id: string; reason: string }[] };
     assert.deepEqual(listBody.docs.map((row) => row.id), ["notes/good"]);
@@ -1693,7 +1699,7 @@ test("wire: GET /docs leaves a malformed document out and names it in skipped; h
       assert.equal(response.status, 500);
       const body = (await response.json()) as { error: { code: string; message: string; details: { malformed: { id: string } } } };
       assert.equal(body.error.code, "RUNTIME");
-      assert.equal(body.error.details.malformed.id, "notes/bad.md");
+      assert.equal(body.error.details.malformed.id, "notes/bad");
     }
   } finally {
     await rm(root, { recursive: true, force: true });

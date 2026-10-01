@@ -249,8 +249,10 @@ function errorFromCaught(err: unknown): Response {
   if (err instanceof MalformedDocumentError) {
     // The request is well formed; the stored document is what cannot be served. Naming it lets
     // a client report the one document to fix instead of an opaque server failure.
+    // Backends attribute the error to the document's path or its id; the wire names the id.
+    const id = err.context === undefined ? undefined : err.context.endsWith(".md") ? err.context.slice(0, -3) : err.context;
     return errorResponse(500, "RUNTIME", err.message, {
-      malformed: { ...(err.context === undefined ? {} : { id: err.context }), reason: err.detail },
+      malformed: { ...(id === undefined ? {} : { id }), reason: err.detail },
     });
   }
   return errorResponse(500, "RUNTIME", "internal server error");
@@ -1007,12 +1009,17 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     // push-down (an indexed adapter can answer without reading bodies),
     // re-applies the canonical `matchesFilter` to whatever came back, and falls back to
     // the delete-tolerant `list` + batch-read walk for every other backend (a doc deleted
-    // mid-scan is SKIPPED, not a scan-failing 404 — the server half of STATUS item 33). A
-    // MALFORMED doc is left out of the rows and named in `skipped` on every page, so one bad
-    // file never fails the listing. The router deliberately does NOT re-implement the
-    // prefer-else-fallback dance itself.
+    // mid-scan is SKIPPED, not a scan-failing 404 — the server half of STATUS item 33). With
+    // `malformed=skip`, a MALFORMED doc is left out of the rows and named in `skipped` on every
+    // page, so one bad file never fails the listing; without it (a client that cannot read
+    // `skipped`) the listing fails naming the document, so no client silently loses one. The
+    // router deliberately does NOT re-implement the prefer-else-fallback dance itself.
     const skipped: Array<{ id: ConceptId; reason: string }> = [];
-    const heads = await queryHeads(backend, { prefix, type, tags }, { onSkip: (skip) => skipped.push(skip) });
+    const heads = await queryHeads(
+      backend,
+      { prefix, type, tags },
+      searchParams.get("malformed") === "skip" ? { onSkip: (skip) => skipped.push(skip) } : {},
+    );
 
     const count = heads.length;
     let page = heads;

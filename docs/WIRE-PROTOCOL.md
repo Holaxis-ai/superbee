@@ -101,16 +101,18 @@ There are deliberately no collection-delete routes and no reserved-file delete r
 
 ### List projection and pagination
 
-Document list query parameters are `prefix`, `type`, repeated `tag`, `fields`, `limit`, and
-`cursor`. Filters are ANDed. The default page size is 50; a missing, non-positive, or unparsable
-limit also selects 50. `count` is the total filtered count before cursor pagination. The default row
+Document list query parameters are `prefix`, `type`, repeated `tag`, `fields`, `limit`,
+`cursor`, and `malformed`. Filters are ANDed. The default page size is 50; a missing,
+non-positive, or unparsable limit also selects 50. `count` is the total filtered count before cursor pagination. The default row
 is `{ id, version, type, title, timestamp }`; `fields=frontmatter` returns
 `{ id, version, frontmatter }`. The `fields` name is therefore a projection selector on the wire,
 not the CLI/core `QueryFilter.fields` equality filter.
 
-A document whose stored frontmatter does not parse is left out of `docs` and `count`, and every page
-of that listing names it in `skipped: [{ id, reason }]` (absent when every document parsed), so one
-bad file never fails the listing. `RemoteBackend.queryHeads` reports those rows through the scan's
+With `malformed=skip`, a document whose stored frontmatter does not parse is left out of `docs`
+and `count`, and every page of that listing names it in `skipped: [{ id, reason }]` (absent when
+every document parsed), so one bad file never fails the listing. Without the parameter, a client
+that cannot read `skipped` gets the listing's failure naming the document rather than silently
+losing it. `RemoteBackend.queryHeads` reports those rows through the scan's
 `onSkip`, and without one keeps the scan's fail-loud contract by raising `MalformedDocumentError`;
 `RemoteBackend.list` still lists their ids, since the documents exist. Reading such a document, or
 any route that cannot leave it out (heads and snapshot, where a missing id means a deletion),
@@ -419,7 +421,8 @@ These are current limitations, not promises that a client may paper over:
 3. There is no original-document-byte endpoint. Canonical JSON reconstruction is the only remote
    document export; blobs are raw but cannot use `.md` keys.
 4. A malformed document still fails heads and snapshot: a working copy reads an id missing from
-   heads as a deletion, so those routes cannot skip it. The document list skips and names it.
+   heads as a deletion, so those routes cannot skip it. The document list skips and names it
+   when asked (`malformed=skip`).
 5. Wire `fields` selects a projection and cannot express core's arbitrary field-equality filter.
 6. `requestFromIncomingMessage` supports a maximum body size, but reference `serve()` currently
    supplies no cap.

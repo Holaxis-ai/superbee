@@ -92,7 +92,7 @@ export interface ListHeadsParams {
 
 /** One page of `GET .../docs?fields=frontmatter[&type=][&prefix=]`, following `cursor` when given. */
 export async function listHeadsPage(params: ListHeadsParams, cursor?: string): Promise<ListDocsResponse> {
-  const query = new URLSearchParams({ fields: "frontmatter", limit: String(LIST_LIMIT) });
+  const query = new URLSearchParams({ fields: "frontmatter", limit: String(LIST_LIMIT), malformed: "skip" });
   if (params.type) query.set("type", params.type);
   if (params.prefix) query.set("prefix", params.prefix);
   if (cursor) query.set("cursor", cursor);
