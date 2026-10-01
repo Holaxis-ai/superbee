@@ -143,6 +143,7 @@ export async function buildPublicationBundle(outfile, surface = "full") {
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
       "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
+      "@superbee/core/query-order": r("../core/src/query-order.ts"),
       "@superbee/core/publication-filesystem": r("../core/src/publication-filesystem.ts"),
       "@superbee/core": r("../core/src/index.ts"),
       "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),

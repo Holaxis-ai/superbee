@@ -34,6 +34,7 @@ export const workspaceAliases = {
       "@superbee/core/kinds": r("../core/src/kinds.ts"),
       "@superbee/core/platform": r("../core/src/platform.ts"),
       "@superbee/core/query-filter": r("../core/src/query-filter.ts"),
+      "@superbee/core/query-order": r("../core/src/query-order.ts"),
       "@superbee/core/remote": r("../core/src/remote.ts"),
       "@superbee/core/uncertain-write": r("../core/src/uncertain-write.ts"),
       "@superbee/core/verification": r("../core/src/verification.ts"),

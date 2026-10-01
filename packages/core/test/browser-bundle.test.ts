@@ -43,6 +43,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "meaningful-change-time.js", symbol: "meaningfulChangeTimeValue" },
   { module: "page.js", symbol: "parseRegistration" },
   { module: "query-filter.js", symbol: "matchesFilter" },
+  { module: "query-order.js", symbol: "compareByMeaningfulChange" },
   { module: "query-selection.js", symbol: "applyQuerySelectionFilters" },
   { module: "kinds.js", symbol: "isTerminal" },
   { module: "remote.js", symbol: "RemoteBackend" },
