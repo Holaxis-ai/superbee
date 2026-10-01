@@ -61,7 +61,7 @@ test("losing or replacing the active source clears retained answers and citation
   assert.doesNotMatch(f.root.textContent, /October 5/);
 });
 
-test("a source changed during admission starts its own conversation after the old start settles", async t => {
+test("a source changed during admission starts its own conversation immediately", async t => {
   const pending = deferred();
   const f = fixture(t, { async start(value) {
     f.starts.push(value.bindingId);
@@ -73,6 +73,40 @@ test("a source changed during admission starts its own conversation after the ol
   assert.deepEqual(f.starts, ["bundle-one", "bundle-two"]);
   assert.equal(f.root.querySelector('[type="submit"]').disabled, false);
 });
+
+for (const middle of [selection("bundle-two"), undefined]) {
+  test(`pending A -> ${middle ? "B" : "absent"} -> A admission cannot revive an obsolete start`, async t => {
+    const admissions = [], streams = [];
+    const f = fixture(t, {
+      start(context, signal) {
+        const pending = deferred();
+        admissions.push({ context, signal, pending });
+        return pending.promise;
+      },
+      events(sessionId, after, signal, callback) {
+        streams.push(sessionId);
+        callback({ seq: 1, at: "now", type: "agent.text", payload: { turnId: "old", text: "stale answer" } });
+        return new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+      },
+    });
+    f.panel.show(); await tick();
+    f.context(middle); void f.panel.refresh(); await tick();
+    assert.equal(admissions[0].signal.aborted, true);
+    f.context(selection()); void f.panel.refresh(); await tick();
+    assert.equal(admissions.length, middle ? 3 : 2);
+    for (const admission of admissions.slice(0, -1)) {
+      assert.equal(admission.signal.aborted, true);
+      admission.pending.resolve({ sessionId: "obsolete", status: "active" });
+    }
+    await tick();
+    assert.deepEqual(streams, []);
+    assert.doesNotMatch(f.root.textContent, /stale answer/);
+    admissions.at(-1).pending.resolve({ sessionId: "current", status: "active" });
+    await tick();
+    assert.deepEqual(streams, ["current"]);
+    assert.equal(f.root.querySelector('[type="submit"]').disabled, false);
+  });
+}
 
 test("late send receipt cannot activate a turn in a replacement source", async t => {
   const pending = deferred();
@@ -91,6 +125,30 @@ test("terminal stream event preceding send response keeps the completed turn set
   pending.resolve({ turnId: "turn-one" }); await tick();
   assert.equal(f.root.querySelector('[type="submit"]').disabled, false);
   assert.match(f.root.querySelector('[role="status"]').textContent, /Ready/);
+});
+
+test("terminal event preceding a cancel response keeps Ready status", async t => {
+  const pending = deferred();
+  const f = fixture(t, { cancel: () => pending.promise });
+  f.panel.show(); await tick();
+  f.event(1, "turn.accepted", { turnId: "turn-one", text: "Question" });
+  f.root.querySelector(".assistant-actions button:nth-child(2)").click();
+  f.event(2, "turn.ended", { turnId: "turn-one", stopReason: "end_turn" });
+  pending.resolve(); await tick();
+  assert.match(f.root.querySelector('[role="status"]').textContent, /Ready/);
+  assert.equal(f.root.querySelector(".assistant-actions button:nth-child(2)").disabled, true);
+});
+
+test("a cancel response from a replaced source cannot change the current conversation status", async t => {
+  const pending = deferred();
+  const f = fixture(t, { cancel: () => pending.promise });
+  f.panel.show(); await tick();
+  f.event(1, "turn.accepted", { turnId: "turn-one", text: "Question" });
+  f.root.querySelector(".assistant-actions button:nth-child(2)").click();
+  f.context(selection("bundle-two")); await f.panel.refresh();
+  const status = f.root.querySelector('[role="status"]').textContent;
+  pending.resolve(); await tick();
+  assert.equal(f.root.querySelector('[role="status"]').textContent, status);
 });
 
 test("only the originating current surface executes each navigation request once", async t => {

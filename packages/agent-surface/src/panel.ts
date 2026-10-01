@@ -46,8 +46,9 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
   let cursor = 0;
   let activeTurn: string | undefined;
   let stopped = false;
-  let opening = false;
-  let pendingRefresh = false;
+  let opening: AbortController | undefined;
+  let openingRevision: string | undefined;
+  let openingSurface: string | undefined;
   let sending = false;
   let polling = false;
   let epoch = 0;
@@ -237,26 +238,32 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
   }
   async function refresh() {
     if (stopped) return;
-    if (opening) { pendingRefresh = true; return; }
     const context = options.context();
     sourceLabel.textContent = context?.label ?? "Choose a bundle to ask a question.";
-    if (!context) {
-      epoch++; stream?.abort(); polling = false; session = undefined; sourceBinding = undefined;
-      clearTranscript(); status.textContent = "Choose a bundle to continue."; controls(); return;
+    if (context && sourceBinding === context.bindingId &&
+        (session || (opening && openingRevision === context.contextRevision && openingSurface === context.surfaceId))) {
+      controls(); return;
     }
-    if (session && sourceBinding === context.bindingId) { controls(); return; }
-    opening = true;
+    // Invalidate before starting another admission, even when an obsolete start ignores abort.
     const generation = ++epoch;
-    stream?.abort();
+    opening?.abort(); opening = undefined;
+    stream?.abort(); stream = undefined;
     polling = false;
     session = undefined;
-    sourceBinding = context.bindingId;
+    sourceBinding = context?.bindingId;
     clearTranscript();
+    if (!context) {
+      status.textContent = "Choose a bundle to continue."; controls(); return;
+    }
+    const admission = new AbortController();
+    opening = admission;
+    openingRevision = context.contextRevision;
+    openingSurface = context.surfaceId;
     status.textContent = "Opening conversation…";
     controls();
     try {
-      const admitted = await transport.start(context, lifetime.signal);
-      if (stopped || generation !== epoch || options.context()?.bindingId !== sourceBinding) return;
+      const admitted = await transport.start(context, AbortSignal.any([admission.signal, lifetime.signal]));
+      if (stopped || admission.signal.aborted || generation !== epoch || options.context()?.bindingId !== sourceBinding) return;
       session = admitted;
       status.textContent = "Ask a question about this source.";
       stream = new AbortController();
@@ -264,15 +271,17 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
     } catch {
       if (!stopped && generation === epoch) { status.textContent = "The assistant is unavailable. Try reconnecting."; retry.hidden = false; }
     } finally {
-      opening = false; controls();
-      if (!stopped && (pendingRefresh || options.context()?.bindingId !== sourceBinding)) {
-        pendingRefresh = false; void refresh();
+      if (opening === admission) opening = undefined;
+      if (generation === epoch) {
+        controls();
+        if (!stopped && options.context()?.bindingId !== sourceBinding) void refresh();
       }
     }
   }
   function fence(message: string) {
     stopped = true;
     epoch++;
+    opening?.abort(); opening = undefined;
     stream?.abort();
     lifetime.abort();
     session = undefined;
@@ -311,10 +320,15 @@ export function mountAssistantPanel(options: AssistantPanelOptions) {
   input.addEventListener("keydown", inputKey);
   cancel.addEventListener("click", () => {
     if (!session || !activeTurn || stopped) return;
+    const generation = epoch;
+    const sessionId = session.sessionId;
+    const turnId = activeTurn;
+    const current = () => !stopped && generation === epoch && session?.sessionId === sessionId &&
+      activeTurn === turnId && !endedTurns.has(turnId);
     cancel.disabled = true;
-    void transport.cancel(session.sessionId, activeTurn, lifetime.signal).then(
-      () => { status.textContent = "Stopping…"; },
-      () => { if (!stopped) { status.textContent = "Stop could not be confirmed. Reconnect to check the turn."; controls(); } },
+    void transport.cancel(sessionId, turnId, lifetime.signal).then(
+      () => { if (current()) status.textContent = "Stopping…"; },
+      () => { if (current()) { status.textContent = "Stop could not be confirmed. Reconnect to check the turn."; controls(); } },
     );
   });
   retry.addEventListener("click", () => {

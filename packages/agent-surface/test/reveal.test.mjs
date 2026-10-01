@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { createRevealPolicy, SurfaceContextError, FOLLOW_MS, OFFER_MS } from "../dist/index.js";
 
 function fixture() {
@@ -56,6 +57,28 @@ test("screen clear and lifetime abort retire explicit offers", async () => {
   }
 });
 
+test("invocation cancellation retires a suggestion and removes its listener and timer", async () => {
+  const f = fixture();
+  const invocation = new AbortController();
+  assert.equal((await f.policy.execute("explicit", { signal: invocation.signal })).offered, true);
+  assert.equal(getEventListeners(invocation.signal, "abort").length, 1);
+  invocation.abort();
+  assert.equal(f.offers[0].disposed, 1);
+  assert.equal(f.timers.size, 0);
+  assert.equal(getEventListeners(invocation.signal, "abort").length, 0);
+  assert.equal((await f.policy.execute("next")).offered, true);
+  f.policy.dispose();
+});
+
+test("an expired offer removes its invocation cancellation listener", async () => {
+  const f = fixture();
+  const invocation = new AbortController();
+  await f.policy.execute("explicit", { signal: invocation.signal });
+  [...f.timers.values()][0]();
+  assert.equal(getEventListeners(invocation.signal, "abort").length, 0);
+  f.policy.dispose();
+});
+
 test("follow stamps failed attempts, throttles quiet screens, degrades busy screens and resets on preference changes", async () => {
   const f = fixture();
   f.mode("follow");
@@ -85,6 +108,25 @@ test("cancel during navigation fences late success while screen transitions may 
   const result = policy.execute("target", { signal: canceled.signal });
   canceled.abort(); complete(true);
   assert.equal((await result).error.code, "unavailable");
+  policy.dispose();
+});
+
+test("a delayed navigation host observes cancellation before committing a side effect", async () => {
+  const lifetime = new AbortController();
+  const invocation = new AbortController();
+  const screen = new AbortController();
+  let release, commits = 0;
+  const policy = createRevealPolicy({ lifetime: lifetime.signal, screenSignal: () => screen.signal,
+    resolve: target => ({ target }), surface: { mode: () => "follow", async navigate(_, context) {
+      await new Promise(resolve => { release = resolve; });
+      if (context.signal.aborted) return false;
+      commits++; return true;
+    } },
+  });
+  const result = policy.execute("target", { signal: invocation.signal });
+  invocation.abort(); release();
+  assert.equal((await result).error.code, "unavailable");
+  assert.equal(commits, 0);
   policy.dispose();
 });
 

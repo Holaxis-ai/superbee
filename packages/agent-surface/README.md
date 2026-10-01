@@ -18,7 +18,7 @@ supported.
 | Export | Owner and caller |
 | --- | --- |
 | `createSurfaceContext`, `SurfaceContextError`, `SurfaceSnapshot` | Pure context lifecycle; hosted screen-context and Portal adapters validate their own selection shapes |
-| `createRevealPolicy`, `RevealMode`, `RevealSurface`, `RevealResult`, `FOLLOW_MS`, `OFFER_MS` | One navigation preference/cadence/offer lifecycle; hosts resolve typed targets and run their ordinary navigation paths |
+| `createRevealPolicy`, `RevealMode`, `RevealSurface`, `RevealResult`, `RevealNavigationContext`, `FOLLOW_MS`, `OFFER_MS` | One navigation preference/cadence/offer lifecycle; hosts resolve typed targets and run their ordinary navigation paths |
 | `ToolDescriptor` | Direct callable descriptor; a separate browser registration adapter may expose the same object through WebMCP |
 | `AssistantEvent`, `AssistantSourceRead`, `AssistantSourceRef` | Additive event envelope and host-created live/publication source references |
 | `NavigationOrigin`, `NavigationTarget`, `NavigationOutcome`, `NavigationRequest`, `NavigationReceipt` | Identifier-based requests and receipts bound to the initiating session, turn, tool, surface and context |
@@ -34,8 +34,10 @@ host selections should contain immutable identifiers rather than mutable content
 `createRevealPolicy({surface, resolve, screenSignal, lifetime})` exposes `execute(input, invocation?)`
 and `dispose()`. Input validation belongs to the host wrapper. Off refuses; suggestions offer; follow
 navigates on a quiet surface, at most once per six seconds. A busy follow surface offers instead.
-Offers expire after sixty seconds and clear on screen transition or lifetime abort. The host's
-`navigate` must check current admission and mayLeave guards before reporting success. A successful
+Offers expire after sixty seconds and clear on screen transition, invocation cancellation or lifetime
+abort. The host's `navigate(target, {signal})` must recheck the supplied signal after awaited admission
+and mayLeave guards, before committing navigation. Existing callbacks that accept only the target
+remain compatible. A successful
 navigation can intentionally change the prior context revision.
 
 The package does not touch `document.modelContext`. A descriptor's `execute` is directly callable
