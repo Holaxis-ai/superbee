@@ -13,7 +13,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const TSC_WORKSPACES = Object.freeze([
   "core", "browser-local", "board-git", "server", "view-runtime", "ui-server",
-  "markdown-renderer", "mcp-app", "publication", "bundle-descriptor", "agent-surface",
+  "markdown-renderer", "mcp-app", "publication", "bundle-descriptor",
 ]);
 
 // Lifecycle hooks replaced by this dependency graph must not silently acquire new work.

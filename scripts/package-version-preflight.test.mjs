@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { checkPackageVersions, peerAdmits } from './package-version-policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const files = ['packages/core/package.json', 'packages/server/package.json', 'packages/markdown-renderer/package.json', 'packages/cli/package.json', 'packages/agent-surface/package.json', 'package-lock.json'];
+const files = ['packages/core/package.json', 'packages/server/package.json', 'packages/markdown-renderer/package.json', 'packages/cli/package.json', 'package-lock.json'];
 function fixture(t, mutate = () => {}) {
   const directory = mkdtempSync(path.join(tmpdir(), 'superbee-version-preflight-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -25,10 +25,10 @@ test('source preflight succeeds without dependencies, build outputs or network',
   assert.deepEqual(checkPackageVersions(fixture(t)), []);
 });
 
-test('a coherent future pair and independent renderer, cli and agent-surface versions need no validator edits', t => {
+test('a coherent future pair and independent renderer and cli versions need no validator edits', t => {
   const directory = fixture(t, d => {
-    for (const name of ['core', 'server', 'markdown-renderer', 'cli', 'agent-surface']) {
-      d[`packages/${name}/package.json`].version = { 'markdown-renderer': '3.1.0', cli: '4.0.0-pre.2', 'agent-surface': '5.0.0-pre.1' }[name] ?? '9.0.0-pre.3';
+    for (const name of ['core', 'server', 'markdown-renderer', 'cli']) {
+      d[`packages/${name}/package.json`].version = { 'markdown-renderer': '3.1.0', cli: '4.0.0-pre.2' }[name] ?? '9.0.0-pre.3';
       d['package-lock.json'].packages[`packages/${name}`].version = d[`packages/${name}/package.json`].version;
     }
     d['packages/server/package.json'].dependencies['@superbee/core'] = d['packages/core/package.json'].version;
@@ -65,15 +65,6 @@ for (const [label, mutate, expected] of [
   ['cli stale lock version', d => { d['package-lock.json'].packages['packages/cli'].version = '0.0.0'; }, /packages\/cli.version:.*from packages\/cli\/package.json/],
   ['cli stale lock development dependency', d => { d['package-lock.json'].packages['packages/cli'].devDependencies.esbuild = '*'; }, /packages\/cli.devDependencies:.*from packages\/cli\/package.json/],
   ['cli missing link', d => { delete d['package-lock.json'].packages['node_modules/@superbee/cli']; }, /node_modules\/@superbee\/cli.link: found missing/],
-  ['private agent-surface', d => { d['packages/agent-surface/package.json'].private = true; }, /agent-surface\/package.json private: expected publishable/],
-  ['agent-surface publish access drift', d => { d['packages/agent-surface/package.json'].publishConfig.access = 'restricted'; }, /agent-surface\/package.json publishConfig.access:.*expected "public"/],
-  ['agent-surface missing registry', d => { delete d['packages/agent-surface/package.json'].publishConfig.registry; }, /agent-surface\/package.json publishConfig.registry: found missing/],
-  ['agent-surface malformed version', d => { d['packages/agent-surface/package.json'].version = '0.1.0-pre.01'; }, /agent-surface\/package.json version: expected/],
-  ['agent-surface missing workspace', d => { delete d['package-lock.json'].packages['packages/agent-surface']; }, /packages\/agent-surface: missing workspace record/],
-  ['agent-surface stale lock version', d => { d['package-lock.json'].packages['packages/agent-surface'].version = '0.0.0'; }, /packages\/agent-surface.version:.*from packages\/agent-surface\/package.json/],
-  ['agent-surface stale lock development dependency', d => { d['package-lock.json'].packages['packages/agent-surface'].devDependencies.jsdom = '*'; }, /packages\/agent-surface.devDependencies:.*from packages\/agent-surface\/package.json/],
-  ['agent-surface missing link', d => { delete d['package-lock.json'].packages['node_modules/@superbee/agent-surface']; }, /node_modules\/@superbee\/agent-surface.link: found missing/],
-  ['agent-surface stale link', d => { d['package-lock.json'].packages['node_modules/@superbee/agent-surface'].resolved = 'packages/cli'; }, /agent-surface.resolved:.*from packages\/agent-surface\/package.json/],
 ]) test(label, t => assert.match(checkPackageVersions(fixture(t, mutate)).join('\n'), expected));
 
 test('direct runner refuses unexpected arguments', () => {
