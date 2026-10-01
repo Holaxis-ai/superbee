@@ -1,0 +1,25 @@
+{
+  "name": "@superbee/agent-surface",
+  "version": "0.1.0-pre.1",
+  "type": "module",
+  "description": "Shared assistant context, navigation policy and browser panel with host-owned authority and transport.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Holaxis-ai/superbee.git",
+    "directory": "packages/agent-surface"
+  },
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "sideEffects": false,
+  "files": ["dist", "README.md", "LICENSE", "NOTICE"],
+  "scripts": {
+    "prepublishOnly": "node -e \"console.error('Publication requires a reviewed artifact and explicit maintainer release authorization'); process.exit(1)\"",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": { "jsdom": "^25.0.1", "typescript": "^5.9.3" }
+}
