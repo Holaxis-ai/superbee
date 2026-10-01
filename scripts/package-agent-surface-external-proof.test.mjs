@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -35,6 +35,11 @@ test('packed agent-surface passes the retained-artifact external consumer proof'
     assert.equal(result.tarball, tarball);
     assert.equal(result.sha256, createHash('sha256').update(bytes).digest('hex'));
     assert.deepEqual(await readFile(tarball), bytes, 'The retained packed bytes must not change');
+    const alias = path.join(artifacts, 'artifact-alias.tgz');
+    await symlink(tarball, alias);
+    await assert.rejects(exec(process.execPath,
+      [path.join(root, 'packages/agent-surface/scripts/verify-packed.mjs'), alias],
+      { cwd: root, maxBuffer: 10 * 1024 * 1024 }), /retained artifact must be a regular file/);
   } finally {
     await rm(artifacts, { recursive: true, force: true });
   }
