@@ -12,3 +12,6 @@ export * from "./answer-rows.js";
 export * from "./read-adapter.js";
 export * from "./paged-reads.js";
 export * from "./whole-document-transport.js";
+export * from "./history-pages.js";
+export * from "./operations.js";
+export * from "./root-write.js";

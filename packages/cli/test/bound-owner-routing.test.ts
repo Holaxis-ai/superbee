@@ -1222,8 +1222,9 @@ test("a fresh clone whose binding names its own conventional board provisions fr
     await withHome(homeDir, async () => {
       let out = "";
       await inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true }));
-      const rec = JSON.parse(out) as { provisioned?: string; sync?: string };
+      const rec = JSON.parse(out) as { provisioned?: string; sync?: string; home?: string };
       assert.match(rec.provisioned ?? "", /materialized from origin\/board/);
+      assert.equal(rec.home, "git", "the first sync, which provisions the board, reports a Git board");
       assert.equal(rec.provisioned?.startsWith(topo.a.board), true, "provisioned exactly the bound path");
       assert.equal(rec.sync, "already up to date");
       assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
@@ -1234,7 +1235,7 @@ test("a fresh clone whose binding names its own conventional board provisions fr
 
       let again = "";
       await inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (again += line), hookInstalled: () => true }));
-      assert.deepEqual(JSON.parse(again), { sync: "already up to date" });
+      assert.deepEqual(JSON.parse(again), { sync: "already up to date", schema_version: 2, home: "git", sent: 0, received: 0, conflicts: 0, held: 0, next: [] });
     });
     assert.equal(existsSync(topo.b.board), false, "the sibling clone is never touched");
   } finally {
@@ -1263,7 +1264,7 @@ test("own-checkout symlink routes cannot provision an absent board or establish 
             const run = () => inDir(topo.a.root, () => sync(flags, { stdout: (line) => (out += line), hookInstalled: () => true }));
             if (populated) {
               await run();
-              assert.deepEqual(JSON.parse(out), { sync: "nothing to sync" });
+              assert.deepEqual(JSON.parse(out), { sync: "nothing to sync", schema_version: 2, home: "local", sent: 0, received: 0, conflicts: 0, held: 0, next: [] });
             } else {
               await assert.rejects(run, (err: unknown) => (err as { code?: string }).code === "NOT_FOUND");
             }
@@ -1329,7 +1330,7 @@ test("an existing legacy bound board syncs without moving to the canonical direc
     await withHome(homeDir, async () => {
       let out = "";
       await inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true }));
-      assert.deepEqual(JSON.parse(out), { sync: "already up to date" });
+      assert.deepEqual(JSON.parse(out), { sync: "already up to date", schema_version: 2, home: "git", sent: 0, received: 0, conflicts: 0, held: 0, next: [] });
     });
     assert.equal(existsSync(topo.a.board), false);
     assert.equal(existsSync(path.join(legacy, ".git")), true);

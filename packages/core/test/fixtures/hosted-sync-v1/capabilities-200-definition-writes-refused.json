@@ -1,0 +1,23 @@
+{
+  "name": "capabilities-200-definition-writes-refused",
+  "description": "The capabilities of a bundle in the same tenant whose model the bearer may not change (a read grant): definitionWrites refused.",
+  "route": "/sync/v1/capabilities",
+  "rows": [
+    "capabilities 200"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"ro.a\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"heads\":true,\"snapshot\":true,\"operations\":true,\"operationsRetentionMs\":2592000000,\"bound\":{\"documents\":1000,\"bytes\":1048576},\"paged\":{\"documents\":10000},\"limits\":{\"documentInputBytes\":983040},\"root\":{\"content\":\"---\\nokf_version: \\\"0.2\\\"\\n---\\n# ro.a\\n\",\"version\":\"sha256:2b4a77c406c4bbdbe473d4a6d3cc8cbfcf040cc12819dcb4435922005e210c7e\"},\"definitionWrites\":\"refused\",\"rootWrites\":\"refused\"}",
+    "truncated": false
+  }
+}

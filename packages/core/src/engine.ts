@@ -230,7 +230,8 @@ export async function queryHeads(
   options: QueryOptions = {},
 ): Promise<HeadResult[]> {
   if (backend.queryHeads) {
-    const rows = (await backend.queryHeads(filter)).filter((row) => matchesFilter(row, filter));
+    const rows = (await backend.queryHeads(filter, options.onSkip ? { onSkip: options.onSkip } : undefined))
+      .filter((row) => matchesFilter(row, filter));
     rows.sort((a, b) => a.id.localeCompare(b.id));
     return rows;
   }
@@ -267,11 +268,15 @@ function toSelectorList(value: string | string[] | undefined): string[] | undefi
   return Array.isArray(value) ? value : [value];
 }
 
-export async function queryEdges(backend: StorageBackend, filter: EdgeFilter = {}): Promise<Link[]> {
+export async function queryEdges(
+  backend: StorageBackend,
+  filter: EdgeFilter = {},
+  options: QueryOptions = {},
+): Promise<Link[]> {
   const fromSelectors = toSelectorList(filter.from)?.map(normalizeEdgeSelector);
   const toSelectors = toSelectorList(filter.to)?.map(normalizeEdgeSelector);
   const edges: Link[] = [];
-  for (const doc of await query(backend)) {
+  for (const doc of await query(backend, {}, options)) {
     for (const link of parseLinksFromDoc(doc)) {
       if (!matchesEdgeSelector(link.from, fromSelectors)) continue;
       if (!matchesEdgeSelector(link.to, toSelectors)) continue;

@@ -78,7 +78,7 @@ import { deriveOffers, OFFERS_HELP, type OfferRow } from "../offers.js";
 import { parseArgs } from "node:util";
 import path from "node:path";
 import { realpath } from "node:fs/promises";
-import { bundleHomeAt, type BundleHome } from "../bundle-home.js";
+import { bundleHomeAt, unboundCopyOf, type BundleHome } from "../bundle-home.js";
 import {
   BOARD_BRANCH,
   BOARD_REF,
@@ -106,7 +106,7 @@ import { defaultSyncStore, type AwarenessCache, type AwarenessDeltaRow } from ".
 import { hookNeedsUpdate } from "./hook.js";
 import { skillRefreshScopes } from "./skill.js";
 import type { InstallScope } from "../install-scope.js";
-import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "../meaningful-change-order.js";
+import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "@superbee/core/query-order";
 import { loadCatalog } from "../catalog.js";
 import { staticBuildIdentity, type ArtifactChannel } from "../build-identity.js";
 import {
@@ -197,7 +197,18 @@ export interface BundleSummary {
   okfVersion?: string | null;
   /** Where the bundle lives (`bundle-home.ts`); injected test fakes may omit it (the block omits the field then). */
   home?: BundleHome;
+  /** A hosted checkout marker with no binding here: what it says and the adopt command (`bundle-home.ts`). */
+  copyOfCheckout?: Record<string, unknown>;
+  /**
+   * Documents whose frontmatter does not parse, left out of every count above. Rendered first in
+   * the bundle block so an agent that broke a file with a raw edit learns it at the next session
+   * start or turn, not when a reader fails. Absent when every document parses.
+   */
+  malformed?: { id: string; reason: string }[];
 }
+
+/** Malformed rows rendered in the home view before the overflow is summarized as a count. */
+const MALFORMED_SHOWN = 5;
 
 /**
  * A bundle root WAS discovered from the CWD, but reading it failed (e.g. a malformed/unreadable
@@ -232,9 +243,14 @@ export interface HomeBindingNote {
   recovery?: string;
 }
 
-/** The deliberately small user-scoped catalog projection shown during agent orientation. */
+/**
+ * The deliberately small user-scoped catalog projection shown during agent orientation. `home`
+ * reads only the label; `session-start` adds where each other bundle lives and how fresh it is.
+ */
 export interface HomeWorkspace {
   label: string;
+  home?: string;
+  freshness?: string;
 }
 
 export type HomeWorkspacesBlock =
@@ -255,7 +271,7 @@ const HOME_RECENT_LIMIT = 5;
 /** Catalog orientation must remain a cheap hint even when an entry points at a slow filesystem. */
 export const HOME_WORKSPACES_BUDGET_MS = 500;
 /** Cap the always-on workspace orientation block; the full catalog remains one explicit read away. */
-const HOME_WORKSPACES_LIMIT = 15;
+export const HOME_WORKSPACES_LIMIT = 15;
 
 /** Injectable seam so the offline view is unit-testable without real I/O. */
 export interface HomeDeps {
@@ -396,7 +412,8 @@ export async function defaultSummarizeBundle(
     return { root, unreadable: true };
   }
   try {
-    const docs = await queryHeads(bundle);
+    const malformed: { id: string; reason: string }[] = [];
+    const docs = await queryHeads(bundle, {}, { onSkip: ({ id, reason }) => malformed.push({ id, reason }) });
     // ONE extra known-id read (absent-tolerant, never throws, fs-only for home's always-local
     // bundle) — the same display-name chain the ui server's config uses (bundle-name.ts).
     const { name, source } = await deriveBundleDisplayName(bundle);
@@ -404,8 +421,13 @@ export async function defaultSummarizeBundle(
     // as the v0.1 compatibility fallback, exactly as the mutation service resolves it.
     const okfVersion = await readBundleOkfVersion(bundle);
     // Local Git and private state only, like the rest of this render; unreadable evidence reads as local.
-    const bundleHome = (await bundleHomeAt(await realpath(bundle.root).catch(() => bundle.root))).home;
-    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }), home: bundleHome };
+    const facts = await bundleHomeAt(await realpath(bundle.root).catch(() => bundle.root));
+    const copy = unboundCopyOf(facts).copy_of_checkout as Record<string, unknown> | undefined;
+    return {
+      name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }), home: facts.home,
+      ...(copy ? { copyOfCheckout: copy } : {}),
+      ...(malformed.length > 0 ? { malformed: malformed.sort((a, b) => a.id.localeCompare(b.id)) } : {}),
+    };
   } catch {
     // A bundle root exists but could not be read — DISTINCT from "no bundle" (see UnreadableBundle).
     return { root: collapseHomeDirectory(bundle.root), unreadable: true };
@@ -913,6 +935,8 @@ export function buildHomeView(
     const bundleBlock: Record<string, unknown> = {};
     // Where it lives comes first: every later line (sync, refusals, conflicts) depends on it.
     if (summary.home) bundleBlock.home = summary.home;
+    // A copied, moved or restored hosted checkout: local until adopted, and the one command that binds it.
+    if (summary.copyOfCheckout) bundleBlock.copy_of_checkout = summary.copyOfCheckout;
     // Identity: the derived project name, so a conventional
     // conventional bundle reads as ITS project, not as the folder name every project shares.
     if (summary.name) {
@@ -926,6 +950,17 @@ export function buildHomeView(
       }
     }
     bundleBlock.root = summary.root;
+    if (summary.malformed && summary.malformed.length > 0) {
+      bundleBlock.malformed_docs = {
+        shown: Math.min(summary.malformed.length, MALFORMED_SHOWN),
+        total: summary.malformed.length,
+        rows: summary.malformed.slice(0, MALFORMED_SHOWN),
+      };
+      bundleBlock.malformed_help =
+        `these documents' frontmatter is invalid YAML: readers skip them and sync publishes nothing until they parse — fix the ` +
+        `lines between the --- markers (quote a value that contains ': '), then confirm with ` +
+        `\`${deps.invocation()} status\``;
+    }
     bundleBlock.docs = summary.docs;
     bundleBlock.by_type = summary.byType;
     if (summary.trust) bundleBlock.trust = summary.trust;

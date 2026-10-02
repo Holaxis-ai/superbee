@@ -38,13 +38,15 @@ import {
   decodeOutcomeAnswer,
   HostedOutcomeError,
   CAPACITY_REFUSAL_CODES,
+  DELETIONS_HELD_REFUSAL_CODE,
+  definitionFindingsText,
   updateRow,
   UPDATE_ANSWER_ROWS,
   type AuthorizationCode,
   type WriteFailure,
 } from "./answer-rows.js";
 import { DELETE_OPERATION_ID } from "./answer-rows.js";
-import { HostedCarrierError, type HostedAnswer, type HostedCarrier, type HostedRequestOptions } from "./carrier.js";
+import { HostedCarrierError, isAcceptedDeletionCount, isAgentLabelVia, type HostedAnswer, type HostedCarrier, type HostedRequestOptions } from "./carrier.js";
 import { isContentVersion } from "../version-transport.js";
 import { OPERATIONS_RETENTION_SKEW_MS, type HostedReadAdapter } from "./read-adapter.js";
 
@@ -59,13 +61,23 @@ const UNSAFE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "p
 export const WHOLE_DOCUMENT_SETTLEMENT: NonNullable<UncertainWriteOptions["settlement"]> = "recorded-only";
 
 export const WHOLE_DOCUMENT_BOUNDS = Object.freeze({
-  /** The write routes' request ceiling; a larger payload is refused here before it leaves. */
+  /**
+   * The write routes' request ceiling on a host that states none (`limits.documentInputBytes`); a
+   * larger payload is refused here before it leaves. A host that states its bound is held to that.
+   */
   payloadBytes: 65536,
   /** A write answer is a bounded result envelope. */
   answerBytes: 65536,
   /** An outcome answer carries the committed document as base64 under this envelope ceiling. */
   outcomeAnswerBytes: 2 * 1024 * 1024,
 });
+
+/**
+ * The whole-document write bound current hosts state (`limits.documentInputBytes`, 983,040 bytes:
+ * 1 MiB less a 64 KiB margin). A client plans against it only before it has asked the host, and
+ * holds a request to what the host actually states.
+ */
+export const CURRENT_HOST_DOCUMENT_INPUT_BYTES = 983_040;
 
 export interface WholeDocumentRoutes {
   create: string;
@@ -201,6 +213,29 @@ export interface WholeDocumentTransportOptions {
   /** Ends every request in flight. */
   signal?: AbortSignal;
   now?: () => number;
+  /**
+   * The agent the client runs under (`X-Superbee-Via`), sent on every write and its lookup. It
+   * must be a token {@link isAgentLabelVia} admits: the transport refuses to be built otherwise.
+   */
+  via?: string;
+  /**
+   * The person's typed acknowledgment of the host's mass-delete hold (`X-Superbee-Accept-Deletes`),
+   * sent on every delete write of this transport and on nothing else. Set it only after the person
+   * confirmed that many deletions in their own terminal; never from an agent's decision.
+   */
+  acceptDeletes?: number;
+  /**
+   * The host's whole-document write bound as its capabilities answer states it
+   * (`documentInputBytes`), in bytes of the request's JSON. Absent or null: the host states none,
+   * and {@link WHOLE_DOCUMENT_BOUNDS}`.payloadBytes` applies.
+   */
+  documentInputBytes?: number | null;
+  /**
+   * Told of each delete the host's mass-delete hold refused (`428 deletions_held`), with the
+   * bundle's counts. The intent is settled `refused` with {@link DELETIONS_HELD_REFUSAL_CODE},
+   * which never pauses the store: it stays until a person accepts or restores it.
+   */
+  onDeletionsHeld?: (held: { requestId: string; target: string; deletions: number; baseline: number }) => void;
 }
 
 const UNKNOWN: Outcome = Object.freeze({ kind: "unknown" });
@@ -213,6 +248,12 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   const lifetime = options.signal ?? new AbortController().signal;
   const requestSignal = (signal?: AbortSignal) => (signal ? AbortSignal.any([lifetime, signal]) : lifetime);
   const denial = (code: AuthorizationCode, message: string): Outcome => ({ kind: "refused", code, message });
+  // Checked here, so the carrier's own refusal of a bad token (a `denied`, read as a sign-in
+  // pause) is never reached from a write.
+  if (options.via !== undefined && !isAgentLabelVia(options.via)) throw new TypeError("the via token is not one the host admits");
+  if (options.acceptDeletes !== undefined && !isAcceptedDeletionCount(options.acceptDeletes)) throw new TypeError("acceptDeletes is not a count the host admits");
+  const via = options.via;
+  const payloadBytes = options.documentInputBytes ?? WHOLE_DOCUMENT_BOUNDS.payloadBytes;
 
   /**
    * The served head as the conflict a refusal stands for. Absent, it is a conflict against no
@@ -254,20 +295,34 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     if (error.code === "version_conflict" && intent.base === null) return servedHead(intent, "conflict", error.currentVersion);
     if (error.code === "version_conflict") return error.currentVersion === undefined ? servedHead(intent) : { kind: "conflict", actual: error.currentVersion };
     const row = UPDATE_ANSWER_ROWS.find((candidate) => candidate.answer === `200 ${error.code}`) ?? updateRow("200 other");
-    return row.code ? denial(row.code, error.message) : { kind: "refused", code: error.code, message: error.message };
+    if (row.code) return denial(row.code, error.message);
+    // A model change's findings ride in the message the refusal row prints: what to fix, by rule.
+    const findings = error.code === "definition_incompatible" ? definitionFindingsText(error.definitionDetails) : "";
+    return { kind: "refused", code: error.code, message: findings ? `${error.message} Findings: ${findings}.` : error.message };
   }
 
   function prepare(intent: OperationIntent): { request: WholeDocumentRequest; body: string } {
     const request = wholeDocumentRequest(bundleId, intent, options.okfVersion);
     const body = JSON.stringify(request.payload);
-    if (encoder.encode(body).byteLength > WHOLE_DOCUMENT_BOUNDS.payloadBytes)
-      throw new WholeDocumentInputError(`the document exceeds ${WHOLE_DOCUMENT_BOUNDS.payloadBytes} bytes as a request`);
+    if (encoder.encode(body).byteLength > payloadBytes)
+      throw new WholeDocumentInputError(`the document exceeds ${payloadBytes} bytes as a request`);
     return { request, body };
   }
 
-  /** The identity headers of a write and of its lookup: the same, including a create's acknowledgement. */
-  function identity(intent: OperationIntent, request: WholeDocumentRequest, maximum: number): HostedRequestOptions {
-    return { maximum, writeRequest: intent.requestId, binding, ...(request.kind === "create" && request.recreates !== undefined ? { recreate: request.recreates } : {}) };
+  /**
+   * The identity headers of a write and of its lookup: the same, including a create's
+   * acknowledgement. `via` rides along but is not identity: the host ignores it on a lookup.
+   */
+  function identity(intent: OperationIntent, request: WholeDocumentRequest, maximum: number, write = false): HostedRequestOptions {
+    return {
+      maximum,
+      writeRequest: intent.requestId,
+      binding,
+      ...(request.kind === "create" && request.recreates !== undefined ? { recreate: request.recreates } : {}),
+      ...(via !== undefined ? { via } : {}),
+      // Admission only, never identity: a delete write carries it, its lookup never needs it.
+      ...(write && request.kind === "delete" && options.acceptDeletes !== undefined ? { acceptDeletes: options.acceptDeletes } : {}),
+    };
   }
 
   /**
@@ -341,7 +396,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     const { request } = prepared;
     let answer: HostedAnswer;
     try {
-      answer = await carrier.json(routes[request.kind], request.payload, requestSignal(submitOptions.signal), identity(intent, request, WHOLE_DOCUMENT_BOUNDS.answerBytes));
+      answer = await carrier.json(routes[request.kind], request.payload, requestSignal(submitOptions.signal), identity(intent, request, WHOLE_DOCUMENT_BOUNDS.answerBytes, true));
     } catch (error) {
       // A credential that was already gone sent nothing; anything else may have left.
       if (error instanceof HostedCarrierError && error.code === "denied") return denial("AUTH_REQUIRED", "No credential was available; the change was not sent.");
@@ -353,8 +408,19 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     if (result?.ok && request.kind === "delete" && result.data.deletedVersion !== intent.base) return UNKNOWN;
     if (result?.ok) return { kind: "committed", version: result.data.version };
     if (result && !result.ok && result.error.code === "request_capacity") return capacity(result.error);
-    // The carrier refuses a malformed identity or binding before sending, so a 400 here, and any
-    // invalid_input, is the host's schema refusing this exact document. That is deterministic:
+    if (result && !result.ok && result.error.code === "deletions_held") {
+      const { deletions = 0, baseline = 0 } = result.error;
+      try {
+        options.onDeletionsHeld?.({ requestId: intent.requestId, target: intent.target, deletions, baseline });
+      } catch {
+        // Reporting never changes the outcome.
+      }
+      return { kind: "refused", code: DELETIONS_HELD_REFUSAL_CODE, message: result.error.message };
+    }
+    // The carrier refuses a malformed identity, binding or via token before sending, so a 400
+    // here, and any invalid_input, is the host's schema refusing this exact document (were the
+    // via grammar ever to drift from the host's, every write would land here: the golden
+    // exchanges pin it). That is deterministic:
     // resending or looking it up again can only repeat it, so it is a terminal refusal.
     if (row.answer === "400") {
       const code = (answer.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;

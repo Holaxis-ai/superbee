@@ -1,0 +1,23 @@
+{
+  "name": "heads-503-backend-unavailable",
+  "description": "The heads listing when storage fails: the reader is offline and may retry.",
+  "route": "/sync/v1/heads",
+  "rows": [
+    "refusal 503 backend_unavailable"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\"}"
+  },
+  "response": {
+    "status": 503,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"backend_unavailable\",\"message\":\"The bundle backend is unavailable.\",\"retryable\":true}}",
+    "truncated": false
+  }
+}

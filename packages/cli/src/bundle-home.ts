@@ -10,6 +10,12 @@
 //   git     the folder is a Git board: the provisioned `board` worktree, or the conventional
 //           bundle committed with the code on the current branch (in-tree)
 //   local   everything else, including a bundle not yet shared with `sync --establish`
+//
+// A local or Git folder that carries a hosted checkout marker (`.superbee/checkout.json`) but no
+// binding is reported as a `copy` of a checkout: moved, copied or restored. The marker never
+// changes the home; only `checkout --adopt` binds the folder again. A local one is refused by
+// `sync` and by the local MCP app's writes (`unboundLocalCopyAt`), since nothing done there
+// reaches the host.
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -29,6 +35,7 @@ import {
 } from "@superbee/board-git";
 
 import { bindingForPath, type CheckoutBinding } from "./hosted/binding.js";
+import { readCheckoutMarker, unboundCopyDetail, type CheckoutMarker } from "./hosted/marker.js";
 
 export type BundleHome = "local" | "git" | "hosted";
 
@@ -47,9 +54,15 @@ export interface GitBoardFacts {
   readonly prefix: BundleDirName | "";
 }
 
+/** A hosted checkout marker found in a folder that is not bound: the folder and what its marker says. */
+export interface UnboundCopy {
+  readonly folder: string;
+  readonly marker: CheckoutMarker;
+}
+
 export type BundleHomeFacts =
-  | { readonly home: "local" }
-  | { readonly home: "git"; readonly board: GitBoardFacts }
+  | { readonly home: "local"; readonly copy?: UnboundCopy }
+  | { readonly home: "git"; readonly board: GitBoardFacts; readonly copy?: UnboundCopy }
   | { readonly home: "hosted"; readonly binding: CheckoutBinding };
 
 function gitText(dir: string, args: string[]): string | null {
@@ -110,9 +123,27 @@ export async function gitBoardAt(canonicalRoot: string): Promise<GitBoardFacts |
 export async function bundleHomeAt(canonicalRoot: string, options: { home?: string } = {}): Promise<BundleHomeFacts> {
   const binding = await bindingForPath(options.home ?? homedir(), canonicalRoot).catch(() => null);
   if (binding) return { home: "hosted", binding };
+  const marker = readCheckoutMarker(canonicalRoot);
+  const copy = marker ? { copy: { folder: canonicalRoot, marker } } : {};
   const board = await gitBoardAt(canonicalRoot).catch(() => null);
-  if (board) return { home: "git", board };
-  return { home: "local" };
+  if (board) return { home: "git", board, ...copy };
+  return { home: "local", ...copy };
+}
+
+/**
+ * The unbound copy of a checkout at this canonical root when the folder is otherwise a plain local
+ * bundle, or null: what `sync` and the local MCP app refuse to act on. A Git board that carries a
+ * marker syncs through Git and is not one.
+ */
+export async function unboundLocalCopyAt(canonicalRoot: string, options: { home?: string } = {}): Promise<UnboundCopy | null> {
+  const facts = await bundleHomeAt(canonicalRoot, options);
+  return facts.home === "local" && facts.copy ? facts.copy : null;
+}
+
+/** The `copy_of_checkout` detail for a marked folder that is not bound, or nothing. */
+export function unboundCopyOf(facts: BundleHomeFacts): Record<string, unknown> {
+  if (facts.home === "hosted" || !facts.copy) return {};
+  return unboundCopyDetail(facts.copy.folder, facts.copy.marker);
 }
 
 /** The `hosted` or `board` detail a receipt carries beside `home`. */
@@ -123,9 +154,9 @@ export function homeDetail(facts: BundleHomeFacts): Record<string, unknown> {
   }
   if (facts.home === "git") {
     const { board } = facts;
-    return { board: { channel: board.channel, branch: board.branch, upstream: board.upstream, shared: board.shared } };
+    return { board: { channel: board.channel, branch: board.branch, upstream: board.upstream, shared: board.shared }, ...unboundCopyOf(facts) };
   }
-  return {};
+  return unboundCopyOf(facts);
 }
 
 function count(dir: string, args: string[]): number | null {
@@ -136,7 +167,7 @@ function count(dir: string, args: string[]): number | null {
 }
 
 /** The newest FETCH_HEAD this working tree or its repository has: a fetch from either one counts. */
-async function lastFetch(top: string): Promise<string | null> {
+export async function lastFetch(top: string): Promise<string | null> {
   const own = gitText(top, ["rev-parse", "--path-format=absolute", "--git-path", "FETCH_HEAD"]);
   const common = gitText(top, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   let newest: Date | null = null;

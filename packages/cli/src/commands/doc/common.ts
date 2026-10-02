@@ -6,6 +6,7 @@ import { currentHost } from "../../runtime-context.js";
 import { fstatSync } from "node:fs";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
+import type { HostedAccountDeps } from "../../hosted/account.js";
 
 /** The common flags every `doc` verb accepts — appended to each verb's focused help (§10). */
 const COMMON_OPTIONS = `Common options:
@@ -216,9 +217,25 @@ kind-declared fields like progress_status/priority — and truncates a large bod
 A truncated body is published as 'body_preview' (never 'body'), with body_truncated:true, the true
 body_chars, and a marker inside the value itself. That value is a PREVIEW, not a body: writing it
 back through 'doc write'/'doc update' is refused (exit 2) unless --accept-truncated-body is passed.
-Use --body-out to get the complete body for an edit cycle.
+Use --body-out to get the complete body for an edit cycle, or --offset to read it a page at a time.
 
 Options:
+  --offset <n>         Page the record's body: 'body' is the page starting at character n (a
+                       JavaScript string index, 0 for the first page) and 'range' says where it sits:
+                       offset, end, total_chars, total_bytes, complete, and next_offset while more
+                       follows. The page without next_offset is the last; complete is true only
+                       when the whole body fit in one page, so page on next_offset. A page ends
+                       within --max-bytes of UTF-8, never splits a character, and ends just after a
+                       line where one is near its end. A page is NOT the document: never write it
+                       back as the body.
+  --max-bytes <n>      The page's body bound in UTF-8 bytes, 1024 to 983040 (default 32768). Implies
+                       --offset 0 when --offset is absent.
+  --expected-version <v>
+                       Read the page only if the document is still at version v (the first page's
+                       head_version); otherwise exit with CONFLICT (version_conflict), so pages
+                       of two versions are never joined. Page with:
+                         superbee doc read <id> --offset 0 --json
+                         superbee doc read <id> --offset <next_offset> --expected-version <head_version> --json
   --out <path>         Write the doc's raw markdown bytes to a file (bypasses context).
                        Use --out - to stream raw bytes to stdout (the receipt goes to stderr).
                        Over --remote, bytes are the canonical OKF re-serialization (no raw-bytes
@@ -273,6 +290,7 @@ Examples:
   superbee doc read concepts/auth --body-out <path-outside-bundle>
   superbee doc read concepts/auth --rendered-out ./auth.html
   superbee doc read concepts/auth --field head_version
+  superbee doc read meetings/kickoff --offset 0 --json
 `;
 
 export const DOC_VERIFY_USAGE = `superbee doc verify — append one OKF v0.2 verification event and report the trust tier
@@ -312,10 +330,13 @@ Examples:
   superbee list --fields trust
 `;
 
+/** `doc history --limit 0` in a hosted checkout pages back at most this many versions. */
+export const HOSTED_HISTORY_CEILING = 10_000;
 export const DOC_HISTORY_USAGE = `superbee doc history — show a doc's attributed version chain (newest first)
 
 Usage:
   superbee doc history <id> [--limit <n>] [options]
+  superbee doc history <id> --seq <n> [options]
 
 Lists version + actor + timestamp (and agent, when recorded) per revision, with a count. A
 history-keeping backend (a remote deployment) returns the full chain and its real per-write
@@ -326,17 +347,27 @@ revision. Its actor is resolved from the doc's compatible advisory attribution, 
 the local user identity when none is present. The newest version is the token to
 pass to --expected-version for an optimistic doc update/delete.
 
+In a hosted checkout (and without --remote) the chain is the host's: every sent version, each with
+its seq (1 = the first write), the principal id that made it, and the agent label it named. The
+host's newest version is not the folder's compare-and-swap base, so no --expected-version line is
+offered there. A document created in the checkout has history once sync sends it.
+
 Options:
   --limit <n>           Cap the number of revisions returned, newest first (default: 20; 0 =
                         unlimited). A truncated result reports \`shown\` alongside the total
                         \`count\`, and a help line names the escape (a higher --limit, or 0 for
                         all). The newest revision is always included when truncated (it never
-                        gets cut off the front).
+                        gets cut off the front). In a hosted checkout, a listing (0 included)
+                        stops at ${HOSTED_HISTORY_CEILING.toLocaleString("en-US")}.
+  --seq <n>             Hosted checkout only: show version <n> — its row, frontmatter and a
+                        bounded body preview; with --json, its row and the whole stored content.
+                        Refused on a local bundle and with --remote.
 ${COMMON_OPTIONS}
 
 Examples:
   superbee doc history concepts/auth
   superbee doc history concepts/auth --limit 0
+  superbee doc history concepts/auth --seq 3
 `;
 
 export const DOC_DELETE_USAGE = `superbee doc delete — hard-delete a concept document (idempotent)
@@ -382,6 +413,8 @@ export interface DocCliDeps {
    * explicit-empty channel.
    */
   readStdin: () => Promise<StdinReadResult>;
+  /** What `doc history` reaches a hosted checkout's host with (default: the signed-in session and global fetch). */
+  hosted?: HostedAccountDeps;
 }
 
 /**

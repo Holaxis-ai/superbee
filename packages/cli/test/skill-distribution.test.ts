@@ -32,7 +32,7 @@ import {
   SKILL_CAPABILITY_PATTERNS,
   SKILL_COMMAND_RESOURCES,
 } from "../src/distribution-resources.js";
-import { renderNpm } from "../src/skill-render.js";
+import { renderNpm, renderDevin } from "../src/skill-render.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(here, "../../..");
@@ -212,9 +212,9 @@ test("the shipped View authoring reference teaches Superbee commands while prese
 const renderedNpm = renderNpm();
 
 test("the eager npm Skill stays lean and routes exact syntax to the live CLI", () => {
-  // 105: the hosted-checkout section (sign-in relay, batch sync, conflicts, app refusals) is eager
-  // because an agent meets it before it would think to read a reference.
-  assert.ok(renderedNpm.split("\n").length <= 105, "the eager Skill must remain a bounded front door");
+  // 109: the hosted-checkout section (sign-in relay, batch sync, app refusals) and the one conflict
+  // section both homes share are eager because an agent meets them before it would read a reference.
+  assert.ok(renderedNpm.split("\n").length <= 109, "the eager Skill must remain a bounded front door");
   assert.match(renderedNpm, /## Keep the front door short/);
   assert.match(renderedNpm, /Each outcome is one short sentence/);
   assert.match(renderedNpm, /complete opener to five lines and at most 80 words/);
@@ -259,6 +259,20 @@ test("the npm Skill progressively discloses one focused modeling reference", () 
   assert.match(renderedNpm, /remove temporary authoring\s+files/);
   assert.match(renderedNpm, /Use `--body-file` for multiline Markdown/);
   assert.match(renderedNpm, /Read only what the accepted work requires/);
+});
+
+test("private Portal guidance is internal-only and preserves both generated projections", () => {
+  const guide = "https://github.com/Holaxis-ai/superbee-portal/blob/main/docs/publishing-guide.md";
+  const internal = renderDevin();
+  assert.doesNotMatch(renderedNpm, /superbee-portal|Portal publishing guide/);
+  assert.equal(internal.split(guide).length - 1, 1);
+  assert.match(internal, /For internal Holaxis site publishing/);
+  assert.match(internal, /local\/Git snapshots or hosted authority, public or protected reads, and a separate authenticated-write path/);
+  assert.ok(internal.split("\n").length <= 109);
+  for (const [file, expected] of [["packages/superbee/SKILL.md", renderedNpm], [".cognition/skills/superbee/SKILL.md", internal]] as const) {
+    assert.equal(readFileSync(path.join(REPO_ROOT, file), "utf8"), expected);
+  }
+  assert.equal(internal.replace(/^For internal Holaxis site publishing.*$/m, "Read only what the accepted work requires."), renderedNpm);
 });
 
 test("the focused modeling reference calibrates structure and pins a verified delivery loop", () => {

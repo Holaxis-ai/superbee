@@ -36,30 +36,36 @@ import {
   type DeletionRefusal,
   type LocalBundle,
   type PullReport,
+  type SharedBase,
 } from "@superbee/browser-local";
-import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
+import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
 import {
   createWholeDocumentTransport,
+  sendRootWrite,
   WHOLE_DOCUMENT_SETTLEMENT,
   type HostedCapabilities,
   type HostedCarrier,
   type HostedReadAdapter,
 } from "@superbee/core/hosted-transport";
-import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalSnapshotConflict, type NewIntentRecord } from "@superbee/core/journaled-backend";
+import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalGuardConflict, JournalSnapshotConflict, type IntentRecord, type NewIntentRecord } from "@superbee/core/journaled-backend";
 import { mintRequestId, type UncertainWriteOptions } from "@superbee/core/uncertain-write";
 
 import { resolveLocalBundleTarget } from "../bundle.js";
 import { parseSyncArgs } from "../commands/sync/orchestrate.js";
 import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
+import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
-import { ACCESS_TOKEN_ENV, defaultHostedAuthDeps, ensureHostedAccessToken, readSession, SignedOutError, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { ACCESS_TOKEN_ENV, defaultHostedAuthDeps, readSession, SignedOutError, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
-import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./binding.js";
-import { createHostedSyncClient, hostedFailure } from "./client.js";
+import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreDir, recordHostStatement, type CheckoutBinding } from "./binding.js";
+import { hostedFailure, type createHostedSyncClient } from "./client.js";
+import { connectCheckout } from "./account.js";
+import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
+import { bundleAbsent } from "./refusals.js";
 import { buildRows, BUSY_REFUSAL_CODES, countRows, receiptFailure, rowsFailure, type NotSentReason, type SyncRow } from "./sync-rows.js";
 import {
   exportCheckout,
@@ -67,18 +73,23 @@ import {
   folderConflicts,
   inboundLinks,
   folderMatchesProjection,
+  heldPathMessage,
   readProjection,
   removeGuarded,
   scanCheckout,
   unsendable,
   writeProjection,
   recoverPlacements,
+  recordHostHold,
+  supersedeDeletion,
   type FolderConflictReason,
   type HeldFile,
   type ProjectionRecord,
 } from "./sync-scan.js";
-import { digestOf, fold, replaceGuarded } from "./projection.js";
-import { recordPulled } from "./freshness.js";
+import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
+import { adoptHostRoot, moveRootBase, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
+import { recordPulled, recordSynced } from "./freshness.js";
+import { syncEnvelope, syncVerbNotApplicable, withSyncEnvelope, type SyncEnvelope } from "../sync-outcomes.js";
 
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
 
@@ -106,8 +117,11 @@ first, and are refused (stale_review) if the host's version changed after it; ta
 A deleted file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
 document's history. A mass delete is held: when the deletes of the last day (sent, unsent and
 new) are more than half the checkout and at least 3 (or every document of a smaller one), the new
-ones are not sent, and they stay held until restored or accepted. --restore-deletes puts held
-and unsent deleted files back (so does --resolve take --doc <id> for one of them).
+ones are not sent, and they stay held until restored or accepted. The host applies the same
+rule to the whole bundle, over everyone's deletes of the last day: a delete it holds
+(deletions_held, counted_over naming the bundle) is parked the same way and never resent by a
+plain sync. --restore-deletes puts held and unsent deleted files back (so does --resolve take
+--doc <id> for one of them).
 --accept-deletes <token> sends exactly the held set the receipt names, and only after the person
 types the held count at the prompt: it needs an interactive terminal, and refuses any other
 shell (needs_person_at_terminal), so an agent asks the person to run it themselves.
@@ -121,12 +135,20 @@ deletes the host's version and take brings it back. A document id the folder can
 held with a row (unsafe_id), and the rest of the bundle syncs. A file edited while the host changed or
 deleted its document (during a sync, or while sync held it) is a conflict too; it is never sent
 over the host's version without --resolve.
+The bundle's front page (the root index.md) is sent and refreshed like a document where the host
+takes front-page changes from you; a conflict on it is resolved with --doc index.md (take, or keep
+after --inspect). Elsewhere it is held, and a subdirectory index.md and every log.md always are.
 Rows are committed, conflict, held (sync cannot send the file: reserved files, conventions/ and
 views/, a type change, a bulk deletion, a file over the host's bounds), refused, unknown (the
 answer was lost; the next sync looks it up by the same request) and paused (sign-in, or your
 sync quota for this bundle). The exit is 0 only when every row is committed: 5 when a row needs
 your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a lost answer, and
 4 (AUTH_REQUIRED, with the sign-in link) when you must sign in.
+Each write names the agent the sync runs under, recorded with it on the host as unverified
+attribution (never authority): claude-code under Claude Code (CLAUDECODE=1), or SUPERBEE_VIA=<token>
+(1 to 32 of a-z 0-9 . _ -, not starting with superbee); SUPERBEE_NO_VIA=<any value> names none.
+Another agent started from a Claude Code shell inherits CLAUDECODE=1 and is named claude-code
+unless SUPERBEE_VIA says otherwise. SUPERBEE_ACTOR does not set it.
 `;
 
 /** Rows shown by default; --limit changes it. */
@@ -196,7 +218,7 @@ function hostedDeps(partial: Partial<HostedSyncDeps>): HostedSyncDeps {
 }
 
 /** The `--dir` value in raw argv, in either spelling; malformed argv is left to the parser. */
-function dirArgument(argv: readonly string[]): string | undefined {
+export function dirArgument(argv: readonly string[]): string | undefined {
   let dir: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]!;
@@ -257,7 +279,7 @@ function parseHosted(argv: string[]): HostedValues {
   const inv = cliInvocation();
   for (const flag of GIT_ONLY_FLAGS) {
     if ((values as Record<string, unknown>)[flag] !== undefined) {
-      throw new CliError("USAGE", `--${flag} is for a Git board; a hosted checkout syncs with plain 'sync'`, { help: `${inv} sync --help` });
+      throw syncVerbNotApplicable([flag], "hosted", "it is for a Git board; a hosted checkout syncs with plain 'sync'", `${inv} sync --help`);
     }
   }
   if (values.inspect !== undefined && values.resolve !== undefined) {
@@ -329,6 +351,8 @@ interface Session {
   readonly reader: HostedReadAdapter;
   readonly capabilities: HostedCapabilities;
   readonly carrier: ReturnType<typeof createHostedSyncClient>["carrier"];
+  /** The checkout's client, for a second read after a refusal (the bundle list), or a fresh capabilities read. */
+  readonly client: Pick<ReturnType<typeof createHostedSyncClient>, "bundles" | "reader">;
   readonly routes: string;
   readonly store: FileJournaledBackend;
   readonly local: LocalBundle;
@@ -401,20 +425,10 @@ function unsafeIdRows(unsafe: ReadonlyMap<string, string>): HeldFile[] {
   }));
 }
 
-function bundleGone(binding: CheckoutBinding, unsent: number): CliError {
-  return new CliError(
-    "CONFLICT",
-    `hosted bundle '${binding.bundle_id}' is no longer served to you on ${binding.origin}: it was deleted there, or your access was removed`,
-    {
-      details: { reason: "bundle_deleted_remotely", bundle_id: binding.bundle_id, host: binding.origin, folder: binding.path, unsent_changes: unsent },
-      help: `your files stay in ${binding.path}; to keep them as a plain folder: ${cliInvocation()} checkout --release ${commandToken(binding.path)}`,
-    },
-  );
-}
-
-/** A read-side failure in CLI terms: a bundle the host no longer serves is a conflict with the checkout. */
-function readFailure(error: unknown, session: Pick<Session, "binding" | "target">, resumeCommand: CommandText, unsent: number): unknown {
-  if (error instanceof RemoteError && (error.code === "bundle_not_found" || error.status === 404)) return bundleGone(session.binding, unsent);
+/** A read-side failure in CLI terms: a bundle the host no longer serves (or whose id became
+ * ambiguous for a checkout naming no workspace) is a conflict with the checkout. */
+async function readFailure(error: unknown, session: Pick<Session, "binding" | "target" | "client">, resumeCommand: CommandText, unsent: number): Promise<unknown> {
+  if (error instanceof RemoteError && (error.code === "bundle_not_found" || error.status === 404)) return bundleAbsent(session.binding, session.client, unsent);
   return hostedFailure(error, session.target, resumeCommand);
 }
 
@@ -436,17 +450,6 @@ function lockFailure(error: unknown, folder: string): unknown {
   return error;
 }
 
-async function storeOkfVersion(store: JournaledBackend): Promise<"0.1" | "0.2" | undefined> {
-  const root = await store.readReserved("", "index.md");
-  if (!root) return undefined;
-  try {
-    const version = parseMarkdown(root.content, "index").frontmatter.okf_version;
-    return version === "0.1" || version === "0.2" ? version : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Run `body` under the checkout lock with the person signed in, the principal confirmed, the
  * host's capabilities read and the private store open. The projection record is written back
@@ -465,21 +468,7 @@ async function withSession<T>(
   return locks
     .request(checkoutLockName(binding.path), {}, async () => {
       // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
-      const token = await ensureHostedAccessToken(target, { resume: resumeCommand, ...(options.signIn === false ? { signIn: false } : {}) }, deps.auth);
-      const client = createHostedSyncClient({
-        target,
-        accessToken: token.accessToken,
-        resume: resumeCommand,
-        ...(binding.workspace !== null ? { workspace: binding.workspace } : {}),
-        ...(deps.fetch ? { fetch: deps.fetch } : {}),
-      });
-      const identity = await client.whoami();
-      if (identity.principalId !== binding.principal_id) {
-        throw new CliError("FORBIDDEN", `you are signed in to ${binding.origin} as another person than the one this checkout belongs to`, {
-          details: { reason: "other_principal", folder: binding.path, checkout_principal: binding.principal_id, signed_in_principal: identity.principalId },
-          help: `sign in as the checkout's person (${cliInvocation()} login --host ${commandToken(binding.origin)}), or check the bundle out again for yourself in a new folder`,
-        });
-      }
+      const { client } = await connectCheckout(binding, { resume: resumeCommand, ...(options.signIn === false ? { signIn: false } : {}) }, deps);
       const unsafeIds = new Map<string, string>();
       const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id) });
       const reader = withoutUnsafeIds(client.reader(binding.bundle_id), unsafeIds, store, deps.idRule);
@@ -491,9 +480,14 @@ async function withSession<T>(
         try {
           capabilities = await reader.hostedCapabilities();
         } catch (error) {
-          throw readFailure(error, { binding, target }, resumeCommand, await unsent());
+          throw await readFailure(error, { binding, target, client }, resumeCommand, await unsent());
         }
+        // The up-front Kind refusals read what the host last said, with no request of their own.
+        const bound = await recordHostStatement(deps.auth.home, binding, { definitionWrites: capabilities.definitionWrites, documentInputBytes: capabilities.documentInputBytes });
         projection = await readProjection(deps.auth.home, binding.checkout_id, store);
+        // What the host said about root writes, for a status preview that makes no request.
+        if (capabilities.rootWrites === "allowed") projection.rootWrites = "allowed";
+        else delete projection.rootWrites;
         // Finish or undo any placement an interrupted run left, then record the baseline before
         // anything changes the store, so a crash from here on never leaves it describing a store
         // that moved.
@@ -502,11 +496,12 @@ async function withSession<T>(
         const persist = () => writeProjection(deps.auth.home, binding.checkout_id, record);
         await persist();
         return await body({
-          binding,
+          binding: bound,
           target,
           reader,
           capabilities,
           carrier: client.carrier,
+          client,
           routes: client.prefix,
           store,
           local,
@@ -530,21 +525,30 @@ async function withSession<T>(
 
 /**
  * Push with creates first, then replaces, then deletes, each in journal order (new link targets
- * exist first, and a document leaves only after the edits that may repair links to it). A create
- * in `blocked` is not offered to the push at all.
+ * exist first, and a document leaves only after the edits that may repair links to it). A change
+ * to the bundle's model brackets them (designs/hosted-model-evolution.md section 5.3): convention
+ * creates and replaces go before every document, so a widening lands before the documents that
+ * use it, and convention deletes go last, after the document deletes that leave the Kind unused.
+ * A create in `blocked` is not offered to the push at all, whatever its folder; nor, unless the
+ * host answers `allowed` now (`models`), is a convention change journaled while it did.
  */
-function createsFirst(store: JournaledBackend, blocked: ReadonlySet<string>): JournaledBackend {
+function createsFirst(store: JournaledBackend, blocked: ReadonlySet<string>, models: boolean): JournaledBackend {
   return new Proxy(store, {
     get(inner, prop) {
       if (prop === "listIntents") {
         return async (state?: Parameters<JournaledBackend["listIntents"]>[0]) => {
-          const rows = await inner.listIntents(state);
+          const rows = (await inner.listIntents(state)).filter(
+            (row) => !(state === "pending" && ((row.base === null && row.kind !== DOCUMENT_DELETE_KIND && blocked.has(row.target)) || (!models && isConventionId(row.target)))),
+          );
           if (state !== "pending") return rows;
           const deleting = (row: (typeof rows)[number]) => row.kind === DOCUMENT_DELETE_KIND;
+          const model = (row: (typeof rows)[number]) => isConventionId(row.target);
           return [
-            ...rows.filter((row) => row.base === null && !deleting(row) && !blocked.has(row.target)),
-            ...rows.filter((row) => row.base !== null && !deleting(row)),
-            ...rows.filter(deleting),
+            ...rows.filter((row) => model(row) && !deleting(row)),
+            ...rows.filter((row) => !model(row) && row.base === null && !deleting(row)),
+            ...rows.filter((row) => !model(row) && row.base !== null && !deleting(row)),
+            ...rows.filter((row) => !model(row) && deleting(row)),
+            ...rows.filter((row) => model(row) && deleting(row)),
           ];
         };
       }
@@ -554,19 +558,23 @@ function createsFirst(store: JournaledBackend, blocked: ReadonlySet<string>): Jo
   });
 }
 
+/** A refusal that says only that the host was busy (a recorded `concurrent_change` after its own retries, or a transient refusal). */
+const busyRefusal = (row: IntentRecord) => row.refusal !== undefined && BUSY_REFUSAL_CODES.has(row.refusal.code);
+
 /**
- * Requeue, under a fresh identity, each change the host refused only because it was busy (a
- * recorded `concurrent_change` after its own retries, or a transient refusal). The recorded
- * identity can only ever answer that refusal again, so a new one is the only way to resend it.
- * Only a refusal that heads nothing is requeued; the document's bytes are rewritten unchanged. A
- * refusal that heads a never-sent edit is left to push, which folds the two into one fresh
- * intent carrying the edit, so the refused change is never sent separately.
+ * Requeue, under a fresh identity, each refused change `eligible` admits: one the host refused
+ * only because it was busy, or a model-change refusal that this run's writes may have cleared
+ * ({@link definitionRetry}). The recorded identity can only ever answer that refusal again, so a
+ * new one is the only way to resend it. Only a refusal that heads nothing is requeued; the
+ * document's bytes are rewritten unchanged. A refusal that heads a never-sent edit is left to
+ * push, which folds the two into one fresh intent carrying the edit, so the refused change is
+ * never sent separately. Returns the documents requeued.
  */
-async function requeueBusy(store: JournaledBackend): Promise<number> {
-  let requeued = 0;
+async function requeueRefused(store: JournaledBackend, eligible: (row: IntentRecord) => boolean): Promise<string[]> {
+  const requeued: string[] = [];
   const unsettled = await store.listIntents(UNSETTLED_STATES);
   for (const row of unsettled) {
-    if (row.state !== "refused" || !row.refusal || !BUSY_REFUSAL_CODES.has(row.refusal.code)) continue;
+    if (row.state !== "refused" || !row.refusal || !eligible(row)) continue;
     if (unsettled.some((other) => other.after === row.requestId)) continue;
     const current = await store.readWithJournal(row.target);
     const latest = current.intents.filter((intent) => intent.state !== "acknowledged").at(-1);
@@ -574,10 +582,7 @@ async function requeueBusy(store: JournaledBackend): Promise<number> {
     const supersede = { requestId: row.requestId, expectedState: "refused" as const, expectedAttempts: row.attempts };
     if (row.kind === DOCUMENT_DELETE_KIND) {
       // A deletion holds no document: the same deletion, recorded again under a fresh identity.
-      if (current.document) continue;
-      const intent: NewIntentRecord = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: row.target, base: row.base, baseContent: row.baseContent, createdAt: new Date().toISOString(), ...(row.after !== undefined ? { after: row.after } : {}) };
-      await store.deleteJournaled(row.target, { intent, supersede });
-      requeued += 1;
+      if (await supersedeDeletion(store, row)) requeued.push(row.target);
       continue;
     }
     if (!current.document) continue;
@@ -595,9 +600,91 @@ async function requeueBusy(store: JournaledBackend): Promise<number> {
       },
       supersede,
     });
-    requeued += 1;
+    requeued.push(row.target);
   }
   return requeued;
+}
+
+/** The frontmatter an intent's document carries: its content, or for a delete the version it removes. */
+function intentFrontmatter(row: IntentRecord, okfVersion: "0.1" | "0.2" | undefined): Record<string, unknown> | null {
+  const text = row.kind === DOCUMENT_DELETE_KIND ? row.baseContent : row.content;
+  if (!text) return null;
+  try {
+    return parseMarkdown(text, row.target, { okfVersion }).frontmatter as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The documents of this run the host acknowledged at bytes other than those sent, whose files
+ * still hold what this run scanned. A file edited while its own send was in flight keeps its
+ * edit: its base drops the refetch mark, so the pull leaves it and the next run sends the edit
+ * against the acknowledged version (and takes the host's bytes after that send).
+ */
+async function hostRestamped(
+  store: JournaledBackend,
+  acknowledged: ReadonlyMap<string, string>,
+  folder: string,
+  projection: ProjectionRecord,
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const id of acknowledged.keys()) {
+    const base = await store.readMeta<SharedBase>(baseKey(id));
+    if (base?.refetch !== true) continue;
+    const bytes = await fs.readFile(path.join(folder, `${id}.md`)).catch(() => null);
+    const entry = projection.files[id];
+    if (bytes !== null && entry !== undefined && !entry.deleted && digestOf(bytes) === entry.digest) ids.add(id);
+    else {
+      const { refetch: _refetch, ...kept } = base;
+      try {
+        await store.writeMeta(baseKey(id), kept, { expected: { present: true, value: base } });
+      } catch (error) {
+        // The base moved under this run: whatever moved it decides, not this mark.
+        if (!(error instanceof JournalGuardConflict)) throw error;
+      }
+    }
+  }
+  return ids;
+}
+
+/** What this run's acknowledged writes changed that a model-change refusal can depend on. */
+interface Landed {
+  /** The types of documents (not conventions) written or deleted. */
+  readonly types: Set<string>;
+  /** The types whose governing convention was written or deleted. */
+  readonly governed: Set<string>;
+  /** A convention was written or deleted: the registry another convention is proved against moved. */
+  conventionChanged: boolean;
+}
+
+function recordLanded(landed: Landed, row: IntentRecord, okfVersion: "0.1" | "0.2" | undefined): void {
+  const frontmatter = intentFrontmatter(row, okfVersion);
+  if (isConventionId(row.target)) {
+    if (typeof frontmatter?.governs === "string") landed.governed.add(frontmatter.governs);
+    landed.conventionChanged = true;
+  } else if (typeof frontmatter?.type === "string") landed.types.add(frontmatter.type);
+}
+
+/**
+ * Whether a refused change may now land because of what this run acknowledged (section 5.3, one
+ * retry pass): a convention the host refused as incompatible, once documents of the type it
+ * governs were written or deleted, or another convention changed; a document its Kind refused,
+ * once a convention governing its type changed. Refusals from earlier runs count too, so fixing
+ * the documents in a later sync lands the Kind without touching its file. Anything else is not
+ * resent: each resend spends the person's sync capacity.
+ */
+function definitionRetry(row: IntentRecord, landed: Landed, okfVersion: "0.1" | "0.2" | undefined, models: boolean): boolean {
+  const code = row.refusal?.code;
+  if (isConventionId(row.target)) {
+    // Only while the host answers `allowed`: otherwise the resend could only be refused.
+    if (!models || code !== "definition_incompatible") return false;
+    const governs = intentFrontmatter(row, okfVersion)?.governs;
+    return landed.conventionChanged || (typeof governs === "string" && landed.types.has(governs));
+  }
+  if (code !== "validation_failed") return false;
+  const type = intentFrontmatter(row, okfVersion)?.type;
+  return typeof type === "string" && landed.governed.has(type);
 }
 
 interface PushOutcome {
@@ -612,6 +699,8 @@ interface PushOutcome {
   readonly notSent: NotSentReason;
   /** Creates not sent because the host holds a document whose id differs only in case. */
   readonly collisions: HeldFile[];
+  /** The agent the writes named (`X-Superbee-Via`), or why a named one was not sent. */
+  readonly via?: { readonly token?: string; readonly ignored?: string };
 }
 
 /**
@@ -637,7 +726,7 @@ async function caseCollidingCreates(store: JournaledBackend): Promise<HeldFile[]
   return out;
 }
 
-async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<PushOutcome> {
+async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes?: number, heldSink: { value?: { deletions: number; baseline: number } } = {}): Promise<PushOutcome> {
   const { store, local, binding, reader } = session;
   const acknowledged = new Map<string, string>();
   const deleted = new Set<string>();
@@ -661,6 +750,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
   // Running sync is the person's decision to retry: a pause from an earlier run (sign-in, quota,
   // a withdrawn grant) is lifted and its refused changes are requeued under their identities.
   await resume(local);
+  const via = resolveHostedVia(deps.auth.env);
   const transport = createWholeDocumentTransport({
     carrier,
     bundleId: binding.bundle_id,
@@ -669,14 +759,36 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
     remote: reader,
     routes: { create: `${session.routes}/create`, replace: `${session.routes}/replace`, delete: `${session.routes}/delete`, outcome: `${session.routes}/outcome` },
     ...(session.okfVersion ? { okfVersion: session.okfVersion } : {}),
+    documentInputBytes: session.capabilities.documentInputBytes,
+    ...(via.token !== undefined ? { via: via.token } : {}),
+    // Only the person's typed confirmation in this run sets it (scanCheckout's acceptance).
+    ...(acceptDeletes !== undefined ? { acceptDeletes } : {}),
+    onDeletionsHeld: ({ deletions, baseline }) => {
+      heldSink.value ??= { deletions, baseline };
+    },
   });
-  const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)));
+  // A convention change journaled while the host allowed it waits, held, while it does not: the
+  // host would refuse it, and each refusal spends the person's sync capacity.
+  const models = session.capabilities.definitionWrites === "allowed";
+  const withheld: HeldFile[] = models
+    ? []
+    : [...new Set((await store.listIntents("pending")).filter((row) => isConventionId(row.target)).map((row) => row.target))].map((id) => ({
+        id,
+        path: `${id}.md`,
+        reason: "convention_folder" as const,
+        message: heldPathMessage(`${id}.md`, session.capabilities.definitionWrites),
+      }));
+  const ordered = createsFirst(store, new Set(collisions.map((row) => row.id)), models);
   let signInRequired = false;
+  const landed: Landed = { types: new Set(), governed: new Set(), conventionChanged: false };
+  // A model-change refusal is resent at most once per document per run.
+  const retried = new Set<string>();
   for (let pass = 0; pass < PUSH_PASSES; pass += 1) {
     const report = await push(ordered, transport, { remote: reader, write: { ...deps.write, settlement: WHOLE_DOCUMENT_SETTLEMENT } });
     for (const settled of report.settled) {
       if (settled.state !== "acknowledged") continue;
       const row = await store.readIntent(settled.requestId);
+      if (row) recordLanded(landed, row, session.okfVersion);
       // A delete settled by read-back past retention names no tombstone: its row shows no version.
       acknowledged.set(settled.target, row?.acknowledgedVersion === DELETION_VERSION ? "" : row?.acknowledgedVersion ?? "");
       if (row?.kind === DOCUMENT_DELETE_KIND) {
@@ -689,10 +801,48 @@ async function pushChanges(session: Session, deps: HostedSyncDeps): Promise<Push
       signInRequired = /^(AUTH_REQUIRED|UNAUTHORIZED)\b/.test(control?.reason ?? "") && !denied;
       break;
     }
-    if (pass === PUSH_PASSES - 1 || (await requeueBusy(store)) === 0) break;
+    if (pass === PUSH_PASSES - 1) break;
+    const model = new Set<string>();
+    const requeued = await requeueRefused(store, (row) => {
+      if (busyRefusal(row)) return true;
+      if (retried.has(row.target) || !definitionRetry(row, landed, session.okfVersion, models)) return false;
+      model.add(row.target);
+      return true;
+    });
+    if (requeued.length === 0) break;
+    for (const id of requeued) if (model.has(id)) retried.add(id);
     await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(50 + Math.floor(Math.random() * 200));
   }
-  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions };
+  return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via };
+}
+
+/** The host's root as the run's capabilities answer serves it (re-read once a heads answer named another root). */
+async function hostRoot(reader: Pick<HostedReadAdapter, "hostedCapabilities">): Promise<HostRoot> {
+  const { root } = await reader.hostedCapabilities();
+  return root ? { content: root.content, version: root.version } : null;
+}
+
+/** The run's front-page step (`root-sync.ts`); `send` false only reads (a pull). */
+function rootStep(session: Session, deps: HostedSyncDeps, send: boolean): Promise<RootStepReport> {
+  const { binding } = session;
+  const via = resolveHostedVia(deps.auth.env).token;
+  return syncRoot({
+    folder: binding.path,
+    bundleId: binding.bundle_id,
+    projection: session.projection,
+    store: session.store,
+    rootWrites: session.capabilities.rootWrites,
+    current: () => hostRoot(session.reader),
+    // A new adapter: the run's own holds the answer it already read.
+    reread: () => hostRoot(session.client.reader(binding.bundle_id)),
+    ...(send
+      ? {
+          send: (content: string, base: string | null) =>
+            sendRootWrite({ carrier: session.carrier, route: `${session.routes}/root`, bundleId: binding.bundle_id, binding: checkoutBindingDigest(binding.checkout_id), content, base, ...(via !== undefined ? { via } : {}) }),
+        }
+      : {}),
+    persist: session.persist,
+  });
 }
 
 /**
@@ -773,7 +923,7 @@ function assertPersonAtTerminal(binding: CheckoutBinding, token: string, termina
 
 /** Ask the person to confirm removing exactly this held set by typing its count. */
 function confirmAtTerminal(binding: CheckoutBinding, terminal: HostedTerminal) {
-  return async (hold: { count: number; ids: readonly string[]; token: string }): Promise<boolean> => {
+  return async (hold: { count: number; ids: readonly string[]; token: string; bundle?: { deletions: number; baseline: number } }): Promise<boolean> => {
     const shown = hold.ids.slice(0, 50).map((id) => `  ${id}`);
     const more = hold.ids.length > shown.length ? [`  ... and ${hold.ids.length - shown.length} more`] : [];
     const answer = await terminal.ask(
@@ -782,6 +932,7 @@ function confirmAtTerminal(binding: CheckoutBinding, terminal: HostedTerminal) {
         ...shown,
         ...more,
         `Accepting removes them from the hosted bundle '${binding.bundle_id}' for everyone; the host keeps their history.`,
+        ...(hold.bundle ? [`With every deletion in the bundle over the last 24 hours when the host last answered, that is ${hold.bundle.deletions} of the ${hold.bundle.baseline} documents it held; the host counts again when they are sent.`] : []),
         `Type ${hold.count} to remove them, or anything else to keep them held: `,
       ].join("\n"),
     );
@@ -808,6 +959,9 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       okfVersion: session.okfVersion,
       local,
       projection,
+      definitionWrites: session.capabilities.definitionWrites,
+      rootWrites: session.capabilities.rootWrites,
+      documentInputBytes: session.capabilities.documentInputBytes,
       ...(acceptDeletes !== undefined ? { acceptDeletes, confirmAccept: confirmAtTerminal(binding, terminal) } : {}),
     });
     await session.persist();
@@ -822,7 +976,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       try {
         report = await pull(local, reader, acceptRefusedDeletions ? { acceptRefusedDeletions } : {});
       } catch (error) {
-        throw readFailure(error, session, resumeCommand, await unsent());
+        throw await readFailure(error, session, resumeCommand, await unsent());
       }
       if (report.held.length > 0 || session.unsafeIds.size > 0) await forgetPullDigest(store);
       const placed = await exportCheckout(binding.path, store, projection);
@@ -841,17 +995,41 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     }
     await recordPulled(deps.auth.home, binding.checkout_id);
     let outcome: PushOutcome;
+    const heldSink: { value?: { deletions: number; baseline: number } } = {};
     try {
-      outcome = await pushChanges(session, deps);
+      outcome = await pushChanges(session, deps, scan.acceptDeletes, heldSink);
     } catch (error) {
-      throw readFailure(error, session, resumeCommand, await unsent());
+      // The deletes the host held before the push failed stay parked; keep its counts with them.
+      await recordHostHold(store, heldSink.value, scan.hold).catch(() => undefined);
+      throw await readFailure(error, session, resumeCommand, await unsent());
     }
+    // The deletes the host held join the scan's held set: one hold, one token to accept it. Kept
+    // before anything else can fail, so the host's counts are never lost.
+    const hold = await recordHostHold(store, heldSink.value, scan.hold);
     // A document the pull held for a change that has now committed may have changed on the host
     // meanwhile: pull it once more so the folder is current when the run says so.
-    const second = first.report.held.some((id) => outcome.acknowledged.has(id)) ? await pullAndExport() : null;
+    // The host may also have stored a sent document with fields of its own (actor, clock); that
+    // pull brings its bytes into the folder in place of the ones sent.
+    const restamped = await hostRestamped(store, outcome.acknowledged, binding.path, projection);
+    const second =
+      first.report.held.some((id) => outcome.acknowledged.has(id)) || restamped.size > 0 ? await pullAndExport() : null;
     const pulled = second?.report ?? first.report;
+    // The front page, after the documents: settled, pulled, or sent against its base.
+    let root: RootStepReport;
+    try {
+      root = await rootStep(session, deps, true);
+    } catch (error) {
+      throw await readFailure(error, session, resumeCommand, await unsent());
+    }
     const exported = {
-      placed: [...first.placed.placed, ...(second?.placed.placed ?? [])],
+      // A document this run sent and only took back with the host's stamps is not one received
+      // (accepted: a change by someone else in the same instant is not counted either, and after
+      // a crash between the acknowledgement and this pull, the next run counts it once).
+      placed: [
+        ...first.placed.placed,
+        ...(second?.placed.placed ?? []).filter((id) => !restamped.has(id)),
+        ...(root.refreshed ? [ROOT_INDEX] : []),
+      ],
       removed: [...first.placed.removed, ...(second?.placed.removed ?? [])],
       kept: second?.placed.kept ?? first.placed.kept,
       held: second?.placed.held ?? first.placed.held,
@@ -859,6 +1037,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // The closing pass: a file edited during this run against a document the pull refreshed or
     // removed is a conflict now, so the run that saw it never reports itself in sync.
     const conflicts = await folderConflicts(binding.path, store, projection, session.okfVersion);
+    // After the run's last placement: a file changed later is an edit this run did not see.
+    await recordSynced(deps.auth.home, binding.checkout_id);
     const inbound = await inboundLinks(store, outcome.deleted, session.okfVersion);
     const rows = buildRows({
       folderConflicts: conflicts,
@@ -869,6 +1049,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       blocked: outcome.collisions,
       accessWithdrawn: outcome.accessWithdrawn,
       notSent: outcome.notSent,
+      ...(root.row ? { root: root.row } : {}),
     });
     const counts = countRows(rows);
     const shown = rows.slice(0, limit);
@@ -880,27 +1061,29 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       status: rows.every((row) => row.state === "committed") ? (rows.length === 0 ? "up_to_date" : "synced") : "incomplete",
       pulled: pulledView(binding, pulled, exported.placed, exported.removed, exported.kept),
       ...(taken ? { take_host_deletions: taken } : {}),
-      ...(scan.hold
+      ...(hold
         ? {
             deletions_held: {
-              count: scan.hold.count,
-              documents: scan.hold.ids.slice(0, 50),
-              window_deletions: scan.hold.deletions,
-              baseline: scan.hold.baseline,
-              ...(scan.hold.basis === "originals" ? { counted_over: "the documents this checkout did not create itself" } : {}),
-              ...(scan.hold.pending ? { held_since_earlier_sync: true } : {}),
-              ...(scan.hold.acceptMismatch !== undefined ? { accept_mismatch: `the token given (${JSON.stringify(scan.hold.acceptMismatch)}) does not name the held set (${scan.hold.token}); nothing was accepted` } : {}),
-              ...(scan.hold.acceptDeclined ? { accept_declined: `the typed confirmation was not ${scan.hold.count}; nothing was accepted` } : {}),
+              count: hold.count,
+              documents: hold.ids.slice(0, 50),
+              window_deletions: hold.deletions,
+              baseline: hold.baseline,
+              ...(hold.basis === "originals" ? { counted_over: "the documents this checkout did not create itself" } : {}),
+              ...(hold.basis === "bundle" ? { counted_over: "every deletion in the hosted bundle over the last 24 hours, by anyone", held_by: "host" } : {}),
+              ...(hold.pending ? { held_since_earlier_sync: true } : {}),
+              ...(hold.acceptMismatch !== undefined ? { accept_mismatch: `the token given (${JSON.stringify(hold.acceptMismatch)}) does not name the held set (${hold.token}); nothing was accepted` } : {}),
+              ...(hold.acceptDeclined ? { accept_declined: `the typed confirmation was not ${hold.count}; nothing was accepted` } : {}),
               restore: syncCommand(binding, commandLiteral(" --restore-deletes")),
               confirmation_required: {
-                agent_instruction: `Do not run this yourself: it needs the person to type a confirmation in their own terminal, and it refuses any other shell. Name these ${scan.hold.count} documents to the person, and ask them to run the command in their terminal if they want them removed from the bundle; otherwise restore the files.`,
-                token: scan.hold.token,
-                command_for_person: syncCommand(binding, commandFragment` --accept-deletes ${commandToken(scan.hold.token)}`),
+                agent_instruction: `Do not run this yourself: it needs the person to type a confirmation in their own terminal, and it refuses any other shell. Name these ${hold.count} documents to the person, and ask them to run the command in their terminal if they want them removed from the bundle; otherwise restore the files.`,
+                token: hold.token,
+                command_for_person: syncCommand(binding, commandFragment` --accept-deletes ${commandToken(hold.token)}`),
               },
             },
           }
         : {}),
       ...(scan.accepted !== undefined ? { deletions_accepted: scan.accepted } : {}),
+      ...(outcome.via?.ignored !== undefined ? { via_ignored: outcome.via.ignored } : {}),
       ...(scan.deleted.length > 0
         ? { deletions: scan.deleted.map((row) => ({ id: row.id, ...(row.inbound.length > 0 ? { still_linked_from: row.inbound.slice(0, 20), warning: `${row.inbound.length} document(s) still link to '${row.id}'; the links are left as they are` } : {}) })) }
         : {}),
@@ -923,8 +1106,16 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     if (exit) failure = receiptFailure(exit, { counts });
     return record;
   });
-  if (receipt) deps.stdout(render(receipt, mode));
+  if (receipt) deps.stdout(render(withSyncEnvelope(receipt, hostedSyncEnvelope(receipt)), mode));
   if (failure) throw failure;
+}
+
+/** The one sync envelope, from a hosted run receipt's own keys (its counts, pulled and help). */
+function hostedSyncEnvelope(receipt: Record<string, unknown>): SyncEnvelope {
+  const counts = (receipt.counts ?? {}) as Record<string, number | undefined>;
+  const pulled = (receipt.pulled ?? {}) as Record<string, number | undefined>;
+  const help = Array.isArray(receipt.help) ? receipt.help.map(String) : [];
+  return syncEnvelope("hosted", { sent: counts.committed ?? 0, received: (pulled.refreshed ?? 0) + (pulled.removed ?? 0), conflicts: counts.conflict ?? 0, held: counts.held ?? 0, next: help });
 }
 
 /** What a pull-only pass did, or why it did not run. */
@@ -963,17 +1154,17 @@ export async function hostedPull(binding: CheckoutBinding, partial: Partial<Host
  * leaves the machine; `busy` when another command holds the checkout.
  */
 export async function hostedLocalState(binding: CheckoutBinding, home: string): Promise<"changed" | "clean" | "busy"> {
-  return filesystemPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {
-    if (!lock) return "busy" as const;
-    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(home, binding.checkout_id) });
-    try {
+  const state = await withIdleCheckoutStore(
+    binding,
+    home,
+    async (store) => {
       if ((await store.listIntents(UNSETTLED_STATES)).length > 0) return "changed" as const;
       const projection = await readProjection(home, binding.checkout_id, store);
       return (await folderMatchesProjection(binding.path, projection)) ? ("clean" as const) : ("changed" as const);
-    } finally {
-      await store.close();
-    }
-  });
+    },
+    { readOnly: false },
+  );
+  return state ?? "busy";
 }
 
 async function pullOnly(binding: CheckoutBinding, session: Session, deps: HostedSyncDeps, resumeCommand: CommandText): Promise<HostedPullResult> {
@@ -981,19 +1172,26 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     const { store, local, reader, projection } = session;
     // As in sync: an interrupted push's claims are looked up before anything could send them.
     await reclaimInFlight(local);
-    await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection });
+    await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, definitionWrites: session.capabilities.definitionWrites, documentInputBytes: session.capabilities.documentInputBytes, rootWrites: session.capabilities.rootWrites });
     await session.persist();
     let report: PullReport;
     try {
       report = await pull(local, reader);
     } catch (error) {
-      throw readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
+      throw await readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
     }
     if (report.held.length > 0 || session.unsafeIds.size > 0) await forgetPullDigest(store);
     const placed = await exportCheckout(binding.path, store, projection);
     await session.persist();
+    // The front page too: an unedited one takes the host's bytes; nothing is sent.
+    let root: RootStepReport;
+    try {
+      root = await rootStep(session, deps, false);
+    } catch (error) {
+      throw await readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
+    }
     await recordPulled(deps.auth.home, binding.checkout_id);
-    return { state: "pulled", refreshed: placed.placed.length, removed: placed.removed.length, kept: placed.kept.length };
+    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length };
   }
 }
 
@@ -1053,7 +1251,7 @@ async function conflictFor(session: Session, id: string, resumeCommand: CommandT
         help: syncCommand(session.binding),
       });
     }
-    throw readFailure(error, session, resumeCommand, 0);
+    throw await readFailure(error, session, resumeCommand, 0);
   }
 }
 
@@ -1074,7 +1272,7 @@ function resolvedRecord(binding: CheckoutBinding, id: string, choice: string, fi
     // keep or revise again changes nothing: the earlier decision stands until the sync sends it.
     ...(already ? { already_resolved: true, requested: choice } : { choice }),
     ...(replaces !== undefined ? { replaces } : {}),
-    file: path.join(binding.path, `${id}.md`),
+    file: path.join(binding.path, id === ROOT_INDEX ? ROOT_INDEX : `${id}.md`),
     file_state: fileState,
     sent: false,
     next: sends
@@ -1192,9 +1390,8 @@ function remoteVersionOf(conflict: Conflict): string | null {
  * otherwise overwrite a version they never saw. `keep` and `revise` send over the host's version,
  * so they need an inspection to bind to; `take` sends nothing and needs none.
  */
-async function assertInspectedCurrent(session: Session, id: string, conflict: Conflict, choice: "keep" | "take" | "revise"): Promise<void> {
+async function assertInspectedCurrent(session: Session, id: string, current: string | null, choice: "keep" | "take" | "revise"): Promise<void> {
   const inspected = await session.store.readMeta<{ remote?: string | null } | null>(inspectedKey(id));
-  const current = remoteVersionOf(conflict);
   if (!inspected || !("remote" in inspected)) {
     if (choice === "take") return;
     throw new CliError("CONFLICT", `'${choice}' sends your version over the host's, so inspect the host's version of '${id}' first`, {
@@ -1236,9 +1433,13 @@ async function assertInspectedTombstone(session: Session, id: string, current: s
   }
 }
 
-async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
-  const id = documentId(values.inspect!);
-  const resumeCommand = commandFragment`${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`;
+/** True when a person's `--doc` names the bundle's root `index.md` (the front page), not a document. */
+function namesRoot(input: string): boolean {
+  return conceptIdFromPath(input.trim()) === "index";
+}
+
+/** `--out` resolved, refused when it would land inside the checkout (it would sync as a document). */
+async function inspectOut(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, resumeCommand: CommandText): Promise<string | undefined> {
   let out: string | undefined;
   if (values.out !== undefined) {
     out = path.resolve(deps.cwd, values.out);
@@ -1253,6 +1454,122 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
       throw new CliError("USAGE", "--out must be outside the checkout folder, or the file would be synced as a document", { help: `${resumeCommand} --out <file outside the folder>` });
     }
   }
+  return out;
+}
+
+/** The front page's conflict now, or the CLI error that says there is none. */
+async function rootConflictFor(session: Session): Promise<{ host: HostRoot; base: string | null; bytes: Buffer }> {
+  const host = await hostRoot(session.reader);
+  // A write whose answer was lost is settled first: it may be the very change the host now holds.
+  await settleRootSent(session.projection, session.store, host, session.persist);
+  const conflict = await rootConflict(session.binding.path, session.projection, session.store, host);
+  if (!conflict) {
+    throw new CliError("NOT_FOUND", `'${ROOT_INDEX}' has no conflict to resolve in this checkout`, {
+      details: { id: ROOT_INDEX, folder: session.binding.path },
+      help: syncCommand(session.binding),
+    });
+  }
+  return conflict;
+}
+
+/** `--inspect --doc index.md`: the front page's base, your file and the host's version. */
+async function runInspectRoot(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
+  const doc = commandToken(ROOT_INDEX);
+  const dir = commandToken(binding.path);
+  const resumeCommand = commandFragment`${cliInvocation()} sync --inspect --doc ${doc} --dir ${dir}`;
+  const out = await inspectOut(binding, values, deps, resumeCommand);
+  const record = await withSession(binding, deps, resumeCommand, async (session) => {
+    let conflict;
+    try {
+      conflict = await rootConflictFor(session);
+    } catch (error) {
+      if (error instanceof CliError) throw error;
+      throw await readFailure(error, session, resumeCommand, 0);
+    }
+    const { host, base, bytes } = conflict;
+    await session.store.writeMeta(inspectedKey(ROOT_INDEX), { remote: host?.version ?? null, tombstone: null });
+    if (out !== undefined) {
+      if (host === null) throw new CliError("NOT_FOUND", `the host has no front page to write for this bundle`, { details: { id: ROOT_INDEX } });
+      await fs.writeFile(out, host.content);
+    }
+    const stored = await session.store.readReserved("", "index.md");
+    const keep = `${cliInvocation()} sync --resolve keep --doc ${doc} --dir ${dir}`;
+    const take = `${cliInvocation()} sync --resolve take --doc ${doc} --dir ${dir}`;
+    return {
+      conflict: ROOT_INDEX,
+      file: path.join(binding.path, ROOT_INDEX),
+      reason: "changed_remotely",
+      base: { version: base, ...preview(stored && stored.version === base ? stored.content : null) },
+      local: { version: digestOf(bytes), ...preview(bytes.toString("utf8")) },
+      remote: { version: host?.version ?? null, ...preview(host?.content ?? null) },
+      ...(out !== undefined ? { remote_written_to: out } : {}),
+      choices: {
+        keep: "keep your front page: the next sync sends it over the host's version (edit the file first to combine the two)",
+        take: "replace your front page with the host's",
+      },
+      help: [keep, take],
+    };
+  });
+  deps.stdout(render(record, mode));
+}
+
+/**
+ * `--resolve take|keep|revise --doc index.md`. take places the host's front page; keep (and
+ * revise, the same for a file that is never journaled) moves the base to the host's version, so
+ * the next sync sends the file as it is then against it. keep needs an `--inspect` of exactly that
+ * version, as a document's does. Nothing is sent here.
+ */
+async function runResolveRoot(binding: CheckoutBinding, choice: "keep" | "take" | "revise", deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
+  const resumeCommand = commandFragment`${cliInvocation()} sync --resolve ${commandToken(choice)} --doc ${commandToken(ROOT_INDEX)} --dir ${commandToken(binding.path)}`;
+  const record = await withSession(binding, deps, resumeCommand, async (session) => {
+    const { projection, store } = session;
+    let conflict;
+    try {
+      conflict = await rootConflictFor(session);
+    } catch (error) {
+      if (error instanceof CliError) throw error;
+      throw await readFailure(error, session, resumeCommand, 0);
+    }
+    const { host, bytes } = conflict;
+    if (choice !== "take" && session.capabilities.rootWrites !== "allowed") {
+      throw new CliError("CONFLICT", `the host does not take changes to this bundle's front page from you, so '${choice}' could never be sent`, {
+        details: { reason: "root_writes_refused", id: ROOT_INDEX },
+        help: `${cliInvocation()} sync --resolve take --doc ${commandToken(ROOT_INDEX)} --dir ${commandToken(binding.path)} (or edit the front page in the Superbee app)`,
+      });
+    }
+    await assertInspectedCurrent(session, ROOT_INDEX, host?.version ?? null, choice);
+    const file = path.join(binding.path, ROOT_INDEX);
+    let fileState = "unchanged";
+    if (choice === "take") {
+      // Recorded before the file moves, so a crash mid-take leaves nothing recovery must keep.
+      const key = conceptIdFromPath(ROOT_INDEX);
+      projection.discarded = { ...projection.discarded, [key]: digestOf(bytes) };
+      await session.persist();
+      const placed = host ? (await replaceGuarded(file, bytes, Buffer.from(host.content, "utf8"))).placed : await removeGuarded(file, bytes);
+      delete projection.discarded[key];
+      if (!placed) throw new CliError("CONFLICT", `${file} changed while resolving it`, { details: { reason: "stale_review", id: ROOT_INDEX }, help: resumeCommand });
+      if (host) await adoptHostRoot(projection, store, host);
+      else {
+        projection.root = null;
+        projection.rootBase = null;
+      }
+      delete projection.rootConflicted;
+      fileState = host ? "replaced" : "removed";
+    } else {
+      await moveRootBase(projection, store, host);
+    }
+    await store.writeMeta(inspectedKey(ROOT_INDEX), null);
+    await session.persist();
+    return resolvedRecord(binding, ROOT_INDEX, choice, fileState, choice !== "take");
+  });
+  deps.stdout(render(record, mode));
+}
+
+async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
+  if (namesRoot(values.inspect!)) return runInspectRoot(binding, values, deps, mode);
+  const id = documentId(values.inspect!);
+  const resumeCommand = commandFragment`${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`;
+  const out = await inspectOut(binding, values, deps, resumeCommand);
   const record = await withSession(binding, deps, resumeCommand, async (session) => {
     const conflict = await conflictFor(session, id, resumeCommand);
     // The deletion shown with a "deleted remotely" conflict is recorded too: a re-create acknowledges exactly it.
@@ -1315,7 +1632,7 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
 /** Refuse a file sync cannot send as the resolved version. */
 async function assertSendable(session: Session, id: string, file: string, bytes: Buffer, resumeCommand: CommandText): Promise<void> {
   const stored = await session.store.readWithJournal(id);
-  const held = unsendable(id, `${id}.md`, bytes, stored.document?.doc ?? null, { bundleId: session.binding.bundle_id, okfVersion: session.okfVersion });
+  const held = unsendable(id, `${id}.md`, bytes, stored.document?.doc ?? null, { bundleId: session.binding.bundle_id, okfVersion: session.okfVersion, documentInputBytes: session.capabilities.documentInputBytes }, { definitionWrites: session.capabilities.definitionWrites });
   if (held) throw new CliError("CONFLICT", `${file} cannot be sent: ${held.message}`, { details: { reason: held.reason, id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
 }
 
@@ -1362,8 +1679,9 @@ async function resolveFolder(session: Session, id: string, choice: "keep" | "tak
 }
 
 async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
-  const id = documentId(values.doc!);
   const choice = values.resolve as "keep" | "take" | "revise";
+  if (namesRoot(values.doc!)) return runResolveRoot(binding, choice, deps, mode);
+  const id = documentId(values.doc!);
   const resumeCommand = commandFragment`${cliInvocation()} sync --resolve ${commandToken(choice)} --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`;
   const record = await withSession(binding, deps, resumeCommand, async (session) => {
     const { projection, store, local, reader } = session;
@@ -1386,7 +1704,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       }
       throw error;
     }
-    await assertInspectedCurrent(session, id, conflict, choice);
+    await assertInspectedCurrent(session, id, remoteVersionOf(conflict), choice);
     await beginResolution(store, id, choice);
     let fileState: string;
     if (conflict.kind === "folder") {
@@ -1441,7 +1759,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
         if (error instanceof InvalidInputError) {
           throw new CliError("CONFLICT", `${file} is not a valid document: ${error.message}`, { details: { reason: "not_sendable", id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
         }
-        throw readFailure(error, session, resumeCommand, 0);
+        throw await readFailure(error, session, resumeCommand, 0);
       }
       fileState = "unchanged";
       if (choice === "take") {

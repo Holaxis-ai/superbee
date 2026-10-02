@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="superbee-conformance-revision" content="3">
+<meta name="superbee-conformance-revision" content="4">
 <title>View protocol conformance</title>
 <style>
   /* Superbee View theme, the same tokens the shipped example Views use. */
@@ -122,15 +122,16 @@
   };
 })();
 
-// Conformance run. One row per request type, in the order docs/VIEW-PROTOCOL.md lists them, plus
-// one burst row that keeps 12 reads in flight at once: a host may cap concurrency but must queue
-// or refuse the excess with an error reply, never drop it, so the row expects every result.
+// Conformance run. One row per request type, in the order docs/VIEW-PROTOCOL.md lists them, a
+// query-newest row when the host declares query.newest, and one burst row that keeps 12 reads in
+// flight at once: a host may cap concurrency but must queue or refuse the excess with an error
+// reply, never drop it, so the row expects every result.
 // Statuses: answered (a result reply), refused (an error reply, code named in the summary),
 // sent (no reply expected and none arrived), skipped (a precondition was missing), failed
 // (a wrong shape, a wrong code, or no reply within the window). Other hosts byte-copy this
 // entry and record the revision from <meta name="superbee-conformance-revision">.
 (function conformance() {
-  var REVISION = "3";
+  var REVISION = "4";
   var REPLY_WINDOW_MS = 5000;
   var NAVIGATION_WINDOW_MS = 1500;
   var UNDECLARED_CAPABILITY = "conformance.undeclared";
@@ -211,6 +212,16 @@
       firstDoc = q.rows.length ? q.rows[0].id : null;
       record("query", "answered", "rows=" + q.rows.length + " count=" + q.count);
     }, function (err) { refusal("query", err); });
+  }
+  function stepQueryNewest() {
+    if (!has(capabilities, "query.newest")) {
+      record("query-newest", "skipped", "query.newest not declared");
+      return Promise.resolve();
+    }
+    return within(Bridge.query({ order: "newest", limit: 5 }), REPLY_WINDOW_MS).then(function (q) {
+      if (!q || !q.rows || typeof q.count !== "number") { record("query-newest", "failed", "reply carries no rows or count"); return; }
+      record("query-newest", "answered", "rows=" + q.rows.length + " count=" + q.count + " first=" + (q.rows.length ? q.rows[0].id : "none"));
+    }, function (err) { refusal("query-newest", err); });
   }
   function stepRead() {
     if (!firstDoc) { record("read", "skipped", "no document to read"); return Promise.resolve(); }
@@ -321,7 +332,7 @@
 
   // Order matters: open-page is last because some hosts retire the source launch on it.
   stepHello()
-    .then(stepQuery).then(stepRead).then(stepReadVersioned).then(stepEdges).then(stepGraph).then(stepRender)
+    .then(stepQuery).then(stepQueryNewest).then(stepRead).then(stepReadVersioned).then(stepEdges).then(stepGraph).then(stepRender)
     .then(stepSubscribe).then(stepHost).then(stepPropose).then(stepBurst).then(stepOpenPage)
     .then(function () {
       setText("status", "complete: " + rows.length + " rows, " + changes + " change events during the run");

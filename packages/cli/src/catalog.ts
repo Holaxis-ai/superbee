@@ -378,6 +378,28 @@ export async function addCatalogEntry(
   return { entry: result.value, changed: result.changed };
 }
 
+/**
+ * Point the entry for a folder that moved at its new canonical path, keeping its id and label.
+ * Nothing changes when no entry names the old path, or another entry already names the new one.
+ * Returns the entry now naming the new path, or null.
+ */
+export async function relocateCatalogEntry(oldPath: string, newPath: string, options: CatalogOptions = {}): Promise<CatalogEntry | null> {
+  if (!path.isAbsolute(newPath)) throw new CliError("USAGE", "workspace catalog paths must be absolute");
+  const result = await mutateCatalog<CatalogEntry | null>(async (current) => {
+    const already = current.entries.find((entry) => samePhysicalPath(entry.locator.path, newPath));
+    if (already) return { value: already, changed: false };
+    const moved = current.entries.find((entry) => entry.locator.path === oldPath);
+    if (!moved) return { value: null, changed: false };
+    const entry: CatalogEntry = { ...moved, locator: { kind: "local-path", path: newPath } };
+    return {
+      value: entry,
+      changed: true,
+      next: { schema_version: CATALOG_SCHEMA_VERSION, entries: current.entries.map((item) => (item.id === moved.id ? entry : item)) },
+    };
+  }, options);
+  return result.value;
+}
+
 async function entryAvailable(entry: CatalogEntry): Promise<boolean> {
   try {
     const target = await resolveLocalBundleTarget(entry.locator.path);

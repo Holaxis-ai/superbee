@@ -195,6 +195,8 @@ test("built bare MCP server resolves documents and Views through the private wor
     "list_workspaces",
     "show_document",
     "list_views",
+    "list_operations",
+    "run_operation",
     "show_view",
     "authorize_durable_view",
     "save_transient_view",

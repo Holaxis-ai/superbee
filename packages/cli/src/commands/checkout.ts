@@ -28,12 +28,14 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
-import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, readDefaultHost, type HostedAuthDeps } from "../hosted-auth/session.js";
-import { readDefaultWorkspace } from "../hosted/defaults.js";
+import { defaultHostedAuthDeps, hostArgument, hostedWriteHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { checkoutTarget, connectHostedAccount, hostedListCommand, resolveBundleReference, workspaceNames } from "../hosted/account.js";
 import { recordPulled } from "../hosted/freshness.js";
-import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
+import type { HostedTarget } from "../hosted-auth/discovery.js";
 import {
   bindingForPath,
+  bindingReference,
+  bindsBundle,
   checkoutLockName,
   checkoutStoreDir,
   discardCheckoutState,
@@ -45,55 +47,88 @@ import {
   releaseCheckout,
   writeBinding,
   type CheckoutBinding,
+  type DefinitionWrites,
+  withHostStatement,
 } from "../hosted/binding.js";
-import { createHostedSyncClient, hostedFailure, syncRoutePrefix, WORKSPACE_HEADER } from "../hosted/client.js";
-import { HOSTED_CHECKOUT_REFUSALS } from "../hosted/refusals.js";
+import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, type HostedIdentity, type HostedSyncClient } from "../hosted/client.js";
+import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from "../hosted/refusals.js";
 import { digestOf, exportFresh, findPathCollision, ROOT_INDEX } from "../hosted/projection.js";
 import { writeProjection } from "../hosted/sync-scan.js";
 import { addCatalogEntry, assertCatalogLabel, loadCatalog } from "../catalog.js";
+import { checkoutMarkerBytes, readCheckoutMarker, removeCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
+import { adopt } from "./checkout-adopt.js";
+import { hostedBundleReferenceText, parseHostedBundleReference, type HostedBundleReference } from "../hosted/reference.js";
 
 /**
- * Checkout refuses a bundle over this many documents until paged heads and snapshot land: the
- * host's working copy routes answer one unpaged listing, bounded at this size.
+ * The most documents a checkout holds: the paged working copy's inventory bound, which is also the
+ * most documents a staged creation makes (so `publish` converts every folder it creates). A host
+ * that pages heads and snapshot states its own bound (`paged.documents`); one from before paging
+ * serves only its unpaged bound (`bound.documents`), and checkout holds the lower of the two.
  */
-export const CHECKOUT_DOCUMENT_LIMIT = 1000;
-const BUNDLE_ID = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
-/** The bundle list the host answers is capped at this many rows. */
-const BUNDLE_LIST_CAP = 100;
+export const CHECKOUT_DOCUMENT_LIMIT = 10_000;
 
 export const CHECKOUT_USAGE = `superbee checkout — mirror a hosted bundle into a local folder
 
 Usage:
   superbee checkout <bundle-id> [--host <url>] [--dir <folder>] [--workspace <id>] [--json]
+  superbee checkout --adopt <folder> [--host <url>] [--workspace <id>] [--json]
   superbee checkout --release <folder> [--json]
 
-Signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the command to
-re-run), then copies the hosted bundle into --dir (default: ./<bundle-id>), which must be new or
-empty. The host is --host, else the host of your last sign-in (never SUPERBEE_HOST alone); the
-receipt names the host it bound. The folder holds plain bundle files, so every command runs on it
-with --dir <folder>. The link to the host is kept in private state, keyed by the folder's path,
-never in the folder. Re-running for the same folder and bundle is a no-op. A checkout whose folder
-was deleted, or replaced by a new empty folder, is replaced, unless it holds changes sync has not
-sent yet; a checkout emptied in place is refused, because removing every file is a pending edit.
+'superbee catalog list --hosted' lists the bundle ids you can check out. Signs in if needed
+(AUTH_REQUIRED, exit 4, carries the one link to relay and the command to re-run), then copies the
+hosted bundle into --dir (default: ./<bundle-id>), which must be new or empty. The host is --host,
+else, for a folder that is already a checkout, its own host, else the host of your last sign-in
+when it is the only host you are signed in to (never SUPERBEE_HOST alone); signed in to more than
+one host, a checkout without --host is refused and names them. The receipt names the host it
+bound. The folder holds plain bundle files, so every command runs on it with --dir <folder>. The
+link to the host is kept in private state, keyed by the folder's path, never in the folder.
+Re-running for the same folder and bundle is a no-op. A checkout whose folder was deleted, or
+replaced by a new empty folder, is replaced, unless it holds changes sync has not sent yet; a
+checkout emptied in place is refused, because removing every file is a pending edit.
 
 A new checkout is added to your workspace catalog under its bundle id (or the id with -2 to -9
 when that label is taken), so other sessions and the local MCP app can find it; 'catalog list'
-shows it with home: hosted. The local MCP app serves it read-only.
+shows it with home: hosted. The local MCP app serves it through the folder, and refuses before the
+file changes a write sync cannot send.
 
---release <folder> forgets the checkout at that folder: its private binding and store are removed
-and the folder's files are left as they are. Releasing a folder that is not a checkout is a no-op.
+The folder carries a read-only marker, .superbee/checkout.json, naming the host and bundle. It is
+informational: it never selects a host or routes a command. A folder that has the marker but no
+binding here (it was moved, copied or restored) is reported as copy_of_checkout by status, home,
+bundle locate and session-start. Nothing done in it reaches the host: sync, publish and writes
+through the local MCP app refuse it (unbound_copy) until it is adopted, or until its marker is
+deleted to keep it as a plain local bundle.
+
+--adopt <folder> binds such a folder again. A folder moved on the same disk is bound back to its
+own checkout with no network (unsent edits and conflicts carry over). Any other copy needs --host,
+which you name yourself (the marker's host is never used alone): without it, --adopt only
+previews. With it, adopt signs in, fetches the hosted bundle, adds the documents the folder lacks,
+and never overwrites a file. A file that differs from the host's version becomes a conflict for
+'sync --inspect/--resolve'; a document only in the folder is sent as new by the next sync.
+
+--release <folder> forgets the checkout at that folder: its private binding and store are removed,
+its marker is removed, and the folder's other files are left as they are. Releasing a folder that
+is not a checkout is a no-op.
 
 'superbee sync --dir <folder>' sends your edits and brings in the host's. Commands whose effect
 sync cannot send (doc verify, kind, recipe add/evolve, artifact, promote or delete of a non-.md
-key, index generate, serve, ui, mcp) are refused in it with "do this in the app". Deleting a
+key, index generate, serve, ui) are refused in it with "do this in the app". Deleting a
 document file, by hand or with doc delete or delete --doc-key <id>.md, syncs as a delete. Bundles over ${CHECKOUT_DOCUMENT_LIMIT} documents, bundles the host does not
-serve to a checkout (such as one with a Git source), and ids in two of your workspaces are refused.
+serve to a checkout (such as one with a Git source), and a bare id in two of your workspaces are refused.
+
+<bundle-id> may name its workspace: a bundle id in more than one of your workspaces is <workspace>/<bundle-id>
+(catalog list --hosted lists it that way, and lists your workspaces' names); --workspace does the
+same for a bare id. The checkout records the workspace, so its sync keeps reaching that
+workspace's bundle when another of your workspaces gains the same id. A checkout made bare whose
+id another workspace gains is bound again in place with --adopt <folder> --host <url> --workspace
+<workspace>.
 
 Options:
-  --host <url>        Hosted Superbee URL (an origin, or an agent connection URL); default: your last sign-in
+  --host <url>        Hosted Superbee URL (an origin, or an agent connection URL); default: your last sign-in, when it is the only host signed in
   --dir <folder>      Checkout folder (default: ./<bundle-id>)
-  --workspace <id>    Your workspace that holds the bundle: checked against your memberships,
-                      recorded in the binding and sent as ${WORKSPACE_HEADER}
+  --workspace <id>    Your workspace that holds the bundle, by name or id: checked against your
+                      memberships, recorded in the binding, and (on a host that names workspaces)
+                      the workspace the bundle is named in
+  --adopt             Treat the argument as a moved, copied or restored checkout folder and bind it
   --release           Treat the argument as a checkout folder and forget its binding
   --json              Emit compact JSON instead of TOON
   -h, --help          Show this help
@@ -101,6 +136,7 @@ Options:
 Examples:
   superbee checkout team.knowledge
   superbee checkout team.knowledge --host https://mcp.getsuperbee.com --dir ~/work/team
+  superbee checkout --adopt ~/restored/team --host https://mcp.getsuperbee.com
   superbee checkout --release ~/work/team
 `;
 
@@ -121,7 +157,7 @@ function checkoutDeps(partial: Partial<CheckoutDeps>): CheckoutDeps {
   };
 }
 
-async function entryKind(target: string): Promise<"absent" | "empty-dir" | "dir" | "other"> {
+export async function entryKind(target: string): Promise<"absent" | "empty-dir" | "dir" | "other"> {
   let info;
   try {
     info = await stat(target);
@@ -133,13 +169,10 @@ async function entryKind(target: string): Promise<"absent" | "empty-dir" | "dir"
   return (await readdir(target)).length === 0 ? "empty-dir" : "dir";
 }
 
-function sameBundle(binding: CheckoutBinding, target: HostedTarget, bundleId: string): boolean {
-  return binding.origin === target.origin && binding.audience === target.audience && binding.bundle_id === bundleId;
-}
-
-function bindingView(binding: CheckoutBinding): Record<string, unknown> {
+export function bindingView(binding: CheckoutBinding): Record<string, unknown> {
   return {
     bundle_id: binding.bundle_id,
+    ...(binding.workspace_slug ? { reference: hostedBundleReferenceText(bindingReference(binding)) } : {}),
     host: binding.origin,
     audience: binding.audience,
     workspace: binding.workspace,
@@ -148,12 +181,12 @@ function bindingView(binding: CheckoutBinding): Record<string, unknown> {
   };
 }
 
-function nextSteps(folder: string): string[] {
+export function nextSteps(folder: string): string[] {
   return [`${cliInvocation()} list --dir ${commandToken(folder)}`, `${cliInvocation()} status --dir ${commandToken(folder)}`];
 }
 
 /** Refuse a folder nested in a local bundle or a bound project: one authority per folder. */
-async function assertStandaloneFolder(folder: string): Promise<void> {
+export async function assertStandaloneFolder(folder: string): Promise<void> {
   const parent = path.dirname(folder);
   const enclosing = await findBundleRoot(parent).catch(() => null);
   if (enclosing) {
@@ -171,35 +204,40 @@ async function assertStandaloneFolder(folder: string): Promise<void> {
   }
 }
 
-function capabilityRefusal(error: unknown, bundleId: string, target: HostedTarget, listed: boolean, resume: string): unknown {
+export function capabilityRefusal(error: unknown, named: HostedBundleReference | string, target: HostedTarget, listed: boolean, resume: string): unknown {
+  const reference = typeof named === "string" ? { slug: null, bundleId: named } : named;
+  const bundleId = hostedBundleReferenceText(reference);
+  const ids = { bundle_id: reference.bundleId, ...(reference.slug !== null ? { reference: bundleId } : {}) };
   if (error instanceof RemoteError && error.code === "bundle_not_found" && listed) {
     // Visible to this identity, but the working copy routes do not serve it. The host does not say
     // why: a bundle backed by a Git source answers this, and so does any bundle the working copy
     // surface cannot serve. The reason stays neutral until the host names it.
     return new CliError("FORBIDDEN", `hosted bundle '${bundleId}' is not served to a checkout on ${target.origin}; a hosted bundle with a Git source is edited through its Git board`, {
-      details: { reason: "not_served", bundle_id: bundleId, host: target.origin },
+      details: { reason: "not_served", ...ids, host: target.origin },
       help: "if the bundle has a Git source, clone that repository and run superbee sync there; otherwise use the Superbee app",
     });
   }
   if (error instanceof RemoteError && error.code === "bundle_not_found") {
     return new CliError("NOT_FOUND", `no hosted bundle '${bundleId}' is visible to you on ${target.origin}`, {
-      details: { bundle_id: bundleId, host: target.origin },
-      help: `${cliInvocation()} whoami --host ${commandToken(hostArgument(target))}`,
+      details: { ...ids, host: target.origin },
+      help: hostedListCommand(target),
     });
   }
-  if (error instanceof RemoteError && error.code === "result_too_large") return tooLarge(bundleId, target, null);
+  if (error instanceof RemoteError && error.code === "result_too_large") return tooLarge(reference, target, null);
   return hostedFailure(error, target, resume);
 }
 
-function tooLarge(bundleId: string, target: HostedTarget, count: number | null): CliError {
-  return new CliError("FORBIDDEN", `hosted bundle '${bundleId}' is too large to check out (over ${CHECKOUT_DOCUMENT_LIMIT} documents)`, {
-    details: { reason: "bundle_too_large", bundle_id: bundleId, host: target.origin, limit: CHECKOUT_DOCUMENT_LIMIT, ...(count === null ? {} : { documents: count }) },
-    help: "use the Superbee app for this bundle; paged checkout is not available yet",
+export function tooLarge(named: HostedBundleReference | string, target: HostedTarget, count: number | null, limit = CHECKOUT_DOCUMENT_LIMIT): CliError {
+  const reference = typeof named === "string" ? { slug: null, bundleId: named } : named;
+  const text = hostedBundleReferenceText(reference);
+  return new CliError("FORBIDDEN", `hosted bundle '${text}' is too large to check out (over ${limit} documents)`, {
+    details: { reason: "bundle_too_large", bundle_id: reference.bundleId, ...(reference.slug !== null ? { reference: text } : {}), host: target.origin, limit, ...(count === null ? {} : { documents: count }) },
+    help: "use the Superbee app for this bundle",
   });
 }
 
 /** The lock errors a checkout can meet, as the CLI taxonomy names them. */
-function lockFailure(error: unknown, folder: string): unknown {
+export function lockFailure(error: unknown, folder: string): unknown {
   if (error instanceof PushRoleStaleOwnerError) {
     return new CliError("CONFLICT", `the checkout lock for ${folder} names a process that is gone`, {
       details: { reason: "stale_lock", folder, lock: error.lockPath },
@@ -220,7 +258,7 @@ function lockFailure(error: unknown, folder: string): unknown {
  * name, or, when the folder is a symbolic link, the real path of the folder it names. A link to
  * nothing is refused.
  */
-async function canonicalFolder(folder: string): Promise<string> {
+export async function canonicalFolder(folder: string): Promise<string> {
   const parent = path.dirname(folder);
   await mkdir(parent, { recursive: true });
   let link = false;
@@ -270,7 +308,7 @@ async function assertReclaimable(home: string, binding: CheckoutBinding, canonic
  * then the directories that left empty, then the folder when this command created it. A file
  * someone else wrote, or changed, is kept, and so is every directory holding one.
  */
-async function removePlaced(folder: string, placed: ReadonlyMap<string, string>, createdFolder: boolean): Promise<boolean> {
+export async function removePlaced(folder: string, placed: ReadonlyMap<string, string>, createdFolder: boolean): Promise<boolean> {
   const dirs = new Set<string>();
   for (const [file, digest] of placed) {
     try {
@@ -302,7 +340,7 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
     deps.stdout(render({ released: false, folder: canonical, reason: "not a hosted checkout" }, mode));
     return;
   }
-  await filesystemPushRoleLocks()
+  const markerRemoved = await filesystemPushRoleLocks()
     .request(checkoutLockName(canonical), { ifAvailable: true }, async (lock) => {
       if (!lock) {
         throw new CliError("CONFLICT", `another command holds the checkout lock for ${canonical}`, {
@@ -311,6 +349,7 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
         });
       }
       await releaseCheckout(deps.auth.home, binding);
+      return removeCheckoutMarker(canonical, binding).catch(() => false);
     })
     .catch((error: unknown) => {
       throw lockFailure(error, canonical);
@@ -321,11 +360,39 @@ async function release(folderArg: string, deps: CheckoutDeps, mode: ReturnType<t
         released: true,
         ...bindingView(binding),
         files: "kept (the folder is now an ordinary local folder)",
-        help: [`${cliInvocation()} checkout ${commandToken(binding.bundle_id)} --host ${commandToken(binding.origin)} --dir <new folder>`],
+        marker: markerRemoved ? "removed" : "none",
+        help: [`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(bindingReference(binding)))} --host ${commandToken(binding.origin)} --dir <new folder>`],
       },
       mode,
     ),
   );
+}
+
+/**
+ * The host a `checkout <bundle-id>` binds: --host; else the folder's own host when it is already a
+ * checkout; else the last sign-in when it is the one host signed in.
+ */
+async function checkoutHost(
+  flag: string | undefined,
+  folder: string,
+  typed: HostedBundleReference,
+  values: { readonly workspace?: string; readonly json?: boolean },
+  home: string,
+): Promise<HostedTarget> {
+  if (flag === undefined) {
+    const real = await realpath(folder).catch(() => null);
+    const bound = real ? await bindingForPath(home, real).catch(() => null) : null;
+    if (bound) return checkoutTarget(bound);
+  }
+  const retry = (host: string) =>
+    String(
+      commandFragment`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(host)} --dir ${commandToken(folder)}${
+        values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
+      }${values.json ? commandFragment` --json` : commandFragment``}`,
+    );
+  const chosen = await hostedWriteHost(flag, home, retry);
+  if (!chosen) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
+  return chosen.target;
 }
 
 export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = {}): Promise<void> {
@@ -339,6 +406,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
           dir: { type: "string" },
           workspace: { type: "string" },
           release: { type: "boolean" },
+          adopt: { type: "boolean" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -351,6 +419,16 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
     return;
   }
   const mode = resolveMode(values);
+  if (values.release && values.adopt) {
+    throw new CliError("USAGE", "--release and --adopt cannot be combined", { help: `${cliInvocation()} checkout --help` });
+  }
+  if (values.adopt) {
+    if (values.dir !== undefined) {
+      throw new CliError("USAGE", "--adopt takes the folder as its argument, not --dir", { help: `${cliInvocation()} checkout --adopt <folder> --host <url>` });
+    }
+    await adopt(positionals[0]!, { host: values.host, workspace: values.workspace, json: values.json === true }, deps, mode);
+    return;
+  }
   if (values.release) {
     if (values.host !== undefined || values.dir !== undefined || values.workspace !== undefined) {
       throw new CliError("USAGE", "--release takes only the checkout folder", { help: `${cliInvocation()} checkout --release <folder>` });
@@ -358,23 +436,19 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
     await release(positionals[0]!, deps, mode);
     return;
   }
-  const bundleId = positionals[0]!;
-  if (!BUNDLE_ID.test(bundleId) || bundleId.length > 128) {
-    throw new CliError("USAGE", `'${bundleId}' is not a hosted bundle id`, { help: `${cliInvocation()} checkout --help` });
+  const typed = parseHostedBundleReference(positionals[0]!);
+  if (!typed) {
+    throw new CliError("USAGE", `'${positionals[0]!}' is not a hosted bundle id or <workspace>/<bundle-id>`, { help: `${cliInvocation()} checkout --help` });
   }
-  // The host is the flag, else the last sign-in's host. SUPERBEE_HOST alone never selects it, and
-  // the chosen host is fixed in the binding and echoed in the receipt.
-  const hostChoice = values.host || (await readDefaultHost(deps.auth.home));
-  if (!hostChoice) {
-    throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", {
-      help: `${cliInvocation()} login --host <url>`,
-    });
-  }
-  const target = resolveHostedTarget(hostChoice);
-  const prefix = syncRoutePrefix(target);
+  const bundleId = typed.bundleId;
   const folder = path.resolve(deps.cwd, values.dir ?? bundleId);
   assertBundleOutsidePrivateState(folder, deps.auth.home);
-  const resume: CommandText = commandFragment`${cliInvocation()} checkout ${commandToken(bundleId)} --host ${commandToken(hostArgument(target))} --dir ${commandToken(folder)}${
+  // The chosen host is fixed in the binding and echoed in the receipt. Without --host, a folder
+  // that is already a checkout keeps its own host; a new one takes the last sign-in only when it
+  // is the one host signed in.
+  const target = await checkoutHost(values.host, folder, typed, values, deps.auth.home);
+  const prefix = syncRoutePrefix(target);
+  const resume: CommandText = commandFragment`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(hostArgument(target))} --dir ${commandToken(folder)}${
     values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
   }${values.json ? commandFragment` --json` : commandFragment``}`;
 
@@ -384,79 +458,26 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   }
   if (found === "dir") {
     const existing = await bindingForPath(deps.auth.home, await realpath(folder));
-    if (existing && sameBundle(existing, target, bundleId)) {
+    // A bare id matches the checkout of that id in whichever workspace it names.
+    // A bare id matches the checkout of that id in whichever workspace it names, unless --workspace
+    // names another workspace than the one the checkout recorded.
+    const sameWorkspace =
+      values.workspace === undefined || values.workspace === existing?.workspace_slug || values.workspace === existing?.workspace;
+    const asked = typed.slug === null && sameWorkspace ? { slug: existing?.workspace_slug ?? null, bundleId } : typed;
+    if (existing && bindsBundle(existing, target, asked)) {
       deps.stdout(render({ checkout: "unchanged", ...bindingView(existing), help: nextSteps(existing.path) }, mode));
       return;
     }
-    throw new CliError("ALREADY_EXISTS", existing
-      ? `${folder} is already a checkout of '${existing.bundle_id}' on ${existing.origin}`
-      : `${folder} is not empty`, {
+    const marker = existing ? null : readCheckoutMarker(folder);
+    if (marker) throw unboundCopyRefusal({ folder, marker }, "ALREADY_EXISTS", `${folder} is a copy of a hosted checkout of '${marker.bundle_id}', not bound here`);
+    throw new CliError("ALREADY_EXISTS", existing ? `${folder} is already a checkout of '${hostedBundleReferenceText(bindingReference(existing))}' on ${existing.origin}` : `${folder} is not empty`, {
       details: existing ? { reason: "other_checkout", ...bindingView(existing) } : { reason: "not_empty", folder },
       help: existing ? `${cliInvocation()} checkout --release ${commandToken(existing.path)}` : "pass --dir <new or empty folder>",
     });
   }
   await assertStandaloneFolder(folder);
 
-  // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
-  const token = await ensureHostedAccessToken(target, { resume }, deps.auth);
-  const client = createHostedSyncClient({
-    target,
-    accessToken: token.accessToken,
-    resume,
-    ...(values.workspace !== undefined ? { workspace: values.workspace } : {}),
-    ...(deps.fetch ? { fetch: deps.fetch } : {}),
-  });
-
-  const identity = await client.whoami();
-  if (values.workspace !== undefined && !identity.tenantIds.includes(values.workspace)) {
-    throw new CliError("NOT_FOUND", `you are not a member of workspace '${values.workspace}' on ${target.origin}`, {
-      details: { workspace: values.workspace, workspaces: identity.tenantIds },
-      help: `${cliInvocation()} checkout ${commandToken(bundleId)} --host ${commandToken(hostArgument(target))} --workspace <id>`,
-    });
-  }
-  const bundles = await client.bundles();
-  const matches = bundles.filter((row) => row.bundleId === bundleId).length;
-  if (matches > 1) {
-    // The host selects the tenant from the bundle id and refuses an id two tenants serve; it does
-    // not select by workspace yet, so naming one cannot settle it.
-    throw new CliError("CONFLICT", `hosted bundle id '${bundleId}' is in ${matches} of your workspaces on ${target.origin}, so the host cannot tell which one you mean`, {
-      details: { reason: "ambiguous_bundle", bundle_id: bundleId, host: target.origin, workspaces: identity.tenantIds, ...(values.workspace ? { requested_workspace: values.workspace } : {}) },
-      help: "rename the bundle in all but one workspace in the Superbee app, or use the app for it",
-    });
-  }
-  const listed = matches === 1;
-  if (!listed && bundles.length < BUNDLE_LIST_CAP) {
-    throw new CliError("NOT_FOUND", `no hosted bundle '${bundleId}' is visible to you on ${target.origin}`, {
-      details: { bundle_id: bundleId, host: target.origin, visible: bundles.slice(0, 20).map((row) => row.bundleId), visible_total: bundles.length },
-      help: `${cliInvocation()} checkout <bundle-id> --host ${commandToken(hostArgument(target))}`,
-    });
-  }
-
-  const reader = client.reader(bundleId);
-  let capabilities: HostedCapabilities;
-  try {
-    capabilities = await reader.hostedCapabilities();
-  } catch (error) {
-    throw capabilityRefusal(error, bundleId, target, listed, resume);
-  }
-  if (!capabilities.heads || !capabilities.snapshot) {
-    throw new CliError("RUNTIME", `${target.origin} does not serve a working copy of '${bundleId}'`, { details: { bundle_id: bundleId, host: target.origin } });
-  }
-  let ids: string[];
-  try {
-    const heads = await reader.heads();
-    ids = heads?.heads.map((head) => head.id) ?? [];
-  } catch (error) {
-    throw capabilityRefusal(error, bundleId, target, listed, resume);
-  }
-  if (ids.length > Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.bound.documents)) throw tooLarge(bundleId, target, ids.length);
-  assertProjectable(ids, bundleId, target);
-
-  // Named, else the only one, else the default `setup hosted` recorded for this host (if still yours).
-  const remembered = identity.tenantIds.length > 1 ? await readDefaultWorkspace(deps.auth.home, target.origin) : null;
-  const workspace =
-    values.workspace ??
-    (identity.tenantIds.length === 1 ? identity.tenantIds[0]! : remembered !== null && identity.tenantIds.includes(remembered) ? remembered : null);
+  const { identity, reader, listed, workspace, reference, definitionWrites, documentInputBytes } = await connectHostedBundle(typed, target, values.workspace, deps, resume);
   const canonical = await canonicalFolder(folder);
   let createdFolder = false;
   const placed = new Map<string, string>();
@@ -488,7 +509,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       }
       const identityNow = await folderIdentity(canonical);
       if (!identityNow) throw new CliError("RUNTIME", `${canonical} disappeared during checkout`, { help: "retry the same command" });
-      const binding: CheckoutBinding = {
+      const binding: CheckoutBinding = withHostStatement({
         schema: 1,
         checkout_id: newCheckoutId(),
         path: canonical,
@@ -498,11 +519,12 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         workspace,
         workspaces: identity.tenantIds,
         bundle_id: bundleId,
+        ...(reference.slug !== null ? { workspace_slug: reference.slug } : {}),
         principal_id: identity.principalId,
         created_at: new Date(deps.auth.now()).toISOString(),
         state: "hydrating",
         folder_identity: identityNow,
-      };
+      }, { definitionWrites, documentInputBytes });
       await writeBinding(deps.auth.home, binding);
       let store: FileJournaledBackend | undefined;
       try {
@@ -532,7 +554,12 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
           const version = versions.get(id);
           if (id !== ROOT_INDEX && version) files[id] = { digest, version };
         }
-        await writeProjection(deps.auth.home, binding.checkout_id, { files, root: exported.exported[ROOT_INDEX] ?? null });
+        // The root's base is the host's version of the bytes placed: what an edit to it is sent against.
+        const rootBase = exported.exported[ROOT_INDEX] !== undefined ? ((await store.readReserved("", "index.md"))?.version ?? null) : null;
+        await writeProjection(deps.auth.home, binding.checkout_id, { files, root: exported.exported[ROOT_INDEX] ?? null, rootBase });
+        // The folder's read-only marker: informational, never routing (`hosted/marker.ts`).
+        const markerFile = await writeCheckoutMarker(canonical, binding);
+        if (markerFile) placed.set(markerFile, digestOf(checkoutMarkerBytes(binding)));
         const ready: CheckoutBinding = { ...binding, state: "ready" };
         await writeBinding(deps.auth.home, ready);
         // The checkout is a complete pull: reads start fresh instead of pulling or warning at once.
@@ -583,6 +610,95 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   );
 }
 
+/** What `connectHostedBundle` found: who signed in, a reader for the bundle, and its workspace. */
+export interface HostedBundleConnection {
+  readonly identity: HostedIdentity;
+  readonly reader: ReturnType<ReturnType<typeof createHostedSyncClient>["reader"]>;
+  /** True when the host's bundle list named it. */
+  readonly listed: boolean;
+  /** Named, else the only one, else the default `setup hosted` recorded for this host (if still yours). */
+  readonly workspace: string | null;
+  /** The reference the checkout names the bundle by: the one typed, or the bare id qualified by `--workspace <slug>`. */
+  readonly reference: HostedBundleReference;
+  /** The signed-in account's client, naming no workspace. */
+  readonly client: HostedSyncClient;
+  /** What the capabilities answer said about model changes (`null`: it did not say); the binding records it. */
+  readonly definitionWrites: DefinitionWrites | null;
+  /** The host's whole-document write bound, as its capabilities answer stated it (`null`: none). */
+  readonly documentInputBytes: number | null;
+}
+
+/**
+ * Sign in, confirm the bundle is visible and servable as a working copy, and check its documents
+ * fit a folder. Every refusal comes before anything is written. A reference with a workspace, or a
+ * bare id with `--workspace` naming a workspace by a slug the host reports, names the bundle in
+ * that workspace: its reader sends `<slug>/<bundle-id>`, and the host selects that workspace's
+ * bundle among the person's own. A recorded default workspace never qualifies anything.
+ */
+export async function connectHostedBundle(
+  typed: HostedBundleReference,
+  target: HostedTarget,
+  workspaceFlag: string | undefined,
+  deps: CheckoutDeps,
+  resume: CommandText,
+): Promise<HostedBundleConnection> {
+  const { bundleId } = typed;
+  const command = (named: string) => `${cliInvocation()} checkout ${commandToken(named)} --host ${commandToken(hostArgument(target))}`;
+  const account = await connectHostedAccount(
+    target,
+    { workspace: workspaceFlag, resume, otherWorkspace: `${command(hostedBundleReferenceText(typed))} --workspace <id>` },
+    deps,
+  );
+  const { client, identity, workspace } = account;
+  const { reference, tenantId } = resolveBundleReference(typed, account, target, command);
+  const text = hostedBundleReferenceText(reference);
+  const bundles = await client.bundles();
+  const listing = readBundleListing(bundles);
+  const found = listing.lookup(reference);
+  if (reference.slug === null && found.holders > 1) {
+    // A bare id in several of the person's workspaces: the host cannot tell which one is meant, and
+    // neither can this command. The host's list names each by its reference where it can.
+    throw ambiguousBundle(bundleId, target, found.references, {
+      workspaces: workspaceNames(identity),
+      ...(workspaceFlag ? { requested_workspace: workspaceFlag } : {}),
+    });
+  }
+  // A reference the list does not name as such may still be listed bare (its id is in one
+  // workspace): the host decides whether that workspace is the one named.
+  const listed = found.row !== null;
+  if (!listed && !(reference.slug !== null && found.holders > 0) && listing.complete) {
+    throw new CliError("NOT_FOUND", `no hosted bundle '${text}' is visible to you on ${target.origin}`, {
+      details: { bundle_id: bundleId, ...(reference.slug !== null ? { reference: text } : {}), host: target.origin, visible: bundles.slice(0, 20).map((row) => row.bundleId), visible_total: bundles.length },
+      help: hostedListCommand(target),
+    });
+  }
+
+  const reader = (reference.slug === null ? client : client.within(reference.slug)).reader(bundleId);
+  let capabilities: HostedCapabilities;
+  try {
+    capabilities = await reader.hostedCapabilities();
+  } catch (error) {
+    throw capabilityRefusal(error, reference, target, listed, resume);
+  }
+  if (!capabilities.heads || !capabilities.snapshot) {
+    throw new CliError("RUNTIME", `${target.origin} does not serve a working copy of '${text}'`, { details: { bundle_id: bundleId, host: target.origin } });
+  }
+  let ids: string[];
+  try {
+    const heads = await reader.heads();
+    ids = heads?.heads.map((head) => head.id) ?? [];
+  } catch (error) {
+    throw capabilityRefusal(error, reference, target, listed, resume);
+  }
+  // The heads were read a page at a time from a host that pages (`reader.heads()` follows `next`);
+  // the snapshot is too, during the bootstrap.
+  const limit = Math.min(CHECKOUT_DOCUMENT_LIMIT, capabilities.paged?.documents ?? capabilities.bound.documents);
+  if (ids.length > limit) throw tooLarge(reference, target, ids.length, limit);
+  assertProjectable(ids, bundleId, target);
+
+  return { identity, reader, listed, workspace: tenantId ?? workspace, reference, client, definitionWrites: capabilities.definitionWrites, documentInputBytes: capabilities.documentInputBytes };
+}
+
 /** Catalog labels tried for a checkout: the bundle id, then `-2` to `-9` when another entry holds it. */
 function catalogLabels(bundleId: string): string[] {
   const base = bundleId.slice(0, 60).replace(/[._-]+$/, "");
@@ -601,7 +717,7 @@ function catalogLabels(bundleId: string): string[] {
  * app can find it; the catalog derives its home (hosted) from the binding. Registration never
  * fails the checkout: the receipt says what happened and how to do it by hand.
  */
-async function registerInCatalog(home: string, binding: CheckoutBinding): Promise<Record<string, unknown>> {
+export async function registerInCatalog(home: string, binding: CheckoutBinding): Promise<Record<string, unknown>> {
   const byHand = `${cliInvocation()} catalog add <label> --dir ${commandToken(binding.path)}`;
   try {
     const taken = new Set((await loadCatalog(home)).entries.map((entry) => entry.label));
@@ -615,15 +731,15 @@ async function registerInCatalog(home: string, binding: CheckoutBinding): Promis
 }
 
 /** The refused command families, as the receipt lists them. */
-const REFUSED_SUMMARY: readonly string[] = Object.freeze(
+export const REFUSED_SUMMARY: readonly string[] = Object.freeze(
   HOSTED_CHECKOUT_REFUSALS.filter((row) => row.reason !== "checkout_target").map((row) => {
     const words = row.words.join(" ");
-    return row.words[0] === "promote" || row.words[0] === "delete" ? `${words} (non-.md key)` : words;
+    return row.words[0] === "promote" || row.words[0] === "delete" ? `${words} (a blob, reserved, conventions/ or views/ key)` : words;
   }),
 );
 
 /** Refuse, before any file is written, ids the folder cannot hold as distinct files. */
-function assertProjectable(ids: readonly string[], bundleId: string, target: HostedTarget): void {
+export function assertProjectable(ids: readonly string[], bundleId: string, target: HostedTarget): void {
   let collision;
   try {
     collision = findPathCollision(ids);

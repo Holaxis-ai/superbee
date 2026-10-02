@@ -35,6 +35,10 @@ import { doc } from "../src/commands/doc.js";
 import { resolveProjectBinding } from "../src/bundle.js";
 import { cliInvocation } from "../src/invocation.js";
 import { CliError } from "../src/errors.js";
+import { defaultHostedAuthDeps, writeDefaultHost } from "../src/hosted-auth/session.js";
+import { reachableHostedBundles } from "../src/hosted/reachable.js";
+import { FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
+import { seedHostedSession } from "./support/hosted-session.js";
 
 const T = "2026-07-01T00:00:00.000Z";
 const BODY = "# Summary\n\nx\n";
@@ -321,5 +325,32 @@ test("a repo-authored project binding renders its URL as a single argument in th
     await assertInert(err.help, "project binding --remote help");
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a reachable hosted bundle gets a printed checkout command only for an id checkout takes, never one that reads as an option", async () => {
+  const home = await tempDir("superbee-inject-reachable-");
+  try {
+    // Bundle ids come from the host. One starting with `-` would be read by `checkout` as an option
+    // (quoting does not stop option parsing), so it gets no command; nor does any other id checkout
+    // refuses. The listing still names them, and MCP falls back to the full-listing command.
+    const hostile = ["--help", "-x", "Team.Upper"];
+    const host = new FakeHost({ bundles: ["team.archive", ...hostile] });
+    await writeDefaultHost(home, HOST);
+    await seedHostedSession(home, { host: HOST, accessToken: TOKEN, expiresAtMs: Date.now() + 3_600_000 });
+    const auth = defaultHostedAuthDeps(home, { env: {}, fetch: async () => { throw new Error("no sign-in may start"); } });
+    const listing = await reachableHostedBundles({ budgetMs: 5_000, auth, fetch: host.fetch });
+    const rows = listing?.hosts[0]?.bundles ?? [];
+    assert.deepEqual(rows.map((row) => row.bundle_id).sort(), ["--help", "-x", "Team.Upper", "team.archive"].sort());
+    for (const row of rows.filter((candidate) => hostile.includes(candidate.bundle_id))) {
+      assert.equal("checkout" in row, false, `no checkout command for '${row.bundle_id}'`);
+    }
+    const emitted = rows.find((row) => row.bundle_id === "team.archive")?.checkout;
+    assert.ok(emitted, "an id checkout takes gets its command");
+    const run = await executeEmitted(emitted);
+    assert.deepEqual([run.markers, run.stderr], [[], ""]);
+    assert.deepEqual(run.argv, ["checkout", "team.archive", "--host", HOST]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 });

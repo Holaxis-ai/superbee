@@ -34,6 +34,7 @@ export const workspaceAliases = {
       "@superbee/core/kinds": r("../core/src/kinds.ts"),
       "@superbee/core/platform": r("../core/src/platform.ts"),
       "@superbee/core/query-filter": r("../core/src/query-filter.ts"),
+      "@superbee/core/query-order": r("../core/src/query-order.ts"),
       "@superbee/core/remote": r("../core/src/remote.ts"),
       "@superbee/core/uncertain-write": r("../core/src/uncertain-write.ts"),
       "@superbee/core/verification": r("../core/src/verification.ts"),
@@ -54,6 +55,7 @@ export const workspaceAliases = {
       // so a clean npm build never depends on sibling dist/ directories existing.
       "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
       "@superbee/markdown-renderer": r("../markdown-renderer/src/index.tsx"),
+      "@superbee/view-runtime/view-host": r("../view-runtime/src/view-host.ts"),
       "@superbee/view-runtime": r("../view-runtime/src/index.ts"),
       // The loopback UI runtime is a private workspace package; source-alias it so the npm CLI
       // remains one self-contained artifact with no workspace dependency at install time.

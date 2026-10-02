@@ -17,13 +17,14 @@
 // device authorization, persists it, and returns AUTH_REQUIRED carrying one link to relay. Running
 // the same command again polls once and, when the person has confirmed, completes sign-in and
 // carries on.
-import { mkdir, realpath, stat, unlink } from "node:fs/promises";
+import { mkdir, readdir, realpath, stat, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 
 import { FilesystemMutationLockError } from "@superbee/core";
 
 import { CliError } from "../errors.js";
+import { bindingHostArgument } from "../hosted/marker.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { cliFilesystemRuntime, withCliFilesystemMutationLock } from "../filesystem-runtime.js";
@@ -179,7 +180,7 @@ export function hostedAuthRoot(home: string): string {
 }
 
 /** The credential-store account for a target; also the session's identity. */
-export function sessionAccount(target: HostedTarget): string {
+export function sessionAccount(target: Pick<HostedTarget, "origin" | "audience">): string {
   return `${target.origin} ${target.audience}`;
 }
 
@@ -189,8 +190,8 @@ export function sessionDirFor(home: string, account: string): string {
 }
 
 /** The shortest `--host` value that selects this target. */
-export function hostArgument(target: HostedTarget): string {
-  return target.audience === `${target.origin}/mcp` ? target.origin : target.audience;
+export function hostArgument(target: Pick<HostedTarget, "origin" | "audience">): string {
+  return bindingHostArgument(target);
 }
 
 async function readRecord<T>(home: string, file: string): Promise<T | null> {
@@ -219,11 +220,30 @@ async function removeFile(file: string): Promise<boolean> {
   }
 }
 
-export async function readSession(home: string, target: HostedTarget): Promise<SessionRecord | null> {
+export async function readSession(home: string, target: Pick<HostedTarget, "origin" | "audience">): Promise<SessionRecord | null> {
   const record = await readRecord<SessionRecord>(home, join(sessionDirFor(home, sessionAccount(target)), SESSION_FILE));
   if (!record || record.schema !== 1 || record.audience !== target.audience || record.host !== target.origin) return null;
   if (typeof record.access_token !== "string" || typeof record.access_token_expires_at_ms !== "number") return null;
   return record;
+}
+
+/**
+ * Whether a command for this host may have to ask the person to sign in, from the stored session
+ * record alone (no network, no lock): no record, or an access token at or near its expiry with no
+ * refresh token to renew it. An access token in the environment answers no. "May": a refresh token
+ * the issuer has since revoked is only found out by using it.
+ */
+export async function storedSessionMayNeedSignIn(
+  home: string,
+  target: Pick<HostedTarget, "origin" | "audience">,
+  env: NodeJS.ProcessEnv = process.env,
+  now: number = Date.now(),
+): Promise<boolean> {
+  if (env[ACCESS_TOKEN_ENV]) return false;
+  const session = await readSession(home, target).catch(() => null);
+  if (!session) return true;
+  // The same margin the token cache uses: a token that close to expiry is renewed, not used.
+  return session.access_token_expires_at_ms - now <= REFRESH_SKEW_MS && !session.has_refresh_token;
 }
 
 export async function readPending(home: string, target: HostedTarget): Promise<PendingRecord | null> {
@@ -244,6 +264,114 @@ export async function readDefaultHost(home: string): Promise<string | null> {
 
 export async function writeDefaultHost(home: string, host: string): Promise<void> {
   await writeUserStateFileAtomic0600(home, hostedAuthRoot(home), DEFAULT_HOST_FILE, `${JSON.stringify({ host })}\n`);
+}
+
+/**
+ * The host a command on a hosted bundle (checkout, export, publish, `catalog list --hosted`) uses:
+ * `--host`, else the host of the last sign-in, else null. SUPERBEE_HOST alone never selects it, so
+ * a bundle is always bound to a host the person chose.
+ */
+export async function hostedBundleHost(flag: string | undefined, home: string): Promise<string | null> {
+  return flag || (await readDefaultHost(home));
+}
+
+/** {@link hostedBundleHost}, refusing when there is none. */
+export async function requireHostedBundleHost(flag: string | undefined, home: string): Promise<HostedTarget> {
+  const chosen = await hostedBundleHost(flag, home);
+  if (!chosen) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
+  return resolveHostedTarget(chosen);
+}
+
+/**
+ * The hosts this machine user holds a stored sign-in session for, each once, as `--host` values,
+ * sorted. Read from the session records alone (no network, no lock, no credential store); an
+ * unreadable or inconsistent record is skipped.
+ */
+export async function storedSessionHosts(home: string): Promise<string[]> {
+  const root = hostedAuthRoot(home);
+  let names: string[];
+  try {
+    names = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+  const hosts = new Set<string>();
+  for (const name of names) {
+    const record = await readRecord<Partial<SessionRecord>>(home, join(root, name, SESSION_FILE)).catch(() => null);
+    if (!record || record.schema !== 1 || typeof record.host !== "string" || typeof record.audience !== "string") continue;
+    const target = { origin: record.host, audience: record.audience };
+    // A record copied into another session's directory names a session that is not stored there.
+    if (sessionDirFor(home, sessionAccount(target)) !== join(root, name)) continue;
+    hosts.add(hostArgument(target));
+  }
+  return [...hosts].sort();
+}
+
+/**
+ * Where a hosted write's host came from: named on the command; the remembered last sign-in, the one
+ * host holding a session; the one host holding a session, with no sign-in remembered; or the
+ * remembered last sign-in, which holds no session now (the write starts a sign-in to it).
+ */
+export type HostSource = "flag" | "last-sign-in" | "only-session" | "last-sign-in-signed-out";
+
+export interface HostedWriteHost {
+  readonly target: HostedTarget;
+  readonly source: HostSource;
+}
+
+/** A receipt's words for {@link HostSource}. */
+export function hostSourceText(source: HostSource): string {
+  switch (source) {
+    case "flag":
+      return "--host";
+    case "last-sign-in":
+      return "your last sign-in, the only host with a session";
+    case "only-session":
+      return "the only host with a session";
+    case "last-sign-in-signed-out":
+      return "your last sign-in; no session for it now";
+  }
+}
+
+/**
+ * The host a hosted command that is not bound to one yet (`publish --yes`, a new `checkout`) sends
+ * to: `--host`, else the one host this choice cannot confuse. The candidates are every host with a
+ * stored session plus the remembered last sign-in; with more than one, the last sign-in is not a
+ * choice the person made for this write, so the command refuses, naming the hosts and which of
+ * them has no session. SUPERBEE_HOST never selects it, as for {@link hostedBundleHost}. Null when
+ * there is no host at all.
+ */
+export async function hostedWriteHost(flag: string | undefined, home: string, retry: (host: string) => string): Promise<HostedWriteHost | null> {
+  if (flag !== undefined) {
+    if (flag.trim() === "") throw new CliError("USAGE", "--host is empty: name the hosted Superbee URL", { help: retry("<url>") });
+    return { target: resolveHostedTarget(flag), source: "flag" };
+  }
+  const remembered = await readDefaultHost(home);
+  const stored = await storedSessionHosts(home);
+  const candidates = new Set(stored);
+  let rememberedHost: string | null = null;
+  if (remembered) {
+    rememberedHost = hostArgument(resolveHostedTarget(remembered));
+    candidates.add(rememberedHost);
+  }
+  if (candidates.size > 1) {
+    const hosts = [...candidates].sort();
+    const signedOut = hosts.filter((host) => !stored.includes(host));
+    throw new CliError("USAGE", `more than one hosted Superbee host could be meant (${hosts.join(", ")}); name the one this command is for with --host`, {
+      details: {
+        reason: "ambiguous_host",
+        hosts,
+        ...(rememberedHost ? { last_sign_in: rememberedHost } : {}),
+        with_session: stored,
+        ...(signedOut.length > 0 ? { no_session: signedOut } : {}),
+        commands: hosts.map(retry),
+      },
+      help: `re-run with --host set to the host you mean (one of: ${hosts.join(", ")}); the last sign-in is not used when sessions are held for more than one host or it has none`,
+    });
+  }
+  if (rememberedHost) return { target: resolveHostedTarget(rememberedHost), source: stored.length === 0 ? "last-sign-in-signed-out" : "last-sign-in" };
+  if (stored.length === 1) return { target: resolveHostedTarget(stored[0]!), source: "only-session" };
+  return null;
 }
 
 /** `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in. */

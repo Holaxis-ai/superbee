@@ -878,7 +878,7 @@ test("the file store keeps the refresh token 0600 inside the private state root"
 // ---------------------------------------------------------------------------------------------
 // Boundary: no existing command reaches hosted before the transport exists
 
-test("only the sign-in commands, the hosted checkout and hosted sync import the hosted session module", async () => {
+test("only the sign-in commands, the hosted checkout, export, doc history, op and hosted sync import the hosted session module", async () => {
   const src = path.resolve(here, "../src");
   const offenders: string[] = [];
   async function walk(dir: string): Promise<void> {
@@ -893,15 +893,28 @@ test("only the sign-in commands, the hosted checkout and hosted sync import the 
       const allowed = [
         path.join("commands", "hosted-auth.ts"),
         path.join("commands", "checkout.ts"),
+        path.join("commands", "checkout-adopt.ts"),
+        path.join("commands", "export.ts"),
+        path.join("commands", "publish.ts"),
         path.join("hosted", "client.ts"),
         path.join("hosted", "sync.ts"),
         // Hosted-checkout triggers: each reaches the session only for a folder bound as a hosted checkout.
         "autopull.ts",
+        // The local MCP app's reads of a checkout run that checkout's automatic pull.
+        path.join("hosted", "served-bundle.ts"),
+        // The signed-in listing of hosted bundles beside the folders (catalog list, list_workspaces):
+        // it reads the stored session and never starts a sign-in.
+        path.join("hosted", "reachable.ts"),
         path.join("commands", "session-start.ts"),
         path.join("commands", "turn-end.ts"),
         path.join("commands", "setup-hosted.ts"),
         path.join("hosted", "defaults.ts"),
         path.join("hosted", "freshness.ts"),
+        // `catalog list --hosted` only: plain catalog commands never sign in.
+        path.join("commands", "catalog.ts"),
+        path.join("hosted", "account.ts"),
+        // `doc history`, `op list` and `op run` in a hosted checkout reach the checkout's host through it.
+        path.join("hosted", "checkout-connection.ts"),
       ];
       if (/hosted-auth\//.test(text) && !allowed.includes(path.relative(src, full))) {
         offenders.push(path.relative(src, full));

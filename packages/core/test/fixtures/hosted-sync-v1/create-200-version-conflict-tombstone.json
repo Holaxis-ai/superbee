@@ -20,7 +20,7 @@
       "content-type": "application/json; charset=utf-8",
       "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000007"
     },
-    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"version_conflict\",\"message\":\"The document changed; read it and reconcile your changes before trying again.\",\"retryable\":false,\"writeState\":\"not_applied\",\"currentVersion\":\"sha256:07c898744d00f93c1a51350f80d511fb68d7c56e4715c221c5109ed57018a0b9\"}}",
+    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"version_conflict\",\"message\":\"The document changed; read it and reconcile your changes before trying again.\",\"retryable\":false,\"writeState\":\"not_applied\",\"currentVersion\":\"sha256:26245f980e9194be7154390b7b11846bfffe2c94756c10bce18d0820d3294589\"}}",
     "truncated": false
   }
 }

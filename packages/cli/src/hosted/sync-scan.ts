@@ -24,8 +24,10 @@ import path from "node:path";
 
 import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
 import { DOCUMENT_DELETE_KIND } from "@superbee/core/journaled-backend";
-import { assertSafeConceptId, conceptIdFromPath, InvalidInputError, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, type Frontmatter, type JournaledBackend } from "@superbee/core";
-import { FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
+import { assertSafeConceptId, conceptIdFromPath, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, type Frontmatter, type JournaledBackend } from "@superbee/core";
+import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDefinitionWrites, type HostedRootWrites, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
+import { mintRequestId } from "@superbee/core/uncertain-write";
+import type { IntentRecord, NewIntentRecord } from "@superbee/core/journaled-backend";
 
 import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.js";
 import { checkoutDir } from "./binding.js";
@@ -36,8 +38,77 @@ const PROJECTION_SCHEMA = 2;
 const PROJECTION_BYTES = 8 * 1024 * 1024;
 /** The kernel's bound on a document's frontmatter, as JSON. */
 export const FRONTMATTER_JSON_BYTES = 16 * 1024;
-/** Folders whose documents are conventions the app edits; sync holds them. */
-const HELD_PREFIXES = ["conventions/", "views/"] as const;
+/**
+ * Folders whose documents sync holds for everyone, compared folded as the host kernel compares
+ * ids (`Views-Registry/x` lands in `views-registry/` on a case-insensitive disk): View pages, and
+ * View registrations, which the host installs and refuses as a write under every authority.
+ */
+const HELD_FOLDERS = ["views", "views-registry"] as const;
+
+/** What the host said about model changes, as the scan applies it (`null`: it did not say). */
+export type DefinitionWritesState = HostedDefinitionWrites | null;
+
+/** True when `rel`, folded, is `folder` or under it. */
+function underFolded(rel: string, folder: string): boolean {
+  const folded = foldedPath(rel);
+  return folded === folder || folded.startsWith(`${folder}/`);
+}
+
+/**
+ * Why sync holds a folder-relative path whatever its content, or null for a document path sync
+ * may send: a reserved OKF file, a file that is not a `.md` document (a blob), or a document under
+ * a folder the app or the host manages (`convention_folder`). `conventions/` is held unless the host
+ * said this person may change the bundle's model (`definitionWrites: "allowed"`), and then only
+ * for an {@link isConventionId} spelling; only the sync scan passes the capability, so every other
+ * caller keeps it held. The one path rule the scan, the local MCP app's write guard
+ * (`served-bundle.ts`) and the command refusals (`refusals.ts`) share. It mirrors the host
+ * kernel's fence (agent-operations `ordinary()`), at least as strictly (its folding catches a
+ * little more); the type half is {@link heldTypeReason}.
+ */
+export function heldPathReason(rel: string, options: { readonly definitionWrites?: DefinitionWritesState } = {}): "reserved_file" | "not_a_document" | "convention_folder" | null {
+  if (isReservedFile(rel)) return "reserved_file";
+  if (!rel.endsWith(".md")) return "not_a_document";
+  if (HELD_FOLDERS.some((folder) => underFolded(rel, folder))) return "convention_folder";
+  if (underFolded(rel, "conventions") && !(options.definitionWrites === "allowed" && isConventionId(rel))) return "convention_folder";
+  return null;
+}
+
+/**
+ * The type half of the kernel's fence, for a document at a path {@link heldPathReason} admits: a
+ * `View` is held anywhere, and a `Convention` anywhere but a convention id sync may send.
+ */
+function heldTypeReason(rel: string, type: unknown, definitionWrites: DefinitionWritesState): string | null {
+  if (type === "View") return `'${conceptIdFromPath(rel)}' is a View registration, which the host installs; it does not sync`;
+  if (type === CONVENTION_TYPE && !(definitionWrites === "allowed" && isConventionId(rel))) return `'${conceptIdFromPath(rel)}' is a Kind convention outside conventions/; the host reads Kinds only from conventions/`;
+  if (definitionWrites === "allowed" && isConventionId(rel) && type !== CONVENTION_TYPE) return `'${conceptIdFromPath(rel)}' is under conventions/ but is not a Convention; only Kind conventions sync there`;
+  return null;
+}
+
+/**
+ * The refusal of a model change to a person the host does not allow (designs/hosted-model-evolution.md
+ * section 5.2): neutral, naming no role or organization, since the permission is managed per
+ * person. The one source of this wording: the command refusals and the held rows both use it.
+ */
+export const DEFINITIONS_REFUSED = Object.freeze({
+  why: "you don't have permission to change this bundle's model",
+  instead: "ask whoever manages access to it",
+});
+
+/**
+ * Why a document under a held folder (`convention_folder`) is not sent, in the person's terms.
+ * `sender` says who is writing: the sync scan and a conflict's resolution (the default), or the
+ * local MCP app, which never writes conventions.
+ */
+export function heldPathMessage(rel: string, definitionWrites: DefinitionWritesState = null, sender: "sync" | "app" = "sync"): string {
+  if (underFolded(rel, "views-registry")) return `${rel} is under views-registry/, which holds the bundle's View registrations; they are installed on the host and do not sync`;
+  if (underFolded(rel, "conventions") && definitionWrites === "refused") return `${rel} is under conventions/, which holds the bundle's model: ${DEFINITIONS_REFUSED.why}; ${DEFINITIONS_REFUSED.instead}`;
+  if (underFolded(rel, "conventions") && definitionWrites === "allowed") {
+    return sender === "app"
+      ? `${rel} is under conventions/, which holds the bundle's model; change it with the kind and recipe commands`
+      : `${rel} is not under conventions/ as spelled; the bundle's Kinds sync only from the folder named exactly conventions/`;
+  }
+  return `${rel} is under ${rel.split("/")[0]}/, which holds conventions edited in the Superbee app`;
+}
 
 /** One document's accounting: the bytes the file was last known to hold, and the store version they match. */
 export interface ProjectionEntry {
@@ -53,11 +124,34 @@ export interface ProjectionRecord {
   /** The digest of the root `index.md` as exported, or null without one. */
   root: string | null;
   /**
+   * The host's version of the root `index.md` the folder's root was last brought to (the base an
+   * edit to it is sent against), or null when the host had none. Kept apart from `root`, the digest
+   * of the bytes placed: a conflict kept with `--resolve keep` moves the base and leaves the file.
+   * Absent in a record written before root writes: the store's root, which the checkout copied
+   * from the host, is the base.
+   */
+  rootBase?: string | null;
+  /**
+   * A root write sent whose answer was lost: the digest of the bytes sent and the base it was sent
+   * against. The next read of the host's root version settles it (see `rootLanding`).
+   */
+  rootSent?: { readonly version: string; readonly base: string | null };
+  /** What the host last said about replacing the root (`rootWrites`), for a preview that makes no request. */
+  rootWrites?: HostedRootWrites;
+  /** Set while the last sync reported the root as a conflict, for a preview that makes no request. */
+  rootConflicted?: true;
+  /**
    * Document id to the digest of local bytes a `--resolve take` is replacing, recorded before the
    * replacement starts. A crash mid-take can leave those bytes moved aside; recovery drops them
    * because the person already chose to discard them. Cleared by the next recovery.
    */
   discarded?: Record<string, string>;
+  /**
+   * Folder-relative path to digest of files a checkout does not hold as documents but that the
+   * host already has: the blobs and reserved files `publish` sent with the bundle. Sync leaves such
+   * a file be while it holds those bytes; once changed, it is held like any other.
+   */
+  extras?: Record<string, string>;
 }
 
 /** Why a file is held: it stays in the folder and nothing is sent for it. */
@@ -128,6 +222,12 @@ export interface DeletionWindow {
   baseline: number | null;
   /** The deletions held and not yet accepted or restored, with the token that accepts them. */
   hold: { ids: string[]; token: string } | null;
+  /**
+   * The host's mass-delete hold as it last answered (`428 deletions_held`): the bundle's deletions
+   * in 24 hours with the first held delete, and its baseline. Kept while deletes the host held are
+   * parked in the journal; cleared by an acceptance or once none is parked.
+   */
+  host?: { deletions: number; baseline: number } | null;
 }
 
 export async function readDeletionWindow(store: JournaledBackend): Promise<DeletionWindow> {
@@ -138,7 +238,82 @@ export async function readDeletionWindow(store: JournaledBackend): Promise<Delet
     acceptedSequence: typeof raw?.acceptedSequence === "number" && Number.isSafeInteger(raw.acceptedSequence) ? raw.acceptedSequence : null,
     baseline: typeof raw?.baseline === "number" && Number.isSafeInteger(raw.baseline) ? raw.baseline : null,
     hold,
+    host:
+      raw?.host && Number.isSafeInteger(raw.host.deletions) && Number.isSafeInteger(raw.host.baseline) && raw.host.deletions >= 1 && raw.host.baseline >= 1
+        ? { deletions: raw.host.deletions, baseline: raw.host.baseline }
+        : null,
   };
+}
+
+/**
+ * The deletes the host's mass-delete hold refused (`DELETIONS_HELD`), parked in the journal: each
+ * the latest unsettled intent of its document. The journal is the one record of which deletes the
+ * host holds; a plain sync never resends them (the refusal does not pause), only an acceptance or
+ * `--restore-deletes` moves them.
+ */
+export async function parkedDeletions(store: JournaledBackend): Promise<IntentRecord[]> {
+  const unsettled = await store.listIntents(UNSETTLED_STATES);
+  return unsettled.filter(
+    (row) =>
+      row.kind === DOCUMENT_DELETE_KIND &&
+      row.state === "refused" &&
+      row.refusal?.code === DELETIONS_HELD_REFUSAL_CODE &&
+      !unsettled.some((other) => other.target === row.target && other.sequence > row.sequence),
+  );
+}
+
+/**
+ * The same deletion recorded again under a fresh identity, superseding a refused one that heads
+ * its document (a busy refusal's resend, or a held delete a person accepted). The refused identity
+ * can only answer its refusal again. Returns false when the document is no longer deleted.
+ */
+export async function supersedeDeletion(store: JournaledBackend, row: IntentRecord): Promise<boolean> {
+  const current = await store.readWithJournal(row.target);
+  if (current.document) return false;
+  const intent: NewIntentRecord = { requestId: mintRequestId(), kind: DOCUMENT_DELETE_KIND, target: row.target, base: row.base, baseContent: row.baseContent, createdAt: new Date().toISOString(), ...(row.after !== undefined ? { after: row.after } : {}) };
+  await store.deleteJournaled(row.target, { intent, supersede: { requestId: row.requestId, expectedState: "refused" as const, expectedAttempts: row.attempts } });
+  return true;
+}
+
+/**
+ * Record the deletes the host held in this run as the one held set, beside any the scan held
+ * locally (one hold at a time, one token), and keep the host's counts. Returns the hold to show,
+ * or `local` unchanged when the host holds nothing.
+ */
+export async function recordHostHold(store: JournaledBackend, answered: { deletions: number; baseline: number } | undefined, local: DeletionHold | undefined): Promise<DeletionHold | undefined> {
+  const parked = await parkedDeletions(store);
+  if (parked.length === 0) return local;
+  const window = await readDeletionWindow(store);
+  const host = answered ?? window.host ?? null;
+  const { ids, token, bundle } = heldSet(parked, local?.ids ?? [], host);
+  await store.writeMeta(DELETION_WINDOW_KEY, { ...window, hold: { ids, token }, host } satisfies DeletionWindow);
+  return {
+    count: ids.length,
+    ids,
+    token,
+    pending: local?.pending ?? false,
+    deletions: bundle?.deletions ?? local?.deletions ?? ids.length,
+    baseline: bundle?.baseline ?? local?.baseline ?? ids.length,
+    basis: bundle ? "bundle" : (local?.basis ?? "all"),
+    // What the person's --accept-deletes did in this run's scan, carried to the receipt.
+    ...(local?.acceptMismatch !== undefined ? { acceptMismatch: local.acceptMismatch } : {}),
+    ...(local?.acceptDeclined ? { acceptDeclined: true as const } : {}),
+  };
+}
+
+/**
+ * The one held set: the deletes the host parked with the ones held here, the token that accepts
+ * exactly them, and the bundle's window if they all went through (only while the host holds some).
+ */
+function heldSet(parked: readonly IntentRecord[], others: readonly string[], host: { deletions: number; baseline: number } | null | undefined): { ids: string[]; token: string; bundle: { deletions: number; baseline: number } | null } {
+  const ids = [...new Set([...parked.map((row) => row.target), ...others])].sort();
+  return { ids, token: acceptToken(ids), bundle: parked.length > 0 ? hostWindow(host, ids.length) : null };
+}
+
+/** The bundle's window if all `count` held deletes went through, from the host's last answer (its
+ * `deletions` counted the first held delete). */
+function hostWindow(host: { deletions: number; baseline: number } | null | undefined, count: number): { deletions: number; baseline: number } | null {
+  return host ? { deletions: host.deletions - 1 + count, baseline: host.baseline } : null;
 }
 
 /** What the window holds, read from the journal; see {@link deletionWindowStats}. */
@@ -215,8 +390,8 @@ export interface DeletionHold {
   /** Deletions in the window, this scan's included, and the baseline they are counted against. */
   readonly deletions: number;
   readonly baseline: number;
-  /** `all` when the count over every document held it; `originals` when the count over the documents this checkout did not create did. */
-  readonly basis: "all" | "originals";
+  /** `all` when the count over every document held it; `originals` when the count over the documents this checkout did not create did; `bundle` when the host's hold over the whole bundle did. */
+  readonly basis: "all" | "originals" | "bundle";
   /** Set when `--accept-deletes` named another set. */
   readonly acceptMismatch?: string;
   /** Set when `--accept-deletes` named this set but the person did not confirm it in a terminal. */
@@ -230,6 +405,11 @@ export interface ScanReport {
   hold?: DeletionHold;
   /** Set when `--accept-deletes` admitted this many held deletions. */
   accepted?: number;
+  /**
+   * Set with `accepted`: the count the person confirmed for the host's hold, which this run's
+   * delete writes carry (`X-Superbee-Accept-Deletes`), so a confirmed set is not held again.
+   */
+  acceptDeletes?: number;
   /** Documents whose file deletion this scan journaled as a delete. */
   readonly deleted: ScannedDeletion[];
   /** Documents whose only differences were managed fields. */
@@ -271,7 +451,23 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
     if (typeof rawDiscarded === "object" && rawDiscarded !== null) {
       for (const [id, digest] of Object.entries(rawDiscarded as Record<string, unknown>)) if (typeof digest === "string") discarded[id] = digest;
     }
-    return { files, root: typeof value.root === "string" ? value.root : null, ...(Object.keys(discarded).length > 0 ? { discarded } : {}) };
+    const extras: Record<string, string> = {};
+    const rawExtras = (value as { extras?: unknown }).extras;
+    if (typeof rawExtras === "object" && rawExtras !== null) {
+      for (const [rel, digest] of Object.entries(rawExtras as Record<string, unknown>)) if (typeof digest === "string") extras[rel] = digest;
+    }
+    const raw = value as { rootBase?: unknown; rootSent?: { version?: unknown; base?: unknown } | null; rootWrites?: unknown };
+    const sent = raw.rootSent;
+    return {
+      files,
+      root: typeof value.root === "string" ? value.root : null,
+      ...(raw.rootBase === null || typeof raw.rootBase === "string" ? { rootBase: raw.rootBase } : {}),
+      ...(sent && typeof sent.version === "string" && (sent.base === null || typeof sent.base === "string") ? { rootSent: { version: sent.version, base: sent.base } } : {}),
+      ...(raw.rootWrites === "allowed" ? { rootWrites: "allowed" as const } : {}),
+      ...((value as { rootConflicted?: unknown }).rootConflicted === true ? { rootConflicted: true as const } : {}),
+      ...(Object.keys(discarded).length > 0 ? { discarded } : {}),
+      ...(Object.keys(extras).length > 0 ? { extras } : {}),
+    };
   }
   const exported = value && value.schema === 1 && typeof value.exported === "object" && value.exported !== null ? (value.exported as Record<string, unknown>) : {};
   const versions = new Map((await store.readHeads({ project: (head) => [head.id, head.version] as const })).map(([id, version]) => [id, version]));
@@ -299,6 +495,7 @@ export async function folderMatchesProjection(folder: string, projection: Projec
       if (digestOf(bytes) !== projection.root) return false;
       continue;
     }
+    if (projection.extras?.[entry.rel] !== undefined && digestOf(bytes) === projection.extras[entry.rel]) continue;
     const id = conceptIdFromPath(entry.rel);
     seen.add(id);
     const recorded = projection.files[id];
@@ -309,11 +506,11 @@ export async function folderMatchesProjection(folder: string, projection: Projec
 
 export async function writeProjection(home: string, checkoutId: string, record: ProjectionRecord): Promise<void> {
   const sorted = Object.fromEntries(Object.entries(record.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}) })}\n`);
+  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.rootBase !== undefined ? { rootBase: record.rootBase } : {}), ...(record.rootSent ? { rootSent: record.rootSent } : {}), ...(record.rootWrites === "allowed" ? { rootWrites: "allowed" } : {}), ...(record.rootConflicted ? { rootConflicted: true } : {}), ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
 }
 
 /** Every file under the folder, relative and POSIX-spelled; dot-files and dot-folders are skipped. */
-async function walk(folder: string, prefix = ""): Promise<{ rel: string; symlink: boolean }[]> {
+export async function walk(folder: string, prefix = ""): Promise<{ rel: string; symlink: boolean }[]> {
   const out: { rel: string; symlink: boolean }[] = [];
   let entries;
   try {
@@ -365,7 +562,7 @@ export function utf8(bytes: Uint8Array): string | null {
 }
 
 /** True when the file says exactly what the store's document says (managed fields aside). */
-function sameAsStored(bytes: Uint8Array, id: string, doc: { frontmatter: Frontmatter; body?: string } | undefined, okfVersion?: "0.1" | "0.2"): boolean {
+export function sameAsStored(bytes: Uint8Array, id: string, doc: { frontmatter: Frontmatter; body?: string } | undefined, okfVersion?: "0.1" | "0.2"): boolean {
   if (!doc) return false;
   const text = utf8(bytes);
   if (text === null) return false;
@@ -395,7 +592,7 @@ export interface ScanContext {
    * Asks the person, at their terminal, to confirm removing exactly this held set; true only on
    * their typed confirmation. Without it, `acceptDeletes` never admits anything.
    */
-  readonly confirmAccept?: (hold: { count: number; ids: readonly string[]; token: string }) => Promise<boolean>;
+  readonly confirmAccept?: (hold: { count: number; ids: readonly string[]; token: string; bundle?: { deletions: number; baseline: number } }) => Promise<boolean>;
   /**
    * Classify without writing anything (`status`): no edit or deletion is journaled, no hold is
    * recorded, and each one that would be is listed in `pending`. The caller passes a projection
@@ -403,7 +600,44 @@ export interface ScanContext {
    * pending here; only the journaling that a preview skips can find it.
    */
   readonly preview?: boolean;
+  /**
+   * What the host's capabilities answer said about model changes this run: `allowed` sends
+   * `conventions/` like any document; otherwise it is held (with the neutral wording under
+   * `refused`).
+   */
+  readonly definitionWrites?: DefinitionWritesState;
+  /**
+   * What the host said about replacing the root `index.md` this run (a preview: what it said at
+   * the last sync). `allowed` leaves an edited root to the run's root step, which sends it;
+   * otherwise it is held as the app's to change.
+   */
+  readonly rootWrites?: HostedRootWrites;
+  /**
+   * The host's whole-document write bound as its capabilities answer (or the binding's record of
+   * it) states it. Absent or null: the host states none, and 65,536 applies.
+   */
+  readonly documentInputBytes?: number | null;
 }
+
+/** The most a host that states its bound stores of one document (frontmatter and body serialized). */
+const STORED_DOCUMENT_BYTES = 1024 * 1024;
+
+/** The whole-document write bound a host holds sync to: what it states, else 65,536. */
+export function documentInputBound(stated: number | null | undefined): number {
+  return stated ?? WHOLE_DOCUMENT_BOUNDS.payloadBytes;
+}
+
+/** Why a document is too large to send, naming the host's bound and the document's size as sent. */
+function tooLarge(id: string, size: number, stated: number | null | undefined): string {
+  const kib = (bytes: number) => Math.ceil(bytes / 1024);
+  const bound = documentInputBound(stated);
+  return stated === null || stated === undefined
+    ? `'${id}' is ${kib(size)} KiB as sent; this host accepts up to ${kib(bound)} KiB per document (newer hosts accept about 960 KiB as sent)`
+    : `'${id}' is ${kib(size)} KiB as sent; this host accepts up to ${kib(bound)} KiB per document`;
+}
+
+/** Why an edited root `index.md` is held where the host does not take root writes from this person. */
+export const ROOT_HELD_MESSAGE = "the bundle's root index is edited in the Superbee app";
 
 function held(id: string, rel: string, reason: HeldReason, message: string): HeldFile {
   return { id, path: rel, reason, message };
@@ -419,11 +653,24 @@ export function unsendable(
   rel: string,
   bytes: Uint8Array,
   stored: { frontmatter: Frontmatter } | null,
-  context: Pick<ScanContext, "bundleId" | "okfVersion">,
+  context: Pick<ScanContext, "bundleId" | "okfVersion" | "documentInputBytes">,
+  /**
+   * The host kernel's fence, both halves ({@link heldPathReason}, {@link heldTypeReason}), for a
+   * document sent to an existing bundle: the scan and a conflict's resolution pass what the host said about
+   * model changes. Absent (`publish`, whose bundle create carries conventions and Views): no type rule.
+   */
+  fence?: { readonly definitionWrites: DefinitionWritesState; readonly sender?: "sync" | "app" },
 ): HeldFile | null {
-  if (bytes.byteLength > WHOLE_DOCUMENT_BOUNDS.payloadBytes) {
-    return held(id, rel, "too_large", `'${id}' is over the ${WHOLE_DOCUMENT_BOUNDS.payloadBytes / 1024} KiB a sync write carries`);
+  // Sent to an existing bundle: the path half of the host's fence first, then the type half below.
+  if (fence && heldPathReason(rel, { definitionWrites: fence.definitionWrites }) === "convention_folder") {
+    return held(id, rel, "convention_folder", heldPathMessage(rel, fence.definitionWrites, fence.sender));
   }
+  const bound = documentInputBound(context.documentInputBytes);
+  // The file's own bytes only screen out what cannot fit before it is parsed: a host that states
+  // its bound stores up to 1 MiB (YAML frontmatter can be larger than its JSON), and the request's
+  // JSON, measured below, decides.
+  const screen = context.documentInputBytes === null || context.documentInputBytes === undefined ? bound : Math.max(bound, STORED_DOCUMENT_BYTES);
+  if (bytes.byteLength > screen) return held(id, rel, "too_large", tooLarge(id, bytes.byteLength, context.documentInputBytes));
   const content = utf8(bytes);
   if (content === null) return held(id, rel, "not_sendable", `'${id}' is not UTF-8 text; sending it would change its bytes`);
   let request;
@@ -436,12 +683,13 @@ export function unsendable(
   // A `document.write` is never a delete; the narrowing says so to the type checker.
   if (request.kind === "delete") throw new Error(`'${id}' became a delete request`);
   const { frontmatter } = request.payload;
-  if (Buffer.byteLength(JSON.stringify(request.payload)) > WHOLE_DOCUMENT_BOUNDS.payloadBytes) {
-    return held(id, rel, "too_large", `'${id}' is over the ${WHOLE_DOCUMENT_BOUNDS.payloadBytes / 1024} KiB a sync write carries`);
-  }
+  const sent = Buffer.byteLength(JSON.stringify(request.payload));
+  if (sent > bound) return held(id, rel, "too_large", tooLarge(id, sent, context.documentInputBytes));
   if (Buffer.byteLength(JSON.stringify(frontmatter)) > FRONTMATTER_JSON_BYTES || Object.keys(frontmatter).length > FRONTMATTER_KEY_LIMIT) {
     return held(id, rel, "too_large", `'${id}' has more frontmatter than the host accepts (${FRONTMATTER_JSON_BYTES / 1024} KiB, ${FRONTMATTER_KEY_LIMIT} fields)`);
   }
+  const typed = fence ? heldTypeReason(rel, frontmatter.type, fence.definitionWrites) : null;
+  if (typed !== null) return held(id, rel, "not_sendable", typed);
   const storedType = stored?.frontmatter.type;
   if (typeof storedType === "string" && storedType !== frontmatter.type) {
     return held(id, rel, "type_change", `'${id}' changes type from '${storedType}' to '${String(frontmatter.type)}', which sync cannot send`);
@@ -465,14 +713,24 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     const id = isMarkdown ? conceptIdFromPath(rel) : rel;
     if (context.only && !context.only.has(id)) continue;
     if (symlink) {
+      // The root step reports a root that is not a plain file, under the one id `index.md`.
+      if (rel === ROOT_INDEX) continue;
       report.held.push(held(id, rel, "symlink", `${rel} is a symbolic link; sync sends only plain files`));
       continue;
     }
     if (rel === ROOT_INDEX) {
       const bytes = await fs.readFile(path.join(folder, rel));
-      if (digestOf(bytes) !== projection.root) report.held.push(held(rel, rel, "reserved_file", "the bundle's root index is edited in the Superbee app"));
+      if (digestOf(bytes) === projection.root) continue;
+      // Where the host takes root writes, the run's root step sends the edit (or reports its conflict).
+      if (context.rootWrites === "allowed") {
+        if (context.preview) (projection.rootConflicted ? report.conflicted : report.pending).push(ROOT_INDEX);
+        continue;
+      }
+      report.held.push(held(rel, rel, "reserved_file", ROOT_HELD_MESSAGE));
       continue;
     }
+    // A file publish already sent with the bundle, still as it was sent: nothing to do.
+    if (projection.extras?.[rel] !== undefined && digestOf(await fs.readFile(path.join(folder, rel))) === projection.extras[rel]) continue;
     if (isReservedFile(rel)) {
       report.held.push(held(rel, rel, "reserved_file", `${rel} is a reserved OKF file, which sync does not send`));
       continue;
@@ -514,11 +772,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
         continue;
       }
     }
-    if (HELD_PREFIXES.some((prefix) => rel.startsWith(prefix))) {
-      report.held.push(held(id, rel, "convention_folder", `${rel} is under ${rel.split("/")[0]}/, which holds conventions edited in the Superbee app`));
-      continue;
-    }
-    const refusal = unsendable(id, rel, bytes, stored.document?.doc ?? null, context);
+    const refusal = unsendable(id, rel, bytes, stored.document?.doc ?? null, context, { definitionWrites: context.definitionWrites ?? null });
     if (refusal) {
       report.held.push(refusal);
       continue;
@@ -559,6 +813,16 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
       delete projection.files[id];
       continue;
     }
+    // A delete the host's fence would refuse (a file under a folder sync holds, or a stored View or
+    // Convention it would not take a write to) is never sent: the host's version is placed back.
+    const definitionWrites = context.definitionWrites ?? null;
+    const refusedPath = heldPathReason(rel, { definitionWrites }) === "convention_folder";
+    const refusedType = refusedPath ? null : heldTypeReason(rel, stored.document.doc.frontmatter.type, definitionWrites);
+    if (refusedPath || refusedType !== null) {
+      delete projection.files[id];
+      report.held.push(held(id, rel, refusedPath ? "convention_folder" : "not_sendable", `${refusedPath ? heldPathMessage(rel, definitionWrites) : refusedType}; the host's version is placed back in the folder`));
+      continue;
+    }
     if (stored.intents.some((row) => row.state === "conflict")) {
       report.held.push(held(id, rel, "deleted_locally", `${rel} was deleted while '${id}' has a conflict to resolve; resolve it first`));
       continue;
@@ -589,33 +853,39 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     stats.counted.filter((id) => !owned.has(id)).length,
   );
   const decision = overall.held || !originals.held ? { ...overall, basis: "all" as const } : { ...originals, basis: "originals" as const };
-  const pendingHold = window.hold !== null && counting.some(({ id }) => window.hold!.ids.includes(id));
-  const token = acceptToken(counting.map(({ id }) => id));
-  const holding = counting.length > 0 && (pendingHold || decision.held);
+  // The deletes the host held are one set with this scan's: one hold at a time, one token.
+  const parked = await parkedDeletions(local.backend);
+  const { ids: union, token, bundle } = heldSet(parked, counting.map(({ id }) => id), window.host);
+  const pendingHold = parked.length > 0 || (window.hold !== null && counting.some(({ id }) => window.hold!.ids.includes(id)));
+  const holding = union.length > 0 && (pendingHold || decision.held);
   let accepting = false;
   let declined = false;
   if (holding && context.acceptDeletes === token) {
     // The token names this set; only the person's typed confirmation in a terminal admits it.
-    accepting = context.confirmAccept !== undefined && (await context.confirmAccept({ count: counting.length, ids: counting.map(({ id }) => id).sort(), token }));
+    accepting = context.confirmAccept !== undefined && (await context.confirmAccept({ count: union.length, ids: union, token, ...(bundle ? { bundle } : {}) }));
     declined = !accepting;
   }
   if (holding && !accepting) {
-    const ids = counting.map(({ id }) => id).sort();
+    const ids = union;
     if (!context.preview) await local.backend.writeMeta(DELETION_WINDOW_KEY, { ...window, hold: { ids, token } } satisfies DeletionWindow);
     report.hold = {
-      count: counting.length,
+      count: union.length,
       ids,
       token,
       pending: pendingHold && !decision.held,
-      deletions: decision.deletions,
-      baseline: decision.baseline,
-      basis: decision.basis,
+      deletions: bundle?.deletions ?? decision.deletions,
+      baseline: bundle?.baseline ?? decision.baseline,
+      basis: bundle ? "bundle" : decision.basis,
       ...(context.acceptDeletes !== undefined && !declined ? { acceptMismatch: context.acceptDeletes } : {}),
       ...(declined ? { acceptDeclined: true as const } : {}),
     };
-    const counts = decision.basis === "originals" ? `${decision.deletions} of the ${decision.baseline} documents this checkout did not create itself` : `${decision.deletions} of the ${decision.baseline} documents`;
+    const counts = bundle
+      ? `${bundle.deletions} of the ${bundle.baseline} documents in the bundle`
+      : decision.basis === "originals"
+        ? `${decision.deletions} of the ${decision.baseline} documents this checkout did not create itself`
+        : `${decision.deletions} of the ${decision.baseline} documents`;
     for (const { id, rel } of counting) {
-      report.held.push(held(id, rel, "bulk_deletion", `${rel} is one of ${counting.length} files deleted and held: with the deletes of the last day that is ${counts}${pendingHold && !decision.held ? " (held since an earlier sync)" : ""}, so none is sent. Put the files back with sync --restore-deletes; removing them from the bundle needs the person to confirm it in their own terminal (see deletions_held)`));
+      report.held.push(held(id, rel, "bulk_deletion", `${rel} is one of ${union.length} files deleted and held: with the deletes of the last day that is ${counts}${pendingHold && !decision.held ? " (held since an earlier sync)" : ""}, so none is sent. Put the files back with sync --restore-deletes; removing them from the bundle needs the person to confirm it in their own terminal (see deletions_held)`));
     }
     // Deleting what the checkout created today is not part of the hold; it goes out as usual.
     const heldIds = new Set(ids);
@@ -624,7 +894,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   if (!context.preview && !report.hold && (counting.length > 0 || window.hold !== null)) {
     // Opening the window freezes its baseline; an acceptance, or a hold whose files came back, closes it.
     const opening = counted === 0 && counting.length > 0 && !accepting;
-    const next: DeletionWindow = { acceptedAt: window.acceptedAt, acceptedSequence: window.acceptedSequence ?? null, baseline: accepting ? null : opening ? baseline : window.baseline, hold: null };
+    const next: DeletionWindow = { acceptedAt: window.acceptedAt, acceptedSequence: window.acceptedSequence ?? null, baseline: accepting ? null : opening ? baseline : window.baseline, hold: null, host: null };
     await local.backend.writeMeta(DELETION_WINDOW_KEY, next satisfies DeletionWindow);
   }
   if (context.preview) {
@@ -647,10 +917,16 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     report.deleted.push({ id, inbound: [] });
   }
   if (accepting) {
+    // The deletes the host held go out again under fresh identities, with the person's count.
+    let requeued = 0;
+    for (const row of parked) if (await supersedeDeletion(local.backend, row)) requeued += 1;
     // An explicit acceptance admits the whole window and starts a new one. It is written after the
-    // deletes are journaled: a crash in between leaves them counted, which only holds more.
-    await local.backend.writeMeta(DELETION_WINDOW_KEY, { acceptedAt: new Date().toISOString(), acceptedSequence: await latestSequence(local.backend), baseline: null, hold: null } satisfies DeletionWindow);
-    report.accepted = admitted.length;
+    // deletes are journaled and requeued: a crash in between leaves them counted, which only holds more.
+    await local.backend.writeMeta(DELETION_WINDOW_KEY, { acceptedAt: new Date().toISOString(), acceptedSequence: await latestSequence(local.backend), baseline: null, hold: null, host: null } satisfies DeletionWindow);
+    report.accepted = admitted.length + requeued;
+    // The host counts the whole bundle: the person confirmed the host's count when it answered
+    // one, else this checkout's own (a second prompt follows only if the bundle's is higher).
+    report.acceptDeletes = Math.min(Math.max(bundle?.deletions ?? decision.deletions, union.length, 1), MAXIMUM_ACCEPTED_DELETIONS);
   }
   const inbound = await inboundLinks(local.backend, report.deleted.map((row) => row.id), context.okfVersion);
   for (const row of report.deleted) row.inbound.push(...(inbound.get(row.id) ?? []));
@@ -914,7 +1190,7 @@ export async function recoverPlacements(folder: string, projection: ProjectionRe
     const aside = await fs.readFile(temp);
     const relTarget = path.relative(folder, target).split(path.sep).join("/");
     const entry = relTarget.endsWith(".md") ? projection.files[conceptIdFromPath(relTarget)] : undefined;
-    const recorded = entry !== undefined && digestOf(aside) === entry.digest;
+    const recorded = relTarget === ROOT_INDEX ? projection.root !== null && digestOf(aside) === projection.root : entry !== undefined && digestOf(aside) === entry.digest;
     const discarded = relTarget.endsWith(".md") && projection.discarded?.[conceptIdFromPath(relTarget)] === digestOf(aside);
     const current = await readIfPresent(target);
     if (current === null) {

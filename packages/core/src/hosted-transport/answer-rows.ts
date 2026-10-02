@@ -17,6 +17,7 @@
  */
 
 import { isContentVersion } from "../version-transport.js";
+import { stripHostText } from "../host-text.js";
 import type { Version } from "../types.js";
 import type { HostedAnswer } from "./carrier.js";
 
@@ -31,6 +32,13 @@ export type AuthorizationCode = "AUTH_REQUIRED" | "PERMISSION_DENIED";
  */
 export const CAPACITY_REFUSAL_CODES = Object.freeze({ principal: "REQUEST_CAPACITY_PRINCIPAL", bundle: "REQUEST_CAPACITY_BUNDLE" } as const);
 export type CapacityScope = keyof typeof CAPACITY_REFUSAL_CODES;
+
+/**
+ * The refusal code of the host's mass-delete hold (`428 deletions_held`): a delete that would take
+ * over half of the bundle's documents within 24 hours, counted over every person and checkout. It
+ * never pauses: only a person's typed acknowledgment releases it, never time or a plain resend.
+ */
+export const DELETIONS_HELD_REFUSAL_CODE = "DELETIONS_HELD";
 
 /** The quota scope a refused outcome names, or `null` when it is not a capacity refusal. */
 export function capacityScopeOf(outcome: { kind: string; code?: string }): CapacityScope | null {
@@ -74,6 +82,8 @@ export const UPDATE_ANSWER_ROWS: readonly UpdateAnswerRow[] = Object.freeze([
   // The remaining not_applied codes of the write schema: definitive once recorded, like the transient ones.
   { answer: "200 result_too_large", recorded: "settled-only", outcome: "refused" },
   { answer: "200 field_action_refused", recorded: "settled-only", outcome: "refused" },
+  // A model change the host's compatibility check refused (designs/hosted-model-evolution.md 4.6).
+  { answer: "200 definition_incompatible", recorded: "settled-only", outcome: "refused" },
   { answer: "200 document_exists", recorded: "settled-only", outcome: "refused" },
   { answer: "200 candidate_unavailable", recorded: "settled-only", outcome: "refused" },
   { answer: "200 candidate_recovery_unavailable", recorded: "settled-only", outcome: "refused" },
@@ -84,6 +94,8 @@ export const UPDATE_ANSWER_ROWS: readonly UpdateAnswerRow[] = Object.freeze([
   // The sync quota, refused before dispatch; the row's outcome code is chosen by the scope the answer names.
   { answer: "200 request_capacity", recorded: "no", outcome: "refused" },
   { answer: "429 request_capacity", recorded: "no", outcome: "refused" },
+  // The mass-delete hold, refused before dispatch on a delete; not pausing (see DELETIONS_HELD_REFUSAL_CODE).
+  { answer: "428 deletions_held", recorded: "no", outcome: "refused" },
   { answer: "200 write_outcome_unknown", recorded: "maybe", outcome: "unknown" },
   { answer: "200 other", recorded: "unknown", outcome: "unknown" },
   { answer: "400", recorded: "no", outcome: "unknown" },
@@ -182,6 +194,8 @@ export const WRITE_ERROR_CODES = Object.freeze([
   "document_id_not_canonical",
   "document_id_collision",
   "request_capacity",
+  "deletions_held",
+  "definition_incompatible",
 ] as const);
 export type WriteErrorCode = (typeof WRITE_ERROR_CODES)[number];
 
@@ -212,9 +226,71 @@ export type WriteFailure = {
     scope?: CapacityScope;
     /** On `request_capacity` only, when the host states it: when the bound admits writes again (ISO instant). */
     resetAt?: string;
+    /** On `deletions_held` only: the bundle's deletions in 24 hours with this one, and the documents it held when that window opened. */
+    deletions?: number;
+    baseline?: number;
+    /**
+     * On `definition_incompatible` only: the host's compatibility findings, carried as sent and
+     * read leniently by {@link definitionFindingsText} (as `fieldActionDetails` is carried), so a
+     * field the host adds later never makes the recorded refusal unreadable.
+     */
+    definitionDetails?: unknown;
   };
 };
 export type WriteResult = WriteSuccess | WriteFailure;
+
+/** At most this many documents are named per finding in {@link definitionFindingsText}; the count says the rest. */
+const FINDING_IDS_SHOWN = 5;
+/** The bound on the findings text: the refusal message is journaled, so it stays small. */
+export const DEFINITION_FINDINGS_TEXT_BYTES = 2048;
+
+/** One part of a finding as text to show: host text, stripped of control and format characters; absent when not short text. */
+const findingText = (value: unknown): string | undefined => {
+  if (typeof value !== "string" || value.length > 256) return undefined;
+  const text = stripHostText(value, 256);
+  return text.length > 0 ? text : undefined;
+};
+
+/**
+ * A model-change refusal's findings (`definitionDetails`) as text a person reads: one clause per
+ * finding, naming the rule, the Kind's type and field, the core code, and up to five documents
+ * with the full count, within {@link DEFINITION_FINDINGS_TEXT_BYTES}. Read leniently: a finding
+ * without a rule, or a part that is not short text, is left out; anything else the host sends is
+ * ignored. Empty when nothing is readable. The findings carry no values, bodies or authors, so
+ * neither does this.
+ */
+export function definitionFindingsText(details: unknown): string {
+  const findings = isRecord(details) && Array.isArray(details.findings) ? details.findings : [];
+  const clauses: string[] = [];
+  for (const finding of findings) {
+    if (!isRecord(finding)) continue;
+    const rule = findingText(finding.rule);
+    if (!rule) continue;
+    const type = findingText(finding.type);
+    const conventionId = findingText(finding.conventionId);
+    const field = findingText(finding.field);
+    const detail = findingText(finding.detail);
+    const where = [type ? `Kind '${type}'` : conventionId ? `'${conventionId}'` : "", field ? `field '${field}'` : ""].filter(Boolean).join(" ");
+    const instances = isRecord(finding.instances) ? finding.instances : undefined;
+    const total = instances && Number.isSafeInteger(instances.count) && (instances.count as number) > 0 ? (instances.count as number) : 0;
+    const ids = instances && Array.isArray(instances.ids) ? instances.ids.map(findingText).filter((id): id is string => id !== undefined) : [];
+    const shown = ids.slice(0, FINDING_IDS_SHOWN);
+    const documents = total > 0 ? `: ${total} document${total === 1 ? "" : "s"}${shown.length > 0 ? `, ${shown.join(", ")}${total > shown.length ? ", ..." : ""}` : ""}` : "";
+    clauses.push(`${rule}${where ? ` on ${where}` : ""}${detail ? ` (${detail})` : ""}${documents}`);
+  }
+  const more = isRecord(details) && details.truncated === true;
+  let text = "";
+  for (const [index, clause] of clauses.entries()) {
+    const next = text === "" ? clause : `${text}; ${clause}`;
+    const rest = clauses.length - index;
+    if (new TextEncoder().encode(next).byteLength > DEFINITION_FINDINGS_TEXT_BYTES - 32) {
+      // One clause alone can pass the bound (every part at the host's 256): it is cut, not dropped.
+      return text === "" ? `${clause.slice(0, 512)}...${rest > 1 ? `; and ${rest - 1} more` : ""}` : `${text}; and ${rest} more`;
+    }
+    text = next;
+  }
+  return more && text !== "" ? `${text}; and more` : text;
+}
 
 export class HostedAnswerError extends Error {
   override readonly name = "HostedAnswerError";
@@ -224,8 +300,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const onlyKeys = (value: Record<string, unknown>, allowed: readonly string[]) => Object.keys(value).every((key) => allowed.includes(key));
 const DATA_KEYS = ["bundleId", "documentId", "version", "changed", "scope"] as const;
 const DELETE_DATA_KEYS = [...DATA_KEYS, "deletedVersion", "deleted"] as const;
-const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "candidate", "retentionUnavailable", "scope", "resetAt"] as const;
-
+const ERROR_KEYS = ["code", "message", "retryable", "writeState", "currentVersion", "diagnostics", "fieldActionDetails", "definitionDetails", "candidate", "retentionUnavailable", "scope", "resetAt", "deletions", "baseline"] as const;
+const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 1;
 /**
  * A write operation's result envelope, admitted or refused as one: the operation it answers,
  * the document it names, and a success with a content version or a refusal with a known code
@@ -255,11 +331,23 @@ export function parseWriteResult(raw: unknown, expected: { operationIds: readonl
       (error.code === "write_outcome_unknown" && error.writeState !== "unknown") ||
       (error.code === "request_capacity"
         ? (error.scope !== "principal" && error.scope !== "bundle") || error.writeState !== "not_applied" || (error.resetAt !== undefined && (typeof error.resetAt !== "string" || !Number.isFinite(Date.parse(error.resetAt))))
-        : error.scope !== undefined || error.resetAt !== undefined)) throw refuse();
+        : error.scope !== undefined || error.resetAt !== undefined) ||
+      (error.code === "deletions_held"
+        ? operationId !== DELETE_OPERATION_ID || error.writeState !== "not_applied" || !count(error.deletions) || !count(error.baseline)
+        : error.deletions !== undefined || error.baseline !== undefined) ||
+      // A model-change refusal says nothing was applied; its findings ride on it alone.
+      (error.code === "definition_incompatible" && error.writeState !== "not_applied") ||
+      (error.definitionDetails !== undefined && error.code !== "definition_incompatible")) throw refuse();
   return { ok: false, operationId, error: { ...(error as WriteFailure["error"]) } };
 }
 
 // ── classifying an identified-write answer ─────────────────────────────────────────────────
+
+/** The refusals answered before dispatch, by status: the sync quota, and the mass-delete hold. */
+const BEFORE_DISPATCH = new Map<number, { code: WriteErrorCode; lenient: boolean }>([
+  [429, { code: "request_capacity", lenient: true }],
+  [428, { code: "deletions_held", lenient: false }],
+]);
 
 const rowsByAnswer = new Map(UPDATE_ANSWER_ROWS.map((row) => [row.answer, row]));
 
@@ -297,17 +385,19 @@ export function classifyWriteAnswer(
     return { row: updateRow("401 other") };
   }
   if (status === 403) return { row: updateRow("403") };
-  if (status === 429) {
+  // The refusals the host answers before dispatch, each with its own status and code. The
+  // capacity refusal is read leniently (its early hosts left fields out); the mass-delete hold is
+  // parsed exactly as the host sends it, so a 428 that does not say it applied nothing is not one.
+  const beforeDispatch = BEFORE_DISPATCH.get(status);
+  if (beforeDispatch) {
     const error = (body as { error?: unknown } | undefined)?.error;
-    if (isRecord(error) && error.code === "request_capacity") {
-      try {
-        const result = parseWriteResult({ ok: false, operationId: expected.operationIds[0], error: { retryable: false, writeState: "not_applied", message: "", ...error } }, expected);
-        return { row: updateRow("429 request_capacity"), result };
-      } catch {
-        return { row: updateRow("other status") };
-      }
+    if (!isRecord(error) || error.code !== beforeDispatch.code) return { row: updateRow("other status") };
+    try {
+      const sent = beforeDispatch.lenient ? { retryable: false, writeState: "not_applied", message: "", ...error } : error;
+      return { row: updateRow(`${status} ${beforeDispatch.code}`), result: parseWriteResult({ ok: false, operationId: expected.operationIds[0], error: sent }, expected) };
+    } catch {
+      return { row: updateRow("other status") };
     }
-    return { row: updateRow("other status") };
   }
   if (status === 503) return { row: updateRow("503") };
   return { row: updateRow("other status") };

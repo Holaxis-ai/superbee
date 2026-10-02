@@ -1,0 +1,24 @@
+{
+  "name": "snapshot-200-page-last",
+  "description": "The last snapshot page: the same header, the remaining documents, and the whole listing's end line.",
+  "route": "/sync/v1/snapshot",
+  "rows": [
+    "snapshot 200 page"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"cursor\":\"2212f1a11f32877afc0ce90442c8088bc96900e2b0fd3453bfcaaa5543584d74.bm90ZXMvdGhyZWU\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "etag": "\"sha256:2212f1a11f32877afc0ce90442c8088bc96900e2b0fd3453bfcaaa5543584d74\""
+    },
+    "body": "{\"kind\":\"snapshot\",\"count\":3,\"digest\":\"sha256:2212f1a11f32877afc0ce90442c8088bc96900e2b0fd3453bfcaaa5543584d74\"}\n{\"kind\":\"doc\",\"id\":\"notes/two\",\"version\":\"sha256:72442039faabc41c2e36a899ba86a92ed7959a6ec35b720223795b9539637f1f\",\"frontmatter\":{\"type\":\"Note\",\"generated\":{\"by\":\"process:superbee-hosted\",\"at\":\"2030-01-01T00:00:00.000Z\"},\"superbee_updated_by\":\"person:both\"},\"body\":\"two\\n\"}\n{\"kind\":\"end\",\"count\":3}\n",
+    "truncated": false
+  }
+}

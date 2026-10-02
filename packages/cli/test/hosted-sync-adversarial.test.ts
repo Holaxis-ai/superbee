@@ -510,7 +510,7 @@ test("RF4 sign-in expires after some writes landed: AUTH_REQUIRED, resume sends 
   for (const id of ["notes/alpha", "notes/beta", "notes/gamma"]) assert.equal(applyCount(h, id), 1, id);
 });
 
-test("RF5 locally refused commands in a checkout: Kinds, ui, mcp (a delete now syncs)", async () => {
+test("RF5 locally refused commands in a checkout: Kinds, ui (a delete now syncs; mcp serves the folder and guards its writes)", async () => {
   const h = await harness();
   const refused = async (name: string, args: string[]) => {
     try {
@@ -523,7 +523,6 @@ test("RF5 locally refused commands in a checkout: Kinds, ui, mcp (a delete now s
   const cases: [string, string[]][] = [
     ["kind", ["add", "Thing", "--dir", h.folder]],
     ["ui", ["--dir", h.folder]],
-    ["mcp", ["--dir", h.folder]],
     // Flag-first spellings (`doc --dir X delete`) slip past matchRow, but the CLI's own parser
     // rejects them (RF5b), so they are not probed here.
   ];
@@ -595,13 +594,28 @@ test("FS3 symlinks inside the checkout: file and directory links are held, nothi
 test("FS4 huge files are held too_large; the rest still syncs", async () => {
   const h = await harness();
   await writeDoc(h, "notes/huge", "Huge", "x".repeat(10 * 1024 * 1024));
-  await writeDoc(h, "notes/escaped", "Escaped", '"\u0001'.repeat(20 * 1024)); // < 64 KiB bytes, > 64 KiB as JSON
+  // 400 KiB of bytes, but each pair costs eight bytes as JSON: over the host's 983,040 as sent.
+  await writeDoc(h, "notes/escaped", "Escaped", '"\u0001'.repeat(200 * 1024));
   await writeDoc(h, "notes/alpha", "Alpha", "Small.\n");
   const { receipt } = await fails(h);
   assert.equal(rowFor(receipt, "notes/huge")?.reason, "too_large");
   assert.equal(rowFor(receipt, "notes/escaped")?.reason, "too_large");
   assert.equal(hostDoc(h, "notes/alpha").body, "Small.\n");
   assert.equal(h.host.docs.has("notes/huge"), false);
+});
+
+test("FS4b the host's stated bound decides: a 200 KiB document waits on a host that states none, and sends where it is stated", async () => {
+  const body = `${"a line of a long meeting transcript\n".repeat(5_700)}`;
+  const old = await harness(new FakeHost({ documentInputBytes: null }));
+  await writeDoc(old, "notes/long", "Long", body);
+  const held = rowFor((await fails(old)).receipt, "notes/long");
+  assert.equal(held?.reason, "too_large");
+  assert.match((held as { message?: string }).message ?? JSON.stringify(held), /accepts up to 64 KiB/);
+  assert.equal(old.host.docs.has("notes/long"), false);
+  const current = await harness();
+  await writeDoc(current, "notes/long", "Long", body);
+  await ok(current);
+  assert.equal(hostDoc(current, "notes/long").body, body);
 });
 
 test("FS5 non-UTF-8 bytes are held, never sent as replacement characters or overwritten", async () => {

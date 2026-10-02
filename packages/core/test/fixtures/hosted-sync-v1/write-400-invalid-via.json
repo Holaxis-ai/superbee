@@ -1,0 +1,26 @@
+{
+  "name": "write-400-invalid-via",
+  "description": "A write whose X-Superbee-Via token is outside the grammar: refused, nothing recorded.",
+  "route": "/sync/v1/create",
+  "rows": [
+    "400"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000017",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "x-superbee-via": "Claude Code"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/x\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"new\"}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

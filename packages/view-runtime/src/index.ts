@@ -241,6 +241,13 @@ export class PageLaunchRegistry {
     return launch;
   }
 
+  /** Resolve a nonce and retire it: a launch's HTML bytes are handed out at most once. */
+  consumeNonce(nonce: string): PageLaunch | null {
+    const launch = this.resolveNonce(nonce);
+    this.byNonce.delete(nonce);
+    return launch;
+  }
+
   revoke(launchId: string): void {
     const launch = this.byLaunch.get(launchId);
     if (!launch) return;
@@ -633,6 +640,7 @@ export {
   BRIDGE_ERROR_CODES,
   BRIDGE_HOST_CAPABILITIES,
   BRIDGE_PROTOCOL,
+  BRIDGE_QUERY_ORDERS,
   BRIDGE_SERVICE_CAPABILITIES,
   BRIDGE_SERVICE_LIMITS,
   BridgeService,
@@ -657,6 +665,8 @@ export {
   type BridgeLaunchAuthority,
   type BridgeOutcome,
   type BridgePollOutcome,
+  type BridgeQueryOrder,
+  type BridgeQueryParams,
   type BridgeServiceOptions,
   type EdgeParams,
 } from "./bridge.js";

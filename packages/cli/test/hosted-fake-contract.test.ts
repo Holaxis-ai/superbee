@@ -6,19 +6,28 @@
 // discriminator strings in DISCRIMINATORS: operation, error code, write state, outcome status and
 // the like). Only values that name the fixture's own data (ids, versions, messages, timestamps)
 // may differ. A fake that drifts from what the host emits fails here, not on staging.
+//
+// The export exchanges are held to more than a shape: the fake is loaded with the bundle the
+// captured archive holds, at the captured instant, and must answer the same status, the same
+// header values and the same bytes, the zip included. The CLI's archive reader is held to the
+// captured archive's values in `hosted-export.test.ts`.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
+import { verifyExport } from "../src/hosted/export-archive.js";
 import { BUNDLE, FakeHost, SYNC_FIXTURES } from "./support/fake-hosted-sync.js";
 
 interface Exchange {
   name: string;
   route: string;
   request: { headers: Record<string, string>; body: string };
-  response: { status: number; headers: Record<string, string>; body: string };
+  response: { status: number; headers: Record<string, string>; body: string; bodyBase64?: string };
 }
+
+/** Exchanges compared by value in the export test below, not by shape. */
+const isExport = (exchange: Exchange) => exchange.route === "/sync/v1/export";
 
 const index = JSON.parse(readFileSync(path.join(SYNC_FIXTURES, "index.json"), "utf8")) as { exchanges: { name: string; file: string }[] };
 const golden = new Map<string, Exchange>(index.exchanges.map((entry) => [entry.name, JSON.parse(readFileSync(path.join(SYNC_FIXTURES, entry.file), "utf8")) as Exchange]));
@@ -31,7 +40,7 @@ const NOT_MODELED: Readonly<Record<string, string>> = Object.freeze({
 const VERSION = /^sha256:[a-f0-9]{64}$/;
 
 /** String keys whose value selects a row or an outcome, and so must equal the host's. */
-const DISCRIMINATORS: ReadonlySet<string> = new Set(["operationId", "code", "writeState", "status", "kind", "surface", "scope", "encoding", "consistency", "error"]);
+const DISCRIMINATORS: ReadonlySet<string> = new Set(["operationId", "code", "writeState", "status", "kind", "surface", "scope", "encoding", "consistency", "error", "definitionWrites", "rootWrites", "rule"]);
 
 /**
  * A value's shape: keys and types all the way down, with the value itself wherever it is a
@@ -61,13 +70,19 @@ function bodyShape(text: string): unknown {
 
 const GRAMMAR = ["content-type", "etag", "x-superbee-root-version", "x-superbee-write-settled"];
 
+/** Header names, and the root version header's value where it selects a row: `none` (no root) or a version. */
+function headerShape(get: (name: string) => string | null): string[] {
+  return GRAMMAR.filter((name) => get(name) !== null)
+    .sort()
+    .map((name) => (name === "x-superbee-root-version" ? `${name}=${get(name) === "none" ? "none" : shape(get(name))}` : name));
+}
+
 async function answerOf(response: Response) {
-  const headers = GRAMMAR.filter((name) => response.headers.has(name)).sort();
-  return { status: response.status, headers, body: bodyShape(await response.text()) };
+  return { status: response.status, headers: headerShape((name) => response.headers.get(name)), body: bodyShape(await response.text()) };
 }
 
 function expectedOf(exchange: Exchange) {
-  return { status: exchange.response.status, headers: Object.keys(exchange.response.headers).sort(), body: bodyShape(exchange.response.body) };
+  return { status: exchange.response.status, headers: headerShape((name) => exchange.response.headers[name] ?? null), body: bodyShape(exchange.response.body) };
 }
 
 const identity = (n: number) => `4a2f9c1e-8b3d-4e6f-9a1b-${String(n).padStart(12, "0")}`;
@@ -75,21 +90,25 @@ const BINDING = `sha256:${"c".repeat(64)}`;
 
 test("the fake answers every golden /sync/v1 exchange in the host's shape", async () => {
   const host = new FakeHost();
-  const send = (route: string, body: unknown, options: { requestId?: string | null; bearer?: string } = {}) =>
-    host.fetch(`${host.origin}/sync/v1/${route}`, {
+  const sendTo = (to: FakeHost, route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string; via?: string; acceptDeletes?: string } = {}) =>
+    to.fetch(`${to.origin}/sync/v1/${route}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        Authorization: `Bearer ${options.bearer ?? host.token}`,
+        Authorization: `Bearer ${options.bearer ?? to.token}`,
         ...(options.requestId === undefined || options.requestId === null ? {} : { "X-Superbee-Write-Request": options.requestId, "X-Superbee-Checkout": BINDING }),
         ...(options.requestId === null ? { "X-Superbee-Checkout": BINDING } : {}),
+        ...(options.recreate === undefined ? {} : { "X-Superbee-Recreate": options.recreate }),
+        ...(options.via === undefined ? {} : { "X-Superbee-Via": options.via }),
+        ...(options.acceptDeletes === undefined ? {} : { "X-Superbee-Accept-Deletes": options.acceptDeletes }),
       },
       body: JSON.stringify(body),
     });
+  const send = (route: string, body: unknown, options: { requestId?: string | null; bearer?: string; recreate?: string; via?: string } = {}) => sendTo(host, route, body, options);
   const [firstId, first] = [...host.docs][0]!;
   const create = (documentId: string, body = "two") => ({ bundleId: BUNDLE, documentId, expectAbsent: true, frontmatter: { type: "Note" }, body });
   const replace = (expectedVersion: string, body: string) => ({ bundleId: BUNDLE, documentId: firstId, expectedVersion, frontmatter: { type: "Note" }, body });
-  const remove = (expectedVersion: string) => ({ bundleId: BUNDLE, documentId: "notes/two", expectedVersion });
+  const remove = (expectedVersion: string, documentId = "notes/two") => ({ bundleId: BUNDLE, documentId, expectedVersion });
 
   const observed = new Map<string, Awaited<ReturnType<typeof answerOf>>>();
   const observe = async (name: string, response: Promise<Response>) => {
@@ -101,16 +120,23 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
 
   await observe("whoami-200", send("whoami", {}));
   await observe("bundles-200", send("bundles", {}));
-  await observe("capabilities-200", send("capabilities", { bundleId: BUNDLE }));
+  // The host's capabilities answer states the front-page capability; the fake's default is a host
+  // from before it, so this answer is driven against one that states it.
+  await observe("capabilities-200", sendTo(new FakeHost({ rootWrites: "allowed" }), "capabilities", { bundleId: BUNDLE }));
   const { digest } = await json(send("heads", { bundleId: BUNDLE }));
   await observe("heads-200", send("heads", { bundleId: BUNDLE }));
   await observe("heads-304", send("heads", { bundleId: BUNDLE, ifNoneMatch: digest }));
   await observe("snapshot-200", send("snapshot", { bundleId: BUNDLE }));
   await observe("read-200-ok", send("read", { bundleId: BUNDLE, documentId: firstId }));
+  await observe("read-200-ok-qualified", send("read", { bundleId: `tenant-a/${BUNDLE}`, documentId: firstId }));
   await observe("read-200-document-not-found", send("read", { bundleId: BUNDLE, documentId: "notes/absent" }));
   await observe("read-200-bundle-not-found", send("read", { bundleId: "nope.a", documentId: firstId }));
   await observe("read-400-invalid-input", send("read", { bundleId: BUNDLE, documentId: firstId, extra: true }));
   await observe("read-401-unauthenticated", send("read", { bundleId: BUNDLE, documentId: firstId }, { bearer: "not-a-token" }));
+  await observe("read-403-access-denied", sendTo(new FakeHost({ syncSurface: false }), "read", { bundleId: BUNDLE, documentId: firstId }));
+  host.unavailable = true;
+  await observe("heads-503-backend-unavailable", send("heads", { bundleId: BUNDLE }));
+  host.unavailable = false;
 
   const created = await json(send("create", create("notes/two"), { requestId: identity(1) }));
   observed.set("create-200-ok", await answerOf(await send("create", create("notes/two"), { requestId: identity(1) })));
@@ -118,17 +144,111 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   await observe("create-200-document-exists", send("create", create(firstId, "dup"), { requestId: identity(2) }));
   const replaced = await json(send("replace", replace(first.version, "one edited"), { requestId: identity(3) }));
   observed.set("replace-200-ok", await answerOf(await send("replace", replace(first.version, "one edited"), { requestId: identity(3) })));
+  await observe("outcome-200-committed-replace", send("outcome", replace(first.version, "one edited"), { requestId: identity(3) }));
   await observe("replace-200-version-conflict", send("replace", replace(first.version, "stale"), { requestId: identity(4) }));
   await observe("outcome-200-refused-replace", send("outcome", replace(first.version, "stale"), { requestId: identity(4) }));
+  await observe("delete-200-version-conflict", send("delete", remove(first.version, firstId), { requestId: identity(16) }));
   await observe("delete-200-ok", send("delete", remove(created.data.version), { requestId: identity(5) }));
   await observe("outcome-200-committed-delete", send("outcome", remove(created.data.version), { requestId: identity(5) }));
   await observe("delete-200-unchanged", send("delete", remove(created.data.version), { requestId: identity(6) }));
   await observe("create-200-version-conflict-tombstone", send("create", create("notes/two", "again"), { requestId: identity(7) }));
+  const firstTombstone = host.latestTombstone("notes/two")!.tombstone;
+  const recreated = await json(send("create", create("notes/two", "again"), { requestId: identity(17), recreate: firstTombstone }));
+  observed.set("create-200-recreate", await answerOf(await send("create", create("notes/two", "again"), { requestId: identity(17), recreate: firstTombstone })));
+  await send("delete", remove(recreated.data.version), { requestId: identity(18) });
+  await observe("create-200-version-conflict-stale-recreate", send("create", create("notes/two", "stale acknowledgement"), { requestId: identity(19), recreate: firstTombstone }));
+  await observe("create-200-insufficient-scope", sendTo(new FakeHost({ writable: false }), "create", create("notes/reader"), { requestId: identity(20) }));
   await observe("outcome-200-absent", send("outcome", create("notes/never"), { requestId: identity(8) }));
   await observe("write-400-invalid-input", send("replace", { ...replace(replaced.data.version, "x"), extra: true }, { requestId: identity(9) }));
   await observe("write-400-missing-identity", send("create", create("notes/x"), { requestId: null }));
+  const viaCreated = await json(send("create", create("notes/via", "via"), { requestId: identity(22), via: "claude-code" }));
+  observed.set("create-200-ok-via", await answerOf(await send("create", create("notes/via", "via"), { requestId: identity(22), via: "claude-code" })));
+  // History: the labeled create, then a replace, newest first; a page back with its content.
+  await send("replace", { bundleId: BUNDLE, documentId: "notes/via", expectedVersion: viaCreated.data.version, frontmatter: { type: "Note" }, body: "via edited" }, { requestId: identity(24) });
+  await observe("history-200-ok", send("history", { bundleId: BUNDLE, documentId: "notes/via" }));
+  await observe("history-200-content", send("history", { bundleId: BUNDLE, documentId: "notes/via", limit: 1, before: 2, includeContent: true }));
+  await observe("history-200-document-not-found", send("history", { bundleId: BUNDLE, documentId: "notes/absent" }));
+  await observe("history-400-invalid-input", send("history", { bundleId: BUNDLE, documentId: "notes/via", extra: true }));
+  // Operations by id: the listing, another bundle's, history run by id and the run refusals.
+  const history = (documentId: string, bundleId = BUNDLE, operationId = "documents.history.v1", inputBundle = bundleId) => ({ bundleId, operationId, input: { bundleId: inputBundle, documentId } });
+  await observe("operations-200", send("operations", { bundleId: BUNDLE }));
+  await observe("operations-404-bundle-not-found", send("operations", { bundleId: "nope.a" }));
+  await observe("run-200-ok", send("run", history("notes/via")));
+  // The envelope names the workspace; the input keeps the bare id.
+  await observe("run-200-ok-qualified", send("run", history("notes/via", `tenant-a/${BUNDLE}`, "documents.history.v1", BUNDLE)));
+  await observe("run-200-document-not-found", send("run", history("notes/absent")));
+  await observe("run-200-bundle-not-found", send("run", history("notes/via", "nope.a")));
+  await observe("run-400-unknown-operation", send("run", { ...history("notes/via"), operationId: "documents.replace.v1" }));
+  await observe("run-400-invalid-input", send("run", history("notes/via", BUNDLE, "documents.history.v1", "ro.a")));
+  await observe("unknown-route-404", send("nope", {}));
+  await observe("write-400-invalid-via", send("create", create("notes/x"), { requestId: identity(23), via: "Claude Code" }));
+  host.hook = (call) => (call.requestId === identity(21) ? { kind: "unknown" } : undefined);
+  await observe("create-200-write-outcome-unknown", send("create", create("notes/unknown"), { requestId: identity(21) }));
+  host.hook = undefined;
+  await observe("outcome-200-pending", send("outcome", create("notes/unknown"), { requestId: identity(21) }));
+
+  // The mass-delete hold: four old documents, two deleted, the third held until the person's count admits it.
+  const holding = new FakeHost({ massDeleteHold: true });
+  while (holding.docs.size < 4) holding.put(`notes/old-${holding.docs.size}`, { type: "Note" }, "old");
+  const [one, two, three] = [...holding.docs];
+  for (const [n, [id, doc]] of [one!, two!].entries()) await sendTo(holding, "delete", remove(doc.version, id), { requestId: identity(30 + n) });
+  const heldDelete = remove(three![1].version, three![0]);
+  await observe("delete-428-deletions-held", sendTo(holding, "delete", heldDelete, { requestId: identity(32) }));
+  await observe("delete-200-ok-accepted", sendTo(holding, "delete", heldDelete, { requestId: identity(32), acceptDeletes: "3" }));
+
+  // Model changes: the capability in both states; a Kind created, a narrowing its documents fail
+  // and its lookup, a document its Kind refuses, a convention by a person the host does not allow,
+  // and a delete of a Kind in use.
+  const modeled = new FakeHost({ definitionWrites: "allowed", rootWrites: "allowed" });
+  await observe("capabilities-200-definition-writes-allowed", sendTo(modeled, "capabilities", { bundleId: BUNDLE }));
+  await observe("capabilities-200-definition-writes-refused", sendTo(new FakeHost({ definitionWrites: "refused", rootWrites: "refused" }), "capabilities", { bundleId: BUNDLE }));
+  const noteKind = (fields: Record<string, unknown>) => ({ frontmatter: { type: "Convention", title: "Note", governs: "Note", fields }, body: "# Note\n\nA note.\n" });
+  const kindCreate = { bundleId: BUNDLE, documentId: "conventions/note", expectAbsent: true, ...noteKind({ optional: ["stage"], values: { stage: ["open", "done"] } }) };
+  const kindCreated = await json(sendTo(modeled, "create", kindCreate, { requestId: identity(40) }));
+  observed.set("create-200-ok-convention", await answerOf(await sendTo(modeled, "create", kindCreate, { requestId: identity(40) })));
+  const narrowing = { bundleId: BUNDLE, documentId: "conventions/note", expectedVersion: kindCreated.data.version, ...noteKind({ required: ["stage"], values: { stage: ["open", "done"] } }) };
+  await observe("replace-200-definition-incompatible", sendTo(modeled, "replace", narrowing, { requestId: identity(41) }));
+  await observe("outcome-200-refused-definition", sendTo(modeled, "outcome", narrowing, { requestId: identity(41) }));
+  const alpha = modeled.docs.get("notes/alpha")!;
+  await observe("replace-200-validation-failed-kind", sendTo(modeled, "replace", { bundleId: BUNDLE, documentId: "notes/alpha", expectedVersion: alpha.version, frontmatter: { ...alpha.frontmatter, stage: "later" }, body: alpha.body }, { requestId: identity(42) }));
+  const idea = { bundleId: BUNDLE, documentId: "conventions/idea", expectAbsent: true, frontmatter: { type: "Convention", title: "Idea", governs: "Idea", fields: {} }, body: "# Idea\n" };
+  await observe("create-200-invalid-input-convention", sendTo(new FakeHost({ definitionWrites: "refused" }), "create", idea, { requestId: identity(43) }));
+  await observe("delete-200-definition-incompatible", sendTo(modeled, "delete", { bundleId: BUNDLE, documentId: "conventions/note", expectedVersion: kindCreated.data.version }, { requestId: identity(44) }));
+  assert.equal(modeled.docs.get("conventions/note")?.version, kindCreated.data.version, "a refused model change leaves the Kind as it was");
+
+  // Pages: the three-document bundle served two to a page, then a write between pages.
+  const paged = new FakeHost({ pageSize: 2 });
+  const firstPage = await json(sendTo(paged, "heads", { bundleId: BUNDLE })) as unknown as { next: string };
+  await observe("heads-200-page-first", sendTo(paged, "heads", { bundleId: BUNDLE }));
+  await observe("heads-200-page-last", sendTo(paged, "heads", { bundleId: BUNDLE, cursor: firstPage.next }));
+  await observe("snapshot-200-page-first", sendTo(paged, "snapshot", { bundleId: BUNDLE }));
+  await observe("snapshot-200-page-last", sendTo(paged, "snapshot", { bundleId: BUNDLE, cursor: firstPage.next }));
+  paged.put("notes/four", { type: "Note" }, "four");
+  await observe("heads-409-concurrent-change", sendTo(paged, "heads", { bundleId: BUNDLE, cursor: firstPage.next }));
+  await observe("heads-200-no-root", sendTo(new FakeHost({ root: false }), "heads", { bundleId: BUNDLE }));
+
+  // The front page (bundles.root.replace.v1): the capability both ways; a replace, the capabilities
+  // answer serving it, a stale base, a create over a root, an edition change, an identified request
+  // (refused: the route takes none), a person without the grant, and a create where there is none.
+  const fronted = new FakeHost({ rootWrites: "allowed" });
+  await observe("capabilities-200-root-writes-allowed", sendTo(fronted, "capabilities", { bundleId: BUNDLE }));
+  await observe("capabilities-200-root-writes-refused", sendTo(new FakeHost({ rootWrites: "refused" }), "capabilities", { bundleId: BUNDLE }));
+  const page = (title: string, edition = "0.2") => `---\nokf_version: "${edition}"\n---\n# ${title}\n`;
+  const before = fronted.root()!.version;
+  await observe("root-200-ok", sendTo(fronted, "root", { bundleId: BUNDLE, content: page("Our front page"), expectedVersion: before }, { requestId: null, via: "claude-code" }));
+  await observe("capabilities-200-root-moved", sendTo(fronted, "capabilities", { bundleId: BUNDLE }));
+  const after = fronted.root()!.version;
+  await observe("root-200-version-conflict", sendTo(fronted, "root", { bundleId: BUNDLE, content: page("Our front page"), expectedVersion: before }, { requestId: null }));
+  await observe("root-200-document-exists", sendTo(fronted, "root", { bundleId: BUNDLE, content: "# Another front page\n", expectAbsent: true }, { requestId: null }));
+  await observe("root-200-validation-failed", sendTo(fronted, "root", { bundleId: BUNDLE, content: page("Older", "0.1"), expectedVersion: after }, { requestId: null }));
+  await observe("root-400-identified", sendTo(fronted, "root", { bundleId: BUNDLE, content: "# notes.a\n", expectedVersion: after }, { requestId: identity(60) }));
+  await observe("root-200-insufficient-scope", sendTo(new FakeHost({ rootWrites: "refused" }), "root", { bundleId: BUNDLE, content: "# ro.a\n", expectedVersion: before }, { requestId: null }));
+  const rootless = new FakeHost({ rootWrites: "allowed" });
+  rootless.clearRoot();
+  await observe("root-200-ok-created", sendTo(rootless, "root", { bundleId: BUNDLE, content: "# notes.a\n\nOur front page.\n", expectAbsent: true }, { requestId: null }));
 
   for (const [name, exchange] of golden) {
+    if (isExport(exchange)) continue;
     if (NOT_MODELED[name]) {
       assert.ok(!observed.has(name), `${name} is marked not modeled but was driven`);
       continue;
@@ -152,4 +272,105 @@ test("the contract catches the read answer the fake used to give, and a wrong er
   assert.notDeepEqual(bodyShape(refused.replace('"status":"refused"', '"status":"committed"')), bodyShape(refused));
   const changed = golden.get("delete-200-unchanged")!.response.body;
   assert.notDeepEqual(bodyShape(changed.replace('"changed":false', '"changed":true')), bodyShape(changed));
+  // A history row's keys are grammar: a row named with other keys (`revision`, `at`) is another answer.
+  const history = golden.get("history-200-ok")!.response.body;
+  assert.notDeepEqual(bodyShape(history.replaceAll('"seq"', '"revision"').replaceAll('"timestamp"', '"at"')), bodyShape(history));
+});
+
+/** The operations exchanges the fake answers with the host's exact bytes (the golden requests, sent to the fake's bundle). */
+const OPERATIONS_BY_VALUE = ["operations-200", "operations-404-bundle-not-found", "run-200-document-not-found", "run-200-bundle-not-found", "run-400-unknown-operation", "run-400-invalid-input", "unknown-route-404"];
+
+test("the fake answers the operations goldens' requests with the host's status, headers and bytes, and runs history as /history answers it", async () => {
+  const host = new FakeHost();
+  const post = (route: string, body: string) =>
+    host.fetch(`${host.origin}${route}`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${host.token}` }, body });
+  const ours = (body: string) => body.replaceAll('"notes.a"', JSON.stringify(BUNDLE));
+  for (const name of OPERATIONS_BY_VALUE) {
+    const exchange = golden.get(name)!;
+    const response = await post(exchange.route, ours(exchange.request.body));
+    assert.equal(response.status, exchange.response.status, name);
+    assert.deepEqual(Object.fromEntries(Object.keys(exchange.response.headers).map((header) => [header, response.headers.get(header)])), exchange.response.headers, `${name}: headers`);
+    assert.equal(await response.text(), exchange.response.body, `${name}: body bytes`);
+  }
+  // History run by id is the /history answer, byte for byte, as run-200-ok is history-200-ok.
+  const [id] = [...host.docs.keys()];
+  const run = await post("/sync/v1/run", JSON.stringify({ bundleId: BUNDLE, operationId: "documents.history.v1", input: { bundleId: BUNDLE, documentId: id } }));
+  const direct = await post("/sync/v1/history", JSON.stringify({ bundleId: BUNDLE, documentId: id }));
+  assert.equal(run.status, 200);
+  assert.equal(await run.text(), await direct.text());
+  assert.equal(golden.get("run-200-ok")!.response.body, golden.get("history-200-ok")!.response.body);
+  // An old gateway answers both routes with the family's unknown route.
+  const old = new FakeHost({ operations: false });
+  for (const route of ["operations", "run"]) {
+    const response = await old.fetch(`${old.origin}/sync/v1/${route}`, { method: "POST", headers: { Authorization: `Bearer ${old.token}` }, body: JSON.stringify({ bundleId: BUNDLE }) });
+    assert.equal(response.status, 404);
+    assert.equal(await response.text(), golden.get("unknown-route-404")!.response.body);
+  }
+});
+
+test("the fake answers every golden /sync/v1/export exchange with the host's exact values and bytes", async () => {
+  const exchanges = [...golden.values()].filter(isExport);
+  assert.deepEqual(exchanges.map((exchange) => exchange.name).sort(), [
+    "export-200",
+    "export-200-page-first",
+    "export-200-page-last",
+    "export-400-invalid-cursor",
+    "export-400-invalid-input",
+    "export-401-unauthenticated",
+    "export-404-bundle-not-found",
+    "export-409-concurrent-change",
+  ]);
+  const captured = golden.get("export-200")!;
+  const archive = Buffer.from(captured.response.bodyBase64!, "base64");
+  // The bundle the captured archive holds, as the fake's storage: the files are the input, and
+  // every byte the fake adds around them (order, headers, manifest, directory) is compared.
+  const exported = verifyExport(archive, "notes.a");
+  const host = new FakeHost({ bundles: ["notes.a"] });
+  host.exportState = {
+    tenantId: exported.source.tenantId,
+    bundleId: exported.source.bundleId,
+    revision: exported.source.revision,
+    files: new Map([...exported.entries].reverse().map((entry) => [entry.path, entry.bytes])),
+  };
+  host.exportedAt = () => new Date(exported.exportedAt);
+  // The golden pages are generated one object a page.
+  host.exportPageObjects = 1;
+
+  for (const exchange of exchanges) {
+    const bearer = exchange.name === "export-401-unauthenticated" ? "not-a-token" : host.token;
+    const response = await host.fetch(`${host.origin}/sync/v1/export`, {
+      method: "POST",
+      headers: { ...exchange.request.headers, Authorization: `Bearer ${bearer}` },
+      body: exchange.request.body,
+    });
+    assert.equal(response.status, exchange.response.status, exchange.name);
+    const headers = Object.fromEntries(Object.keys(exchange.response.headers).map((name) => [name, response.headers.get(name)]));
+    assert.deepEqual(headers, exchange.response.headers, `${exchange.name}: header values`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (exchange.response.bodyBase64 !== undefined) {
+      assert.equal(bytes.toString("base64"), exchange.response.bodyBase64, `${exchange.name}: the archive bytes`);
+    } else {
+      assert.equal(bytes.toString("utf8"), exchange.response.body, `${exchange.name}: the body bytes`);
+    }
+  }
+});
+
+test("the export value check catches a manifest, order or header the host does not emit", async () => {
+  const captured = golden.get("export-200")!;
+  const archive = Buffer.from(captured.response.bodyBase64!, "base64");
+  const exported = verifyExport(archive, "notes.a");
+  const answer = async (mutate: (host: FakeHost) => void) => {
+    const host = new FakeHost({ bundles: ["notes.a"] });
+    host.exportState = { tenantId: exported.source.tenantId, bundleId: "notes.a", revision: exported.source.revision, files: new Map(exported.entries.map((entry) => [entry.path, entry.bytes])) };
+    host.exportedAt = () => new Date(exported.exportedAt);
+    mutate(host);
+    const response = await host.fetch(`${host.origin}/sync/v1/export`, { method: "POST", headers: { Authorization: `Bearer ${host.token}` }, body: JSON.stringify({ bundleId: "notes.a" }) });
+    return { disposition: response.headers.get("content-disposition"), base64: Buffer.from(await response.arrayBuffer()).toString("base64") };
+  };
+  assert.equal((await answer(() => {})).base64, captured.response.bodyBase64);
+  // Another revision changes the manifest and the file name; another instant changes every header.
+  const revised = await answer((host) => void (host.exportState = { ...host.exportState!, revision: 3 }));
+  assert.notEqual(revised.base64, captured.response.bodyBase64);
+  assert.notEqual(revised.disposition, captured.response.headers["content-disposition"]);
+  assert.notEqual((await answer((host) => void (host.exportedAt = () => new Date(Date.parse(exported.exportedAt) + 60_000)))).base64, captured.response.bodyBase64);
 });

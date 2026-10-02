@@ -202,7 +202,7 @@ Run `npm run check:package-versions` before installing or building after a runti
 version edit. This dependency-free source check validates the synchronized core/server pair,
 their exact dependency, and core/server/markdown-renderer/cli workspace lock metadata and links.
 It also checks their existing publish access and registry policy without publishing anything.
-The cli version is independent: no rule ties it to the core/server version.
+The cli version is independent of the core/server version.
 Manifests own versions and dependency declarations; the lockfile is their checked projection.
 The renderer's core peer policy permits `||` alternatives of exact versions and stable
 `^major.minor.patch` ranges; prereleases require an exact alternative. Other range syntax or

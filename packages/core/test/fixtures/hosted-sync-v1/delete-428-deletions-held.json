@@ -1,0 +1,25 @@
+{
+  "name": "delete-428-deletions-held",
+  "description": "A delete that would make 3 of the bundle's 4 documents deleted in 24 hours: held before dispatch, nothing recorded.",
+  "route": "/sync/v1/delete",
+  "rows": [
+    "428 deletions_held"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000185",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/three\",\"expectedVersion\":\"sha256:6515280c298777fb405f9d42266a4dcd5b99a7a8875f71cd810051c75f75e34f\"}"
+  },
+  "response": {
+    "status": 428,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"deletions_held\",\"deletions\":3,\"baseline\":4,\"message\":\"This would make 3 deletions in 24 hours of the 4 documents this bundle held. Nothing was deleted; a person must confirm this mass delete.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

@@ -49,7 +49,18 @@ const PATH_FLAG_CANDIDATES = [
   "path",
   "from-file",
   "to-file",
+  "input-file",
 ] as const;
+
+/**
+ * A flag a leaf accepts under a name another leaf declares as a path, where on THIS leaf the value
+ * is not a filesystem target. Each entry carries its reason; an entry never hides a path flag.
+ */
+const NOT_A_PATH_ON_LEAF: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  linkList: { to: "a link-target concept id or prefix filter; export's --to is the folder" },
+  publish: { to: "the destination kind (only 'hosted'); publish moves the --dir bundle in place" },
+  opRun: { input: "the operation's input as inline JSON; --input-file is the path" },
+};
 
 /** Positionals a leaf needs before its own parser is reached. Default: `arity.count` placeholders. */
 const PROBE_POSITIONALS: Readonly<Record<string, readonly string[]>> = {
@@ -152,6 +163,10 @@ test("registry path flags: every declared flag is accepted by the built CLI, and
     }
     if (leaf.dynamicFieldFlags) continue;
     for (const flag of accepted) {
+      if (NOT_A_PATH_ON_LEAF[leaf.id]?.[flag] !== undefined) {
+        assert.ok(!declared.has(flag), `${leaf.path} both declares --${flag} a path and exempts it`);
+        continue;
+      }
       assert.ok(
         declared.has(flag),
         `${leaf.path} accepts --${flag} without declaring it in command-spec.ts — declare its CliPathRole `
