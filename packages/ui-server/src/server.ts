@@ -6,13 +6,14 @@
 // Reuses the server package's exported node:http adapter ({@link requestFromIncomingMessage} /
 // {@link writeResponseToServerResponse}) so Request/Response marshaling has one implementation.
 //
-// Bundle Views add a second privilege tier alongside the data API: a
-// PAGE-BYTES route (`/__page/<nonce>`) that serves a bundle page's static HTML to a sandboxed,
-// opaque-origin iframe, gated by a per-page nonce the session-authed shell mints (`POST
-// /__page/mint`) — NOT by the session token, so a page cannot call `/v0/*` directly. Data-bearing
-// active HTML also requires an exact-byte local approval, and its bridge requests are resolved
-// here against the immutable launch before and after each read. Plus an SSE `/events` stream
-// (shell-only) fed by a version-token watcher. See `pages.ts`, `events.ts`, `watch.ts`.
+// Bundle Views add a second privilege tier alongside the data API: the session-authed shell
+// mints one immutable launch (`POST /__page/mint`), fetches that launch's exact HTML once through
+// its single-use nonce (`GET /__page/<nonce>`), and hands the bytes to the static View host
+// (`/__ui/view-host`), which mounts them in a sandboxed, opaque-origin `blob:` frame. The View
+// frame makes no request of its own and never holds the session. Data-bearing active HTML also
+// requires an exact-byte local approval, and its bridge requests are resolved here against the
+// immutable launch before and after each read. Plus an SSE `/events` stream (shell-only) fed by a
+// version-token watcher. See `pages.ts`, `events.ts`, `watch.ts`.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import {
@@ -26,7 +27,7 @@ import { isAllowedHost } from "./host.js";
 import { checkAuth, constantTimeEqual, mintSessionSecret, sessionCookieHeader } from "./session.js";
 import type { UiAssetHandler } from "./assets.js";
 import { proxyToRemote } from "./proxy.js";
-import { pageCsp } from "./pages.js";
+import { pageCsp, viewChildCsp } from "./pages.js";
 import {
   BRIDGE_HOST_CAPABILITIES,
   BRIDGE_SERVICE_CAPABILITIES,
@@ -49,6 +50,7 @@ import {
   type PageLaunch,
   type ViewAuthorizationStore,
 } from "@superbee/view-runtime";
+import { VIEW_HOST_PATH, viewHostCsp, viewHostDocument } from "@superbee/view-runtime/view-host";
 import { SseHub } from "./events.js";
 import { startWatcher, type ChangeEvent, type WatcherHandle } from "./watch.js";
 
@@ -196,7 +198,7 @@ export interface UiServerHandle {
 /** Per-run mutable state the request handler closes over: the page-nonce registry, the SSE fan-out, the change watcher, and the shutdown signal (aborts remote-mode upstream requests at close()). */
 interface UiRuntime {
   launches: PageLaunchRegistry;
-  /** Launches whose nonce response reached Node's completed-response boundary. */
+  /** Launches whose single nonce response to the shell reached Node's completed-response boundary. */
   deliveredLaunches: WeakSet<PageLaunch>;
   authorizations: ViewAuthorizationStore;
   bridge?: BridgeService;
@@ -335,38 +337,32 @@ async function handleManagementRequest(
   return true;
 }
 
-/** Escape text for interpolation into HTML (the standard `&<>\"'` five). The ONE escape primitive for the serve path — every {@link pageError} message flows through it, because a message on that path can carry remote-originated text (e.g. an upstream failure's error string) and must never reach the iframe as markup. */
-export function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-}
-
-/** A minimal readable error rendered INSIDE the page iframe (the page route serves HTML, so a JSON envelope would show as raw text). Carries the page CSP so the error frame is as locked-down as a real page. The message is ALWAYS HTML-escaped — it is data, never markup. Exported for the escaping pin (ui-pages.test.ts); not otherwise a public API. */
-export function pageError(status: number, message: string): Response {
-  const body = `<!doctype html><meta charset="utf-8"><title>page unavailable</title><p>${escapeHtml(message)}</p>`;
-  return new Response(body, {
-    status,
-    headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": pageCsp(), "referrer-policy": "no-referrer" },
-  });
-}
-
-/** Serve a page's bytes for a resolved nonce — the ONLY thing a nonce authorizes, and only ITS one key. */
+/**
+ * Serve a launch's exact bytes for its nonce — the ONLY thing a nonce authorizes, and only once.
+ * The caller is the session-authed shell, which verifies the bytes against the approved content
+ * version before handing them to the View host.
+ */
 async function servePageBytes(
   options: UiServerOptions,
   runtime: UiRuntime,
   nonce: string,
 ): Promise<{ response: Response; deliveredLaunch?: PageLaunch }> {
-  const launch = runtime.launches.resolveNonce(nonce);
-  if (!launch) return { response: pageError(403, "This view link is unknown or has expired. Reopen the view from the launcher.") };
+  const launch = runtime.launches.consumeNonce(nonce);
+  if (!launch) {
+    return { response: jsonError(403, "FORBIDDEN", "this View launch is unknown, already delivered, or expired; reopen the View from the launcher") };
+  }
   if (!(await launchIsCurrent(options.bundle, launch))) {
     runtime.launches.revoke(launch.launchId);
-    return { response: pageError(403, "This view changed after it was opened. Reopen it from the launcher.") };
+    return { response: jsonError(403, "FORBIDDEN", "this View changed after it was opened; reopen it from the launcher") };
   }
   return {
     response: new Response(launch.bytes, {
       status: 200,
       headers: {
         "content-type": launch.contentType,
-        "content-security-policy": pageCsp(),
+        // Defense in depth: these bytes are only ever read by the shell's fetch. Should anything
+        // render them directly, they still run sandboxed under the View policy.
+        "content-security-policy": `sandbox allow-scripts; ${pageCsp()}`,
         "x-content-type-options": "nosniff",
         "cache-control": "no-store",
         "referrer-policy": "no-referrer",
@@ -374,6 +370,22 @@ async function servePageBytes(
     }),
     deliveredLaunch: launch,
   };
+}
+
+/** The static View host document. It carries no secret; its policy is what the View inherits. */
+function viewHostResponse(): Response {
+  return new Response(viewHostDocument(viewChildCsp()), {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": viewHostCsp(viewChildCsp()),
+      // The host's own framing guard. Unlike `frame-ancestors`, the blob child does not inherit it.
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+    },
+  });
 }
 
 /**
@@ -437,7 +449,7 @@ async function handleMint(req: Request, runtime: UiRuntime, options: UiServerOpt
     }
     const matches: string[] = [];
     try {
-      const heads = await queryHeads(options.bundle, { type: "View" });
+      const heads = await queryHeads(options.bundle, { type: "View" }, { onSkip: () => {} });
       for (const head of heads) {
         const registration = parseRegistration(head.id, head.frontmatter);
         if (registration?.entry === legacyKey) matches.push(registration.id);
@@ -658,13 +670,14 @@ async function edgesResponse(options: UiServerOptions, url: URL): Promise<Respon
   if (text) filter.text = text;
 
   let links: Awaited<ReturnType<typeof queryEdges>>;
+  const skipped: Array<{ id: string; reason: string }> = [];
   try {
-    links = await queryEdges(options.bundle, filter);
+    links = await queryEdges(options.bundle, filter, { onSkip: ({ id, reason }) => skipped.push({ id, reason }) });
   } catch {
     return jsonError(502, "RUNTIME", "could not read the bundle's edges");
   }
   const edges = links.map((l) => ({ from: l.from, to: l.to, text: l.text }));
-  return new Response(JSON.stringify({ edges, count: edges.length }), {
+  return new Response(JSON.stringify({ edges, count: edges.length, ...(skipped.length > 0 ? { skipped } : {}) }), {
     status: 200,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
@@ -686,7 +699,7 @@ function exactOwnKeys(value: unknown, keys: readonly string[]): value is Record<
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-const MAX_TRUSTED_ACTION_BODY_BYTES = 16 * 1024;
+const MAX_TRUSTED_ACTION_BODY_BYTES = 512 * 1024;
 
 /**
  * The `X-Requested-With` marker a same-origin mutation must carry. Renaming the value cannot be a
@@ -718,7 +731,7 @@ async function trustedPayload(
   }
   const declaredLength = Number(req.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_TRUSTED_ACTION_BODY_BYTES) {
-    return jsonError(413, "USAGE", `${label} request body must be at most 16 KiB`);
+    return jsonError(413, "USAGE", `${label} request body must be at most 512 KiB`);
   }
   let text: string;
   try {
@@ -727,7 +740,7 @@ async function trustedPayload(
     return jsonError(400, "USAGE", `${label} request body could not be read`);
   }
   if (Buffer.byteLength(text, "utf8") > MAX_TRUSTED_ACTION_BODY_BYTES) {
-    return jsonError(413, "USAGE", `${label} request body must be at most 16 KiB`);
+    return jsonError(413, "USAGE", `${label} request body must be at most 512 KiB`);
   }
   let value: unknown;
   try {
@@ -858,13 +871,31 @@ async function handleRequest(
   // management secret.
   if (await handleManagementRequest(req, res, options, runtime, url)) return;
 
-  // PAGE BYTES — the second privilege tier. Nonce-gated and SESSION-INDEPENDENT: the sandboxed,
-  // opaque-origin iframe that loads this URL holds no session token, and the nonce is its sole
-  // capability (minted by the session-authed shell for this one key). The data token does NOT open
-  // this route to arbitrary keys, and this nonce does NOT open any data route (`checkAuth` below
-  // rejects it — it is not the session secret). `/__page/mint` is excluded here: it is a data
-  // operation and stays behind the session gate.
+  // Authenticate from the raw request metadata before adapting/buffering any body. A caller with
+  // no session must not be able to make the loopback process allocate an arbitrary request body
+  // merely to discover that it is unauthorized.
+  const auth = checkAuth(
+    sessionSecret,
+    url.searchParams.get("token"),
+    req.headers.cookie ?? null,
+    options.sessionCookieName,
+  );
+  if (!auth.ok) {
+    await writeResponseToServerResponse(
+      res,
+      jsonError(403, "FORBIDDEN", "missing or invalid session — open the printed URL (with its ?token) again"),
+    );
+    return;
+  }
+  // PAGE BYTES — the second privilege tier. The session-authed shell fetches one launch's bytes
+  // through its single-use nonce; the nonce alone opens nothing, and it is not the session secret,
+  // so it opens no data route either. Requiring X-Requested-With keeps a plain navigation from
+  // ever rendering the bytes at this origin. `/__page/mint` is a separate data operation below.
   if (url.pathname.startsWith("/__page/") && url.pathname !== "/__page/mint") {
+    if (req.method !== "GET" || !req.headers["x-requested-with"]) {
+      await writeResponseToServerResponse(res, jsonError(403, "FORBIDDEN", "View bytes are delivered only to the Superbee shell"));
+      return;
+    }
     const nonce = decodeURIComponent(url.pathname.slice("/__page/".length));
     const served = await servePageBytes(options, runtime, nonce);
     const completed = new Promise<boolean>((resolve) => {
@@ -884,22 +915,12 @@ async function handleRequest(
     return;
   }
 
-  // Authenticate from the raw request metadata before adapting/buffering any body. A caller with
-  // no session must not be able to make the loopback process allocate an arbitrary request body
-  // merely to discover that it is unauthorized.
-  const auth = checkAuth(
-    sessionSecret,
-    url.searchParams.get("token"),
-    req.headers.cookie ?? null,
-    options.sessionCookieName,
-  );
-  if (!auth.ok) {
-    await writeResponseToServerResponse(
-      res,
-      jsonError(403, "FORBIDDEN", "missing or invalid session — open the printed URL (with its ?token) again"),
-    );
+  // The View host is static and secret-free, but only the shell has a reason to frame it.
+  if (url.pathname === VIEW_HOST_PATH && req.method === "GET") {
+    await writeResponseToServerResponse(res, viewHostResponse());
     return;
   }
+
   const boundedTrustedBody =
     url.pathname === "/__page/mint" || url.pathname.startsWith("/__ui/");
   let request: Request;
@@ -916,7 +937,7 @@ async function handleRequest(
           : "View launch";
       await writeResponseToServerResponse(
         res,
-        jsonError(413, "USAGE", `${label} request body must be at most 16 KiB`),
+        jsonError(413, "USAGE", `${label} request body must be at most 512 KiB`),
       );
       return;
     }

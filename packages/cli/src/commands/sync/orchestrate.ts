@@ -38,9 +38,12 @@ import {
   resolveOriginRef,
   retargetBoardInterior,
   runGit,
+  malformedCommittedDocuments,
+  malformedOutgoingDocuments,
   stageAndCommit,
   unpushedCount,
   type CommitResult,
+  type HeldDocument,
   type DocChange,
   type FetchRebaseResolvingOutcome,
   type ProvisionOutcome,
@@ -74,6 +77,8 @@ import {
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
 import {
+  boundBoardWorktreeError,
+  emptyDirectory,
   ownConventionalBoardRoot,
   resolveLocalBundleRoute,
   resolveProjectBinding,
@@ -82,6 +87,7 @@ import {
 import type { BoundBoardOwner } from "../../bound-board-owner.js";
 import { recoverBoundBoardOwner } from "../../bound-board-recovery.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
+import { syncEnvelope, withSyncEnvelope } from "../../sync-outcomes.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -89,6 +95,8 @@ Usage:
   superbee sync [--pull-only] [--dir <path>] [--limit <n>] [--json]
   superbee sync --establish [--yes] [--dir <path>] [--json]
   superbee sync --show-incoming <id> [--out <file> | --body-out <file>] [--dir <path>] [--json]
+  superbee sync --inspect --doc <id> [--out <file>] [--dir <path>] [--json]
+  superbee sync --resolve keep|take|revise --doc <id> [--dir <path>] [--json]
 
 Before first publication, check whether the intended remote repository exists, then whether
 origin/board exists. Superbee does not create the remote repository. If the repository is
@@ -141,6 +149,14 @@ board is never left mid-state; non-conflicted local changes still land). The run
 one row per conflicted doc and the reconcile chain: \`sync --show-incoming <id>\` to view the kept
 incoming version, \`doc update <id> --body-file <export-file>\` to write your merged version on
 top, then \`sync\` again to share it.
+
+A hosted checkout's conflict verbs work on a saved conflict too, over the same flow (sync still
+keeps the teammate's version first): \`--inspect --doc <id>\` shows your saved version and the
+teammate's (\`--out <file>\` writes theirs whole); \`--resolve take\` restores theirs (undoing any
+later edit) and discards your saved copy; \`--resolve keep\` writes your saved body over theirs with \`doc update\` (frontmatter
+that differs is listed, not carried); \`--resolve revise\` records the document as it is now, so
+edit it to the result you want first. Each removes the saved copy; none commits or pushes: the
+next \`sync\` shares keep and revise.
 
 \`sync --show-incoming <id>\` prints the board's incoming (upstream) version of one doc — the
 state of \`origin/board\` as of the last fetch (it never fetches). Full doc-read semantics: large
@@ -205,6 +221,11 @@ Options:
   --show-incoming <id> Print the upstream (origin/board) version of one doc, as of the last fetch
   --out <file>         With --show-incoming: write the raw bytes to <file> ('-' = raw to stdout)
   --body-out <file>    With --show-incoming: write only a parsed doc body ('-' = body to stdout)
+  --inspect --doc <id> Show a saved conflict: your saved version and the teammate's
+                       (--inspect <id> is an alias; --out <file> writes theirs whole)
+  --resolve keep|take|revise --doc <id>
+                       Settle a saved conflict: keep writes yours with doc update, take keeps
+                       theirs, revise keeps the document as you edited it; sync then pushes it
   --dir <path>         Directory to run sync from (default: the cwd) — must be inside a git repo
   --limit <n>          Cap the incoming-delta row list to <n> rows (default: 20; 0 = unlimited)
   --json               Emit compact JSON instead of TOON
@@ -332,7 +353,8 @@ async function syncInTree(run: SyncRun): Promise<void> {
   }
   const hookHint = await hookInstallHintOnce(key, run.inv, run.deps.hookInstalled);
   if (hookHint) rec.hint = hookHint;
-  run.stdout(render(rec, run.mode));
+  // An in-tree bundle rides the code branch: this reports what is incoming, and moves nothing.
+  run.stdout(render(withSyncEnvelope(rec, syncEnvelope("git")), run.mode));
 }
 
 /**
@@ -377,12 +399,24 @@ function requestsShowIncomingStdoutByteChannel(argv: string[]): boolean {
   return false;
 }
 
-/** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
-async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
-  const { values } = parseLeafOrUsage(
+/**
+ * `--inspect` names its document with `--doc <id>`, like `--resolve`; `--inspect <id>` is kept
+ * as an alias. A bare `--inspect` (last, or followed by another flag) is read as an empty value,
+ * which the hosted parse replaces with `--doc`.
+ */
+function bareInspect(argv: string[]): string[] {
+  return argv.map((token, index) => (token === "--inspect" && (index + 1 === argv.length || argv[index + 1]!.startsWith("-")) ? "--inspect=" : token));
+}
+
+/**
+ * The one parse of `sync` argv, for both kinds of target: a Git board (below) and a hosted
+ * checkout (`../../hosted/sync.ts`, which owns `--inspect`, `--resolve` and `--doc`).
+ */
+export function parseSyncArgs(argv: string[]) {
+  return parseLeafOrUsage(
     () =>
       parseArgs({
-        args: argv,
+        args: bareInspect(argv),
         options: {
           "pull-only": { type: "boolean" },
           establish: { type: "boolean" },
@@ -395,12 +429,30 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
           limit: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
+          inspect: { type: "string" },
+          resolve: { type: "string" },
+          doc: { type: "string" },
+          "accept-deletes": { type: "string" },
+          "restore-deletes": { type: "boolean" },
+          "take-host-deletions": { type: "string" },
         },
         allowPositionals: true,
       }),
     CLI_LEAVES.sync,
   );
+}
+
+/** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
+async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
+  const { values } = parseSyncArgs(argv);
   if (values.help) return { kind: "help" };
+  if (values.inspect !== undefined || values.resolve !== undefined || values.doc !== undefined || values["accept-deletes"] !== undefined || values["restore-deletes"] !== undefined || values["take-host-deletions"] !== undefined) {
+    // `superbee sync` routes the conflict verbs (both homes) and the hosted-only verbs before the
+    // Git sync runs; only a caller that invokes the Git sync directly reaches this.
+    throw new CliError("USAGE", `--inspect, --resolve and --doc are handled by '${inv} sync' (the one conflict grammar for Git boards and hosted checkouts); --accept-deletes, --restore-deletes and --take-host-deletions apply to a hosted checkout only`, {
+      help: `${inv} sync --inspect --doc <id>`,
+    });
+  }
 
   // `--migrate` is a RETIRED spelling: `--establish` subsumed the committed-folder case. The flag
   // stays recognized so old muscle memory gets a pointer instead of a generic unknown-option error.
@@ -512,7 +564,16 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
     const binding = await resolveProjectBinding(process.cwd());
     if (binding) {
       ownBoardRoot = (await ownConventionalBoardRoot(binding)) ?? undefined;
-      if (ownBoardRoot === undefined || existsSync(binding.target)) {
+      // A linked worktree cannot provision the repository's one board checkout a second time, and
+      // a board registered to a missing worktree must be pruned first; give the resolver's recovery
+      // instead of a provisioning attempt that can only fail.
+      if (ownBoardRoot !== undefined) {
+        const blocked = await boundBoardWorktreeError(binding);
+        if (blocked) throw blocked;
+      }
+      // An absent or empty own board path is exactly what provisioning fills; the resolver refuses
+      // to open it (its recovery is this very sync), so only an occupied path routes through it.
+      if (ownBoardRoot === undefined || (existsSync(binding.target) && !(await emptyDirectory(binding.target)))) {
         route = await resolveLocalBundleRoute(undefined);
       }
       if (ownBoardRoot !== undefined && route?.kind === "bound-local") route = undefined;
@@ -545,7 +606,7 @@ function provisionPhase(run: SyncRun): SyncBoard | null {
     return { boardPath: run.owner.bundleRoot, key: run.owner.stateKey, outcome: { kind: "already", boardPath: run.owner.bundleRoot } };
   }
   const emptyState = (rec: Record<string, unknown>): null => {
-    run.stdout(render(rec, run.mode));
+    run.stdout(render(withSyncEnvelope(rec, syncEnvelope("local")), run.mode));
     return null;
   };
   const outcome = provisionBoardWorktree(run.dir, { allowLocalBranch: false, ensureIgnore: true });
@@ -691,12 +752,14 @@ async function deltaPhase(board: SyncBoard, baseline: SyncBaseline): Promise<Syn
  * a PARTIAL envelope LEADING with the safety message, then throws `asHandled` so the bin wrapper
  * sets the exit code without a second (conflicting) error envelope.
  */
-async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta): Promise<number> {
-  if (run.pullOnly) return 0;
+async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta): Promise<{ commits: number; documents: number }> {
+  if (run.pullOnly) return { commits: 0, documents: 0 };
   const ahead = unpushedCount(board.boardPath) ?? 0;
+  // The documents the push sends: every one the unpushed commits change, this run's or earlier.
+  const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), currentHead(board.boardPath)).map((change) => change.docId)).size : 0;
   try {
     push(board.boardPath);
-    return ahead;
+    return { commits: ahead, documents: outgoing };
   } catch (err) {
     const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
     const warning = pushFailureMessage(classified);
@@ -704,7 +767,7 @@ async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
       board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote,
       classified.details,
     );
-    run.stdout(render(partial, run.mode));
+    run.stdout(render(withSyncEnvelope(partial, syncEnvelope("git", { received: delta.originDelta.length })), run.mode));
     await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
     throw asHandled(new CliError(classified.code, warning, { details: classified.details }));
   }
@@ -718,16 +781,59 @@ async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
  */
 async function receiptPhase(
   run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta,
-  pushedCount: number, establishAlreadyNote: string | undefined,
+  pushed: { commits: number; documents: number }, establishAlreadyNote: string | undefined,
 ): Promise<void> {
   await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
   const hookHint = await hookInstallHintOnce(board.key, run.inv, run.deps.hookInstalled);
   const receipt = buildSyncReceipt({
-    outcome: board.outcome, commitDocs: commitResult.docs, pushedCount,
+    outcome: board.outcome, commitDocs: commitResult.docs, pushedCount: pushed.commits,
     originDelta: delta.originDelta, limit: run.limit,
     establishAlreadyNote, reanchorNote: delta.reanchorNote, hookHint,
   });
-  run.stdout(render(receipt, run.mode));
+  run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { sent: pushed.documents, received: delta.originDelta.length })), run.mode));
+}
+
+/**
+ * A sync with an outgoing document whose frontmatter does not parse. Publishing it would break
+ * every reader of the shared board, so nothing outgoing moves: no commit, no push, no file set
+ * aside. Incoming changes still arrive when the board fast-forwards (Git itself refuses a
+ * fast-forward that would overwrite a local edit). The receipt names each held document with the
+ * fix, and the run exits 5 so the turn-end hook hands it back to the writer.
+ */
+async function heldRun(run: SyncRun, board: SyncBoard, baseline: SyncBaseline, held: readonly HeldDocument[]): Promise<void> {
+  const pulled = ffPull(board.boardPath);
+  const delta = await deltaPhase(board, baseline);
+  await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
+  reportHeld(run, board, delta, held, "in the worktree", pulled.swallowed);
+}
+
+/** Print the held receipt (nothing pushed) and exit 5 so the turn-end hook hands it back. */
+function reportHeld(
+  run: SyncRun, board: SyncBoard, delta: SyncDelta, held: readonly HeldDocument[],
+  where: "in the worktree" | "committed locally", notPulled?: string,
+): never {
+  const receipt = buildSyncReceipt({
+    outcome: board.outcome, commitDocs: [], pushedCount: 0,
+    originDelta: delta.originDelta, limit: run.limit, reanchorNote: delta.reanchorNote,
+  });
+  receipt.sync = where === "in the worktree"
+    ? "held: nothing was committed or pushed"
+    : "held: local commits carry these documents, so nothing was pushed";
+  if (notPulled) receipt.pull = `not pulled (${notPulled}); the next sync after the fix pulls`;
+  receipt.held_documents = held.map((doc) => ({ id: doc.id, path: doc.relPath, reason: doc.reason, detail: doc.detail }));
+  const fix = `fix the lines between the --- markers of ${held.map((doc) => doc.relPath).join(", ")} ` +
+    `(quote any value that contains ': '), check with ${run.inv} status, then run ${run.inv} sync`;
+  receipt.held_help =
+    `not published: the YAML frontmatter of these documents does not parse, and publishing it would ` +
+    `break every reader of the board, so this sync sent nothing. Your files are untouched; ${fix}` +
+    (where === "committed locally" ? " (the fix is committed on top and both go out together)" : "");
+  const envelope = syncEnvelope("git", { received: delta.originDelta.length, held: held.length, next: [`${run.inv} sync`] });
+  run.stdout(render(withSyncEnvelope(receipt, envelope), run.mode));
+  throw new CliError(
+    "CONFLICT",
+    `${held.length} document(s) have invalid frontmatter (${held.map((doc) => doc.id).join(", ")}); nothing was published`,
+    { help: fix, details: { held: held.map((doc) => doc.id) }, handled: true },
+  );
 }
 
 async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {
@@ -748,7 +854,7 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   // A plain binding is a normal selected bundle, never a board owner.  Keep sync's supported
   // local-only/no-op result without probing an enclosing private or invoking checkout.
   if (run.route?.kind === "bound-local") {
-    stdout(render({ sync: "nothing to sync" }, run.mode));
+    stdout(render(withSyncEnvelope({ sync: "nothing to sync" }, syncEnvelope("local")), run.mode));
     return;
   }
 
@@ -799,9 +905,27 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   assertBundleOutsidePrivateState(board.boardPath);
 
   const baseline = await baselinePhase(board);
+  if (!run.pullOnly) {
+    const held = malformedOutgoingDocuments(board.boardPath);
+    if (held.length > 0) {
+      await heldRun(run, board, baseline, held);
+      return;
+    }
+  }
   const commitResult = await commitPhase(board, run.pullOnly);
+  if (commitResult.held) {
+    await heldRun(run, board, baseline, commitResult.held);
+    return;
+  }
   await pullPhase(run, board, commitResult);
   const delta = await deltaPhase(board, baseline);
-  const pushedCount = await pushPhase(run, board, commitResult, delta);
-  await receiptPhase(run, board, commitResult, delta, pushedCount, establishAlreadyNote);
+  const originRef = run.pullOnly ? null : resolveOriginRef(board.boardPath);
+  if (originRef !== null) {
+    // A malformed document already in an unpushed commit (made by hand, or by an older client
+    // whose push failed) is held the same way: nothing is pushed.
+    const held = malformedCommittedDocuments(board.boardPath, originRef, "HEAD");
+    if (held.length > 0) reportHeld(run, board, delta, held, "committed locally");
+  }
+  const pushed = await pushPhase(run, board, commitResult, delta);
+  await receiptPhase(run, board, commitResult, delta, pushed, establishAlreadyNote);
 }

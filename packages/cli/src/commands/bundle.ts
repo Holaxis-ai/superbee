@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { parseSelectorOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
+import { bundleHomeAt, homeDetail } from "../bundle-home.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
@@ -24,11 +25,20 @@ Options:
 Resolution preserves normal CLI precedence: explicit --dir, then the nearest project binding,
 then local discovery. A successful receipt contains a canonical absolute local path suitable for
 passing back to ordinary commands with --dir. This command never reads or selects an HTTP remote.
+
+The receipt names the bundle's home, which decides how its changes travel:
+  local                   Changes stay on this machine
+  git                     A Git board; 'board' names its channel, branch, upstream, and whether it is shared
+  hosted                  A hosted checkout; 'hosted' names the host, bundle id, workspace and principal.
+                          selected_by is 'hosted-checkout' when discovery found the checkout
+The home is read from local Git and private state only: no request, no fetch.
 `;
 
 export interface BundleCliDeps {
   stdout: (s: string) => void;
   cwd: () => string;
+  /** The home whose private state holds hosted checkout bindings (default: the OS home). */
+  home: string;
 }
 
 export async function bundleCommand(argv: string[], deps: Partial<BundleCliDeps> = {}): Promise<void> {
@@ -64,12 +74,15 @@ export async function bundleCommand(argv: string[], deps: Partial<BundleCliDeps>
   }
 
   const target = await resolveLocalBundleTarget(parsed.values.dir, cwd());
+  const home = await bundleHomeAt(target.canonicalRoot, deps.home === undefined ? {} : { home: deps.home });
   stdout(
     render(
       {
         schema_version: 1,
         locator: { kind: "local-path", path: target.canonicalRoot },
-        selected_by: target.selectedBy,
+        home: home.home,
+        ...homeDetail(home),
+        selected_by: home.home === "hosted" && target.selectedBy === "discovery" ? "hosted-checkout" : target.selectedBy,
         ...(target.bindingFile ? { binding_file: target.bindingFile } : {}),
         available: true,
       },

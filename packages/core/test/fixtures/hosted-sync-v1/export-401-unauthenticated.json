@@ -1,0 +1,23 @@
+{
+  "name": "export-401-unauthenticated",
+  "description": "An export without a valid bearer.",
+  "route": "/sync/v1/export",
+  "rows": [
+    "refusal 401 unauthenticated"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\"}"
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":\"invalid_token\"}",
+    "truncated": false
+  }
+}

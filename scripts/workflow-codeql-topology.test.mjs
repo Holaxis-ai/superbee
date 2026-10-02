@@ -77,6 +77,7 @@ function validateSecurityManifest(candidate = manifest.security_analysis) {
     codeql_analyze: "github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938",
   });
   assert.equal(candidate.checkout_persist_credentials, false);
+  assert.equal(candidate.checkout_ref, "${{ github.sha }}");
   assert.equal(candidate.query_suite, "security-extended");
   assert.equal(candidate.threat_model, "local");
   assert.deepEqual(candidate.paths, ["packages", "scripts", ".github/actions/ci-gate", "infrastructure/github-ci"]);
@@ -125,7 +126,7 @@ function expectedAnalysisJob(expected, initWith) {
     steps: [
       {
         uses: manifest.security_analysis.action_pins.checkout,
-        with: { "persist-credentials": manifest.security_analysis.checkout_persist_credentials },
+        with: { ref: manifest.security_analysis.checkout_ref, "persist-credentials": manifest.security_analysis.checkout_persist_credentials },
       },
       {
         name: `Initialize ${label} analysis`,
@@ -247,6 +248,8 @@ test("CodeQL topology mutations cannot weaken sources, queries, permissions, sco
     workflow.replace("queries: security-extended", "queries: default"),
     workflow.replace("  merge_group:\n    types: [checks_requested]\n", ""),
     workflow.replace("types: [checks_requested]", "types: [destroyed]"),
+    workflow.replace("ref: ${{ github.sha }}", "ref: main"),
+    workflow.replace("          ref: ${{ github.sha }}\n", ""),
     workflow.replace("build-mode: none", "build-mode: manual"),
     workflow.replace("  schedule:\n    - cron: \"23 7 * * 1\"\n", ""),
     workflow.replace("  workflow_dispatch:\n", "  pull_request_target:\n"),

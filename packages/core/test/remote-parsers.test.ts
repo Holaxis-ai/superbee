@@ -159,7 +159,7 @@ test("readSnapshotStream: a whole body whose rows do not digest to the header's 
   assert.ok(isRemoteError(changed.failure, SNAPSHOT_DIGEST_MISMATCH, 200));
 });
 
-test("readSnapshotStream: a malformed header rejects before any document, as RUNTIME 502, and releases the reader", async () => {
+test("readSnapshotStream: a malformed header rejects before any document, as MALFORMED_ANSWER 502, and releases the reader", async () => {
   const rest = DOCS.map(docLine).join("\n") + "\n" + JSON.stringify({ kind: "end", count: DOCS.length }) + "\n";
   const headers: Array<[string, string]> = [
     ["not JSON", "not json at all"],
@@ -177,7 +177,7 @@ test("readSnapshotStream: a malformed header rejects before any document, as RUN
     let cancelled = false;
     await assert.rejects(
       readSnapshotStream(streamOf(`${header}\n${rest}`, 7, () => { cancelled = true; })),
-      (err: unknown) => isRemoteError(err, "RUNTIME", 502),
+      (err: unknown) => isRemoteError(err, "MALFORMED_ANSWER", 502),
       label,
     );
     assert.ok(cancelled, `${label}: the reader is cancelled so the connection is released`);
@@ -195,19 +195,19 @@ test("readSnapshotStream: counts that disagree with the lines reject; an end lin
 
   const headerTooLow = await collect(streamOf(snapshotText(DOCS, { header: { count: 2 } })));
   assert.equal(headerTooLow.received.length, 2, "the announced documents are yielded");
-  assert.ok(isRemoteError(headerTooLow.failure, "RUNTIME", 502), "a line beyond the announced count is malformed, not truncation");
+  assert.ok(isRemoteError(headerTooLow.failure, "MALFORMED_ANSWER", 502), "a line beyond the announced count is malformed, not truncation");
 
   const lines = snapshotText(DOCS).split("\n").filter((line) => line !== "");
   const unknownKind = await collect(streamOf([lines[0], lines[1], '{"kind":"comment","text":"x"}', ...lines.slice(2)].join("\n") + "\n"));
   assert.equal(unknownKind.received.length, 1);
-  assert.ok(isRemoteError(unknownKind.failure, "RUNTIME", 502), "a kind the grammar does not name is malformed");
+  assert.ok(isRemoteError(unknownKind.failure, "MALFORMED_ANSWER", 502), "a kind the grammar does not name is malformed");
 
   const badDoc = await collect(streamOf([lines[0], JSON.stringify({ kind: "doc", id: "concepts/alpha", version: VERSION_A, body: "no frontmatter" }), ...lines.slice(2)].join("\n") + "\n"));
   assert.equal(badDoc.received.length, 0);
-  assert.ok(isRemoteError(badDoc.failure, "RUNTIME", 502), "a doc line without a frontmatter object is malformed");
+  assert.ok(isRemoteError(badDoc.failure, "MALFORMED_ANSWER", 502), "a doc line without a frontmatter object is malformed");
 });
 
-test("parseHeadsAnswer: a well-formed answer yields its rows and digest; a bad row, a digest that does not recompute, or any other departure from the grammar is RUNTIME 502", () => {
+test("parseHeadsAnswer: a well-formed answer yields its rows and digest; a bad row, a digest that does not recompute, or any other departure from the grammar is MALFORMED_ANSWER 502", () => {
   const heads: DocumentHead[] = [
     { id: "b", version: VERSION_B },
     { id: "a", version: VERSION_A },
@@ -218,7 +218,7 @@ test("parseHeadsAnswer: a well-formed answer yields its rows and digest; a bad r
   assert.deepEqual(parseHeadsAnswer({ count: 0, digest: headsDigest([]), heads: [] }), { digest: headsDigest([]), heads: [] });
 
   const rejects = (label: string, payload: unknown): void => {
-    assert.throws(() => parseHeadsAnswer(payload), (err: unknown) => isRemoteError(err, "RUNTIME", 502), label);
+    assert.throws(() => parseHeadsAnswer(payload), (err: unknown) => isRemoteError(err, "MALFORMED_ANSWER", 502), label);
   };
   rejects("a bad row (no version)", { count: 2, digest, heads: [heads[0], { id: "a" }] });
   rejects("a bad row (numeric version)", { count: 2, digest, heads: [heads[0], { id: "a", version: 1 }] });

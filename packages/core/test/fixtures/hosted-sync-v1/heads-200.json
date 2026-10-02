@@ -1,0 +1,25 @@
+{
+  "name": "heads-200",
+  "description": "The heads listing: one document.",
+  "route": "/sync/v1/heads",
+  "rows": [
+    "heads 200"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "etag": "\"sha256:92bd771dd86f71d602cca33d4d133788360101e583d68445187bf56a81899689\"",
+      "x-superbee-root-version": "sha256:7cc1f9e472341f8bdf54f668a9ab98655055e36a9ad41f8bfcc8d5977aaa59d0"
+    },
+    "body": "{\"count\":1,\"digest\":\"sha256:92bd771dd86f71d602cca33d4d133788360101e583d68445187bf56a81899689\",\"heads\":[{\"id\":\"notes/one\",\"version\":\"sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4\"}]}",
+    "truncated": false
+  }
+}

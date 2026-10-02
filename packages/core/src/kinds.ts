@@ -31,6 +31,15 @@ import type { ConceptId, Frontmatter, OkfDocument } from "./types.js";
 /** The bundle-relative prefix a kind convention doc MUST live under to be discovered. */
 export const CONVENTIONS_PREFIX = "conventions/";
 
+/**
+ * True for an id `loadKinds` reads a convention from: under {@link CONVENTIONS_PREFIX} exactly as
+ * spelled (case-sensitive). A case variant is not a convention id; a host that fences folded ids
+ * refuses it rather than let it govern after a case-insensitive checkout.
+ */
+export function isConventionId(id: string): boolean {
+  return id.startsWith(CONVENTIONS_PREFIX);
+}
+
 /** The OKF `type` value a kind convention doc itself carries. */
 export const CONVENTION_TYPE = "Convention";
 

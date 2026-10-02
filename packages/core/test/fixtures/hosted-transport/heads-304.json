@@ -1,0 +1,20 @@
+{
+  "name": "heads-304",
+  "description": "The caller already holds the digest: a bodyless 304 that still states the root version.",
+  "rows": ["heads 304"],
+  "route": "/reader/heads",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\",\"ifNoneMatch\":\"W/\\\"sha256:e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14\\\"\"}"
+  },
+  "response": {
+    "status": 304,
+    "headers": {
+      "etag": "\"sha256:e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14\"",
+      "x-superbee-root-version": "sha256:2d4238b1970c24a72552dc8e00a8ec0afa9a66d5f56418f8ac2fe5498945b107"
+    },
+    "body": "",
+    "truncated": false
+  }
+}

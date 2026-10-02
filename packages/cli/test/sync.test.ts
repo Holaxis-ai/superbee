@@ -80,6 +80,9 @@ import {
 import { testInvocation } from "./support/command-prefix.js";
 import { rendered } from "./support/rendered-command.js";
 
+/** The one sync envelope (S4) as TOON appends it to a receipt that moved nothing. */
+const envelopeToon = (home: "local" | "git") => `schema_version: 2\nhome: ${home}\nsent: 0\nreceived: 0\nconflicts: 0\nheld: 0\nnext: []\n`;
+
 // ── test scaffolding ───────────────────────────────────────────────────────────
 
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
@@ -521,7 +524,7 @@ test("sync: no git repo at all -> the definitive 'nothing to sync' empty state, 
   try {
     const { out, err } = await runSync(homes[0]!, ["--dir", plainDir]);
     assert.equal(err, undefined);
-    assert.equal(out, "sync: nothing to sync\n");
+    assert.equal(out, `sync: nothing to sync\n${envelopeToon("local")}`);
   } finally {
     await cleanup();
     await rm(plainDir, { recursive: true, force: true });
@@ -535,7 +538,7 @@ test("sync: a git repo with no board branch anywhere AND no bundle is ALSO 'noth
     git(lone, ["init", "-b", "main"]);
     const { out, err } = await runSync(homes[0]!, ["--dir", lone]);
     assert.equal(err, undefined);
-    assert.equal(out, "sync: nothing to sync\n");
+    assert.equal(out, `sync: nothing to sync\n${envelopeToon("local")}`);
   } finally {
     await cleanup();
     await rm(lone, { recursive: true, force: true });
@@ -696,7 +699,7 @@ test("sync: standalone board-branch root checkout commits, pushes, pulls, and st
 
     const clean = await runSync(homes[0]!, ["--dir", directA]);
     assert.equal(clean.err, undefined, clean.err?.message);
-    assert.equal(clean.out, "sync: already up to date\n");
+    assert.equal(clean.out, `sync: already up to date\n${envelopeToon("git")}`);
     assert.equal(existsSync(path.join(directA, BUNDLE_DIR)), false, "sync never creates a nested worktree");
 
     await cliDocWrite(directA, "notes/from-slack-agent", [
@@ -729,7 +732,7 @@ test("sync: standalone board-branch root checkout commits, pushes, pulls, and st
       .then((content) => content.includes("# Direct checkout")), true);
 
     const again = await runSync(homes[1]!, ["--dir", directB, "--pull-only"]);
-    assert.equal(again.out, "sync: already up to date\n");
+    assert.equal(again.out, `sync: already up to date\n${envelopeToon("git")}`);
   } finally {
     await cleanup();
     await topo.cleanup();
@@ -948,6 +951,25 @@ test("sync: root OKF bundle on the wrong branch fails closed before nested workt
   }
 });
 
+test("sync: a run that pushes commits left from an earlier run counts their documents as sent", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    // Two documents committed on the board earlier and never pushed (a push that failed).
+    await cliDocWrite(topo.a.board, "notes/one", ["--type", "Note", "--title", "One", "--body", "# one\n"]);
+    await cliDocWrite(topo.a.board, "notes/two", ["--type", "Note", "--title", "Two", "--body", "# two\n"]);
+    git(topo.a.board, ["add", "-A"]);
+    git(topo.a.board, ["commit", "-q", "-m", "earlier run"]);
+    const retried = await runSync(homes[0]!, ["--dir", topo.a.root, "--json"]);
+    assert.equal(retried.err, undefined, retried.err?.message);
+    const receipt = JSON.parse(retried.out) as Record<string, unknown>;
+    assert.deepEqual([receipt.committed, receipt.pushed, receipt.home, receipt.sent], [0, 1, "git", 2]);
+  } finally {
+    await topo.cleanup();
+    await cleanup();
+  }
+});
+
 test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees the attributed delta, both idempotent", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);
@@ -962,6 +984,8 @@ test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees 
     assert.match(first.out, /committed: 1/);
     assert.match(first.out, /pushed: 1/);
     assert.match(first.out, /actor: "human:mike"/);
+    // The one sync envelope, appended: the document sent, nothing received.
+    assert.match(first.out, /\nhome: git\nsent: 1\nreceived: 0\nconflicts: 0\nheld: 0\n/);
     // Finding 2: A is the AUTHOR of notes/founder, not a recipient of it — A's own receipt must
     // report pulled:0 and must NOT list its own just-committed doc as "incoming" (nothing arrived
     // FROM ORIGIN this run; see the dedicated finding-2 regression test below for the isolated case).
@@ -970,7 +994,7 @@ test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees 
 
     // Idempotent re-run on A: nothing new, definitive "already up to date".
     const again = await runSync(homeA!, ["--dir", topo.a.root]);
-    assert.equal(again.out, "sync: already up to date\n");
+    assert.equal(again.out, `sync: already up to date\n${envelopeToon("git")}`);
 
     // B's FIRST-EVER sync (no stored cursor yet) — must still see the attributed delta, not an
     // empty one, since the diff baseline falls back to B's own pre-sync HEAD.
@@ -979,12 +1003,13 @@ test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees 
     assert.match(bFirst.out, /committed: 0/);
     assert.match(bFirst.out, /pushed: 0/);
     assert.match(bFirst.out, /pulled: 1/);
+    assert.match(bFirst.out, /\nhome: git\nsent: 0\nreceived: 1\n/);
     assert.match(bFirst.out, /notes\/founder/);
     assert.match(bFirst.out, /human:mike/);
 
     // Idempotent re-run on B: nothing new.
     const bAgain = await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"]);
-    assert.equal(bAgain.out, "sync: already up to date\n");
+    assert.equal(bAgain.out, `sync: already up to date\n${envelopeToon("git")}`);
 
     // The awareness cache/cursor really landed under B's own home (U4's future read path).
     const key = bundleKey({ remoteUrl: topo.origin, subpath: "", checkoutRoot: topo.b.board });
@@ -1404,6 +1429,103 @@ test("sync: the central happy path — a genuine local commit AND a real remote 
   }
 });
 
+test("sync: a raw-edited document with invalid frontmatter holds everything outgoing — named, nothing committed or pushed, files untouched — while incoming still arrives", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    await modifyBoardDoc(topo.a, "tasks/seed-two", { body: "# tasks/seed-two\n\nchanged by A\n" });
+    commitBoard(topo.a, "board: A edits tasks/seed-two", { author: { name: "alice", email: "alice@example.invalid" } });
+    pushBoard(topo.a);
+    const originBefore = originBoardHead(topo);
+    // An agent's plain file writes: an unquoted ': ' in a title is invalid YAML (one new file, one edit).
+    const badNew = "---\ntype: Note\ntitle: Import bundles: archive upload\n---\nbody\n";
+    const badEdit = "---\ntype: Task\ntitle: Seed one: broken\n---\nB's edit\n";
+    await mkdir(path.join(topo.b.board, "notes", "deep"), { recursive: true });
+    await writeFile(path.join(topo.b.board, "notes", "deep", "bad[1].md"), badNew);
+    await writeFile(path.join(topo.b.board, "tasks", "seed-one.md"), badEdit);
+    await writeBoardDoc(topo.b, "notes/fine", { frontmatter: { type: "Note", title: "Fine", actor: "brian" }, body: "# ok\n" });
+    const headBefore = boardHead(topo.b);
+
+    const result = await runSync(homes[0]!, ["--dir", topo.b.root, "--json"]);
+    assert.equal(result.err?.code, "CONFLICT", "a held document needs the writer: exit 5");
+    assert.match(result.err!.message, /invalid frontmatter \(notes\/deep\/bad\[1\], tasks\/seed-one\); nothing was published/);
+    assert.match(result.err!.help ?? "", /quote any value that contains ': '/);
+    const receipt = JSON.parse(result.out) as { held: number; pulled: number; held_documents: { id: string; reason: string }[] };
+    assert.equal(receipt.held, 2);
+    assert.deepEqual(receipt.held_documents.map((row) => [row.id, row.reason]), [
+      ["notes/deep/bad[1]", "malformed_frontmatter"],
+      ["tasks/seed-one", "malformed_frontmatter"],
+    ]);
+    assert.equal(receipt.pulled, 1, "the teammate's edit to another document still arrived");
+    assert.equal(originBoardHead(topo), originBefore, "nothing reached origin/board");
+    assert.notEqual(boardHead(topo.b), headBefore, "the board fast-forwarded");
+    assert.equal(git(topo.b.board, ["log", "--format=%an", "-1"]).trim(), "alice", "no local commit was made");
+    assert.equal(await readBoardFile(topo.b, "notes/deep/bad[1].md"), badNew, "the writer's bytes stay untouched");
+    assert.equal(await readBoardFile(topo.b, "tasks/seed-one.md"), badEdit);
+    assert.match(await readBoardFile(topo.b, "notes/fine.md"), /Fine/, "the valid edit waits, uncommitted, for the next sync");
+
+    // Fixed: the next sync publishes everything that waited.
+    await writeFile(path.join(topo.b.board, "notes", "deep", "bad[1].md"), badNew.replace("Import bundles: archive upload", "'Import bundles: archive upload'"));
+    await writeFile(path.join(topo.b.board, "tasks", "seed-one.md"), badEdit.replace("Seed one: broken", "'Seed one: fixed'"));
+    const fixed = await runSync(homes[0]!, ["--dir", topo.b.root]);
+    assert.equal(fixed.err, undefined, fixed.err?.message);
+    const published = git(topo.origin, ["ls-tree", "-r", "--name-only", BOARD_BRANCH]);
+    assert.ok(published.includes("notes/deep/bad[1].md") && published.includes("notes/fine.md"));
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: a malformed document already in an unpushed local commit is held — nothing is pushed until a fix is committed on top", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    // A hand-made commit, or one an older client could not push.
+    await writeFile(path.join(topo.b.board, "notes", "bad.md"), "---\ntype: Note\ntitle: Import: archive upload\n---\nx\n");
+    commitBoard(topo.b, "manual commit", { author: { name: "bob", email: "bob@example.invalid" } });
+    const before = originBoardHead(topo);
+
+    const held = await runSync(homes[0]!, ["--dir", topo.b.root, "--json"]);
+    assert.equal(held.err?.code, "CONFLICT");
+    assert.match(held.err!.message, /invalid frontmatter \(notes\/bad\)/);
+    assert.match((JSON.parse(held.out) as { sync: string }).sync, /local commits carry these documents/);
+    assert.equal(originBoardHead(topo), before, "nothing was pushed");
+
+    await writeFile(path.join(topo.b.board, "notes", "bad.md"), "---\ntype: Note\ntitle: 'Import: archive upload'\n---\nx\n");
+    const fixed = await runSync(homes[0]!, ["--dir", topo.b.root]);
+    assert.equal(fixed.err, undefined, fixed.err?.message);
+    assert.match(git(topo.origin, ["show", `${BOARD_BRANCH}:notes/bad.md`]), /'Import: archive upload'/);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: a held edit whose path a teammate also changed is never overwritten — the board is not pulled", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    await modifyBoardDoc(topo.a, "tasks/seed-one", { body: "# tasks/seed-one\n\nchanged by A\n" });
+    commitBoard(topo.a, "board: A edits tasks/seed-one", { author: { name: "alice", email: "alice@example.invalid" } });
+    pushBoard(topo.a);
+    const badEdit = "---\ntype: Task\ntitle: Seed one: broken\n---\nB's edit\n";
+    await writeFile(path.join(topo.b.board, "tasks", "seed-one.md"), badEdit);
+    const headBefore = boardHead(topo.b);
+
+    const result = await runSync(homes[0]!, ["--dir", topo.b.root, "--json"]);
+    assert.equal(result.err?.code, "CONFLICT");
+    const receipt = JSON.parse(result.out) as { pull?: string };
+    assert.match(receipt.pull ?? "", /not pulled \(dirty\)/);
+    assert.equal(boardHead(topo.b), headBefore);
+    assert.equal(await readBoardFile(topo.b, "tasks/seed-one.md"), badEdit, "the writer's bytes are never replaced");
+    assert.ok(!isMidRebase(topo.b));
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("sync: FINDING 3 — a commit that lands, then a fetch failure, still gets the safety framing + an honest cache write (stranded-commit path)", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(1);
@@ -1515,7 +1637,7 @@ test("sync: cross-clone isolation — clone A's clean sync must NOT erase clone 
     await rm(hookPath);
     const aResult = await runSync(home, ["--dir", topo.a.root]);
     assert.equal(aResult.err, undefined, aResult.err?.message);
-    assert.equal(aResult.out, "sync: already up to date\n");
+    assert.equal(aResult.out, `sync: already up to date\n${envelopeToon("git")}`);
 
     // A got its OWN state file under its OWN key…
     const keyA = bundleKey({ remoteUrl: topo.origin, subpath: "", checkoutRoot: topo.a.board });
@@ -1683,7 +1805,7 @@ test("sync: loud provisioning — THE MOUNT-MOVE FIELD FINDING end-to-end — a 
 
     // Steady-state re-run from the (now healthy) moved location: NEITHER announcement key appears.
     const again = await runSync(homes[0]!, ["--dir", movedRoot]);
-    assert.equal(again.out, "sync: already up to date\n", "no provisioned/repaired key on a steady-state re-run");
+    assert.equal(again.out, `sync: already up to date\n${envelopeToon("git")}`, "no provisioned/repaired key on a steady-state re-run");
   } finally {
     await cleanup();
     await topo.cleanup();
@@ -1720,7 +1842,7 @@ test("sync: steady state carries NEITHER 'provisioned' NOR 'repaired' — an alr
   try {
     const result = await runSync(homes[0]!, ["--dir", topo.a.root]);
     assert.equal(result.err, undefined, result.err?.message);
-    assert.equal(result.out, "sync: already up to date\n");
+    assert.equal(result.out, `sync: already up to date\n${envelopeToon("git")}`);
     assert.ok(!result.out.includes("provisioned:"));
     assert.ok(!result.out.includes("repaired:"));
   } finally {

@@ -1,0 +1,21 @@
+{
+  "name": "heads-empty-no-root",
+  "description": "An empty bundle without a root: the empty digest and the absent root marker.",
+  "rows": ["heads 200"],
+  "route": "/reader/heads",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "etag": "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"",
+      "x-superbee-root-version": "none"
+    },
+    "body": "{\"count\":0,\"digest\":\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"heads\":[]}",
+    "truncated": false
+  }
+}

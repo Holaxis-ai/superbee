@@ -54,6 +54,7 @@ import { render, type OutputMode } from "../../output.js";
 import { syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
 import type { EstablishOutcome } from "./establish.js";
 import type { CommandPrefix } from "../../command-text.js";
+import { syncEnvelope, withSyncEnvelope } from "../../sync-outcomes.js";
 
 /** The local branch the folder-removal commit is prepared on — the human pushes it and opens the PR. */
 export const CLEANUP_BRANCH = "board-cleanup";
@@ -283,7 +284,8 @@ function executeCommittedEstablishment(
     both_worlds: bothWorldsLine(branch),
     tell_your_teammates: rolloutNote(inv, branch, bundleDir),
   };
-  stdout(render(receipt, mode));
+  // The documents were already shared on the code branch; the board branch carries the same ones.
+  stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { next: committedNextSteps(inv, branch, bundleDir) })), mode));
   return { already: false };
 }
 
@@ -320,7 +322,9 @@ export async function establishCommitted(
   const plan = guardCommittedPreconditions(top, inv, treeSha, bundleDir);
 
   if (!yes) {
-    stdout(render(committedPreviewRecord(inv, plan.branch, plan.bundleDir), mode));
+    const preview = committedPreviewRecord(inv, plan.branch, plan.bundleDir);
+    // A preview: nothing moved, and the folder is still the code branch's.
+    stdout(render(withSyncEnvelope(preview, syncEnvelope("local", { next: Array.isArray(preview.next_steps) ? preview.next_steps.map(String) : [] })), mode));
     return { already: false };
   }
 
@@ -440,7 +444,7 @@ async function alreadyShared(
     rec.note = windowNote(top, inv, branch, bundleDir);
   }
 
-  stdout(render(rec, mode));
+  stdout(render(withSyncEnvelope(rec, syncEnvelope("git", { next: Array.isArray(rec.next_steps) ? rec.next_steps.map(String) : [] })), mode));
 }
 
 /**
@@ -451,7 +455,7 @@ async function alreadyShared(
  */
 function windowNote(top: string, inv: CommandPrefix, branch: string, bundleDir: BundleDirName): string {
   const guidance = boardWindowGuidance(top, true, bundleDir);
-  if (guidance.state === "window-remnant") return guidance.message;
+  if (guidance.state !== "pre-share-window") return guidance.message;
   const landedUpstream = pathLandedAbsentOnRemoteBranch(top, branch, bundleDir);
   return landedUpstream
     ? syncOutcomeLine("line.window-note.landed", { inv, branch, bundleDir })

@@ -201,6 +201,84 @@ test("link add: re-adding an already-present link is an idempotent no-op (no wri
   }
 });
 
+test("link add: an ancestor hub target (projects next to projects/) writes a resolving href, becomes a backlink, and re-runs converge to changed:false", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  try {
+    await writeDoc({ root: dir }, { id: "projects", frontmatter: { type: "Concept", timestamp: OLD_TS }, body: "Hub." });
+    await writeDoc({ root: dir }, { id: "projects/a", frontmatter: { type: "Concept", timestamp: OLD_TS }, body: "A." });
+    await writeDoc({ root: dir }, { id: "deep/nest/leaf", frontmatter: { type: "Concept", timestamp: OLD_TS }, body: "Leaf." });
+
+    const cases: Array<[string, string, string]> = [
+      ["projects/a", "projects", "../projects.md"],
+      ["deep/nest/leaf", "deep", "../../deep.md"],
+      ["deep/nest/leaf", "deep/nest", "../nest.md"],
+    ];
+    for (const [from, to, href] of cases) {
+      const first = await linkAdd(dir, [from, to]);
+      assert.equal(first.changed, true, `${from} -> ${to}`);
+      assert.equal(first.href, href, `${from} -> ${to}`);
+      const bodyAfterFirst = (await readDoc({ root: dir }, from)).body;
+
+      const second = await linkAdd(dir, [from, to]);
+      assert.equal(second.changed, false, `${from} -> ${to} must be idempotent`);
+      assert.equal((await readDoc({ root: dir }, from)).body, bodyAfterFirst);
+
+      const doc = await readDoc({ root: dir }, from);
+      assert.equal(parseLinks({ root: dir }, doc).filter((l) => l.to === to).length, 1, `${from} -> ${to} parses as one edge`);
+    }
+    const hub = await linkShow(dir, ["projects"]);
+    assert.equal(hub.backlink_count, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("link add: a target whose emitted link cannot resolve back to it is refused with USAGE, never written", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  try {
+    for (const target of ["concepts/x#y", "concepts/q?r", "concepts/sp ace", "concepts/a)b", "mailto:z", "#frag"]) {
+      await assert.rejects(
+        () => link(["add", "concepts/a", target, "--dir", dir, "--json"], { stdout: () => {} }),
+        (err: unknown) => {
+          assert.ok(err instanceof CliError, `expected a CliError for target '${target}'`);
+          assert.equal(err.code, "USAGE");
+          assert.match(err.message, /resolves back to it/);
+          return true;
+        },
+      );
+    }
+    const doc = await readDoc({ root: dir }, "concepts/a");
+    assert.equal(doc.body, "Body A.\n");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("link add --text: brackets, backslashes and line breaks are refused with USAGE instead of injecting or garbling edges", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  try {
+    for (const text of ["x](../evil.md) [y", "a]b", "a[b", "a\\b", "line\nbreak"]) {
+      await assert.rejects(
+        () => link(["add", "concepts/a", "concepts/b", "--text", text, "--dir", dir, "--json"], { stdout: () => {} }),
+        (err: unknown) => {
+          assert.ok(err instanceof CliError, `expected a CliError for text ${JSON.stringify(text)}`);
+          assert.equal(err.code, "USAGE");
+          return true;
+        },
+      );
+    }
+    const doc = await readDoc({ root: dir }, "concepts/a");
+    assert.equal(doc.body, "Body A.\n");
+
+    const plain = await linkAdd(dir, ["concepts/a", "concepts/b", "--text", "depends on (v2)"]);
+    assert.equal(plain.changed, true);
+    const again = await linkAdd(dir, ["concepts/a", "concepts/b", "--text", "depends on (v2)"]);
+    assert.equal(again.changed, false);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("link add: different exact text to the same target creates a second semantic edge; exact repeats remain no-ops", async () => {
   const { dir, cleanup } = await makeFixtureBundle();
   try {

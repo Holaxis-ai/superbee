@@ -1,5 +1,6 @@
 export const ACTION_BRIDGE_PROTOCOL = "v1";
-const MAX_MESSAGE_BYTES = 8 * 1024;
+const MAX_MESSAGE_BYTES = 512 * 1024;
+export const MAX_ACTION_BODY_BYTES = 64 * 1024;
 
 export type ActionScalar = string | number | boolean;
 
@@ -11,9 +12,48 @@ export interface DocumentSetFieldAction {
   expectedVersion: string;
 }
 
+export interface DocumentSetBodyAction {
+  kind: "document.set-body";
+  docId: string;
+  field: "body";
+  value: string;
+  expectedVersion: string;
+}
+export interface DocumentUpdateAction {
+  kind: "document.update";
+  docId: string;
+  field: "document";
+  value: { fields: Record<string, ActionScalar>; body: string };
+  expectedVersion: string;
+}
+export type DocumentAction = DocumentSetFieldAction | DocumentSetBodyAction | DocumentUpdateAction;
+
+export function parseDocumentAction(value: unknown): DocumentAction {
+  if (isPlainRecord(value) && value.kind === "document.update") {
+    if (!exactKeys(value, ["kind", "docId", "field", "value", "expectedVersion"]) || value.field !== "document" ||
+        !isPlainRecord(value.value) || !exactKeys(value.value, ["fields", "body"]) || !isPlainRecord(value.value.fields))
+      throw new Error("document update requires exact fields and body");
+    const body = parseDocumentAction({ ...value, kind: "document.set-body", field: "body", value: value.value.body }) as DocumentSetBodyAction;
+    const entries = Object.entries(value.value.fields);
+    if (entries.length < 1 || entries.length > 8) throw new Error("document update requires one to eight scalar fields");
+    for (const [field, scalar] of entries) {
+      const parsed = parseDocumentSetFieldAction({ kind: "document.set-field", docId: body.docId, field, value: scalar, expectedVersion: body.expectedVersion });
+      if (parsed.field !== field) throw new Error("field names must be canonical");
+    }
+    return { kind: "document.update", docId: body.docId, field: "document", value: { fields: Object.fromEntries(entries) as Record<string, ActionScalar>, body: body.value }, expectedVersion: body.expectedVersion };
+  }
+  if (!isPlainRecord(value) || value.kind !== "document.set-body") return parseDocumentSetFieldAction(value);
+  if (!exactKeys(value, ["kind", "docId", "field", "value", "expectedVersion"]) ||
+      !safeDocId(value.docId) || value.field !== "body" || typeof value.value !== "string" ||
+      byteLength(value.value) > MAX_ACTION_BODY_BYTES || typeof value.expectedVersion !== "string" ||
+      !value.expectedVersion.trim() || value.expectedVersion.length > 256)
+    throw new Error("body action requires a safe docId, field body, text of at most 64 KiB, and expectedVersion");
+  return { kind: "document.set-body", docId: value.docId, field: "body", value: value.value, expectedVersion: value.expectedVersion.trim() };
+}
+
 export type ActionBridgeMessage =
   | { bridge: "v1"; type: "read-versioned"; id: string; docId: string }
-  | { bridge: "v1"; type: "action.propose"; requestId: string; action: DocumentSetFieldAction };
+  | { bridge: "v1"; type: "action.propose"; requestId: string; action: DocumentAction };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -82,7 +122,8 @@ export function parseDocumentSetFieldAction(value: unknown): DocumentSetFieldAct
 export function parseActionBridgeMessage(value: unknown): { ok: true; message: ActionBridgeMessage } | { ok: false; message: string } | null {
   if (!isPlainRecord(value) || value.bridge !== ACTION_BRIDGE_PROTOCOL || typeof value.type !== "string") return null;
   const size = jsonSize(value);
-  if (size === null || size > MAX_MESSAGE_BYTES) return { ok: false, message: "action bridge message must be acyclic JSON of at most 8 KiB" };
+  const limit = value.type === "action.propose" && isPlainRecord(value.action) && ["document.set-body", "document.update"].includes(String(value.action.kind)) ? MAX_MESSAGE_BYTES : 8 * 1024;
+  if (size === null || size > limit) return { ok: false, message: `action bridge message must be acyclic JSON of at most ${limit / 1024} KiB` };
 
   if (value.type === "read-versioned") {
     if (!exactKeys(value, ["bridge", "type", "id", "docId"]) || typeof value.id !== "string" || !value.id || value.id.length > 64 || !safeDocId(value.docId)) {
@@ -96,10 +137,10 @@ export function parseActionBridgeMessage(value: unknown): { ok: true; message: A
       return { ok: false, message: "action.propose requires an exact non-empty requestId of at most 64 characters" };
     }
     try {
-      const action = parseDocumentSetFieldAction(value.action);
+      const action = parseDocumentAction(value.action);
       return { ok: true, message: { bridge: ACTION_BRIDGE_PROTOCOL, type: "action.propose", requestId: value.requestId, action } };
     } catch {
-      return { ok: false, message: "action.propose requires one valid document.set-field scalar action" };
+      return { ok: false, message: "action.propose requires one valid document.set-field or document.set-body action" };
     }
   }
 

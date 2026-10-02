@@ -31,8 +31,10 @@ import { InvalidInputError } from "../src/errors.js";
 import { headsDigest, sortHeads } from "../src/heads-digest.js";
 import { stringifyDoc } from "../src/frontmatter.js";
 import { RemoteBackend, RemoteError } from "../src/remote-backend.js";
+import { MalformedDocumentError } from "../src/frontmatter-contract.js";
+import { query as engineQuery, queryHeads as engineQueryHeads } from "../src/engine.js";
 import { createRemoteOperationTransport, openRemoteOperationTransport, OperationsUnsupportedError } from "../src/remote-operations.js";
-import type { OperationIntent } from "../src/uncertain-write.js";
+import { performUncertainWrite, type OperationIntent } from "../src/uncertain-write.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import {
   writeDocVersioned,
@@ -49,6 +51,7 @@ import type {
   OkfDocument,
   ReservedFilename,
   StorageBackend,
+  Version,
   WriteOptions,
 } from "../src/types.js";
 
@@ -928,7 +931,7 @@ test("wire: a recorded outcome expires after the retention window; a resubmissio
   now += 1;
   assert.equal((await outcomeAt(router, "ttl-1")).status, 404);
 
-  // The premise makes expiry safe: the write's own commit is what the resubmission conflicts with.
+  // Nothing was written since, so the resubmission conflicts with the write's own commit.
   const resubmitted = await router(identifiedPut("concepts/ttl", "v2", { "Idempotency-Key": "ttl-1", "If-Match": base }));
   assert.equal(resubmitted.status, 412);
   const conflict = (await resubmitted.json()) as { error: { details: { expected: string; actual: string } } };
@@ -937,6 +940,345 @@ test("wire: a recorded outcome expires after the retention window; a resubmissio
   assert.deepEqual(await outcomeAt(router, "ttl-1"), { status: 200, body: { kind: "conflict", actual: committed.version } });
   assert.equal((await serverBackend.versions("concepts/ttl")).length, 2);
   assert.equal(store.size, 1, "recording pruned the expired record");
+});
+
+test("wire: after expiry, a byte-identical revert to the premise's content lets a resubmission apply a second time", async () => {
+  let now = 1_000_000;
+  const store = new MemoryOperationOutcomeStore({ retentionMs: 60_000, now: () => now });
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-retention-aba", backend: serverBackend };
+  const router = createRouter(bundle, { outcomes: store });
+  const { version: base } = await writeDocVersioned(bundle, { id: "concepts/aba", frontmatter: { type: "T", timestamp: T_DOC }, body: "v1" });
+
+  const committed = await answer(await router(identifiedPut("concepts/aba", "v2", { "Idempotency-Key": "aba-1", "If-Match": base })));
+  assert.equal(committed.status, 200);
+  // A third party restores the exact base bytes; versions are content hashes, so the head is `base` again.
+  const reverted = await answer(await router(identifiedPut("concepts/aba", "v1", { "If-Match": committed.version! })));
+  assert.equal(reverted.status, 200);
+  assert.equal(reverted.version, base);
+  now += 60_000;
+  assert.equal((await outcomeAt(router, "aba-1")).status, 404);
+
+  // The premise holds again, so nothing distinguishes the resubmission from a first delivery.
+  const resubmitted = await answer(await router(identifiedPut("concepts/aba", "v2", { "Idempotency-Key": "aba-1", "If-Match": base })));
+  assert.equal(resubmitted.status, 200);
+  assert.equal(resubmitted.version, committed.version);
+  assert.equal((await serverBackend.read("concepts/aba")).version, committed.version, "the revert is overwritten");
+  assert.equal((await serverBackend.versions("concepts/aba")).length, 4);
+});
+
+type WireRouter = (req: Request) => Promise<Response>;
+
+interface SentRequest {
+  method: string;
+  path: string;
+  key: string | null;
+}
+
+/**
+ * A transport over `router` that records every client request and loses the answer to the first
+ * document `PUT` or `DELETE`: the router applies it, `between` runs against the router as a third
+ * party, and the client then sees a transport failure, so `RemoteBackend` retries.
+ */
+function losingFirstWriteAnswer(router: WireRouter, between: (lost: Response) => Promise<void>): { fetchImpl: WireRouter; sent: SentRequest[] } {
+  const sent: SentRequest[] = [];
+  let lost = false;
+  const fetchImpl: WireRouter = async (req) => {
+    const path = new URL(req.url).pathname;
+    sent.push({ method: req.method, path, key: req.headers.get("Idempotency-Key") });
+    const res = await router(req);
+    if (!lost && (req.method === "PUT" || req.method === "DELETE") && path.startsWith("/v0/bundles/test/docs/")) {
+      lost = true;
+      await between(res);
+      throw new TypeError("fetch failed: connection reset after the request was delivered");
+    }
+    return res;
+  };
+  return { fetchImpl, sent };
+}
+
+test("RemoteBackend: a guarded write whose answer is lost is retried under the same minted Idempotency-Key and replayed, so a byte-identical third-party change between attempts survives", async (t) => {
+  const doc = (body: string): OkfDocument => ({ id: "concepts/lost", frontmatter: { type: "T", timestamp: T_DOC }, body });
+  const cases: Array<{
+    name: string;
+    seed: boolean;
+    act: (remote: RemoteBackend, base: Version | null) => Promise<unknown>;
+    thirdParty: (router: WireRouter, lost: Response) => Promise<Response>;
+    check: (serverBackend: ServerMemoryBackend, base: Version | null, answer: unknown) => Promise<void>;
+  }> = [
+    {
+      name: "If-Match PUT, then a revert to the base bytes",
+      seed: true,
+      act: (remote, base) => remote.write("concepts/lost", doc("v2"), { expectedVersion: base }),
+      thirdParty: (router, lost) => router(identifiedPut("concepts/lost", "v1", { "If-Match": lost.headers.get("X-Version")! })),
+      check: async (serverBackend, base, answer) => {
+        assert.match(String(answer), /^sha256:[0-9a-f]{64}$/);
+        assert.notEqual(answer, base);
+        assert.equal((await serverBackend.read("concepts/lost")).version, base, "the revert is not overwritten");
+        assert.equal((await serverBackend.versions("concepts/lost")).length, 3, "base, the write once, the revert");
+      },
+    },
+    {
+      name: "If-None-Match create, then a delete",
+      seed: false,
+      act: (remote) => remote.write("concepts/lost", doc("v1"), { expectedVersion: null }),
+      thirdParty: (router) => router(identifiedDelete("concepts/lost")),
+      check: async (serverBackend) => {
+        assert.equal(await serverBackend.exists("concepts/lost"), false, "the delete is not undone by a second create");
+      },
+    },
+    {
+      name: "If-Match DELETE, then a byte-identical re-create",
+      seed: true,
+      act: (remote, base) => remote.delete("concepts/lost", { expectedVersion: base! }),
+      thirdParty: (router) => router(identifiedPut("concepts/lost", "v1", { "If-None-Match": "*" })),
+      check: async (serverBackend, base, answer) => {
+        assert.equal(answer, true, "the recorded deleted:true is replayed");
+        assert.equal(await serverBackend.exists("concepts/lost"), true, "the re-create is not deleted again");
+        assert.equal((await serverBackend.read("concepts/lost")).version, base);
+      },
+    },
+  ];
+
+  for (const c of cases) await t.test(c.name, async () => {
+    const serverBackend = new ServerMemoryBackend();
+    const bundle: Bundle = { root: `mem://wire-lost-answer`, backend: serverBackend };
+    const router = createRouter(bundle);
+    const base = c.seed ? (await writeDocVersioned(bundle, doc("v1"))).version : null;
+    let thirdPartyStatus = 0;
+    const { fetchImpl, sent } = losingFirstWriteAnswer(router, async (lost) => {
+      const res = await c.thirdParty(router, lost);
+      thirdPartyStatus = res.status;
+      if (c.seed && res.ok && res.headers.get("X-Version")) assert.equal(res.headers.get("X-Version"), base, `${c.name}: third party restores the base bytes`);
+    });
+    const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl, maxRetries: 1 });
+
+    const answer = await c.act(remote, base);
+    assert.ok(thirdPartyStatus >= 200 && thirdPartyStatus < 300, `${c.name}: the third-party change applied`);
+    await c.check(serverBackend, base, answer);
+
+    const writes = sent.filter((r) => r.method !== "GET");
+    assert.equal(writes.length, 2, `${c.name}: one lost attempt and one retry`);
+    assert.ok(writes[0]!.key, `${c.name}: the first attempt is identified`);
+    assert.equal(writes[1]!.key, writes[0]!.key, `${c.name}: the retry reuses the key`);
+    assert.deepEqual(sent.filter((r) => r.method === "GET").map((r) => r.path), ["/v0/capabilities"]);
+  });
+});
+
+test("RemoteBackend: a host without operations is asked once and sent no Idempotency-Key on guarded writes", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouterForBackend(serverBackend, { outcomes: null });
+  const sent: SentRequest[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    fetchImpl: async (req) => {
+      sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
+      return router(req);
+    },
+  });
+  const doc: OkfDocument = { id: "concepts/plain", frontmatter: { type: "T", timestamp: T_DOC }, body: "v1" };
+
+  const created = await remote.write("concepts/plain", doc, { expectedVersion: null });
+  const updated = await remote.write("concepts/plain", { ...doc, body: "v2" }, { expectedVersion: created });
+  assert.equal(await remote.delete("concepts/plain", { expectedVersion: updated }), true);
+
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.path} ${r.key}`),
+    [
+      "GET /v0/capabilities null",
+      "PUT /v0/bundles/test/docs/concepts/plain null",
+      "PUT /v0/bundles/test/docs/concepts/plain null",
+      "DELETE /v0/bundles/test/docs/concepts/plain null",
+    ],
+  );
+});
+
+test("RemoteBackend: separate guarded writes are minted different keys; unconditional writes and a caller's requestId mint none", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-minted", backend: serverBackend });
+  const sent: SentRequest[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    fetchImpl: async (req) => {
+      sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
+      return router(req);
+    },
+  });
+  const doc = (id: string, body: string): OkfDocument => ({ id, frontmatter: { type: "T", timestamp: T_DOC }, body });
+
+  const a = await remote.write("concepts/a", doc("concepts/a", "a1"), { expectedVersion: null });
+  await remote.write("concepts/a", doc("concepts/a", "a2"), { expectedVersion: a });
+  await remote.write("concepts/b", doc("concepts/b", "b1"));
+  const c = await remote.write("concepts/c", doc("concepts/c", "c1"), { expectedVersion: null, requestId: "caller-chosen" });
+  await remote.delete("concepts/b");
+  await remote.delete("concepts/c", { expectedVersion: c });
+
+  const keys = sent.filter((r) => r.method !== "GET").map((r) => r.key);
+  assert.equal(keys.length, 6);
+  const [createA, updateA, plainB, callerC, plainDeleteB, guardedDeleteC] = keys;
+  for (const minted of [createA, updateA, guardedDeleteC]) assert.match(minted ?? "", /^[0-9a-f-]{36}$/);
+  assert.equal(new Set([createA, updateA, guardedDeleteC]).size, 3, "every guarded write gets its own key");
+  assert.equal(plainB, null, "an unconditional write is not identified");
+  assert.equal(plainDeleteB, null, "an unconditional delete is not identified");
+  assert.equal(callerC, "caller-chosen", "a caller's requestId is sent as given");
+  assert.equal(sent.filter((r) => r.path === "/v0/capabilities").length, 1, "the capability answer is kept");
+  assert.deepEqual(await outcomeAt(router, updateA!), { status: 200, body: { kind: "committed", version: (await serverBackend.read("concepts/a")).version } });
+});
+
+test("RemoteBackend: a capability question that fails in transport or with a transient status is asked again, and only a transport failure holds the write back", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-probe-retry", backend: serverBackend });
+  let probe: "throw" | "503" | "router" = "throw";
+  const sent: SentRequest[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    maxRetries: 0,
+    fetchImpl: async (req) => {
+      const path = new URL(req.url).pathname;
+      sent.push({ method: req.method, path, key: req.headers.get("Idempotency-Key") });
+      if (path === "/v0/capabilities" && probe === "throw") throw new TypeError("fetch failed");
+      if (path === "/v0/capabilities" && probe === "503") return new Response("", { status: 503 });
+      return router(req);
+    },
+  });
+  const doc = (body: string): OkfDocument => ({ id: "concepts/p", frontmatter: { type: "T", timestamp: T_DOC }, body });
+
+  await assert.rejects(() => remote.write("concepts/p", doc("p1"), { expectedVersion: null }), TypeError);
+  assert.equal(await serverBackend.exists("concepts/p"), false, "a write whose capability question failed in transport is not sent");
+  probe = "503";
+  const created = await remote.write("concepts/p", doc("p1"), { expectedVersion: null });
+  probe = "router";
+  await remote.write("concepts/p", doc("p2"), { expectedVersion: created });
+
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.path} ${r.key === null ? "unidentified" : "identified"}`),
+    [
+      "GET /v0/capabilities unidentified",
+      "GET /v0/capabilities unidentified",
+      "PUT /v0/bundles/test/docs/concepts/p unidentified",
+      "GET /v0/capabilities unidentified",
+      "PUT /v0/bundles/test/docs/concepts/p identified",
+    ],
+  );
+});
+
+test("RemoteBackend: a delete whose premise is not a content version is sent unidentified, as the wire accepts identity on no other", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-delete-premise", backend: serverBackend };
+  const router = createRouter(bundle);
+  const sent: SentRequest[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    fetchImpl: async (req) => {
+      sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
+      return router(req);
+    },
+  });
+  const { version } = await writeDocVersioned(bundle, { id: "concepts/d", frontmatter: { type: "T", timestamp: T_DOC }, body: "d1" });
+
+  await assert.rejects(() => remote.delete("concepts/d", { expectedVersion: "not-a-version" }), VersionConflict);
+  assert.equal(await remote.delete("concepts/d", { expectedVersion: `W/"${version}"` }), true);
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.path} ${r.key === null ? "unidentified" : "identified"}`),
+    [
+      "DELETE /v0/bundles/test/docs/concepts/d unidentified",
+      "GET /v0/capabilities unidentified",
+      "DELETE /v0/bundles/test/docs/concepts/d identified",
+    ],
+  );
+});
+
+test("RemoteBackend: a guarded write sends the document as it stood when write() was called, and refuses an unencodable one before asking capabilities", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-capture", backend: serverBackend });
+  let answerProbe!: () => void;
+  const probeAnswered = new Promise<void>((resolve) => (answerProbe = resolve));
+  const sent: string[] = [];
+  const remote = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    maxRetries: 0,
+    fetchImpl: async (req) => {
+      const path = new URL(req.url).pathname;
+      sent.push(`${req.method} ${path}`);
+      if (path === "/v0/capabilities") await probeAnswered;
+      return router(req);
+    },
+  });
+  const doc: OkfDocument = { id: "concepts/cap", frontmatter: { type: "T", timestamp: T_DOC }, body: "as called" };
+
+  const pending = remote.write("concepts/cap", doc, { expectedVersion: null });
+  doc.body = "changed while the capability question was pending";
+  doc.frontmatter.title = "changed";
+  answerProbe();
+  await pending;
+  const head = await serverBackend.read("concepts/cap");
+  assert.equal(head.doc.body?.trim(), "as called");
+  assert.equal(head.doc.frontmatter.title, undefined);
+
+  const unencodable: OkfDocument = { id: "concepts/nan", frontmatter: { type: "T", n: Number.NaN }, body: "x" };
+  const fresh = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      throw new TypeError("fetch failed");
+    },
+  });
+  await assert.rejects(() => fresh.write("concepts/nan", unencodable, { expectedVersion: null }), InvalidInputError);
+  assert.deepEqual(sent, ["GET /v0/capabilities", "PUT /v0/bundles/test/docs/concepts/cap"]);
+});
+
+test("RemoteBackend: a kept operations answer that went stale is dropped on the host's identity refusal and the guarded write is sent once more without a key; a caller's requestId is not", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  let router = createRouterForBackend(serverBackend);
+  const sent: SentRequest[] = [];
+  const fetchImpl: WireRouter = async (req) => {
+    sent.push({ method: req.method, path: new URL(req.url).pathname, key: req.headers.get("Idempotency-Key") });
+    return router(req);
+  };
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", maxRetries: 0, fetchImpl });
+  const doc = (id: string, body: string): OkfDocument => ({ id, frontmatter: { type: "T", timestamp: T_DOC }, body });
+  const a = await remote.write("concepts/a", doc("concepts/a", "a1"), { expectedVersion: null });
+  const b = await remote.write("concepts/b", doc("concepts/b", "b1"), { expectedVersion: null });
+
+  // The host restarts over the same documents without an outcome store.
+  router = createRouterForBackend(serverBackend, { outcomes: null });
+  sent.length = 0;
+  const a2 = await remote.write("concepts/a", doc("concepts/a", "a2"), { expectedVersion: a });
+  assert.equal((await serverBackend.read("concepts/a")).version, a2);
+  assert.equal((await serverBackend.versions("concepts/a")).length, 2, "the refused attempt applied nothing");
+  await assert.rejects(
+    () => remote.write("concepts/c", doc("concepts/c", "c1"), { expectedVersion: null, requestId: "caller-chosen" }),
+    (error: unknown) => error instanceof RemoteError && error.status === 400,
+  );
+  assert.equal(await remote.delete("concepts/b", { expectedVersion: b }), true);
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.path} ${r.key === null ? "unidentified" : r.key === "caller-chosen" ? "caller" : "minted"}`),
+    [
+      "PUT /v0/bundles/test/docs/concepts/a minted",
+      "PUT /v0/bundles/test/docs/concepts/a unidentified",
+      "PUT /v0/bundles/test/docs/concepts/c caller",
+      "GET /v0/capabilities unidentified",
+      "DELETE /v0/bundles/test/docs/concepts/b unidentified",
+    ],
+  );
+
+  // A stale answer met by a delete is handled the same way.
+  const staleDelete = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", maxRetries: 0, fetchImpl });
+  router = createRouterForBackend(serverBackend);
+  const d = await staleDelete.write("concepts/d", doc("concepts/d", "d1"), { expectedVersion: null });
+  router = createRouterForBackend(serverBackend, { outcomes: null });
+  sent.length = 0;
+  assert.equal(await staleDelete.delete("concepts/d", { expectedVersion: d }), true);
+  assert.deepEqual(
+    sent.map((r) => `${r.method} ${r.key === null ? "unidentified" : "minted"}`),
+    ["DELETE minted", "DELETE unidentified"],
+  );
 });
 
 test("wire: MemoryOperationOutcomeStore releases the claim and settles waiters with null when the clock throws inside record", async () => {
@@ -1164,7 +1506,11 @@ test("wire: createRemoteOperationTransport delivers a document.write intent as a
   assert.equal(refused.kind, "refused");
   assert.equal(refused.kind === "refused" && refused.code, "USAGE");
   assert.deepEqual(await transport.lookup("op-3"), refused, "a content rejection is a recorded outcome");
-  await assert.rejects(transport.submit({ ...intent("op-4", "concepts/op", null, "x"), kind: "document.delete" }), /unsupported intent kind/);
+  const unsupported = await transport.submit({ ...intent("op-4", "concepts/op", null, "x"), kind: "document.delete" });
+  assert.equal(unsupported.kind, "refused");
+  assert.equal(unsupported.kind === "refused" && unsupported.code, "USAGE");
+  assert.match(unsupported.kind === "refused" ? unsupported.message : "", /unsupported intent kind 'document\.delete'/);
+  assert.equal(await transport.lookup("op-4"), null, "a local refusal sends nothing, so nothing is recorded");
 });
 
 test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the primitive classifies it as unknown and looks up, while a 4xx refusal stays refused", async () => {
@@ -1204,6 +1550,34 @@ test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the pri
   // authorization pause fires instead of an unknown loop.
   const gated = createRemoteOperationTransport(new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: async () => envelope(401, "AUTH_REQUIRED"), maxRetries: 0 }));
   assert.deepEqual(await gated.submit(intent), { kind: "refused", code: "AUTH_REQUIRED", message: "AUTH_REQUIRED from the wire" });
+});
+
+test("wire: createRemoteOperationTransport refuses an intent it cannot send, so the primitive settles it as refused instead of unknown", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-remote-unsendable", backend: serverBackend };
+  const router = createRouter(bundle);
+  const methods: string[] = [];
+  const fetchImpl = async (request: Request) => {
+    methods.push(`${request.method} ${new URL(request.url).pathname}`);
+    return router(request);
+  };
+  const transport = createRemoteOperationTransport(new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl, maxRetries: 0 }));
+  const { version: base } = await writeDocVersioned(bundle, { id: "concepts/kept", frontmatter: { type: "T", timestamp: T_DOC }, body: "kept" });
+  const unsendable: Array<[string, OperationIntent]> = [
+    ["a delete", { requestId: "op-delete", kind: "document.delete", target: "concepts/kept", base, local: base, content: "", createdAt: T_DOC, attempts: 0, state: "pending" }],
+    ["unparseable content", { requestId: "op-malformed", kind: "document.write", target: "concepts/kept", base, local: "sha256:local", content: "---\ntype: [unclosed\n---\nbody\n", createdAt: T_DOC, attempts: 0, state: "pending" }],
+  ];
+  for (const [name, intent] of unsendable) {
+    for (const attempts of [0, 2]) {
+      methods.length = 0;
+      const result = await performUncertainWrite(transport, { ...intent, attempts }, { sleep: async () => {}, lookupDelayMs: 0 });
+      assert.equal(result.outcome.kind, "refused", `${name} after ${attempts} attempt(s)`);
+      assert.equal(result.outcome.kind === "refused" && result.outcome.code, "USAGE");
+      assert.equal(result.intent.state, "refused");
+      assert.ok(methods.every((method) => method.startsWith("GET ")), `${name} sends nothing that writes: ${methods.join(", ")}`);
+    }
+  }
+  assert.equal((await serverBackend.read("concepts/kept")).version, base);
 });
 
 // ── heads and snapshot (WIRE-PROOF-11, WIRE-PROOF-12) ────────────────────────
@@ -1295,7 +1669,7 @@ test("wire: GET /heads lists every id and version under the documented digest; I
   assert.equal(deleted.digest, documentedDigest(deleted.heads));
 });
 
-test("wire: GET /heads over a malformed document fails exactly as GET /docs fails (same status and code, no skip envelope)", async () => {
+test("wire: GET /docs with malformed=skip leaves a malformed document out and names it in skipped; without it, and on heads and snapshot, it fails naming the document", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "wire-heads-malformed-"));
   try {
     await mkdir(path.join(root, "notes"), { recursive: true });
@@ -1303,18 +1677,54 @@ test("wire: GET /heads over a malformed document fails exactly as GET /docs fail
     await writeFile(path.join(root, "notes", "bad.md"), "---\ntype: [unclosed\ntitle: bad\n---\nbody\n");
     const router = createRouter({ root, backend: new ServerFilesystemBackend(root) });
 
-    const list = await router(new Request("http://wire.local/v0/bundles/test/docs"));
+    // A client that cannot read `skipped` (no malformed=skip) still gets a failure, never a
+    // listing that silently lost a document; the failure names it.
+    const strict = await router(new Request("http://wire.local/v0/bundles/test/docs?fields=frontmatter"));
+    assert.equal(strict.status, 500);
+    assert.equal(((await strict.json()) as { error: { details: { malformed: { id: string } } } }).error.details.malformed.id, "notes/bad");
+
+    const list = await router(new Request("http://wire.local/v0/bundles/test/docs?fields=frontmatter&malformed=skip"));
+    assert.equal(list.status, 200, "one malformed document never fails the listing");
+    const listBody = (await list.json()) as { count: number; docs: { id: string }[]; skipped: { id: string; reason: string }[] };
+    assert.deepEqual(listBody.docs.map((row) => row.id), ["notes/good"]);
+    assert.equal(listBody.count, 1);
+    assert.deepEqual(listBody.skipped.map((row) => row.id), ["notes/bad"]);
+    assert.match(listBody.skipped[0]!.reason, /flow collection|unexpected end/);
+
+    // A missing id in heads means a deletion to a working copy, so heads cannot skip: it fails,
+    // and now names the document instead of an opaque internal error.
     const heads = await router(new Request(HEADS_URL));
     const snapshot = await router(new Request(SNAPSHOT_URL));
-    const listBody = (await list.json()) as { error: { code: string } };
-    const headsBody = (await heads.json()) as { error: { code: string } };
-    const snapshotBody = (await snapshot.json()) as { error: { code: string } };
-    assert.equal(list.status, 500);
-    assert.equal(heads.status, list.status);
-    assert.equal(snapshot.status, list.status, "the listing fails before any snapshot byte exists");
-    assert.equal(headsBody.error.code, listBody.error.code);
-    assert.equal(snapshotBody.error.code, listBody.error.code);
-    assert.equal(listBody.error.code, "RUNTIME");
+    for (const response of [heads, snapshot]) {
+      assert.equal(response.status, 500);
+      const body = (await response.json()) as { error: { code: string; message: string; details: { malformed: { id: string } } } };
+      assert.equal(body.error.code, "RUNTIME");
+      assert.equal(body.error.details.malformed.id, "notes/bad");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("wire: RemoteBackend reports a server-skipped document through onSkip, keeps fail-loud without it, and reads it as MalformedDocumentError", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "wire-remote-malformed-"));
+  try {
+    await mkdir(path.join(root, "notes"), { recursive: true });
+    await writeFile(path.join(root, "notes", "good.md"), "---\ntype: Concept\ntitle: Good\n---\nfine\n");
+    await writeFile(path.join(root, "notes", "bad.md"), "---\ntype: Concept\ntitle: Bad: unquoted\n---\nbody\n");
+    const router = createRouter({ root, backend: new ServerFilesystemBackend(root) });
+    const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router });
+
+    const skipped: string[] = [];
+    const heads = await engineQueryHeads(remote, {}, { onSkip: ({ id }) => skipped.push(id) });
+    assert.deepEqual(heads.map((row) => row.id), ["notes/good"]);
+    assert.deepEqual(skipped, ["notes/bad"]);
+    await assert.rejects(engineQueryHeads(remote, {}), MalformedDocumentError, "no onSkip keeps the scan's fail-loud contract");
+
+    assert.deepEqual(await remote.list(), ["notes/bad", "notes/good"], "the document still exists");
+    await assert.rejects(remote.read("notes/bad"), (error: unknown) => error instanceof MalformedDocumentError && /notes\/bad/.test(error.message));
+    const docs = await engineQuery(remote, {}, { onSkip: ({ id }) => skipped.push(id) });
+    assert.deepEqual(docs.map((doc) => doc.id), ["notes/good"], "a whole-document scan over the wire skips it too");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1484,7 +1894,7 @@ test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a
     ["digest mismatch", { count: 1, digest: first.digest, heads: [row] }],
     ["digest of another version", { count: 2, digest: headsDigest(first.heads.map((h) => ({ id: h.id, version: `sha256:${"f".repeat(64)}` }))), heads: first.heads }],
   ] as const) {
-    await assert.rejects(answering(payload).heads(), (err: unknown) => err instanceof RemoteError && err.code === "RUNTIME" && err.status === 502, label);
+    await assert.rejects(answering(payload).heads(), (err: unknown) => err instanceof RemoteError && err.code === "MALFORMED_ANSWER" && err.status === 502, label);
   }
   // The recomputation sorts by the recipe, so the served row order does not decide.
   const reversed = await answering({ count: 2, digest: first.digest, heads: [...first.heads].reverse() }).heads();
@@ -1499,7 +1909,7 @@ test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a
   });
   await assert.rejects(
     unconditional304.heads(),
-    (err: unknown) => err instanceof RemoteError && err.code === "RUNTIME" && err.status === 502,
+    (err: unknown) => err instanceof RemoteError && err.code === "MALFORMED_ANSWER" && err.status === 502,
     "a 304 to a request that sent no If-None-Match is malformed, not null",
   );
   assert.equal(await unconditional304.heads({ ifNoneMatch: first.digest }), null, "the same 304 to a conditional request is null");

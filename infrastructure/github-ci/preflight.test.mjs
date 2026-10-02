@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluateSnapshot, ENGINE, LEGACY_CHECKS, RELEASE_TAGS, SOURCE_FILES } from "./preflight.mjs";
+import { evaluateSnapshot, ENGINE, LEGACY_CHECKS, RELEASE_TAGS, SOURCE_FILES, WORKFLOW_JOBS } from "./preflight.mjs";
 
 function fixture() {
   const mainSha = "a".repeat(40);
@@ -11,7 +11,7 @@ function fixture() {
     protection: { required_status_checks: { strict: true, checks: LEGACY_CHECKS.map((context) => ({ context, app_id: 15368 })) } },
     engineRulesets: [{ id: 20914366, enforcement: "active", target: "tag", source_type: "Repository", source: ENGINE,
       conditions: { ref_name: { include: [...RELEASE_TAGS], exclude: [] } }, bypass_actors: [], rules: [{ type: "update" }, { type: "deletion" }] }], windowsRulesets: [],
-    workflows: { "ci-tests.yml": run(["CI required lanes", ...LEGACY_CHECKS]), "codeql.yml": run(["CodeQL required analyses"]) },
+    workflows: { ...Object.fromEntries(Object.entries(WORKFLOW_JOBS).map(([file, names]) => [file, run(names)])) },
   };
 }
 
@@ -89,4 +89,38 @@ for (const [name, mutate] of Object.entries({
     const snapshot = squashFixture(); mutate(snapshot);
     assert.equal(evaluateSnapshot(snapshot).ready, false);
   });
+}
+
+
+test("readiness inventory retains all maintained shards, lanes and security analyses", () => {
+  assert.deepEqual(WORKFLOW_JOBS, {
+    "ci-tests.yml": [
+      "runtime compatibility (node 22, shard 1/2)", "runtime compatibility (node 22, shard 2/2)",
+      "runtime compatibility (node 26, shard 1/2)", "runtime compatibility (node 26, shard 2/2)",
+      "host-class proofs on an aliasing host (macos, node 26)",
+      "built-CLI smoke on the engines floor (node 20)",
+      "distribution package and installed behavior", "browser and UI", "repository scripts and CI topology",
+      "CI required lanes", "gate (node 22)", "gate (node 26)",
+    ],
+    "codeql.yml": ["CodeQL JavaScript/TypeScript", "CodeQL GitHub Actions", "CodeQL required analyses"],
+  });
+});
+
+for (const [file, names] of Object.entries(WORKFLOW_JOBS)) {
+  for (const name of names) {
+    test(`requires unique successful exact-main proof: ${name}`, () => {
+      for (const mutate of [
+        (jobs) => jobs.splice(jobs.findIndex((job) => job.name === name), 1),
+        (jobs) => { jobs.find((job) => job.name === name).conclusion = "skipped"; },
+        (jobs) => { jobs.find((job) => job.name === name).head_sha = "c".repeat(40); },
+        (jobs) => jobs.push({ ...jobs.find((job) => job.name === name) }),
+      ]) {
+        const snapshot = fixture();
+        mutate(snapshot.workflows[file].jobs);
+        const verdict = evaluateSnapshot(snapshot);
+        assert.equal(verdict.ready, false);
+        assert.ok(verdict.errors.includes(`required status not proven on main: ${name}`));
+      }
+    });
+  }
 }

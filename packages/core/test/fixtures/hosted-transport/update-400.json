@@ -1,0 +1,21 @@
+{
+  "name": "update-400",
+  "description": "A malformed write request id.",
+  "rows": ["400"],
+  "route": "/editor/update",
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-recovery-target": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "x-superbee-write-request": "not-a-uuid"
+    },
+    "body": "{\"bundleId\":\"team.knowledge\",\"documentId\":\"notes/alpha\",\"expectedVersion\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":\"Alpha body changed é\\r\\n\"}"
+  },
+  "response": {
+    "status": 400,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "create-200-recreate",
+  "description": "A create that acknowledges the id's latest tombstone (X-Superbee-Recreate): it commits.",
+  "route": "/sync/v1/create",
+  "rows": [
+    "200 ok"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000011",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "x-superbee-recreate": "sha256:26245f980e9194be7154390b7b11846bfffe2c94756c10bce18d0820d3294589"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"again\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000011"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"documents.create.v1\",\"data\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/two\",\"version\":\"sha256:801e3b995994a61026ed8730a1a5aa62b3f625e58b9d6cd9241e2df08efb57d1\",\"changed\":true}}",
+    "truncated": false
+  }
+}

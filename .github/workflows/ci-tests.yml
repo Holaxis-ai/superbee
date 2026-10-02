@@ -1,11 +1,12 @@
 name: CI tests
 
-# Runtime-sensitive suites run identically on Node 22 and 26, then once more on macOS so that
-# tests whose native branch only executes on a case-aliasing filesystem actually run. Distribution,
-# browser/UI, local release policy, and exhaustive target proofs are platform-independent lanes on
-# one supported runtime. Windows adapters and their native installed-package proof live in the
-# separate Windows distribution repository. Required lanes remain unconditional: path
-# classification and skip receipts require a separate fail-closed classifier contract.
+# Runtime-sensitive suites run identically on Node 22 and 26 (two shards each), then once more on
+# macOS so that tests whose native branch only executes on a case-aliasing filesystem actually run.
+# Distribution, browser/UI, local release policy, and exhaustive target proofs are
+# platform-independent lanes on one supported runtime. Windows adapters and their native
+# installed-package proof live in the separate Windows distribution repository. Required lanes
+# remain unconditional: path classification and skip receipts require a separate fail-closed
+# classifier contract.
 #
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
 # app-bound context, then remove the two legacy `gate (node N)` requirements. Roll back by restoring
@@ -31,20 +32,26 @@ env:
   AGENTSTATE_LITE_NO_AUTOPULL: 1
 
 jobs:
+  # Each runtime is split into two shards so the lane stays well inside its timeout as tests grow.
+  # Both shards build and typecheck; the CLI suite (the dominant cost) is divided by file through
+  # SUPERBEE_TEST_SHARD, and the smaller workspace suites run in both shards.
   runtime:
-    name: runtime compatibility (node ${{ matrix.node-version }})
+    name: runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/2)
     strategy:
       fail-fast: false
       matrix:
         node-version: [22, 26]
+        shard: [1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"
+      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
@@ -67,6 +74,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -87,6 +95,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -109,6 +118,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -140,12 +150,14 @@ jobs:
           const chromium = browser("chromium");
           const headless = browser("chromium-headless-shell");
           const ffmpeg = browser("ffmpeg");
+          const webkit = browser("webkit");
           assert.equal(chromium.revision, headless.revision, "Chromium revisions must stay aligned");
           const required = [
             [path.join(root, `chromium-${chromium.revision}`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, `chromium-${chromium.revision}`, "chrome-linux64", "chrome"), constants.X_OK],
             [path.join(root, `chromium_headless_shell-${headless.revision}`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, `chromium_headless_shell-${headless.revision}`, "chrome-headless-shell-linux64", "chrome-headless-shell"), constants.X_OK],
+            [path.join(root, `webkit-${webkit.revision}`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, `ffmpeg-${ffmpeg.revision}`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, `ffmpeg-${ffmpeg.revision}`, "ffmpeg-linux"), constants.X_OK],
           ];
@@ -161,6 +173,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -178,6 +191,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -213,6 +227,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -238,6 +253,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -263,6 +279,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26

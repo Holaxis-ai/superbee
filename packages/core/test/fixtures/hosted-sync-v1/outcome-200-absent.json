@@ -1,0 +1,25 @@
+{
+  "name": "outcome-200-absent",
+  "description": "An identity the host never recorded.",
+  "route": "/sync/v1/outcome",
+  "rows": [
+    "200 absent"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000008",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/never\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"new\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"schemaVersion\":1,\"requestId\":\"4a2f9c1e-8b3d-4e6f-9a1b-000000000008\",\"binding\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"status\":\"absent\"}",
+    "truncated": false
+  }
+}

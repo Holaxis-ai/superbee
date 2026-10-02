@@ -1,0 +1,23 @@
+{
+  "name": "read-200-bundle-not-found",
+  "description": "documents.read.v1 in a bundle the bearer cannot reach.",
+  "route": "/sync/v1/read",
+  "rows": [
+    "read 200 bundle_not_found"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"nope.a\",\"documentId\":\"notes/one\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.read.v1\",\"error\":{\"code\":\"bundle_not_found\",\"message\":\"The bundle is unavailable for this operation. Check your bundle access with a workspace administrator.\",\"retryable\":false}}",
+    "truncated": false
+  }
+}

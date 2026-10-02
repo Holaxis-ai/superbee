@@ -1,0 +1,24 @@
+{
+  "name": "snapshot-200-page-first",
+  "description": "The first of two snapshot pages: the whole listing's header, its documents, and a page terminator naming the next cursor.",
+  "route": "/sync/v1/snapshot",
+  "rows": [
+    "snapshot 200 page"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "etag": "\"sha256:2212f1a11f32877afc0ce90442c8088bc96900e2b0fd3453bfcaaa5543584d74\""
+    },
+    "body": "{\"kind\":\"snapshot\",\"count\":3,\"digest\":\"sha256:2212f1a11f32877afc0ce90442c8088bc96900e2b0fd3453bfcaaa5543584d74\"}\n{\"kind\":\"doc\",\"id\":\"notes/one\",\"version\":\"sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4\",\"frontmatter\":{\"type\":\"Note\"},\"body\":\"one\\n\"}\n{\"kind\":\"doc\",\"id\":\"notes/three\",\"version\":\"sha256:2ef6c34c325448bf7c80d5ef8811fe8ce93235b4056be07e253034012f4c1451\",\"frontmatter\":{\"type\":\"Note\",\"generated\":{\"by\":\"process:superbee-hosted\",\"at\":\"2030-01-01T00:00:00.000Z\"},\"superbee_updated_by\":\"person:both\"},\"body\":\"three\\n\"}\n{\"kind\":\"page\",\"count\":2,\"next\":\"2212f1a11f32877afc0ce90442c8088bc96900e2b0fd3453bfcaaa5543584d74.bm90ZXMvdGhyZWU\"}\n",
+    "truncated": false
+  }
+}

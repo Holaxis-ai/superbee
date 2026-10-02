@@ -1,0 +1,23 @@
+{
+  "name": "read-200-ok",
+  "description": "documents.read.v1 of a present document.",
+  "route": "/sync/v1/read",
+  "rows": [
+    "read 200 ok"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"documents.read.v1\",\"data\":{\"document\":{\"id\":\"notes/one\",\"frontmatter\":{\"type\":\"Note\"},\"body\":\"one\\n\"},\"version\":\"sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4\"}}",
+    "truncated": false
+  }
+}

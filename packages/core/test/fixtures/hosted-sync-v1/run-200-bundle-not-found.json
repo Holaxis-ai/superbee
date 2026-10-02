@@ -1,0 +1,23 @@
+{
+  "name": "run-200-bundle-not-found",
+  "description": "A run in a bundle the bearer cannot reach: the operation's refusal, as the read route answers it.",
+  "route": "/sync/v1/run",
+  "rows": [
+    "run 200 bundle_not_found"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"nope.a\",\"operationId\":\"documents.history.v1\",\"input\":{\"bundleId\":\"nope.a\",\"documentId\":\"notes/via\"}}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.history.v1\",\"error\":{\"code\":\"bundle_not_found\",\"message\":\"The bundle is unavailable for this operation. Check your bundle access with a workspace administrator.\",\"retryable\":false}}",
+    "truncated": false
+  }
+}

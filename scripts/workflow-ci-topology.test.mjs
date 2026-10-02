@@ -44,12 +44,14 @@ const BROWSER_PREFLIGHT = `      - name: Verify baked Playwright browser artifac
           const chromium = browser("chromium");
           const headless = browser("chromium-headless-shell");
           const ffmpeg = browser("ffmpeg");
+          const webkit = browser("webkit");
           assert.equal(chromium.revision, headless.revision, "Chromium revisions must stay aligned");
           const required = [
             [path.join(root, \`chromium-\${chromium.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`chromium-\${chromium.revision}\`, "chrome-linux64", "chrome"), constants.X_OK],
             [path.join(root, \`chromium_headless_shell-\${headless.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`chromium_headless_shell-\${headless.revision}\`, "chrome-headless-shell-linux64", "chrome-headless-shell"), constants.X_OK],
+            [path.join(root, \`webkit-\${webkit.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`ffmpeg-\${ffmpeg.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`ffmpeg-\${ffmpeg.revision}\`, "ffmpeg-linux"), constants.X_OK],
           ];
@@ -163,6 +165,7 @@ function assertAggregator(job, label) {
   assert.equal(parsed["continue-on-error"], undefined);
   assert.equal(parsed.steps.length, 3, `${label} has checkout, Node setup and gate only`);
   assert.equal(parsed.steps[0].uses, "actions/checkout@v4");
+  assert.equal(parsed.steps[0].with?.ref, manifest.merge_queue.checkout_ref);
   assert.equal(parsed.steps[1].uses, "actions/setup-node@v4");
   assert.equal(parsed.steps[1].with["node-version"], manifest.singleton_node);
   for (const step of parsed.steps) {
@@ -224,6 +227,23 @@ function assertHostExpectations(jobs, candidate) {
   assert.deepEqual(expectations, { runtime: "0", "aliasing-host": "1" }, "both host classes must be pinned");
 }
 
+// The runtime lane splits each Node version into shards. Every shard index must be a matrix leg and
+// must reach the tests through the declared variable, or files would silently go unrun.
+function assertRuntimeShards(job, lane) {
+  assert.ok(Number.isInteger(lane.shards) && lane.shards >= 1, "runtime must declare an integer shard count");
+  assert.equal(typeof lane.shard_variable, "string", "runtime must name its shard variable");
+  const indexes = Array.from({ length: lane.shards }, (_, index) => index + 1).join(", ");
+  assert.match(
+    job,
+    new RegExp(`^ {8}shard: \\[${indexes}\\]\\s*$`, "m"),
+    "runtime matrix must run every declared shard",
+  );
+  assert.ok(
+    job.includes(`\n      ${lane.shard_variable}: \${{ matrix.shard }}/${lane.shards}\n`),
+    "runtime must export its shard to the tests",
+  );
+}
+
 function validateBrowserScripts(packages) {
   const rootCommand = packages.root.scripts["ci:browser"];
   const mcpCommand = packages.mcpApp.scripts["test:browser"];
@@ -237,7 +257,7 @@ function validateBrowserScripts(packages) {
   );
   assert.equal(
     uiCommand,
-    "playwright install chromium && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts --project=chromium",
+    "playwright install chromium webkit && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts e2e/view-delivery.spec.ts --project=chromium && playwright test e2e/view-delivery.spec.ts --project=webkit",
     "UI browser coverage must retain its complete reviewed command",
   );
   assert.equal(
@@ -402,6 +422,7 @@ function validateCiTopology(
   }
   assert.match(jobs.runtime, /node-version: \[22, 26\]/);
   assert.match(jobs.runtime, /run: npm run ci:runtime/);
+  assertRuntimeShards(jobs.runtime, candidate.lanes.runtime);
   assert.match(jobs["aliasing-host"], /node-version: 26/);
   assert.match(text, /^permissions:\n {2}contents: read$/m, "required CI must retain read-only contents permission");
   assertHostExpectations(jobs, candidate);
@@ -549,6 +570,9 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
     ["          node-version: 20", "          node-version: 22", /second setup-node|deep-equal/],
     ["          node --version | grep -q '^v20\\.'", "          node --version", /self-check/],
     ["          node \"$CLI\" status --dir \"$DIR\"", "          node --version", /command surface/],
+    ["        shard: [1, 2]", "        shard: [1]", /every declared shard/],
+    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2\n", "", /export its shard/],
+    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2", "      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/3", /export its shard/],
   ]) {
     assert.throws(() => validateCiTopology(workflow.replace(from, to)), error);
   }
@@ -563,20 +587,26 @@ test("queue triggers, candidate checkout and main evidence cannot drift", () => 
     workflow.replace("types: [checks_requested]", "types: [destroyed]"),
     workflow.replace("branches: [main]", "branches: [other]"),
     workflow.replace("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", "cancel-in-progress: true"),
-    workflow.replace("          fetch-depth: 1", "          fetch-depth: 1\n          ref: main"),
+    workflow.replace("ref: ${{ github.sha }}", "ref: main"),
+    workflow.replace("          ref: ${{ github.sha }}\n", ""),
     workflow.replace("    name: runtime compatibility", "    if: false\n    name: runtime compatibility"),
   ]) assert.throws(() => validateQueueCheckout(changed));
+  for (const [name, job] of Object.entries(extractJobs(workflow))) {
+    const changedJob = job.replace("ref: ${{ github.sha }}", "ref: main");
+    assert.notEqual(changedJob, job, `${name} must check out the integration candidate`);
+    assert.throws(() => validateQueueCheckout(workflow.replace(job, changedJob)),
+      /checkout must use the event candidate SHA/, name);
+  }
   validateQueueCheckout(workflow);
 });
 
 function validateQueueCheckout(text) {
   validateCiTopology(text);
-  // checkout's default ref is the event SHA (including GitHub's merge-group candidate).
-  // A hardcoded branch or PR head would prove different bytes for a queue run.
+  // Bind every proof checkout to the event candidate, including merge groups.
   for (const job of Object.values(yaml.safeLoad(text).jobs)) {
     for (const step of job.steps ?? []) {
       if (step.uses?.startsWith("actions/checkout@")) {
-        assert.equal(step.with?.ref, undefined, "checkout must use the event candidate SHA");
+        assert.equal(step.with?.ref, "${{ github.sha }}", "checkout must use the event candidate SHA");
       }
     }
   }

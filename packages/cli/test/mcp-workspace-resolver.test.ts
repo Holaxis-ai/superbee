@@ -16,6 +16,7 @@ const availableEntry = {
   label: "planning",
   locator: { kind: "local-path" as const, path: "/private/catalog/planning" },
   available: true,
+  home: "local" as const,
 };
 
 test("catalog MCP resolver exposes only path-free summaries and derives display names", async () => {
@@ -29,6 +30,7 @@ test("catalog MCP resolver exposes only path-free summaries and derives display 
         label: "missing",
         locator: { kind: "local-path", path: "/private/catalog/missing" },
         available: false,
+        home: "local" as const,
       },
     ],
     open: async (dir) => {
@@ -45,6 +47,7 @@ test("catalog MCP resolver exposes only path-free summaries and derives display 
       label: "planning",
       displayName: "Product planning",
       available: true,
+      home: "local",
     },
     {
       id: "bnd_11111111111111111111111111111111",
@@ -113,6 +116,7 @@ test("catalog MCP resolver bounds display-name bundle reads to the visible page"
         label: `workspace-${index.toString().padStart(2, "0")}`,
         locator: { kind: "local-path" as const, path: `/private/catalog/${index}` },
         available: true,
+        home: "local" as const,
       }),
     ),
     open: async (dir) => {
@@ -143,6 +147,9 @@ test("catalog MCP resolver refuses canonical-root drift between resolution and o
     resolver.open("planning"),
     /workspace catalog target changed during selection/,
   );
+  // The host operations select the workspace the same way, before any binding is read.
+  await assert.rejects(resolver.listOperations!("planning"), /workspace catalog target changed during selection/);
+  await assert.rejects(resolver.runOperation!("planning", "documents.history.v1", {}), /workspace catalog target changed during selection/);
 });
 
 test("catalog MCP resolver refuses a real rename-and-symlink retarget during selection", async (t) => {

@@ -213,7 +213,11 @@ test("sync --establish on a committed folder without --yes: pinned preview, noth
   try {
     const preHead = git(topo.a.root, ["rev-parse", "HEAD"]).trim();
     const rec = await runSyncJson(home, ["--establish", "--dir", topo.a.root]);
-    assert.deepEqual(rec, committedPreviewRecord(INV, "main"));
+    // The preview record, unchanged, plus the one sync envelope (nothing sent or received).
+    const { schema_version, home: bundleHome, sent, received, conflicts, held, next, ...preview } = rec as Record<string, unknown>;
+    assert.deepEqual(preview, committedPreviewRecord(INV, "main"));
+    assert.deepEqual({ schema_version, sent, received, conflicts, held, next }, { schema_version: 2, sent: 0, received: 0, conflicts: 0, held: 0, next: [] });
+    assert.equal(bundleHome, "local", "a preview moves nothing: the folder is still the code branch's");
     assert.equal(rec.establish, ESTABLISH_COMMITTED_PREVIEW);
     assertPristine(topo, topo.a.root, preHead);
     assert.equal(git(topo.a.root, ["status", "--porcelain"]).trim(), "", "working tree untouched");

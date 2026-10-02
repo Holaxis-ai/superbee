@@ -39,9 +39,20 @@ function preservesReleaseTags(rule) {
     sameSet(rule.bypass_actors, []) && Array.isArray(rule.rules) &&
     ["update", "deletion"].every((type) => rule.rules.some((entry) => entry?.type === type));
 }
-const WORKFLOWS = {
-  "ci-tests.yml": ["CI required lanes", ...LEGACY_CHECKS],
-  "codeql.yml": ["CodeQL required analyses"],
+const manifest = JSON.parse(readFileSync(new URL("../../scripts/ci-lanes.json", import.meta.url), "utf8"));
+// A successful workflow can include skipped jobs. Require each maintained lane and
+// every matrix leg on the exact main candidate, as well as the stable aggregates.
+export const WORKFLOW_JOBS = {
+  "ci-tests.yml": [
+    ...manifest.required_jobs.flatMap((id) => {
+      const lane = manifest.lanes[id];
+      if (!lane.shards) return [lane.display_name];
+      return lane.nodes.flatMap((node) => Array.from({ length: lane.shards }, (_, index) => lane.display_name
+        .replace("${{ matrix.node-version }}", String(node)).replace("${{ matrix.shard }}", String(index + 1))));
+    }),
+    "CI required lanes", "gate (node 22)", "gate (node 26)",
+  ],
+  "codeql.yml": Object.values(manifest.security_analysis.jobs).map((job) => job.display_name),
 };
 
 // The preflight is advisory evidence for an exact saved-plan review, never an
@@ -76,7 +87,7 @@ export function evaluateSnapshot(snapshot) {
   }
   const queueRules = Array.isArray(snapshot.engineRulesets) ? snapshot.engineRulesets.filter((rule) => rule?.name === "Superbee merge queue") : [];
   if (queueRules.length > 1) errors.push("multiple engine queue rulesets require reconciliation");
-  for (const [file, requiredNames] of Object.entries(WORKFLOWS)) {
+  for (const [file, requiredNames] of Object.entries(WORKFLOW_JOBS)) {
     const run = snapshot.workflows?.[file];
     if (run?.event !== "push" || run.head_sha !== snapshot.mainSha || run.status !== "completed" || run.conclusion !== "success") {
       errors.push(`latest main push workflow is not successful: ${file}`);
@@ -127,7 +138,7 @@ export function collectSnapshot(root) {
     matchingFiles[file] = remote.encoding === "base64" && Buffer.from(remote.content, "base64").equals(readFileSync(path.join(root, file)));
   }
   const workflows = {};
-  for (const file of Object.keys(WORKFLOWS)) {
+  for (const file of Object.keys(WORKFLOW_JOBS)) {
     const runs = paged(`repos/${ENGINE}/actions/workflows/${file}/runs?event=push&head_sha=${mainSha}`, "workflow_runs");
     const latest = runs.sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt)[0];
     workflows[file] = latest ? { ...latest, jobs: paged(`repos/${ENGINE}/actions/runs/${latest.id}/attempts/${latest.run_attempt}/jobs`, "jobs") } : null;

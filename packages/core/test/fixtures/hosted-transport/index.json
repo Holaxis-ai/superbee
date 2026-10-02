@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "description": "Golden hosted transport exchanges: each file is one request and the exact answer the hosted route emits. Response headers are limited to grammarHeaders; carrier headers are not part of the grammar. Rows name the answer rows of UPDATE_ANSWER_ROWS and OUTCOME_ANSWER_ROWS (browser/hosted-body-transport.ts) for the update and outcome routes.",
+  "generator": "test/support/hosted-transport-exchanges.ts",
+  "grammarHeaders": ["content-type", "etag", "x-superbee-root-version", "x-superbee-write-settled"],
+  "exchanges": [
+    {
+      "name": "capabilities-operations",
+      "file": "capabilities-operations.json",
+      "route": "/reader/capabilities",
+      "rows": ["capabilities 200"],
+      "status": 200
+    },
+    {
+      "name": "capabilities-read-only",
+      "file": "capabilities-read-only.json",
+      "route": "/reader/capabilities",
+      "rows": ["capabilities 200"],
+      "status": 200
+    },
+    { "name": "heads-200", "file": "heads-200.json", "route": "/reader/heads", "rows": ["heads 200"], "status": 200 },
+    { "name": "heads-304", "file": "heads-304.json", "route": "/reader/heads", "rows": ["heads 304"], "status": 304 },
+    {
+      "name": "heads-empty-no-root",
+      "file": "heads-empty-no-root.json",
+      "route": "/reader/heads",
+      "rows": ["heads 200"],
+      "status": 200
+    },
+    {
+      "name": "snapshot-complete",
+      "file": "snapshot-complete.json",
+      "route": "/reader/snapshot",
+      "rows": ["snapshot 200 complete"],
+      "status": 200
+    },
+    {
+      "name": "snapshot-truncated",
+      "file": "snapshot-truncated.json",
+      "route": "/reader/snapshot",
+      "rows": ["snapshot 200 truncated"],
+      "status": 200
+    },
+    {
+      "name": "refusal-bundle-not-found",
+      "file": "refusal-bundle-not-found.json",
+      "route": "/reader/heads",
+      "rows": ["refusal 404 bundle_not_found"],
+      "status": 404
+    },
+    {
+      "name": "refusal-result-too-large",
+      "file": "refusal-result-too-large.json",
+      "route": "/reader/snapshot",
+      "rows": ["refusal 422 result_too_large"],
+      "status": 422
+    },
+    {
+      "name": "refusal-validation-failed",
+      "file": "refusal-validation-failed.json",
+      "route": "/reader/heads",
+      "rows": ["refusal 422 validation_failed"],
+      "status": 422
+    },
+    {
+      "name": "refusal-backend-unavailable",
+      "file": "refusal-backend-unavailable.json",
+      "route": "/reader/heads",
+      "rows": ["refusal 503 backend_unavailable"],
+      "status": 503
+    },
+    {
+      "name": "refusal-invalid-input",
+      "file": "refusal-invalid-input.json",
+      "route": "/reader/heads",
+      "rows": ["refusal 400 invalid_input"],
+      "status": 400
+    },
+    {
+      "name": "refusal-unauthenticated",
+      "file": "refusal-unauthenticated.json",
+      "route": "/reader/heads",
+      "rows": ["refusal 401 unauthenticated"],
+      "status": 401
+    },
+    {
+      "name": "heads-page-first",
+      "file": "heads-page-first.json",
+      "route": "/reader/heads",
+      "rows": ["heads 200 page"],
+      "status": 200
+    },
+    {
+      "name": "heads-page-last",
+      "file": "heads-page-last.json",
+      "route": "/reader/heads",
+      "rows": ["heads 200 page"],
+      "status": 200
+    },
+    {
+      "name": "snapshot-page-first",
+      "file": "snapshot-page-first.json",
+      "route": "/reader/snapshot",
+      "rows": ["snapshot 200 page"],
+      "status": 200
+    },
+    {
+      "name": "snapshot-page-last",
+      "file": "snapshot-page-last.json",
+      "route": "/reader/snapshot",
+      "rows": ["snapshot 200 page"],
+      "status": 200
+    },
+    {
+      "name": "refusal-concurrent-change",
+      "file": "refusal-concurrent-change.json",
+      "route": "/reader/heads",
+      "rows": ["refusal 409 concurrent_change"],
+      "status": 409
+    },
+    {
+      "name": "update-200-ok",
+      "file": "update-200-ok.json",
+      "route": "/editor/update",
+      "rows": ["200 ok"],
+      "status": 200
+    },
+    {
+      "name": "update-200-version-conflict",
+      "file": "update-200-version-conflict.json",
+      "route": "/editor/update",
+      "rows": ["200 version_conflict"],
+      "status": 200
+    },
+    {
+      "name": "update-200-backend-unavailable-unsettled",
+      "file": "update-200-backend-unavailable-unsettled.json",
+      "route": "/editor/update",
+      "rows": ["200 backend_unavailable"],
+      "status": 200
+    },
+    {
+      "name": "update-200-write-outcome-unknown",
+      "file": "update-200-write-outcome-unknown.json",
+      "route": "/editor/update",
+      "rows": ["200 write_outcome_unknown"],
+      "status": 200
+    },
+    {
+      "name": "update-401-not-applied",
+      "file": "update-401-not-applied.json",
+      "route": "/editor/update",
+      "rows": ["401 not_applied"],
+      "status": 401
+    },
+    {
+      "name": "update-401-write-outcome-unknown",
+      "file": "update-401-write-outcome-unknown.json",
+      "route": "/editor/update",
+      "rows": ["401 write_outcome_unknown"],
+      "status": 401
+    },
+    {
+      "name": "update-503-write-outcome-unknown",
+      "file": "update-503-write-outcome-unknown.json",
+      "route": "/editor/update",
+      "rows": ["503"],
+      "status": 503
+    },
+    { "name": "update-400", "file": "update-400.json", "route": "/editor/update", "rows": ["400"], "status": 400 },
+    {
+      "name": "outcome-200-absent",
+      "file": "outcome-200-absent.json",
+      "route": "/editor/outcome",
+      "rows": ["200 absent", "200 absent past retention"],
+      "status": 200
+    },
+    {
+      "name": "outcome-200-pending",
+      "file": "outcome-200-pending.json",
+      "route": "/editor/outcome",
+      "rows": ["200 pending"],
+      "status": 200
+    },
+    {
+      "name": "outcome-200-refused",
+      "file": "outcome-200-refused.json",
+      "route": "/editor/outcome",
+      "rows": ["200 refused"],
+      "status": 200
+    },
+    {
+      "name": "outcome-200-committed",
+      "file": "outcome-200-committed.json",
+      "route": "/editor/outcome",
+      "rows": ["200 committed"],
+      "status": 200
+    },
+    { "name": "outcome-400", "file": "outcome-400.json", "route": "/editor/outcome", "rows": ["400"], "status": 400 },
+    { "name": "outcome-401", "file": "outcome-401.json", "route": "/editor/outcome", "rows": ["401"], "status": 401 },
+    { "name": "outcome-503", "file": "outcome-503.json", "route": "/editor/outcome", "rows": ["503"], "status": 503 }
+  ]
+}

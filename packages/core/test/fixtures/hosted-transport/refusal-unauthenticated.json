@@ -1,0 +1,17 @@
+{
+  "name": "refusal-unauthenticated",
+  "description": "The carrier refused the caller before admission.",
+  "rows": ["refusal 401 unauthenticated"],
+  "route": "/reader/heads",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 401,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"error\":{\"code\":\"unauthenticated\"}}",
+    "truncated": false
+  }
+}

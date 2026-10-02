@@ -1,0 +1,23 @@
+{
+  "name": "read-401-unauthenticated",
+  "description": "A read without a valid bearer.",
+  "route": "/sync/v1/read",
+  "rows": [
+    "refusal 401 unauthenticated"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\"}"
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":\"invalid_token\"}",
+    "truncated": false
+  }
+}

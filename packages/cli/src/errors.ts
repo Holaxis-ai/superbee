@@ -62,7 +62,14 @@ export type CliErrorCode =
    * worktree left with unmerged paths). The CAS-semantics bucket: same exit (5) as
    * `STALE_HEAD`/`ALREADY_EXISTS` — "the precondition moved under you" — with a distinct code.
    */
-  | "CONFLICT";
+  | "CONFLICT"
+  /**
+   * Hosted sign-in cannot reach the OS credential store (tool missing, no Secret Service, keychain
+   * locked or prompting). Exit 1 with a distinct code: the fix is the environment (or the explicit
+   * SUPERBEE_CREDENTIAL_STORE=file opt-in), never re-authenticating, and never a silent plaintext
+   * fallback.
+   */
+  | "CREDENTIAL_STORE_UNAVAILABLE";
 
 /** The capped exit-code taxonomy (§6). More codes become brittle; refine via `code` instead. */
 export const EXIT = {
@@ -99,6 +106,7 @@ const CODE_EXIT: Record<CliErrorCode, number> = {
   NO_UPSTREAM: EXIT.RUNTIME,
   GIT_BUSY: EXIT.RUNTIME,
   CONFLICT: EXIT.CONFLICT,
+  CREDENTIAL_STORE_UNAVAILABLE: EXIT.RUNTIME,
 };
 
 export interface CliErrorOptions {

@@ -81,7 +81,7 @@ function isDocumentHead(value: unknown): value is DocumentHead {
  * The `200` body of `GET /heads`, admitted or refused as one: a well-formed digest, a `heads`
  * array of `{ id, version }` rows, a `count` equal to the number of rows, and rows that digest
  * by the documented recipe to the digest served. Anything else rejects as malformed (a
- * {@link RemoteError} with code `RUNTIME` and status `502`) rather than being trusted. The
+ * {@link MalformedAnswer}, code `MALFORMED_ANSWER`) rather than being trusted. The
  * recomputation is what stops a listing that is whole by its own count but not the state its
  * digest names (a shortened listing under the real digest) from being diffed as a mass
  * deletion. Rows keep the order served: the recipe sorts for itself, so order does not decide

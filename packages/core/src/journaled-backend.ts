@@ -21,7 +21,9 @@
  *   that commits.
  * - {@link JournaledBackend.deleteJournaled} is the deletion counterpart: ONE transaction that
  *   removes the document record under the same compare-and-swap, puts and removes meta rows
- *   with it, and honours `requireSettled` the same way, so a document the authority deleted
+ *   with it, optionally supersedes an intent and records a deletion intent
+ *   ({@link DOCUMENT_DELETE_KIND}) exactly as `writeJournaled` does for a write, and honours
+ *   `requireSettled` the same way, so a document the authority deleted
  *   leaves the working copy together with its shared base and never while a local edit holds
  *   it. An absent target is not a conflict: the meta changes still apply and the result says
  *   `absent`, as the plain `delete` answers absence with `false`. With `onHeld`, a hold is not a
@@ -70,6 +72,18 @@ import type { MalformedDocumentError } from "./frontmatter-contract.js";
 import type { OperationIntent, OperationState } from "./uncertain-write.js";
 import type { ConceptId, DeleteOptions, Frontmatter, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "./types.js";
 import { assertSafeConceptId } from "./paths.js";
+import { versionOfBytes } from "./versioning.js";
+
+/**
+ * The intent kind of a journaled local deletion: the document leaves at exactly the intent's
+ * base. A deletion carries no bytes, so its `content` is {@link DELETION_CONTENT} and its `local`
+ * is {@link DELETION_VERSION}, the version of empty bytes, which no document can have (every
+ * document has frontmatter). A conflict can therefore never name a deletion's own `local` and
+ * read as its commit.
+ */
+export const DOCUMENT_DELETE_KIND = "document.delete";
+export const DELETION_CONTENT = "";
+export const DELETION_VERSION: Version = versionOfBytes(DELETION_CONTENT);
 
 /** Presence is independent of value: a stored undefined is not an absent row. */
 export type MetaExpectation = { present: false } | { present: true; value: unknown };
@@ -311,8 +325,12 @@ export interface IntentRecord extends OperationIntent {
   after?: string;
   /** Set when the authority committed the intent; equals `local` for a content-addressed token. */
   acknowledgedVersion?: Version;
-  /** The shared head observed when the intent entered conflict. */
-  remote?: { version: Version | null; content: string | null };
+  /**
+   * The shared head observed when the intent entered conflict. With `version: null` (deleted
+   * remotely), `tombstone` is the deletion the authority named, when it named one: what a
+   * deliberate re-create acknowledges. It is never a version a read serves.
+   */
+  remote?: { version: Version | null; content: string | null; tombstone?: Version };
   refusal?: { code: string; message: string };
   /** A recorded observation the caller should surface, such as an acknowledged version that differs from `local`. */
   finding?: string;
@@ -320,7 +338,7 @@ export interface IntentRecord extends OperationIntent {
 
 /** The caller-supplied part of a new intent; the adapter fills content, version, sequence, and state. */
 export type NewIntentRecord = Pick<IntentRecord, "requestId" | "kind" | "target" | "base" | "baseContent" | "createdAt"> &
-  Partial<Pick<IntentRecord, "after">>;
+  Partial<Pick<IntentRecord, "after" | "recreates">>;
 
 /** An opaque key-value row in the meta store (bootstrap marker, per-document base, pause flag). */
 export interface MetaRecord {
@@ -336,6 +354,23 @@ export class JournalSnapshotConflict extends Error {
     super(`journal snapshot for '${target}' changed or cannot be resolved`);
     this.target = target;
   }
+}
+
+/**
+ * The deletion intent a journaled deletion records, refused before any adapter work when it is
+ * not one: another kind, another target, or combined with a guard (a guarded deletion journals
+ * nothing). The adapter fills content, local version, sequence and state.
+ */
+export function assertDeletionIntent(target: ConceptId, options: JournaledDeleteOptions): void {
+  if (options.intent === undefined && options.supersede === undefined) return;
+  if (options.guard !== undefined || (options.intent !== undefined && (options.intent.kind !== DOCUMENT_DELETE_KIND || options.intent.target !== target))) {
+    throw new JournalSnapshotConflict(target);
+  }
+}
+
+/** The record a journaled deletion adds for `intent`. */
+export function deletionIntentRecord(intent: NewIntentRecord, sequence: number, now: string): IntentRecord {
+  return { ...intent, local: DELETION_VERSION, content: DELETION_CONTENT, sequence, attempts: 0, state: "pending", updatedAt: now };
 }
 
 export function assertJournalResolutionOptions(target: ConceptId, options: JournaledWriteOptions | JournaledDeleteOptions): void {
@@ -406,6 +441,16 @@ export interface JournaledDeleteOptions extends DeleteOptions {
   /** Meta keys to remove in the same transaction; a key with no row is not an error. Applied as `meta` is. */
   removeMeta?: readonly string[];
   /**
+   * Record this deletion intent in the same transaction, as `writeJournaled` records a write's:
+   * `pending`, zero attempts, the next sequence, with {@link DELETION_CONTENT} and
+   * {@link DELETION_VERSION}. Its kind must be {@link DOCUMENT_DELETE_KIND}. It is recorded when
+   * the deletion applies, including over an absent record (a resolution re-deleting a document
+   * the working copy no longer holds), and never when the deletion is held.
+   */
+  intent?: NewIntentRecord;
+  /** An unsettled intent this deletion composes over; removed only while its state and attempts still match, as for `writeJournaled`. */
+  supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number };
+  /**
    * Refuse the deletion when any intent targeting `id` is in a state other than `acknowledged`,
    * read in the same transaction as the deletion. A pull that reconciles a remote deletion uses
    * this so a local edit is never discarded. Without `onHeld` the refusal rejects with
@@ -422,10 +467,10 @@ export interface JournaledDeleteOptions extends DeleteOptions {
 
 /** What {@link JournaledBackend.deleteJournaled} did, in one transaction. */
 export type JournaledDeleteResult =
-  /** A record was removed; `meta` and `removeMeta` applied. */
-  | { outcome: "deleted" }
-  /** No record to remove; `meta` and `removeMeta` still applied. */
-  | { outcome: "absent" }
+  /** A record was removed; `meta` and `removeMeta` applied, and `intent` recorded when one was given. */
+  | { outcome: "deleted"; intent?: IntentRecord }
+  /** No record to remove; `meta` and `removeMeta` still applied, and `intent` recorded when one was given. */
+  | { outcome: "absent"; intent?: IntentRecord }
   /** An unsettled intent holds the target and `onHeld` was given: its meta rows applied, nothing else did. */
   | { outcome: "held"; requestId: string; state: OperationState };
 

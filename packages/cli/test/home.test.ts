@@ -545,6 +545,8 @@ test("A1.6 offline/directory-scoped: default deps, real bundle dir -> dashboard;
       let out1 = "";
       await home([], { stdout: (s) => (out1 += s) });
       assert.ok(out1.includes("bundle"), "expected a dashboard inside a real bundle dir");
+      // Where the bundle lives is the bundle block's first line.
+      assert.match(out1, /^bundle:\n {2}home: local\n/m);
       assert.ok(out1.includes("notes/hello") || out1.includes("hello"));
 
       process.chdir(plainDir);
@@ -700,27 +702,29 @@ test("A1.10 unreadable bundle (present but a doc failed to read): status:unreada
   assert.equal(view.getting_started, undefined);
 });
 
-test("A1.11 default summarizer distinguishes unreadable from no-bundle: a malformed doc -> unreadable, home() exit 0", async () => {
+test("A1.11 a malformed doc is named in the bundle block; the rest of the bundle still summarizes, home() exit 0", async () => {
   const bundleDir = await tempDir();
   try {
     await initBundle(bundleDir);
-    // Write a raw concept file with UNPARSEABLE YAML frontmatter (unclosed flow sequence), bypassing
-    // writeDoc's validation, so the bundle walk's frontmatter parse throws on it.
+    await writeDoc({ root: bundleDir }, { id: "notes/good", frontmatter: { type: "Note", title: "Good" }, body: "ok" });
+    // A raw write with UNPARSEABLE YAML frontmatter (an unquoted ': ' in a title), bypassing
+    // writeDoc's validation, as an agent's plain file edit would.
     await mkdir(path.join(bundleDir, "notes"), { recursive: true });
-    await writeFile(path.join(bundleDir, "notes", "bad.md"), "---\ntype: [unclosed\n---\nbody\n");
+    await writeFile(path.join(bundleDir, "notes", "bad.md"), "---\ntype: Note\ntitle: Import bundles: archive upload\n---\nbody\n");
 
     const origCwd = process.cwd();
     try {
       process.chdir(bundleDir);
       let out = "";
-      let threw = false;
-      try {
-        await home([], { stdout: (s) => (out += s) });
-      } catch {
-        threw = true;
-      }
-      assert.equal(threw, false, "home() must never throw, even on an unreadable bundle");
-      assert.ok(out.includes("unreadable"), "a present-but-unreadable bundle must report unreadable");
+      await home(["--json"], { stdout: (s) => (out += s) });
+      const bundle = (JSON.parse(out) as { bundle: Record<string, unknown> }).bundle;
+      assert.equal(bundle.status, undefined, "one bad document must not make the whole bundle unreadable");
+      assert.equal(bundle.docs, 1, "the readable document is still counted");
+      const malformed = bundle.malformed_docs as { total: number; rows: { id: string; reason: string }[] };
+      assert.equal(malformed.total, 1);
+      assert.equal(malformed.rows[0]!.id, "notes/bad");
+      assert.match(malformed.rows[0]!.reason, /mapping/);
+      assert.match(bundle.malformed_help as string, /status/);
       assert.ok(!out.includes("getting_started"), "must NOT tell the agent to init over an existing bundle");
     } finally {
       process.chdir(origCwd);
@@ -816,7 +820,7 @@ test("same-level old/new binding conflict remains non-fatal in home and withhold
   }
 });
 
-test("A1.12b disappeared project-binding target: recovery init preserves the bound target and recipe browsing is withheld", async () => {
+test("A1.12b disappeared project-binding target outside Git: scoped init recovery preserves the bound target and recipe browsing is withheld", async () => {
   const root = await tempDir();
   try {
     const physicalRoot = await realpath(root);
@@ -832,14 +836,50 @@ test("A1.12b disappeared project-binding target: recovery init preserves the bou
       await home(["--json"], { stdout: (s) => (out += s) });
       const view = JSON.parse(out) as Record<string, unknown>;
       const gettingStarted = view.getting_started as string;
+      // Outside a Git checkout no board can exist, so the resolver's recovery is the scoped init.
+      // It is recipe-free, agreeing with the text: recipes stay withheld until the binding resolves.
       assert.ok(
-        gettingStarted.includes(
-          `${DEFAULT_INVOKE} init --recipe none --dir ${shellArg(missingBundle)}`,
+        gettingStarted.endsWith(
+          `recover with: ${DEFAULT_INVOKE} init --create-only --recipe none --dir ${shellArg(missingBundle)}`,
         ),
+        gettingStarted,
       );
-      assert.ok(gettingStarted.includes("fix/remove the binding before browsing recipes"));
+      assert.ok(gettingStarted.includes("recipes stay withheld until the binding resolves"));
       assert.ok(!gettingStarted.includes(`${DEFAULT_INVOKE} recipes`));
-      assert.ok(!gettingStarted.includes("init --recipe none`"), "must not emit an unscoped init");
+      assert.ok(!/init --create-only(?! --recipe none --dir)/.test(gettingStarted), "must not emit an unscoped or recipe-applying init");
+    } finally {
+      process.chdir(origCwd);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("A1.12c resolved binding with no summary: home falls back to the resolver's scoped, recipe-free init", async () => {
+  const root = await tempDir();
+  try {
+    const physicalRoot = await realpath(root);
+    const projectDir = path.join(physicalRoot, "project");
+    const boundBundle = path.join(physicalRoot, "bound bundle");
+    await mkdir(projectDir, { recursive: true });
+    await initBundle(boundBundle);
+    await writeFile(path.join(projectDir, ".superbee.json"), JSON.stringify({ bundle: "../bound bundle" }));
+
+    const origCwd = process.cwd();
+    try {
+      process.chdir(projectDir);
+      let out = "";
+      // The target resolved, so the resolver attached no recovery; the summary is unavailable
+      // (as when the target vanishes between resolution and the read).
+      await home(["--json"], { stdout: (s) => (out += s), summarizeBundle: async () => null, loadWorkspaces: async () => [] });
+      const gettingStarted = (JSON.parse(out) as Record<string, unknown>).getting_started as string;
+      assert.ok(
+        gettingStarted.endsWith(
+          `recover with: ${DEFAULT_INVOKE} init --create-only --recipe none --dir ${shellArg(boundBundle)}`,
+        ),
+        gettingStarted,
+      );
+      assert.ok(!/init (?!--create-only --recipe none --dir)/.test(gettingStarted), "never an overwriting or recipe-applying init");
     } finally {
       process.chdir(origCwd);
     }

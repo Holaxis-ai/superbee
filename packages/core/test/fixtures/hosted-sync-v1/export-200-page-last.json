@@ -1,0 +1,24 @@
+{
+  "name": "export-200-page-last",
+  "description": "The last page of a paged export, fetched by the first page's cursor: its manifest names no next.",
+  "route": "/sync/v1/export",
+  "rows": [
+    "export 200 page"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"paged\":true,\"cursor\":\"2.1\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/zip",
+      "content-disposition": "attachment; filename=\"notes.a-2.zip\""
+    },
+    "bodyBase64": "UEsDBBQAAAgAAAAAIWQvLlkNFwAAABcAAAAMAAAAbm90ZXMvb25lLm1kLS0tCnR5cGU6IE5vdGUKLS0tCm9uZQpQSwMEFAAACAAAAAAhZLXnbi/xAQAA8QEAABQAAABzdXBlcmJlZS1leHBvcnQuanNvbnsKICAiZm9ybWF0IjogInN1cGVyYmVlLWV4cG9ydC8xIiwKICAic291cmNlIjogewogICAgInRlbmFudElkIjogInRlbmFudDphIiwKICAgICJidW5kbGVJZCI6ICJub3Rlcy5hIiwKICAgICJyZXZpc2lvbiI6IDIsCiAgICAib2tmRWRpdGlvbiI6ICIwLjIiCiAgfSwKICAiZXhwb3J0ZWRBdCI6ICIyMDMwLTAxLTAxVDAwOjAwOjAwLjAwMFoiLAogICJjb3VudHMiOiB7CiAgICAiZG9jdW1lbnRzIjogMSwKICAgICJyZXNlcnZlZCI6IDEsCiAgICAiYmxvYnMiOiAwCiAgfSwKICAiZW50cmllcyI6IFsKICAgIHsKICAgICAgInBhdGgiOiAibm90ZXMvb25lLm1kIiwKICAgICAgImJ5dGVzIjogMjMsCiAgICAgICJzaGEyNTYiOiAiZGZjMDVjZjMzNmJmMmVhYTJiZjRhMzMxOTYwOWY1OTY1MTRjMmVjMGY1YWJmM2U3YTE3M2FhZmU3YmFhYzVjNCIKICAgIH0KICBdLAogICJwYWdlIjogewogICAgImZyb20iOiAxLAogICAgImNvdW50IjogMSwKICAgICJ0b3RhbCI6IDIKICB9Cn0KUEsBAhQAFAAACAAAAAAhZC8uWQ0XAAAAFwAAAAwAAAAAAAAAAAAAAAAAAAAAAG5vdGVzL29uZS5tZFBLAQIUABQAAAgAAAAAIWS1524v8QEAAPEBAAAUAAAAAAAAAAAAAAAAAEEAAABzdXBlcmJlZS1leHBvcnQuanNvblBLBQYAAAAAAgACAHwAAABkAgAAAAA=",
+    "truncated": false
+  }
+}

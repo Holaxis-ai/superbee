@@ -1,0 +1,20 @@
+{
+  "name": "snapshot-complete",
+  "description": "The NDJSON snapshot: header, one line per document in wire order, and the terminator.",
+  "rows": ["snapshot 200 complete"],
+  "route": "/reader/snapshot",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "etag": "\"sha256:e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14\""
+    },
+    "body": "{\"kind\":\"snapshot\",\"count\":3,\"digest\":\"sha256:e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14\"}\n{\"kind\":\"doc\",\"id\":\"notes/alpha\",\"version\":\"sha256:7f677d62359613b3a8fe840c840b9d6c6d1be756e74013aee2a97c5739ee7fbe\",\"frontmatter\":{\"type\":\"Note\",\"title\":\"Alpha\",\"tags\":[\"one\",\"two\"]},\"body\":\"Alpha body é.\\n\"}\n{\"kind\":\"doc\",\"id\":\"notes/beta\",\"version\":\"sha256:d8e0850683b269ee85f2023211c6f768b7b3e9a1e3cf6d9ab0544c6e43482184\",\"frontmatter\":{\"type\":\"Note\",\"title\":\"Beta\",\"owner\":{\"name\":\"Ada\"}},\"body\":\"Line one\\r\\nLine two\\r\\n\"}\n{\"kind\":\"doc\",\"id\":\"projects/2026/plan\",\"version\":\"sha256:422eea40f06017c6ce64c5caa63af90c8e2f4caacc1209f8e46c8335ff3f7c0d\",\"frontmatter\":{\"type\":\"Project\",\"title\":\"Plan\",\"status\":\"active\"},\"body\":\"# Plan\\n\\nSee [Alpha](../../notes/alpha.md).\\n\"}\n{\"kind\":\"end\",\"count\":3}\n",
+    "truncated": false
+  }
+}

@@ -43,8 +43,12 @@
 import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
 import { spawnSync } from "node:child_process";
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -60,6 +64,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  MalformedDocumentError,
   conceptIdFromPath,
   isReservedFile,
   mutationActorFromFrontmatter,
@@ -786,7 +791,7 @@ export function trackedBoardRemnantPaths(
  * refusal carries in `details.state`.
  */
 export interface BoardWindowGuidance {
-  state: "pre-share-window" | "window-remnant";
+  state: "pre-share-window" | "window-remnant" | "tracked-placeholder";
   message: string;
   help: string;
   /** Remnant arm only: the still-tracked folder paths (full list — display capping is the consumer's). */
@@ -808,6 +813,20 @@ export function boardWindowGuidance(
         `folder committed on this branch, and sync cannot pull the shared board without the remote`,
       help: `git remote add ${BOARD_REMOTE} <url>  # restore the remote, 'git pull' once the cleanup PR merges, then re-run sync`,
     };
+  }
+  // Only empty-folder placeholders are tracked: no cleanup PR or pull story applies, the fix is
+  // to stop tracking them.
+  // Same placeholder rules as provisioning: regular zero-byte `.gitkeep` files and the like, in a
+  // folder with nothing else meaningful; anything more keeps the remnant/pre-share guidance below.
+  const boardDir = path.join(top, bundleDir);
+  const tracked = trackedBoardDirPaths(top, bundleDir);
+  if (
+    tracked.length > 0 &&
+    tracked.every((entry) => isIgnorableBoardDirEntry(path.join(top, path.dirname(entry)), path.posix.basename(entry))) &&
+    (!existsSync(boardDir) || boardDirEntries(boardDir).meaningful.length === 0)
+  ) {
+    const guidance = trackedPlaceholderGuidance(top, boardDir, bundleDir, tracked);
+    return { state: "tracked-placeholder", originConfigured, trackedRemnants: tracked, ...guidance };
   }
   const remnants = trackedBoardRemnantPaths(top, bundleDir);
   if (remnants !== null) {
@@ -870,6 +889,170 @@ export function preShareWindowError(top: string, boardPath: string, originConfig
     details.tracked_remnants = { shown: shown.length, total: guidance.trackedRemnants.length, rows: shown };
   }
   return new BoardGitError("RUNTIME", guidance.message, { details, help: guidance.help });
+}
+
+/**
+ * Entries that never make a would-be board directory meaningfully occupied: operating-system
+ * folder metadata and the conventional empty-folder placeholder. A directory holding only these
+ * is empty for provisioning and for the CLI's bound-path resolver alike.
+ */
+export const IGNORABLE_BOARD_DIR_ENTRIES: readonly string[] = [".DS_Store", ".gitkeep", "Thumbs.db"];
+
+/**
+ * True when a directory entry is an ignorable placeholder: a regular file with an ignorable name,
+ * and for `.gitkeep` only when it is zero bytes (a non-empty one carries content someone wrote).
+ */
+export function isIgnorableBoardDirEntry(dir: string, name: string): boolean {
+  if (!IGNORABLE_BOARD_DIR_ENTRIES.includes(name)) return false;
+  try {
+    const info = lstatSync(path.join(dir, name));
+    return info.isFile() && (name !== ".gitkeep" || info.size === 0);
+  } catch {
+    return false;
+  }
+}
+
+/** How a directory at the board path is populated, ignoring nothing but placeholders. */
+function boardDirEntries(dir: string): { meaningful: string[]; placeholders: string[] } {
+  const meaningful: string[] = [];
+  const placeholders: string[] = [];
+  for (const name of readdirSync(dir)) (isIgnorableBoardDirEntry(dir, name) ? placeholders : meaningful).push(name);
+  return { meaningful, placeholders };
+}
+
+/**
+ * Paths under `bundleDir` that the code checkout tracks, in HEAD or staged in the index. A tracked
+ * placeholder belongs to the code branch: deleting it would show there as a deletion.
+ */
+export function trackedBoardDirPaths(top: string, bundleDir: string): string[] {
+  return [...new Set([...indexBoardDirPaths(top, bundleDir), ...headBoardDirPaths(top, bundleDir)])].sort();
+}
+
+/** Paths under `bundleDir` in the index. A Git failure throws: unknown must never read as untracked. */
+function indexBoardDirPaths(top: string, bundleDir: string): string[] {
+  const args = ["ls-files", "-z", "--", bundleDir];
+  const r = runGit(top, args);
+  if (r.status !== 0) throw classifyGitError(failureOf(args, r));
+  return r.stdout.split("\0").filter(Boolean);
+}
+
+/** Paths under `bundleDir` in HEAD; none on an unborn branch. A Git failure throws. */
+function headBoardDirPaths(top: string, bundleDir: string): string[] {
+  if (runGit(top, ["rev-parse", "--verify", "--quiet", "HEAD"]).status !== 0) return [];
+  const args = ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", bundleDir];
+  const r = runGit(top, args);
+  if (r.status !== 0) throw classifyGitError(failureOf(args, r));
+  return r.stdout.split("\0").filter(Boolean);
+}
+
+/** Recovery for a board path that holds only placeholders, some of them tracked on the code branch. */
+export function trackedPlaceholderGuidance(top: string, boardPath: string, bundleDir: string, tracked: readonly string[]): { message: string; help: string } {
+  const plural = tracked.length !== 1;
+  const dir = shellToken(bundleDir);
+  // Committed placeholders: remove them (they are zero-byte placeholders) and commit only that
+  // path, never other staged work. Staged-only placeholders: unstaging them is enough.
+  const untrack = headBoardDirPaths(top, bundleDir).length > 0
+    ? `git rm -r -- ${dir} && git commit -m 'Untrack the board folder placeholder' -- ${dir}`
+    : `git rm -r --cached -- ${dir}`;
+  return {
+    message:
+      `${tracked.length} ${plural ? "paths" : "path"} under '${bundleDir}' at ${boardPath} ${plural ? "are" : "is"} tracked ` +
+      `on this branch (${tracked.slice(0, 5).join(", ")}) — the board checkout cannot replace tracked files, so ` +
+      `untrack ${plural ? "them" : "it"} first`,
+    help: `${untrack}, then re-run sync`,
+  };
+}
+
+/** A shell-inert rendering of one argument, matching the CLI's command-token rule. */
+function shellToken(value: string): string {
+  return /^[A-Za-z0-9_@+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** Where Git registers this repository's board branch, when that blocks provisioning `boardPath`. */
+export type BoardWorktreeBlock =
+  /** Checked out in a different, existing worktree; Git allows one checkout per branch. */
+  | { readonly kind: "elsewhere"; readonly path: string }
+  /** Registered to a worktree whose directory no longer exists (possibly this very path). */
+  | { readonly kind: "missing"; readonly path: string };
+
+/**
+ * Why Git cannot check the board branch out at `boardPath`: it is checked out in another worktree,
+ * or still registered to a worktree whose directory is gone. Null when neither applies. Local only
+ * (`git worktree list`).
+ */
+export function boardWorktreeBlock(top: string, boardPath: string, hostPolicy?: BoardHostPolicy): BoardWorktreeBlock | null {
+  const policy = captureBoardHostPolicy(hostPolicy);
+  const list = runGit(top, ["worktree", "list", "--porcelain"]);
+  if (list.status !== 0) return null;
+  const target = path.resolve(boardPath);
+  for (const block of list.stdout.split(/\n\s*\n/)) {
+    const lines = block.split("\n");
+    const worktree = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+    if (!worktree || !lines.includes(`branch refs/heads/${BOARD_BRANCH}`)) continue;
+    const recorded = path.resolve(worktree);
+    if (!existsSync(recorded)) return { kind: "missing", path: recorded };
+    if (recorded === target || policy.sameResolvedPath(realOrSame(recorded), realOrSame(target))) return null;
+    return { kind: "elsewhere", path: recorded };
+  }
+  return null;
+}
+
+/** Provisioning's refusal when Git's board registration blocks checking the board out here. */
+export function boardWorktreeBlockError(boardPath: string, block: BoardWorktreeBlock): BoardGitError {
+  if (block.kind === "missing") {
+    return new BoardGitError(
+      "CONFLICT",
+      `the '${BOARD_BRANCH}' branch is still registered to a worktree at ${block.path} that no longer exists, so sync cannot check it out at ${boardPath}`,
+      {
+        details: { path: boardPath, board_checkout: block.path, board_checkout_missing: true },
+        help: "git worktree prune, then re-run sync",
+      },
+    );
+  }
+  return new BoardGitError(
+    "CONFLICT",
+    `the '${BOARD_BRANCH}' branch is already checked out at ${block.path}, so sync cannot check it out at ${boardPath}`,
+    {
+      details: { path: boardPath, board_checkout: block.path, board_checkout_missing: false },
+      help: `pass --dir ${shellToken(block.path)}`,
+    },
+  );
+}
+
+/**
+ * A linked git worktree (its git dir differs from the common dir; equal in the main checkout and
+ * in a submodule), with the main checkout when it is simply the common dir's parent. Superbee
+ * boards are unsupported inside linked worktrees; null for every other checkout.
+ */
+export function linkedWorktree(top: string, hostPolicy?: BoardHostPolicy): { main?: string } | null {
+  const dirs = runGit(top, ["rev-parse", "--git-dir", "--git-common-dir"]);
+  if (dirs.status !== 0) return null;
+  const [gitDir, common] = dirs.stdout.split("\n").map((line) => line.trim());
+  if (!gitDir || !common) return null;
+  const policy = captureBoardHostPolicy(hostPolicy);
+  const absGitDir = path.resolve(top, gitDir);
+  const absCommon = path.resolve(top, common);
+  if (absGitDir === absCommon || policy.sameResolvedPath(realOrSame(absGitDir), realOrSame(absCommon))) return null;
+  return path.basename(absCommon) === ".git" ? { main: path.dirname(absCommon) } : {};
+}
+
+/** The one refusal for boards in a linked worktree; `invocation` names the CLI in the help. */
+export function linkedWorktreeGuidance(linked: { main?: string }, bundleDir: string, invocation = "superbee"): { message: string; help: string } {
+  const where = linked.main ? ` at ${shellToken(linked.main)}` : "";
+  const dir = linked.main ? shellToken(path.join(linked.main, bundleDir)) : `<the main checkout's ${bundleDir}>`;
+  return {
+    message: "Superbee boards are not supported inside a linked git worktree",
+    help: `run ${invocation} from the main checkout${where}, or pass --dir ${dir}`,
+  };
+}
+
+/** Provisioning's refusal inside a linked worktree (see {@link linkedWorktree}). */
+export function linkedWorktreeError(boardPath: string, linked: { main?: string }): BoardGitError {
+  const guidance = linkedWorktreeGuidance(linked, path.basename(boardPath));
+  return new BoardGitError("CONFLICT", guidance.message, {
+    details: { path: boardPath, ...(linked.main ? { main_checkout: linked.main } : {}) },
+    help: guidance.help,
+  });
 }
 
 /** How a non-empty, non-adoptable pre-existing conventional directory was classified. */
@@ -1097,8 +1280,34 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     return ffAdopted;
   };
 
+  // A linked worktree shares the repository's one board branch. When another worktree already has
+  // it checked out, `worktree add` below would fail and must not be mistaken for this checkout.
+  // A worktree signature at the board path defers to the repair path below instead: a moved or
+  // remounted repository still registers its board at the old, now-missing location.
+  // Boards are unsupported inside a linked worktree: never create one there. An occupied path keeps
+  // its own refusal or repair below.
+  if (!existsSync(boardPath) || (!hasWorktreeSignature(boardPath) && boardDirEntries(boardPath).meaningful.length === 0)) {
+    const linked = linkedWorktree(top, policy);
+    if (linked) throw linkedWorktreeError(boardPath, linked);
+  }
+  const worktreeBlock = hasWorktreeSignature(boardPath) ? null : boardWorktreeBlock(top, boardPath, policy);
+  if (worktreeBlock) throw boardWorktreeBlockError(boardPath, worktreeBlock);
+
   if (existsSync(boardPath)) {
-    if (readdirSync(boardPath).length > 0) {
+    const entries = boardDirEntries(boardPath);
+    // Placeholders count as empty only while untracked: a tracked placeholder belongs to the code
+    // branch, and removing it would show as a deletion there.
+    if (entries.meaningful.length === 0 && entries.placeholders.length > 0) {
+      const tracked = trackedBoardDirPaths(top, bundleDir);
+      if (tracked.length > 0) {
+        const guidance = trackedPlaceholderGuidance(top, boardPath, bundleDir, tracked);
+        throw new BoardGitError("CONFLICT", guidance.message, {
+          details: { path: boardPath, tracked_placeholders: tracked.slice(0, 20) },
+          help: guidance.help,
+        });
+      }
+    }
+    if (entries.meaningful.length > 0) {
       // The PRE-SHARE WINDOW (see {@link preShareWindowError} for the full hazard story): the
       // generic "move it aside" advice below must never fire while the checked-out branch still
       // TRACKS the folder and the board branch exists on the remote.
@@ -1146,9 +1355,19 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     if (hasLocal && budget.allowLocalBranch === false && !localMatchesRemote && !adoptLocalBoard()) {
       return { kind: "local_board", boardPath, remoteExists: hasRemote };
     }
-    // The one resolvable pre-existing state: an EMPTY directory. Remove it so worktree add can
-    // create the path itself.
-    rmdirSync(boardPath);
+    // The one resolvable pre-existing state: an EMPTY directory (ignoring untracked placeholder
+    // entries). Remove only the placeholders approved above, still placeholders now, then the
+    // directory itself: anything created since the check makes rmdir fail closed.
+    for (const name of entries.placeholders) {
+      if (isIgnorableBoardDirEntry(boardPath, name)) rmSync(path.join(boardPath, name));
+    }
+    try {
+      rmdirSync(boardPath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOTEMPTY" || code === "EEXIST") throw existingDirRefusal("foreign", boardPath, top, policy);
+      throw err;
+    }
   }
 
   // A branch name alone is not provenance. Interactive sync and SessionStart adopt an
@@ -1194,8 +1413,12 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     // ("already checked out" ≤2.47, "already used by worktree" ≥2.48), and LC_ALL=C pins locale
     // but not version. `worktree list --porcelain` names the checked-out branch of every
     // worktree in a stable machine format — version-proof.
+    // Only a checkout at THIS path (a concurrent provisioning run won the race) is success; a
+    // registration elsewhere or at a missing directory gets its own recovery.
+    const block = boardWorktreeBlock(top, boardPath, policy);
+    if (block) throw boardWorktreeBlockError(boardPath, block);
     const list = runGit(top, ["worktree", "list", "--porcelain"]);
-    if (list.status === 0 && list.stdout.split("\n").includes(`branch refs/heads/${BOARD_BRANCH}`)) {
+    if (list.status === 0 && list.stdout.split("\n").includes(`branch refs/heads/${BOARD_BRANCH}`) && existsSync(boardPath)) {
       return withIgnoreCoverage({ kind: "already" as const, boardPath });
     }
     throw classifyGitError(failureOf(["worktree", "add"], r));
@@ -1329,6 +1552,8 @@ export interface CommitResult {
   subject?: string;
   /** The enriched per-doc changes that were committed (empty for a reserved-file-only commit). */
   docs: DocChange[];
+  /** Present when nothing was committed because a staged document's frontmatter does not parse. */
+  held?: HeldDocument[];
 }
 
 /**
@@ -1376,6 +1601,13 @@ export function stageAndCommit(boardPath: string): CommitResult {
   }
 
   const rows = nameStatusRows(mustGit(boardPath, ["diff", "--cached", "--name-status", "--no-renames", "-z"]));
+  // The exact bytes being committed: a file rewritten after sync's worktree check is caught here.
+  // Unstaging leaves every file as it is.
+  const held = malformedDocumentsIn(boardPath, rows, ":0");
+  if (held.length > 0) {
+    mustGit(boardPath, ["reset", "-q"]);
+    return { committed: false, docs: [], held };
+  }
   const docs: DocChange[] = [];
   for (const { letter, relPath } of rows) {
     if (!isConceptDocPath(relPath)) continue;
@@ -1399,6 +1631,100 @@ export function stageAndCommit(boardPath: string): CommitResult {
   );
   const sha = mustGit(boardPath, ["rev-parse", "HEAD"]).trim();
   return { committed: true, sha, subject, docs };
+}
+
+/** An outgoing document sync will not publish, and why. */
+export interface HeldDocument {
+  /** The document id. */
+  id: string;
+  /** Its path, relative to the board worktree. */
+  relPath: string;
+  /** Always `malformed_frontmatter` today: the YAML between the `---` lines does not parse. */
+  reason: "malformed_frontmatter";
+  /** The parser's first line, e.g. where the YAML broke. */
+  detail: string;
+}
+
+/**
+ * Added or edited documents in the board worktree whose frontmatter does not parse. Reads the
+ * worktree bytes `git add -A` would commit (`status -z`, every untracked file, no renames) without
+ * touching the index or any file: sync uses it to hold everything outgoing before it stages, so a
+ * malformed document never reaches the shared board, where it would break every reader. A symlink
+ * or a path that vanished is not a document to judge here (a symlinked `.md` is committed as a
+ * link, unchecked, as before).
+ */
+export function malformedOutgoingDocuments(boardPath: string): HeldDocument[] {
+  const listed = runGit(boardPath, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
+  if (listed.status !== 0) throw classifyGitError(failureOf(["status"], listed));
+  const held: HeldDocument[] = [];
+  for (const record of listed.stdout.split("\0")) {
+    if (record.length < 4) continue;
+    const code = record.slice(0, 2);
+    const relPath = record.slice(3);
+    if (code.includes("D") || !isConceptDocPath(relPath)) continue;
+    const file = path.join(boardPath, relPath);
+    const content = readRegularFile(file);
+    if (content === null) continue;
+    try {
+      parseMarkdown(content, relPath);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      held.push({ id: conceptIdFromPath(relPath), relPath, reason: "malformed_frontmatter", detail: error.detail });
+    }
+  }
+  return held.sort((a, b) => a.relPath.localeCompare(b.relPath));
+}
+
+/**
+ * A regular file's text, or null for a symlink, a non-file or a path that vanished. One open
+ * (never following a final symlink where the platform supports it) and a stat of that same
+ * descriptor, so the bytes read are the bytes judged.
+ */
+function readRegularFile(file: string): string | null {
+  let fd: number;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch {
+    return null;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    return readFileSync(fd, "utf8");
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Documents a push would publish whose frontmatter does not parse: those added or changed between
+ * `base` and `ref` (normally `origin/board` and `HEAD`), read at `ref`. Catches a malformed
+ * document already in an unpushed local commit (made by hand, or by an older client whose push
+ * failed), which the worktree check cannot see.
+ */
+export function malformedCommittedDocuments(boardPath: string, base: string, ref: string): HeldDocument[] {
+  const rows = nameStatusRows(mustGit(boardPath, ["diff", "--name-status", "--no-renames", "-z", base, ref]));
+  return malformedDocumentsIn(boardPath, rows, ref);
+}
+
+/** The added or edited concept documents among `rows` whose frontmatter at `rev` does not parse. */
+function malformedDocumentsIn(boardPath: string, rows: Array<{ letter: string; relPath: string }>, rev: string): HeldDocument[] {
+  const held: HeldDocument[] = [];
+  for (const { letter, relPath } of rows) {
+    if (!isConceptDocPath(relPath)) continue;
+    const verb = verbOf(letter);
+    if (verb === null || verb === "deleted") continue;
+    const shown = runGit(boardPath, ["show", `${rev}:${relPath}`]);
+    if (shown.status !== 0) continue;
+    try {
+      parseMarkdown(shown.stdout, relPath);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      held.push({ id: conceptIdFromPath(relPath), relPath, reason: "malformed_frontmatter", detail: error.detail });
+    }
+  }
+  return held.sort((a, b) => a.relPath.localeCompare(b.relPath));
 }
 
 /** A root commit assembled from a plain bundle without touching the real index or worktree. */

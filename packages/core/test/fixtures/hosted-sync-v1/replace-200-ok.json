@@ -1,0 +1,26 @@
+{
+  "name": "replace-200-ok",
+  "description": "A replace at the served version that commits.",
+  "route": "/sync/v1/replace",
+  "rows": [
+    "200 ok"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000003",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\",\"expectedVersion\":\"sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4\",\"frontmatter\":{\"type\":\"Note\"},\"body\":\"one edited\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000003"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"documents.replace.v1\",\"data\":{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\",\"version\":\"sha256:04c5cbc34e6644ad845cf717a378ca37202c95dd1a011c83c4d79c0837c44c9a\",\"changed\":true}}",
+    "truncated": false
+  }
+}

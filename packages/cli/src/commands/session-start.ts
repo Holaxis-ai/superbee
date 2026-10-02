@@ -51,6 +51,8 @@ import { provisionBoardWorktree } from "../board-runtime.js";
 // step itself is SHARED, not owned here: autopull.ts's `pullBoardAndRecord` (extracted from this
 // command) is the ONE code path both this hook and the opportunistic read-command trigger use —
 // do not fork the state-write discipline back into either caller.
+import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import path from "node:path";
 
@@ -67,7 +69,10 @@ import {
 } from "@superbee/board-git";
 import { defaultSyncStore } from "../cursor.js";
 import { pullBoardAndRecord } from "../autopull.js";
-import { defaultSummarizeBundle, discoverSummarizeBundle, home, type BoardPullOutcome } from "./home.js";
+import { defaultSummarizeBundle, discoverSummarizeBundle, home, HOME_WORKSPACES_LIMIT, type BoardPullOutcome, type HomeWorkspace } from "./home.js";
+import { loadCatalog } from "../catalog.js";
+import { bundleHomeAt, lastFetch } from "../bundle-home.js";
+import { findBundleRoot, resolveLocalBundleTarget } from "../bundle.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandLiteral, commandQuoted } from "../command-text.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -75,6 +80,14 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
 import { assertSearchDirOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../bundle.js";
+import { hostedAutoPullOptedOut, hostedCheckoutAt } from "../autopull.js";
+import { CliError } from "../errors.js";
+import { commandToken } from "../command-text.js";
+import { render } from "../output.js";
+import type { CheckoutBinding } from "../hosted/binding.js";
+import { ageMs, backgroundSyncDeps, describeAge, readFreshness } from "../hosted/freshness.js";
+import { storedSessionMayNeedSignIn } from "../hosted-auth/session.js";
+import type { HostedPullResult, HostedSyncDeps } from "../hosted/sync.js";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
 export const SESSION_START_PULL_BUDGET_MS = 7_000;
@@ -120,11 +133,157 @@ Options:
   -h, --help         Show this help
 `;
 
+/**
+ * What listing the other catalog bundles may add to a session start. Their homes come from private
+ * state and local Git (a few short `git rev-parse` calls per Git board), never the network.
+ */
+export const SESSION_START_WORKSPACES_BUDGET_MS = 2_000;
+/**
+ * The probes' own deadline, under that budget: a Git probe is a blocking spawn that no timer can
+ * cut short, so once this passes the remaining rows keep their label and are marked not checked,
+ * and the block never falls back to "timed out".
+ */
+export const SESSION_START_PROBE_DEADLINE_MS = 1_000;
+
+/**
+ * How current one other bundle's folder is, from its last pull or fetch. No network. A hosted
+ * checkout whose host's stored sign-in session looks unusable (checked once per host, from the
+ * record alone) says it may need sign-in, so the link tends to come at the start of the session.
+ */
+async function bundleFreshness(root: string, userHome: string, now: Date, signIn: Map<string, Promise<boolean>>, env: NodeJS.ProcessEnv): Promise<Pick<HomeWorkspace, "home" | "freshness">> {
+  const facts = await bundleHomeAt(root, { home: userHome });
+  if (facts.home === "hosted") {
+    const age = ageMs((await readFreshness(userHome, facts.binding.checkout_id).catch(() => null))?.pulled_at ?? null, now);
+    const pulled = age === null ? "never pulled" : `pulled ${describeAge(age)} ago`;
+    const key = `${facts.binding.origin} ${facts.binding.audience}`;
+    if (!signIn.has(key)) signIn.set(key, storedSessionMayNeedSignIn(userHome, facts.binding, env, now.getTime()).catch(() => false));
+    return { home: "hosted", freshness: (await signIn.get(key)) ? `${pulled}; may need sign-in` : pulled };
+  }
+  if (facts.home === "git") {
+    if (!facts.board.shared) return { home: "git", freshness: "not shared yet" };
+    const age = ageMs(await lastFetch(facts.board.top).catch(() => null), now);
+    return { home: "git", freshness: age === null ? "never fetched" : `fetched ${describeAge(age)} ago` };
+  }
+  return { home: "local", freshness: "local only" };
+}
+
+/**
+ * The catalog bundles other than the one this session is in, each with its home and how fresh it
+ * is, so an agent knows what else exists and which copies are stale. The catalog, private state
+ * and local Git only: nothing is pulled, and no path or id is shown (`catalog resolve` gives them).
+ */
+export async function otherCatalogBundles(
+  currentRoot: string | null,
+  options: { home?: string; signal?: AbortSignal; now?: Date; deadlineMs?: number; env?: NodeJS.ProcessEnv } = {},
+): Promise<HomeWorkspace[]> {
+  const userHome = options.home ?? homedir();
+  const now = options.now ?? new Date();
+  const deadline = Date.now() + (options.deadlineMs ?? SESSION_START_PROBE_DEADLINE_MS);
+  const current = currentRoot === null ? null : await realpath(currentRoot).catch(() => path.resolve(currentRoot));
+  const entries = [...(await loadCatalog(userHome, options.signal)).entries].sort((a, b) => a.label.localeCompare(b.label));
+  const others: { label: string; root: string }[] = [];
+  for (const entry of entries) {
+    const root = await realpath(entry.locator.path).catch(() => null);
+    if (root !== null && root === current) continue;
+    others.push({ label: entry.label, root: root ?? entry.locator.path });
+  }
+  const rows: HomeWorkspace[] = [];
+  const signIn = new Map<string, Promise<boolean>>();
+  for (const [index, other] of others.entries()) {
+    // Only the rows the block shows are probed; the rest are counted.
+    if (index >= HOME_WORKSPACES_LIMIT || options.signal?.aborted || Date.now() >= deadline) {
+      rows.push({ label: other.label, home: "unknown", freshness: "not checked" });
+      continue;
+    }
+    let available = false;
+    try {
+      available = (await resolveLocalBundleTarget(other.root)).canonicalRoot === other.root;
+    } catch {
+      available = false;
+    }
+    rows.push({
+      label: other.label,
+      ...(available ? await bundleFreshness(other.root, userHome, now, signIn, options.env ?? process.env).catch(() => ({ home: "unknown", freshness: "unreadable" })) : { home: "unknown", freshness: "folder missing" }),
+    });
+  }
+  return rows;
+}
+
+/** The bundle this session start renders, so the catalog listing can leave it out. Never throws. */
+async function sessionBundleRoot(dir: string | undefined, known: string | undefined): Promise<string | null> {
+  if (known !== undefined) return known;
+  try {
+    if (dir !== undefined) return (await findBundleRoot(path.resolve(dir))) ?? null;
+    return (await resolveLocalBundleTarget(undefined)).canonicalRoot;
+  } catch {
+    return null;
+  }
+}
+
 /** `ffPull` swallow reasons that mean "could not reach/verify the remote" → the offline note. */
 const OFFLINE_REASONS = new Set(["network", "auth", "busy", "git-missing"]);
 
 /** The same offline classes as {@link OFFLINE_REASONS}, in `BoardGitError.code` vocabulary (in-tree fetch). */
 const OFFLINE_CODES = new Set(["TRANSIENT", "AUTH_REQUIRED", "GIT_BUSY", "GIT_MISSING"]);
+
+/** How the session-start pull of a hosted checkout went. */
+export type HostedSessionPull = "pulled" | "disabled" | "signed_out" | "offline" | "busy" | "failed";
+
+/**
+ * The session-start pull of a hosted checkout: one pull-only pass within the budget (never a
+ * sign-in, never a send), reported as the `hosted_checkout` block after the home view. Opt out
+ * with SUPERBEE_NO_AUTOPULL, which also stops the automatic pull on reads.
+ */
+export async function hostedSessionStartPull(
+  binding: CheckoutBinding,
+  budgetMs: number,
+  deps: { env?: Record<string, string | undefined>; sync?: Partial<HostedSyncDeps>; pull?: (binding: CheckoutBinding, deps: Partial<HostedSyncDeps>) => Promise<HostedPullResult> } = {},
+): Promise<Record<string, unknown>> {
+  const home = deps.sync?.auth?.home ?? homedir();
+  const state = await sessionPullState(binding, budgetMs, home, deps);
+  const counts: Record<string, number> = typeof state === "object" ? state : {};
+  const pulledAt = (await readFreshness(home, binding.checkout_id).catch(() => null))?.pulled_at ?? null;
+  const sync = `${cliInvocation()} sync --dir ${commandToken(binding.path)}`;
+  return {
+    folder: binding.path,
+    bundle_id: binding.bundle_id,
+    host: binding.origin,
+    pull: typeof state === "object" ? "pulled" : state,
+    ...counts,
+    last_pulled: pulledAt,
+    note:
+      state === "signed_out"
+        ? "not signed in: run sync, and relay the sign-in link it returns"
+        : state === "busy"
+          ? "another superbee command is using this checkout, so it was not pulled; sync when it finishes"
+          : typeof state === "object"
+          ? "edit files here, then sync at the end of a batch of edits"
+          : "showing the folder as last pulled; sync reports the full story",
+    help: [sync],
+  };
+}
+
+/**
+ * The pull itself: never a sign-in (a dead or missing session is left for an explicit command),
+ * and every request and lock bounded by the budget.
+ */
+async function sessionPullState(
+  binding: CheckoutBinding,
+  budgetMs: number,
+  home: string,
+  deps: { env?: Record<string, string | undefined>; sync?: Partial<HostedSyncDeps>; pull?: (binding: CheckoutBinding, deps: Partial<HostedSyncDeps>) => Promise<HostedPullResult> },
+): Promise<Exclude<HostedSessionPull, "pulled"> | { refreshed: number; removed: number; kept_local_edits: number }> {
+  if (hostedAutoPullOptedOut(deps.env ?? process.env)) return "disabled";
+  try {
+    const pullOnce = deps.pull ?? (await import("../hosted/sync.js")).hostedPull;
+    const result = await pullOnce(binding, backgroundSyncDeps(deps.sync, home, Date.now() + budgetMs));
+    if (result.state === "pulled") return { refreshed: result.refreshed, removed: result.removed, kept_local_edits: result.kept };
+    return result.state === "busy" ? "busy" : "signed_out";
+  } catch (error) {
+    if (error instanceof CliError) return error.code === "AUTH_REQUIRED" ? "signed_out" : error.code === "TRANSIENT" ? "offline" : "failed";
+    return "offline";
+  }
+}
 
 /** Injectable seam for the fall-through tests. */
 export interface SessionStartDeps {
@@ -135,6 +294,12 @@ export interface SessionStartDeps {
   budgetMs: number;
   /** Injected final renderer for argv-forwarding tests; production uses {@link home}. */
   renderHome: typeof home;
+  /** The hosted checkout the run is in (default: found from --dir or the cwd). */
+  hostedCheckout: (dir: string | undefined) => Promise<CheckoutBinding | null>;
+  /** The hosted session-start pull (default {@link hostedSessionStartPull}). */
+  hostedPull: (binding: CheckoutBinding, budgetMs: number) => Promise<Record<string, unknown>>;
+  /** The other catalog bundles (default {@link otherCatalogBundles}). */
+  otherBundles: (currentRoot: string | null, signal?: AbortSignal) => Promise<HomeWorkspace[]>;
 }
 
 /**
@@ -336,6 +501,52 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
 
   const budgetMs = deps.budgetMs ?? SESSION_START_PULL_BUDGET_MS;
   const pull = deps.pull ?? sessionStartPull;
+  const otherBundles = deps.otherBundles ?? ((root: string | null, signal?: AbortSignal) => otherCatalogBundles(root, signal ? { signal } : {}));
+  // The catalog block lists the OTHER bundles, with their homes and freshness.
+  const workspaceDeps = (currentRoot: Promise<string | null>) => ({
+    loadWorkspaces: async (signal?: AbortSignal) => otherBundles(await currentRoot, signal),
+    workspaceBudgetMs: SESSION_START_WORKSPACES_BUDGET_MS,
+  });
+
+  // A hosted checkout has no Git board: pull it from the host instead, then render home with a
+  // settled board outcome (so home starts no pull of its own) and the hosted block after it.
+  let hosted: CheckoutBinding | null = null;
+  try {
+    hosted = await (deps.hostedCheckout ?? ((d) => hostedCheckoutAt(d)))(values.dir);
+  } catch {
+    hosted = null;
+  }
+  if (hosted) {
+    let block: Record<string, unknown>;
+    try {
+      block = await (deps.hostedPull ?? ((binding, budget) => hostedSessionStartPull(binding, budget)))(hosted, budgetMs);
+    } catch {
+      block = { folder: hosted.path, pull: "failed" };
+    }
+    const captured: string[] = [];
+    const homeArgv: string[] = [];
+    if (values.dir !== undefined) homeArgv.push("--dir", values.dir);
+    if (values.json) homeArgv.push("--json");
+    if (values["no-update-check"]) homeArgv.push("--no-update-check");
+    await (deps.renderHome ?? home)(homeArgv, {
+      stdout: (text) => void captured.push(text),
+      boardPull: { offline: false },
+      ...workspaceDeps(Promise.resolve(hosted.path)),
+    });
+    const rendered = captured.join("");
+    if (values.json) {
+      let view: unknown;
+      try {
+        view = JSON.parse(rendered);
+      } catch {
+        view = undefined;
+      }
+      stdout(view && typeof view === "object" && !Array.isArray(view) ? `${JSON.stringify({ ...view, hosted_checkout: block })}\n` : rendered);
+    } else {
+      stdout(`${rendered}${rendered.endsWith("\n") || rendered === "" ? "" : "\n"}${render({ hosted_checkout: block }, "default")}`);
+    }
+    return;
+  }
 
   // The belt to the pull step's internal per-op suspenders: race the WHOLE pull against the
   // budget, so even a pull that hangs in ways the per-op kills can't see (an injected async dep,
@@ -385,6 +596,7 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
     // board is probed (buildBoardBlock's own contract), so the render is unchanged — but a fresh
     // network pull outside this command's budget race is now structurally impossible.
     boardPull: outcome ?? { offline: true },
+    ...workspaceDeps(sessionBundleRoot(projectDir, boardPath)),
     ...(projectDir !== undefined
       ? {
           summarizeBundle: () =>

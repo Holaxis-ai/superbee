@@ -1,0 +1,798 @@
+// Hosted sync triggers (C4): the automatic pull on reads and its staleness warning, the pull at
+// session start, the end-of-turn sync hook and its opt-in, sign-in inside `setup`, and the two
+// carry-overs from PR 295's QA (keep/revise need a current inspection; a crash during take leaves
+// no temp file behind). Everything runs against the in-process fake host; no request leaves.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { decode } from "@toon-format/toon";
+import { filesystemMutationLockPath } from "@superbee/core";
+import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
+import { checkoutLockName } from "../src/hosted/binding.js";
+
+import { CliError } from "../src/errors.js";
+import { checkout } from "../src/commands/checkout.js";
+import { sync } from "../src/commands/sync.js";
+import { hook } from "../src/commands/hook.js";
+import { sessionStart, hostedSessionStartPull } from "../src/commands/session-start.js";
+import { setupHosted } from "../src/commands/setup-hosted.js";
+import { TURN_END_OTHER_SLICE_MS, TURN_END_START_MARGIN_MS, turnEnd } from "../src/commands/turn-end.js";
+import { hostedCheckoutAt, maybeAutoPull, maybeHostedAutoPull } from "../src/autopull.js";
+import { defaultHostedAuthDeps, readDefaultHost, sessionAccount, sessionDirFor, withSessionLock, type HostedAuthDeps } from "../src/hosted-auth/session.js";
+import { resolveHostedTarget } from "../src/hosted-auth/discovery.js";
+import { readDefaultWorkspace } from "../src/hosted/defaults.js";
+import { readFreshness, recordPulled, recordSynced } from "../src/hosted/freshness.js";
+import { digestOf } from "../src/hosted/projection.js";
+import { recoverPlacements } from "../src/hosted/sync-scan.js";
+import { hostedLocalState, hostedPull, type HostedSyncDeps } from "../src/hosted/sync.js";
+import type { CheckoutBinding } from "../src/hosted/binding.js";
+import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
+import { seedHostedSession } from "./support/hosted-session.js";
+
+interface Harness {
+  home: string;
+  cwd: string;
+  folder: string;
+  auth: HostedAuthDeps;
+  host: FakeHost;
+  binding: CheckoutBinding;
+}
+
+const instant = async () => {};
+
+async function harness(host = new FakeHost()): Promise<Harness> {
+  const home = await mkdtemp(path.join(tmpdir(), "sb-trig-home-"));
+  const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-cwd-")));
+  const auth = defaultHostedAuthDeps(home, {
+    env: { SUPERBEE_ACCESS_TOKEN: TOKEN },
+    fetch: async () => {
+      throw new Error("the sign-in module must not be reached");
+    },
+  });
+  await checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth, cwd, fetch: host.fetch });
+  const folder = path.join(cwd, "team");
+  const binding = (await hostedCheckoutAt(folder, home))!;
+  assert.ok(binding, "the checkout is found by its folder");
+  host.requests.length = 0;
+  return { home, cwd, folder, auth, host, binding };
+}
+
+function syncDeps(h: Harness): Partial<HostedSyncDeps> {
+  return { auth: h.auth, cwd: h.cwd, fetch: h.host.fetch, write: { sleep: instant, lookupDelayMs: 0 }, sleep: instant };
+}
+
+async function runSync(h: Harness, argv: string[] = []): Promise<Record<string, unknown>> {
+  const out: string[] = [];
+  await sync(["--dir", h.folder, ...argv], { ...syncDeps(h), stdout: (text: string) => void out.push(text) });
+  return decode(out.at(-1)!.trim()) as Record<string, unknown>;
+}
+
+async function syncError(h: Harness, argv: string[] = []): Promise<CliError> {
+  try {
+    await sync(["--dir", h.folder, ...argv], { ...syncDeps(h), stdout: () => {}, lockWaitMs: 200 });
+  } catch (error) {
+    assert.ok(error instanceof CliError, String(error));
+    return error;
+  }
+  assert.fail("expected sync to fail");
+}
+
+const writeRoutes = (h: Harness) => h.host.writes.filter((call) => call.route !== "outcome");
+const fileOf = (h: Harness, id: string) => path.join(h.folder, `${id}.md`);
+
+async function hostChangesAlpha(h: Harness, body = "Host alpha.\n"): Promise<string> {
+  const before = h.host.docs.get("notes/alpha")!;
+  return h.host.put("notes/alpha", before.frontmatter, body);
+}
+
+async function conflictOnAlpha(h: Harness): Promise<void> {
+  await hostChangesAlpha(h);
+  await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nLocal alpha.\n');
+  const error = await syncError(h);
+  assert.equal(error.code, "CONFLICT");
+}
+
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+
+// ------------------------------------------------------------------------ automatic pull on reads
+
+test("a checkout starts fresh: a read right after it neither pulls nor warns", async () => {
+  const h = await harness();
+  assert.ok((await readFreshness(h.home, h.binding.checkout_id)).pulled_at, "checkout records its pull");
+  const warnings: string[] = [];
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, stderr: (t) => void warnings.push(t), sync: syncDeps(h) });
+  assert.equal(outcome, "fresh");
+  assert.deepEqual(warnings, []);
+  assert.equal(h.host.requests.length, 0);
+});
+
+test("a read pulls once the last pull is over five minutes old, then is throttled; it never sends", async () => {
+  const h = await harness();
+  await hostChangesAlpha(h);
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nLocal beta edit.\n');
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, stderr: () => {}, sync: syncDeps(h) });
+  assert.equal(outcome, "pulled");
+  assert.match(await readFile(fileOf(h, "notes/alpha"), "utf8"), /Host alpha\./);
+  assert.match(await readFile(fileOf(h, "notes/beta"), "utf8"), /Local beta edit\./, "a local edit is never overwritten");
+  assert.deepEqual(writeRoutes(h), [], "an automatic pull sends nothing");
+  // The next sync still sends the local edit.
+  const receipt = await runSync(h);
+  assert.equal((receipt.rows as { id: string; state: string }[]).find((row) => row.id === "notes/beta")?.state, "committed");
+
+});
+
+test("a failed automatic pull backs off for the whole window", async () => {
+  const h = await harness();
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(10));
+  const offline = await maybeHostedAutoPull(h.binding, {
+    env: {},
+    stderr: () => {},
+    sync: { ...syncDeps(h), fetch: (async () => { throw new TypeError("offline"); }) as typeof fetch },
+  });
+  assert.equal(offline, "skipped");
+  const again = await maybeHostedAutoPull(h.binding, { env: {}, stderr: () => {}, sync: syncDeps(h) });
+  assert.equal(again, "throttled");
+  assert.equal(h.host.requests.length, 0);
+});
+
+test("an automatic pull over a file deleted locally records the delete and sends nothing; the next sync sends it", async () => {
+  const h = await harness();
+  const { unlink } = await import("node:fs/promises");
+  await unlink(fileOf(h, "notes/beta"));
+  assert.equal(await hostedLocalState(h.binding, h.home), "changed", "a deleted file is a change turn-end must send");
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, stderr: () => {}, sync: syncDeps(h) });
+  assert.equal(outcome, "pulled");
+  assert.deepEqual(writeRoutes(h), [], "an automatic pull never sends a delete");
+  assert.ok(h.host.docs.has("notes/beta"));
+  await readFile(fileOf(h, "notes/beta")).then(
+    () => assert.fail("the pull must not put a locally deleted file back"),
+    () => {},
+  );
+  await runSync(h);
+  assert.equal(h.host.docs.has("notes/beta"), false, "sync sends the delete");
+  assert.equal(await hostedLocalState(h.binding, h.home), "clean");
+});
+
+test("the automatic pull gives up inside its budget when the host hangs", async () => {
+  const h = await harness();
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  const hanging = ((_input: unknown, init?: RequestInit) =>
+    new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)))) as typeof fetch;
+  const started = Date.now();
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, budgetMs: 300, stderr: () => {}, sync: { ...syncDeps(h), fetch: hanging } });
+  assert.equal(outcome, "skipped");
+  assert.ok(Date.now() - started < 2_000, `took ${Date.now() - started} ms`);
+});
+
+test("past thirty minutes a read warns on stderr with the sync command; the opt-out stops the pull, not the warning", async () => {
+  const h = await harness();
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(45));
+  const warnings: string[] = [];
+  const outcome = await maybeHostedAutoPull(h.binding, { env: { SUPERBEE_NO_AUTOPULL: "1" }, stderr: (t) => void warnings.push(t), sync: syncDeps(h) });
+  assert.equal(outcome, "disabled");
+  assert.equal(h.host.requests.length, 0);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /was last pulled 45m ago/);
+  assert.match(warnings[0]!, /sync --dir /);
+});
+
+test("maybeAutoPull routes a read inside a hosted checkout (or a folder below it) to the hosted pull", async () => {
+  const h = await harness();
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  await hostChangesAlpha(h);
+  const outcome = await maybeAutoPull(path.join(h.folder, "notes"), { env: {}, hosted: { env: {}, stderr: () => {}, sync: syncDeps(h) } });
+  assert.equal(outcome, "pulled");
+  assert.match(await readFile(fileOf(h, "notes/alpha"), "utf8"), /Host alpha\./);
+});
+
+test("an automatic pull never starts a sign-in", async () => {
+  const h = await harness();
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  const signedOut = { ...h.auth, env: {} };
+  const result = await hostedPull(h.binding, { ...syncDeps(h), auth: signedOut });
+  assert.deepEqual(result, { state: "signed_out" });
+  assert.equal(h.host.requests.length, 0);
+});
+
+test("sync records its pull, so a read after it is fresh; push always follows a pull in the same run", async () => {
+  const h = await harness();
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(60));
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nSent.\n');
+  await runSync(h);
+  const paths = h.host.requests.map((request) => new URL(request.path, HOST).pathname.split("/").pop());
+  assert.ok(paths.indexOf("heads") !== -1 && paths.indexOf("heads") < paths.findIndex((name) => name === "replace" || name === "create"), `order: ${paths.join(",")}`);
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, stderr: () => {}, sync: syncDeps(h) });
+  assert.equal(outcome, "fresh");
+});
+
+/** A stored session whose access token has expired and that has no refresh token: signed out. */
+async function deadSession(h: Harness): Promise<{ file: string; auth: HostedAuthDeps }> {
+  const file = await seedHostedSession(h.home, { host: HOST, accessToken: TOKEN, expiresAtMs: 0 });
+  const auth = defaultHostedAuthDeps(h.home, {
+    env: { SUPERBEE_CREDENTIAL_STORE: "file" },
+    fetch: async () => {
+      throw new Error("background work must not reach the issuer");
+    },
+  });
+  return { file, auth };
+}
+
+test("B1: a pull on a read with a dead stored session skips with a note, starts no sign-in, and leaves the session alone", async () => {
+  const h = await harness();
+  const { file, auth } = await deadSession(h);
+  const before = await readFile(file, "utf8");
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  const notes: string[] = [];
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, stderr: (t) => void notes.push(t), sync: { ...syncDeps(h), auth } });
+  assert.equal(outcome, "signed-out");
+  assert.match(notes.join(""), /not signed in to https:\/\/hosted\.example, so the automatic pull was skipped/);
+  assert.equal(await readFile(file, "utf8"), before);
+  assert.deepEqual((await readdir(path.dirname(file))).filter((name) => name.startsWith("pending")), []);
+  assert.equal(h.host.requests.length, 0);
+  // The session-start pull is the same.
+  const block = await hostedSessionStartPull(h.binding, 2_000, { env: {}, sync: { ...syncDeps(h), auth } });
+  assert.equal(block.pull, "signed_out");
+  assert.equal(await readFile(file, "utf8"), before);
+});
+
+test("B2: a busy sign-in session lock never holds a read past its budget", async () => {
+  const h = await harness();
+  const { auth } = await deadSession(h);
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(6));
+  let release!: () => void;
+  const held = withSessionLock(resolveHostedTarget(HOST), auth, () => new Promise<void>((resolve) => (release = resolve)));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const notes: string[] = [];
+  const started = Date.now();
+  const outcome = await maybeHostedAutoPull(h.binding, { env: {}, budgetMs: 400, stderr: (t) => void notes.push(t), sync: { ...syncDeps(h), auth } });
+  const took = Date.now() - started;
+  release();
+  await held;
+  assert.equal(outcome, "busy");
+  assert.ok(took < 2_000, `took ${took} ms`);
+  assert.match(notes.join(""), /another superbee command is using/);
+});
+
+test("B3: a sign-in session lock left by a killed command is reported by the pull, not skipped as busy", async () => {
+  const h = await harness();
+  const { auth } = await deadSession(h);
+  const lock = filesystemMutationLockPath(path.join(await realpath(sessionDirFor(h.home, sessionAccount(resolveHostedTarget(HOST)))), "session"));
+  await mkdir(lock);
+  const when = new Date(Date.now() - 60_000);
+  await utimes(lock, when, when);
+  try {
+    await assert.rejects(hostedPull(h.binding, { ...syncDeps(h), auth: { ...auth, lockWaitMs: 100 } }), (error: unknown) => {
+      assert.ok(error instanceof CliError);
+      assert.equal(error.code, "CONFLICT");
+      assert.deepEqual(error.details, { reason: "session_lock_orphaned", host: HOST, lock, retryable: false });
+      return true;
+    });
+    const block = await hostedSessionStartPull(h.binding, 2_000, { env: {}, sync: { ...syncDeps(h), auth } });
+    assert.equal(block.pull, "failed");
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------------------------------ session start
+
+test("session-start in a hosted checkout pulls from the host and appends the hosted_checkout block", async () => {
+  const h = await harness();
+  await hostChangesAlpha(h);
+  const block = await hostedSessionStartPull(h.binding, 5_000, { env: {}, sync: syncDeps(h) });
+  assert.equal(block.pull, "pulled");
+  assert.equal(block.refreshed, 1);
+  assert.match(await readFile(fileOf(h, "notes/alpha"), "utf8"), /Host alpha\./);
+  assert.equal((await hostedSessionStartPull(h.binding, 5_000, { env: { SUPERBEE_NO_AUTOPULL: "1" }, sync: syncDeps(h) })).pull, "disabled");
+
+  const out: string[] = [];
+  await sessionStart(["--dir", h.folder, "--no-update-check"], {
+    stdout: (text) => void out.push(text),
+    hostedCheckout: async () => h.binding,
+    hostedPull: async () => block,
+    renderHome: async (_argv, deps) => void deps?.stdout?.("superbee:\n  home: rendered\n"),
+  });
+  const view = decode(out.join("")) as Record<string, Record<string, unknown>>;
+  assert.equal(view.hosted_checkout!.pull, "pulled");
+  assert.equal(view.superbee!.home, "rendered");
+
+  const json: string[] = [];
+  await sessionStart(["--dir", h.folder, "--json"], {
+    stdout: (text) => void json.push(text),
+    hostedCheckout: async () => h.binding,
+    hostedPull: async () => block,
+    renderHome: async (_argv, deps) => void deps?.stdout?.(`${JSON.stringify({ superbee: { home: "rendered" } })}\n`),
+  });
+  assert.equal(JSON.parse(json.join("")).hosted_checkout.pull, "pulled");
+});
+
+// ------------------------------------------------------------------------ end-of-turn sync
+
+async function turnEndOutput(h: Harness, stdin: string | null = "{}", env: Record<string, string> = {}): Promise<string> {
+  const out: string[] = [];
+  await turnEnd(["--dir", h.folder], { stdout: (t) => void out.push(t), env, readStdin: async () => stdin, syncDeps: syncDeps(h) });
+  return out.join("");
+}
+
+test("turn-end sends edits silently, and hands a conflict back to the agent once", async () => {
+  const h = await harness();
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nTurn edit.\n');
+  assert.equal(await turnEndOutput(h), "");
+  assert.equal(h.host.docs.get("notes/beta")!.body, "Turn edit.\n");
+
+  await hostChangesAlpha(h);
+  await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nLocal alpha.\n');
+  const decision = JSON.parse(await turnEndOutput(h)) as { decision: string; reason: string };
+  assert.equal(decision.decision, "block");
+  assert.match(decision.reason, /sync --inspect --doc <id>/);
+  assert.match(decision.reason, /notes\/alpha/);
+  assert.match(decision.reason, /Superbee app is for the person/);
+  // Already continuing because of this hook: never blocked twice.
+  assert.equal(await turnEndOutput(h, JSON.stringify({ stop_hook_active: true })), "");
+  // The same unresolved conflict on a later turn is not reported again.
+  assert.equal(await turnEndOutput(h), "");
+  // A new condition is.
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nAnother edit.\n');
+  const before = h.host.docs.get("notes/beta")!.version;
+  h.host.put("notes/beta", h.host.docs.get("notes/beta")!.frontmatter, "Host beta.\n");
+  assert.notEqual(h.host.docs.get("notes/beta")!.version, before);
+  const second = JSON.parse(await turnEndOutput(h)) as { reason: string };
+  assert.match(second.reason, /notes\/beta/);
+  // Opt-out for a shell.
+  assert.equal(await turnEndOutput(h, "{}", { SUPERBEE_NO_TURN_SYNC: "1" }), "");
+});
+
+test("turn-end does not touch the network when nothing changed and the last pull is recent", async () => {
+  const h = await harness();
+  assert.equal(await turnEndOutput(h), "");
+  assert.equal(h.host.requests.length, 0);
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(10));
+  assert.equal(await turnEndOutput(h), "");
+  assert.ok(h.host.requests.length > 0, "a stale copy is synced");
+  h.host.requests.length = 0;
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nEdited.\n');
+  assert.equal(await turnEndOutput(h), "");
+  assert.equal(h.host.docs.get("notes/beta")!.body, "Edited.\n");
+});
+
+test("turn-end relays the sign-in link when the session is gone", async () => {
+  const h = await harness();
+  const out: string[] = [];
+  await turnEnd(["--dir", h.folder], {
+    stdout: (t) => void out.push(t),
+    env: {},
+    readStdin: async () => null,
+    hostedCheckout: async () => h.binding,
+    localState: async () => "changed",
+    syncDeps: { auth: h.auth },
+    sync: async () => {
+      throw new CliError("AUTH_REQUIRED", "sign-in to x is required", { details: { sign_in_url: "https://issuer.example/activate?user_code=ABCD" } });
+    },
+  });
+  const decision = JSON.parse(out.join("")) as { decision: string; reason: string };
+  assert.equal(decision.decision, "block");
+  assert.match(decision.reason, /Relay this sign-in link to the person: https:\/\/issuer\.example\/activate\?user_code=ABCD/);
+});
+
+test("turn-end hands an orphaned lock to the person with the lock to remove, not the conflict steps", async () => {
+  const h = await harness();
+  const out: string[] = [];
+  const help = "confirm no superbee command is using the https://hosted.example sign-in session, remove /locks/x.lock, then retry the same command";
+  await turnEnd(["--dir", h.folder], {
+    stdout: (t) => void out.push(t),
+    env: {},
+    readStdin: async () => null,
+    hostedCheckout: async () => h.binding,
+    localState: async () => "changed",
+    syncDeps: { auth: h.auth },
+    sync: async () => {
+      throw new CliError("CONFLICT", "the https://hosted.example sign-in session lock was left by a command that is gone", {
+        details: { reason: "session_lock_orphaned", host: HOST, lock: "/locks/x.lock", retryable: false },
+        help,
+      });
+    },
+  });
+  const decision = JSON.parse(out.join("")) as { decision: string; reason: string };
+  assert.equal(decision.decision, "block");
+  assert.ok(decision.reason.includes(help), decision.reason);
+  assert.doesNotMatch(decision.reason, /sync --inspect/);
+});
+
+test("turn-end does nothing outside a hosted checkout, and never blocks for offline or busy", async () => {
+  const plain = await mkdtemp(path.join(tmpdir(), "sb-trig-plain-"));
+  const home = await mkdtemp(path.join(tmpdir(), "sb-trig-home2-"));
+  const out: string[] = [];
+  let synced = false;
+  await turnEnd(["--dir", plain], {
+    stdout: (t) => void out.push(t),
+    env: {},
+    readStdin: async () => null,
+    syncDeps: { auth: defaultHostedAuthDeps(home) },
+    sync: async () => void (synced = true),
+  });
+  assert.equal(synced, false);
+  assert.equal(out.join(""), "");
+
+  const h = await harness();
+  for (const failure of [new CliError("TRANSIENT", "offline"), new CliError("CONFLICT", "busy", { details: { reason: "sync_busy" } })]) {
+    const lines: string[] = [];
+    let ran = false;
+    await turnEnd(["--dir", h.folder], {
+      stdout: (t) => void lines.push(t),
+      env: {},
+      readStdin: async () => null,
+      hostedCheckout: async () => h.binding,
+      localState: async () => "changed",
+      syncDeps: { auth: h.auth },
+      sync: async () => {
+        ran = true;
+        throw failure;
+      },
+    });
+    assert.ok(ran);
+    assert.equal(lines.join(""), "");
+  }
+});
+
+test("a Git-board verb in a hosted checkout answers 'not applicable in a hosted bundle'; a --json run carries the one envelope", async () => {
+  const h = await harness();
+  const refused = await syncError(h, ["--establish"]);
+  assert.equal(refused.code, "USAGE");
+  assert.deepEqual(refused.details, { reason: "not_applicable", home: "hosted", flags: ["--establish"] });
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nEnveloped.\n');
+  const out: string[] = [];
+  await sync(["--dir", h.folder, "--json"], { ...syncDeps(h), stdout: (text: string) => void out.push(text) });
+  const receipt = JSON.parse(out.join("")) as Record<string, unknown>;
+  assert.deepEqual([receipt.home, receipt.sent, receipt.conflicts, receipt.held, receipt.schema_version], ["hosted", 1, 0, 0, 2]);
+  assert.ok(Array.isArray(receipt.rows), "the hosted rows stay");
+});
+
+// ------------------------------------------------------------------------ turn end across checkouts
+
+/** A second checkout of the bundle beside the harness's, in the same home. */
+async function secondCheckout(h: Harness): Promise<{ folder: string; binding: CheckoutBinding }> {
+  await checkout([BUNDLE, "--host", HOST, "--dir", "other"], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  const folder = path.join(h.cwd, "other");
+  h.host.requests.length = 0;
+  await settled(folder);
+  await settled(h.folder);
+  return { folder, binding: (await hostedCheckoutAt(folder, h.home))! };
+}
+
+/**
+ * Make a whole checkout look untouched for ten minutes, as a checkout made earlier would. The
+ * folder itself keeps its times: on macOS an earlier modification time also moves the birth time,
+ * which is part of the identity that binds the folder.
+ */
+async function settled(folder: string): Promise<void> {
+  const at = new Date(Date.now() - 600_000);
+  const visit = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await visit(full);
+      await utimes(full, at, at);
+    }
+  };
+  await visit(folder);
+}
+
+/** Make a file look edited `seconds` ago (and its folder, as the edit touched it). */
+async function editedAgo(file: string, seconds: number): Promise<void> {
+  const at = new Date(Date.now() - seconds * 1000);
+  await utimes(file, at, at);
+  await utimes(path.dirname(file), at, at);
+}
+
+/** The Stop hook run from a folder that is no checkout (a project), as the rehearsal runs it. */
+async function turnEndFrom(h: Harness, dir: string, budgetMs?: number): Promise<string> {
+  const out: string[] = [];
+  await turnEnd(["--dir", dir], { stdout: (t) => void out.push(t), env: {}, readStdin: async () => "{}", syncDeps: syncDeps(h), ...(budgetMs === undefined ? {} : { budgetMs }) });
+  return out.join("");
+}
+
+test("turn end from another folder sends a quiet checkout's edits, waits on one edited in the last 30 s, and costs a clean one nothing", async () => {
+  const h = await harness();
+  const other = await secondCheckout(h);
+  const project = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  // Clean everywhere: no request at all.
+  assert.equal(await turnEndFrom(h, project), "");
+  assert.equal(h.host.requests.length, 0);
+  // Edited with --dir a minute ago in the first checkout, and just now in the second.
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nSent at turn end.\n');
+  await editedAgo(fileOf(h, "notes/beta"), 60);
+  await writeFile(path.join(other.folder, "notes", "alpha.md"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nStill being edited.\n');
+  assert.equal(await turnEndFrom(h, project), "");
+  assert.equal(h.host.docs.get("notes/beta")!.body, "Sent at turn end.\n");
+  assert.notEqual(h.host.docs.get("notes/alpha")!.body, "Still being edited.\n", "a checkout edited in the last 30 s is not sent");
+  // Once it is quiet, the next turn end sends it.
+  await editedAgo(path.join(other.folder, "notes", "alpha.md"), 60);
+  assert.equal(await turnEndFrom(h, project), "");
+  assert.equal(h.host.docs.get("notes/alpha")!.body, "Still being edited.\n");
+});
+
+test("turn end never starts another checkout's sync with under five seconds of budget left", async () => {
+  const h = await harness();
+  const project = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  await settled(h.folder);
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nLate.\n');
+  await editedAgo(fileOf(h, "notes/beta"), 60);
+  assert.equal(await turnEndFrom(h, project, 4_000), "");
+  assert.equal(h.host.requests.length, 0);
+});
+
+test("another checkout's conflict blocks once when it was edited since its last sync, and an older one does not block", async () => {
+  const h = await harness();
+  const project = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  await settled(h.folder);
+  // This turn's --dir edit meets a change made on the host: the hook hands it back, once.
+  await hostChangesAlpha(h);
+  await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nLocal alpha.\n');
+  await editedAgo(fileOf(h, "notes/alpha"), 60);
+  // The last full sync scanned ten minutes ago; a read's automatic pull ran since (it sends nothing).
+  await recordPulled(h.home, h.binding.checkout_id, minutesAgo(10));
+  await recordSynced(h.home, h.binding.checkout_id, minutesAgo(10));
+  await recordPulled(h.home, h.binding.checkout_id, new Date());
+  const decision = JSON.parse(await turnEndFrom(h, project)) as { decision: string; reason: string };
+  assert.equal(decision.decision, "block");
+  assert.match(decision.reason, /notes\/alpha/);
+  assert.ok(decision.reason.includes(h.folder));
+  assert.equal(await turnEndFrom(h, project), "", "the same condition is not reported again");
+
+  // A conflict left from before the checkout's last sync (another session's) never blocks this turn.
+  const g = await harness();
+  const elsewhere = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  await settled(g.folder);
+  await hostChangesAlpha(g);
+  await writeFile(fileOf(g, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nOld local alpha.\n');
+  await editedAgo(fileOf(g, "notes/alpha"), 600);
+  await recordPulled(g.home, g.binding.checkout_id, minutesAgo(6));
+  await recordSynced(g.home, g.binding.checkout_id, minutesAgo(6));
+  const quiet: string[] = [];
+  await turnEnd(["--dir", elsewhere], { stdout: (t) => void quiet.push(t), env: {}, readStdin: async () => "{}", syncDeps: syncDeps(g) });
+  assert.equal(quiet.join(""), "");
+  assert.ok(g.host.requests.some((request) => request.path.endsWith("/heads")), "it was synced, and its conflict found");
+});
+
+test("a turn end that pulls a host change into another checkout with an old conflict neither blocks then nor retries it within five minutes", async () => {
+  const h = await harness();
+  const project = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  await settled(h.folder);
+  // An old conflict on alpha (from another session), and an unrelated host change to beta to pull.
+  await hostChangesAlpha(h);
+  await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nOld local alpha.\n');
+  await editedAgo(fileOf(h, "notes/alpha"), 600);
+  await recordSynced(h.home, h.binding.checkout_id, minutesAgo(6));
+  h.host.put("notes/beta", h.host.docs.get("notes/beta")!.frontmatter, "Pulled beta.\n");
+  assert.equal(await turnEndFrom(h, project), "", "an old conflict does not block");
+  assert.equal(await readFile(fileOf(h, "notes/beta"), "utf8").then((text) => /Pulled beta/.test(text)), true, "the host's change was placed");
+  // The next turn: the placed file is not an edit, so nothing is retried inside five minutes.
+  await editedAgo(fileOf(h, "notes/beta"), 60);
+  h.host.requests.length = 0;
+  assert.equal(await turnEndFrom(h, project), "");
+  assert.equal(h.host.requests.length, 0, "not retried");
+});
+
+test("turn end from another folder: a checkout another command holds is skipped, and an already-continuing turn syncs nothing", async () => {
+  const h = await harness();
+  const project = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  await settled(h.folder);
+  await writeFile(fileOf(h, "notes/beta"), '---\ntype: "Note"\ntitle: "Beta"\n---\nHeld back.\n');
+  await editedAgo(fileOf(h, "notes/beta"), 60);
+  // Busy: another command holds the checkout.
+  await filesystemPushRoleLocks().request(checkoutLockName(h.binding.path), {}, async () => {
+    assert.equal(await turnEndFrom(h, project), "");
+  });
+  assert.equal(h.host.requests.length, 0);
+  // The host says this turn is already continuing because of the hook: nothing is synced.
+  const out: string[] = [];
+  await turnEnd(["--dir", project], { stdout: (t) => void out.push(t), env: {}, readStdin: async () => JSON.stringify({ stop_hook_active: true }), syncDeps: syncDeps(h) });
+  assert.equal(out.join(""), "");
+  assert.equal(h.host.requests.length, 0);
+});
+
+test("turn end syncs several quiet checkouts, oldest change first, one slice each, and stops starting them near the deadline", async () => {
+  const h = await harness();
+  const project = await realpath(await mkdtemp(path.join(tmpdir(), "sb-trig-project-")));
+  const order: string[] = [];
+  const listed = ["/a", "/b", "/c"].map((folder, index) => ({ ...h.binding, checkout_id: `00000000-0000-4000-8000-00000000000${index}`, path: folder }));
+  const changed = new Map([["/a", 3], ["/b", 1], ["/c", 2]]);
+  const base = Date.now() - 600_000;
+  let clock = 0;
+  await turnEnd(["--dir", project], {
+    stdout: () => {},
+    env: {},
+    readStdin: async () => "{}",
+    syncDeps: syncDeps(h),
+    budgetMs: 20_000,
+    checkouts: async () => listed,
+    localState: async () => "changed",
+    lastChange: async (folder) => base + changed.get(folder)! * 1_000,
+    sync: async (argv, deps) => {
+      order.push(argv[1]!);
+      // Each sync's locks and requests are bounded by its own slice of the budget, not all of it.
+      assert.ok((deps.lockWaitMs ?? Infinity) <= TURN_END_OTHER_SLICE_MS, String(deps.lockWaitMs));
+      clock += 1;
+    },
+  });
+  assert.deepEqual(order, ["/b", "/c", "/a"], "oldest change first");
+  assert.equal(clock, 3);
+  // With the budget nearly spent, none is started.
+  const late: string[] = [];
+  await turnEnd(["--dir", project], {
+    stdout: () => {}, env: {}, readStdin: async () => "{}", syncDeps: syncDeps(h), budgetMs: TURN_END_START_MARGIN_MS - 1,
+    checkouts: async () => listed, localState: async () => "changed", lastChange: async () => 0,
+    sync: async (argv) => void late.push(argv[1]!),
+  });
+  assert.deepEqual(late, []);
+});
+
+test("a condition in the session's own checkout blocks, and another checkout's older one rides along as not blocking", async () => {
+  const h = await harness();
+  const other = await secondCheckout(h);
+  const otherAlpha = path.join(other.folder, "notes", "alpha.md");
+  await hostChangesAlpha(h);
+  // The other checkout: an old conflict (edited before its last pull).
+  await writeFile(otherAlpha, '---\ntype: "Note"\ntitle: "Alpha"\n---\nOther checkout alpha.\n');
+  await editedAgo(otherAlpha, 600);
+  await recordPulled(h.home, other.binding.checkout_id, minutesAgo(6));
+  await recordSynced(h.home, other.binding.checkout_id, minutesAgo(6));
+  // The session's own checkout: a fresh conflict.
+  await writeFile(fileOf(h, "notes/alpha"), '---\ntype: "Note"\ntitle: "Alpha"\n---\nOwn alpha.\n');
+  const decision = JSON.parse(await turnEndOutput(h)) as { decision: string; reason: string };
+  assert.equal(decision.decision, "block");
+  const [own, rest] = decision.reason.split("Not blocking this turn:");
+  assert.ok(own!.includes(h.folder));
+  assert.ok(rest?.includes(other.folder), decision.reason);
+});
+
+test("hook install --turn-end-sync adds the Stop hook (opt-in); uninstall --turn-end-sync removes only it", async () => {
+  const base = await mkdtemp(path.join(tmpdir(), "sb-trig-hook-"));
+  const program = path.join(base, "packages", "superbee", "dist", "superbee.mjs");
+  const settingsOf = async (file: string) => JSON.parse(await readFile(path.join(base, file), "utf8")) as { hooks: Record<string, { hooks: { command: string; timeout: number }[] }[]> };
+
+  const plain: string[] = [];
+  await hook(["install", "--json"], { base, commandBase: program, stdout: (t) => void plain.push(t) });
+  assert.equal((await settingsOf(".claude/settings.json")).hooks.Stop, undefined, "plain install never adds the Stop hook");
+  assert.equal(JSON.parse(plain.join("")).hook.turn_end_sync.installed, false);
+
+  const out: string[] = [];
+  await hook(["install", "--turn-end-sync", "--json"], { base, commandBase: program, stdout: (t) => void out.push(t) });
+  assert.equal(JSON.parse(out.join("")).hook.turn_end_sync.installed, true);
+  for (const file of [".claude/settings.json", ".codex/hooks.json"]) {
+    const settings = await settingsOf(file);
+    assert.equal(settings.hooks.Stop!.length, 1);
+    assert.equal(settings.hooks.Stop![0]!.hooks[0]!.command, `${program} turn-end`);
+    assert.equal(settings.hooks.Stop![0]!.hooks[0]!.timeout, 30);
+    assert.equal(settings.hooks.SessionStart!.length, 1);
+  }
+  // Idempotent, and a plain reinstall keeps the opt-in.
+  await hook(["install", "--turn-end-sync"], { base, commandBase: program, stdout: () => {} });
+  await hook(["install"], { base, commandBase: program, stdout: () => {} });
+  assert.equal((await settingsOf(".claude/settings.json")).hooks.Stop!.length, 1);
+
+  const status: string[] = [];
+  await hook(["status", "--json"], { base, commandBase: program, stdout: (t) => void status.push(t) });
+  assert.deepEqual(JSON.parse(status.join("")).hook.turn_end_sync, { claude_code: true, codex: true });
+
+  // A foreign Stop hook survives; opting out removes only ours and keeps SessionStart.
+  const claude = await settingsOf(".claude/settings.json");
+  claude.hooks.Stop!.push({ hooks: [{ command: "echo mine", timeout: 5 }] });
+  await writeFile(path.join(base, ".claude/settings.json"), JSON.stringify(claude));
+  await hook(["uninstall", "--turn-end-sync"], { base, commandBase: program, stdout: () => {} });
+  const after = await settingsOf(".claude/settings.json");
+  assert.deepEqual(after.hooks.Stop!.map((group) => group.hooks[0]!.command), ["echo mine"]);
+  assert.equal(after.hooks.SessionStart!.length, 1);
+  assert.equal((await settingsOf(".codex/hooks.json")).hooks.Stop, undefined);
+});
+
+// ------------------------------------------------------------------------ setup hosted
+
+test("setup hosted signs in and chooses the only workspace in one step", async () => {
+  const host = new FakeHost();
+  const home = await mkdtemp(path.join(tmpdir(), "sb-trig-setup-"));
+  const auth = defaultHostedAuthDeps(home, { env: { SUPERBEE_ACCESS_TOKEN: TOKEN } });
+  const out: string[] = [];
+  await setupHosted(["--url", HOST], { stdout: (t) => void out.push(t), auth, fetch: host.fetch });
+  const receipt = (decode(out.join("")) as { setup_hosted: Record<string, unknown> }).setup_hosted;
+  assert.equal(receipt.status, "ready");
+  assert.equal(receipt.workspace, "tenant-a");
+  assert.equal(await readDefaultHost(home), HOST);
+  assert.equal(await readDefaultWorkspace(home, HOST), "tenant-a");
+});
+
+test("setup hosted with several workspaces asks for a choice, then records it", async () => {
+  const host = new FakeHost({ tenants: ["tenant-a", "tenant-b"] });
+  const home = await mkdtemp(path.join(tmpdir(), "sb-trig-setup2-"));
+  const auth = defaultHostedAuthDeps(home, { env: { SUPERBEE_ACCESS_TOKEN: TOKEN } });
+  const out: string[] = [];
+  await setupHosted(["--url", HOST], { stdout: (t) => void out.push(t), auth, fetch: host.fetch });
+  const choose = (decode(out.join("")) as { setup_hosted: Record<string, unknown> }).setup_hosted;
+  assert.equal(choose.status, "choose_workspace");
+  assert.equal((choose.help as string[]).length, 2);
+  out.length = 0;
+  await setupHosted(["--url", HOST, "--workspace", "tenant-b"], { stdout: (t) => void out.push(t), auth, fetch: host.fetch });
+  assert.equal(await readDefaultWorkspace(home, HOST), "tenant-b");
+  await assert.rejects(
+    setupHosted(["--url", HOST, "--workspace", "tenant-z"], { stdout: () => {}, auth, fetch: host.fetch }),
+    (error: unknown) => error instanceof CliError && error.code === "NOT_FOUND",
+  );
+});
+
+test("setup hosted refuses a workspace the person is not in, and records no default host", async () => {
+  const host = new FakeHost({ tenants: ["tenant-a", "tenant-b"] });
+  const home = await mkdtemp(path.join(tmpdir(), "sb-trig-setup4-"));
+  const auth = defaultHostedAuthDeps(home, { env: { SUPERBEE_ACCESS_TOKEN: TOKEN } });
+  await assert.rejects(
+    setupHosted(["--url", HOST, "--workspace", "tenant-z"], { stdout: () => {}, auth, fetch: host.fetch }),
+    (error: unknown) => error instanceof CliError && error.code === "NOT_FOUND" && error.details?.reason === "not_a_member",
+  );
+  assert.equal(await readDefaultHost(home), null);
+  assert.equal(await readDefaultWorkspace(home, HOST), null);
+});
+
+test("setup hosted records no default when sign-in cannot complete", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "sb-trig-setup3-"));
+  const auth = defaultHostedAuthDeps(home, {
+    env: {},
+    fetch: async () => {
+      throw new TypeError("no network in this test");
+    },
+  });
+  await assert.rejects(setupHosted(["--url", HOST], { stdout: () => {}, auth }));
+  assert.equal(await readDefaultWorkspace(home, HOST), null);
+});
+
+// ------------------------------------------------------------------------ carry-overs from PR 295 QA
+
+test("keep and revise without an inspection are refused (not_inspected); take needs none", async () => {
+  const h = await harness();
+  await conflictOnAlpha(h);
+  h.host.writes.length = 0;
+  for (const choice of ["keep", "revise"]) {
+    const error = await syncError(h, ["--resolve", choice, "--doc", "notes/alpha"]);
+    assert.equal(error.code, "CONFLICT");
+    assert.equal(error.details?.reason, "not_inspected");
+    assert.match(error.help ?? "", /sync --inspect --doc notes\/alpha/);
+  }
+  assert.deepEqual(writeRoutes(h), []);
+  // After the host moves on past the conflict the person saw, an inspection binds keep to it.
+  await runSync(h, ["--inspect", "notes/alpha"]);
+  await hostChangesAlpha(h, "Host v3, never inspected.\n");
+  const stale = await syncError(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  assert.equal(stale.details?.reason, "stale_review");
+  assert.equal(h.host.docs.get("notes/alpha")!.body, "Host v3, never inspected.\n");
+});
+
+test("recovery drops a take's moved-aside local bytes once the host's bytes are in place", async () => {
+  const folder = await mkdtemp(path.join(tmpdir(), "sb-trig-recover-"));
+  await mkdir(path.join(folder, "notes"));
+  const local = Buffer.from("---\ntype: Note\n---\nDiscarded local edit.\n");
+  const hostBytes = Buffer.from("---\ntype: Note\n---\nHost version.\n");
+  const temp = path.join(folder, "notes", ".alpha.md.superbee-pre-0a1b2c3d4e5f.tmp");
+
+  // Without a recorded decision, bytes that match nothing are kept (never deleted).
+  await writeFile(path.join(folder, "notes", "alpha.md"), hostBytes);
+  await writeFile(temp, local);
+  const undecided = { files: { "notes/alpha": { digest: "sha256:other", version: "v1" } }, root: null };
+  await recoverPlacements(folder, undecided);
+  assert.deepEqual(await readdir(path.join(folder, "notes")), [".alpha.md.superbee-pre-0a1b2c3d4e5f.tmp", "alpha.md"].sort());
+
+  // With the take recorded before the replacement, the leftover is dropped and the record cleared.
+  const decided: Parameters<typeof recoverPlacements>[1] = { ...undecided, discarded: { "notes/alpha": digestOf(local) } };
+  await recoverPlacements(folder, decided);
+  assert.deepEqual(await readdir(path.join(folder, "notes")), ["alpha.md"]);
+  assert.equal(await readFile(path.join(folder, "notes", "alpha.md"), "utf8"), hostBytes.toString());
+  assert.equal(decided.discarded, undefined);
+
+  // A crash before the host's bytes landed restores the local file: the conflict still stands.
+  await writeFile(temp, local);
+  const { unlink } = await import("node:fs/promises");
+  await unlink(path.join(folder, "notes", "alpha.md"));
+  await recoverPlacements(folder, { ...undecided, discarded: { "notes/alpha": digestOf(local) } });
+  assert.equal(await readFile(path.join(folder, "notes", "alpha.md"), "utf8"), local.toString());
+});

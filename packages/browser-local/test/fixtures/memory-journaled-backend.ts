@@ -15,6 +15,9 @@
 import { parseMarkdown, stringifyDoc } from "@superbee/core/document-codec";
 import { readBundleOkfVersion } from "@superbee/core/engine";
 import {
+  assertDeletionIntent,
+  deletionIntentRecord,
+  JournalSnapshotConflict,
   assertJournalGuard,
   assertJournalIntentChanges,
   assertJournalMetaChanges,
@@ -281,8 +284,10 @@ export class MemoryJournaledBackend implements JournaledBackend {
     options = captureJournalDeleteOptions(id, options);
     assertSafeConceptId(id);
     assertJournalResolutionOptions(id, options);
+    assertDeletionIntent(id, options);
     this.#checkGuard(options.guard);
-    if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()]);
+    if (options.resolveIntents) assertJournalSnapshot(id, options.resolveIntents.expected, [...this.#intents.values()], options.intent?.requestId);
+    if (options.intent && this.#intents.has(options.intent.requestId)) throw new JournalSnapshotConflict(id);
     // Every check runs before any mutation, with no await between them, as in `writeJournaled`.
     if (options.requireSettled) {
       const holder = [...this.#intents.values()].sort(bySequence).find((row) => row.target === id && row.state !== "acknowledged");
@@ -296,12 +301,26 @@ export class MemoryJournaledBackend implements JournaledBackend {
     if ((current !== null || options.resolveIntents) && options.expectedVersion !== undefined && options.expectedVersion !== current) {
       throw new VersionConflict(id, options.expectedVersion, current);
     }
+    const { supersede } = options;
+    if (supersede) {
+      const existing = this.#intents.get(supersede.requestId);
+      if (!existing || existing.target !== id || existing.state !== supersede.expectedState || existing.attempts !== supersede.expectedAttempts) {
+        throw new IntentStateConflict(supersede.requestId, supersede.expectedState, existing?.state ?? null);
+      }
+    }
     const meta = structuredClone(options.meta ?? []);
     const removed = this.#documents.delete(id);
+    if (supersede) this.#intents.delete(supersede.requestId);
     for (const row of options.resolveIntents?.expected ?? []) this.#intents.delete(row.requestId);
+    let record: IntentRecord | undefined;
+    if (options.intent) {
+      this.#sequence += 1;
+      record = deletionIntentRecord(structuredClone(options.intent), this.#sequence, new Date().toISOString());
+      this.#intents.set(record.requestId, structuredClone(record));
+    }
     for (const row of meta) this.#meta.set(row.key, row.value);
     for (const key of options.removeMeta ?? []) this.#meta.delete(key);
-    return { outcome: removed ? "deleted" : "absent" };
+    return { outcome: removed ? "deleted" : "absent", ...(record ? { intent: record } : {}) };
   }
 
   async readWithJournal(id: ConceptId, options: { meta?: readonly string[] } = {}): Promise<JournaledReadResult> {

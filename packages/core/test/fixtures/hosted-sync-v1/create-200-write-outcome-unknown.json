@@ -1,0 +1,25 @@
+{
+  "name": "create-200-write-outcome-unknown",
+  "description": "A create whose publication failed: the outcome is unknown; look it up before writing again.",
+  "route": "/sync/v1/create",
+  "rows": [
+    "200 write_outcome_unknown"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000015",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/unknown\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"new\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"write_outcome_unknown\",\"message\":\"The save outcome is unknown. Read the same document before making another write; do not create a replacement ID.\",\"retryable\":false,\"writeState\":\"unknown\"}}",
+    "truncated": false
+  }
+}

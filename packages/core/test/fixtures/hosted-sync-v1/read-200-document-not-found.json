@@ -1,0 +1,23 @@
+{
+  "name": "read-200-document-not-found",
+  "description": "documents.read.v1 of an absent document.",
+  "route": "/sync/v1/read",
+  "rows": [
+    "read 200 document_not_found"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/absent\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.read.v1\",\"error\":{\"code\":\"document_not_found\",\"message\":\"The document was not found.\",\"retryable\":false}}",
+    "truncated": false
+  }
+}

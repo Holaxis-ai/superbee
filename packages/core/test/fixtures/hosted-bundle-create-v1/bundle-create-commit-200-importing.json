@@ -1,0 +1,25 @@
+{
+  "name": "bundle-create-commit-200-importing",
+  "description": "Reserved and part written: the commit names the staged blob that is gone.",
+  "route": "/sync/v1/bundle-create-commit",
+  "rows": [
+    "200 importing"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-0000000000d1",
+      "content-length": "135"
+    },
+    "body": "{\"workspace\":\"tenant:a\",\"bundleId\":\"staged.notes\",\"planHash\":\"sha256:0d755da3fe1995970b83e99b74cd74d9cc484197ac00cb5017d932dbaec8f374\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"bundles.create.v1\",\"data\":{\"state\":\"importing\",\"planHash\":\"sha256:0d755da3fe1995970b83e99b74cd74d9cc484197ac00cb5017d932dbaec8f374\",\"expected\":{\"documents\":2,\"reserved\":1,\"blobs\":1,\"history\":1,\"versions\":4,\"blobVersions\":1,\"bytes\":180},\"staged\":{\"versions\":4,\"blobVersions\":0},\"missing\":{\"versions\":[],\"blobs\":[\"sha256:3598ce6f965b2481fe26316c06b30950c46ac7f8e7229f104aa78f579997668d\"]},\"written\":{\"documents\":2,\"reserved\":1,\"blobs\":0,\"history\":1}}}",
+    "truncated": false
+  }
+}

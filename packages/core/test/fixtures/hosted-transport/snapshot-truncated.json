@@ -1,0 +1,20 @@
+{
+  "name": "snapshot-truncated",
+  "description": "Storage failed after the header streamed: the body ends without its terminator (a truncated snapshot).",
+  "rows": ["snapshot 200 truncated"],
+  "route": "/reader/snapshot",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "etag": "\"sha256:e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14\""
+    },
+    "body": "{\"kind\":\"snapshot\",\"count\":3,\"digest\":\"sha256:e1049689bc22d94329e6438c8cb04e6debee695576f2f10dde18caee00d93f14\"}\n",
+    "truncated": true
+  }
+}

@@ -85,6 +85,9 @@ export { readBlob, writeBlob, existsBlob, listBlobs } from "./bundle.js";
 export type { BlobKey, ReadBlobResult } from "./types.js";
 
 export { freshness, staleAfterInstant } from "./freshness.js";
+export { escapeHostJson, stripHostControls, stripHostData, stripHostText } from "./host-text.js";
+// The one equality for OKF frontmatter values: what the write policy treats as unchanged.
+export { okfValuesEqual } from "./okf-authored-values.js";
 
 // OKF v0.2 trust: the one actor grammar and the one `verified` read/append policy every surface
 // (CLI receipts, status counts, list projection, the UI header) derives the trust tier through.
@@ -151,7 +154,7 @@ export type {
 // tests. No CF/D1/production deployment is implied by its presence.
 export { RemoteBackend } from "./remote-backend.js";
 export type { FetchLike, HeadsOptions, RemoteBackendOptions, WireCapabilities } from "./remote-backend.js";
-export { RemoteError } from "./remote-error.js";
+export { RemoteError, MalformedAnswer, MALFORMED_ANSWER, isMalformedAnswer } from "./remote-error.js";
 export { SNAPSHOT_DIGEST_MISMATCH, SNAPSHOT_TRUNCATED, parseHeadsAnswer, readSnapshotStream } from "./remote-parsers.js";
 export type { HeadsResult, ReadSnapshotStreamOptions, RemoteSnapshot, SnapshotDocument, SnapshotHeader } from "./remote-parsers.js";
 export { headsDigest, isHeadsDigest, sortHeads } from "./heads-digest.js";
@@ -293,6 +296,7 @@ export { applyV02MutationMetadata } from "./document-write-policy.js";
 export {
   CONVENTIONS_PREFIX,
   CONVENTION_TYPE,
+  isConventionId,
   PROGRESS_STATUS_FIELD,
   SUPERBEE_PROGRESS_STATUS_FIELD,
   RESERVED_KIND_FIELD_NAMES,

@@ -10,7 +10,8 @@
   "host_expectation_variable": "SUPERBEE_TEST_EXPECT_ALIASING_HOST",
   "merge_queue": {
     "supported": true,
-    "activation_authority": "Live GitHub settings verified by infrastructure/github-ci preflight and recorded in the project bundle; workflow capability does not imply queue activation"
+    "activation_authority": "Live GitHub settings verified by infrastructure/github-ci preflight and recorded in the project bundle; workflow capability does not imply queue activation",
+    "checkout_ref": "${{ github.sha }}"
   },
   "security_analysis": {
     "workflow": ".github/workflows/codeql.yml",
@@ -94,7 +95,8 @@
         "timeout_minutes": 5
       }
     },
-    "merge_enforcement": "human-owned GitHub ruleset after hosted evidence; workflow success proves analysis completion only"
+    "merge_enforcement": "human-owned GitHub ruleset after hosted evidence; workflow success proves analysis completion only",
+    "checkout_ref": "${{ github.sha }}"
   },
   "required_jobs": [
     "runtime",
@@ -153,7 +155,7 @@
   ],
   "lanes": {
     "runtime": {
-      "display_name": "runtime compatibility (node ${{ matrix.node-version }})",
+      "display_name": "runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/2)",
       "script": "ci:runtime",
       "components": [
         "build",
@@ -164,6 +166,8 @@
         22,
         26
       ],
+      "shards": 2,
+      "shard_variable": "SUPERBEE_TEST_SHARD",
       "runs_on": "ubuntu-latest",
       "expect_aliasing_host": "0",
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""

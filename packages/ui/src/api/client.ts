@@ -8,7 +8,7 @@
  * guard requires it as a CSRF belt-and-braces on top of the `SameSite=Strict` cookie (rev 3.2:
  * "a malicious page could otherwise fire blind key-injected reads/writes through the proxy").
  */
-import type { DocHead, ListDocsResponse, ReadDocResponse, WireErrorEnvelope, WriteDocResponse } from "./types.js";
+import type { DocHead, HeadsListing, ListDocsResponse, ReadDocResponse, SkippedDoc, WireErrorEnvelope, WriteDocResponse } from "./types.js";
 
 const BUNDLE = "default";
 const BASE = `/v0/bundles/${BUNDLE}`;
@@ -92,7 +92,7 @@ export interface ListHeadsParams {
 
 /** One page of `GET .../docs?fields=frontmatter[&type=][&prefix=]`, following `cursor` when given. */
 export async function listHeadsPage(params: ListHeadsParams, cursor?: string): Promise<ListDocsResponse> {
-  const query = new URLSearchParams({ fields: "frontmatter", limit: String(LIST_LIMIT) });
+  const query = new URLSearchParams({ fields: "frontmatter", limit: String(LIST_LIMIT), malformed: "skip" });
   if (params.type) query.set("type", params.type);
   if (params.prefix) query.set("prefix", params.prefix);
   if (cursor) query.set("cursor", cursor);
@@ -102,16 +102,26 @@ export async function listHeadsPage(params: ListHeadsParams, cursor?: string): P
 
 /** Every matching doc's head (frontmatter + version), following `next_cursor` to exhaustion — a caller bucketing by an enum field (a page's board view) needs the full set, not one page. */
 export async function listAllHeads(params: ListHeadsParams): Promise<DocHead[]> {
-  const all: DocHead[] = [];
+  return (await listAllHeadsReport(params)).heads;
+}
+
+/**
+ * {@link listAllHeads} plus the documents the server left out because their frontmatter does not
+ * parse. Every page names the same skipped set; it is collected once per id.
+ */
+export async function listAllHeadsReport(params: ListHeadsParams): Promise<HeadsListing> {
+  const heads: DocHead[] = [];
+  const skipped = new Map<string, SkippedDoc>();
   let cursor: string | undefined;
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const page = await listHeadsPage(params, cursor);
-    all.push(...page.docs);
+    heads.push(...page.docs);
+    for (const row of page.skipped ?? []) skipped.set(row.id, { id: row.id, reason: row.reason });
     if (!page.next_cursor) break;
     cursor = page.next_cursor;
   }
-  return all;
+  return { heads, skipped: [...skipped.values()].sort((a, b) => a.id.localeCompare(b.id)) };
 }
 
 /** Full doc + its version (the CAS basis for a following `putDoc`). */

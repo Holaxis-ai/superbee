@@ -41,6 +41,7 @@ test("bundle locate: explicit --dir wins and identifies the same physical root o
     assert.deepEqual(receipt, {
       schema_version: 1,
       locator: { kind: "local-path", path: actual },
+      home: "local",
       selected_by: "explicit-dir",
       available: true,
     });
@@ -62,6 +63,7 @@ test("bundle locate: an explicit project directory identifies its conventional b
     assert.deepEqual(receipt, {
       schema_version: 1,
       locator: { kind: "local-path", path: conventional },
+      home: "local",
       selected_by: "explicit-dir",
       available: true,
     });
@@ -86,6 +88,7 @@ test("bundle locate: a preferred project binding wins discovery and names the bi
     assert.deepEqual(receipt, {
       schema_version: 1,
       locator: { kind: "local-path", path: bound },
+      home: "local",
       selected_by: "project-binding",
       binding_file: bindingFile,
       available: true,
@@ -107,6 +110,7 @@ test("bundle locate: bare resolution discovers the nearest conventional project 
     assert.deepEqual(receipt, {
       schema_version: 1,
       locator: { kind: "local-path", path: conventional },
+      home: "local",
       selected_by: "discovery",
       available: true,
     });

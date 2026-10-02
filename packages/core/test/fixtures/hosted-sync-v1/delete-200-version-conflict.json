@@ -1,0 +1,26 @@
+{
+  "name": "delete-200-version-conflict",
+  "description": "A delete at a stale version: refused, naming the current version.",
+  "route": "/sync/v1/delete",
+  "rows": [
+    "200 version_conflict"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000010",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\",\"expectedVersion\":\"sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000010"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.delete.v1\",\"error\":{\"code\":\"version_conflict\",\"message\":\"The document changed; read it and reconcile your changes before trying again.\",\"retryable\":false,\"writeState\":\"not_applied\",\"currentVersion\":\"sha256:04c5cbc34e6644ad845cf717a378ca37202c95dd1a011c83c4d79c0837c44c9a\"}}",
+    "truncated": false
+  }
+}

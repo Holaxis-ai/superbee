@@ -9,7 +9,7 @@ export {
 } from "./assets.js";
 export { SseHub } from "./events.js";
 export { hostnameOf, isAllowedHost } from "./host.js";
-export { PAGE_BLOB_PREFIXES, pageCsp } from "./pages.js";
+export { PAGE_BLOB_PREFIXES, pageCsp, viewChildCsp } from "./pages.js";
 export {
   PageActionLaunchAuthority,
   PageBridgeLaunchAuthority,
@@ -23,6 +23,7 @@ export {
   type ActionPrepareResult,
   type ActionScalar,
   type ActionTerminalResult,
+  type DocumentAction,
   type DocumentSetFieldAction,
   type PageLaunch,
   type RegisteredViewAuthorizationSubject,
@@ -35,8 +36,6 @@ export { proxyToRemote } from "./proxy.js";
 export { checkAuth, constantTimeEqual, mintSessionSecret, readCookie, sessionCookieHeader } from "./session.js";
 export {
   bootUiServer,
-  escapeHtml,
-  pageError,
   type SharingStateKind,
   type SharingSummary,
   type UiManagementHandle,

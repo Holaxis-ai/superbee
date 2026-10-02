@@ -20,6 +20,14 @@
     "./bridge": {
       "types": "./dist/bridge.d.ts",
       "default": "./dist/bridge.js"
+    },
+    "./action-preparation": {
+      "types": "./dist/action-preparation.d.ts",
+      "default": "./dist/action-preparation.js"
+    },
+    "./view-host": {
+      "types": "./dist/view-host.d.ts",
+      "default": "./dist/view-host.js"
     }
   },
   "files": [

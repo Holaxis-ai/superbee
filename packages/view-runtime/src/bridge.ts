@@ -13,6 +13,7 @@ import {
   type QuerySelectionParams,
 } from "@superbee/core";
 import { isAnyRegistryId, parseRegistration, type BridgeCapability } from "@superbee/core/page";
+import { sortByMeaningfulChange } from "@superbee/core/query-order";
 
 export const BRIDGE_PROTOCOL = "v0";
 export const ACTION_BRIDGE_PROTOCOL = "v1";
@@ -107,6 +108,7 @@ export const BRIDGE_HOST_CAPABILITIES = Object.freeze({
   queryFieldOr: "query.field-or",
   queryOpen: "query.open",
   queryCount: "query.count",
+  queryNewest: "query.newest",
   edges: "edges",
   renderDocument: "render-document",
   openPage: "open-page",
@@ -124,6 +126,7 @@ export const BRIDGE_SERVICE_CAPABILITIES: readonly BridgeHostCapability[] = Obje
   BRIDGE_HOST_CAPABILITIES.queryFieldOr,
   BRIDGE_HOST_CAPABILITIES.queryOpen,
   BRIDGE_HOST_CAPABILITIES.queryCount,
+  BRIDGE_HOST_CAPABILITIES.queryNewest,
   BRIDGE_HOST_CAPABILITIES.edges,
   BRIDGE_HOST_CAPABILITIES.graph,
   BRIDGE_HOST_CAPABILITIES.renderDocument,
@@ -188,9 +191,17 @@ interface HelloRequest extends BaseRequest {
   type: "hello";
 }
 
+/** Row order of a query reply: canonical ID (`localeCompare`, the default) or newest meaningful change first. */
+export type BridgeQueryOrder = "id" | "newest";
+export const BRIDGE_QUERY_ORDERS: readonly BridgeQueryOrder[] = Object.freeze(["id", "newest"]);
+
+export interface BridgeQueryParams extends QuerySelectionParams {
+  order?: BridgeQueryOrder;
+}
+
 interface QueryRequest extends BaseRequest {
   type: "query";
-  params: QuerySelectionParams;
+  params: BridgeQueryParams;
 }
 
 interface ReadRequest extends BaseRequest {
@@ -287,11 +298,11 @@ function invalidV0RequestId(value: unknown): string | undefined {
   return requestId(value.id) ?? undefined;
 }
 
-function normalizeQueryParams(raw: unknown): QuerySelectionParams | null {
+function normalizeQueryParams(raw: unknown): BridgeQueryParams | null {
   if (!isPlainRecord(raw)) return null;
-  const allowed = new Set(["type", "prefix", "field", "open", "limit"]);
+  const allowed = new Set(["type", "prefix", "field", "open", "limit", "order"]);
   if (Object.keys(raw).some((key) => !allowed.has(key))) return null;
-  const out: QuerySelectionParams = {};
+  const out: BridgeQueryParams = {};
   if (raw.type !== undefined) {
     const value = boundedString(raw.type, 256)?.trim();
     if (!value) return null;
@@ -316,6 +327,10 @@ function normalizeQueryParams(raw: unknown): QuerySelectionParams | null {
       return null;
     }
     out.limit = raw.limit as number;
+  }
+  if (raw.order !== undefined) {
+    if (!BRIDGE_QUERY_ORDERS.includes(raw.order as BridgeQueryOrder)) return null;
+    out.order = raw.order as BridgeQueryOrder;
   }
   return out;
 }
@@ -464,14 +479,38 @@ function replyWithinLimit(reply: Record<string, unknown>): boolean {
   return Buffer.byteLength(JSON.stringify(reply), "utf8") <= MAX_REPLY_BYTES;
 }
 
-function boundedRows(rows: HeadResult[], params: QuerySelectionParams, kinds: KindConvention[]): {
+/** A document a whole-bundle read left out because its frontmatter does not parse. */
+interface SkippedDocument {
+  id: string;
+  reason: string;
+}
+
+/**
+ * The `skipped` member of a whole-bundle reply: absent when every document parsed, so a clean
+ * bundle answers exactly as before. A malformed document never fails the whole View request; it is
+ * named here so the View, or the person reading it, can see which file to fix.
+ */
+function skippedReply(skipped: SkippedDocument[]): { skipped?: SkippedDocument[] } {
+  if (skipped.length === 0) return {};
+  return { skipped: [...skipped].sort((a, b) => a.id.localeCompare(b.id)).slice(0, MAX_QUERY_ROWS) };
+}
+
+function boundedRows(rows: HeadResult[], params: BridgeQueryParams, kinds: KindConvention[]): {
   rows: HeadResult[];
   count: number;
 } {
   const requested = params.limit === 0 || params.limit === undefined
     ? MAX_QUERY_ROWS
     : Math.min(params.limit, MAX_QUERY_ROWS);
-  return applyQuerySelectionFilters(rows, { ...params, limit: requested }, kinds);
+  const { order, ...selection } = params;
+  if (order !== "newest") return applyQuerySelectionFilters(rows, { ...selection, limit: requested }, kinds);
+  // Order every matching row before the cap so the page is the newest `limit`, not a sorted
+  // slice of the ID-ordered head.
+  const matched = applyQuerySelectionFilters(rows, { ...selection, limit: undefined }, kinds);
+  return {
+    rows: sortByMeaningfulChange(matched.rows, selection.okfVersion).slice(0, requested),
+    count: matched.count,
+  };
 }
 
 export interface BridgeServiceOptions {
@@ -650,7 +689,8 @@ export class BridgeService {
   }
 
   private async subscriptionSnapshot(): Promise<Map<string, string>> {
-    const rows = await queryHeads(this.options.bundle, {});
+    // A malformed document has no version to watch; it reads as absent until it parses again.
+    const rows = await queryHeads(this.options.bundle, {}, { onSkip: () => {} });
     if (rows.length > MAX_SUBSCRIPTION_HEADS) {
       throw new Error("the bundle is too large for the experimental View polling snapshot");
     }
@@ -670,7 +710,11 @@ export class BridgeService {
    * capability before adding them.
    */
   private async graph(launch: BridgeLaunch, request: GraphRequest): Promise<BridgeOutcome> {
-    const heads = await queryHeads(this.options.bundle, {});
+    const skipped: SkippedDocument[] = [];
+    const onSkip = (skip: SkippedDocument): void => {
+      if (!skipped.some((row) => row.id === skip.id)) skipped.push({ id: skip.id, reason: skip.reason });
+    };
+    const heads = await queryHeads(this.options.bundle, {}, { onSkip });
     if (heads.length > GRAPH_MAX_DOCUMENTS) {
       return {
         reply: fail(request.id, request.bridge, "TOO_LARGE", `the graph exceeded ${GRAPH_MAX_DOCUMENTS} documents`),
@@ -679,7 +723,7 @@ export class BridgeService {
     const [registry, declaredOkfVersion, edges] = await Promise.all([
       loadKinds(this.options.bundle),
       readBundleOkfVersion(this.options.bundle),
-      queryEdges(this.options.bundle, {}),
+      queryEdges(this.options.bundle, {}, { onSkip }),
     ]);
     if (edges.length > GRAPH_MAX_RELATIONSHIPS) {
       return {
@@ -722,6 +766,7 @@ export class BridgeService {
         documents,
         relationships,
         counts: { documents: documents.length, relationships: relationships.length },
+        ...skippedReply(skipped),
       }),
     };
   }
@@ -762,6 +807,8 @@ export class BridgeService {
           mode: config.mode,
           protocol: BRIDGE_PROTOCOL,
           grant: launch.capability === "bundle-propose" ? "propose" : "read",
+          ...(config.mode === "dir" && this.options.host.kind === "oss" && launch.capability === "bundle-propose"
+            ? { actionProtocol: "v1", actions: ["document.set-field", "document.set-body", "document.update"] } : {}),
           host: this.hostDescriptor(),
         }),
       };
@@ -780,10 +827,16 @@ export class BridgeService {
       return { reply: ok(request.id, request.bridge, request.type, { capability: request.capability, output: outcome.output }) };
     }
     if (request.type === "query") {
+      if (request.params.order !== undefined
+        && !this.options.host.capabilities.includes(BRIDGE_HOST_CAPABILITIES.queryNewest)) {
+        // A host that does not declare query.newest answers `order` exactly like any unknown key.
+        return { reply: fail(request.id, request.bridge, "USAGE", "invalid or unsupported bridge request") };
+      }
+      const skipped: SkippedDocument[] = [];
       const rows = await queryHeads(this.options.bundle, {
         ...(request.params.type ? { type: request.params.type } : {}),
         ...(request.params.prefix ? { prefix: request.params.prefix } : {}),
-      });
+      }, { onSkip: (skip) => skipped.push({ id: skip.id, reason: skip.reason }) });
       // Every View query is a product-facing projection, including untyped feeds such as Pulse.
       // Resolve logical Kind fields here once so durable web and MCP Views never need to know the
       // physical coordinate selected by a bundle edition.
@@ -802,7 +855,7 @@ export class BridgeService {
           ? { ...row, frontmatter: projectLogicalKindFields(okfVersion, kind, row.frontmatter) }
           : row;
       });
-      return { reply: ok(request.id, request.bridge, request.type, result) };
+      return { reply: ok(request.id, request.bridge, request.type, { ...result, ...skippedReply(skipped) }) };
     }
     if (request.type === "read" || request.type === "read-versioned") {
       const [result, registry, okfVersion] = await Promise.all([
@@ -856,12 +909,21 @@ export class BridgeService {
       };
     }
     if (request.type === "edges") {
-      const edges = await queryEdges(this.options.bundle, request.params);
+      const skipped: SkippedDocument[] = [];
+      const edges = await queryEdges(this.options.bundle, request.params, {
+        onSkip: (skip) => skipped.push({ id: skip.id, reason: skip.reason }),
+      });
       if (edges.length > MAX_EDGE_ROWS) {
         return { reply: fail(request.id, request.bridge, "TOO_LARGE", `the edge query exceeded ${MAX_EDGE_ROWS} rows`) };
       }
       const projected = edges.map(({ from, to, text }) => ({ from, to, text }));
-      return { reply: ok(request.id, request.bridge, request.type, { edges: projected, count: projected.length }) };
+      return {
+        reply: ok(request.id, request.bridge, request.type, {
+          edges: projected,
+          count: projected.length,
+          ...skippedReply(skipped),
+        }),
+      };
     }
     if (request.type === "graph") {
       return this.graph(launch, request);

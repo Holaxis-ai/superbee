@@ -1,0 +1,312 @@
+/**
+ * The carrier seam: how a hosted request leaves and what comes back, with the credential kept on
+ * the carrier's side. The browser's carrier sends the session cookie and CSRF token; the CLI's
+ * sends a bearer token. Everything above the seam (the read adapter, the whole-document
+ * transport, the answer rows) is the same for both, so one answer grammar serves every client.
+ *
+ * A carrier reports two failures and never a third: `denied` says nothing left (the credential
+ * was already gone, so the request was never sent), and `unavailable` says the request may have
+ * left and its answer is unknown. It never reports "not applied" on its own.
+ */
+
+/** A hosted answer as the route sent it: the status, the headers, and the bounded JSON body (undefined when there is none). */
+export type HostedAnswer = { status: number; headers: Headers; body: unknown };
+
+/** A streamed answer: the body as a stream for a `2xx`, otherwise the bounded refusal envelope. */
+export type HostedStream = { status: number; headers: Headers } & ({ ok: true; body: ReadableStream<Uint8Array> } | { ok: false; body: unknown });
+
+export interface HostedRequestOptions {
+  /** Largest answer body admitted, in bytes; a larger or undecodable body is `unavailable`. */
+  maximum: number;
+  /** The request identity of an identified write or its outcome lookup. */
+  writeRequest?: string;
+  /**
+   * The binding the request is pinned to: the browser's editor recovery target, or the CLI
+   * checkout's digest. The carrier decides which header carries it.
+   */
+  binding?: string;
+  /**
+   * The tombstone a create acknowledges it re-creates (`X-Superbee-Recreate`), on a create and
+   * on that create's outcome lookup only. It is part of the request identity on the host, so a
+   * lookup must carry exactly what the write carried.
+   */
+  recreate?: string;
+  /**
+   * The agent the client runs under, such as `claude-code` (`X-Superbee-Via`): the unverified
+   * `;via=` part of the host's agent label for this write. Attribution only, never authority, and
+   * not part of the request identity. Only the whole-document transport's write and outcome
+   * requests carry it, and only a token {@link isAgentLabelVia} admits is ever sent.
+   */
+  via?: string;
+  /**
+   * A person's typed acknowledgment of the host's mass-delete hold (`X-Superbee-Accept-Deletes`):
+   * the deletions they confirmed the bundle's 24-hour window may hold, from 1 to 100,000. Sent on
+   * a delete only, and never without that confirmation. Admission only, not part of the request
+   * identity.
+   */
+  acceptDeletes?: number;
+}
+
+/** The header that carries {@link HostedRequestOptions.acceptDeletes}. */
+export const ACCEPT_DELETES_HEADER = "X-Superbee-Accept-Deletes";
+
+/** The largest acknowledgment the host admits. */
+export const MAXIMUM_ACCEPTED_DELETIONS = 100000;
+
+/** Whether `value` is an acknowledgment count the host admits: an integer from 1 to 100,000. */
+export function isAcceptedDeletionCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= MAXIMUM_ACCEPTED_DELETIONS;
+}
+
+/** The header that carries {@link HostedRequestOptions.recreate}. */
+export const RECREATE_HEADER = "X-Superbee-Recreate";
+
+/** The header that carries {@link HostedRequestOptions.via}. */
+export const VIA_HEADER = "X-Superbee-Via";
+
+/**
+ * Whether `value` is a `via` token the host admits: 1 to 32 characters of `[a-z0-9._-]`, never
+ * starting with `superbee` (Superbee's own names). The same rule as the host's `isAgentLabelVia`;
+ * the `/sync/v1` golden exchanges (`create-200-ok-via`, `write-400-invalid-via`) pin the header
+ * and the host's refusal. A token the host refused would make every write a terminal 400.
+ */
+export function isAgentLabelVia(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9._-]{1,32}$/.test(value) && !value.startsWith("superbee");
+}
+
+/**
+ * A raw-bytes request ({@link HostedCarrier.bytes}), such as one blob of a staged bundle creation
+ * (`bundle-create-blob`): the body travels as `application/octet-stream` with its exact
+ * `Content-Length`, and the route's own fields travel as headers.
+ */
+export interface HostedBytesRequestOptions {
+  /** Largest answer body admitted, in bytes; a larger or undecodable body is `unavailable`. */
+  maximum: number;
+  /** The request identity of the identified write the bytes belong to. */
+  writeRequest?: string;
+  /**
+   * The route's own fields (`X-Superbee-Workspace`, say): `X-Superbee-` names only, and never a
+   * header the carrier owns (the request identity, the binding, `recreate`, `via`, the deletion
+   * acknowledgment) or a credential. Values are printable ASCII.
+   */
+  headers?: Readonly<Record<string, string>>;
+}
+
+export interface HostedCarrier {
+  json(path: string, input: unknown, signal: AbortSignal, options: HostedRequestOptions): Promise<HostedAnswer>;
+  stream(path: string, input: unknown, signal: AbortSignal): Promise<HostedStream>;
+  /**
+   * One `POST` whose body is `body` exactly, answered as {@link json} answers. Optional: a carrier
+   * without it (the browser's) cannot send raw bytes, and a caller that needs them says so.
+   */
+  bytes?(path: string, body: Uint8Array, signal: AbortSignal, options: HostedBytesRequestOptions): Promise<HostedAnswer>;
+}
+
+/**
+ * The cause a carrier's `unavailable` carries when the answer was larger than the request's
+ * `maximum`: the host answered, and the same request gets the same answer, so a reader may report
+ * it as a deterministic refusal rather than an outage. The carrier's code stays `unavailable`.
+ */
+export class HostedAnswerTooLarge extends Error {
+  override readonly name = "HostedAnswerTooLarge";
+  readonly maximum: number;
+  constructor(maximum: number) {
+    super(`the answer is larger than ${maximum} bytes`);
+    this.maximum = maximum;
+  }
+}
+
+/** True when `error` is a carrier failure because the answer exceeded its bound. */
+export function isAnswerTooLarge(error: unknown): boolean {
+  return error instanceof HostedCarrierError && error.cause instanceof HostedAnswerTooLarge;
+}
+
+export class HostedCarrierError extends Error {
+  override readonly name = "HostedCarrierError";
+  readonly code: "denied" | "unavailable";
+  constructor(code: "denied" | "unavailable", options?: { cause?: unknown }) {
+    super(code, options);
+    this.code = code;
+  }
+}
+
+const WRITE_REQUEST = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const BINDING = /^sha256:[a-f0-9]{64}$/;
+const ROUTE_HEADER = /^x-superbee-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const ROUTE_HEADER_VALUE = /^[\x20-\x7e]{0,1024}$/;
+
+export interface FetchCarrierOptions {
+  /** The host's origin, e.g. `https://superbee.example`; paths are resolved against it. */
+  baseUrl: string;
+  /**
+   * The credential headers for one request, such as `{ Authorization: "Bearer …" }`. A rejection
+   * means no credential is available: the request is not sent and the carrier reports `denied`.
+   */
+  credentials(signal: AbortSignal): Promise<Record<string, string>>;
+  /** The header that carries `binding`. Default `X-Superbee-Checkout`. */
+  bindingHeader?: string;
+  fetch?: typeof fetch;
+  /** Every request is answered within this many milliseconds; a stream restarts it at each chunk. Default 15 s. */
+  deadlineMs?: number;
+}
+
+async function readBounded(response: Response, maximum: number): Promise<unknown> {
+  if (!response.body) return undefined;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      size += part.value.byteLength;
+      if (size > maximum) throw new HostedCarrierError("unavailable", { cause: new HostedAnswerTooLarge(maximum) });
+      chunks.push(part.value);
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+  if (size === 0) return undefined;
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+  } catch (cause) {
+    throw new HostedCarrierError("unavailable", { cause });
+  }
+}
+
+/** Restart `deadlineMs` at every chunk, so a slow but live stream is not cut and a stalled one is. */
+function idleBounded(body: ReadableStream<Uint8Array>, deadlineMs: number, abort: () => void): ReadableStream<Uint8Array> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(abort, deadlineMs);
+  };
+  arm();
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        arm();
+        controller.enqueue(chunk);
+      },
+      flush() {
+        clearTimeout(timer);
+      },
+    }),
+  );
+}
+
+/** A request's headers: its own fields, then the credential and the content headers, which always win. */
+function requestHeaders(credentials: Record<string, string>, extra: Record<string, string>, type: string): Headers {
+  const headers = new Headers(extra);
+  for (const [name, value] of Object.entries(credentials)) headers.set(name, value);
+  headers.set("Content-Type", type);
+  headers.set("Accept", "application/json");
+  return headers;
+}
+
+/**
+ * A carrier over `fetch` with caller-supplied credential headers: the shape the CLI's bearer
+ * carrier takes. Requests are `POST` with a JSON body (or, through `bytes`, a raw one), never follow
+ * redirects, and are refused before sending when the identity, binding or a route header is
+ * malformed.
+ */
+export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier {
+  const fetcher = options.fetch ?? fetch;
+  const deadlineMs = options.deadlineMs ?? 15_000;
+  const bindingHeader = options.bindingHeader ?? "X-Superbee-Checkout";
+  const base = new URL(options.baseUrl);
+
+  async function send(path: string, body: { readonly type: string; readonly content: string | Uint8Array }, signal: AbortSignal, extra: Record<string, string>, deadline: AbortSignal): Promise<Response> {
+    if (!path.startsWith("/")) throw new TypeError(`hosted route '${path}' must be absolute`);
+    let credentials: Record<string, string>;
+    try {
+      credentials = await options.credentials(signal);
+    } catch (cause) {
+      throw new HostedCarrierError("denied", { cause });
+    }
+    if (signal.aborted) throw new HostedCarrierError("denied");
+    try {
+      return await fetcher(new URL(path, base), {
+        method: "POST",
+        redirect: "error",
+        headers: requestHeaders(credentials, extra, body.type),
+        body: body.content,
+        signal: AbortSignal.any([signal, deadline]),
+      });
+    } catch (cause) {
+      throw new HostedCarrierError("unavailable", { cause });
+    }
+  }
+
+  const jsonBody = (input: unknown) => ({ type: "application/json", content: JSON.stringify(input) });
+  // Headers the carrier sets itself, which a route's own fields never name.
+  const owned = new Set(["x-superbee-write-request", bindingHeader.toLowerCase(), RECREATE_HEADER.toLowerCase(), VIA_HEADER.toLowerCase(), ACCEPT_DELETES_HEADER.toLowerCase()]);
+
+  async function answer(path: string, body: { readonly type: string; readonly content: string | Uint8Array }, signal: AbortSignal, extra: Record<string, string>, maximum: number): Promise<HostedAnswer> {
+    // An answer is always read within a bound: an unset or nonsensical maximum refuses before sending.
+    if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new HostedCarrierError("denied");
+    const deadline = AbortSignal.timeout(deadlineMs);
+    const response = await send(path, body, signal, extra, deadline);
+    let read: unknown;
+    try {
+      read = await readBounded(response, maximum);
+    } catch (error) {
+      // A refusal's envelope is best effort: its status already decides, and an unreadable
+      // body must never read as "not applied".
+      if (response.ok) throw error instanceof HostedCarrierError ? error : new HostedCarrierError("unavailable", { cause: error });
+      read = undefined;
+    }
+    return { status: response.status, headers: response.headers, body: read };
+  }
+
+  return {
+    async json(path, input, signal, request) {
+      if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
+      if (request.binding !== undefined && !BINDING.test(request.binding)) throw new HostedCarrierError("denied");
+      if (request.recreate !== undefined && !BINDING.test(request.recreate)) throw new HostedCarrierError("denied");
+      if (request.via !== undefined && !isAgentLabelVia(request.via)) throw new HostedCarrierError("denied");
+      if (request.acceptDeletes !== undefined && !isAcceptedDeletionCount(request.acceptDeletes)) throw new HostedCarrierError("denied");
+      const extra: Record<string, string> = {};
+      if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
+      if (request.binding !== undefined) extra[bindingHeader] = request.binding;
+      if (request.recreate !== undefined) extra[RECREATE_HEADER] = request.recreate;
+      if (request.via !== undefined) extra[VIA_HEADER] = request.via;
+      if (request.acceptDeletes !== undefined) extra[ACCEPT_DELETES_HEADER] = String(request.acceptDeletes);
+      return answer(path, jsonBody(input), signal, extra, request.maximum);
+    },
+    async bytes(path, body, signal, request) {
+      if (!(body instanceof Uint8Array)) throw new HostedCarrierError("denied");
+      if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
+      const extra: Record<string, string> = {};
+      for (const [name, value] of Object.entries(request.headers ?? {})) {
+        const lower = name.toLowerCase();
+        if (!ROUTE_HEADER.test(lower) || owned.has(lower) || lower in extra || typeof value !== "string" || !ROUTE_HEADER_VALUE.test(value)) throw new HostedCarrierError("denied");
+        extra[lower] = value;
+      }
+      if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
+      // The body is sent as given; `fetch` derives its exact Content-Length from the bytes.
+      return answer(path, { type: "application/octet-stream", content: body }, signal, extra, request.maximum);
+    },
+    async stream(path, input, signal) {
+      const idle = new AbortController();
+      const firstByte = setTimeout(() => idle.abort(), deadlineMs);
+      let response: Response;
+      try {
+        response = await send(path, jsonBody(input), signal, {}, idle.signal);
+      } finally {
+        clearTimeout(firstByte);
+      }
+      if (!response.ok || !response.body) {
+        const body = await readBounded(response, 64 * 1024).catch(() => undefined);
+        return { status: response.status, headers: response.headers, ok: false, body };
+      }
+      return { status: response.status, headers: response.headers, ok: true, body: idleBounded(response.body, deadlineMs, () => idle.abort()) };
+    },
+  };
+}

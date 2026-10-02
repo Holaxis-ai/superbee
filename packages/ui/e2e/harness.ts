@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import type { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import type { Frontmatter } from "@superbee/core";
-import type { Page } from "@playwright/test";
+import type { Frame, FrameLocator, Page, Request } from "@playwright/test";
 import {
   bootUiServer,
   createEmbeddedAssetHandler,
@@ -47,6 +47,69 @@ export async function approveViewIfPrompted(page: Page): Promise<void> {
 export async function openRegisteredView(page: Page, registryId: string): Promise<void> {
   await page.locator(`[data-page-id="${registryId}"]`).click();
   await approveViewIfPrompted(page);
+}
+
+/**
+ * The View's own document. The shell frames the View host (`iframe.page-frame-iframe`), and the
+ * host frames the View as its single sandboxed `blob:` child.
+ */
+export function viewFrame(page: Page): FrameLocator {
+  return page.frameLocator("iframe.page-frame-iframe").frameLocator("iframe");
+}
+
+/** The View child as a Playwright Frame, for evaluating inside the View's own context. */
+export async function viewContentFrame(page: Page): Promise<Frame> {
+  const host = await (await page.waitForSelector("iframe.page-frame-iframe")).contentFrame();
+  if (!host) throw new Error("the View host had no content frame");
+  const view = await (await host.waitForSelector("iframe")).contentFrame();
+  if (!view) throw new Error("the View host had no View frame");
+  return view;
+}
+
+async function frameOrigin(frame: Frame): Promise<string> {
+  return await frame.evaluate(() => self.origin).catch(() => "null");
+}
+
+/**
+ * Whether a browser that refuses requests initiated by opaque-origin frames would refuse this
+ * one: a navigation into a frame whose element is sandboxed without allow-same-origin (the frame
+ * is opaque before any response arrives) or that an opaque document initiated, or a subresource
+ * request from an opaque document.
+ */
+async function initiatedByOpaqueFrame(page: Page, request: Request): Promise<boolean> {
+  let frame: Frame;
+  try {
+    frame = request.frame();
+  } catch {
+    return false;
+  }
+  if (frame === page.mainFrame()) return false;
+  // Local schemes (blob:, data:) never reach the network; WebKit merely routes them too.
+  if (!/^https?:$/.test(new URL(request.url()).protocol)) return false;
+  if (!request.isNavigationRequest()) return (await frameOrigin(frame)) === "null";
+  const element = await frame.frameElement().catch(() => null);
+  const sandbox = element ? await element.getAttribute("sandbox") : null;
+  if (sandbox !== null && !sandbox.split(/\s+/).includes("allow-same-origin")) return true;
+  const parent = frame.parentFrame();
+  return parent !== null && parent !== page.mainFrame() && (await frameOrigin(parent)) === "null";
+}
+
+/**
+ * Emulate a browser (such as the Claude desktop in-app browser) that fails every network request
+ * an opaque-origin frame initiates with net::ERR_BLOCKED_BY_CLIENT. Returns the refused URLs.
+ */
+export async function blockOpaqueOriginFrameRequests(page: Page): Promise<string[]> {
+  const refused: string[] = [];
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    if (await initiatedByOpaqueFrame(page, request)) {
+      refused.push(request.url());
+      await route.abort("blockedbyclient");
+      return;
+    }
+    await route.fallback();
+  });
+  return refused;
 }
 
 /** A Task doc to seed a temp bundle with before booting `ui` over it. */

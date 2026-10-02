@@ -1,0 +1,25 @@
+{
+  "name": "create-200-insufficient-scope",
+  "description": "A create by a person with only a read grant on the bundle: refused, nothing written.",
+  "route": "/sync/v1/create",
+  "rows": [
+    "200 insufficient_scope"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000014",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/reader\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Note\"},\"body\":\"new\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"insufficient_scope\",\"message\":\"Your access to this bundle does not allow this write. Nothing was written.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

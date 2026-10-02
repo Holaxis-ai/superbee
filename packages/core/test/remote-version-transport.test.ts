@@ -135,6 +135,7 @@ test("write(): expectedVersion: null (expect-absent) and a real token both still
     baseUrl: "http://guard.local",
     bundle: "test",
     fetchImpl: async (req: Request) => {
+      if (new URL(req.url).pathname === "/v0/capabilities") return jsonResponse(200, { operations: false });
       assert.equal(req.headers.get("If-None-Match"), "*");
       return jsonResponse(201, { version: TOKEN });
     },

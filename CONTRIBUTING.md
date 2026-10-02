@@ -103,7 +103,8 @@ a PR run on the same SHA are the same coverage paid twice. One run can satisfy b
 only when the merged SHA equals the validated SHA. Merge-group CI evaluates GitHub's candidate
 integration SHA; do not substitute its verdict for a different final merge/tag SHA. CI and CodeQL
 support `merge_group: checks_requested`, with the same unconditional lanes and required status
-names as PR runs. Queue runs do not cancel each other through PR cancellation rules.
+names as PR runs. Every proof checkout binds `github.sha` explicitly. Queue runs do not cancel each
+other through PR cancellation rules.
 `scripts/ci-lanes.json` records queue capability only. Live activation is verified by the read-only
 `infrastructure/github-ci` preflight and recorded in the project bundle. The private
 [holaxis-infrastructure runbook](https://github.com/Holaxis-ai/holaxis-infrastructure/tree/main/github/superbee)
@@ -123,7 +124,7 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 <!-- contributing-ci-lanes:start -->
 | Lane | Local command | CI job | Node |
 | --- | --- | --- | --- |
-| runtime | `npm run ci:runtime` | `runtime` | 22, 26 |
+| runtime | `npm run ci:runtime` | `runtime` | 22, 26 (2 shards each) |
 | aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 26 |
 | distribution | `npm run ci:distribution` | `distribution` | 26 |
 | browser | `npm run ci:browser` | `browser` | 26 |
@@ -131,8 +132,14 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 | smoke-node-20 | workflow only | `smoke-node-20` | 20 |
 <!-- contributing-ci-lanes:end -->
 
-CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, merge-group candidates,
-a weekly schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
+The `runtime` job runs two shards per Node version so it stays well inside its 20-minute timeout.
+Each shard builds and typechecks; the CLI suite, the dominant cost, is divided by file through
+Node's `--test-shard`, and the smaller workspace suites run in both shards. Reproduce one shard
+locally with `SUPERBEE_TEST_SHARD=1/2 npm run ci:runtime`; without the variable, `ci:runtime` runs
+everything.
+
+CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, merge-group
+candidates, a weekly schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
 `.github/codeql/codeql-config.yml`; both surfaces are pinned by `scripts/ci-lanes.json` and
 `scripts/workflow-codeql-topology.test.mjs`. Every action in the CodeQL workflow is pinned to a
 full commit SHA because the analysis jobs upload security results and also run unattended.
@@ -160,6 +167,12 @@ shell, second-order Git/Hg, and path-injection classes; product tests and review
 non-shell option injection, containment, symbolic-link, permission, atomicity, and destructive-scope
 invariants.
 
+The `TLA+ specs` workflow in `.github/workflows/tla-specs.yml` model-checks the specifications under
+`specs/tla` with a pinned, checksum-verified TLC release on pull requests, pushes to `main`, and
+manual dispatch. It is not a required lane and is outside the lane projection above.
+[`specs/tla/README.md`](specs/tla/README.md) owns how to run the models, what each config checks,
+and which fixed configs model changes that have not merged.
+
 Minimum iteration lanes by reach:
 
 | Touched surface | Run at minimum |
@@ -170,6 +183,7 @@ Minimum iteration lanes by reach:
 | Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts`; for CodeQL-only iteration, start with `node --test scripts/workflow-codeql-topology.test.mjs` |
 | Host-class-dependent tests (case or normalization fixtures, the identity lock) | `npm run ci:aliasing-host` |
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
+| `specs/tla` or `.github/workflows/tla-specs.yml` | `specs/tla/run-tlc.sh` on the touched area's configs |
 
 A CI topology change must update `scripts/ci-lanes.json` and this table in the same unit; never
 add path skipping without a separately reviewed fail-closed classifier. Automatic CI runs on Linux
@@ -201,7 +215,7 @@ Run `npm run check:package-versions` before installing or building after a runti
 version edit. This dependency-free source check validates the synchronized core/server pair,
 their exact dependency, and core/server/markdown-renderer/cli workspace lock metadata and links.
 It also checks their existing publish access and registry policy without publishing anything.
-The cli version is independent: no rule ties it to the core/server version.
+The cli version is independent of the core/server version.
 Manifests own versions and dependency declarations; the lockfile is their checked projection.
 The renderer's core peer policy permits `||` alternatives of exact versions and stable
 `^major.minor.patch` ranges; prereleases require an exact alternative. Other range syntax or

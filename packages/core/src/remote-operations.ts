@@ -13,8 +13,9 @@
  * or the authority's own runtime failure, says nothing about whether the write was applied, so
  * the primitive classifies it as unknown and resolves it by lookup, which is the whole reason
  * the identity exists. A 4xx is final because the authority answered and declined. A local
- * metadata encoding refusal is also final because no PUT was sent, not because the authority
- * recorded an outcome.
+ * refusal is also final because no PUT was sent, not because the authority recorded an outcome:
+ * an intent kind other than `document.write`, content that does not parse, or metadata the wire
+ * cannot encode is refused `USAGE` without a PUT.
  *
  * The transport is only sound against an authority that implements identity. A host that
  * predates it ignores the header, applies every retry as a fresh write, and answers the lookup
@@ -32,8 +33,8 @@
  * the verdict visible uses {@link openRemoteOperationTransport} or reads `wireCapabilities()`
  * itself. And the check is memoized on success: a host downgraded afterwards is not detected,
  * so one unidentified resubmission can reach it. Because every identified write is guarded by
- * its base, that exposure is bounded to a spurious conflict at a moved head, never a double
- * application.
+ * its base, that exposure is bounded to a spurious conflict at a moved head, or a second
+ * application when the head has returned to the base's exact content.
  *
  * This module imports nothing from Node so a browser working copy and a Node consumer share
  * one transport over one client adapter.
@@ -88,10 +89,18 @@ function buildTransport(remote: RemoteBackend, options: RemoteOperationTransport
   };
   const transport: OperationTransport = {
     async submit(intent: OperationIntent): Promise<Outcome> {
+      // Refused rather than thrown: the primitive classifies a throw as unknown, and an intent
+      // that can never be sent would then stay pending as possibly delivered on every push.
       if (intent.kind !== "document.write") {
-        throw new Error(`remote operation transport: unsupported intent kind '${intent.kind}'`);
+        return { kind: "refused", code: "USAGE", message: `remote operation transport: unsupported intent kind '${intent.kind}'` };
       }
-      const { frontmatter, body } = parseMarkdown(intent.content, pathFromConceptId(intent.target));
+      let parsed: ReturnType<typeof parseMarkdown>;
+      try {
+        parsed = parseMarkdown(intent.content, pathFromConceptId(intent.target));
+      } catch (error) {
+        return { kind: "refused", code: "USAGE", message: error instanceof Error ? error.message : String(error) };
+      }
+      const { frontmatter, body } = parsed;
       const writeOptions = {
         expectedVersion: intent.base,
         requestId: intent.requestId,

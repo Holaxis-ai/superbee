@@ -701,7 +701,7 @@ test("fall-through belt: an injected pull that NEVER resolves still renders home
   }
 });
 
-test("session-start inherits non-empty workspace orientation from home", async () => {
+test("session-start extends home's workspace orientation with each other bundle's home and freshness", async () => {
   const homeDir = await realpath(await tempHome());
   const bundleDir = path.join(homeDir, "personal-bundle");
   try {
@@ -715,7 +715,7 @@ test("session-start inherits non-empty workspace orientation from home", async (
     const view = JSON.parse(out) as Record<string, any>;
     assert.equal(view.workspaces.count, 1);
     assert.equal(view.workspaces.shown, 1);
-    assert.deepEqual(view.workspaces.entries, [{ label: "personal" }]);
+    assert.deepEqual(view.workspaces.entries, [{ label: "personal", home: "local", freshness: "local only" }]);
     assert.match(view.workspaces.help, /catalog resolve <label-or-id> --field path$/);
     assert.doesNotMatch(JSON.stringify(view.workspaces), /(?:locator|personal-bundle|bnd_)/);
   } finally {

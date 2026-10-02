@@ -1,0 +1,23 @@
+{
+  "name": "read-400-invalid-input",
+  "description": "A read input the schema refuses.",
+  "route": "/sync/v1/read",
+  "rows": [
+    "refusal 400 invalid_input"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\",\"extra\":true}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

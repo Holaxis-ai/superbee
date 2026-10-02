@@ -2,17 +2,19 @@
  * Pages-spike API surface (tasks/ui-pages-spike), layered on the same-origin `/v0/*` client
  * (`client.ts`) plus two shell-only local endpoints the pages server adds:
  *   - `GET /__ui/config` — bundle summary for the launcher + the bridge `hello` reply.
- *   - `POST /__page/mint` — exchange a page's blob key for a short-lived nonce URL; the launcher
- *     sets that URL as the sandboxed iframe's `src`. Session-gated (cookie + X-Requested-With),
- *     so a page — which holds neither — can never mint its own.
+ *   - `POST /__page/mint` — resolve a View to one immutable launch with a single-use nonce URL.
+ *   - `GET /__page/<nonce>` — the shell's one fetch of that launch's exact HTML bytes, verified
+ *     against the approved content version before the View host mounts them as a `blob:` frame.
+ *   Both are session-gated (cookie + X-Requested-With), so a View — which holds neither — can
+ *   never mint or fetch its own.
  *
  * A page's HTML never rides the model/query path: only its registry doc (frontmatter) is read
- * here; the bytes travel opaquely through the nonce route into the iframe.
+ * here; the bytes travel opaquely from the nonce route to the View host.
  */
 import { getDoc, parseErrorEnvelope } from "./client.js";
 import type { Edge, EdgesResponse, Frontmatter } from "./types.js";
 import type { KindConvention } from "@superbee/core/kinds";
-import type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentSetFieldAction, SharingSummary, WorkspaceSummaryEntry } from "@superbee/ui-server";
+import type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentAction, SharingSummary, WorkspaceSummaryEntry } from "@superbee/ui-server";
 import { parseRegisteredPage, type BridgeCapability } from "../pages/registry.js";
 
 /** `/__ui/config` shape (server `configResponse`). `sharing`/`workspaces` are ui-server's plain data shapes (type-only import — no runtime dependency), CLI-injected in dir mode. */
@@ -214,6 +216,43 @@ export async function mintPageNonce(registryId: string): Promise<MintedView> {
   return (await res.json()) as MintedView;
 }
 
+export interface ViewBytes {
+  bytes: ArrayBuffer;
+  contentType: string;
+}
+
+/** The fetched bytes are not the version the launch (and any approval) named. */
+export class ViewBytesMismatchError extends Error {
+  constructor() {
+    super("the View's HTML did not match the version that was approved; reopen the View from the launcher");
+    this.name = "ViewBytesMismatchError";
+  }
+}
+
+async function sha256Version(bytes: ArrayBuffer): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) throw new Error("this browser cannot verify View bytes (Web Crypto is unavailable)");
+  const digest = new Uint8Array(await subtle.digest("SHA-256", bytes));
+  return `sha256:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
+ * Fetch a launch's exact HTML once through its single-use nonce URL and prove the bytes are the
+ * content version the launch carries — the version the shell displayed for approval. Only
+ * verified bytes reach the View host.
+ */
+export async function fetchViewBytes(url: string, contentVersion: string): Promise<ViewBytes> {
+  const res = await fetch(url, {
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: { "X-Requested-With": "superbee-ui" },
+  });
+  if (!res.ok) throw await parseErrorEnvelope(res);
+  const bytes = await res.arrayBuffer();
+  if ((await sha256Version(bytes)) !== contentVersion) throw new ViewBytesMismatchError();
+  return { bytes, contentType: res.headers.get("content-type") ?? "text/html; charset=utf-8" };
+}
+
 async function postTrustedShell<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
@@ -225,7 +264,7 @@ async function postTrustedShell<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
-export function prepareTrustedAction(launchId: string, action: DocumentSetFieldAction): Promise<ActionPrepareResult> {
+export function prepareTrustedAction(launchId: string, action: DocumentAction): Promise<ActionPrepareResult> {
   return postTrustedShell("/__ui/actions/prepare", { launchId, action });
 }
 
@@ -253,4 +292,4 @@ export function sendViewBridge(launchId: string, request: unknown): Promise<View
   return postTrustedShell("/__ui/views/bridge", { launchId, request });
 }
 
-export type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentSetFieldAction, SharingSummary, WorkspaceSummaryEntry };
+export type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentAction, SharingSummary, WorkspaceSummaryEntry };

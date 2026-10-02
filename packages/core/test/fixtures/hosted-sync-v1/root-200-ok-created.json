@@ -1,0 +1,24 @@
+{
+  "name": "root-200-ok-created",
+  "description": "A front page created against absence (expectAbsent) in a bundle with no root index.",
+  "route": "/sync/v1/root",
+  "rows": [
+    "200 ok"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"content\":\"# notes.a\\n\\nOur front page.\\n\",\"expectAbsent\":true}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"bundles.root.replace.v1\",\"data\":{\"bundleId\":\"notes.a\",\"version\":\"sha256:ac15b24ac5cb5c96b4ba392c76f35b5b043d7c694a6ba06ac636b044da128d7b\",\"changed\":true}}",
+    "truncated": false
+  }
+}

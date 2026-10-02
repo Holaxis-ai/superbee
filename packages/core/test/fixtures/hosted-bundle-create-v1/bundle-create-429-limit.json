@@ -1,0 +1,24 @@
+{
+  "name": "bundle-create-429-limit",
+  "description": "The person's configured create limit is used up.",
+  "route": "/sync/v1/bundle-create",
+  "rows": [
+    "429 bundle_create_limit"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-0000000000c7"
+    },
+    "body": "{\"workspace\":\"tenant:a\",\"bundleId\":\"lim.two\",\"documents\":[{\"id\":\"notes/alpha\",\"frontmatter\":{\"type\":\"Note\",\"title\":\"Alpha\"},\"body\":\"Alpha body é.\\n\"},{\"id\":\"projects/plan\",\"frontmatter\":{\"type\":\"Project\",\"title\":\"Plan\"},\"body\":\"# Plan\\n\"}],\"reserved\":[{\"dir\":\"\",\"name\":\"index.md\",\"content\":\"---\\nokf_version: \\\"0.2\\\"\\ntitle: Mine\\n---\\n# Mine\\n\"}],\"blobs\":[{\"key\":\"assets/logo.txt\",\"contentType\":\"text/plain\",\"base64\":\"bG9nbw==\"}]}"
+  },
+  "response": {
+    "status": 429,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"bundle_create_limit\",\"message\":\"Your bundle creation limit in this workspace is used up. Nothing was created.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

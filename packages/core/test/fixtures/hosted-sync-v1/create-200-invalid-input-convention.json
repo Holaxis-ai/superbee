@@ -1,0 +1,26 @@
+{
+  "name": "create-200-invalid-input-convention",
+  "description": "A convention create by a person whose grant does not carry the definitions flag: refused invalid_input, as every surface refuses conventions without the authority.",
+  "route": "/sync/v1/create",
+  "rows": [
+    "200 invalid_input"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000283",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"conventions/idea\",\"expectAbsent\":true,\"frontmatter\":{\"type\":\"Convention\",\"title\":\"Idea\",\"governs\":\"Idea\",\"fields\":{}},\"body\":\"# Idea\\n\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8",
+      "x-superbee-write-settled": "4a2f9c1e-8b3d-4e6f-9a1b-000000000283"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"documents.create.v1\",\"error\":{\"code\":\"invalid_input\",\"message\":\"The write input is invalid. Use fieldAction alone for collection changes; do not mix it with setFields, removeFields or body changes. Retained-candidate edit/replace-all requires expectedCandidateVersion from candidates.read.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

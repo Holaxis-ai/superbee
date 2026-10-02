@@ -1,0 +1,17 @@
+{
+  "name": "refusal-invalid-input",
+  "description": "A request body the route does not admit.",
+  "rows": ["refusal 400 invalid_input"],
+  "route": "/reader/heads",
+  "request": {
+    "method": "POST",
+    "headers": { "content-type": "application/json" },
+    "body": "{\"bundleId\":\"team.knowledge\",\"extra\":true}"
+  },
+  "response": {
+    "status": 400,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

@@ -7,7 +7,8 @@ access: bundle-read
 actor: mike/claude
 timestamp: "2026-09-15T00:00:00.000Z"
 ---
-The conformance fixture for `docs/VIEW-PROTOCOL.md`. It sends `hello`, `query`, `read`,
+The conformance fixture for `docs/VIEW-PROTOCOL.md`. It sends `hello`, `query`, `query-newest`
+(a `query` with `order: "newest"`, skipped unless the host declares `query.newest`), `read`,
 `read-versioned`, `edges`, `graph` (heads only; a host that does not declare `graph` is expected to
 refuse it), `render-document`, `subscribe`, `host` (an undeclared capability, so a `FORBIDDEN`
 reply is the expected outcome), `action.propose`, `burst` (12 `read` requests in flight at once,

@@ -181,6 +181,8 @@ test("combo 1: --establish — full receipt, origin gets the board, working-tree
     assert.equal(typeof rec.gitignore, "string");
     assert.match(rec.gitignore as string, /appended/);
     assert.deepEqual(rec.next_steps, establishNextSteps(INV));
+    // The one sync envelope: a Git board now, and the snapshot's document went out with it.
+    assert.deepEqual([rec.home, rec.sent, rec.received, rec.next], ["git", 1, 0, establishNextSteps(INV)]);
 
     // origin now genuinely carries the board branch.
     assert.equal(
@@ -213,9 +215,34 @@ test("combo 1: --establish — full receipt, origin gets the board, working-tree
     const boardCommitsBefore = git(topo.a.board, ["rev-list", "--count", "HEAD"]).trim();
     const rerun = await runSyncJson(home, ["--establish", "--dir", topo.a.root]);
     assert.equal(rerun.establish, ESTABLISH_ALREADY);
+    assert.equal(rerun.home, "git", "already established: an ordinary Git sync, reported as one");
     assert.equal(rerun.sync, "already up to date");
     const boardCommitsAfter = git(topo.a.board, ["rev-list", "--count", "HEAD"]).trim();
     assert.equal(boardCommitsAfter, boardCommitsBefore, "re-running --establish never adds a second lineage");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("--establish refuses a bundle holding a document with invalid frontmatter: names it, publishes and moves nothing", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    await initPlainBundleDir(topo.a);
+    await writeBoardDoc(topo.a, "notes/hello", { frontmatter: { type: "Note", title: "Hello" }, body: "# Hello\n" });
+    await mkdir(path.join(topo.a.board, "notes"), { recursive: true });
+    await writeFile(path.join(topo.a.board, "notes", "bad.md"), "---\ntype: Note\ntitle: Bad: unquoted\n---\nbody\n");
+
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(err?.code, "USAGE");
+    assert.match(err!.message, /invalid YAML frontmatter \(notes\/bad\); nothing was published or moved/);
+    assert.notEqual(
+      gitTry(topo.origin, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]).status,
+      0,
+      "origin never gets a board",
+    );
+    assert.equal(existsSync(path.join(topo.a.board, "notes", "bad.md")), true, "the local bundle is untouched");
   } finally {
     await cleanup();
     await topo.cleanup();
@@ -752,7 +779,7 @@ test("generic remote rejection during first publication stays provider-neutral a
   }
 });
 
-test("recovery markers are isolated between linked code worktrees", async () => {
+test("establish from a linked code worktree is refused and leaves the main worktree's recovery marker alone", async () => {
   const topo = await makeGreenfieldTopology();
   const { home, cleanup } = await tempHome();
   const siblingRoot = path.join(topo.dir, "A-sibling");
@@ -778,11 +805,16 @@ test("recovery markers are isolated between linked code worktrees", async () => 
     await chmod(hook, 0o755);
 
     assert.equal((await runSync(home, ["--establish", "--dir", topo.a.root])).err?.code, "AUTH_REQUIRED");
-    assert.equal((await runSync(home, ["--establish", "--dir", siblingRoot])).err?.code, "AUTH_REQUIRED");
     const markerA = establishMarkerPath(topo.a.root);
-    const markerSibling = establishMarkerPath(siblingRoot);
-    assert.notEqual(markerA, markerSibling);
-    assert.notEqual(readFileSync(markerA, "utf8"), readFileSync(markerSibling, "utf8"));
+    const markerBefore = readFileSync(markerA, "utf8");
+    // Boards are unsupported inside a linked worktree: establish refuses before any snapshot,
+    // marker, or push, so the main worktree's interrupted establishment is untouched.
+    const refused = (await runSync(home, ["--establish", "--dir", siblingRoot])).err;
+    assert.equal(refused?.code, "CONFLICT");
+    assert.match(refused?.message ?? "", /not supported inside a linked git worktree/);
+    assert.equal(existsSync(establishMarkerPath(siblingRoot)), false, "no marker in the linked worktree");
+    assert.equal(readFileSync(markerA, "utf8"), markerBefore);
+    assert.ok(existsSync(path.join(sibling.board, "notes", "from-sibling.md")), "the linked worktree's bundle is untouched");
   } finally {
     await cleanup();
     await topo.cleanup();
@@ -1019,6 +1051,25 @@ test("establish refusals: no folder / empty folder / no index.md all point at in
       assert.equal(err?.code, "RUNTIME");
       assert.match(err?.message ?? "", /no index\.md/);
     }
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("establish over a bundle made at the work tree's top names the move into .superbee/, and works after it", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    await initBundle(topo.a.root);
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(err?.code, "RUNTIME");
+    assert.match(err?.message ?? "", /top folder is itself a bundle.*move the bundle at the work tree's top into \.superbee\//);
+    assert.match(err?.help ?? "", /mv index\.md \.superbee\//);
+    await mkdir(topo.a.board);
+    await rename(path.join(topo.a.root, "index.md"), path.join(topo.a.board, "index.md"));
+    const receipt = await runSyncJson(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(receipt.established, ESTABLISH_DONE);
   } finally {
     await cleanup();
     await topo.cleanup();

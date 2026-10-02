@@ -1,0 +1,25 @@
+{
+  "name": "write-400-invalid-input",
+  "description": "A write body the schema refuses.",
+  "route": "/sync/v1/replace",
+  "rows": [
+    "400"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000009",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\",\"expectedVersion\":\"sha256:04c5cbc34e6644ad845cf717a378ca37202c95dd1a011c83c4d79c0837c44c9a\",\"frontmatter\":{\"type\":\"Note\"},\"body\":\"x\",\"extra\":true}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

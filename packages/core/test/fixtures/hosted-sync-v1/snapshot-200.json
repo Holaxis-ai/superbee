@@ -1,0 +1,24 @@
+{
+  "name": "snapshot-200",
+  "description": "The whole bundle as one NDJSON snapshot.",
+  "route": "/sync/v1/snapshot",
+  "rows": [
+    "snapshot 200 complete"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "etag": "\"sha256:92bd771dd86f71d602cca33d4d133788360101e583d68445187bf56a81899689\""
+    },
+    "body": "{\"kind\":\"snapshot\",\"count\":1,\"digest\":\"sha256:92bd771dd86f71d602cca33d4d133788360101e583d68445187bf56a81899689\"}\n{\"kind\":\"doc\",\"id\":\"notes/one\",\"version\":\"sha256:dfc05cf336bf2eaa2bf4a3319609f596514c2ec0f5abf3e7a173aafe7baac5c4\",\"frontmatter\":{\"type\":\"Note\"},\"body\":\"one\\n\"}\n{\"kind\":\"end\",\"count\":1}\n",
+    "truncated": false
+  }
+}
