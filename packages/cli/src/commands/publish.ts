@@ -68,7 +68,7 @@ host has created it, with progress on stderr (JSON lines with --json). Staged, a
 most 10,000 documents, 1,000 reserved files, 1,000 other files of 16 MiB each and 64 MiB of
 current files in all, and 5,000 earlier versions (64 MiB); the list of everything is at most
 3 MiB. Every way: each document within the host's bound (983,040 bytes as sent on current
-hosts, about 960 KiB of Markdown; 64 KiB on older ones), 64 KiB per reserved file, 16 KiB of
+hosts, about 950 KiB of Markdown; 64 KiB on older ones), 64 KiB per reserved file, 16 KiB of
 frontmatter.
 
 With --yes, signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the
@@ -558,6 +558,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
               : [uncheckable]),
           ],
           network: "none (preview)",
+          document_bound: `checked against ${CURRENT_HOST_DOCUMENT_INPUT_BYTES} bytes as sent per document (current hosts); --yes checks the host's own bound before anything is sent`,
           help: blockers.length === 0
             ? [String(yesCommand)]
             : ambiguous

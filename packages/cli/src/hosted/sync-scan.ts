@@ -619,6 +619,9 @@ export interface ScanContext {
   readonly documentInputBytes?: number | null;
 }
 
+/** The most a host that states its bound stores of one document (frontmatter and body serialized). */
+const STORED_DOCUMENT_BYTES = 1024 * 1024;
+
 /** The whole-document write bound a host holds sync to: what it states, else 65,536. */
 export function documentInputBound(stated: number | null | undefined): number {
   return stated ?? WHOLE_DOCUMENT_BOUNDS.payloadBytes;
@@ -629,7 +632,7 @@ function tooLarge(id: string, size: number, stated: number | null | undefined): 
   const kib = (bytes: number) => Math.ceil(bytes / 1024);
   const bound = documentInputBound(stated);
   return stated === null || stated === undefined
-    ? `'${id}' is ${kib(size)} KiB as sent; this host accepts up to ${kib(bound)} KiB per document (newer hosts accept about 960 KiB)`
+    ? `'${id}' is ${kib(size)} KiB as sent; this host accepts up to ${kib(bound)} KiB per document (newer hosts accept about 960 KiB as sent)`
     : `'${id}' is ${kib(size)} KiB as sent; this host accepts up to ${kib(bound)} KiB per document`;
 }
 
@@ -663,7 +666,11 @@ export function unsendable(
     return held(id, rel, "convention_folder", heldPathMessage(rel, fence.definitionWrites, fence.sender));
   }
   const bound = documentInputBound(context.documentInputBytes);
-  if (bytes.byteLength > bound) return held(id, rel, "too_large", tooLarge(id, bytes.byteLength, context.documentInputBytes));
+  // The file's own bytes only screen out what cannot fit before it is parsed: a host that states
+  // its bound stores up to 1 MiB (YAML frontmatter can be larger than its JSON), and the request's
+  // JSON, measured below, decides.
+  const screen = context.documentInputBytes === null || context.documentInputBytes === undefined ? bound : Math.max(bound, STORED_DOCUMENT_BYTES);
+  if (bytes.byteLength > screen) return held(id, rel, "too_large", tooLarge(id, bytes.byteLength, context.documentInputBytes));
   const content = utf8(bytes);
   if (content === null) return held(id, rel, "not_sendable", `'${id}' is not UTF-8 text; sending it would change its bytes`);
   let request;
