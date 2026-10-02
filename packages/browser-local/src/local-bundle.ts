@@ -62,7 +62,7 @@
 
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
 import { stringifyDoc } from "@superbee/core/document-codec";
-import { performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
+import { BODY_DELIVERY_LIMITS, performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
 import { JournalGuardConflict, JournalSnapshotConflict, assertJournalGuard, type JournalGuard, type MetaExpectation } from "@superbee/core/journaled-backend";
@@ -1589,7 +1589,7 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
       }
       case "conflict": {
         let remote = await remoteHead(options.remote, intent.target, result.outcome.actual);
-        if (jsonBytes(remote) > 2 * 1024 * 1024) { remote = { version: result.outcome.actual, content: null }; patch.finding = "Remote content exceeds the retained evidence limit."; }
+        if (jsonBytes(remote) > BODY_DELIVERY_LIMITS.envelopeBytes) { remote = { version: result.outcome.actual, content: null }; patch.finding = "Remote content exceeds the retained evidence limit."; }
         patch = { ...patch, state: "conflict", remote };
         break;
       }
