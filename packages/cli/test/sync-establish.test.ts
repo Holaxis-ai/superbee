@@ -1064,7 +1064,7 @@ test("establish over a bundle made at the work tree's top names the move into .s
     await initBundle(topo.a.root);
     const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
     assert.equal(err?.code, "RUNTIME");
-    assert.match(err?.message ?? "", /top folder is itself a bundle.*move the bundle into '\.superbee\/'/);
+    assert.match(err?.message ?? "", /top folder is itself a bundle.*move the bundle at the work tree's top into \.superbee\//);
     assert.match(err?.help ?? "", /mv index\.md .*\.superbee\//);
     await mkdir(topo.a.board);
     await rename(path.join(topo.a.root, "index.md"), path.join(topo.a.board, "index.md"));

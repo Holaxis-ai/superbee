@@ -14,7 +14,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -110,17 +110,84 @@ test("plain init inside a Git work tree makes the top's .superbee/, the folder e
   }
 });
 
-test("plain init in a current directory that already is a bundle keeps opening it, Git or not", async () => {
+test("plain init opens the nearest bundle up to the work tree's top, never splitting the project in two", async () => {
   const dir = await tempDir();
   try {
     await mkdir(path.join(dir, ".git"));
     await runInit(["--dir", path.join(dir, "notes")]);
-    const receipt = await runPlainInit(path.join(dir, "notes"));
-    assert.equal(await realpath(receipt.root as string), await realpath(path.join(dir, "notes")));
+    const deep = path.join(dir, "notes", "deep");
+    await mkdir(deep);
+    for (const cwd of [path.join(dir, "notes"), deep]) {
+      const receipt = await runPlainInit(cwd);
+      assert.equal(await realpath(receipt.root as string), await realpath(path.join(dir, "notes")), cwd);
+      // A bundle that is not the work tree's .superbee/ is never told to establish; it is told how.
+      assert.doesNotMatch(receipt.hint as string, /sync --establish/);
+      assert.match(receipt.hint as string, /init --dir .*\.superbee/);
+    }
     assert.equal(existsSync(path.join(dir, ".superbee")), false);
-    // A bundle that is not the work tree's .superbee/ is never told to establish.
-    assert.doesNotMatch(receipt.hint as string, /sync --establish/);
-    assert.match(receipt.hint as string, /only the work tree's \.superbee\/ folder can be shared/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a bundle already at the work tree's top keeps opening from below, and its hint names the move", async () => {
+  const dir = await tempDir();
+  try {
+    await mkdir(path.join(dir, ".git"));
+    await runInit(["--dir", dir]);
+    await mkdir(path.join(dir, "sub"));
+    const receipt = await runPlainInit(path.join(dir, "sub"));
+    assert.equal(await realpath(receipt.root as string), await realpath(dir));
+    assert.equal(existsSync(path.join(dir, ".superbee")), false, "no second bundle nested inside the first");
+    assert.match(receipt.hint as string, /move the bundle at the work tree's top into \.superbee\//);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("inside an established board folder (a linked worktree with its own .git file) plain init opens it", async () => {
+  const dir = await tempDir();
+  try {
+    await mkdir(path.join(dir, ".git"));
+    await runInit(["--dir", path.join(dir, ".superbee")]);
+    await writeFile(path.join(dir, ".superbee", ".git"), "gitdir: ../.git/worktrees/board\n");
+    await mkdir(path.join(dir, ".superbee", "tasks"));
+    const receipt = await runPlainInit(path.join(dir, ".superbee", "tasks"));
+    assert.equal(await realpath(receipt.root as string), await realpath(path.join(dir, ".superbee")));
+    assert.equal(existsSync(path.join(dir, ".superbee", ".superbee")), false);
+    assert.match(receipt.hint as string, /sync --establish/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an index.md that is not a bundle's (a docs site's) is left alone; the bundle goes to .superbee/", async () => {
+  const dir = await tempDir();
+  try {
+    await mkdir(path.join(dir, ".git"));
+    await writeFile(path.join(dir, "index.md"), "# docs\n");
+    const receipt = await runPlainInit(dir);
+    assert.equal(await realpath(receipt.root as string), await realpath(path.join(dir, ".superbee")));
+    assert.equal(await readFile(path.join(dir, "index.md"), "utf8"), "# docs\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("--create-only with no --dir inside a Git work tree creates the top's .superbee/ too", async () => {
+  const dir = await tempDir();
+  try {
+    await mkdir(path.join(dir, ".git"));
+    await mkdir(path.join(dir, "src"));
+    const before = process.cwd();
+    process.chdir(path.join(dir, "src"));
+    let receipt: Record<string, unknown>;
+    try {
+      receipt = await runInit(["--create-only"]);
+    } finally {
+      process.chdir(before);
+    }
+    assert.equal(await realpath(receipt.root as string), await realpath(path.join(dir, ".superbee")));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

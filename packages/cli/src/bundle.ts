@@ -68,7 +68,7 @@ import {
   resolveBundleKey,
   runGit,
 } from "@superbee/board-git";
-import { constants, promises as fs, type Dir, type Stats } from "node:fs";
+import { constants, lstatSync, promises as fs, readFileSync, type Dir, type Stats } from "node:fs";
 import path from "node:path";
 import {
   FilesystemMutationLockError,
@@ -103,6 +103,28 @@ async function exists(p: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Whether `dir` holds a bundle's root `index.md`: a plain file whose frontmatter declares an OKF
+ * edition, as `init` writes it. Read-only and bounded; an `index.md` without that (a docs site's)
+ * is not a bundle.
+ */
+export function looksLikeBundle(dir: string): boolean {
+  const index = path.join(dir, "index.md");
+  try {
+    if (!lstatSync(index).isFile()) return false;
+    const text = readFileSync(index, "utf8").slice(0, 16 * 1024);
+    const block = /^---\r?\n([\s\S]*?)\r?\n---\r?(?:\n|$)/.exec(text);
+    return block !== null && /^okf_version\s*:/m.test(block[1]!);
+  } catch {
+    return false;
+  }
+}
+
+/** What to do with a bundle made at a Git work tree's top, which establish cannot share. */
+export const TOP_LEVEL_BUNDLE_MOVE =
+  `move the bundle at the work tree's top into ${BUNDLE_DIR}/ (index.md, conventions/ and its document folders; ` +
+  `\`git mv\` if they are committed, \`mv\` if not)`;
 
 /** The directory `init` should create/open: the explicit `--dir`, else the cwd. */
 export function resolveTargetDir(dirFlag: string | undefined): string {

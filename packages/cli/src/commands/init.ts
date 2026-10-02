@@ -12,7 +12,7 @@ import path from "node:path";
 import { loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
 import { BUNDLE_DIR, BUNDLE_DIRS } from "@superbee/board-git";
 import { configuredInitBundle as initBundle } from "../filesystem-runtime.js";
-import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
+import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, looksLikeBundle, resolveLocalBundleRoute, resolveProjectBinding, TOP_LEVEL_BUNDLE_MOVE, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -67,29 +67,44 @@ export function insideGitRepo(dir: string): boolean {
   return gitWorkTreeTop(dir) !== null;
 }
 
-/** The nearest directory at or above `dir` holding a `.git` entry: the work tree's top. Same fs-only walk. */
+/**
+ * The top of the Git work tree holding `dir`: the nearest directory at or above it with a `.git`
+ * entry. Same fs-only walk. A project's board folder (`.superbee/` once established or joined) is
+ * a linked worktree with its own `.git` file; it belongs to the project around it, so the walk
+ * passes over it to the outer top.
+ */
 export function gitWorkTreeTop(dir: string): string | null {
   let cur = path.resolve(dir);
+  let found: string | null = null;
   for (;;) {
-    if (existsSync(path.join(cur, ".git"))) return cur;
+    if (existsSync(path.join(cur, ".git"))) {
+      if (!BUNDLE_DIRS.includes(path.basename(cur) as (typeof BUNDLE_DIRS)[number])) return cur;
+      found ??= cur;
+    }
     const parent = path.dirname(cur);
-    if (parent === cur) return null;
+    if (parent === cur) return found;
     cur = parent;
   }
 }
 
 /**
- * Where plain `init` (no `--dir`, no project binding) puts the bundle. Inside a Git work tree it is
- * the work tree's conventional folder (`.superbee/`, or an existing legacy one), the only place
- * `sync --establish` shares and every command finds from anywhere in the tree. A current directory
- * that already is a bundle keeps opening as before; outside Git it stays the current directory.
+ * Where plain `init` (no `--dir`, no project binding) puts the bundle inside a Git work tree; outside
+ * one, undefined (the current directory, as always). The nearest bundle from the current directory
+ * up to the top keeps opening, as the other commands' discovery walk finds it, so init never splits
+ * a project into two bundles. With none, it is the top's conventional folder (`.superbee/`, or an
+ * existing legacy one): the one `sync --establish` shares and every command finds from anywhere in
+ * the tree. An `index.md` that is not a bundle's (a docs site's) is not a bundle.
  */
 function plainInitDir(cwd: string): string | undefined {
-  if (existsSync(path.join(cwd, "index.md"))) return undefined;
   const top = gitWorkTreeTop(cwd);
   if (top === null) return undefined;
-  const existing = BUNDLE_DIRS.find((name) => existsSync(path.join(top, name, "index.md")));
-  return path.join(top, existing ?? BUNDLE_DIR);
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (looksLikeBundle(dir)) return dir;
+    const conventional = BUNDLE_DIRS.find((name) => looksLikeBundle(path.join(dir, name)));
+    if (conventional) return path.join(dir, conventional);
+    if (dir === top || path.dirname(dir) === dir) break;
+  }
+  return path.join(top, BUNDLE_DIR);
 }
 
 /** CLI entry: parse flags, init the bundle, print its root. */
@@ -212,14 +227,16 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   // joining an existing shared board from explicitly sharing this new one.
   const top = gitWorkTreeTop(root);
   if (top !== null) {
-    const shareable = path.dirname(root) === top && BUNDLE_DIRS.includes(path.basename(root) as (typeof BUNDLE_DIRS)[number]);
-    receipt.hint =
+    const joinFirst =
       "this bundle is local until shared — if the project already shares a board, " +
-      `\`${cliInvocation()} sync\` joins it (never init there, that mints a divergent second ` +
-      (shareable
-        ? `bundle); to start sharing this one, \`${cliInvocation()} sync --establish\``
-        : `bundle); only the work tree's ${BUNDLE_DIR}/ folder can be shared, and this bundle is not ` +
-          `it: \`${cliInvocation()} init\` with no --dir makes that one`);
+      `\`${cliInvocation()} sync\` joins it (never init there, that mints a divergent second bundle); `;
+    const conventional = path.dirname(root) === top && BUNDLE_DIRS.includes(path.basename(root) as (typeof BUNDLE_DIRS)[number]);
+    receipt.hint = conventional
+      ? `${joinFirst}to start sharing this one, \`${cliInvocation()} sync --establish\``
+      : path.resolve(root) === path.resolve(top)
+        ? `${joinFirst}${TOP_LEVEL_BUNDLE_MOVE}, then \`${cliInvocation()} sync --establish\``
+        : `${joinFirst}only the work tree's ${BUNDLE_DIR}/ folder can be shared, and this bundle is not it ` +
+          `(\`${cliInvocation()} init --dir ${commandQuoted(path.join(top, BUNDLE_DIR))}\` makes that one)`;
   }
   // A selected recipe may not install Context Note (or any kind at all). Never advertise a
   // mutation the resulting bundle cannot perform; use the recipe's parsed `governs` inventory to
