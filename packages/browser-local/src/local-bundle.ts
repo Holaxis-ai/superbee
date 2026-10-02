@@ -201,6 +201,17 @@ export interface SharedBase {
    * conflict review it is the deletion the authority named, which `keep-local` acknowledges.
    */
   tombstone?: Version;
+  /**
+   * The authority acknowledged `version` for bytes other than `content`, the bytes sent: it
+   * stamped fields of its own (an actor, a clock). The working copy is not that version, so the
+   * next pull fetches it as though the head had moved, which also clears this.
+   */
+  refetch?: true;
+}
+
+/** Whether the working copy already holds the authority's `version` as its shared base. */
+function holdsVersion(base: SharedBase | undefined, version: Version | null): boolean {
+  return base !== undefined && base.version === version && base.refetch !== true;
 }
 
 /**
@@ -1503,7 +1514,7 @@ export async function settleIntent(
         requestId,
         "in_flight",
         { state: "acknowledged", attempts, acknowledgedVersion: outcome.version, ...(finding ? { finding } : {}) },
-        { meta: [baseRow(current.target, { version: outcome.version, content: current.content }), acknowledged] },
+        { meta: [baseRow(current.target, { version: outcome.version, content: current.content, ...(finding ? { refetch: true as const } : {}) }), acknowledged] },
       );
     }
     case "conflict": {
@@ -2006,7 +2017,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       return;
     }
     const base = fenced ? fenced.base : await backend.readMeta<SharedBase>(baseKey(id));
-    if (base?.version === head.version) {
+    if (holdsVersion(base, head.version)) {
       report.unchanged.push(id);
       return;
     }
@@ -2094,7 +2105,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       continue;
     }
     const base = await backend.readMeta<SharedBase>(baseKey(head.id));
-    if (base?.version === head.version) report.unchanged.push(head.id);
+    if (holdsVersion(base, head.version)) report.unchanged.push(head.id);
     else {
       candidates.push(head.id);
       versions.set(head.id, head.version);
