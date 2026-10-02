@@ -660,7 +660,7 @@ test("login flag validation is USAGE (exit 2)", async () => {
     for (const argv of [["--port", "8080"], ["--timeout", "5"], ["--wait", "--timeout", "601"], ["--wait", "--loopback"]]) {
       await assert.rejects(login(["--host", h.host, ...argv], io), (e: CliError) => e.exitCode === EXIT.USAGE, argv.join(" "));
     }
-    await assert.rejects(whoami([], { ...io, auth: { ...h.deps, env: {} } }), (e: CliError) => e.code === "USAGE" && /--host/.test(e.help ?? ""));
+    await assert.rejects(login([], { ...io, auth: { ...h.deps, env: {} } }), (e: CliError) => e.code === "USAGE" && /--host/.test(e.help ?? ""));
   } finally {
     await h.cleanup();
   }

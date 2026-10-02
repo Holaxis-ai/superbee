@@ -1009,7 +1009,7 @@ export async function exportCommand(argv: string[], partial: Partial<ExportDeps>
   let source: Source;
   if (reference) {
     source = {
-      target: await requireHostedBundleHost(values.host, deps.auth.home),
+      target: await requireHostedBundleHost(values.host, deps.auth.home, deps.auth.env),
       bundleId: reference.bundleId,
       slug: reference.slug,
       workspace: values.workspace ?? null,

@@ -36,7 +36,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
-import { defaultHostedAuthDeps, hostedWriteHost, hostSourceText, type HostedWriteHost } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, firstSignInCommand, hostedWriteHost, hostSourceText, notSignedInError, type HostedWriteHost } from "../hosted-auth/session.js";
 import { isHostedBundleId } from "../hosted/bundle-id.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
@@ -529,7 +529,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   if (!values.yes) {
     const blockers = [...plan.blockers.map((b) => ({ path: b.path, reason: b.reason, message: b.message })), ...(boardState?.blocker ? [boardState.blocker] : [])];
     if (ambiguous) blockers.push({ path: "", reason: "ambiguous_host", message: ambiguous.message });
-    else if (!target) blockers.push({ path: "", reason: "no_host", message: "no hosted Superbee host: sign in first, or pass --host" });
+    else if (!target) blockers.push({ path: "", reason: "no_host", message: notSignedInError(deps.auth.env).message });
     deps.stdout(
       render(
         {
@@ -564,7 +564,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
             : ambiguous
               ? [...((ambiguous.details?.commands as string[] | undefined) ?? []), ...(blockers.length > 1 ? ["fix the blocking files, then preview again"] : [])]
               : !target
-                ? [`${cliInvocation()} login --host <url>`]
+                ? [String(firstSignInCommand())]
                 : ["fix the blocking files, then preview again"],
         },
         mode,
@@ -573,9 +573,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     return;
   }
 
-  if (!target) {
-    throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
-  }
+  if (!target) throw notSignedInError(deps.auth.env);
   if (boardState?.blocker) {
     throw new CliError("CONFLICT", boardState.blocker.message, {
       details: { reason: boardState.blocker.reason, sync: boardState.block },
