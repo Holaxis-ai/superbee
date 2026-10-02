@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,8 +67,13 @@ export function evaluateSnapshot(snapshot) {
   }
   const mergedReview = Array.isArray(snapshot.mergedPullRequests) && snapshot.mergedPullRequests.some((pr) => isMergedReview(pr, snapshot.reviewedSha) && onMain(pr.mergeComparison));
   if (!onMain(snapshot.comparison) && !mergedReview) errors.push("reviewed source has no merged provenance on main");
-  if (!snapshot.clean) errors.push("reviewed checkout has uncommitted changes");
+  if (snapshot.clean !== true) errors.push("reviewed checkout has uncommitted changes");
   for (const file of SOURCE_FILES) {
+    const source = snapshot.reviewedFiles?.[file];
+    if (!isSha(source?.sha) || source.type !== "blob" || !["100644", "100755"].includes(source.mode) ||
+        source.checkoutMatches !== true || source.indexVisible !== true) {
+      errors.push(`checkout differs from reviewed Git source or hides index changes: ${file}`);
+    }
     if (snapshot.matchingFiles?.[file] !== true) errors.push(`main differs from reviewed source: ${file}`);
   }
   const protection = snapshot.protection?.required_status_checks;
@@ -100,7 +105,7 @@ export function evaluateSnapshot(snapshot) {
       }
     }
   }
-  return { ready: errors.length === 0, errors, mainSha: snapshot.mainSha, reviewedSha: snapshot.reviewedSha };
+  return { ready: errors.length === 0, errors, mainSha: snapshot.mainSha, reviewedSha: snapshot.reviewedSha, reviewedFiles: snapshot.reviewedFiles };
 }
 
 function api(endpoint) {
@@ -126,6 +131,36 @@ function rulesets(repository) {
 export function collectSnapshot(root) {
   const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   const reviewedSha = git("rev-parse", "HEAD");
+  const blob = (sha) => execFileSync("git", ["-C", root, "cat-file", "blob", sha], { maxBuffer: 16 * 1024 * 1024 });
+  const indexTags = new Map(git("ls-files", "-v", "-z", "--", ...SOURCE_FILES).split("\0").filter(Boolean)
+    .map((row) => [row.slice(2), row[0]]));
+  const reviewedFiles = {};
+  const reviewedBytes = new Map();
+  for (const file of SOURCE_FILES) {
+    const rows = git("ls-tree", "-z", "--full-tree", reviewedSha, "--", file).split("\0").filter(Boolean);
+    const [header, name] = rows.length === 1 ? rows[0].split("\t") : [];
+    const [mode, type, sha] = header?.split(" ") ?? [];
+    const source = { sha, mode, type, checkoutMatches: false, indexVisible: indexTags.get(file) === "H" };
+    reviewedFiles[file] = source;
+    if (name !== file || !isSha(sha) || type !== "blob" || !["100644", "100755"].includes(mode)) continue;
+    const bytes = blob(sha);
+    reviewedBytes.set(file, bytes);
+    // Status trusts index flags and core.filemode. Inspect paths and bytes
+    // directly, including ancestor directories so symlinks cannot redirect reads.
+    try {
+      const components = file.split("/");
+      let current = root;
+      for (const component of components.slice(0, -1)) {
+        current = path.join(current, component);
+        const directory = lstatSync(current);
+        if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("nonregular source parent");
+      }
+      const local = path.join(root, file);
+      const stat = lstatSync(local);
+      source.checkoutMatches = stat.isFile() && !stat.isSymbolicLink() &&
+        Boolean(stat.mode & 0o111) === (mode === "100755") && readFileSync(local).equals(bytes);
+    } catch { source.checkoutMatches = false; }
+  }
   const repository = api(`repos/${ENGINE}`);
   const mainSha = api(`repos/${ENGINE}/commits/main`).sha;
   const comparison = api(`repos/${ENGINE}/compare/${reviewedSha}...${mainSha}`).status;
@@ -135,7 +170,8 @@ export function collectSnapshot(root) {
   const matchingFiles = {};
   for (const file of SOURCE_FILES) {
     const remote = api(`repos/${ENGINE}/contents/${file}?ref=${mainSha}`);
-    matchingFiles[file] = remote.encoding === "base64" && Buffer.from(remote.content, "base64").equals(readFileSync(path.join(root, file)));
+    matchingFiles[file] = reviewedBytes.has(file) && remote.encoding === "base64" &&
+      typeof remote.content === "string" && Buffer.from(remote.content, "base64").equals(reviewedBytes.get(file));
   }
   const workflows = {};
   for (const file of Object.keys(WORKFLOW_JOBS)) {
@@ -152,6 +188,7 @@ export function collectSnapshot(root) {
     mergedPullRequests,
     clean: git("status", "--porcelain", "--untracked-files=all") === "",
     matchingFiles,
+    reviewedFiles,
     protection: api(`repos/${ENGINE}/branches/main/protection`),
     engineRulesets: rulesets(ENGINE),
     windowsRulesets: rulesets(WINDOWS),

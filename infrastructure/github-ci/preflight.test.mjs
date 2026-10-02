@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluateSnapshot, ENGINE, LEGACY_CHECKS, RELEASE_TAGS, SOURCE_FILES, WORKFLOW_JOBS } from "./preflight.mjs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { collectSnapshot, evaluateSnapshot, ENGINE, WINDOWS, LEGACY_CHECKS, RELEASE_TAGS, SOURCE_FILES, WORKFLOW_JOBS } from "./preflight.mjs";
 
 function fixture() {
   const mainSha = "a".repeat(40);
@@ -8,6 +12,7 @@ function fixture() {
   return {
     repository: ENGINE, defaultBranch: "main", mainSha, reviewedSha: "b".repeat(40), comparison: "ahead", clean: true,
     matchingFiles: Object.fromEntries(SOURCE_FILES.map((file) => [file, true])),
+    reviewedFiles: Object.fromEntries(SOURCE_FILES.map((file) => [file, { sha: "e".repeat(40), type: "blob", mode: "100644", checkoutMatches: true, indexVisible: true }])),
     protection: { required_status_checks: { strict: true, checks: LEGACY_CHECKS.map((context) => ({ context, app_id: 15368 })) } },
     engineRulesets: [{ id: 20914366, enforcement: "active", target: "tag", source_type: "Repository", source: ENGINE,
       conditions: { ref_name: { include: [...RELEASE_TAGS], exclude: [] } }, bypass_actors: [], rules: [{ type: "update" }, { type: "deletion" }] }], windowsRulesets: [],
@@ -25,6 +30,11 @@ for (const [name, mutate] of Object.entries({
   "dirty source": (s) => { s.clean = false; },
   "changed workflow": (s) => { s.matchingFiles[SOURCE_FILES[0]] = false; },
   "missing source comparison": (s) => { delete s.matchingFiles; },
+  "missing Git source attestation": (s) => { delete s.reviewedFiles; },
+  "missing reviewed blob": (s) => { delete s.reviewedFiles[SOURCE_FILES[0]].sha; },
+  "nonregular reviewed source": (s) => { s.reviewedFiles[SOURCE_FILES[0]].mode = "120000"; },
+  "checkout byte or mode mismatch": (s) => { s.reviewedFiles[SOURCE_FILES[0]].checkoutMatches = false; },
+  "hidden source index flag": (s) => { s.reviewedFiles[SOURCE_FILES[0]].indexVisible = false; },
   "missing legacy protection": (s) => { delete s.protection; },
   "wrong check application": (s) => { s.protection.required_status_checks.checks[0].app_id = 1; },
   "weakened strict policy": (s) => { s.protection.required_status_checks.strict = false; },
@@ -123,4 +133,94 @@ for (const [file, names] of Object.entries(WORKFLOW_JOBS)) {
       }
     });
   }
+}
+
+function collectedFixture(mutate = () => {}) {
+  const root = mkdtempSync(path.join(os.tmpdir(), "engine-source-test-"));
+  const bin = mkdtempSync(path.join(os.tmpdir(), "engine-source-gh-"));
+  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  const previousPath = process.env.PATH;
+  try {
+    for (const file of SOURCE_FILES) {
+      mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      writeFileSync(path.join(root, file), `reviewed ${file}\n`);
+    }
+    git("init", "-q"); git("add", ".");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "reviewed source");
+    const reviewedSha = git("rev-parse", "HEAD");
+    const mainSha = mutate({ root, git, reviewedSha }) ?? reviewedSha;
+    const data = {};
+    const snapshot = fixture();
+    snapshot.mainSha = mainSha;
+    data[`repos/${ENGINE}`] = { full_name: ENGINE, default_branch: "main" };
+    data[`repos/${ENGINE}/commits/main`] = { sha: mainSha };
+    data[`repos/${ENGINE}/compare/${reviewedSha}...${mainSha}`] = { status: mainSha === reviewedSha ? "identical" : "ahead" };
+    for (const file of SOURCE_FILES) data[`repos/${ENGINE}/contents/${file}?ref=${mainSha}`] = {
+      type: "file", encoding: "base64", content: execFileSync("git", ["-C", root, "show", `${mainSha}:${file}`]).toString("base64"),
+    };
+    for (const [file, names] of Object.entries(WORKFLOW_JOBS)) {
+      const id = file === "ci-tests.yml" ? 1 : 2;
+      data[`repos/${ENGINE}/actions/workflows/${file}/runs?event=push&head_sha=${mainSha}&per_page=100&page=1`] = { workflow_runs: [
+        { id, run_number: 1, run_attempt: 1, event: "push", head_sha: mainSha, status: "completed", conclusion: "success" },
+      ] };
+      data[`repos/${ENGINE}/actions/runs/${id}/attempts/1/jobs?per_page=100&page=1`] = { jobs: names.map((name) => ({
+        name, head_sha: mainSha, status: "completed", conclusion: "success",
+      })) };
+    }
+    data[`repos/${ENGINE}/branches/main/protection`] = snapshot.protection;
+    data[`repos/${ENGINE}/rulesets?per_page=100&page=1`] = [{ id: 20914366 }];
+    data[`repos/${ENGINE}/rulesets/20914366`] = snapshot.engineRulesets[0];
+    data[`repos/${WINDOWS}/rulesets?per_page=100&page=1`] = [];
+    writeFileSync(path.join(bin, "data.json"), JSON.stringify(data));
+    writeFileSync(path.join(bin, "gh"), '#!/usr/bin/env node\nconst fs=require("node:fs"),path=require("node:path");const data=JSON.parse(fs.readFileSync(path.join(__dirname,"data.json")));const key=process.argv[3];if(!(key in data))process.exit(3);console.log(JSON.stringify(data[key]));\n', { mode: 0o755 });
+    process.env.PATH = bin + path.delimiter + previousPath;
+    return collectSnapshot(root);
+  } finally {
+    process.env.PATH = previousPath;
+    rmSync(root, { recursive: true, force: true }); rmSync(bin, { recursive: true, force: true });
+  }
+}
+
+test("collector accepts clean owning source equal to reviewed Git blobs and main", () => {
+  assert.equal(evaluateSnapshot(collectedFixture()).ready, true);
+});
+
+for (const flag of ["--skip-worktree", "--assume-unchanged"]) {
+  test(`collector rejects hidden matching-main byte drift: ${flag}`, () => {
+    const snapshot = collectedFixture(({ root, git, reviewedSha }) => {
+      const file = SOURCE_FILES[0];
+      writeFileSync(path.join(root, file), "unreviewed main source\n");
+      git("add", file);
+      git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "changed main source");
+      const mainSha = git("rev-parse", "HEAD");
+      git("reset", "--hard", reviewedSha);
+      git("update-index", flag, file);
+      writeFileSync(path.join(root, file), "unreviewed main source\n");
+      assert.equal(git("status", "--porcelain", "--untracked-files=all"), "");
+      assert.equal(git("merge-base", "--is-ancestor", reviewedSha, mainSha), "");
+      return mainSha;
+    });
+    assert.equal(snapshot.clean, true);
+    assert.equal(snapshot.matchingFiles[SOURCE_FILES[0]], false, "remote agreement must use reviewed blob, not disk");
+    assert.equal(evaluateSnapshot(snapshot).ready, false);
+  });
+  test(`collector rejects hidden index flag even with unchanged bytes: ${flag}`, () => {
+    const snapshot = collectedFixture(({ git }) => { git("update-index", flag, SOURCE_FILES[0]); });
+    assert.equal(snapshot.clean, true);
+    assert.equal(evaluateSnapshot(snapshot).ready, false);
+  });
+}
+
+for (const [name, mutate] of Object.entries({
+  "hidden byte drift with reviewed main": ({ root, git }) => { git("update-index", "--skip-worktree", SOURCE_FILES[0]); writeFileSync(path.join(root, SOURCE_FILES[0]), "changed checkout\n"); },
+  "executable mode drift ignored by Git": ({ root, git }) => { git("config", "core.filemode", "false"); chmodSync(path.join(root, SOURCE_FILES[0]), 0o755); },
+  "same-byte symlink": ({ root }) => { const file = path.join(root, SOURCE_FILES[0]); writeFileSync(path.join(root, "target"), readFileSync(file)); rmSync(file); symlinkSync(path.join(root, "target"), file); },
+  "symlink parent directory": ({ root }) => { const directory = path.join(root, ".github/workflows"); const target = path.join(root, "workflow-target"); mkdirSync(target); for (const file of ["ci-tests.yml", "codeql.yml"]) writeFileSync(path.join(target, file), readFileSync(path.join(directory, file))); rmSync(directory, { recursive: true }); symlinkSync(target, directory); },
+  "missing source": ({ root }) => rmSync(path.join(root, SOURCE_FILES[0])),
+})) {
+  test(`collector refuses checkout source type, mode or byte mismatch: ${name}`, () => {
+    const snapshot = collectedFixture(mutate);
+    assert.equal(snapshot.reviewedFiles[SOURCE_FILES[0]].checkoutMatches, false);
+    assert.equal(evaluateSnapshot(snapshot).ready, false);
+  });
 }

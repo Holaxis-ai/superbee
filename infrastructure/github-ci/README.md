@@ -11,7 +11,13 @@ of the exact reviewed Superbee implementation commit, after its human merge:
 node infrastructure/github-ci/preflight.mjs
 ```
 
-The preflight verifies the reviewed engine source against main, successful current
+The preflight compares main source bytes with the owning files' immutable Git
+blobs at the reviewed checkout SHA. It separately verifies checkout bytes, regular
+file and parent-directory types, executable modes, and visible index entries;
+`assume-unchanged` and `skip-worktree` entries refuse readiness even when Git status
+is clean. The receipt identifies each reviewed blob. The exact reviewed SHA and
+checkout root recorded in the private activation runbook remain authoritative.
+It also verifies successful current
 main-push CI and CodeQL evidence (every runtime shard, maintained proof lane,
 both security analyses, and their stable aggregate statuses), existing protection
 invariants, and the absence
