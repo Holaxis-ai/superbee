@@ -11,15 +11,15 @@ name: CI tests
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
 # app-bound context, then remove the two legacy `gate (node N)` requirements. Roll back by restoring
 # the legacy requirements before removing the canonical one. The compatibility jobs stay until a
-# later workflow cleanup. Merge groups run the same required checks on the complete candidate;
-# enable the repository queue only after this workflow is on main.
+# later workflow cleanup. Queue candidates run the same full proof on their integration SHA.
+# Live queue enforcement is separate from this workflow capability; see infrastructure/github-ci.
 on:
   pull_request:
-  merge_group:
-    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -232,9 +232,16 @@ jobs:
         with:
           node-version: 26
       - name: Reject every non-success or missing required result
-        env:
-          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
-        run: npm run ci:aggregate
+        uses: ./.github/actions/ci-gate
+        with:
+          needs-json: ${{ toJSON(needs) }}
+          policy-json: >-
+            [{"job":"runtime","required":true},
+             {"job":"aliasing-host","required":true},
+             {"job":"smoke-node-20","required":true},
+             {"job":"distribution","required":true},
+             {"job":"browser","required":true},
+             {"job":"scripts","required":true}]
 
   compatibility-gate-node-22:
     name: gate (node 22)
@@ -251,9 +258,16 @@ jobs:
         with:
           node-version: 26
       - name: Preserve the legacy context without weakening its coverage
-        env:
-          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
-        run: npm run ci:aggregate
+        uses: ./.github/actions/ci-gate
+        with:
+          needs-json: ${{ toJSON(needs) }}
+          policy-json: >-
+            [{"job":"runtime","required":true},
+             {"job":"aliasing-host","required":true},
+             {"job":"smoke-node-20","required":true},
+             {"job":"distribution","required":true},
+             {"job":"browser","required":true},
+             {"job":"scripts","required":true}]
 
   compatibility-gate-node-26:
     name: gate (node 26)
@@ -270,6 +284,13 @@ jobs:
         with:
           node-version: 26
       - name: Preserve the legacy context without weakening its coverage
-        env:
-          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
-        run: npm run ci:aggregate
+        uses: ./.github/actions/ci-gate
+        with:
+          needs-json: ${{ toJSON(needs) }}
+          policy-json: >-
+            [{"job":"runtime","required":true},
+             {"job":"aliasing-host","required":true},
+             {"job":"smoke-node-20","required":true},
+             {"job":"distribution","required":true},
+             {"job":"browser","required":true},
+             {"job":"scripts","required":true}]

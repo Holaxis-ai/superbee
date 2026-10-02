@@ -100,28 +100,21 @@ so its run starts the pre-merge verdict; dispatch `CI tests` on a branch only wh
 promptly, and never
 treat a branch dispatch as a serial prerequisite for opening or progressing the PR — a dispatch and
 a PR run on the same SHA are the same coverage paid twice. One run can satisfy both validations
-only when the merged SHA equals the validated SHA (fast-forward or a merge queue; workflow
-support is recorded in `scripts/ci-lanes.json`; live queue settings are owned by GitHub).
+only when the merged SHA equals the validated SHA. Merge-group CI evaluates GitHub's candidate
+integration SHA; do not substitute its verdict for a different final merge/tag SHA. CI and CodeQL
+support `merge_group: checks_requested`, with the same unconditional lanes and required status
+names as PR runs. Every proof checkout binds `github.sha` explicitly. Queue runs do not cancel each
+other through PR cancellation rules.
+`scripts/ci-lanes.json` records queue capability only. Live activation is verified by the read-only
+`infrastructure/github-ci` preflight and recorded in the project bundle. The private
+[holaxis-infrastructure runbook](https://github.com/Holaxis-ai/holaxis-infrastructure/tree/main/github/superbee)
+owns the settings rollout after these workflows and current-main status evidence exist.
 
-### Merge queue
-
-`CI tests` runs on `merge_group: checks_requested` as well as pull requests, pushes to `main`,
-and manual dispatch. Every job checks out the event's `github.sha`, so queue checks validate the
-complete candidate, including the latest base and earlier queued PRs. All required lanes and the
-canonical and compatibility check names stay the same. Concurrency is isolated by event and ref;
-only superseded PR runs are cancelled. Push-to-main validation remains enabled for release-source
-checks; queue adoption does not promise fewer CI runs.
-
-Enable the GitHub queue only after this workflow has landed on `main`. Capture the current branch
-protections first, preserve their required checks and unrelated settings, and replace the strict
-up-to-date requirement with required queue validation. Start with low build concurrency and a check
-response timeout longer than the slowest required lane. Read back the settings, then verify a real
-queued candidate reports every required check and merges through the queue before declaring the
-rollout complete. The human still chooses which PRs to enqueue; queue configuration does not grant
-an agent permission to enqueue or merge them. If activation fails, restore strict up-to-date
-protection before disabling the queue.
-
-### Lane projection
+The canonical and both legacy engine gates call `.github/actions/ci-gate` from the candidate
+checkout. Its complete explicit policy must agree with every required lane. Consumer repositories
+pin the same action to a reviewed full SHA and retain their own lane/scope wiring tests. The scripts
+lane runs the shared evaluator suite and engine readiness tests. Terraform validation and
+mocked-provider tests run in the private infrastructure repository.
 
 The finite product-validation lane projection below is checked against `scripts/ci-lanes.json`, root
 package scripts, and `.github/workflows/ci-tests.yml`. Change the executable topology first, then
@@ -145,8 +138,8 @@ Node's `--test-shard`, and the smaller workspace suites run in both shards. Repr
 locally with `SUPERBEE_TEST_SHARD=1/2 npm run ci:runtime`; without the variable, `ci:runtime` runs
 everything.
 
-CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, a weekly
-schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
+CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, merge-group
+candidates, a weekly schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
 `.github/codeql/codeql-config.yml`; both surfaces are pinned by `scripts/ci-lanes.json` and
 `scripts/workflow-codeql-topology.test.mjs`. Every action in the CodeQL workflow is pinned to a
 full commit SHA because the analysis jobs upload security results and also run unattended.
@@ -154,7 +147,7 @@ full commit SHA because the analysis jobs upload security results and also run u
 <!-- contributing-codeql-analysis:start -->
 | Analysis | Source scope | Build mode | Query coverage | Threat model |
 | --- | --- | --- | --- | --- |
-| JavaScript/TypeScript | `packages`, `scripts`; excludes dependencies, `dist`, tests, e2e, fixtures | `none` | default + `security-extended` | remote + local (beta) |
+| JavaScript/TypeScript | `packages`, `scripts`, `.github/actions/ci-gate`, `infrastructure/github-ci`; excludes dependencies, `dist`, tests, e2e, fixtures | `none` | default + `security-extended` | remote + local (beta) |
 | GitHub Actions | `.github/workflows` | `none` | default + `security-extended` | CodeQL Actions defaults |
 <!-- contributing-codeql-analysis:end -->
 
