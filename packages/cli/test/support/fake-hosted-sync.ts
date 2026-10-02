@@ -485,6 +485,11 @@ export class FakeHost {
     return root ? { content: root.content, version: root.version } : null;
   }
 
+  /** A bundle with no root `index.md` at all (the heads' root version is `none`). */
+  clearRoot(): void {
+    this.storedRoot = null;
+  }
+
   /** A change to the front page made on the host (another person, in the app). */
   putRoot(content: string): string {
     const version = versionOfBytes(content);

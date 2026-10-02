@@ -1,6 +1,6 @@
 {
-  "name": "capabilities-200",
-  "description": "The working copy's capabilities for a writable bundle.",
+  "name": "capabilities-200-root-writes-allowed",
+  "description": "The capabilities of a bundle whose front page the bearer may replace: rootWrites allowed.",
   "route": "/sync/v1/capabilities",
   "rows": [
     "capabilities 200"
