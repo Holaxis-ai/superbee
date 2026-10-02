@@ -18,6 +18,7 @@ import {
   isAnswerTooLarge,
   operationRunBody,
   readRefusal,
+  statedDocumentInputBytes,
   type HostedAnswer,
   type HostedCarrier,
   type HostedHistoryAnswer,
@@ -106,6 +107,11 @@ export interface HostedIdentity {
    * `tenantIds` order. A host from before qualified references reports no slugs: every one is null.
    */
   readonly workspaces: readonly HostedWorkspace[];
+  /**
+   * The host's whole-document write bound (`limits.documentInputBytes`), or null when it states
+   * none (every host before the bound was stated accepts 65,536).
+   */
+  readonly documentInputBytes: number | null;
 }
 
 export interface HostedWorkspace {
@@ -281,7 +287,7 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
     carrier,
     signal: controller.signal,
     async whoami() {
-      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown; workspaces?: unknown } | undefined;
+      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown; workspaces?: unknown; limits?: unknown } | undefined;
       if (
         typeof body?.principalId !== "string" ||
         body.principalId === "" ||
@@ -313,6 +319,7 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
         principalId: body.principalId,
         tenantIds,
         workspaces: tenantIds.map((tenantId) => ({ tenantId, slug: slugs.get(tenantId) ?? null })),
+        documentInputBytes: statedDocumentInputBytes(body.limits),
       };
     },
     async bundles() {

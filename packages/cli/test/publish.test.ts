@@ -23,6 +23,7 @@ import { folderConflicts, folderMatchesProjection, readProjection, scanCheckout 
 import { openLocalBundle } from "@superbee/browser-local";
 import { FakeCreateHost } from "./support/fake-hosted-create.js";
 import { HOST, TOKEN } from "./support/fake-hosted-sync.js";
+import { CURRENT_HOST_DOCUMENT_INPUT_BYTES } from "@superbee/core/hosted-transport";
 
 interface Harness {
   home: string;
@@ -305,7 +306,7 @@ test("a document the host would refuse blocks the preview and --yes, before any 
   const h = await harness();
   const folder = path.join(h.cwd, "b");
   await writeBundle(folder);
-  await writeFile(path.join(folder, "notes", "huge.md"), `---\ntype: Note\n---\n${"x".repeat(70 * 1024)}\n`);
+  await writeFile(path.join(folder, "notes", "huge.md"), `---\ntype: Note\n---\n${"x".repeat(CURRENT_HOST_DOCUMENT_INPUT_BYTES)}\n`);
   const fake = new FakeCreateHost();
   const preview = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
   assert.equal(preview.ready, false);
@@ -313,6 +314,21 @@ test("a document the host would refuse blocks the preview and --yes, before any 
   const error = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], fake));
   assert.equal(error.details?.reason, "blocked");
   assert.equal(fake.requests.length, 0);
+});
+
+test("a document over 64 KiB publishes to a host that states the larger bound, and is refused before creation by one that states none", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "b");
+  await writeBundle(folder);
+  await writeFile(path.join(folder, "notes", "long.md"), `---\ntype: Note\n---\n${"x".repeat(70 * 1024)}\n`);
+  const old = new FakeCreateHost({ documentInputBytes: null });
+  const error = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], old));
+  assert.equal(error.details?.reason, "blocked");
+  assert.match(error.message, /accepts up to 64 KiB/);
+  assert.equal(old.creates.length, 0, "nothing is created on a host that would refuse it");
+  const current = new FakeCreateHost();
+  await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], current);
+  assert.equal(current.creates.length, 1);
 });
 
 test("a document that does not satisfy its Kind, or a Kind convention with a problem, blocks before any request", async () => {

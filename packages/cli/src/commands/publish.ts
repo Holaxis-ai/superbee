@@ -25,7 +25,7 @@ import { parseArgs } from "node:util";
 
 import { runGit } from "@superbee/board-git";
 import { parseMarkdown, RemoteError, stripHostText } from "@superbee/core";
-import { HostedCarrierError } from "@superbee/core/hosted-transport";
+import { CURRENT_HOST_DOCUMENT_INPUT_BYTES, HostedCarrierError } from "@superbee/core/hosted-transport";
 
 import { parseLeafOrUsage } from "../args.js";
 import { findBundleRoot, openBundle, resolveLocalBundleTarget, resolveProjectBinding } from "../bundle.js";
@@ -67,7 +67,9 @@ staged: a list of everything, then parts of about 1 MiB, then each file, then co
 host has created it, with progress on stderr (JSON lines with --json). Staged, a bundle holds at
 most 10,000 documents, 1,000 reserved files, 1,000 other files of 16 MiB each and 64 MiB of
 current files in all, and 5,000 earlier versions (64 MiB); the list of everything is at most
-3 MiB. Every way: 64 KiB per document and reserved file, 16 KiB of frontmatter.
+3 MiB. Every way: each document within the host's bound (983,040 bytes as sent on current
+hosts, about 950 KiB of Markdown; 64 KiB on older ones), 64 KiB per reserved file, 16 KiB of
+frontmatter.
 
 With --yes, signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the
 command to re-run), creates the bundle in your workspace (only you can reach it, at write, until
@@ -497,7 +499,11 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     ambiguous = error;
   }
   const target = chosen?.target ?? null;
-  const plan = await planPublish(canonical, withHistory ? { history: true, ...(board ? { board } : {}), now: deps.auth.now() } : { history: false });
+  // The preview makes no request, so it plans against the bound current hosts state; `--yes` asks
+  // the host and plans again under what it states, before anything is sent.
+  const planFor = (documentInputBytes: number | null) =>
+    planPublish(canonical, withHistory ? { history: true, ...(board ? { board } : {}), now: deps.auth.now(), documentInputBytes } : { history: false, documentInputBytes });
+  let plan = await planFor(CURRENT_HOST_DOCUMENT_INPUT_BYTES);
 
   const yesCommand = yesCommandFor(target ? bindingHostArgument(target) : null);
   // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents, read a page at a time, which is also
@@ -552,6 +558,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
               : [uncheckable]),
           ],
           network: "none (preview)",
+          document_bound: `checked against ${CURRENT_HOST_DOCUMENT_INPUT_BYTES} bytes as sent per document (current hosts); --yes checks the host's own bound before anything is sent`,
           help: blockers.length === 0
             ? [String(yesCommand)]
             : ambiguous
@@ -596,6 +603,15 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       details: { reason: "choose_workspace", workspaces: workspaceNames(identity) },
       help: otherWorkspace,
     });
+  }
+  if (identity.documentInputBytes !== CURRENT_HOST_DOCUMENT_INPUT_BYTES) {
+    plan = await planFor(identity.documentInputBytes);
+    if (plan.blockers.length > 0) {
+      throw new CliError("USAGE", `${plan.blockers.length} thing(s) in the bundle cannot be published to ${target.origin}: ${plan.blockers[0]!.message}`, {
+        details: { reason: "blocked", host: target.origin, blockers: plan.blockers.slice(0, LISTED), blockers_total: plan.blockers.length },
+        help: "make the documents smaller, or publish to a host that accepts larger documents",
+      });
+    }
   }
 
   const created = await sendCreation(plan, { workspace, bundleId, name, home, canonical, target, client, yesCommand, deps, json: values.json === true });

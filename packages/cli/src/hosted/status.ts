@@ -49,6 +49,7 @@ export async function classifyCheckout(binding: CheckoutBinding, home: string, s
     // What the host said at the last sync: a preview makes no request.
     definitionWrites: binding.definition_writes ?? null,
     rootWrites: projection.rootWrites ?? "refused",
+    documentInputBytes: binding.document_input_bytes ?? null,
   });
   for (const id of report.pending) result.unsent.add(id);
   for (const id of report.conflicted) result.conflicts.add(id);

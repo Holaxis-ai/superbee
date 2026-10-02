@@ -61,13 +61,23 @@ const UNSAFE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "p
 export const WHOLE_DOCUMENT_SETTLEMENT: NonNullable<UncertainWriteOptions["settlement"]> = "recorded-only";
 
 export const WHOLE_DOCUMENT_BOUNDS = Object.freeze({
-  /** The write routes' request ceiling; a larger payload is refused here before it leaves. */
+  /**
+   * The write routes' request ceiling on a host that states none (`limits.documentInputBytes`); a
+   * larger payload is refused here before it leaves. A host that states its bound is held to that.
+   */
   payloadBytes: 65536,
   /** A write answer is a bounded result envelope. */
   answerBytes: 65536,
   /** An outcome answer carries the committed document as base64 under this envelope ceiling. */
   outcomeAnswerBytes: 2 * 1024 * 1024,
 });
+
+/**
+ * The whole-document write bound current hosts state (`limits.documentInputBytes`, 983,040 bytes:
+ * 1 MiB less a 64 KiB margin). A client plans against it only before it has asked the host, and
+ * holds a request to what the host actually states.
+ */
+export const CURRENT_HOST_DOCUMENT_INPUT_BYTES = 983_040;
 
 export interface WholeDocumentRoutes {
   create: string;
@@ -215,6 +225,12 @@ export interface WholeDocumentTransportOptions {
    */
   acceptDeletes?: number;
   /**
+   * The host's whole-document write bound as its capabilities answer states it
+   * (`documentInputBytes`), in bytes of the request's JSON. Absent or null: the host states none,
+   * and {@link WHOLE_DOCUMENT_BOUNDS}`.payloadBytes` applies.
+   */
+  documentInputBytes?: number | null;
+  /**
    * Told of each delete the host's mass-delete hold refused (`428 deletions_held`), with the
    * bundle's counts. The intent is settled `refused` with {@link DELETIONS_HELD_REFUSAL_CODE},
    * which never pauses the store: it stays until a person accepts or restores it.
@@ -237,6 +253,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   if (options.via !== undefined && !isAgentLabelVia(options.via)) throw new TypeError("the via token is not one the host admits");
   if (options.acceptDeletes !== undefined && !isAcceptedDeletionCount(options.acceptDeletes)) throw new TypeError("acceptDeletes is not a count the host admits");
   const via = options.via;
+  const payloadBytes = options.documentInputBytes ?? WHOLE_DOCUMENT_BOUNDS.payloadBytes;
 
   /**
    * The served head as the conflict a refusal stands for. Absent, it is a conflict against no
@@ -287,8 +304,8 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   function prepare(intent: OperationIntent): { request: WholeDocumentRequest; body: string } {
     const request = wholeDocumentRequest(bundleId, intent, options.okfVersion);
     const body = JSON.stringify(request.payload);
-    if (encoder.encode(body).byteLength > WHOLE_DOCUMENT_BOUNDS.payloadBytes)
-      throw new WholeDocumentInputError(`the document exceeds ${WHOLE_DOCUMENT_BOUNDS.payloadBytes} bytes as a request`);
+    if (encoder.encode(body).byteLength > payloadBytes)
+      throw new WholeDocumentInputError(`the document exceeds ${payloadBytes} bytes as a request`);
     return { request, body };
   }
 

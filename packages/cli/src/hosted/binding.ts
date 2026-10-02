@@ -64,6 +64,12 @@ export interface CheckoutBinding {
    * up-front refusals read it with no request; the host stays the authority.
    */
   readonly definition_writes?: DefinitionWrites;
+  /**
+   * The host's whole-document write bound (`limits.documentInputBytes`), as `sync` and `checkout`
+   * last read it from the capabilities answer, so offline `status` and the turn-end hook hold the
+   * same documents sync would. Absent: the host did not say, and 65,536 applies.
+   */
+  readonly document_input_bytes?: number;
 }
 
 /** What a capabilities answer says about model changes, as a binding records it. */
@@ -75,18 +81,30 @@ export function withDefinitionWrites(binding: CheckoutBinding, stated: Definitio
   return stated === null ? rest : { ...rest, definition_writes: stated };
 }
 
+/** What a capabilities answer says that a binding records: model changes and the write bound. */
+export interface HostStatement {
+  readonly definitionWrites: DefinitionWrites | null;
+  readonly documentInputBytes: number | null;
+}
+
+/** The binding with both recorded host statements as the host now makes them (`null`: it does not say). */
+export function withHostStatement(binding: CheckoutBinding, stated: HostStatement): CheckoutBinding {
+  const { document_input_bytes: _previous, ...rest } = withDefinitionWrites(binding, stated.definitionWrites);
+  return stated.documentInputBytes === null ? rest : { ...rest, document_input_bytes: stated.documentInputBytes };
+}
+
 /**
- * Record what a capabilities answer said about model changes on a ready checkout's binding, the
- * one field of the record that changes after checkout: a cache of the host's last answer for the
- * up-front refusals, never authority. The caller holds the checkout lock; the record is re-read
+ * Record what a capabilities answer said about model changes and the write bound on a ready
+ * checkout's binding, the two fields of the record that change after checkout: a cache of the
+ * host's last answer for the up-front refusals and offline holds, never authority. The caller holds the checkout lock; the record is re-read
  * under it and written only when the answer changed. Returns the binding as recorded.
  */
-export async function recordDefinitionWrites(home: string, binding: CheckoutBinding, stated: DefinitionWrites | null): Promise<CheckoutBinding> {
+export async function recordHostStatement(home: string, binding: CheckoutBinding, stated: HostStatement): Promise<CheckoutBinding> {
   const current = await readBinding(home, binding.checkout_id);
   // Released meanwhile (`checkout --release`): nothing is written back, so nothing is revived.
   if (current === null) return binding;
-  if ((current.definition_writes ?? null) === stated) return current;
-  const next = withDefinitionWrites(current, stated);
+  if ((current.definition_writes ?? null) === stated.definitionWrites && (current.document_input_bytes ?? null) === stated.documentInputBytes) return current;
+  const next = withHostStatement(current, stated);
   await writeBinding(home, next);
   return next;
 }
@@ -203,7 +221,12 @@ export async function readBinding(home: string, checkoutId: string): Promise<Che
   // A `definition_writes` this CLI does not know (a newer CLI's) reads as `refused`: rejecting the
   // record would read as no checkout, turning every up-front refusal off.
   const stated: unknown = value.definition_writes;
-  return stated === undefined || stated === "allowed" || stated === "refused" ? value : { ...value, definition_writes: "refused" };
+  const known = stated === undefined || stated === "allowed" || stated === "refused" ? value : { ...value, definition_writes: "refused" as const };
+  // A malformed bound reads as none: 65,536, the bound of every host before it was stated.
+  const bound: unknown = known.document_input_bytes;
+  if (bound === undefined || (typeof bound === "number" && Number.isSafeInteger(bound) && bound > 0)) return known;
+  const { document_input_bytes: _malformed, ...rest } = known;
+  return rest;
 }
 
 /** Index a ready checkout by its folder path. The index is written last, so a partial checkout is never found. */
