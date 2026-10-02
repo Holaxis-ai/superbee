@@ -357,7 +357,7 @@ export async function hostedWriteHost(flag: string | undefined, home: string, re
   if (candidates.size > 1) {
     const hosts = [...candidates].sort();
     const signedOut = hosts.filter((host) => !stored.includes(host));
-    throw new CliError("USAGE", `more than one hosted Superbee host could be meant (${hosts.join(", ")}); name the one this write is for with --host`, {
+    throw new CliError("USAGE", `more than one hosted Superbee host could be meant (${hosts.join(", ")}); name the one this command is for with --host`, {
       details: {
         reason: "ambiguous_host",
         hosts,

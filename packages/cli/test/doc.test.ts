@@ -78,6 +78,7 @@ import {
   guardDroppedLinks,
 } from "../src/body-replace-guards.js";
 import { mutateDoc } from "../src/mutate.js";
+import { DOC_READ_USAGE } from "../src/commands/doc/common.js";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
 import { applyRecipe } from "../src/recipes.js";
@@ -2848,10 +2849,14 @@ test("doc read --offset: pages chain to the exact body, a moved version is a con
       assert.ok(Buffer.byteLength(page.body as string) <= 32_768, "a page stays within the default bound");
       joined += page.body as string;
       version = page.head_version as string;
-      const range = page.range as { complete: boolean; next_offset?: number };
+      const range = page.range as { complete: boolean; next_offset?: number; end: number };
       offset = range.next_offset;
+      // The last page has no next_offset and complete false: complete means one page held the
+      // whole body, so the help and the skill tell agents to page on next_offset (dogfood 2026-10-02).
+      if (offset === undefined) assert.deepEqual([range.complete, range.end], [false, body.length]);
     }
     assert.equal(joined, body);
+    assert.match(DOC_READ_USAGE.replace(/\s+/g, " "), /The page without next_offset is the last/);
     await assert.rejects(runDoc(["read", "docs/long", "--offset", "0", "--expected-version", `sha256:${"0".repeat(64)}`, "--dir", dir]), (error: unknown) => (error as CliError).code === "CONFLICT");
     await assert.rejects(runDoc(["read", "docs/long", "--offset", String(body.length), "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
     await assert.rejects(runDoc(["read", "docs/long", "--max-bytes", "10", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
