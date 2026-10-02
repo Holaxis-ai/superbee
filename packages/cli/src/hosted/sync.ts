@@ -36,6 +36,7 @@ import {
   type DeletionRefusal,
   type LocalBundle,
   type PullReport,
+  type SharedBase,
 } from "@superbee/browser-local";
 import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
@@ -48,7 +49,7 @@ import {
   type HostedCarrier,
   type HostedReadAdapter,
 } from "@superbee/core/hosted-transport";
-import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalSnapshotConflict, type IntentRecord, type NewIntentRecord } from "@superbee/core/journaled-backend";
+import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalGuardConflict, JournalSnapshotConflict, type IntentRecord, type NewIntentRecord } from "@superbee/core/journaled-backend";
 import { mintRequestId, type UncertainWriteOptions } from "@superbee/core/uncertain-write";
 
 import { resolveLocalBundleTarget } from "../bundle.js";
@@ -615,6 +616,38 @@ function intentFrontmatter(row: IntentRecord, okfVersion: "0.1" | "0.2" | undefi
   }
 }
 
+/**
+ * The documents of this run the host acknowledged at bytes other than those sent, whose files
+ * still hold what this run scanned. A file edited while its own send was in flight keeps its
+ * edit: its base drops the refetch mark, so the pull leaves it and the next run sends the edit
+ * against the acknowledged version (and takes the host's bytes after that send).
+ */
+async function hostRestamped(
+  store: JournaledBackend,
+  acknowledged: ReadonlyMap<string, string>,
+  folder: string,
+  projection: ProjectionRecord,
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const id of acknowledged.keys()) {
+    const base = await store.readMeta<SharedBase>(baseKey(id));
+    if (base?.refetch !== true) continue;
+    const bytes = await fs.readFile(path.join(folder, `${id}.md`)).catch(() => null);
+    const entry = projection.files[id];
+    if (bytes !== null && entry !== undefined && !entry.deleted && digestOf(bytes) === entry.digest) ids.add(id);
+    else {
+      const { refetch: _refetch, ...kept } = base;
+      try {
+        await store.writeMeta(baseKey(id), kept, { expected: { present: true, value: base } });
+      } catch (error) {
+        // The base moved under this run: whatever moved it decides, not this mark.
+        if (!(error instanceof JournalGuardConflict)) throw error;
+      }
+    }
+  }
+  return ids;
+}
+
 /** What this run's acknowledged writes changed that a model-change refusal can depend on. */
 interface Landed {
   /** The types of documents (not conventions) written or deleted. */
@@ -975,7 +1008,11 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     const hold = await recordHostHold(store, heldSink.value, scan.hold);
     // A document the pull held for a change that has now committed may have changed on the host
     // meanwhile: pull it once more so the folder is current when the run says so.
-    const second = first.report.held.some((id) => outcome.acknowledged.has(id)) ? await pullAndExport() : null;
+    // The host may also have stored a sent document with fields of its own (actor, clock); that
+    // pull brings its bytes into the folder in place of the ones sent.
+    const restamped = await hostRestamped(store, outcome.acknowledged, binding.path, projection);
+    const second =
+      first.report.held.some((id) => outcome.acknowledged.has(id)) || restamped.size > 0 ? await pullAndExport() : null;
     const pulled = second?.report ?? first.report;
     // The front page, after the documents: settled, pulled, or sent against its base.
     let root: RootStepReport;
@@ -985,7 +1022,14 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       throw await readFailure(error, session, resumeCommand, await unsent());
     }
     const exported = {
-      placed: [...first.placed.placed, ...(second?.placed.placed ?? []), ...(root.refreshed ? [ROOT_INDEX] : [])],
+      // A document this run sent and only took back with the host's stamps is not one received
+      // (accepted: a change by someone else in the same instant is not counted either, and after
+      // a crash between the acknowledgement and this pull, the next run counts it once).
+      placed: [
+        ...first.placed.placed,
+        ...(second?.placed.placed ?? []).filter((id) => !restamped.has(id)),
+        ...(root.refreshed ? [ROOT_INDEX] : []),
+      ],
       removed: [...first.placed.removed, ...(second?.placed.removed ?? [])],
       kept: second?.placed.kept ?? first.placed.kept,
       held: second?.placed.held ?? first.placed.held,

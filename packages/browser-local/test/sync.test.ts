@@ -399,6 +399,41 @@ test("settleIntent applies the own-version rule itself: a raw conflict whose act
   }
 });
 
+test("an acknowledgement at a version other than the bytes sent marks the base refetch; the next pull takes the authority's bytes once", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory);
+  try {
+    await bootstrap(fixture.remote, local);
+    const committed = await commitLocal(local, "notes/gamma", edit("gamma v2\n"));
+    const requestId = committed.intent!.requestId;
+    await local.backend.updateIntent(requestId, "pending", { state: "in_flight" });
+    // The authority stores the sent document with a field of its own, as a host stamps actor and clock.
+    const sent = (await local.backend.read("notes/gamma")).doc;
+    const stamped = await fixture.authority.write("notes/gamma", {
+      ...sent,
+      frontmatter: { ...sent.frontmatter, superbee_updated_by: "person:host" },
+    });
+    assert.notEqual(stamped, committed.version);
+
+    const settled = await settleIntent(local, requestId, { kind: "committed", version: stamped }, 1);
+    assert.equal(settled.state, "acknowledged");
+    const base = await local.backend.readMeta<SharedBase>(baseKey("notes/gamma"));
+    assert.equal(base?.version, stamped, "the base names the authority's real version, the CAS basis of the next edit");
+    assert.equal(base?.refetch, true);
+
+    const first = await pull(local, fixture.remote);
+    assert.deepEqual(first.refreshed, ["notes/gamma"]);
+    assert.equal((await local.backend.read("notes/gamma")).version, stamped);
+    assert.equal((await local.backend.read("notes/gamma")).doc.frontmatter.superbee_updated_by, "person:host");
+    assert.equal((await local.backend.readMeta<SharedBase>(baseKey("notes/gamma")))?.refetch, undefined);
+    // Taken once: no loop on the next pull.
+    assert.deepEqual((await pull(local, fixture.remote)).refreshed, []);
+  } finally {
+    local.close();
+  }
+});
+
 test("lost acknowledgement, lookup unreachable, then retention expired: the post-expiry 412 at the intent's own version settles as acknowledged, nothing is applied twice", async () => {
   const fixture = await seededFixture();
   const factory = new IDBFactory();
