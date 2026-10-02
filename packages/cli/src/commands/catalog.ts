@@ -268,7 +268,7 @@ async function listHosted(
   stdout: (s: string) => void,
 ): Promise<void> {
   const auth = deps.auth ?? defaultHostedAuthDeps(home);
-  const target = await requireHostedBundleHost(values.host, auth.home);
+  const target = await requireHostedBundleHost(values.host, auth.home, auth.env);
   const host = hostArgument(target);
   const resume = commandFragment`${cliInvocation()} catalog list --hosted --host ${commandToken(host)}${values.json ? commandFragment` --json` : commandFragment``}`;
   const { client, identity } = await connectHostedAccount(
