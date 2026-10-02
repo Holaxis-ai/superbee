@@ -326,7 +326,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     // frontmatter key can never clobber the body preview the branch below writes.
     const rec: Record<string, unknown> = { id: parsed.id };
     const KNOWN_ORDER = ["type", "title", "description", "resource", "tags", "timestamp"];
-    const RESERVED_OUTPUT = new Set(["id", "head_version", ...BODY_PREVIEW_RESERVED_KEYS]);
+    const RESERVED_OUTPUT = new Set(["id", "head_version", ...BODY_PREVIEW_RESERVED_KEYS, ...(paging ? ["range"] : [])]);
     for (const key of KNOWN_ORDER) {
       if (fm[key] !== undefined && fm[key] !== null) rec[key] = fm[key];
     }
@@ -345,6 +345,11 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     rec.head_version = version;
     if (paging) {
       const expected = values["expected-version"]?.trim();
+      if (expected === "") {
+        throw new CliError("USAGE", "--expected-version was given an empty value — pass the head_version of the first page.", {
+          help: `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset 0 --json`,
+        });
+      }
       if (expected !== undefined && expected !== version) {
         throw new CliError("CONFLICT", `'${parsed.id}' changed while you were reading it; it is now ${version}. Read it again from --offset 0.`, {
           details: { reason: "version_conflict", id: parsed.id, head_version: version },
@@ -362,7 +367,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       if (!page.range.complete) {
         rec.help = [
           ...(page.range.next_offset !== undefined
-            ? [`${cliInvocation()} doc read ${commandToken(parsed.id)} --offset ${page.range.next_offset} --expected-version ${version} --json`]
+            ? [`${cliInvocation()} doc read ${commandToken(parsed.id)} --offset ${page.range.next_offset} --expected-version ${commandToken(version)} --json`]
             : []),
           "a page is not the document: never write it back as the body; edit with doc update --body-file after --body-out, or a passage edit",
         ];

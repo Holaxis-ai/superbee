@@ -44,11 +44,13 @@ function pageEnd(body: string, offset: number, maxBytes: number): number {
 /** The page of `body` at `offset`, or null when `offset` is not a page start (past the end, or
  * inside a surrogate pair). */
 export function bodyPage(body: string, offset: number, maxBytes: number): BodyPage | null {
-  const low = (index: number) => {
+  const within = (index: number, from: number, to: number) => {
     const code = body.charCodeAt(index);
-    return code >= 0xdc00 && code <= 0xdfff;
+    return code >= from && code <= to;
   };
-  if (offset > body.length || (offset === body.length && body.length > 0) || (offset > 0 && low(offset) && !low(offset - 1))) return null;
+  // Inside a pair: a low surrogate right after its high one.
+  const insidePair = offset > 0 && within(offset, 0xdc00, 0xdfff) && within(offset - 1, 0xd800, 0xdbff);
+  if (offset > body.length || (offset === body.length && body.length > 0) || insidePair) return null;
   const end = pageEnd(body, offset, maxBytes);
   return {
     body: body.slice(offset, end),

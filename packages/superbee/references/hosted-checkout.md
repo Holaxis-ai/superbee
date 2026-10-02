@@ -143,8 +143,8 @@ folder's own version from `doc read`, not the host's newest version.
 
 ## Large documents
 
-A host accepts documents up to the size it states (about 960 KiB of Markdown on current hosts,
-983,040 bytes as sent, where each newline, quote or backslash counts twice; 64 KiB on older ones).
+A host accepts documents up to the size it states (on current hosts 983,040 bytes as sent, about
+950 KiB of Markdown, since each newline, quote or backslash counts twice; 64 KiB on older ones).
 Sync holds a larger one with reason `too_large` and sends nothing: split it, or keep the edit until
 the host accepts it. Never shorten someone else's document just to make it sync.
 
