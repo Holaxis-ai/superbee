@@ -75,11 +75,12 @@ or refused work is not reported as a successful complete synchronization.
 
 The runtime admits at most two unsettled intents per target. It reserves missing
 preparations, receipts and observations before accepting work: each envelope is
-bounded at 2 MiB, original journal fields at 8 MiB, reconciliation at 16 MiB and the
-complete guarded target at 32 MiB. JSON escape expansion and named metadata count.
+bounded at 4 MiB, original journal fields at 16 MiB, reconciliation at 32 MiB and the
+complete guarded target at 64 MiB. JSON escape expansion and named metadata count.
 The composite mode/control row has a 64 KiB bound with remaining growth reserved
 per target. Capacity errors retain existing work and refuse new state; they do not
-prune history or receipts. Body input is bounded at 64 KiB. The existing document
+prune history or receipts. Body input is bounded at 983,040 bytes, the hosted kernel's document
+write bound. The existing document
 codec owns metadata normalization, including valid timestamp values.
 
 Body mode supports updates to existing documents, not creation or general metadata

@@ -78,8 +78,9 @@ records. Consumers must retain the anchor until reconciliation can complete.
 
 ## Bounds and evidence
 
-Labels and target IDs are limited to 2,048 UTF-8 bytes, operation bodies to 64 KiB, and content,
-serialized envelopes and reconciliation snapshots to 2 MiB. Request IDs use the existing
+Labels and target IDs are limited to 2,048 UTF-8 bytes, operation bodies to 983,040 bytes (the
+hosted kernel's document write bound), content and serialized envelopes to 4 MiB (an envelope
+carries the body twice), and reconciliation snapshots to 32 MiB. Request IDs use the existing
 128-character printable-ASCII rule. Counts are nonnegative safe integers with overflow checks.
 Unexpected fields, unknown schemas/editions/operations, reserved concept targets, invalid
 timestamps and incomplete evidence fail closed. Scope is a non-secret identity label; do not put

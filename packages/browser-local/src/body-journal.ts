@@ -9,7 +9,7 @@ import type { OkfDocument, Version, StorageBackend } from "@superbee/core";
 import { assertJournalGuard } from "@superbee/core/journaled-backend";
 
 export const BODY_MODE_KEY = "body-delivery:mode";
-export const BODY_RUNTIME_LIMITS = Object.freeze({ journalBytes: 8 * 1024 * 1024, guardedBytes: 32 * 1024 * 1024, unsettled: 2, transitionBytes: 2 * 1024 * 1024, controlBytes: 64 * 1024 });
+export const BODY_RUNTIME_LIMITS = Object.freeze({ journalBytes: 16 * 1024 * 1024, guardedBytes: 64 * 1024 * 1024, unsettled: 2, transitionBytes: 4 * 1024 * 1024, controlBytes: 64 * 1024 });
 const E = BODY_DELIVERY_LIMITS.envelopeBytes;
 export interface BodyMode { schema: 1; kind: "document.body.update"; scope: string; okfVersion: "0.1" | "0.2" }
 export interface BodyDeliveryOptions { scope: string; okfVersion: "0.1" | "0.2"; dedicated?: true }
