@@ -17,7 +17,7 @@
     "headers": {
       "content-type": "application/json; charset=utf-8"
     },
-    "body": "{\"heads\":true,\"snapshot\":true,\"operations\":true,\"operationsRetentionMs\":2592000000,\"bound\":{\"documents\":1000,\"bytes\":1048576},\"paged\":{\"documents\":10000},\"root\":{\"content\":\"---\\nokf_version: \\\"0.2\\\"\\n---\\n# notes.a\\n\\nOur front page.\\n\",\"version\":\"sha256:7c7393f1351cdbe907ab4a549632c3a8d5fe9a8a591311ba34f3d30155b07a40\"},\"rootWrites\":\"allowed\"}",
+    "body": "{\"heads\":true,\"snapshot\":true,\"operations\":true,\"operationsRetentionMs\":2592000000,\"bound\":{\"documents\":1000,\"bytes\":1048576},\"paged\":{\"documents\":10000},\"limits\":{\"documentInputBytes\":983040},\"root\":{\"content\":\"---\\nokf_version: \\\"0.2\\\"\\n---\\n# notes.a\\n\\nOur front page.\\n\",\"version\":\"sha256:7c7393f1351cdbe907ab4a549632c3a8d5fe9a8a591311ba34f3d30155b07a40\"},\"rootWrites\":\"allowed\"}",
     "truncated": false
   }
 }

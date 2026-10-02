@@ -404,6 +404,7 @@ export class FakeHost {
           tenantIds: this.options.tenants ?? ["tenant-a"],
           ...(this.workspaces() ? { workspaces: this.workspaces() } : {}),
           surface: "sync",
+          limits: { documentInputBytes: 983_040 },
         });
       case "bundles":
         return Response.json({
