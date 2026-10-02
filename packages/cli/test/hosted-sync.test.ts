@@ -130,6 +130,10 @@ test("an edited file is sent as one whole document, then the checkout is up to d
   assert.equal(write!.body.bundleId, BUNDLE);
   assert.ok(!("superbee_updated_by" in (write!.body.frontmatter as object)), "managed fields are never sent");
   assert.match(write!.binding!, /^sha256:[0-9a-f]{64}$/);
+  // The host stamped a field of its own, so the folder holds the host's bytes, not the ones sent.
+  assert.equal(await readFile(path.join(h.folder, "notes/alpha.md"), "utf8"), hostDoc(h, "notes/alpha").raw);
+  const { sync: state } = await hostedStatus((await bindingForPath(h.home, h.folder))!, h.home);
+  assert.equal(state.state, "clean");
 
   // Nothing changed since: no write, no conflict, exit 0.
   h.host.writes.length = 0;

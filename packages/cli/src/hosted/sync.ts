@@ -36,6 +36,7 @@ import {
   type DeletionRefusal,
   type LocalBundle,
   type PullReport,
+  type SharedBase,
 } from "@superbee/browser-local";
 import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
@@ -615,6 +616,15 @@ function intentFrontmatter(row: IntentRecord, okfVersion: "0.1" | "0.2" | undefi
   }
 }
 
+/** The documents of this run the host acknowledged at bytes other than those sent. */
+async function hostRestamped(store: JournaledBackend, acknowledged: ReadonlyMap<string, string>): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const id of acknowledged.keys()) {
+    if ((await store.readMeta<SharedBase>(baseKey(id)))?.refetch === true) ids.add(id);
+  }
+  return ids;
+}
+
 /** What this run's acknowledged writes changed that a model-change refusal can depend on. */
 interface Landed {
   /** The types of documents (not conventions) written or deleted. */
@@ -975,7 +985,11 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     const hold = await recordHostHold(store, heldSink.value, scan.hold);
     // A document the pull held for a change that has now committed may have changed on the host
     // meanwhile: pull it once more so the folder is current when the run says so.
-    const second = first.report.held.some((id) => outcome.acknowledged.has(id)) ? await pullAndExport() : null;
+    // The host may also have stored a sent document with fields of its own (actor, clock); that
+    // pull brings its bytes into the folder in place of the ones sent.
+    const restamped = await hostRestamped(store, outcome.acknowledged);
+    const second =
+      first.report.held.some((id) => outcome.acknowledged.has(id)) || restamped.size > 0 ? await pullAndExport() : null;
     const pulled = second?.report ?? first.report;
     // The front page, after the documents: settled, pulled, or sent against its base.
     let root: RootStepReport;
@@ -985,7 +999,12 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       throw await readFailure(error, session, resumeCommand, await unsent());
     }
     const exported = {
-      placed: [...first.placed.placed, ...(second?.placed.placed ?? []), ...(root.refreshed ? [ROOT_INDEX] : [])],
+      // A document this run sent and only took back with the host's stamps is not one received.
+      placed: [
+        ...first.placed.placed,
+        ...(second?.placed.placed ?? []).filter((id) => !restamped.has(id)),
+        ...(root.refreshed ? [ROOT_INDEX] : []),
+      ],
       removed: [...first.placed.removed, ...(second?.placed.removed ?? [])],
       kept: second?.placed.kept ?? first.placed.kept,
       held: second?.placed.held ?? first.placed.held,
