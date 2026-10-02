@@ -10,8 +10,9 @@ import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
+import { BUNDLE_DIR, BUNDLE_DIRS } from "@superbee/board-git";
 import { configuredInitBundle as initBundle } from "../filesystem-runtime.js";
-import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
+import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, TOP_LEVEL_BUNDLE_MOVE, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -27,7 +28,9 @@ Usage:
   superbee init [--dir <path>] [--okf-version <v>] [--recipe <name-or-path>] [--create-only]
 
 Options:
-  --dir <path>            Directory to init the bundle in (default: the current directory)
+  --dir <path>            Directory to init the bundle in (default: the current directory; inside
+                           a Git work tree, its top-level .superbee/ folder, which
+                           'sync --establish' shares, unless the current directory is a bundle)
   --okf-version <v>       Compatibility override for legacy integrations (normally omit; use 0.1
                            only when a legacy consumer requires it). Other versions remain readable
                            but are not authorable
@@ -61,13 +64,47 @@ export interface InitCliDeps {
  * NO git binary invoked").
  */
 export function insideGitRepo(dir: string): boolean {
+  return gitWorkTreeTop(dir) !== null;
+}
+
+/**
+ * The top of the Git work tree holding `dir`: the nearest directory at or above it with a `.git`
+ * entry. Same fs-only walk. A project's board folder (`.superbee/` once established or joined) is
+ * a linked worktree with its own `.git` file; it belongs to the project around it, so the walk
+ * passes over it to the outer top.
+ */
+export function gitWorkTreeTop(dir: string): string | null {
   let cur = path.resolve(dir);
+  let found: string | null = null;
   for (;;) {
-    if (existsSync(path.join(cur, ".git"))) return true;
+    if (existsSync(path.join(cur, ".git"))) {
+      if (!BUNDLE_DIRS.includes(path.basename(cur) as (typeof BUNDLE_DIRS)[number])) return cur;
+      found ??= cur;
+    }
     const parent = path.dirname(cur);
-    if (parent === cur) return false;
+    if (parent === cur) return found;
     cur = parent;
   }
+}
+
+/**
+ * Where plain `init` (no `--dir`, no project binding) puts the bundle inside a Git work tree; outside
+ * one, undefined (the current directory, as always). The nearest bundle from the current directory
+ * up to the top keeps opening, as the other commands' discovery walk finds it, so init never splits
+ * a project into two bundles. With none, it is the top's conventional folder (`.superbee/`, or an
+ * existing legacy one): the one `sync --establish` shares and every command finds from anywhere in
+ * the tree. Each level is judged as that walk judges it (any `index.md`), so the two never disagree.
+ */
+function plainInitDir(cwd: string): string | undefined {
+  const top = gitWorkTreeTop(cwd);
+  if (top === null) return undefined;
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (existsSync(path.join(dir, "index.md"))) return dir;
+    const conventional = BUNDLE_DIRS.find((name) => existsSync(path.join(dir, name, "index.md")));
+    if (conventional) return path.join(dir, conventional);
+    if (dir === top || path.dirname(dir) === dir) break;
+  }
+  return path.join(top, BUNDLE_DIR);
 }
 
 /** CLI entry: parse flags, init the bundle, print its root. */
@@ -149,7 +186,9 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   // bundle exists. Plain init keeps its historical open-or-create path unchanged.
   let root: string;
   let bundle;
-  const initDir = boundRoute?.kind === "bound-local" ? boundRoute.bundle.root : values.dir;
+  const initDir = boundRoute?.kind === "bound-local"
+    ? boundRoute.bundle.root
+    : values.dir ?? (boundRoute ? undefined : plainInitDir(process.cwd()));
   if (createOnly) {
     if (boundRoute) await assertResolvedLocalRouteIdentity(boundRoute);
     const result = await withCreateOnlyTarget(initDir, (physicalTarget) =>
@@ -186,11 +225,20 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   if (warnings.length > 0) receipt.warnings = warnings;
   // `init` always creates a local bundle. Inside a Git repo, an advisory fs-only hint distinguishes
   // joining an existing shared board from explicitly sharing this new one.
-  if (insideGitRepo(root)) {
-    receipt.hint =
+  const top = gitWorkTreeTop(root);
+  if (top !== null) {
+    const joinFirst =
       "this bundle is local until shared — if the project already shares a board, " +
-      `\`${cliInvocation()} sync\` joins it (never init there, that mints a divergent second ` +
-      `bundle); to start sharing this one, \`${cliInvocation()} sync --establish\``;
+      `\`${cliInvocation()} sync\` joins it (never init there, that mints a divergent second bundle); `;
+    const conventional = path.dirname(root) === top && BUNDLE_DIRS.includes(path.basename(root) as (typeof BUNDLE_DIRS)[number]);
+    receipt.hint = !conventional
+      ? path.resolve(root) === path.resolve(top)
+        ? `${joinFirst}${TOP_LEVEL_BUNDLE_MOVE}, then \`${cliInvocation()} sync --establish\``
+        : `${joinFirst}only the work tree's ${BUNDLE_DIR}/ folder can be shared, and this bundle is not it ` +
+          `(\`${cliInvocation()} init --dir ${commandQuoted(path.join(top, BUNDLE_DIR))}\` makes that one)`
+      : existsSync(path.join(root, ".git"))
+        ? `this is the project's shared board; \`${cliInvocation()} sync\` keeps it current`
+        : `${joinFirst}to start sharing this one, \`${cliInvocation()} sync --establish\``;
   }
   // A selected recipe may not install Context Note (or any kind at all). Never advertise a
   // mutation the resulting bundle cannot perform; use the recipe's parsed `governs` inventory to
