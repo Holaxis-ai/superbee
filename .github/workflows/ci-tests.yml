@@ -11,10 +11,12 @@ name: CI tests
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
 # app-bound context, then remove the two legacy `gate (node N)` requirements. Roll back by restoring
 # the legacy requirements before removing the canonical one. The compatibility jobs stay until a
-# later workflow cleanup. `merge_group` is deferred because this repository has no merge-queue
-# workflow or settings evidence; add that trigger before enabling a merge queue.
+# later workflow cleanup. Merge groups run the same required checks on the complete candidate;
+# enable the repository queue only after this workflow is on main.
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -23,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-tests-${{ github.ref }}
+  group: ci-tests-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -49,6 +51,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
@@ -71,6 +74,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -91,6 +95,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -113,6 +118,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -167,6 +173,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -184,6 +191,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -219,6 +227,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -237,6 +246,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26
@@ -255,6 +265,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 26

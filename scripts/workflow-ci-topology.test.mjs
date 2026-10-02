@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import yaml from "js-yaml";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -405,13 +406,7 @@ function validateCiTopology(
   validateBrowserJob(jobs.browser, browserPackages);
   assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
-  assert.equal(
-    /^ {2}merge_group:/m.test(text),
-    candidate.merge_queue.enabled,
-    "workflow trigger must match the recorded current merge-queue posture",
-  );
-  assert.equal(typeof candidate.merge_queue.evidence, "string");
-  assert.equal(typeof candidate.merge_queue.enablement_requirement, "string");
+  validateQueueWorkflow(text, candidate);
   return jobs;
 }
 
@@ -553,11 +548,62 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
   assert.throws(() => validateCiTopology(workflow, incomplete), /required_jobs must equal the automatically run lane set/);
 });
 
-test("merge-queue posture is current configuration, not a permanent prohibition", () => {
-  assert.equal(manifest.merge_queue.enabled, false);
-  const enabled = structuredClone(manifest);
-  enabled.merge_queue.enabled = true;
-  const withMergeGroup = workflow.replace("on:\n", "on:\n  merge_group:\n");
-  assert.doesNotThrow(() => validateCiTopology(withMergeGroup, enabled));
-  assert.throws(() => validateCiTopology(workflow, enabled), /merge-queue posture/);
+// Parse event and checkout structure so a commented trigger or a PR-only override cannot satisfy
+// the queue contract. The existing lane and aggregate assertions still own their full coverage.
+function validateQueueWorkflow(text, candidate = manifest) {
+  const parsed = yaml.safeLoad(text);
+  assert.equal(candidate.merge_queue.workflow_ready, true, "manifest must declare queue workflow readiness");
+  assert.deepEqual(Object.keys(parsed.on).sort(), ["merge_group", "pull_request", "push", "workflow_dispatch"],
+    "CI must run for PRs, merge groups, main pushes and manual dispatch");
+  assert.deepEqual(parsed.on.merge_group, { types: ["checks_requested"] }, "queue must request checks");
+  assert.equal(parsed.on.pull_request, null, "PR validation must remain unconditional");
+  assert.deepEqual(parsed.on.push, { branches: ["main"] }, "main release-source validation must remain enabled");
+  assert.deepEqual(parsed.concurrency, {
+    group: "ci-tests-${{ github.event_name }}-${{ github.ref }}",
+    "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+  }, "concurrency must isolate events and candidate refs, cancelling only obsolete PR runs");
+  for (const [id, name] of [
+    ["required", "CI required lanes"],
+    ["compatibility-gate-node-22", "gate (node 22)"],
+    ["compatibility-gate-node-26", "gate (node 26)"],
+  ]) assert.equal(parsed.jobs[id]?.name, name, `${id} required check identity must remain available`);
+  for (const [name, job] of Object.entries(parsed.jobs)) {
+    assert.equal(job.concurrency, undefined, `${name} must use workflow concurrency`);
+    if (candidate.required_jobs.includes(name)) {
+      assert.equal(job.if, undefined, `${name} must run on every CI event`);
+    }
+    const checkouts = job.steps.filter(step => step.uses?.startsWith("actions/checkout@"));
+    assert.equal(checkouts.length, 1, `${name} must check out the event commit once`);
+    assert.deepEqual(checkouts[0].with, { "fetch-depth": 1, ref: "${{ github.sha }}" },
+      `${name} must test the event commit in the current repository and root directory`);
+    for (const step of job.steps) assert.equal(step.if, undefined, `${name} steps must run on every CI event`);
+  }
+}
+
+test("merge queue validates the complete candidate without changing PR or main validation", () => {
+  validateQueueWorkflow(workflow);
+});
+
+test("merge queue trigger, checkout, skip and concurrency mutations fail closed", () => {
+  const mutations = [
+    ["missing compatibility check", value => { delete value.jobs["compatibility-gate-node-22"]; }, /required check identity/],
+    ["renamed compatibility check", value => { value.jobs["compatibility-gate-node-26"].name = "renamed"; }, /required check identity/],
+    ["missing trigger", value => { delete value.on.merge_group; }, /must run for PRs, merge groups/],
+    ["wrong event type", value => { value.on.merge_group.types = ["destroyed"]; }, /queue must request checks/],
+    ["missing main validation", value => { delete value.on.push; }, /must run for PRs, merge groups/],
+    ["PR-only job", value => { value.jobs.runtime.if = "github.event_name == 'pull_request'"; }, /runtime must run on every CI event/],
+    ["PR-only step", value => { value.jobs.runtime.steps.at(-1).if = "github.event_name == 'pull_request'"; }, /steps must run on every CI event/],
+    ["PR-head checkout", value => { value.jobs.runtime.steps[0].with.ref = "${{ github.event.pull_request.head.sha }}"; }, /must test the event commit/],
+    ["main checkout", value => { value.jobs.runtime.steps[0].with.ref = "main"; }, /must test the event commit/],
+    ["other repository", value => { value.jobs.runtime.steps[0].with.repository = "other/repository"; }, /must test the event commit/],
+    ["other checkout directory", value => { value.jobs.runtime.steps[0].with.path = "other"; }, /must test the event commit/],
+    ["shared concurrency", value => { value.concurrency.group = "ci-tests-main"; }, /concurrency must isolate/],
+    ["queue cancellation", value => { value.concurrency["cancel-in-progress"] = true; }, /concurrency must isolate/],
+    ["job concurrency", value => { value.jobs.runtime.concurrency = "all-runtime"; }, /must use workflow concurrency/],
+  ];
+  for (const [label, mutate, error] of mutations) {
+    const changed = yaml.safeLoad(workflow);
+    mutate(changed);
+    assert.throws(() => validateQueueWorkflow(yaml.safeDump(changed)), error, label);
+  }
 });

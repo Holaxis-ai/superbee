@@ -9,9 +9,9 @@
   "singleton_node": 26,
   "host_expectation_variable": "SUPERBEE_TEST_EXPECT_ALIASING_HOST",
   "merge_queue": {
-    "enabled": false,
-    "evidence": "No merge-queue workflow or repository-settings evidence exists at this revision",
-    "enablement_requirement": "Set enabled true and add the merge_group trigger before enabling merge queue"
+    "workflow_ready": true,
+    "evidence": "CI tests validates merge_group checks_requested candidates with all required lanes",
+    "enablement_requirement": "After this workflow lands on main, activate the repository queue and verify its provider settings and a real queued candidate"
   },
   "security_analysis": {
     "workflow": ".github/workflows/codeql.yml",

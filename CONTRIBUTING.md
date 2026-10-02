@@ -100,8 +100,28 @@ so its run starts the pre-merge verdict; dispatch `CI tests` on a branch only wh
 promptly, and never
 treat a branch dispatch as a serial prerequisite for opening or progressing the PR — a dispatch and
 a PR run on the same SHA are the same coverage paid twice. One run can satisfy both validations
-only when the merged SHA equals the validated SHA (fast-forward or a merge queue; the current
-merge-queue posture is recorded in `scripts/ci-lanes.json`).
+only when the merged SHA equals the validated SHA (fast-forward or a merge queue; workflow
+support is recorded in `scripts/ci-lanes.json`; live queue settings are owned by GitHub).
+
+### Merge queue
+
+`CI tests` runs on `merge_group: checks_requested` as well as pull requests, pushes to `main`,
+and manual dispatch. Every job checks out the event's `github.sha`, so queue checks validate the
+complete candidate, including the latest base and earlier queued PRs. All required lanes and the
+canonical and compatibility check names stay the same. Concurrency is isolated by event and ref;
+only superseded PR runs are cancelled. Push-to-main validation remains enabled for release-source
+checks; queue adoption does not promise fewer CI runs.
+
+Enable the GitHub queue only after this workflow has landed on `main`. Capture the current branch
+protections first, preserve their required checks and unrelated settings, and replace the strict
+up-to-date requirement with required queue validation. Start with low build concurrency and a check
+response timeout longer than the slowest required lane. Read back the settings, then verify a real
+queued candidate reports every required check and merges through the queue before declaring the
+rollout complete. The human still chooses which PRs to enqueue; queue configuration does not grant
+an agent permission to enqueue or merge them. If activation fails, restore strict up-to-date
+protection before disabling the queue.
+
+### Lane projection
 
 The finite product-validation lane projection below is checked against `scripts/ci-lanes.json`, root
 package scripts, and `.github/workflows/ci-tests.yml`. Change the executable topology first, then
