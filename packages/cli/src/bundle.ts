@@ -68,7 +68,7 @@ import {
   resolveBundleKey,
   runGit,
 } from "@superbee/board-git";
-import { constants, promises as fs, type Dir, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, promises as fs, readSync, type Dir, type Stats } from "node:fs";
 import path from "node:path";
 import {
   FilesystemMutationLockError,
@@ -103,6 +103,34 @@ async function exists(p: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Whether `dir` holds a bundle's root `index.md`: a plain file whose frontmatter declares an OKF
+ * edition, as `init` writes it. Read-only and bounded. Establish uses it to tell a bundle made at
+ * a work tree's top from any other `index.md` there (a docs site's).
+ */
+export function looksLikeBundle(dir: string): boolean {
+  let fd: number | undefined;
+  try {
+    // One descriptor, never through a symlink: what is checked is what is read.
+    // Non-blocking, so a FIFO named index.md fails the isFile check instead of hanging the open.
+    fd = openSync(path.join(dir, "index.md"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    if (!fstatSync(fd).isFile()) return false;
+    const buffer = Buffer.alloc(16 * 1024);
+    const text = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8");
+    const block = /^---\r?\n([\s\S]*?)\r?\n---\r?(?:\n|$)/.exec(text);
+    return block !== null && /^okf_version\s*:/m.test(block[1]!);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** What to do with a bundle made at a Git work tree's top, which establish cannot share. */
+export const TOP_LEVEL_BUNDLE_MOVE =
+  `move the bundle at the work tree's top into ${BUNDLE_DIR}/ (index.md, conventions/ and its document folders; ` +
+  `\`git mv\` if they are committed, \`mv\` if not)`;
 
 /** The directory `init` should create/open: the explicit `--dir`, else the cwd. */
 export function resolveTargetDir(dirFlag: string | undefined): string {
