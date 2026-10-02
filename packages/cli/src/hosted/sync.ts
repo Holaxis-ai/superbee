@@ -616,11 +616,29 @@ function intentFrontmatter(row: IntentRecord, okfVersion: "0.1" | "0.2" | undefi
   }
 }
 
-/** The documents of this run the host acknowledged at bytes other than those sent. */
-async function hostRestamped(store: JournaledBackend, acknowledged: ReadonlyMap<string, string>): Promise<Set<string>> {
+/**
+ * The documents of this run the host acknowledged at bytes other than those sent, whose files
+ * still hold what this run scanned. A file edited while its own send was in flight keeps its
+ * edit: its base drops the refetch mark, so the pull leaves it and the next run sends the edit
+ * against the acknowledged version (and takes the host's bytes after that send).
+ */
+async function hostRestamped(
+  store: JournaledBackend,
+  acknowledged: ReadonlyMap<string, string>,
+  folder: string,
+  projection: ProjectionRecord,
+): Promise<Set<string>> {
   const ids = new Set<string>();
   for (const id of acknowledged.keys()) {
-    if ((await store.readMeta<SharedBase>(baseKey(id)))?.refetch === true) ids.add(id);
+    const base = await store.readMeta<SharedBase>(baseKey(id));
+    if (base?.refetch !== true) continue;
+    const bytes = await fs.readFile(path.join(folder, `${id}.md`)).catch(() => null);
+    const entry = projection.files[id];
+    if (bytes !== null && entry !== undefined && !entry.deleted && digestOf(bytes) === entry.digest) ids.add(id);
+    else {
+      const { refetch: _refetch, ...kept } = base;
+      await store.writeMeta(baseKey(id), kept);
+    }
   }
   return ids;
 }
@@ -987,7 +1005,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // meanwhile: pull it once more so the folder is current when the run says so.
     // The host may also have stored a sent document with fields of its own (actor, clock); that
     // pull brings its bytes into the folder in place of the ones sent.
-    const restamped = await hostRestamped(store, outcome.acknowledged);
+    const restamped = await hostRestamped(store, outcome.acknowledged, binding.path, projection);
     const second =
       first.report.held.some((id) => outcome.acknowledged.has(id)) || restamped.size > 0 ? await pullAndExport() : null;
     const pulled = second?.report ?? first.report;
