@@ -40,7 +40,7 @@ const NOT_MODELED: Readonly<Record<string, string>> = Object.freeze({
 const VERSION = /^sha256:[a-f0-9]{64}$/;
 
 /** String keys whose value selects a row or an outcome, and so must equal the host's. */
-const DISCRIMINATORS: ReadonlySet<string> = new Set(["operationId", "code", "writeState", "status", "kind", "surface", "scope", "encoding", "consistency", "error", "definitionWrites", "rule"]);
+const DISCRIMINATORS: ReadonlySet<string> = new Set(["operationId", "code", "writeState", "status", "kind", "surface", "scope", "encoding", "consistency", "error", "definitionWrites", "rootWrites", "rule"]);
 
 /**
  * A value's shape: keys and types all the way down, with the value itself wherever it is a
@@ -120,7 +120,9 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
 
   await observe("whoami-200", send("whoami", {}));
   await observe("bundles-200", send("bundles", {}));
-  await observe("capabilities-200", send("capabilities", { bundleId: BUNDLE }));
+  // The host's capabilities answer states the front-page capability; the fake's default is a host
+  // from before it, so this answer is driven against one that states it.
+  await observe("capabilities-200", sendTo(new FakeHost({ rootWrites: "allowed" }), "capabilities", { bundleId: BUNDLE }));
   const { digest } = await json(send("heads", { bundleId: BUNDLE }));
   await observe("heads-200", send("heads", { bundleId: BUNDLE }));
   await observe("heads-304", send("heads", { bundleId: BUNDLE, ifNoneMatch: digest }));
@@ -197,9 +199,9 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   // Model changes: the capability in both states; a Kind created, a narrowing its documents fail
   // and its lookup, a document its Kind refuses, a convention by a person the host does not allow,
   // and a delete of a Kind in use.
-  const modeled = new FakeHost({ definitionWrites: "allowed" });
+  const modeled = new FakeHost({ definitionWrites: "allowed", rootWrites: "allowed" });
   await observe("capabilities-200-definition-writes-allowed", sendTo(modeled, "capabilities", { bundleId: BUNDLE }));
-  await observe("capabilities-200-definition-writes-refused", sendTo(new FakeHost({ definitionWrites: "refused" }), "capabilities", { bundleId: BUNDLE }));
+  await observe("capabilities-200-definition-writes-refused", sendTo(new FakeHost({ definitionWrites: "refused", rootWrites: "refused" }), "capabilities", { bundleId: BUNDLE }));
   const noteKind = (fields: Record<string, unknown>) => ({ frontmatter: { type: "Convention", title: "Note", governs: "Note", fields }, body: "# Note\n\nA note.\n" });
   const kindCreate = { bundleId: BUNDLE, documentId: "conventions/note", expectAbsent: true, ...noteKind({ optional: ["stage"], values: { stage: ["open", "done"] } }) };
   const kindCreated = await json(sendTo(modeled, "create", kindCreate, { requestId: identity(40) }));
@@ -224,6 +226,26 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   paged.put("notes/four", { type: "Note" }, "four");
   await observe("heads-409-concurrent-change", sendTo(paged, "heads", { bundleId: BUNDLE, cursor: firstPage.next }));
   await observe("heads-200-no-root", sendTo(new FakeHost({ root: false }), "heads", { bundleId: BUNDLE }));
+
+  // The front page (bundles.root.replace.v1): the capability both ways; a replace, the capabilities
+  // answer serving it, a stale base, a create over a root, an edition change, an identified request
+  // (refused: the route takes none), a person without the grant, and a create where there is none.
+  const fronted = new FakeHost({ rootWrites: "allowed" });
+  await observe("capabilities-200-root-writes-allowed", sendTo(fronted, "capabilities", { bundleId: BUNDLE }));
+  await observe("capabilities-200-root-writes-refused", sendTo(new FakeHost({ rootWrites: "refused" }), "capabilities", { bundleId: BUNDLE }));
+  const page = (title: string, edition = "0.2") => `---\nokf_version: "${edition}"\n---\n# ${title}\n`;
+  const before = fronted.root()!.version;
+  await observe("root-200-ok", sendTo(fronted, "root", { bundleId: BUNDLE, content: page("Our front page"), expectedVersion: before }, { requestId: null, via: "claude-code" }));
+  await observe("capabilities-200-root-moved", sendTo(fronted, "capabilities", { bundleId: BUNDLE }));
+  const after = fronted.root()!.version;
+  await observe("root-200-version-conflict", sendTo(fronted, "root", { bundleId: BUNDLE, content: page("Our front page"), expectedVersion: before }, { requestId: null }));
+  await observe("root-200-document-exists", sendTo(fronted, "root", { bundleId: BUNDLE, content: "# Another front page\n", expectAbsent: true }, { requestId: null }));
+  await observe("root-200-validation-failed", sendTo(fronted, "root", { bundleId: BUNDLE, content: page("Older", "0.1"), expectedVersion: after }, { requestId: null }));
+  await observe("root-400-identified", sendTo(fronted, "root", { bundleId: BUNDLE, content: "# notes.a\n", expectedVersion: after }, { requestId: identity(60) }));
+  await observe("root-200-insufficient-scope", sendTo(new FakeHost({ rootWrites: "refused" }), "root", { bundleId: BUNDLE, content: "# ro.a\n", expectedVersion: before }, { requestId: null }));
+  const rootless = new FakeHost({ rootWrites: "allowed" });
+  rootless.clearRoot();
+  await observe("root-200-ok-created", sendTo(rootless, "root", { bundleId: BUNDLE, content: "# notes.a\n\nOur front page.\n", expectAbsent: true }, { requestId: null }));
 
   for (const [name, exchange] of golden) {
     if (isExport(exchange)) continue;

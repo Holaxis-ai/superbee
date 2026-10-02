@@ -42,6 +42,7 @@ import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
 import {
   createWholeDocumentTransport,
+  sendRootWrite,
   WHOLE_DOCUMENT_SETTLEMENT,
   type HostedCapabilities,
   type HostedCarrier,
@@ -84,7 +85,8 @@ import {
   type HeldFile,
   type ProjectionRecord,
 } from "./sync-scan.js";
-import { digestOf, fold, replaceGuarded } from "./projection.js";
+import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
+import { adoptHostRoot, moveRootBase, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
 import { recordPulled, recordSynced } from "./freshness.js";
 import { syncEnvelope, syncVerbNotApplicable, withSyncEnvelope, type SyncEnvelope } from "../sync-outcomes.js";
 
@@ -132,6 +134,9 @@ deletes the host's version and take brings it back. A document id the folder can
 held with a row (unsafe_id), and the rest of the bundle syncs. A file edited while the host changed or
 deleted its document (during a sync, or while sync held it) is a conflict too; it is never sent
 over the host's version without --resolve.
+The bundle's front page (the root index.md) is sent and refreshed like a document where the host
+takes front-page changes from you; a conflict on it is resolved with --doc index.md (take, or keep
+after --inspect). Elsewhere it is held, and a subdirectory index.md and every log.md always are.
 Rows are committed, conflict, held (sync cannot send the file: reserved files, conventions/ and
 views/, a type change, a bulk deletion, a file over the host's bounds), refused, unknown (the
 answer was lost; the next sync looks it up by the same request) and paused (sign-in, or your
@@ -345,8 +350,8 @@ interface Session {
   readonly reader: HostedReadAdapter;
   readonly capabilities: HostedCapabilities;
   readonly carrier: ReturnType<typeof createHostedSyncClient>["carrier"];
-  /** The checkout's client, for a second read after a refusal (the bundle list). */
-  readonly client: Pick<ReturnType<typeof createHostedSyncClient>, "bundles">;
+  /** The checkout's client, for a second read after a refusal (the bundle list), or a fresh capabilities read. */
+  readonly client: Pick<ReturnType<typeof createHostedSyncClient>, "bundles" | "reader">;
   readonly routes: string;
   readonly store: FileJournaledBackend;
   readonly local: LocalBundle;
@@ -479,6 +484,9 @@ async function withSession<T>(
         // The up-front Kind refusals read what the host last said, with no request of their own.
         const bound = await recordDefinitionWrites(deps.auth.home, binding, capabilities.definitionWrites);
         projection = await readProjection(deps.auth.home, binding.checkout_id, store);
+        // What the host said about root writes, for a status preview that makes no request.
+        if (capabilities.rootWrites === "allowed") projection.rootWrites = "allowed";
+        else delete projection.rootWrites;
         // Finish or undo any placement an interrupted run left, then record the baseline before
         // anything changes the store, so a crash from here on never leaves it describing a store
         // that moved.
@@ -774,6 +782,35 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
   return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via };
 }
 
+/** The host's root as the run's capabilities answer serves it (re-read once a heads answer named another root). */
+async function hostRoot(reader: Pick<HostedReadAdapter, "hostedCapabilities">): Promise<HostRoot> {
+  const { root } = await reader.hostedCapabilities();
+  return root ? { content: root.content, version: root.version } : null;
+}
+
+/** The run's front-page step (`root-sync.ts`); `send` false only reads (a pull). */
+function rootStep(session: Session, deps: HostedSyncDeps, send: boolean): Promise<RootStepReport> {
+  const { binding } = session;
+  const via = resolveHostedVia(deps.auth.env).token;
+  return syncRoot({
+    folder: binding.path,
+    bundleId: binding.bundle_id,
+    projection: session.projection,
+    store: session.store,
+    rootWrites: session.capabilities.rootWrites,
+    current: () => hostRoot(session.reader),
+    // A new adapter: the run's own holds the answer it already read.
+    reread: () => hostRoot(session.client.reader(binding.bundle_id)),
+    ...(send
+      ? {
+          send: (content: string, base: string | null) =>
+            sendRootWrite({ carrier: session.carrier, route: `${session.routes}/root`, bundleId: binding.bundle_id, binding: checkoutBindingDigest(binding.checkout_id), content, base, ...(via !== undefined ? { via } : {}) }),
+        }
+      : {}),
+    persist: session.persist,
+  });
+}
+
 /**
  * Make the next pull ask for the whole listing. A pull that held documents recorded the listing's
  * digest, yet the held documents were not refreshed from it; if the host changes one before its
@@ -889,6 +926,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       local,
       projection,
       definitionWrites: session.capabilities.definitionWrites,
+      rootWrites: session.capabilities.rootWrites,
       ...(acceptDeletes !== undefined ? { acceptDeletes, confirmAccept: confirmAtTerminal(binding, terminal) } : {}),
     });
     await session.persist();
@@ -937,8 +975,15 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // meanwhile: pull it once more so the folder is current when the run says so.
     const second = first.report.held.some((id) => outcome.acknowledged.has(id)) ? await pullAndExport() : null;
     const pulled = second?.report ?? first.report;
+    // The front page, after the documents: settled, pulled, or sent against its base.
+    let root: RootStepReport;
+    try {
+      root = await rootStep(session, deps, true);
+    } catch (error) {
+      throw await readFailure(error, session, resumeCommand, await unsent());
+    }
     const exported = {
-      placed: [...first.placed.placed, ...(second?.placed.placed ?? [])],
+      placed: [...first.placed.placed, ...(second?.placed.placed ?? []), ...(root.refreshed ? [ROOT_INDEX] : [])],
       removed: [...first.placed.removed, ...(second?.placed.removed ?? [])],
       kept: second?.placed.kept ?? first.placed.kept,
       held: second?.placed.held ?? first.placed.held,
@@ -958,6 +1003,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       blocked: outcome.collisions,
       accessWithdrawn: outcome.accessWithdrawn,
       notSent: outcome.notSent,
+      ...(root.row ? { root: root.row } : {}),
     });
     const counts = countRows(rows);
     const shown = rows.slice(0, limit);
@@ -1080,7 +1126,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     const { store, local, reader, projection } = session;
     // As in sync: an interrupted push's claims are looked up before anything could send them.
     await reclaimInFlight(local);
-    await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, definitionWrites: session.capabilities.definitionWrites });
+    await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, definitionWrites: session.capabilities.definitionWrites, rootWrites: session.capabilities.rootWrites });
     await session.persist();
     let report: PullReport;
     try {
@@ -1091,8 +1137,15 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     if (report.held.length > 0 || session.unsafeIds.size > 0) await forgetPullDigest(store);
     const placed = await exportCheckout(binding.path, store, projection);
     await session.persist();
+    // The front page too: an unedited one takes the host's bytes; nothing is sent.
+    let root: RootStepReport;
+    try {
+      root = await rootStep(session, deps, false);
+    } catch (error) {
+      throw await readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
+    }
     await recordPulled(deps.auth.home, binding.checkout_id);
-    return { state: "pulled", refreshed: placed.placed.length, removed: placed.removed.length, kept: placed.kept.length };
+    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length };
   }
 }
 
@@ -1173,7 +1226,7 @@ function resolvedRecord(binding: CheckoutBinding, id: string, choice: string, fi
     // keep or revise again changes nothing: the earlier decision stands until the sync sends it.
     ...(already ? { already_resolved: true, requested: choice } : { choice }),
     ...(replaces !== undefined ? { replaces } : {}),
-    file: path.join(binding.path, `${id}.md`),
+    file: path.join(binding.path, id === ROOT_INDEX ? ROOT_INDEX : `${id}.md`),
     file_state: fileState,
     sent: false,
     next: sends
@@ -1291,9 +1344,8 @@ function remoteVersionOf(conflict: Conflict): string | null {
  * otherwise overwrite a version they never saw. `keep` and `revise` send over the host's version,
  * so they need an inspection to bind to; `take` sends nothing and needs none.
  */
-async function assertInspectedCurrent(session: Session, id: string, conflict: Conflict, choice: "keep" | "take" | "revise"): Promise<void> {
+async function assertInspectedCurrent(session: Session, id: string, current: string | null, choice: "keep" | "take" | "revise"): Promise<void> {
   const inspected = await session.store.readMeta<{ remote?: string | null } | null>(inspectedKey(id));
-  const current = remoteVersionOf(conflict);
   if (!inspected || !("remote" in inspected)) {
     if (choice === "take") return;
     throw new CliError("CONFLICT", `'${choice}' sends your version over the host's, so inspect the host's version of '${id}' first`, {
@@ -1335,9 +1387,13 @@ async function assertInspectedTombstone(session: Session, id: string, current: s
   }
 }
 
-async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
-  const id = documentId(values.inspect!);
-  const resumeCommand = commandFragment`${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`;
+/** True when a person's `--doc` names the bundle's root `index.md` (the front page), not a document. */
+function namesRoot(input: string): boolean {
+  return conceptIdFromPath(input.trim()) === "index";
+}
+
+/** `--out` resolved, refused when it would land inside the checkout (it would sync as a document). */
+async function inspectOut(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, resumeCommand: CommandText): Promise<string | undefined> {
   let out: string | undefined;
   if (values.out !== undefined) {
     out = path.resolve(deps.cwd, values.out);
@@ -1352,6 +1408,122 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
       throw new CliError("USAGE", "--out must be outside the checkout folder, or the file would be synced as a document", { help: `${resumeCommand} --out <file outside the folder>` });
     }
   }
+  return out;
+}
+
+/** The front page's conflict now, or the CLI error that says there is none. */
+async function rootConflictFor(session: Session): Promise<{ host: HostRoot; base: string | null; bytes: Buffer }> {
+  const host = await hostRoot(session.reader);
+  // A write whose answer was lost is settled first: it may be the very change the host now holds.
+  await settleRootSent(session.projection, session.store, host, session.persist);
+  const conflict = await rootConflict(session.binding.path, session.projection, session.store, host);
+  if (!conflict) {
+    throw new CliError("NOT_FOUND", `'${ROOT_INDEX}' has no conflict to resolve in this checkout`, {
+      details: { id: ROOT_INDEX, folder: session.binding.path },
+      help: syncCommand(session.binding),
+    });
+  }
+  return conflict;
+}
+
+/** `--inspect --doc index.md`: the front page's base, your file and the host's version. */
+async function runInspectRoot(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
+  const doc = commandToken(ROOT_INDEX);
+  const dir = commandToken(binding.path);
+  const resumeCommand = commandFragment`${cliInvocation()} sync --inspect --doc ${doc} --dir ${dir}`;
+  const out = await inspectOut(binding, values, deps, resumeCommand);
+  const record = await withSession(binding, deps, resumeCommand, async (session) => {
+    let conflict;
+    try {
+      conflict = await rootConflictFor(session);
+    } catch (error) {
+      if (error instanceof CliError) throw error;
+      throw await readFailure(error, session, resumeCommand, 0);
+    }
+    const { host, base, bytes } = conflict;
+    await session.store.writeMeta(inspectedKey(ROOT_INDEX), { remote: host?.version ?? null, tombstone: null });
+    if (out !== undefined) {
+      if (host === null) throw new CliError("NOT_FOUND", `the host has no front page to write for this bundle`, { details: { id: ROOT_INDEX } });
+      await fs.writeFile(out, host.content);
+    }
+    const stored = await session.store.readReserved("", "index.md");
+    const keep = `${cliInvocation()} sync --resolve keep --doc ${doc} --dir ${dir}`;
+    const take = `${cliInvocation()} sync --resolve take --doc ${doc} --dir ${dir}`;
+    return {
+      conflict: ROOT_INDEX,
+      file: path.join(binding.path, ROOT_INDEX),
+      reason: "changed_remotely",
+      base: { version: base, ...preview(stored && stored.version === base ? stored.content : null) },
+      local: { version: digestOf(bytes), ...preview(bytes.toString("utf8")) },
+      remote: { version: host?.version ?? null, ...preview(host?.content ?? null) },
+      ...(out !== undefined ? { remote_written_to: out } : {}),
+      choices: {
+        keep: "keep your front page: the next sync sends it over the host's version (edit the file first to combine the two)",
+        take: "replace your front page with the host's",
+      },
+      help: [keep, take],
+    };
+  });
+  deps.stdout(render(record, mode));
+}
+
+/**
+ * `--resolve take|keep|revise --doc index.md`. take places the host's front page; keep (and
+ * revise, the same for a file that is never journaled) moves the base to the host's version, so
+ * the next sync sends the file as it is then against it. keep needs an `--inspect` of exactly that
+ * version, as a document's does. Nothing is sent here.
+ */
+async function runResolveRoot(binding: CheckoutBinding, choice: "keep" | "take" | "revise", deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
+  const resumeCommand = commandFragment`${cliInvocation()} sync --resolve ${commandToken(choice)} --doc ${commandToken(ROOT_INDEX)} --dir ${commandToken(binding.path)}`;
+  const record = await withSession(binding, deps, resumeCommand, async (session) => {
+    const { projection, store } = session;
+    let conflict;
+    try {
+      conflict = await rootConflictFor(session);
+    } catch (error) {
+      if (error instanceof CliError) throw error;
+      throw await readFailure(error, session, resumeCommand, 0);
+    }
+    const { host, bytes } = conflict;
+    if (choice !== "take" && session.capabilities.rootWrites !== "allowed") {
+      throw new CliError("CONFLICT", `the host does not take changes to this bundle's front page from you, so '${choice}' could never be sent`, {
+        details: { reason: "root_writes_refused", id: ROOT_INDEX },
+        help: `${cliInvocation()} sync --resolve take --doc ${commandToken(ROOT_INDEX)} --dir ${commandToken(binding.path)} (or edit the front page in the Superbee app)`,
+      });
+    }
+    await assertInspectedCurrent(session, ROOT_INDEX, host?.version ?? null, choice);
+    const file = path.join(binding.path, ROOT_INDEX);
+    let fileState = "unchanged";
+    if (choice === "take") {
+      // Recorded before the file moves, so a crash mid-take leaves nothing recovery must keep.
+      const key = conceptIdFromPath(ROOT_INDEX);
+      projection.discarded = { ...projection.discarded, [key]: digestOf(bytes) };
+      await session.persist();
+      const placed = host ? (await replaceGuarded(file, bytes, Buffer.from(host.content, "utf8"))).placed : await removeGuarded(file, bytes);
+      delete projection.discarded[key];
+      if (!placed) throw new CliError("CONFLICT", `${file} changed while resolving it`, { details: { reason: "stale_review", id: ROOT_INDEX }, help: resumeCommand });
+      if (host) await adoptHostRoot(projection, store, host);
+      else {
+        projection.root = null;
+        projection.rootBase = null;
+      }
+      delete projection.rootConflicted;
+      fileState = host ? "replaced" : "removed";
+    } else {
+      await moveRootBase(projection, store, host);
+    }
+    await store.writeMeta(inspectedKey(ROOT_INDEX), null);
+    await session.persist();
+    return resolvedRecord(binding, ROOT_INDEX, choice, fileState, choice !== "take");
+  });
+  deps.stdout(render(record, mode));
+}
+
+async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
+  if (namesRoot(values.inspect!)) return runInspectRoot(binding, values, deps, mode);
+  const id = documentId(values.inspect!);
+  const resumeCommand = commandFragment`${cliInvocation()} sync --inspect --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`;
+  const out = await inspectOut(binding, values, deps, resumeCommand);
   const record = await withSession(binding, deps, resumeCommand, async (session) => {
     const conflict = await conflictFor(session, id, resumeCommand);
     // The deletion shown with a "deleted remotely" conflict is recorded too: a re-create acknowledges exactly it.
@@ -1461,8 +1633,9 @@ async function resolveFolder(session: Session, id: string, choice: "keep" | "tak
 }
 
 async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
-  const id = documentId(values.doc!);
   const choice = values.resolve as "keep" | "take" | "revise";
+  if (namesRoot(values.doc!)) return runResolveRoot(binding, choice, deps, mode);
+  const id = documentId(values.doc!);
   const resumeCommand = commandFragment`${cliInvocation()} sync --resolve ${commandToken(choice)} --doc ${commandToken(id)} --dir ${commandToken(binding.path)}`;
   const record = await withSession(binding, deps, resumeCommand, async (session) => {
     const { projection, store, local, reader } = session;
@@ -1485,7 +1658,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       }
       throw error;
     }
-    await assertInspectedCurrent(session, id, conflict, choice);
+    await assertInspectedCurrent(session, id, remoteVersionOf(conflict), choice);
     await beginResolution(store, id, choice);
     let fileState: string;
     if (conflict.kind === "folder") {

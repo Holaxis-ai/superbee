@@ -37,6 +37,11 @@ import {
   operationRunBody,
   operationRefusal,
   readRefusal,
+  classifyRootAnswer,
+  rootVersionOf,
+  rootWriteRequest,
+  ROOT_OPERATION_ID,
+  sendRootWrite,
   SYNC_READ_ROUTES,
   type HostedAnswer,
   type HostedHistoryRequest,
@@ -94,7 +99,7 @@ function answerOf(exchange: Exchange): HostedAnswer {
 }
 
 test(`golden /sync/v1 exchanges (${index.source}) are indexed as recorded`, () => {
-  assert.equal(index.exchanges.length, 74);
+  assert.equal(index.exchanges.length, 84);
   for (const entry of index.exchanges) {
     const exchange = fixture(entry.name);
     assert.equal(exchange.route, entry.route);
@@ -194,6 +199,71 @@ test("capabilities 200 says whether the caller may change the model: absent is n
     const body = { ...JSON.parse(fixture("capabilities-200-definition-writes-allowed").response.body), definitionWrites: value };
     assert.equal(decodeHostedCapabilities(body).definitionWrites, "refused");
   }
+});
+
+test("capabilities 200 says whether the caller may replace the root index.md; absent (an older host) and anything unknown read as refused", () => {
+  assert.equal(decodeHostedCapabilities(JSON.parse(fixture("capabilities-200").response.body)).rootWrites, "allowed");
+  assert.equal(decodeHostedCapabilities(JSON.parse(fixture("capabilities-200-root-writes-allowed").response.body)).rootWrites, "allowed");
+  assert.equal(decodeHostedCapabilities(JSON.parse(fixture("capabilities-200-root-writes-refused").response.body)).rootWrites, "refused");
+  // A host from before the root write states nothing: the root stays held.
+  const { rootWrites: _stated, ...older } = JSON.parse(fixture("capabilities-200").response.body) as Record<string, unknown>;
+  assert.equal(decodeHostedCapabilities(older).rootWrites, "refused");
+  for (const value of ["refused", "yes", true, null]) {
+    assert.equal(decodeHostedCapabilities({ ...older, rootWrites: value }).rootWrites, "refused", String(value));
+  }
+  // After a root write, the capabilities answer serves the bytes it stored at their digest: what a
+  // client that lost the write's answer compares with the digest of what it sent.
+  const moved = decodeHostedCapabilities(JSON.parse(fixture("capabilities-200-root-moved").response.body));
+  const written = JSON.parse(fixture("root-200-ok").request.body) as { content: string };
+  assert.deepEqual(moved.root, { content: written.content, version: rootVersionOf(written.content) });
+  assert.equal(moved.root!.version, (JSON.parse(fixture("root-200-ok").response.body) as { data: { version: string } }).data.version);
+});
+
+test("root writes: the client's request is the recorded one byte for byte, and every recorded answer classifies as its row", async () => {
+  const expected: Record<string, { kind: string; code?: string; authorization?: string; malformed?: true }> = {
+    "root-200-ok": { kind: "committed" },
+    "root-200-ok-created": { kind: "committed" },
+    "root-200-version-conflict": { kind: "conflict" },
+    "root-200-document-exists": { kind: "conflict" },
+    "root-200-validation-failed": { kind: "refused", code: "validation_failed" },
+    "root-200-insufficient-scope": { kind: "refused", code: "insufficient_scope", authorization: "PERMISSION_DENIED" },
+    "root-400-identified": { kind: "refused", code: "invalid_input", malformed: true },
+  };
+  assert.deepEqual(index.exchanges.filter((entry) => entry.route === "/sync/v1/root").map((entry) => entry.name).sort(), Object.keys(expected).sort());
+  for (const [name, want] of Object.entries(expected)) {
+    const exchange = fixture(name);
+    const body = JSON.parse(exchange.request.body) as { bundleId: string; content: string; expectedVersion?: string; expectAbsent?: true };
+    const base = body.expectAbsent ? null : body.expectedVersion!;
+    const outcome = classifyRootAnswer(answerOf(exchange), { bundleId: body.bundleId, sent: rootVersionOf(body.content) }) as Record<string, unknown>;
+    assert.equal(outcome.kind, want.kind, name);
+    for (const key of ["code", "authorization", "malformed"] as const) if (want[key] !== undefined) assert.equal(outcome[key], want[key], `${name} ${key}`);
+    if (want.kind === "committed") assert.equal(outcome.version, rootVersionOf(body.content), `${name}: the host's version is the digest of the bytes sent`);
+    if (want.kind === "conflict") assert.match(String(outcome.current), /^sha256:[0-9a-f]{64}$/, name);
+    // The 400 is the host refusing an identified root write: the client never sends that header.
+    if (name === "root-400-identified") {
+      assert.ok("x-superbee-write-request" in exchange.request.headers);
+      continue;
+    }
+    assert.equal(rootWriteRequest(body.bundleId, body.content, base).body, exchange.request.body, `${name}: request bytes`);
+    // Through the real fetch carrier: the headers sent are the recorded ones, and never an identity.
+    let sent: Headers | undefined;
+    const carrier = createFetchCarrier({
+      baseUrl: "https://hosted.example",
+      credentials: async () => ({ Authorization: "Bearer token" }),
+      fetch: (async (_input: string | URL | Request, init?: RequestInit) => {
+        sent = new Headers(init?.headers);
+        assert.equal(String(init?.body), exchange.request.body, name);
+        return new Response(exchange.response.body, { status: exchange.response.status, headers: exchange.response.headers });
+      }) as typeof fetch,
+    });
+    const via = exchange.request.headers["x-superbee-via"];
+    const answered = await sendRootWrite({ carrier, route: exchange.route, bundleId: body.bundleId, binding: exchange.request.headers["x-superbee-checkout"]!, content: body.content, base, ...(via ? { via } : {}) });
+    assert.equal(answered.kind, want.kind, name);
+    assert.equal(sent!.get("x-superbee-write-request"), null, name);
+    assert.equal(sent!.get("x-superbee-checkout"), exchange.request.headers["x-superbee-checkout"], name);
+    assert.equal(sent!.get("x-superbee-via"), via ?? null, name);
+  }
+  assert.equal(ROOT_OPERATION_ID, (JSON.parse(fixture("root-200-ok").response.body) as { operationId: string }).operationId);
 });
 
 test("200 definition_incompatible carries the findings; the transport's refusal names them, never beyond the host's bounds", () => {

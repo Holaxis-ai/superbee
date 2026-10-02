@@ -56,6 +56,12 @@ export interface HostedCapabilities {
    * what it says. Any value other than `"allowed"` reads as `"refused"`.
    */
   readonly definitionWrites: HostedDefinitionWrites | null;
+  /**
+   * Whether the caller may replace the bundle's root `index.md` (`bundles.root.replace.v1`): only
+   * an answer that says `"allowed"` does; a host from before the root write says nothing, which
+   * reads as `"refused"`, as does any other value.
+   */
+  readonly rootWrites: "allowed" | "refused";
 }
 
 /** The retention window assumed for a host that states none: thirty days. */
@@ -230,6 +236,7 @@ export function decodeHostedCapabilities(value: unknown): HostedCapabilities {
     root,
     operationsRetentionMs: retention ?? DEFAULT_OPERATIONS_RETENTION_MS,
     definitionWrites: body.definitionWrites === undefined ? null : body.definitionWrites === "allowed" ? "allowed" : "refused",
+    rootWrites: body.rootWrites === "allowed" ? "allowed" : "refused",
   });
 }
 

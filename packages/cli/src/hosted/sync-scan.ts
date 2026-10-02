@@ -25,7 +25,7 @@ import path from "node:path";
 import { commitLocal, deleteLocal, UNSETTLED_STATES, type LocalBundle } from "@superbee/browser-local";
 import { DOCUMENT_DELETE_KIND } from "@superbee/core/journaled-backend";
 import { assertSafeConceptId, conceptIdFromPath, CONVENTION_TYPE, InvalidInputError, isConventionId, isReservedFile, MalformedDocumentError, parseLinksFromDoc, parseMarkdown, type Frontmatter, type JournaledBackend } from "@superbee/core";
-import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDefinitionWrites, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
+import { DELETIONS_HELD_REFUSAL_CODE, MAXIMUM_ACCEPTED_DELETIONS, type HostedDefinitionWrites, type HostedRootWrites, FRONTMATTER_KEY_LIMIT, HOSTED_MANAGED_FIELDS, WHOLE_DOCUMENT_BOUNDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { mintRequestId } from "@superbee/core/uncertain-write";
 import type { IntentRecord, NewIntentRecord } from "@superbee/core/journaled-backend";
 
@@ -123,6 +123,23 @@ export interface ProjectionRecord {
   files: Record<string, ProjectionEntry>;
   /** The digest of the root `index.md` as exported, or null without one. */
   root: string | null;
+  /**
+   * The host's version of the root `index.md` the folder's root was last brought to (the base an
+   * edit to it is sent against), or null when the host had none. Kept apart from `root`, the digest
+   * of the bytes placed: a conflict kept with `--resolve keep` moves the base and leaves the file.
+   * Absent in a record written before root writes: the store's root, which the checkout copied
+   * from the host, is the base.
+   */
+  rootBase?: string | null;
+  /**
+   * A root write sent whose answer was lost: the digest of the bytes sent and the base it was sent
+   * against. The next read of the host's root version settles it (see `rootLanding`).
+   */
+  rootSent?: { readonly version: string; readonly base: string | null };
+  /** What the host last said about replacing the root (`rootWrites`), for a preview that makes no request. */
+  rootWrites?: HostedRootWrites;
+  /** Set while the last sync reported the root as a conflict, for a preview that makes no request. */
+  rootConflicted?: true;
   /**
    * Document id to the digest of local bytes a `--resolve take` is replacing, recorded before the
    * replacement starts. A crash mid-take can leave those bytes moved aside; recovery drops them
@@ -439,9 +456,15 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
     if (typeof rawExtras === "object" && rawExtras !== null) {
       for (const [rel, digest] of Object.entries(rawExtras as Record<string, unknown>)) if (typeof digest === "string") extras[rel] = digest;
     }
+    const raw = value as { rootBase?: unknown; rootSent?: { version?: unknown; base?: unknown } | null; rootWrites?: unknown };
+    const sent = raw.rootSent;
     return {
       files,
       root: typeof value.root === "string" ? value.root : null,
+      ...(raw.rootBase === null || typeof raw.rootBase === "string" ? { rootBase: raw.rootBase } : {}),
+      ...(sent && typeof sent.version === "string" && (sent.base === null || typeof sent.base === "string") ? { rootSent: { version: sent.version, base: sent.base } } : {}),
+      ...(raw.rootWrites === "allowed" ? { rootWrites: "allowed" as const } : {}),
+      ...((value as { rootConflicted?: unknown }).rootConflicted === true ? { rootConflicted: true as const } : {}),
       ...(Object.keys(discarded).length > 0 ? { discarded } : {}),
       ...(Object.keys(extras).length > 0 ? { extras } : {}),
     };
@@ -483,7 +506,7 @@ export async function folderMatchesProjection(folder: string, projection: Projec
 
 export async function writeProjection(home: string, checkoutId: string, record: ProjectionRecord): Promise<void> {
   const sorted = Object.fromEntries(Object.entries(record.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
+  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.rootBase !== undefined ? { rootBase: record.rootBase } : {}), ...(record.rootSent ? { rootSent: record.rootSent } : {}), ...(record.rootWrites === "allowed" ? { rootWrites: "allowed" } : {}), ...(record.rootConflicted ? { rootConflicted: true } : {}), ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
 }
 
 /** Every file under the folder, relative and POSIX-spelled; dot-files and dot-folders are skipped. */
@@ -583,7 +606,16 @@ export interface ScanContext {
    * `refused`).
    */
   readonly definitionWrites?: DefinitionWritesState;
+  /**
+   * What the host said about replacing the root `index.md` this run (a preview: what it said at
+   * the last sync). `allowed` leaves an edited root to the run's root step, which sends it;
+   * otherwise it is held as the app's to change.
+   */
+  readonly rootWrites?: HostedRootWrites;
 }
+
+/** Why an edited root `index.md` is held where the host does not take root writes from this person. */
+export const ROOT_HELD_MESSAGE = "the bundle's root index is edited in the Superbee app";
 
 function held(id: string, rel: string, reason: HeldReason, message: string): HeldFile {
   return { id, path: rel, reason, message };
@@ -657,12 +689,20 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     const id = isMarkdown ? conceptIdFromPath(rel) : rel;
     if (context.only && !context.only.has(id)) continue;
     if (symlink) {
+      // The root step reports a root that is not a plain file, under the one id `index.md`.
+      if (rel === ROOT_INDEX) continue;
       report.held.push(held(id, rel, "symlink", `${rel} is a symbolic link; sync sends only plain files`));
       continue;
     }
     if (rel === ROOT_INDEX) {
       const bytes = await fs.readFile(path.join(folder, rel));
-      if (digestOf(bytes) !== projection.root) report.held.push(held(rel, rel, "reserved_file", "the bundle's root index is edited in the Superbee app"));
+      if (digestOf(bytes) === projection.root) continue;
+      // Where the host takes root writes, the run's root step sends the edit (or reports its conflict).
+      if (context.rootWrites === "allowed") {
+        if (context.preview) (projection.rootConflicted ? report.conflicted : report.pending).push(ROOT_INDEX);
+        continue;
+      }
+      report.held.push(held(rel, rel, "reserved_file", ROOT_HELD_MESSAGE));
       continue;
     }
     // A file publish already sent with the bundle, still as it was sent: nothing to do.
@@ -1126,7 +1166,7 @@ export async function recoverPlacements(folder: string, projection: ProjectionRe
     const aside = await fs.readFile(temp);
     const relTarget = path.relative(folder, target).split(path.sep).join("/");
     const entry = relTarget.endsWith(".md") ? projection.files[conceptIdFromPath(relTarget)] : undefined;
-    const recorded = entry !== undefined && digestOf(aside) === entry.digest;
+    const recorded = relTarget === ROOT_INDEX ? projection.root !== null && digestOf(aside) === projection.root : entry !== undefined && digestOf(aside) === entry.digest;
     const discarded = relTarget.endsWith(".md") && projection.discarded?.[conceptIdFromPath(relTarget)] === digestOf(aside);
     const current = await readIfPresent(target);
     if (current === null) {

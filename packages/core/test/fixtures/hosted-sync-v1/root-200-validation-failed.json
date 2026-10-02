@@ -1,0 +1,24 @@
+{
+  "name": "root-200-validation-failed",
+  "description": "A front page whose okf_version differs from the stored root's: refused, nothing written.",
+  "route": "/sync/v1/root",
+  "rows": [
+    "200 validation_failed"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"content\":\"---\\nokf_version: \\\"0.1\\\"\\n---\\n# notes.a\\n\",\"expectedVersion\":\"sha256:7c7393f1351cdbe907ab4a549632c3a8d5fe9a8a591311ba34f3d30155b07a40\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"bundles.root.replace.v1\",\"error\":{\"code\":\"validation_failed\",\"message\":\"The candidate or bundle conventions failed validation; no change was saved.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

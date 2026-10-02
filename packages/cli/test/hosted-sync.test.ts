@@ -6,8 +6,9 @@
 // across different documents; any concurrent change to one document, even to disjoint frontmatter
 // keys, is an explicit conflict and nothing is sent for that document.
 import test from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -21,7 +22,10 @@ import { sync } from "../src/commands/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
-import { checkoutLockName } from "../src/hosted/binding.js";
+import { bindingForPath, checkoutDir, checkoutLockName } from "../src/hosted/binding.js";
+import { hostedStatus } from "../src/hosted/status.js";
+import { hostedPull } from "../src/hosted/sync.js";
+import { recoverPlacements } from "../src/hosted/sync-scan.js";
 import { assertAllowedInHostedCheckout, HOSTED_CHECKOUT_REFUSALS } from "../src/hosted/refusals.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 
@@ -1051,4 +1055,362 @@ test("a checkout naming no workspace whose id another workspace gains is told so
   // Gone from every workspace: the bundle is gone.
   listed.length = 0;
   assert.equal((await failingSync(h)).error.details?.reason, "bundle_deleted_remotely");
+});
+
+// ── the bundle's front page (the root index.md), lane front-page ───────────────────────────────
+
+const ROOT_V1 = "sha256:2d4238b1970c24a72552dc8e00a8ec0afa9a66d5f56418f8ac2fe5498945b107";
+const frontPage = (title: string, extra = "") => `---\nokf_version: "0.2"\ntitle: ${title}\n---\n# ${title}\n${extra}`;
+const rootFile = (h: Harness) => path.join(h.folder, "index.md");
+
+test("an edited front page is sent against the host's version where the host takes root writes, with no request identity", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  // A root `index generate` rewrote (its generator marker) is an ordinary edit, and is sent like one.
+  const edited = frontPage("Team knowledge, revised", "<!-- agentstate-lite:generated-index:v1 -->\n- [Alpha](notes/alpha.md)\n");
+  await writeFile(rootFile(h), edited);
+  const receipt = await runSync(h);
+  assert.equal(receipt.status, "synced", JSON.stringify(receipt));
+  const row = rowFor(receipt, "index.md")!;
+  assert.equal(row.state, "committed");
+  assert.equal(h.host.root()?.content, edited, "the host stores the file's exact bytes");
+  assert.equal(row.version, h.host.root()?.version);
+  const [call] = h.host.rootCalls;
+  assert.equal(h.host.rootCalls.length, 1);
+  assert.deepEqual(call!.body, { bundleId: BUNDLE, content: edited, expectedVersion: ROOT_V1 });
+  assert.equal(call!.writeRequest, null, "a root write is not identified: no X-Superbee-Write-Request");
+  assert.match(call!.binding!, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(writeRoutes(h).length, 0, "nothing goes through the document routes");
+
+  // Up to date after: nothing is sent again, and a second edit goes against the new version.
+  assert.equal((await runSync(h)).status, "up_to_date");
+  assert.equal(h.host.rootCalls.length, 1);
+  await writeFile(rootFile(h), frontPage("Third"));
+  assert.equal(rowFor(await runSync(h), "index.md")?.state, "committed");
+  assert.equal(h.host.rootCalls[1]!.body.expectedVersion, row.version);
+});
+
+test("without root writes the edited front page stays held as before: an older host, or one that refuses them", async () => {
+  for (const host of [new FakeHost(), new FakeHost({ rootWrites: "refused" })]) {
+    const h = await harness(host);
+    await writeFile(rootFile(h), frontPage("Changed"));
+    const { error, receipt } = await failingSync(h);
+    assert.equal(error.code, "CONFLICT");
+    const row = rowFor(receipt, "index.md")!;
+    assert.deepEqual([row.state, row.reason], ["held", "reserved_file"]);
+    assert.match(row.message, /^the bundle's root index is edited in the Superbee app\./);
+    assert.equal(h.host.rootCalls.length, 0, "nothing is sent to the root route");
+    assert.equal(h.host.root()?.version, ROOT_V1);
+  }
+});
+
+test("with root writes, a subdirectory index.md and every log.md stay held", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  await writeFile(path.join(h.folder, "notes", "index.md"), "---\ntitle: Notes\n---\n# Notes\n");
+  await writeFile(path.join(h.folder, "log.md"), "# Log\n");
+  await writeFile(path.join(h.folder, "notes", "log.md"), "# Notes log\n");
+  const { receipt } = await failingSync(h);
+  const reasons = Object.fromEntries(rowsOf(receipt).map((row) => [row.id, [row.state, row.reason]]));
+  assert.deepEqual(reasons, { "log.md": ["held", "reserved_file"], "notes/index.md": ["held", "reserved_file"], "notes/log.md": ["held", "reserved_file"] });
+  assert.equal(h.host.rootCalls.length, 0);
+});
+
+test("a front page changed on the host replaces an unedited file, and the base moves with it", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  const hostPage = frontPage("Renamed on the host");
+  const hostVersion = h.host.putRoot(hostPage);
+  const receipt = await runSync(h);
+  assert.equal(receipt.status, "up_to_date", JSON.stringify(receipt));
+  assert.equal((receipt.pulled as { refreshed: number }).refreshed, 1);
+  assert.equal(await readFile(rootFile(h), "utf8"), hostPage);
+  assert.equal(h.host.rootCalls.length, 0, "a pull sends nothing");
+  // The next edit is sent against the version pulled, not the one the checkout started from.
+  await writeFile(rootFile(h), frontPage("Mine"));
+  await runSync(h);
+  assert.equal(h.host.rootCalls[0]!.body.expectedVersion, hostVersion);
+});
+
+test("an edited front page the host also changed is a conflict: nothing is sent or merged, and take places the host's", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  const hostPage = frontPage("Theirs");
+  h.host.putRoot(hostPage);
+  await writeFile(rootFile(h), frontPage("Mine"));
+  const { error, receipt } = await failingSync(h);
+  assert.equal(error.code, "CONFLICT");
+  const row = rowFor(receipt, "index.md")!;
+  assert.deepEqual([row.state, row.reason], ["conflict", "changed_remotely"]);
+  assert.equal(h.host.rootCalls.length, 0, "nothing is sent over the host's change");
+  assert.equal(await readFile(rootFile(h), "utf8"), frontPage("Mine"), "the file keeps the edit");
+  assert.match(String((receipt!.help as string[])[0]), new RegExp(`sync --inspect --doc index.md --dir ${h.folder}$`));
+  // Still a conflict on the next run: the base did not move.
+  assert.equal(rowFor((await failingSync(h)).receipt, "index.md")?.state, "conflict");
+
+  const review = await runSync(h, ["--inspect", "--doc", "index.md"]);
+  assert.equal(review.conflict, "index.md");
+  assert.equal((review.base as { version: string }).version, ROOT_V1);
+  assert.equal((review.remote as { content: string }).content, hostPage);
+  assert.match(String((review.local as { content: string }).content), /Mine/);
+
+  const resolved = await runSync(h, ["--resolve", "take", "--doc", "index.md"]);
+  assert.equal(resolved.file_state, "replaced");
+  assert.equal(await readFile(rootFile(h), "utf8"), hostPage);
+  assert.equal((await runSync(h)).status, "up_to_date");
+  assert.equal(h.host.rootCalls.length, 0);
+});
+
+test("keep on a front-page conflict needs an --inspect of the host's version, then the next sync replaces it", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  const theirs = h.host.putRoot(frontPage("Theirs"));
+  const mine = frontPage("Mine");
+  await writeFile(rootFile(h), mine);
+  await failingSync(h);
+  const blind = await failingSync(h, ["--resolve", "keep", "--doc", "index.md"]);
+  assert.equal(blind.error.details?.reason, "not_inspected");
+  await runSync(h, ["--inspect", "--doc", "index.md"]);
+  // The host moved again after the inspection: keep would overwrite a version never shown.
+  const newer = h.host.putRoot(frontPage("Theirs, again"));
+  assert.equal((await failingSync(h, ["--resolve", "keep", "--doc", "index.md"])).error.details?.reason, "stale_review");
+  await runSync(h, ["--inspect", "--doc", "index.md"]);
+  const resolved = await runSync(h, ["--resolve", "keep", "--doc", "index.md"]);
+  assert.equal(resolved.sent, false);
+  assert.equal(resolved.file_state, "unchanged");
+  assert.equal(h.host.rootCalls.length, 0, "a resolution sends nothing");
+  assert.notEqual(newer, theirs);
+
+  const receipt = await runSync(h);
+  assert.equal(rowFor(receipt, "index.md")?.state, "committed");
+  assert.equal(h.host.rootCalls[0]!.body.expectedVersion, newer, "sent against the host's version the person kept theirs over");
+  assert.equal(h.host.root()?.content, mine);
+});
+
+test("a front-page write whose answer was lost is settled by the host's root version, now or on the next run, and never sent twice", async () => {
+  // Applied, answer lost: the re-read finds the bytes sent.
+  const landed = await harness(new FakeHost({ rootWrites: "allowed" }));
+  landed.host.rootHook = () => ({ kind: "apply-then-drop" });
+  await writeFile(rootFile(landed), frontPage("Mine"));
+  const first = await runSync(landed);
+  assert.equal(rowFor(first, "index.md")?.state, "committed", JSON.stringify(first));
+  assert.equal(landed.host.root()?.content, frontPage("Mine"));
+  landed.host.rootHook = undefined;
+  assert.equal((await runSync(landed)).status, "up_to_date");
+  assert.equal(landed.host.rootCalls.length, 1);
+
+  // Not applied, answer lost: the re-read finds the base, and the next sync sends it.
+  const dropped = await harness(new FakeHost({ rootWrites: "allowed" }));
+  dropped.host.rootHook = () => ({ kind: "drop" });
+  await writeFile(rootFile(dropped), frontPage("Mine"));
+  const lost = await failingSync(dropped);
+  assert.deepEqual([rowFor(lost.receipt, "index.md")?.state, rowFor(lost.receipt, "index.md")?.reason], ["paused", "not_landed"]);
+  dropped.host.rootHook = undefined;
+  assert.equal(rowFor(await runSync(dropped), "index.md")?.state, "committed");
+  assert.equal(dropped.host.rootCalls.length, 2);
+
+  // Applied, answer lost, and the re-read fails too: the next run settles it without sending.
+  const later = await harness(new FakeHost({ rootWrites: "allowed" }));
+  later.host.rootHook = () => ({ kind: "apply-then-drop" });
+  let capabilityReads = 0;
+  later.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(input)).pathname.endsWith("/capabilities") && later.host.rootCalls.length > 0 && capabilityReads++ === 0) throw new TypeError("fetch failed");
+    return later.host.fetch(input, init);
+  }) as typeof fetch;
+  await writeFile(rootFile(later), frontPage("Mine"));
+  const unknown = await failingSync(later);
+  assert.deepEqual([rowFor(unknown.receipt, "index.md")?.state, rowFor(unknown.receipt, "index.md")?.reason], ["unknown", "possibly_delivered"]);
+  later.host.rootHook = undefined;
+  // Edited again before the next run: the settled write is the base the new edit goes against,
+  // never a conflict with the person's own landed write.
+  await writeFile(rootFile(later), frontPage("Next"));
+  const settled = await runSync(later);
+  assert.equal(rowFor(settled, "index.md")?.state, "committed", JSON.stringify(settled));
+  assert.equal(later.host.rootCalls.length, 2, "the landed write is never sent again");
+  assert.equal(later.host.rootCalls[1]!.body.content, frontPage("Next"));
+  assert.equal(later.host.rootCalls[1]!.body.expectedVersion, `sha256:${createHash("sha256").update(frontPage("Mine")).digest("hex")}`, "the settled write is the new base");
+});
+
+test("a front page the host would refuse, or over the 64 KiB a write carries, is held and never sent", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  await writeFile(rootFile(h), frontPage("Big", `${"x".repeat(70 * 1024)}\n`));
+  const big = await failingSync(h);
+  assert.deepEqual([rowFor(big.receipt, "index.md")?.state, rowFor(big.receipt, "index.md")?.reason], ["held", "too_large"]);
+  await writeFile(rootFile(h), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(frontPage("BOM"))]));
+  const bom = await failingSync(h);
+  assert.deepEqual([rowFor(bom.receipt, "index.md")?.state, rowFor(bom.receipt, "index.md")?.reason], ["held", "not_sendable"]);
+  assert.equal(h.host.rootCalls.length, 0);
+  // The host's own refusal (an edition change) is a refused row naming its code; nothing changed there.
+  await writeFile(rootFile(h), `---\nokf_version: "0.1"\ntitle: Old\n---\n`);
+  const refused = await failingSync(h);
+  assert.deepEqual([rowFor(refused.receipt, "index.md")?.state, rowFor(refused.receipt, "index.md")?.reason], ["refused", "validation_failed"]);
+  assert.equal(h.host.root()?.version, ROOT_V1);
+});
+
+test("a stale base the host reports on the write itself is a front-page conflict", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  h.host.rootHook = () => {
+    h.host.rootHook = undefined;
+    return { kind: "respond", status: 200, body: { ok: false, operationId: "bundles.root.replace.v1", error: { code: "version_conflict", message: "stale", retryable: false, writeState: "not_applied" } } };
+  };
+  await writeFile(rootFile(h), frontPage("Mine"));
+  const { receipt } = await failingSync(h);
+  assert.deepEqual([rowFor(receipt, "index.md")?.state, rowFor(receipt, "index.md")?.reason], ["conflict", "changed_remotely"]);
+});
+
+test("a copied folder adopted with a front page that differs from the host's is a conflict, never sent over the host's", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  const copy = path.join(h.cwd, "copy");
+  await cp(h.folder, copy, { recursive: true });
+  await writeFile(path.join(copy, "index.md"), frontPage("Mine"));
+  const out: string[] = [];
+  await checkout(["--adopt", copy, "--host", HOST], { stdout: (text: string) => void out.push(text), auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  const adopted = decode(out.at(-1)!.trim()) as Record<string, unknown>;
+  assert.match(String(adopted.root_index), /^kept \(differs/);
+  h.folder = await realpath(copy);
+  const { receipt } = await failingSync(h);
+  assert.deepEqual([rowFor(receipt, "index.md")?.state, rowFor(receipt, "index.md")?.reason], ["conflict", "changed_remotely"]);
+  assert.equal(h.host.rootCalls.length, 0);
+});
+
+// ── front page: review fixes (links, folders, keep, legacy records, pull-only, recovery, status) ──
+
+/** The checkout's projection record file, read and written as JSON. */
+async function projectionRecord(h: Harness): Promise<{ file: string; record: Record<string, unknown> }> {
+  const binding = await bindingForPath(h.home, h.folder);
+  assert.ok(binding);
+  const file = path.join(checkoutDir(h.home, binding.checkout_id), "projection.json");
+  return { file, record: JSON.parse(await readFile(file, "utf8")) as Record<string, unknown> };
+}
+
+const versionOf = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
+
+test("a front page that is a symbolic link is held under index.md alone: nothing outside the folder is read, sent or replaced", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  const outside = path.join(h.cwd, "outside.md");
+  await writeFile(outside, frontPage("Outside the checkout"));
+  await unlink(rootFile(h));
+  await symlink(outside, rootFile(h));
+  h.host.putRoot(frontPage("Theirs"));
+  const { receipt } = await failingSync(h);
+  const rows = rowsOf(receipt).filter((row) => row.id === "index.md" || row.id === "index");
+  assert.deepEqual(rows.map((row) => [row.id, row.state, row.reason]), [["index.md", "held", "symlink"]], "one row, one id");
+  assert.equal(h.host.rootCalls.length, 0, "the link's target is never sent");
+  assert.equal(await readFile(outside, "utf8"), frontPage("Outside the checkout"), "the host's front page is never placed through the link");
+});
+
+test("a front page that is a folder is held, and the rest of the sync goes on", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  await unlink(rootFile(h));
+  await mkdir(rootFile(h));
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Alpha, while index.md is a folder.\n"));
+  const { error, receipt } = await failingSync(h);
+  assert.equal(error.code, "CONFLICT");
+  assert.deepEqual([rowFor(receipt, "index.md")?.state, rowFor(receipt, "index.md")?.reason], ["held", "unsafe_path"]);
+  assert.equal(rowFor(receipt, "notes/alpha")?.state, "committed");
+  assert.equal(h.host.rootCalls.length, 0);
+});
+
+test("after keep on a front-page conflict, the file is sent as it is at the next sync, even when it went back to its old bytes", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  const original = await readFile(rootFile(h), "utf8");
+  const theirs = h.host.putRoot(frontPage("Theirs"));
+  await writeFile(rootFile(h), frontPage("Mine"));
+  await failingSync(h);
+  await runSync(h, ["--inspect", "--doc", "index.md"]);
+  await runSync(h, ["--resolve", "keep", "--doc", "index.md"]);
+  await writeFile(rootFile(h), original);
+  const receipt = await runSync(h);
+  assert.equal(rowFor(receipt, "index.md")?.state, "committed", JSON.stringify(receipt));
+  assert.deepEqual(h.host.rootCalls.map((call) => [call.body.content, call.body.expectedVersion]), [[original, theirs]]);
+  assert.equal(h.host.root()?.content, original, "the folder and the host agree again");
+});
+
+test("a record from before root writes: an edited front page is a conflict, never sent over the host's; an unedited one is refreshed", async () => {
+  const edited = await harness(new FakeHost({ rootWrites: "allowed" }));
+  await writeFile(rootFile(edited), frontPage("Edited while held by an older sync"));
+  const legacy = await projectionRecord(edited);
+  delete legacy.record.rootBase;
+  await writeFile(legacy.file, `${JSON.stringify(legacy.record)}\n`);
+  const { receipt } = await failingSync(edited);
+  assert.deepEqual([rowFor(receipt, "index.md")?.state, rowFor(receipt, "index.md")?.reason], ["conflict", "changed_remotely"]);
+  assert.equal(edited.host.rootCalls.length, 0);
+  assert.equal(edited.host.root()?.version, ROOT_V1);
+
+  const clean = await harness(new FakeHost({ rootWrites: "allowed" }));
+  const record = await projectionRecord(clean);
+  delete record.record.rootBase;
+  await writeFile(record.file, `${JSON.stringify(record.record)}\n`);
+  clean.host.putRoot(frontPage("Theirs"));
+  assert.equal((await runSync(clean)).status, "up_to_date");
+  assert.equal(await readFile(rootFile(clean), "utf8"), frontPage("Theirs"));
+});
+
+test("a pull with no push (a read's pull) refreshes an unedited front page and sends nothing", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  h.host.putRoot(frontPage("Theirs"));
+  const binding = await bindingForPath(h.home, h.folder);
+  assert.ok(binding);
+  const pulled = await hostedPull(binding, { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  assert.deepEqual(pulled, { state: "pulled", refreshed: 1, removed: 0, kept: 0 });
+  assert.equal(await readFile(rootFile(h), "utf8"), frontPage("Theirs"));
+  // An edited one is left as it is, and nothing is sent.
+  h.host.putRoot(frontPage("Theirs again"));
+  await writeFile(rootFile(h), frontPage("Mine"));
+  await hostedPull(binding, { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  assert.equal(await readFile(rootFile(h), "utf8"), frontPage("Mine"));
+  assert.equal(h.host.rootCalls.length, 0);
+});
+
+test("recovery after a crash mid-replacement of the front page drops the moved-aside bytes it had placed, and puts back a missing file", async () => {
+  const folder = await mkdtemp(path.join(tmpdir(), "sb-root-recover-"));
+  const placed = frontPage("Placed");
+  const projection = { files: {}, root: versionOf(placed) };
+  // Crashed after the new bytes were linked: the pre-image is the recorded root, so it goes.
+  await writeFile(path.join(folder, "index.md"), frontPage("Host's"));
+  await writeFile(path.join(folder, ".index.md.superbee-pre-abc123.tmp"), placed);
+  await recoverPlacements(folder, projection);
+  assert.deepEqual((await readdir(folder)).sort(), ["index.md"]);
+  // Crashed before: the name is free, and the pre-image goes back under it.
+  await unlink(path.join(folder, "index.md"));
+  await writeFile(path.join(folder, ".index.md.superbee-pre-def456.tmp"), placed);
+  await recoverPlacements(folder, projection);
+  assert.equal(await readFile(path.join(folder, "index.md"), "utf8"), placed);
+  assert.deepEqual(await readdir(folder), ["index.md"]);
+});
+
+test("status shows a front-page conflict the last sync reported as a conflict, not as an unsent change", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  h.host.putRoot(frontPage("Theirs"));
+  await writeFile(rootFile(h), frontPage("Mine"));
+  await failingSync(h);
+  const { sync: state } = await hostedStatus((await bindingForPath(h.home, h.folder))!, h.home);
+  assert.equal(state.conflicts, 1);
+  assert.deepEqual(state.conflict_ids, ["index.md"]);
+  assert.equal(state.unsent, 0);
+});
+
+test("a front-page write the host denies (403) is access withdrawn, and a malformed-request 400 never blames the file", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  await writeFile(rootFile(h), frontPage("Mine"));
+  h.host.rootHook = () => ({ kind: "respond", status: 403, body: { error: "access_denied" } });
+  const denied = await failingSync(h);
+  assert.deepEqual([rowFor(denied.receipt, "index.md")?.state, rowFor(denied.receipt, "index.md")?.reason], ["refused", "access_withdrawn"]);
+  h.host.rootHook = () => ({ kind: "respond", status: 400, body: { error: { code: "invalid_input" } } });
+  const malformed = await failingSync(h);
+  const row = rowFor(malformed.receipt, "index.md")!;
+  assert.equal(row.state, "refused");
+  assert.match(row.message, /malformed/);
+  assert.doesNotMatch(row.message, /Edit index\.md/);
+});
+
+test("a front-page write that did not land when re-read but lands late is settled as landed, never a conflict with your own write", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  h.host.rootHook = () => ({ kind: "drop" });
+  await writeFile(rootFile(h), frontPage("Mine"));
+  const lost = await failingSync(h);
+  assert.equal(rowFor(lost.receipt, "index.md")?.reason, "not_landed");
+  // The dropped request reaches the host after all, and the person edits the file again meanwhile.
+  h.host.rootHook = undefined;
+  h.host.putRoot(frontPage("Mine"));
+  await writeFile(rootFile(h), frontPage("Next"));
+  const receipt = await runSync(h);
+  assert.equal(rowFor(receipt, "index.md")?.state, "committed", JSON.stringify(receipt));
+  assert.equal(h.host.rootCalls.at(-1)!.body.expectedVersion, versionOf(frontPage("Mine")));
+  assert.equal(h.host.root()?.content, frontPage("Next"));
 });

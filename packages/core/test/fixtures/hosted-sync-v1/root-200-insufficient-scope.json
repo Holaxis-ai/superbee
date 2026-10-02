@@ -1,0 +1,24 @@
+{
+  "name": "root-200-insufficient-scope",
+  "description": "A front page of a bundle the bearer only reads: refused before anything is read.",
+  "route": "/sync/v1/root",
+  "rows": [
+    "200 insufficient_scope"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"ro.a\",\"content\":\"# ro.a\\n\",\"expectedVersion\":\"sha256:7c7393f1351cdbe907ab4a549632c3a8d5fe9a8a591311ba34f3d30155b07a40\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"bundles.root.replace.v1\",\"error\":{\"code\":\"insufficient_scope\",\"message\":\"Your access to this bundle does not allow this write. Nothing was written.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

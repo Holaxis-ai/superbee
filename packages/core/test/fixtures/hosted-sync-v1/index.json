@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted a27dcc5d00afbf9560bc601e6bd814ea823a662d",
+  "source": "Holaxis-ai/superbee-hosted 45b6c7817a91ccd7c2b43e61b789cc76864cf846",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
@@ -669,6 +669,96 @@
         "heads 200 no root"
       ],
       "status": 200
+    },
+    {
+      "name": "root-200-ok-created",
+      "file": "root-200-ok-created.json",
+      "route": "/sync/v1/root",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "capabilities-200-root-writes-allowed",
+      "file": "capabilities-200-root-writes-allowed.json",
+      "route": "/sync/v1/capabilities",
+      "rows": [
+        "capabilities 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "capabilities-200-root-writes-refused",
+      "file": "capabilities-200-root-writes-refused.json",
+      "route": "/sync/v1/capabilities",
+      "rows": [
+        "capabilities 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "root-200-ok",
+      "file": "root-200-ok.json",
+      "route": "/sync/v1/root",
+      "rows": [
+        "200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "root-200-version-conflict",
+      "file": "root-200-version-conflict.json",
+      "route": "/sync/v1/root",
+      "rows": [
+        "200 version_conflict"
+      ],
+      "status": 200
+    },
+    {
+      "name": "root-200-document-exists",
+      "file": "root-200-document-exists.json",
+      "route": "/sync/v1/root",
+      "rows": [
+        "200 document_exists"
+      ],
+      "status": 200
+    },
+    {
+      "name": "capabilities-200-root-moved",
+      "file": "capabilities-200-root-moved.json",
+      "route": "/sync/v1/capabilities",
+      "rows": [
+        "capabilities 200"
+      ],
+      "status": 200
+    },
+    {
+      "name": "root-200-validation-failed",
+      "file": "root-200-validation-failed.json",
+      "route": "/sync/v1/root",
+      "rows": [
+        "200 validation_failed"
+      ],
+      "status": 200
+    },
+    {
+      "name": "root-200-insufficient-scope",
+      "file": "root-200-insufficient-scope.json",
+      "route": "/sync/v1/root",
+      "rows": [
+        "200 insufficient_scope"
+      ],
+      "status": 200
+    },
+    {
+      "name": "root-400-identified",
+      "file": "root-400-identified.json",
+      "route": "/sync/v1/root",
+      "rows": [
+        "400"
+      ],
+      "status": 400
     }
   ]
 }
