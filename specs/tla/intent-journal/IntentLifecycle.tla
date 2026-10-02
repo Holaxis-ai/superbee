@@ -12,7 +12,9 @@
 (*   PStart                pushWithRole (push role, optional               *)
 (*                         reclaimInFlight), push: pause check and         *)
 (*                         listIntents("pending")                          *)
-(*   PNext                 push: predecessor check and claim (updateIntent)*)
+(*   PNext                 push: predecessor check, claim (updateIntent),  *)
+(*                         and the fold of a refused chain                 *)
+(*                         (foldRefusedChain, supersedingIntent)           *)
 (*   PSubmit, PGiveUp,     packages/core/src/uncertain-write.ts            *)
 (*   PLookup               performUncertainWrite: submissions and lookups  *)
 (*   PSettle               settleIntent                                    *)
@@ -26,11 +28,20 @@
 (*    lookups of the same identity return the recorded outcome             *)
 (*    (at-most-once, as the reference outcome store). Retention expiry is  *)
 (*    omitted; see identified-write for it.                                *)
+(*  - Refusals have two classes. "content" is every refusal the authority  *)
+(*    records as not applied, so the identity can only answer it again:    *)
+(*    content codes and the busy codes (BUSY_REFUSAL_CODES). "auth" is     *)
+(*    AUTHORIZATION_REFUSAL_CODES (lost permission, spent quota), which    *)
+(*    records nothing and pauses the bundle. A busy answer that does not   *)
+(*    say the write was not applied is a lost answer here.                 *)
 (*  - Request identities are 1..MaxRid minted in order, so identity order  *)
 (*    is journal sequence order.                                           *)
 (*  - performUncertainWrite's lookup rounds are collapsed to one lookup    *)
 (*    that may fail (consuming the loss budget); at most 2 submissions.    *)
-(*  - The predecessor read and the claim are one step.                     *)
+(*  - The predecessor read and the claim are one step, and so are the fold *)
+(*    guard's journal read and its guarded write. The fold's check that    *)
+(*    the working document holds the successor's bytes always passes, as   *)
+(*    content is abstracted away.                                          *)
 (*  - deleteLocal composes like commitLocal here and is not modeled        *)
 (*    separately.                                                          *)
 (*  - The push role is a mutex taken for the whole push when               *)
@@ -44,11 +55,17 @@
 (*   AdmitRefused       exact-mode resolve admits a content-refused head,  *)
 (*                      as body mode does                                  *)
 (*   RoleDiscipline     every push runs under the push role                *)
+(*   FoldRefusedCodes   the refusal classes whose never-sent chained       *)
+(*                      successor push folds into one fresh intent on the  *)
+(*                      refused head's premise: {} before the fold,        *)
+(*                      {"content"} as the code folds (isContentRefusal)   *)
+(*   FoldDropsEdit      mutant: the fold retires the chain and journals    *)
+(*                      nothing                                            *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Pushers, MaxRid, MaxCommits, MaxCrash, MaxLoss, MaxConflict, MaxRefuse, MaxAuthRefuse,
-          ReclaimBeforePush, AdmitRefused, RoleDiscipline, None
+          ReclaimBeforePush, AdmitRefused, RoleDiscipline, FoldRefusedCodes, FoldDropsEdit, None
 
 Rids == 1..MaxRid
 Gone == [st |-> "gone", att |-> 0, after |-> None, code |-> None]   \* an absent journal row
@@ -63,9 +80,12 @@ VARIABLES
   role,
   pc, P,      \* per-pusher program counter and locals
   budget,     \* environment budgets
-  blindResubmit, retiredApplied  \* ghost flags for action-level safety checks
+  blindResubmit, retiredApplied, \* ghost flags for action-level safety checks
+  badFold,    \* ghost: a fold retired a row the authority did not record as refused, or saw
+  discarded   \* ghost: the person's last step was take-remote, which discards their edit
 
-vars == <<J, nextRid, outcome, submitted, paused, role, pc, P, budget, blindResubmit, retiredApplied>>
+vars == <<J, nextRid, outcome, submitted, paused, role, pc, P, budget, blindResubmit, retiredApplied,
+          badFold, discarded>>
 
 Unsettled == {"pending", "in_flight", "conflict", "refused", "unknown"}
 Live(r) == J[r] # Gone /\ J[r].st \in Unsettled
@@ -89,6 +109,8 @@ Init ==
                conflict |-> MaxConflict, refuse |-> MaxRefuse, authref |-> MaxAuthRefuse]
   /\ blindResubmit = FALSE
   /\ retiredApplied = FALSE
+  /\ badFold = FALSE
+  /\ discarded = FALSE
 
 NewIntent(after) == [st |-> "pending", att |-> 0, after |-> after, code |-> None]
 
@@ -116,19 +138,22 @@ Compose ==
        ELSE /\ J' = [J EXCEPT ![nextRid] = NewIntent(l)]                          \* chain
             /\ UNCHANGED retiredApplied
   /\ nextRid' = nextRid + 1
+  /\ discarded' = FALSE
 
 Commit ==
   /\ budget.commits > 0
   /\ Compose
   /\ budget' = [budget EXCEPT !.commits = @ - 1]
-  /\ UNCHANGED <<outcome, submitted, paused, role, pc, P, blindResubmit>>
+  /\ UNCHANGED <<outcome, submitted, paused, role, pc, P, blindResubmit, badFold>>
 
 HasContentRefusal == \E r \in LiveRids : J[r].st = "refused" /\ J[r].code = "content"
 
 RecoveryEdit ==
   /\ HasContentRefusal
+  \* Model bound only: keep one identity spare so MaxRid never starves a fold.
+  /\ FoldRefusedCodes # {} => nextRid < MaxRid
   /\ Compose
-  /\ UNCHANGED <<outcome, submitted, paused, role, pc, P, budget, blindResubmit>>
+  /\ UNCHANGED <<outcome, submitted, paused, role, pc, P, budget, blindResubmit, badFold>>
 
 \* resume: lift the pause, requeue authorization refusals only.
 Resume ==
@@ -136,7 +161,8 @@ Resume ==
   /\ paused' = FALSE
   /\ J' = [r \in Rids |-> IF Live(r) /\ J[r].st = "refused" /\ J[r].code = "auth"
                             THEN [J[r] EXCEPT !.st = "pending"] ELSE J[r]]
-  /\ UNCHANGED <<nextRid, outcome, submitted, role, pc, P, budget, blindResubmit, retiredApplied>>
+  /\ UNCHANGED <<nextRid, outcome, submitted, role, pc, P, budget, blindResubmit, retiredApplied,
+                 badFold, discarded>>
 
 \* resolveConflict in exact mode, through conflictChain: the head must be a conflict row, or
 \* with AdmitRefused a content refusal. The whole unsettled chain is retired in one
@@ -155,7 +181,8 @@ Resolve(keep) ==
                              ELSE IF keep /\ r = nextRid THEN NewIntent(None) ELSE J[r]]
      /\ NoteRetired(chain)
   /\ nextRid' = IF keep THEN nextRid + 1 ELSE nextRid
-  /\ UNCHANGED <<outcome, submitted, paused, role, pc, P, budget, blindResubmit>>
+  /\ discarded' = ~keep
+  /\ UNCHANGED <<outcome, submitted, paused, role, pc, P, budget, blindResubmit, badFold>>
 
 ----------------------------------------------------------------------------
 (* Push *)
@@ -181,17 +208,24 @@ PStart(p) ==
      /\ J' = j
      /\ P' = [P EXCEPT ![p].list = PendingInOrder(j), ![p].lrec = j]
   /\ pc' = [pc EXCEPT ![p] = "next"]
-  /\ UNCHANGED <<nextRid, outcome, submitted, paused, budget, blindResubmit, retiredApplied>>
+  /\ UNCHANGED <<nextRid, outcome, submitted, paused, budget, blindResubmit, retiredApplied, badFold,
+                 discarded>>
 
 PEnd(p) ==
   /\ pc[p] = "next" /\ P[p].list = <<>>
   /\ pc' = [pc EXCEPT ![p] = "idle"]
   /\ P' = [P EXCEPT ![p] = BlankP]
   /\ role' = IF role = p THEN None ELSE role
-  /\ UNCHANGED <<J, nextRid, outcome, submitted, paused, budget, blindResubmit, retiredApplied>>
+  /\ UNCHANGED <<J, nextRid, outcome, submitted, paused, budget, blindResubmit, retiredApplied, badFold,
+                 discarded>>
 
 \* push: a missing predecessor counts as clear. The claim is a CAS on state only and
-\* writes the listed attempts + 1.
+\* writes the listed attempts + 1. A never-sent intent that waits on a refusal in
+\* FoldRefusedCodes, when the two are the document's whole unsettled journal, is folded
+\* instead: one guarded transaction retires both and journals a fresh intent on the refused
+\* head's premise (its `after`), which the same push then delivers. That is the supersede
+\* compose applies to a refused latest intent, reached because the edit landed while the
+\* head was in flight.
 PNext(p) ==
   /\ pc[p] = "next" /\ P[p].list # <<>>
   /\ LET r == Head(P[p].list)
@@ -199,16 +233,30 @@ PNext(p) ==
          pred == lr.after
          blocked == pred # None /\ J[pred] # Gone /\ J[pred].st # "acked"
          canClaim == J[r] # Gone /\ J[r].st = "pending"
-     IN IF blocked \/ ~canClaim
+         fold == /\ blocked /\ canClaim /\ lr.att = 0 /\ J[r].att = 0
+                 /\ J[pred].st = "refused" /\ J[pred].code \in FoldRefusedCodes
+                 /\ LiveRids = {pred, r} /\ nextRid <= MaxRid
+         folded == NewIntent(J[pred].after)
+     IN IF fold
+          THEN /\ J' = [q \in Rids |-> IF q \in {pred, r} THEN Gone
+                                       ELSE IF q = nextRid /\ ~FoldDropsEdit THEN folded ELSE J[q]]
+               /\ nextRid' = IF FoldDropsEdit THEN nextRid ELSE nextRid + 1
+               /\ NoteRetired({pred, r})
+               /\ badFold' = (badFold \/ outcome[pred] # "refusedC" \/ submitted[r] > 0)
+               /\ P' = [P EXCEPT ![p].list = IF FoldDropsEdit THEN Tail(@) ELSE Append(Tail(@), nextRid),
+                                 ![p].lrec[nextRid] = IF FoldDropsEdit THEN @ ELSE folded]
+               /\ UNCHANGED pc
+        ELSE IF blocked \/ ~canClaim
           THEN /\ P' = [P EXCEPT ![p].list = Tail(@)]
-               /\ UNCHANGED <<J, pc>>
+               /\ UNCHANGED <<J, pc, nextRid, retiredApplied, badFold>>
           ELSE /\ J' = [J EXCEPT ![r].st = "in_flight", ![r].att = lr.att + 1]
                \* performUncertainWrite gets the listed attempts
                /\ P' = [P EXCEPT ![p].list = Tail(@), ![p].cur = r, ![p].catt = lr.att + 1,
                                  ![p].datt = lr.att, ![p].subs = 0, ![p].need = (lr.att = 0),
                                  ![p].nullSeen = FALSE, ![p].out = None]
                /\ pc' = [pc EXCEPT ![p] = "deliver"]
-  /\ UNCHANGED <<nextRid, outcome, submitted, paused, role, budget, blindResubmit, retiredApplied>>
+               /\ UNCHANGED <<nextRid, retiredApplied, badFold>>
+  /\ UNCHANGED <<outcome, submitted, paused, role, budget, blindResubmit, discarded>>
 
 \* performUncertainWrite: one submission. The request may be lost before the authority
 \* applies it, or applied with its answer lost; either yields "unknown" and a lookup.
@@ -243,14 +291,15 @@ PSubmit(p) ==
                                   ![p].nullSeen = FALSE,
                                   ![p].out = IF lost THEN None ELSE rec]
   /\ pc' = [pc EXCEPT ![p] = IF P'[p].out # None THEN "settle" ELSE "deliver"]
-  /\ UNCHANGED <<J, nextRid, paused, role, retiredApplied>>
+  /\ UNCHANGED <<J, nextRid, paused, role, retiredApplied, badFold, discarded>>
 
 \* performUncertainWrite: submissions exhausted -> UNKNOWN
 PGiveUp(p) ==
   /\ pc[p] = "deliver" /\ P[p].need /\ P[p].subs >= 2
   /\ P' = [P EXCEPT ![p].out = "unknown"]
   /\ pc' = [pc EXCEPT ![p] = "settle"]
-  /\ UNCHANGED <<J, nextRid, outcome, submitted, paused, role, budget, blindResubmit, retiredApplied>>
+  /\ UNCHANGED <<J, nextRid, outcome, submitted, paused, role, budget, blindResubmit, retiredApplied,
+                 badFold, discarded>>
 
 \* performUncertainWrite: lookup; failure -> UNKNOWN; recorded -> it; null -> resubmit
 PLookup(p) ==
@@ -267,7 +316,8 @@ PLookup(p) ==
      \/ /\ outcome[r] = None
         /\ P' = [P EXCEPT ![p].need = TRUE, ![p].nullSeen = TRUE]
         /\ UNCHANGED <<budget, pc>>
-  /\ UNCHANGED <<J, nextRid, outcome, submitted, paused, role, blindResubmit, retiredApplied>>
+  /\ UNCHANGED <<J, nextRid, outcome, submitted, paused, role, blindResubmit, retiredApplied, badFold,
+                 discarded>>
 
 \* settleIntent: a CAS on in_flight; attempts = max(advanced, claimed)
 PSettle(p) ==
@@ -288,7 +338,8 @@ PSettle(p) ==
                \* an authorization refusal ends the push
                /\ P' = [P EXCEPT ![p].cur = None, ![p].list = IF o = "refusedA" THEN <<>> ELSE @]
   /\ pc' = [pc EXCEPT ![p] = "next"]
-  /\ UNCHANGED <<nextRid, outcome, submitted, role, budget, blindResubmit, retiredApplied>>
+  /\ UNCHANGED <<nextRid, outcome, submitted, role, budget, blindResubmit, retiredApplied, badFold,
+                 discarded>>
 
 \* The page dies at any await of a push.
 Crash(p) ==
@@ -297,7 +348,8 @@ Crash(p) ==
   /\ pc' = [pc EXCEPT ![p] = "idle"]
   /\ P' = [P EXCEPT ![p] = BlankP]
   /\ role' = IF role = p THEN None ELSE role
-  /\ UNCHANGED <<J, nextRid, outcome, submitted, paused, blindResubmit, retiredApplied>>
+  /\ UNCHANGED <<J, nextRid, outcome, submitted, paused, blindResubmit, retiredApplied, badFold,
+                 discarded>>
 
 ----------------------------------------------------------------------------
 PushStep(p) == PStart(p) \/ PEnd(p) \/ PNext(p) \/ PSubmit(p) \/ PGiveUp(p) \/ PLookup(p) \/ PSettle(p)
@@ -319,6 +371,14 @@ Fairness ==
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
+\* The same without fairness on RecoveryEdit: the person never edits a refused change again.
+FairnessNoEdit ==
+  /\ \A p \in Pushers : WF_vars(PStart(p) \/ PEnd(p) \/ PNext(p) \/ PSubmit(p) \/ PGiveUp(p) \/ PLookup(p) \/ PSettle(p))
+  /\ WF_vars(Resume)
+  /\ WF_vars(Resolve(TRUE) \/ Resolve(FALSE))
+
+SpecNoEdit == Init /\ [][Next]_vars /\ FairnessNoEdit
+
 ----------------------------------------------------------------------------
 (* Properties *)
 
@@ -335,4 +395,22 @@ ChainOrder == \A r \in Rids : (J[r] # Gone /\ J[r].st = "in_flight" /\ J[r].afte
 
 \* Every change eventually settles as acknowledged or is resolved away.
 EventuallyAllSettled == <>[](LiveRids = {})
+
+\* A fold retires only a refusal the authority recorded as not applied, and a successor it
+\* never received.
+FoldRetiresOnlyUnapplied == ~badFold
+\* Every live intent's predecessor is live or acknowledged: no intent waits on, or is premised
+\* on, a retired row.
+NoDanglingAfter == \A r \in LiveRids :
+  J[r].after = None \/ (J[J[r].after] # Gone /\ (Live(J[r].after) \/ J[J[r].after].st = "acked"))
+\* A content-refused identity is never submitted again (an action property).
+NoResendOfContentRefusal ==
+  [][\A r \in Rids : outcome[r] = "refusedC" => submitted'[r] = submitted[r]]_vars
+\* At most one never-sent intent per document, and it is the latest.
+OneUnsentIntent == \A r, s \in LiveRids : s > r => ~(J[r].st = "pending" /\ J[r].att = 0)
+\* The person's latest edit is carried by a journal row unless they took the remote side.
+EditKept == (nextRid > 1 /\ ~discarded) => J[nextRid - 1] # Gone
+\* A pending change is eventually claimed or retired. Checked under SpecNoEdit, so it needs no
+\* further edit by the person.
+PendingProgress == \A r \in Rids : (Live(r) /\ J[r].st = "pending") ~> (~Live(r) \/ J[r].st # "pending")
 =============================================================================

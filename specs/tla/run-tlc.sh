@@ -4,7 +4,8 @@
 # counterexample TLC must report, matched against its "Error: <expect>" line.
 #
 # Usage: TLA2TOOLS=/path/to/tla2tools.jar specs/tla/run-tlc.sh [config.cfg ...]
-# With no arguments every *.cfg under specs/tla is checked. A config named <Module>.<variant>.cfg
+# With no arguments every *.cfg under specs/tla is checked except those under reference/, which
+# model unbuilt designs and are run only by name. A config named <Module>.<variant>.cfg
 # runs against MC<Module>.tla when that file exists, otherwise against <Module>.tla.
 set -euo pipefail
 
@@ -15,7 +16,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 if [ "$#" -eq 0 ]; then
-  while IFS= read -r found; do set -- "$@" "$found"; done < <(find "$root" -name '*.cfg' | sort)
+  while IFS= read -r found; do set -- "$@" "$found"; done < <(find "$root" -path "$root/reference" -prune -o -name '*.cfg' -print | sort)
 fi
 
 failures=0
