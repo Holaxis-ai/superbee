@@ -602,6 +602,10 @@ test("queue triggers, candidate checkout and main evidence cannot drift", () => 
 
 function validateQueueCheckout(text) {
   validateCiTopology(text);
+  validateProofCheckouts(text);
+}
+
+function validateProofCheckouts(text) {
   // Bind every proof checkout to the event candidate, including merge groups.
   for (const [name, job] of Object.entries(yaml.safeLoad(text).jobs)) {
     assert.equal(job.concurrency, undefined, `${name} must use workflow concurrency`);
@@ -638,7 +642,9 @@ test("queue checkout scope and job concurrency mutations fail closed", () => {
     ]) {
       const changed = yaml.safeLoad(workflow);
       mutate(changed.jobs[name]);
-      assert.throws(() => validateQueueCheckout(yaml.safeDump(changed)), `${name}: ${label}`);
+      assert.throws(() => validateProofCheckouts(yaml.safeDump(changed)),
+        /must use workflow concurrency|must check out the event commit once|must test the event commit/,
+        `${name}: ${label}`);
     }
   }
 });
