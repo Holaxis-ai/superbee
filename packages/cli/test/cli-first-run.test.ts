@@ -2,7 +2,7 @@
 // during its first `login`, and when its sandbox will not let it write the private state root.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -14,11 +14,13 @@ import {
   ensureHostedAccessToken,
   hostedWriteHost,
   requireHostedBundleHost,
+  withSessionLock,
 } from "../src/hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
 import { login, logout, whoami } from "../src/commands/hosted-auth.js";
 import { catalog } from "../src/commands/catalog.js";
 import { canonicalUserStateDir, ensureUserStateRoot, userStateWriteRefusal } from "../src/user-state.js";
+import { hostedAuthRoot } from "../src/hosted-auth/session.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
 
 const FIRST_SIGN_IN = new RegExp(`superbee login --host ${PUBLIC_HOSTED_ORIGIN.replace(/[.]/g, "\\.")}$`);
@@ -165,6 +167,48 @@ test("only refused writes under the state root (or home itself) are translated",
     assert.equal(userStateWriteRefusal(errnoError("ENOSPC", root), home), null);
     assert.equal(userStateWriteRefusal(new Error("plain"), home), null);
   } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("whoami on a first run reports a sign-in already waiting on the person, with its host", async () => {
+  const home = await freshHome();
+  const issuer = await new FakeIssuer({ now: () => Date.now() }).start();
+  try {
+    const deps = freshDeps(home);
+    await assert.rejects(ensureHostedAccessToken(resolveHostedTarget(issuer.base), {}, deps), (e: CliError) => e.code === "AUTH_REQUIRED");
+    let out = "";
+    await whoami(["--json"], { stdout: (text) => void (out += text), stderr: () => {}, auth: deps });
+    const me = JSON.parse(out) as Record<string, unknown>;
+    assert.equal(me.signed_in, false);
+    assert.equal(me.status, "waiting_for_confirmation");
+    const waiting = me.pending_sign_ins as Record<string, unknown>[];
+    assert.equal(waiting.length, 1);
+    assert.equal(waiting[0]!.host, issuer.base);
+    assert.ok(waiting[0]!.sign_in_url);
+    assert.ok(!String(me.help).includes(PUBLIC_HOSTED_ORIGIN), "it does not suggest another host");
+
+    out = "";
+    await whoami(["--host", issuer.base, "--json"], { stdout: (text) => void (out += text), stderr: () => {}, auth: deps });
+    assert.equal((JSON.parse(out) as Record<string, unknown>).status, "waiting_for_confirmation");
+  } finally {
+    await issuer.stop();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a session directory the process may not create is a state_dir_not_writable refusal", { skip: !posixOwner }, async () => {
+  const home = await freshHome();
+  const authRoot = hostedAuthRoot(home);
+  try {
+    await ensureUserStateRoot(home);
+    await mkdir(authRoot, { mode: 0o500 });
+    await assert.rejects(
+      withSessionLock(resolveHostedTarget("https://hosted.example"), freshDeps(home), async () => undefined),
+      (e: CliError) => e.code === "RUNTIME" && e.details?.reason === "state_dir_not_writable",
+    );
+  } finally {
+    await chmod(authRoot, 0o700).catch(() => {});
     await rm(home, { recursive: true, force: true });
   }
 });

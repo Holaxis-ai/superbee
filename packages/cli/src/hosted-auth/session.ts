@@ -341,6 +341,37 @@ export async function storedSessionHosts(home: string): Promise<string[]> {
 }
 
 /**
+ * The unexpired device sign-ins waiting on the person, each with its host, read from the pending
+ * records alone (no network, no lock). A first `login` remembers its host only once the person
+ * confirms, so before then this is the only trace of which host the sign-in is for.
+ */
+export async function waitingSignIns(home: string, now: number): Promise<{ target: HostedTarget; pending: PendingRecord }[]> {
+  const root = hostedAuthRoot(home);
+  let names: string[];
+  try {
+    names = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+  const found: { target: HostedTarget; pending: PendingRecord }[] = [];
+  for (const name of names.sort()) {
+    const record = await readRecord<Partial<PendingRecord>>(home, join(root, name, PENDING_FILE)).catch(() => null);
+    if (!record || typeof record.host !== "string" || typeof record.audience !== "string") continue;
+    const stored = { origin: record.host, audience: record.audience };
+    if (sessionDirFor(home, sessionAccount(stored)) !== join(root, name)) continue;
+    let target: HostedTarget;
+    try {
+      target = resolveHostedTarget(hostArgument(stored));
+    } catch {
+      continue;
+    }
+    const pending = await readPending(home, target).catch(() => null);
+    if (pending && pending.expires_at_ms > now) found.push({ target, pending });
+  }
+  return found;
+}
+
+/**
  * Where a hosted write's host came from: named on the command; the remembered last sign-in, the one
  * host holding a session; the one host holding a session, with no sign-in remembered; or the
  * remembered last sign-in, which holds no session now (the write starts a sign-in to it).

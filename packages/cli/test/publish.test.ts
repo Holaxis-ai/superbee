@@ -543,3 +543,22 @@ test("a conversion that fails after the creation is finished by checkout --adopt
   assert.deepEqual(state.held, [], "the blob and nested index publish sent are not held");
   assert.deepEqual(state.pending, []);
 });
+
+test("publish with no host names the sign-in: USAGE with a token set, AUTH_REQUIRED not_signed_in on a first run, never a picked host", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "notes-bundle");
+  await writeBundle(folder);
+  const fake = new FakeCreateHost();
+  const preview = await run(h, ["--to", "hosted", "--dir", folder], fake);
+  assert.equal(preview.ready, false);
+  assert.match(JSON.stringify(preview.blockers), /no_host/);
+  assert.match(String((preview.help as string[])[0]), /superbee login --host https:\/\/mcp\.getsuperbee\.com$/);
+  const withToken = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--yes"], fake));
+  assert.equal(withToken.code, "USAGE");
+  assert.match(withToken.message, /SUPERBEE_ACCESS_TOKEN alone never chooses the host/);
+  const firstRun = { ...h, auth: { ...h.auth, env: {} } };
+  const notSignedIn = await rejects(run(firstRun, ["--to", "hosted", "--dir", folder, "--yes"], fake));
+  assert.equal(notSignedIn.code, "AUTH_REQUIRED");
+  assert.equal(notSignedIn.details?.status, "not_signed_in");
+  assert.equal(fake.requests.length, 0, "nothing is sent without a host");
+});

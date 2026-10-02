@@ -77,11 +77,13 @@ Only run it when the person asks for the move.
 First run on a machine, in order:
 
 1. `superbee whoami`. It exits 0 either way. `signed_in: false` with `status: not_signed_in` names
-   the command to run. The CLI never picks a host on its own; if the person may use a host other
-   than the one named, ask them which.
+   the command to run; `status: waiting_for_confirmation` lists a sign-in already started, with its
+   link. The CLI never picks a host on its own; if the person may use a host other than the one
+   named, ask them which.
 2. `superbee login --host <url>`. It returns exit 4 while it waits for the person (below).
-3. Once they confirm, re-run the same `login`. It reports `signed_in`, and later hosted commands use
-   that host until another is named with `--host`.
+3. Once they confirm, re-run the same `login`. It reports `signed_in`, and later hosted reads use
+   that host until another is named with `--host`. Writes such as `checkout` and `publish` need
+   `--host` once you are signed in to more than one host.
 
 Exit 4 (`AUTH_REQUIRED`) means sign-in is needed. It is not a failure, so do not report it as one.
 Read `details.status`:
@@ -92,6 +94,8 @@ Read `details.status`:
   3. Run the same command again (`details.resume`). It finishes sign-in and continues.
 - `not_signed_in`: no host is known on this machine yet. Run `details.sign_in_command` (or the same
   `login` with the person's host), then re-run the original command.
+- No `status` (for example a session that ended during a sync): run the `login` command in `help`,
+  relay the link it returns as above, then re-run the original command.
 
 A `RUNTIME` error with `details.reason: state_dir_not_writable` means this process may not write
 Superbee's private state directory, `~/.superbee-state`. The usual cause is an agent sandbox that

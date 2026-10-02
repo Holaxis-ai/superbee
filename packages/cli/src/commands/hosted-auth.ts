@@ -34,6 +34,7 @@ import {
   resolveHostSelection,
   resolveHostSelectionOrNull,
   waitForHostedSignIn,
+  waitingSignIns,
   type AccessToken,
   type HostedAuthDeps,
   type SessionRecord,
@@ -291,7 +292,29 @@ export async function whoami(argv: string[], partial: Partial<HostedAuthCommandD
   }
   const target = await resolveHostSelectionOrNull(values.host, auth);
   if (!target) {
-    deps.stdout(render(notSignedInAnywhere("signed_in"), mode));
+    const waiting = await waitingSignIns(auth.home, auth.now());
+    if (waiting.length === 0) {
+      deps.stdout(render(notSignedInAnywhere("signed_in"), mode));
+      return;
+    }
+    // A first sign-in started but not yet confirmed: report it rather than suggest another host.
+    deps.stdout(
+      render(
+        {
+          host: null,
+          signed_in: false,
+          status: "waiting_for_confirmation",
+          pending_sign_ins: waiting.map(({ target: t, pending: p }) => ({
+            host: t.origin,
+            sign_in_url: p.verification_uri_complete ?? p.verification_uri,
+            user_code: p.user_code,
+            expires_at: iso(p.expires_at_ms),
+          })),
+          help: waiting.map(({ target: t }) => String(defaultResumeCommand(t))),
+        },
+        mode,
+      ),
+    );
     return;
   }
   const session = await readSession(auth.home, target);
@@ -314,6 +337,7 @@ export async function whoami(argv: string[], partial: Partial<HostedAuthCommandD
           host: target.origin,
           audience: target.audience,
           signed_in: false,
+          status: Object.keys(pendingView).length > 0 ? "waiting_for_confirmation" : "not_signed_in",
           ...pendingView,
           help: [defaultResumeCommand(target)],
         },
