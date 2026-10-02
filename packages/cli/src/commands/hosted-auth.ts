@@ -26,11 +26,13 @@ import {
   defaultResumeCommand,
   defaultHostedAuthDeps,
   ensureHostedAccessToken,
+  firstSignInCommand,
   hostArgument,
   logoutHosted,
   readPending,
   readSession,
   resolveHostSelection,
+  resolveHostSelectionOrNull,
   waitForHostedSignIn,
   type AccessToken,
   type HostedAuthDeps,
@@ -49,8 +51,9 @@ Usage:
   superbee login [--host <url>] --loopback [--port <n>] [--timeout <seconds>] [--json]
 
 Device sign-in is the default and never blocks: without a session this returns AUTH_REQUIRED
-(exit 4) with details.sign_in_url, the one link to relay to the person. Re-run the same command
-after they confirm and it completes sign-in. --wait polls instead, for at most --timeout seconds
+(exit 4) with details.status waiting_for_confirmation and details.sign_in_url, the one link to
+relay to the person. That is a pause, not a failure: re-run the same command after they confirm
+and it completes sign-in. --wait polls instead, for at most --timeout seconds
 (default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS}). Already signed in (including with --loopback): refreshes if needed, reports the session, and starts no sign-in.
 
 --loopback signs in through a browser redirect to 127.0.0.1 (PKCE), waits at most --timeout
@@ -80,7 +83,8 @@ Usage:
 
 Local and read-only: reports the host, issuer, client, the signed-in subject from the token's
 claims (not yet confirmed by the gateway), scopes, token expiry, where the refresh token is kept,
-and any sign-in waiting on the person. Never prints a token. Not signed in is a successful result.
+and any sign-in waiting on the person. Never prints a token. Not signed in is a successful result,
+including on a first run with no host selected yet (it names the sign-in command).
 
 Options:
   --host <url>   Hosted Superbee URL (default: ${HOST_ENV}, then the last sign-in)
@@ -285,7 +289,11 @@ export async function whoami(argv: string[], partial: Partial<HostedAuthCommandD
     deps.stdout(render({ ...where, ...envOverrideView(override) }, mode));
     return;
   }
-  const target = await resolveHostSelection(values.host, auth);
+  const target = await resolveHostSelectionOrNull(values.host, auth);
+  if (!target) {
+    deps.stdout(render(notSignedInAnywhere("signed_in"), mode));
+    return;
+  }
   const session = await readSession(auth.home, target);
   const pending = await readPending(auth.home, target);
   const now = auth.now();
@@ -334,10 +342,21 @@ export async function whoami(argv: string[], partial: Partial<HostedAuthCommandD
 
 async function resolveHostOrNull(auth: HostedAuthDeps): Promise<HostedTarget | null> {
   try {
-    return await resolveHostSelection(undefined, auth);
+    return await resolveHostSelectionOrNull(undefined, auth);
   } catch {
     return null;
   }
+}
+
+/** whoami/logout on a first run: no host selected and none remembered, so nothing is signed in. */
+function notSignedInAnywhere(flag: "signed_in" | "signed_out"): Record<string, unknown> {
+  return {
+    host: null,
+    [flag]: false,
+    status: "not_signed_in",
+    note: "no hosted Superbee host is selected on this machine yet; sign in once with --host",
+    help: [String(firstSignInCommand())],
+  };
 }
 
 function envOverrideView(token: string): Record<string, unknown> {
@@ -371,7 +390,11 @@ export async function logout(argv: string[], partial: Partial<HostedAuthCommandD
     deps.stdout(renderUsage(LOGOUT_USAGE));
     return;
   }
-  const target = await resolveHostSelection(values.host, deps.auth);
+  const target = await resolveHostSelectionOrNull(values.host, deps.auth);
+  if (!target) {
+    deps.stdout(render(notSignedInAnywhere("signed_out"), resolveMode(values)));
+    return;
+  }
   const result = await logoutHosted(target, deps.auth);
   const notes: string[] = [];
   if (result.access_token_valid_until) {

@@ -74,11 +74,30 @@ Only run it when the person asks for the move.
 
 ## Sign-in: relay the link, then retry
 
-Hosted commands start sign-in by themselves. When a command returns `AUTH_REQUIRED` (exit 4):
+First run on a machine, in order:
 
-1. Give the person `details.sign_in_url` and `details.user_code` exactly as returned.
-2. Wait until they say they have confirmed.
-3. Run the same command again (`details.resume`). It finishes sign-in and continues.
+1. `superbee whoami`. It exits 0 either way. `signed_in: false` with `status: not_signed_in` names
+   the command to run. The CLI never picks a host on its own; if the person may use a host other
+   than the one named, ask them which.
+2. `superbee login --host <url>`. It returns exit 4 while it waits for the person (below).
+3. Once they confirm, re-run the same `login`. It reports `signed_in`, and later hosted commands use
+   that host until another is named with `--host`.
+
+Exit 4 (`AUTH_REQUIRED`) means sign-in is needed. It is not a failure, so do not report it as one.
+Read `details.status`:
+
+- `waiting_for_confirmation`: a sign-in has started and is waiting for the person.
+  1. Give the person `details.sign_in_url` and `details.user_code` exactly as returned.
+  2. Wait until they say they have confirmed.
+  3. Run the same command again (`details.resume`). It finishes sign-in and continues.
+- `not_signed_in`: no host is known on this machine yet. Run `details.sign_in_command` (or the same
+  `login` with the person's host), then re-run the original command.
+
+A `RUNTIME` error with `details.reason: state_dir_not_writable` means this process may not write
+Superbee's private state directory, `~/.superbee-state`. The usual cause is an agent sandbox that
+allows writes only inside the workspace. Ask the person to allow writes to that directory (or to
+approve running the command outside the sandbox), then re-run it. There is no override for the
+directory's location.
 
 Never ask for a password, token or code the person did not see in their browser.
 `superbee setup hosted` signs in and records the default hosted workspace in one step. If the

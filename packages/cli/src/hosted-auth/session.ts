@@ -28,7 +28,7 @@ import { bindingHostArgument } from "../hosted/marker.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { cliFilesystemRuntime, withCliFilesystemMutationLock } from "../filesystem-runtime.js";
-import { ensureUserStateRoot, readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
+import { ensureUserStateRoot, readUserStateFile, userStateDir, userStateWriteRefusal, writeUserStateFileAtomic0600 } from "../user-state.js";
 import {
   REQUESTED_SCOPE,
   discoverHosted,
@@ -55,6 +55,11 @@ import {
 export const ACCESS_TOKEN_ENV = "SUPERBEE_ACCESS_TOKEN";
 export const HOST_ENV = "SUPERBEE_HOST";
 export const CLIENT_ID_ENV = "SUPERBEE_OAUTH_CLIENT_ID";
+/**
+ * The public hosted Superbee, named in first-run guidance only. It is a suggestion the agent shows
+ * the person; no command ever selects it on its own.
+ */
+export const PUBLIC_HOSTED_ORIGIN = "https://mcp.getsuperbee.com";
 
 /** Refresh when less than this remains: covers one gateway request deadline with margin. */
 export const REFRESH_SKEW_MS = 120_000;
@@ -275,10 +280,38 @@ export async function hostedBundleHost(flag: string | undefined, home: string): 
   return flag || (await readDefaultHost(home));
 }
 
-/** {@link hostedBundleHost}, refusing when there is none. */
-export async function requireHostedBundleHost(flag: string | undefined, home: string): Promise<HostedTarget> {
+/** The first sign-in on this machine, as the exact command to run (the public host as the example). */
+export function firstSignInCommand(): CommandText {
+  return commandFragment`${cliInvocation()} login --host ${commandToken(PUBLIC_HOSTED_ORIGIN)}`;
+}
+
+/**
+ * A hosted command with no host to use: no --host, no sign-in remembered and no stored session.
+ * On a first run that is "not signed in yet", not a malformed command, so it is AUTH_REQUIRED
+ * (exit 4) with status `not_signed_in` and the exact sign-in command. With SUPERBEE_ACCESS_TOKEN
+ * or SUPERBEE_HOST set the caller has credentials or a host in mind, and neither ever selects the
+ * host for a bundle, so that is a USAGE refusal asking for --host. It never picks a host itself.
+ */
+export function notSignedInError(env: NodeJS.ProcessEnv = {}): CliError {
+  const command = String(firstSignInCommand());
+  if (env[ACCESS_TOKEN_ENV] || env[HOST_ENV]) {
+    const configured = env[ACCESS_TOKEN_ENV] ? ACCESS_TOKEN_ENV : HOST_ENV;
+    return new CliError("USAGE", `no hosted Superbee host chosen for this command: pass --host (${configured} alone never chooses the host for a bundle)`, {
+      details: { reason: "no_host" },
+      help: `re-run with --host <url>, or sign in once: ${command}`,
+    });
+  }
+  return new CliError(
+    "AUTH_REQUIRED",
+    "not signed in to hosted Superbee yet: run the sign-in command in help (for another hosted Superbee, pass its URL to --host instead)",
+    { details: { status: "not_signed_in", reason: "no_host", sign_in_command: command }, help: command },
+  );
+}
+
+/** {@link hostedBundleHost}, refusing with {@link notSignedInError} when there is none. */
+export async function requireHostedBundleHost(flag: string | undefined, home: string, env: NodeJS.ProcessEnv = {}): Promise<HostedTarget> {
   const chosen = await hostedBundleHost(flag, home);
-  if (!chosen) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
+  if (!chosen) throw notSignedInError(env);
   return resolveHostedTarget(chosen);
 }
 
@@ -374,15 +407,21 @@ export async function hostedWriteHost(flag: string | undefined, home: string, re
   return null;
 }
 
-/** `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in. */
-export async function resolveHostSelection(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget> {
+/** `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in; null when none. */
+export async function resolveHostSelectionOrNull(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget | null> {
   const chosen = flag ?? (deps.env[HOST_ENV] || undefined) ?? (await readDefaultHost(deps.home)) ?? undefined;
-  if (!chosen) {
+  return chosen ? resolveHostedTarget(chosen) : null;
+}
+
+/** {@link resolveHostSelectionOrNull}, refusing when there is no host: `login` needs one named. */
+export async function resolveHostSelection(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget> {
+  const target = await resolveHostSelectionOrNull(flag, deps);
+  if (!target) {
     throw new CliError("USAGE", "no hosted Superbee host selected", {
-      help: `pass --host <url> (for example ${cliInvocation()} login --host https://mcp.getsuperbee.com) or set ${HOST_ENV}`,
+      help: `pass --host <url> (for example ${String(firstSignInCommand())}) or set ${HOST_ENV}`,
     });
   }
-  return resolveHostedTarget(chosen);
+  return target;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -420,7 +459,9 @@ export function storeForSession(session: SessionRecord, deps: HostedAuthDeps): S
 export async function withSessionLock<T>(target: HostedTarget, deps: HostedAuthDeps, body: () => Promise<T>): Promise<T> {
   await ensureUserStateRoot(deps.home);
   const dir = sessionDirFor(deps.home, sessionAccount(target));
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await mkdir(dir, { recursive: true, mode: 0o700 }).catch((error: unknown) => {
+    throw userStateWriteRefusal(error, deps.home) ?? error;
+  });
   let entered = false;
   let bodyError: { readonly error: unknown } | undefined;
   try {
@@ -687,8 +728,9 @@ export function authRequired(
   const relay = pending.verification_uri_complete
     ? `open ${link} and confirm the code ${pending.user_code}`
     : `open ${link} and enter the code ${pending.user_code}`;
-  return new CliError("AUTH_REQUIRED", `sign-in to ${target.origin} is required: ask the person to ${relay}, then re-run the same command`, {
+  return new CliError("AUTH_REQUIRED", `waiting for the person to confirm sign-in to ${target.origin} (not an error): ask the person to ${relay}, then re-run the same command`, {
     details: {
+      status: "waiting_for_confirmation",
       host: target.origin,
       audience: target.audience,
       reason,

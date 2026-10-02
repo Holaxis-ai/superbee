@@ -28,7 +28,7 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
-import { defaultHostedAuthDeps, hostArgument, hostedWriteHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, hostArgument, hostedWriteHost, notSignedInError, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { checkoutTarget, connectHostedAccount, hostedListCommand, resolveBundleReference, workspaceNames } from "../hosted/account.js";
 import { recordPulled } from "../hosted/freshness.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
@@ -378,6 +378,7 @@ async function checkoutHost(
   typed: HostedBundleReference,
   values: { readonly workspace?: string; readonly json?: boolean },
   home: string,
+  env: NodeJS.ProcessEnv,
 ): Promise<HostedTarget> {
   if (flag === undefined) {
     const real = await realpath(folder).catch(() => null);
@@ -391,7 +392,7 @@ async function checkoutHost(
       }${values.json ? commandFragment` --json` : commandFragment``}`,
     );
   const chosen = await hostedWriteHost(flag, home, retry);
-  if (!chosen) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
+  if (!chosen) throw notSignedInError(env);
   return chosen.target;
 }
 
@@ -446,7 +447,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   // The chosen host is fixed in the binding and echoed in the receipt. Without --host, a folder
   // that is already a checkout keeps its own host; a new one takes the last sign-in only when it
   // is the one host signed in.
-  const target = await checkoutHost(values.host, folder, typed, values, deps.auth.home);
+  const target = await checkoutHost(values.host, folder, typed, values, deps.auth.home, deps.auth.env);
   const prefix = syncRoutePrefix(target);
   const resume: CommandText = commandFragment`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(hostArgument(target))} --dir ${commandToken(folder)}${
     values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
