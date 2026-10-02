@@ -10,6 +10,7 @@ import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
+import { BUNDLE_DIR, BUNDLE_DIRS } from "@superbee/board-git";
 import { configuredInitBundle as initBundle } from "../filesystem-runtime.js";
 import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
@@ -27,7 +28,9 @@ Usage:
   superbee init [--dir <path>] [--okf-version <v>] [--recipe <name-or-path>] [--create-only]
 
 Options:
-  --dir <path>            Directory to init the bundle in (default: the current directory)
+  --dir <path>            Directory to init the bundle in (default: the current directory; inside
+                           a Git work tree, its top-level .superbee/ folder, which
+                           'sync --establish' shares, unless the current directory is a bundle)
   --okf-version <v>       Compatibility override for legacy integrations (normally omit; use 0.1
                            only when a legacy consumer requires it). Other versions remain readable
                            but are not authorable
@@ -61,13 +64,32 @@ export interface InitCliDeps {
  * NO git binary invoked").
  */
 export function insideGitRepo(dir: string): boolean {
+  return gitWorkTreeTop(dir) !== null;
+}
+
+/** The nearest directory at or above `dir` holding a `.git` entry: the work tree's top. Same fs-only walk. */
+export function gitWorkTreeTop(dir: string): string | null {
   let cur = path.resolve(dir);
   for (;;) {
-    if (existsSync(path.join(cur, ".git"))) return true;
+    if (existsSync(path.join(cur, ".git"))) return cur;
     const parent = path.dirname(cur);
-    if (parent === cur) return false;
+    if (parent === cur) return null;
     cur = parent;
   }
+}
+
+/**
+ * Where plain `init` (no `--dir`, no project binding) puts the bundle. Inside a Git work tree it is
+ * the work tree's conventional folder (`.superbee/`, or an existing legacy one), the only place
+ * `sync --establish` shares and every command finds from anywhere in the tree. A current directory
+ * that already is a bundle keeps opening as before; outside Git it stays the current directory.
+ */
+function plainInitDir(cwd: string): string | undefined {
+  if (existsSync(path.join(cwd, "index.md"))) return undefined;
+  const top = gitWorkTreeTop(cwd);
+  if (top === null) return undefined;
+  const existing = BUNDLE_DIRS.find((name) => existsSync(path.join(top, name, "index.md")));
+  return path.join(top, existing ?? BUNDLE_DIR);
 }
 
 /** CLI entry: parse flags, init the bundle, print its root. */
@@ -149,7 +171,9 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   // bundle exists. Plain init keeps its historical open-or-create path unchanged.
   let root: string;
   let bundle;
-  const initDir = boundRoute?.kind === "bound-local" ? boundRoute.bundle.root : values.dir;
+  const initDir = boundRoute?.kind === "bound-local"
+    ? boundRoute.bundle.root
+    : values.dir ?? (boundRoute ? undefined : plainInitDir(process.cwd()));
   if (createOnly) {
     if (boundRoute) await assertResolvedLocalRouteIdentity(boundRoute);
     const result = await withCreateOnlyTarget(initDir, (physicalTarget) =>
@@ -186,11 +210,16 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   if (warnings.length > 0) receipt.warnings = warnings;
   // `init` always creates a local bundle. Inside a Git repo, an advisory fs-only hint distinguishes
   // joining an existing shared board from explicitly sharing this new one.
-  if (insideGitRepo(root)) {
+  const top = gitWorkTreeTop(root);
+  if (top !== null) {
+    const shareable = path.dirname(root) === top && BUNDLE_DIRS.includes(path.basename(root) as (typeof BUNDLE_DIRS)[number]);
     receipt.hint =
       "this bundle is local until shared — if the project already shares a board, " +
       `\`${cliInvocation()} sync\` joins it (never init there, that mints a divergent second ` +
-      `bundle); to start sharing this one, \`${cliInvocation()} sync --establish\``;
+      (shareable
+        ? `bundle); to start sharing this one, \`${cliInvocation()} sync --establish\``
+        : `bundle); only the work tree's ${BUNDLE_DIR}/ folder can be shared, and this bundle is not ` +
+          `it: \`${cliInvocation()} init\` with no --dir makes that one`);
   }
   // A selected recipe may not install Context Note (or any kind at all). Never advertise a
   // mutation the resulting bundle cannot perform; use the recipe's parsed `governs` inventory to

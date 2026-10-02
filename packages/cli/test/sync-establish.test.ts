@@ -1057,6 +1057,25 @@ test("establish refusals: no folder / empty folder / no index.md all point at in
   }
 });
 
+test("establish over a bundle made at the work tree's top names the move into .superbee/, and works after it", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    await initBundle(topo.a.root);
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(err?.code, "RUNTIME");
+    assert.match(err?.message ?? "", /top folder is itself a bundle.*move the bundle into '\.superbee\/'/);
+    assert.match(err?.help ?? "", /mv index\.md .*\.superbee\//);
+    await mkdir(topo.a.board);
+    await rename(path.join(topo.a.root, "index.md"), path.join(topo.a.board, "index.md"));
+    const receipt = await runSyncJson(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(receipt.established, ESTABLISH_DONE);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("establish on a folder already committed at HEAD routes to the committed-case preview, never the greenfield conversion", async () => {
   const topo = await makeGreenfieldTopology();
   const { home, cleanup } = await tempHome();
