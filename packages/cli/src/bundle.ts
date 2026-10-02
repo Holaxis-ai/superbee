@@ -68,7 +68,7 @@ import {
   resolveBundleKey,
   runGit,
 } from "@superbee/board-git";
-import { constants, lstatSync, promises as fs, readFileSync, type Dir, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, promises as fs, readSync, type Dir, type Stats } from "node:fs";
 import path from "node:path";
 import {
   FilesystemMutationLockError,
@@ -110,14 +110,19 @@ async function exists(p: string): Promise<boolean> {
  * a work tree's top from any other `index.md` there (a docs site's).
  */
 export function looksLikeBundle(dir: string): boolean {
-  const index = path.join(dir, "index.md");
+  let fd: number | undefined;
   try {
-    if (!lstatSync(index).isFile()) return false;
-    const text = readFileSync(index, "utf8").slice(0, 16 * 1024);
+    // One descriptor, never through a symlink: what is checked is what is read.
+    fd = openSync(path.join(dir, "index.md"), constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!fstatSync(fd).isFile()) return false;
+    const buffer = Buffer.alloc(16 * 1024);
+    const text = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8");
     const block = /^---\r?\n([\s\S]*?)\r?\n---\r?(?:\n|$)/.exec(text);
     return block !== null && /^okf_version\s*:/m.test(block[1]!);
   } catch {
     return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
