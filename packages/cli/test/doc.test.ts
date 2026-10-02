@@ -2736,6 +2736,7 @@ test("doc read: body truncation + --out byte-channel pointer is preserved when k
     assert.equal(result.body_truncated, true);
     assert.equal(result.body_chars, bigBody.length + 1); // stringifyDoc appends a trailing newline
     assert.deepEqual(result.help, [
+      `${cliInvocation()} doc read tasks/x --offset 0 --json`,
       `${cliInvocation()} doc read tasks/x --out <file>`,
       `${cliInvocation()} doc read tasks/x --body-out <path-outside-bundle>`,
     ]);
@@ -2825,9 +2826,36 @@ test("doc read: a truncated body is named body_preview, carries the truncation m
     // Agent-facing recovery: both runnable complete-body channels, `--body-out` being the one that
     // feeds the read -> edit -> `doc update --body-file --expected-version` cycle.
     assert.deepEqual(result.help, [
+      `${cliInvocation()} doc read docs/page --offset 0 --json`,
       `${cliInvocation()} doc read docs/page --out <file>`,
       `${cliInvocation()} doc read docs/page --body-out <path-outside-bundle>`,
     ]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc read --offset: pages chain to the exact body, a moved version is a conflict, and a page start must be one", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const body = `${"A line of a long meeting transcript, with é and 😀.\n".repeat(2_000)}The end.\n`;
+    await runDoc(["write", "docs/long", "--type", "Note", "--title", "Long", "--body", body, "--dir", dir]);
+    let joined = "";
+    let offset: number | undefined = 0;
+    let version: string | undefined;
+    while (offset !== undefined) {
+      const page = await runDoc(["read", "docs/long", "--offset", String(offset), ...(version ? ["--expected-version", version] : []), "--dir", dir]);
+      assert.ok(Buffer.byteLength(page.body as string) <= 32_768, "a page stays within the default bound");
+      joined += page.body as string;
+      version = page.head_version as string;
+      const range = page.range as { complete: boolean; next_offset?: number };
+      offset = range.next_offset;
+    }
+    assert.equal(joined, body);
+    await assert.rejects(runDoc(["read", "docs/long", "--offset", "0", "--expected-version", `sha256:${"0".repeat(64)}`, "--dir", dir]), (error: unknown) => (error as CliError).code === "CONFLICT");
+    await assert.rejects(runDoc(["read", "docs/long", "--offset", String(body.length), "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
+    await assert.rejects(runDoc(["read", "docs/long", "--max-bytes", "10", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
+    await assert.rejects(runDoc(["read", "docs/long", "--offset", "0", "--out", "-", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
   } finally {
     await cleanup();
   }

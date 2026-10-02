@@ -33,6 +33,7 @@ import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../../body-replac
 import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
+import { bodyPage, PAGE_DEFAULT_BYTES, PAGE_MAX_BYTES, PAGE_MIN_BYTES } from "../../body-pages.js";
 import { commandLiteral, commandToken, type CommandText } from "../../command-text.js";
 
 export async function docRead(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
@@ -67,6 +68,9 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
           "body-out": { type: "string" },
           "rendered-out": { type: "string" },
           field: { type: "string" },
+          offset: { type: "string" },
+          "max-bytes": { type: "string" },
+          "expected-version": { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
           json: { type: "boolean" },
@@ -113,6 +117,26 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       { help: `${cliInvocation()} doc read ${commandToken(id)} ${selected[0]!.usage}` },
     );
   }
+  // A page of the body (design `document-size-cap`): the default record, with `body` one bounded
+  // page and `range` saying where it sits. Only the record carries a page; a byte channel or one
+  // field is whole.
+  const paging = values.offset !== undefined || values["max-bytes"] !== undefined || values["expected-version"] !== undefined;
+  if (paging && selected.length > 0) {
+    throw new CliError("USAGE", `--offset, --max-bytes and --expected-version page the record's body; they cannot be combined with ${selected[0]!.flag}`, {
+      help: `${cliInvocation()} doc read ${commandToken(id)} --offset 0 --json`,
+    });
+  }
+  const integer = (flag: string, value: string | undefined, min: number, max: number, fallback: number): number => {
+    if (value === undefined) return fallback;
+    const n = /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN;
+    if (!Number.isSafeInteger(n) || n < min || n > max) {
+      throw new CliError("USAGE", `${flag} takes a whole number from ${min} to ${max}`, { help: `${cliInvocation()} doc read ${commandToken(id)} --offset 0 --json` });
+    }
+    return n;
+  };
+  const pageOffset = integer("--offset", values.offset, 0, Number.MAX_SAFE_INTEGER, 0);
+  const pageBytes = integer("--max-bytes", values["max-bytes"], PAGE_MIN_BYTES, PAGE_MAX_BYTES, PAGE_DEFAULT_BYTES);
+
   if (bodyOutPresent && bodyOutValue.trim() === "") {
     throw new CliError(
       "USAGE",
@@ -302,7 +326,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     // frontmatter key can never clobber the body preview the branch below writes.
     const rec: Record<string, unknown> = { id: parsed.id };
     const KNOWN_ORDER = ["type", "title", "description", "resource", "tags", "timestamp"];
-    const RESERVED_OUTPUT = new Set(["id", "head_version", ...BODY_PREVIEW_RESERVED_KEYS]);
+    const RESERVED_OUTPUT = new Set(["id", "head_version", ...BODY_PREVIEW_RESERVED_KEYS, ...(paging ? ["range"] : [])]);
     for (const key of KNOWN_ORDER) {
       if (fm[key] !== undefined && fm[key] !== null) rec[key] = fm[key];
     }
@@ -319,6 +343,38 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     // write/update/new receipts don't dump frontmatter, so they keep the plain `version` key, matching
     // promote/pull.) Surfacing it resolves the #1 optimistic-concurrency discoverability gap.
     rec.head_version = version;
+    if (paging) {
+      const expected = values["expected-version"]?.trim();
+      if (expected === "") {
+        throw new CliError("USAGE", "--expected-version was given an empty value — pass the head_version of the first page.", {
+          help: `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset 0 --json`,
+        });
+      }
+      if (expected !== undefined && expected !== version) {
+        throw new CliError("CONFLICT", `'${parsed.id}' changed while you were reading it; it is now ${version}. Read it again from --offset 0.`, {
+          details: { reason: "version_conflict", id: parsed.id, head_version: version },
+          help: `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset 0 --json`,
+        });
+      }
+      const page = bodyPage(parsed.body, pageOffset, pageBytes);
+      if (page === null) {
+        throw new CliError("USAGE", `--offset ${pageOffset} is not a page start in a body of ${parsed.body.length} characters`, {
+          help: `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset 0 --json`,
+        });
+      }
+      rec.body = page.body;
+      rec.range = page.range;
+      if (!page.range.complete) {
+        rec.help = [
+          ...(page.range.next_offset !== undefined
+            ? [`${cliInvocation()} doc read ${commandToken(parsed.id)} --offset ${page.range.next_offset} --expected-version ${commandToken(version)} --json`]
+            : []),
+          "a page is not the document: never write it back as the body; edit with doc update --body-file after --body-out, or a passage edit",
+        ];
+      }
+      stdout(render(rec, resolveMode(values)));
+      return;
+    }
     // AXI §3: never dump a large body to stdout — truncate the preview and point at the byte channel
     // (`doc read <id> --out <file>`), which streams the full raw markdown without touching context.
     // `attachBodyPreview` (body-replace-guards.ts) owns the truncation identity itself — the `body_preview` key
@@ -326,6 +382,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     // lines are complete-body channels: `--out` for the whole document, `--body-out` for the
     // body-only edit cycle that ends in `doc update --body-file --expected-version`.
     attachBodyPreview(rec, parsed.body, [
+      `${cliInvocation()} doc read ${commandToken(parsed.id)} --offset 0 --json`,
       `${cliInvocation()} doc read ${commandToken(parsed.id)} --out <file>`,
       `${cliInvocation()} doc read ${commandToken(parsed.id)} --body-out <path-outside-bundle>`,
     ]);
