@@ -35,8 +35,8 @@ import { loadCatalog } from "../catalog.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
-import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
-import { defaultHostedAuthDeps, hostedBundleHost } from "../hosted-auth/session.js";
+import type { HostedTarget } from "../hosted-auth/discovery.js";
+import { defaultHostedAuthDeps, hostedWriteHost, hostSourceText, type HostedWriteHost } from "../hosted-auth/session.js";
 import { isHostedBundleId } from "../hosted/bundle-id.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
@@ -87,7 +87,7 @@ finishes or confirms the one creation; a staged one resumes, sending only what t
 Options:
   --to hosted         Required: the only destination
   --dir <bundle>      The bundle to publish (default: the one found from here)
-  --host <url>        Hosted Superbee URL (default: your last sign-in)
+  --host <url>        Hosted Superbee URL (default: your last sign-in, when it is the only host signed in)
   --workspace <id>    Your workspace to create it in (default: your only one, or your default)
   --bundle-id <id>    The hosted bundle id (default: from the bundle's name)
   --name <name>       The display name (default: the bundle's name)
@@ -308,6 +308,11 @@ interface SendContext {
   readonly json: boolean;
 }
 
+function targetLine(chosen: HostedWriteHost, bundleId: string, json: boolean): string {
+  if (json) return `${JSON.stringify({ event: "publish.target", host: chosen.target.origin, host_from: chosen.source, bundle_id: bundleId })}\n`;
+  return `publish: creating '${bundleId}' on ${chosen.target.origin} (host from ${hostSourceText(chosen.source)})\n`;
+}
+
 /** One staged creation's progress line: words, or a JSON event with --json. */
 function progressLine(event: StagedProgress, json: boolean): string {
   if (json) return `${JSON.stringify({ event: "publish.progress", ...event })}\n`;
@@ -474,18 +479,30 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       help: `${cliInvocation()} publish --to hosted --bundle-id <id>`,
     });
   }
-  const hostChoice = await hostedBundleHost(values.host, home);
-  const target = hostChoice ? resolveHostedTarget(hostChoice) : null;
   const withHistory = values["with-history"] === true;
+  const yesCommandFor = (host: string | null) =>
+    commandFragment`${cliInvocation()} publish --to hosted${values.dir !== undefined ? commandFragment` --dir ${commandToken(canonical)}` : commandFragment``}${
+      host !== null ? commandFragment` --host ${commandToken(host)}` : commandFragment``
+    }${values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``} --bundle-id ${commandToken(bundleId)}${
+      values.name !== undefined ? commandFragment` --name ${commandToken(name)}` : commandFragment``
+    }${withHistory ? commandFragment` --with-history` : commandFragment``} --yes${values.json ? commandFragment` --json` : commandFragment``}`;
+  // An implicit host is used only when it is the one host signed in; the preview reports an
+  // ambiguous one as a blocker, and --yes refuses it.
+  let chosen: HostedWriteHost | null = null;
+  let ambiguous: CliError | null = null;
+  try {
+    chosen = await hostedWriteHost(values.host, home, (host) => String(yesCommandFor(host)));
+  } catch (error) {
+    if (values.yes || !(error instanceof CliError) || error.details?.reason !== "ambiguous_host") throw error;
+    ambiguous = error;
+  }
+  const target = chosen?.target ?? null;
   const plan = await planPublish(canonical, withHistory ? { history: true, ...(board ? { board } : {}), now: deps.auth.now() } : { history: false });
 
-  const yesCommand = commandFragment`${cliInvocation()} publish --to hosted${values.dir !== undefined ? commandFragment` --dir ${commandToken(canonical)}` : commandFragment``}${
-    target ? commandFragment` --host ${commandToken(bindingHostArgument(target))}` : commandFragment``
-  }${values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``} --bundle-id ${commandToken(bundleId)}${
-    values.name !== undefined ? commandFragment` --name ${commandToken(name)}` : commandFragment``
-  }${withHistory ? commandFragment` --with-history` : commandFragment``} --yes${values.json ? commandFragment` --json` : commandFragment``}`;
-  // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents: a larger bundle is created and the
-  // folder is left as it is (a Git board stays bound), to use in the app.
+  const yesCommand = yesCommandFor(target ? bindingHostArgument(target) : null);
+  // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents, read a page at a time, which is also
+  // staged creation's own document bound; a larger bundle (never one this command creates) would be
+  // created and the folder left as it is (a Git board stays bound), to use in the app.
   const converts = plan.documents.length <= CHECKOUT_DOCUMENT_LIMIT;
   const uncheckable = `leave this folder as it is${board ? " (still bound to the Git board)" : ""}: a hosted checkout holds at most ${CHECKOUT_DOCUMENT_LIMIT} documents, so use the bundle in the app; from then on, edits here do not reach the hosted bundle, nor its edits here`;
   const gitPlan = board
@@ -505,7 +522,8 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
 
   if (!values.yes) {
     const blockers = [...plan.blockers.map((b) => ({ path: b.path, reason: b.reason, message: b.message })), ...(boardState?.blocker ? [boardState.blocker] : [])];
-    if (!target) blockers.push({ path: "", reason: "no_host", message: "no hosted Superbee host: sign in first, or pass --host" });
+    if (ambiguous) blockers.push({ path: "", reason: "ambiguous_host", message: ambiguous.message });
+    else if (!target) blockers.push({ path: "", reason: "no_host", message: "no hosted Superbee host: sign in first, or pass --host" });
     deps.stdout(
       render(
         {
@@ -515,6 +533,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           home: facts.home,
           to: {
             host: target?.origin ?? null,
+            ...(chosen ? { host_from: chosen.source } : ambiguous ? { signed_in_hosts: ambiguous.details?.hosts } : {}),
             bundle_id: bundleId,
             name,
             workspace: values.workspace ?? "chosen at --yes: your only workspace, or your default one",
@@ -533,7 +552,13 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
               : [uncheckable]),
           ],
           network: "none (preview)",
-          help: blockers.length === 0 ? [String(yesCommand)] : !target ? [`${cliInvocation()} login --host <url>`] : ["fix the blocking files, then preview again"],
+          help: blockers.length === 0
+            ? [String(yesCommand)]
+            : ambiguous
+              ? [...((ambiguous.details?.commands as string[] | undefined) ?? []), ...(blockers.length > 1 ? ["fix the blocking files, then preview again"] : [])]
+              : !target
+                ? [`${cliInvocation()} login --host <url>`]
+                : ["fix the blocking files, then preview again"],
         },
         mode,
       ),
@@ -557,7 +582,10 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     });
   }
 
-  const otherWorkspace = `${cliInvocation()} publish --to hosted --workspace <id> --bundle-id ${commandToken(bundleId)} --yes`;
+  // Named before anything is asked or sent, on stderr so the receipt on stdout keeps its shape: the one
+  // line that says which host this write is about to change.
+  deps.stderr(targetLine(chosen!, bundleId, values.json === true));
+  const otherWorkspace = `${cliInvocation()} publish --to hosted --host ${commandToken(bindingHostArgument(target))} --workspace <id> --bundle-id ${commandToken(bundleId)} --yes`;
   const { client, identity, workspace } = await connectHostedAccount(
     target,
     { workspace: values.workspace, resume: yesCommand, otherWorkspace, deadlineMs: CREATE_DEADLINE_MS },
@@ -580,6 +608,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           bundle_id: bundleId,
           name,
           host: target.origin,
+          host_from: chosen!.source,
           workspace,
           access: "write (only you, until you share it in the app)",
           sent: {
@@ -652,6 +681,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         bundle_id: bundleId,
         name,
         host: target.origin,
+        host_from: chosen!.source,
         workspace,
         access: "write (only you, until you share it in the app)",
         sent: {

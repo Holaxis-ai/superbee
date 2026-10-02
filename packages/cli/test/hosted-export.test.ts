@@ -19,7 +19,7 @@ import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/s
 import { bindingForPath, releaseCheckout } from "../src/hosted/binding.js";
 import { hostedStatus } from "../src/hosted/status.js";
 import { readCheckoutMarker, unboundCopyDetail } from "../src/hosted/marker.js";
-import { ExportArchiveError, readStoredZip, verifyExport } from "../src/hosted/export-archive.js";
+import { ExportArchiveError, joinExportPages, readStoredZip, verifyExport } from "../src/hosted/export-archive.js";
 import { exportEntries, storedZip, type ZipEntryInput } from "./support/fake-export-archive.js";
 import { BUNDLE, FakeHost, HOST, jwt, SYNC_FIXTURES, TOKEN } from "./support/fake-hosted-sync.js";
 
@@ -181,10 +181,121 @@ test("export --to writes the hosted bundle, byte for byte, into a new local bund
   assert.equal(await bindingForPath(h.home, folder), null);
   // The account first (a reference is checked against the person's workspaces), then the export.
   assert.deepEqual(h.host.requests.map((request) => request.path), ["/sync/v1/whoami", "/sync/v1/export"]);
-  assert.deepEqual(h.host.requests[1]!.body, { bundleId: BUNDLE });
+  assert.deepEqual(h.host.requests[1]!.body, { bundleId: BUNDLE, paged: true });
   assert.equal(h.host.requests[1]!.headers.get("authorization"), `Bearer ${TOKEN}`);
   // The new folder is an ordinary bundle every command reads.
   assert.equal((await bundleHomeAt(await realpath(folder), { home: h.home })).home, "local");
+});
+
+test("export reads a paged host's export a page at a time and writes the whole bundle once", async () => {
+  const h = await harness();
+  h.host.exportExtras.set("assets/logo.png", LOGO);
+  h.host.exportExtras.set("notes/log.md", Buffer.from("# log\n"));
+  h.host.exportPageObjects = 2;
+  const receipt = await run(h, [BUNDLE, "--host", HOST, "--to", "copy"]);
+  const folder = path.join(h.cwd, "copy");
+  assert.deepEqual([receipt.documents, receipt.reserved, receipt.blobs], [3, 2, 1]);
+  assert.deepEqual(await filesUnder(folder), ["assets/logo.png", "index.md", "notes/alpha.md", "notes/beta.md", "notes/log.md", "projects/2026/plan.md"]);
+  for (const [id, doc] of h.host.docs) assert.equal(await readFile(path.join(folder, `${id}.md`), "utf8"), doc.raw, id);
+  assert.deepEqual(await readFile(path.join(folder, "assets/logo.png")), LOGO);
+  // Six objects, two a page: the first page, then each page's own next cursor.
+  const revision = h.host.revision;
+  assert.deepEqual(
+    h.host.requests.filter((request) => request.path === "/sync/v1/export").map((request) => request.body),
+    [{ bundleId: BUNDLE, paged: true }, { bundleId: BUNDLE, paged: true, cursor: `${revision}.2` }, { bundleId: BUNDLE, paged: true, cursor: `${revision}.4` }],
+  );
+});
+
+test("export falls back to the whole archive on a host from before the paged export", async () => {
+  const h = await harness(new FakeHost({ exportPaging: false }));
+  h.host.exportExtras.set("assets/logo.png", LOGO);
+  const receipt = await run(h, [BUNDLE, "--host", HOST, "--to", "copy"]);
+  assert.equal(receipt.export, "created");
+  assert.deepEqual(await readFile(path.join(h.cwd, "copy", "assets/logo.png")), LOGO);
+  assert.deepEqual(
+    h.host.requests.filter((request) => request.path === "/sync/v1/export").map((request) => request.body),
+    [{ bundleId: BUNDLE, paged: true }, { bundleId: BUNDLE }],
+  );
+});
+
+test("a bundle that changes between pages is read again from its first page, and one that keeps changing writes nothing", async () => {
+  const h = await harness();
+  h.host.exportPageObjects = 2;
+  // The bundle moves once, while the second page is asked for: that page is refused and the export starts over.
+  let moves = 1;
+  h.host.exportBefore = (body) => {
+    if (body.cursor !== undefined && moves > 0) {
+      moves -= 1;
+      h.host.revision += 1;
+    }
+  };
+  const receipt = await run(h, [BUNDLE, "--host", HOST, "--to", "copy"]);
+  assert.equal(receipt.export, "created");
+  assert.equal(receipt.revision, h.host.revision);
+  const firsts = h.host.requests.filter((request) => request.path === "/sync/v1/export" && (request.body as { cursor?: string }).cursor === undefined);
+  assert.equal(firsts.length, 2);
+
+  const again = await harness();
+  again.host.exportPageObjects = 2;
+  again.host.exportBefore = (body) => {
+    if (body.cursor !== undefined) again.host.revision += 1;
+  };
+  const error = await rejects(again, [BUNDLE, "--host", HOST, "--to", "copy"]);
+  assert.equal(error.code, "TRANSIENT");
+  assert.equal(error.details?.reason, "export_source_changed");
+  assert.deepEqual(await readdir(again.cwd), []);
+});
+
+test("a host that repeats a page is refused at that page, and a busy page is asked for once more", async () => {
+  const h = await harness();
+  h.host.exportPageObjects = 2;
+  let first: Uint8Array | undefined;
+  h.host.exportHook = (archive) => (first ??= archive);
+  const repeated = await rejects(h, [BUNDLE, "--host", HOST, "--to", "copy"]);
+  assert.equal(repeated.details?.reason, "export_manifest_mismatch");
+  assert.equal(h.host.requests.filter((request) => request.path === "/sync/v1/export").length, 2);
+  assert.deepEqual(await readdir(h.cwd), []);
+
+  // The host's one export slot is busy for the second page once: the same cursor is asked for again.
+  const busy = await harness();
+  busy.host.exportPageObjects = 2;
+  let calls = 0;
+  busy.host.exportHook = (archive) =>
+    (calls += 1) === 2
+      ? Response.json({ error: { code: "backend_unavailable", message: "Another export is running. Try again in a moment.", retryable: true } }, { status: 503 })
+      : archive;
+  const receipt = await run(busy, [BUNDLE, "--host", HOST, "--to", "copy"]);
+  assert.equal(receipt.export, "created");
+  const cursors = busy.host.requests.filter((request) => request.path === "/sync/v1/export").map((request) => (request.body as { cursor?: string }).cursor);
+  assert.deepEqual(cursors, [undefined, `${busy.host.revision}.2`, `${busy.host.revision}.2`]);
+});
+
+test("pages that leave a gap, overlap, mix revisions or end early are refused when joined", () => {
+  const state = {
+    tenantId: "tenant-a",
+    bundleId: BUNDLE,
+    revision: 4,
+    files: new Map<string, Uint8Array>([
+      ["index.md", Buffer.from("# root\n")],
+      ["notes/a.md", Buffer.from("a\n")],
+      ["notes/b.md", Buffer.from("b\n")],
+      ["files/c.bin", Buffer.from([1, 2, 3])],
+    ]),
+  };
+  const at = new Date("2030-01-01T00:00:00.000Z");
+  const page = (from: number, size: number, revision = 4) =>
+    verifyExport(storedZip(exportEntries({ ...state, revision }, at, { from, size }), at), BUNDLE, { paged: true });
+  const whole = joinExportPages([page(0, 2), page(2, 2)]);
+  assert.deepEqual(whole.entries.map((entry) => entry.path), ["index.md", "notes/a.md", "notes/b.md", "files/c.bin"]);
+  assert.deepEqual(whole.counts, { documents: 2, reserved: 1, blobs: 1 });
+  assert.equal(whole.page, undefined);
+  for (const pages of [[page(0, 1), page(2, 2)], [page(0, 2), page(1, 3)], [page(0, 2), page(2, 2, 5)], [page(0, 2)]]) {
+    assert.throws(() => joinExportPages(pages), (error: unknown) => error instanceof ExportArchiveError && error.problem === "manifest_mismatch");
+  }
+  // A page is not the whole bundle, and the whole archive is not a page.
+  const firstPage = storedZip(exportEntries(state, at, { from: 0, size: 2 }), at);
+  assert.throws(() => verifyExport(firstPage, BUNDLE), (error: unknown) => error instanceof ExportArchiveError && error.problem === "manifest_mismatch");
+  assert.throws(() => verifyExport(storedZip(exportEntries(state, at), at), BUNDLE, { paged: true }), (error: unknown) => error instanceof ExportArchiveError && error.problem === "manifest_mismatch");
 });
 
 test("export --to --git commits the export on the board branch, so the folder is a Git board", async () => {
@@ -287,11 +398,11 @@ test("export names the bundle in a workspace by <workspace>/<bundle-id> or --wor
   const h = await harness(new FakeHost({ tenants: ["tenant-a", "tenant-b"], slug: "tenant-b" }));
   const named = await run(h, [`tenant-b/${BUNDLE}`, "--host", HOST, "--to", "one"]);
   assert.equal(named.bundle_id, BUNDLE);
-  assert.deepEqual(h.host.requests.at(-1)!.body, { bundleId: `tenant-b/${BUNDLE}` });
+  assert.deepEqual(h.host.requests.at(-1)!.body, { bundleId: `tenant-b/${BUNDLE}`, paged: true });
   h.host.requests.length = 0;
   await run(h, [BUNDLE, "--host", HOST, "--workspace", "tenant-b", "--to", "two"]);
   assert.deepEqual(h.host.requests.map((r) => r.path), ["/sync/v1/whoami", "/sync/v1/export"]);
-  assert.deepEqual(h.host.requests[1]!.body, { bundleId: `tenant-b/${BUNDLE}` });
+  assert.deepEqual(h.host.requests[1]!.body, { bundleId: `tenant-b/${BUNDLE}`, paged: true });
   // Another of the person's workspaces does not hold it: absent, named as asked.
   const elsewhere = await rejects(h, [`tenant-a/${BUNDLE}`, "--host", HOST, "--to", "three"]);
   assert.equal(elsewhere.code, "NOT_FOUND");
@@ -305,7 +416,7 @@ test("export names the bundle in a workspace by <workspace>/<bundle-id> or --wor
   await checkout([`tenant-b/${BUNDLE}`, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
   h.host.requests.length = 0;
   await run(h, ["--dir", path.join(h.cwd, "team"), "--to", "six"]);
-  assert.deepEqual(h.host.requests.at(-1)!.body, { bundleId: `tenant-b/${BUNDLE}` });
+  assert.deepEqual(h.host.requests.at(-1)!.body, { bundleId: `tenant-b/${BUNDLE}`, paged: true });
 });
 
 test("export of a reference from a host that names no workspaces is refused before the export", async () => {
@@ -335,7 +446,7 @@ test("export --dir <checkout> --to exports the checkout's own bundle under its o
   assert.equal(receipt.bundle_id, BUNDLE);
   assert.deepEqual(h.host.requests.map((request) => request.path), ["/sync/v1/whoami", "/sync/v1/export"]);
   // The checkout names its bundle bare, as it was checked out.
-  assert.deepEqual(h.host.requests[1]!.body, { bundleId: BUNDLE });
+  assert.deepEqual(h.host.requests[1]!.body, { bundleId: BUNDLE, paged: true });
   // The checkout is untouched.
   assert.ok(await bindingForPath(h.home, await realpath(folder)));
 

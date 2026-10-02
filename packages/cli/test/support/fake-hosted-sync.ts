@@ -36,7 +36,11 @@
 // - `/export` (superbee-hosted PR 650, `src/sync-v1-export.ts`): the portable export of the fake's
 //   bundle as the host writes it (`fake-export-archive.ts`): the documents' stored bytes, the root
 //   index, and any reserved files or blobs a test adds to `exportExtras`; a 404 `bundle_not_found`
-//   for another bundle and a 400 `invalid_input` for any body but `{ bundleId }`.
+//   for another bundle and a 400 `invalid_input` for any body but `{ bundleId }` or the paged
+//   `{ bundleId, paged: true, cursor? }`. A paged request answers `exportPageObjects` objects a page,
+//   each page's manifest stating `page` with the `<revision>.<from>` cursor of the next; a cursor
+//   whose revision is no longer the bundle's is `409 concurrent_change`. `exportPaging: false` is a
+//   gateway from before the paged export.
 // - qualified references (superbee-hosted `docs/data-organizations.md`, "Qualified references"):
 //   with `workspaces`, whoami names each workspace's slug; a bundle-scoped body may name the bundle
 //   `<slug>/<bundle-id>`, which reaches the bundle only when `slug` is its workspace's (another
@@ -74,7 +78,7 @@ import { versionOfBytes } from "@superbee/core/versioning";
 import { isAcceptedDeletionCount, isAgentLabelVia } from "@superbee/core/hosted-transport";
 import { deletionHold } from "../../src/hosted/sync-scan.js";
 
-import { exportArchive, type ExportState } from "./fake-export-archive.js";
+import { exportArchive, exportInventorySize, type ExportState } from "./fake-export-archive.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.resolve(here, "../../../core/test/fixtures/hosted-transport");
@@ -177,6 +181,8 @@ export interface FakeHostOptions {
    * follow it (the model-changes item above).
    */
   definitionWrites?: "allowed" | "refused";
+  /** False is a gateway from before the paged export: a paged request's body is `400 invalid_input`. */
+  exportPaging?: boolean;
 }
 
 /** One operation descriptor, as the listing route answers it. */
@@ -230,6 +236,10 @@ export class FakeHost {
   exportState: ExportState | undefined;
   /** The export instant. */
   exportedAt: () => Date = () => new Date();
+  /** Objects one page of a paged export carries (the host's is 500). */
+  exportPageObjects = 500;
+  /** Called before each export answer, with the request body: a test moves the bundle between pages. */
+  exportBefore: ((body: Record<string, unknown>) => void) | undefined;
   /** What a test does to the archive bytes before they are answered (truncate, tamper). */
   exportHook: ((archive: Uint8Array) => Uint8Array | Response) | undefined;
   /** The listing `/operations` answers, when a test sets it; otherwise the golden `operations-200` listing. */
@@ -514,7 +524,16 @@ export class FakeHost {
   }
 
   private export(body: Record<string, unknown>): Response {
-    if (!onlyKeys(body, ["bundleId"]) || typeof body.bundleId !== "string") return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    const invalid = () => Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    const paged = this.options.exportPaging !== false && body.paged === true;
+    if (typeof body.bundleId !== "string" || !(paged ? onlyKeys(body, ["bundleId", "paged", "cursor"]) : onlyKeys(body, ["bundleId"]))) return invalid();
+    let cursor: { revision: number; from: number } | undefined;
+    if (paged && body.cursor !== undefined) {
+      const match = typeof body.cursor === "string" ? /^(0|[1-9][0-9]{0,14})\.([1-9][0-9]{0,5})$/.exec(body.cursor) : null;
+      if (!match) return invalid();
+      cursor = { revision: Number(match[1]), from: Number(match[2]) };
+    }
+    this.exportBefore?.(body);
     const state = this.currentExportState();
     if (body.bundleId !== state.bundleId) {
       return Response.json(
@@ -522,7 +541,15 @@ export class FakeHost {
         { status: 404 },
       );
     }
-    const archive = exportArchive(state, this.exportedAt());
+    let page: { from: number; size: number } | undefined;
+    if (paged) {
+      if (cursor && cursor.revision !== state.revision) {
+        return Response.json({ error: { code: "concurrent_change", message: "The bundle changed since the first page. Start again from the first page.", retryable: true } }, { status: 409 });
+      }
+      if (cursor && cursor.from >= exportInventorySize(state)) return invalid();
+      page = { from: cursor?.from ?? 0, size: this.exportPageObjects };
+    }
+    const archive = exportArchive(state, this.exportedAt(), page);
     const answered = this.exportHook ? this.exportHook(archive) : archive;
     if (answered instanceof Response) return answered;
     return new Response(answered, {

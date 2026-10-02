@@ -183,18 +183,21 @@ test("--yes stages the bundle: begin, files, disjoint bounded parts, commits, th
   assert.equal(seen.size, 1_200 + 2);
   // Progress on stderr, one line per event; stdout is the one receipt.
   assert.equal(h.out.length, 1);
-  assert.match(h.err[0]!, /^publish: staging: 0\/1202 objects and 0\/3 files on the host\n$/);
+  // The host is named before anything is sent, then the progress follows.
+  assert.equal(h.err[0], `publish: creating 'big.notes' on ${HOST} (host from --host)\n`);
+  assert.match(h.err[1]!, /^publish: staging: 0\/1202 objects and 0\/3 files on the host\n$/);
   assert.ok(h.err.some((line) => /^publish: sent part 1\/\d+ \(\d+ objects\)\n$/.test(line)));
   assert.ok(h.err.some((line) => /^publish: sent file \d\/3 assets\/\S+ \(2\.0 MiB\)\n$/.test(line)));
   // The host names at most 1,000 missing versions: the first commit names the rest, which are staged then.
   assert.equal(h.err.find((line) => line.startsWith("publish: commit 1:")), "publish: commit 1: staging\n");
   assert.ok(h.err.some((line) => /^publish: commit 2: importing \(written: /.test(line)));
-  // Past what a checkout holds, the folder is left as it is, and the receipt says why.
+  // Past one working copy page (1,000 documents), the folder still converts in place: the
+  // checkout reads heads and snapshot a page at a time, and no file is rewritten.
   assert.deepEqual(await readFile(path.join(folder, "notes", "n00000.md")), before);
-  assert.equal(readCheckoutMarker(folder), null);
-  assert.equal(await bindingForPath(h.home, folder), null);
-  assert.equal(receipt.home, "local");
-  assert.match(String(receipt.checkout), /^not converted: .* at most 1000 documents/);
+  assert.equal(readCheckoutMarker(folder)?.bundle_id, "big.notes");
+  assert.equal((await bindingForPath(h.home, folder))?.bundle_id, "big.notes");
+  assert.equal(receipt.home, "hosted");
+  assert.deepEqual(receipt.checkout, { matched: 1_200, placed: 0, conflicts: 0, local_only: 0 });
   assert.equal(await readPendingCreate(h.home, folder, "big.notes"), null);
   const bundle = fake.bundles.get("big.notes")!;
   assert.equal(bundle.docs.size, 1_200);
@@ -208,7 +211,8 @@ test("--json reports progress as JSON lines on stderr; a staged bundle a checkou
   const fake = new FakeCreateHost();
   const receipt = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes", "--json"], fake);
   assert.equal(receipt.published, "created");
-  const events = h.err.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const [first, ...events] = h.err.map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.deepEqual(first, { event: "publish.target", host: HOST, host_from: "flag", bundle_id: "big-notes" });
   assert.ok(events.every((event) => event.event === "publish.progress"));
   assert.deepEqual([...new Set(events.map((event) => event.phase))], ["begin", "blob", "stage"]);
   assert.deepEqual(events[0], { event: "publish.progress", phase: "begin", state: "staging", versions: 602, staged: 0, blobs: 3, stagedBlobs: 0 });

@@ -75,6 +75,22 @@ export interface VerifiedExport {
   readonly entries: readonly ArchiveEntry[];
   /** Stored bytes, the manifest excluded. */
   readonly bytes: number;
+  /** A paged export's page; absent on the whole archive (and on pages once joined). */
+  readonly page?: ExportPage;
+}
+
+/** What one page of a paged export states (`page` in its manifest). */
+export interface ExportPage {
+  /** The inventory position of the page's first object. */
+  readonly from: number;
+  /** Objects the page carries. */
+  readonly count: number;
+  /** Objects in the whole bundle. */
+  readonly total: number;
+  /** The cursor of the next page; absent on the last. */
+  readonly next?: string;
+  /** The whole bundle's counts, as every page's manifest states them. */
+  readonly counts: VerifiedExport["counts"];
 }
 
 const CRC_TABLE = (() => {
@@ -258,7 +274,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Verify a whole export archive for `bundleId` and return its entries. Any failure is an
  * {@link ExportArchiveError}; nothing is returned for an archive that is not complete and exact.
  */
-export function verifyExport(archive: Uint8Array, bundleId: string): VerifiedExport {
+export function verifyExport(archive: Uint8Array, bundleId: string, options: { readonly paged?: boolean } = {}): VerifiedExport {
   const raw = readStoredZip(archive);
   const manifests = raw.filter((entry) => entry.name === EXPORT_MANIFEST);
   if (manifests.length !== 1) throw new ExportArchiveError("manifest_mismatch", `the archive holds ${manifests.length} manifests`);
@@ -289,6 +305,27 @@ export function verifyExport(archive: Uint8Array, bundleId: string): VerifiedExp
     throw new ExportArchiveError("manifest_mismatch", "the manifest is missing a field");
   }
   if (source.bundleId !== bundleId) throw new ExportArchiveError("wrong_bundle", `the export is of '${source.bundleId}', not '${bundleId}'`);
+  // A page states its place in the whole; the whole archive states none.
+  let page: ExportPage | undefined;
+  if (options.paged) {
+    const raw = manifest.page;
+    const count = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
+    if (!isRecord(raw) || !count(raw.from) || !count(raw.count) || !count(raw.total) || (raw.next !== undefined && (typeof raw.next !== "string" || raw.next === ""))) {
+      throw new ExportArchiveError("manifest_mismatch", "the page's manifest does not state its page");
+    }
+    if (raw.from + raw.count > raw.total || (raw.next === undefined) !== (raw.from + raw.count === raw.total) || (raw.next !== undefined && raw.count === 0)) {
+      throw new ExportArchiveError("manifest_mismatch", "the page's manifest states a page outside the bundle");
+    }
+    page = {
+      from: raw.from,
+      count: raw.count,
+      total: raw.total,
+      ...(raw.next !== undefined ? { next: raw.next } : {}),
+      counts: { documents: counts.documents as number, reserved: counts.reserved as number, blobs: counts.blobs as number },
+    };
+  } else if (manifest.page !== undefined) {
+    throw new ExportArchiveError("manifest_mismatch", "the archive is one page, not the whole bundle");
+  }
 
   const digests = new Map<string, { bytes: number; sha256: string }>();
   for (const row of listed) {
@@ -320,7 +357,11 @@ export function verifyExport(archive: Uint8Array, bundleId: string): VerifiedExp
   for (const listedPath of digests.keys()) {
     if (!seen.has(listedPath)) throw new ExportArchiveError("manifest_mismatch", `the manifest lists ${listedPath}, which the archive does not hold`);
   }
-  if (tally.documents !== counts.documents || tally.reserved !== counts.reserved || tally.blobs !== counts.blobs) {
+  if (page) {
+    // A page's `counts` are the whole bundle's: the page holds its own count, and the pages are
+    // checked against `counts` once joined (`joinExportPages`).
+    if (entries.length !== page.count) throw new ExportArchiveError("manifest_mismatch", "the page holds a different number of entries than it states");
+  } else if (tally.documents !== counts.documents || tally.reserved !== counts.reserved || tally.blobs !== counts.blobs) {
     throw new ExportArchiveError("manifest_mismatch", "the manifest's counts do not match the archive");
   }
   const collision = findEntryCollision(entries.map((entry) => entry.path));
@@ -333,5 +374,85 @@ export function verifyExport(archive: Uint8Array, bundleId: string): VerifiedExp
     counts: tally,
     entries,
     bytes,
+    ...(page ? { page } : {}),
   };
+}
+
+/**
+ * The pages of one paged export, checked as each arrives and joined once the last has: every page
+ * must name the first page's source (one revision, one edition), state the same whole (its total,
+ * at most an export's entries, and its counts), start where the one before ended, and only the
+ * last may name no next page. So a host that repeats or skips a page is refused at that page, and
+ * a run of pages is at most `total` long. Joined, the pages must hold every object once, add up to
+ * the bundle's counts, and keep every path apart from the others in one folder.
+ */
+export class ExportPageChain {
+  readonly #pages: VerifiedExport[] = [];
+  #from = 0;
+  #ended = false;
+
+  /** Adds the next page; answers its next cursor, or undefined once the export is whole. */
+  add(verified: VerifiedExport): string | undefined {
+    const page = verified.page;
+    const first = this.#pages[0] ?? verified;
+    if (!page || !first.page || this.#ended) throw new ExportArchiveError("manifest_mismatch", "a paged export answered a page outside its run");
+    const counts = first.page.counts;
+    if (
+      verified.source.tenantId !== first.source.tenantId ||
+      verified.source.bundleId !== first.source.bundleId ||
+      verified.source.revision !== first.source.revision ||
+      verified.source.okfEdition !== first.source.okfEdition ||
+      page.counts.documents !== counts.documents ||
+      page.counts.reserved !== counts.reserved ||
+      page.counts.blobs !== counts.blobs ||
+      page.total !== first.page.total ||
+      page.total !== counts.documents + counts.reserved + counts.blobs ||
+      page.total > MAX_EXPORT_ENTRIES - 1
+    ) {
+      throw new ExportArchiveError("manifest_mismatch", "the pages do not describe one export of one revision");
+    }
+    if (page.from !== this.#from) throw new ExportArchiveError("manifest_mismatch", "the pages leave a gap or overlap");
+    this.#pages.push(verified);
+    this.#from += page.count;
+    if (page.next === undefined) this.#ended = true;
+    return page.next;
+  }
+
+  /** The whole bundle, as one archive would have carried it. */
+  joined(): VerifiedExport {
+    const first = this.#pages[0];
+    if (!first?.page || !this.#ended) throw new ExportArchiveError("manifest_mismatch", "the pages end before the last");
+    const { counts } = first.page;
+    const entries: ArchiveEntry[] = [];
+    const tally = { documents: 0, reserved: 0, blobs: 0 };
+    let bytes = 0;
+    for (const verified of this.#pages) {
+      for (const entry of verified.entries) {
+        entries.push(entry);
+        tally[entry.kind === "document" ? "documents" : entry.kind === "reserved" ? "reserved" : "blobs"] += 1;
+        bytes += entry.bytes.byteLength;
+      }
+    }
+    if (this.#from !== first.page.total || entries.length !== first.page.total) throw new ExportArchiveError("manifest_mismatch", "the pages do not add up to the bundle");
+    if (tally.documents !== counts.documents || tally.reserved !== counts.reserved || tally.blobs !== counts.blobs) {
+      throw new ExportArchiveError("manifest_mismatch", "the manifest's counts do not match the pages");
+    }
+    const seen = new Set<string>();
+    for (const entry of entries) {
+      if (seen.has(entry.path)) throw new ExportArchiveError("manifest_mismatch", `the pages hold ${entry.path} twice`);
+      seen.add(entry.path);
+    }
+    const collision = findEntryCollision(entries.map((entry) => entry.path));
+    if (collision) {
+      throw new ExportArchiveError("unsafe_path", `the archive holds paths one folder cannot keep apart: ${JSON.stringify(collision[0])} and ${JSON.stringify(collision[1])}`);
+    }
+    return { source: first.source, exportedAt: first.exportedAt, counts: tally, entries, bytes };
+  }
+}
+
+/** Join the verified pages of one paged export ({@link ExportPageChain}). */
+export function joinExportPages(pages: readonly VerifiedExport[]): VerifiedExport {
+  const chain = new ExportPageChain();
+  for (const page of pages) chain.add(page);
+  return chain.joined();
 }

@@ -1,0 +1,24 @@
+{
+  "name": "export-200-page-first",
+  "description": "The first page of a paged export: a whole zip whose manifest's page names the next cursor.",
+  "route": "/sync/v1/export",
+  "rows": [
+    "export 200 page"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"paged\":true}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/zip",
+      "content-disposition": "attachment; filename=\"notes.a-2.zip\""
+    },
+    "bodyBase64": "UEsDBBQAAAgAAAAAIWR+REuHJQAAACUAAAAIAAAAaW5kZXgubWQtLS0Kb2tmX3ZlcnNpb246ICIwLjIiCi0tLQojIG5vdGVzLmEKUEsDBBQAAAgAAAAAIWQ3qFbCAAIAAAACAAAUAAAAc3VwZXJiZWUtZXhwb3J0Lmpzb257CiAgImZvcm1hdCI6ICJzdXBlcmJlZS1leHBvcnQvMSIsCiAgInNvdXJjZSI6IHsKICAgICJ0ZW5hbnRJZCI6ICJ0ZW5hbnQ6YSIsCiAgICAiYnVuZGxlSWQiOiAibm90ZXMuYSIsCiAgICAicmV2aXNpb24iOiAyLAogICAgIm9rZkVkaXRpb24iOiAiMC4yIgogIH0sCiAgImV4cG9ydGVkQXQiOiAiMjAzMC0wMS0wMVQwMDowMDowMC4wMDBaIiwKICAiY291bnRzIjogewogICAgImRvY3VtZW50cyI6IDEsCiAgICAicmVzZXJ2ZWQiOiAxLAogICAgImJsb2JzIjogMAogIH0sCiAgImVudHJpZXMiOiBbCiAgICB7CiAgICAgICJwYXRoIjogImluZGV4Lm1kIiwKICAgICAgImJ5dGVzIjogMzcsCiAgICAgICJzaGEyNTYiOiAiN2NjMWY5ZTQ3MjM0MWY4YmRmNTRmNjY4YTlhYjk4NjU1MDU1ZTM2YTlhZDQxZjhiZmNjOGQ1OTc3YWFhNTlkMCIKICAgIH0KICBdLAogICJwYWdlIjogewogICAgImZyb20iOiAwLAogICAgImNvdW50IjogMSwKICAgICJ0b3RhbCI6IDIsCiAgICAibmV4dCI6ICIyLjEiCiAgfQp9ClBLAQIUABQAAAgAAAAAIWR+REuHJQAAACUAAAAIAAAAAAAAAAAAAAAAAAAAAABpbmRleC5tZFBLAQIUABQAAAgAAAAAIWQ3qFbCAAIAAAACAAAUAAAAAAAAAAAAAAAAAEsAAABzdXBlcmJlZS1leHBvcnQuanNvblBLBQYAAAAAAgACAHgAAAB9AgAAAAA=",
+    "truncated": false
+  }
+}
