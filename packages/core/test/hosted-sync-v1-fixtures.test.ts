@@ -264,6 +264,8 @@ test("root writes: the client's request is the recorded one byte for byte, and e
     assert.equal(sent!.get("x-superbee-via"), via ?? null, name);
   }
   assert.equal(ROOT_OPERATION_ID, (JSON.parse(fixture("root-200-ok").response.body) as { operationId: string }).operationId);
+});
+
 test("capabilities 200 states the host's document write bound; an absent or malformed one reads as none, never a refusal", () => {
   const body = JSON.parse(fixture("capabilities-200").response.body);
   assert.equal(decodeHostedCapabilities(body).documentInputBytes, 983_040);
