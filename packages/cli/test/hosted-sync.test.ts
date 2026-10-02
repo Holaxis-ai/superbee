@@ -9,6 +9,7 @@ import test from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -141,6 +142,56 @@ test("an edited file is sent as one whole document, then the checkout is up to d
   assert.equal(again.status, "up_to_date");
   assert.deepEqual(rowsOf(again), []);
   assert.equal(h.host.writes.length, 0);
+});
+
+test("a file edited while its own send is in flight keeps the edit, with no conflict; the next run sends it and takes the host's bytes", async () => {
+  const h = await harness();
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Alpha body, revised.\n"));
+  const file = path.join(h.folder, "notes/alpha.md");
+  const sent = await readFile(file, "utf8");
+  const typed = sent.replace("Alpha body, revised.\n", "Typed during the send.\n");
+  let once = true;
+  h.host.hook = (call) => {
+    if (once && call.route === "replace") {
+      once = false;
+      writeFileSync(file, typed);
+    }
+    return undefined;
+  };
+  const first = await runSync(h);
+  assert.equal(rowFor(first, "notes/alpha")?.state, "committed");
+  assert.equal(await readFile(file, "utf8"), typed, "the edit made during the send is never replaced");
+  const acknowledged = hostDoc(h, "notes/alpha").version;
+  h.host.hook = undefined;
+  h.host.writes.length = 0;
+  const second = await runSync(h);
+  assert.equal(second.status, "synced");
+  const [write] = writeRoutes(h);
+  assert.equal(write!.body.expectedVersion, acknowledged, "sent against the host's real version");
+  assert.equal(hostDoc(h, "notes/alpha").body, "Typed during the send.\n");
+  assert.equal(await readFile(file, "utf8"), hostDoc(h, "notes/alpha").raw);
+});
+
+test("a run that stops between the host's acknowledgement and taking its bytes takes them on the next run", async () => {
+  const h = await harness();
+  await edit(h, "notes/alpha", (doc) => void (doc.body = "Alpha body, revised.\n"));
+  let accepted = false;
+  h.fetch = async (input, init) => {
+    if (accepted) throw new TypeError("fetch failed");
+    const response = await h.host.fetch(input as Request, init);
+    if (h.host.writes.some((call) => call.route === "replace")) accepted = true;
+    return response;
+  };
+  await failingSync(h);
+  const file = path.join(h.folder, "notes/alpha.md");
+  assert.notEqual(await readFile(file, "utf8"), hostDoc(h, "notes/alpha").raw, "the run stopped before taking the host's bytes");
+  h.fetch = undefined;
+  h.host.writes.length = 0;
+  await runSync(h);
+  assert.deepEqual(writeRoutes(h), [], "nothing is sent again");
+  assert.equal(await readFile(file, "utf8"), hostDoc(h, "notes/alpha").raw);
+  const { sync: state } = await hostedStatus((await bindingForPath(h.home, h.folder))!, h.home);
+  assert.equal(state.state, "clean");
 });
 
 test("writes name the agent the sync runs under (X-Superbee-Via), and a token the host would refuse is never sent", async () => {

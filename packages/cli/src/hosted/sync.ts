@@ -49,7 +49,7 @@ import {
   type HostedCarrier,
   type HostedReadAdapter,
 } from "@superbee/core/hosted-transport";
-import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalSnapshotConflict, type IntentRecord, type NewIntentRecord } from "@superbee/core/journaled-backend";
+import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalGuardConflict, JournalSnapshotConflict, type IntentRecord, type NewIntentRecord } from "@superbee/core/journaled-backend";
 import { mintRequestId, type UncertainWriteOptions } from "@superbee/core/uncertain-write";
 
 import { resolveLocalBundleTarget } from "../bundle.js";
@@ -637,7 +637,12 @@ async function hostRestamped(
     if (bytes !== null && entry !== undefined && !entry.deleted && digestOf(bytes) === entry.digest) ids.add(id);
     else {
       const { refetch: _refetch, ...kept } = base;
-      await store.writeMeta(baseKey(id), kept);
+      try {
+        await store.writeMeta(baseKey(id), kept, { expected: { present: true, value: base } });
+      } catch (error) {
+        // The base moved under this run: whatever moved it decides, not this mark.
+        if (!(error instanceof JournalGuardConflict)) throw error;
+      }
     }
   }
   return ids;
@@ -1017,7 +1022,9 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       throw await readFailure(error, session, resumeCommand, await unsent());
     }
     const exported = {
-      // A document this run sent and only took back with the host's stamps is not one received.
+      // A document this run sent and only took back with the host's stamps is not one received
+      // (accepted: a change by someone else in the same instant is not counted either, and after
+      // a crash between the acknowledgement and this pull, the next run counts it once).
       placed: [
         ...first.placed.placed,
         ...(second?.placed.placed ?? []).filter((id) => !restamped.has(id)),
