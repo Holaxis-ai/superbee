@@ -198,7 +198,7 @@ interface HistoryOptions {
 }
 
 /** Earlier Git versions of one document, oldest first, as import rows (the current version excluded). */
-function gitVersions(board: GitBoardFacts, id: string, rel: string, current: string, okfVersion: "0.1" | "0.2" | undefined, now: number): { rows: CreateHistory[]; skipped: number } {
+function gitVersions(board: GitBoardFacts, id: string, rel: string, current: string, okfVersion: "0.1" | "0.2" | undefined, now: number, documentInputBytes: number | null): { rows: CreateHistory[]; skipped: number } {
   const repoPath = board.prefix === "" ? rel : `${board.prefix}/${rel}`;
   const log = runGit(board.top, ["log", "--no-renames", "--format=%H%x1f%an <%ae>%x1f%aI", "HEAD", "--", repoPath]);
   if (log.status !== 0) return { rows: [], skipped: 0 };
@@ -218,7 +218,7 @@ function gitVersions(board: GitBoardFacts, id: string, rel: string, current: str
       skipped += 1;
       continue;
     }
-    if (unsendable(id, rel, bytes, null, { bundleId: "publish", okfVersion })) {
+    if (unsendable(id, rel, bytes, null, { bundleId: "publish", okfVersion, documentInputBytes })) {
       skipped += 1;
       continue;
     }
@@ -328,7 +328,17 @@ function kindBlockers(documents: readonly CreateDocument[], okfVersion: "0.1" | 
  * Read the bundle folder into a creation plan. `history` asks for Git history; it is planned only
  * for a Git board, and a local bundle's plan says `current-only`.
  */
-export async function planPublish(folder: string, options: { history: false } | ({ history: true } & Partial<HistoryOptions>)): Promise<PublishPlan> {
+export async function planPublish(
+  folder: string,
+  options: ({ history: false } | ({ history: true } & Partial<HistoryOptions>)) & {
+    /**
+     * The host's whole-document write bound (`limits.documentInputBytes`): each document and
+     * imported version is held to it. Null: the host states none, and 65,536 applies.
+     */
+    readonly documentInputBytes: number | null;
+  },
+): Promise<PublishPlan> {
+  const documentInputBytes = options.documentInputBytes;
   const documents: CreateDocument[] = [];
   const reserved: CreateReserved[] = [];
   const blobs: PlannedBlob[] = [];
@@ -401,7 +411,7 @@ export async function planPublish(folder: string, options: { history: false } | 
       blockers.push({ path: entry.rel, reason: "document_id_not_canonical", message: `${entry.rel} is not in its canonical spelling (a segment starts or ends with a space or an invisible format character, holds a format character other than a joiner, or is not NFC); rename it` });
       continue;
     }
-    const refusal = unsendable(id, entry.rel, bytes, null, { bundleId: "publish", okfVersion });
+    const refusal = unsendable(id, entry.rel, bytes, null, { bundleId: "publish", okfVersion, documentInputBytes });
     if (refusal) {
       blockers.push({ path: entry.rel, reason: refusal.reason, message: refusal.message });
       continue;
@@ -451,7 +461,7 @@ export async function planPublish(folder: string, options: { history: false } | 
     } else {
       let skippedVersions = 0;
       for (const file of documentFiles) {
-        const versions = gitVersions(options.board, file.id, file.rel, file.text, okfVersion, options.now ?? Date.now());
+        const versions = gitVersions(options.board, file.id, file.rel, file.text, okfVersion, options.now ?? Date.now(), documentInputBytes);
         history.push(...versions.rows);
         skippedVersions += versions.skipped;
       }

@@ -612,6 +612,25 @@ export interface ScanContext {
    * otherwise it is held as the app's to change.
    */
   readonly rootWrites?: HostedRootWrites;
+  /**
+   * The host's whole-document write bound as its capabilities answer (or the binding's record of
+   * it) states it. Absent or null: the host states none, and 65,536 applies.
+   */
+  readonly documentInputBytes?: number | null;
+}
+
+/** The whole-document write bound a host holds sync to: what it states, else 65,536. */
+export function documentInputBound(stated: number | null | undefined): number {
+  return stated ?? WHOLE_DOCUMENT_BOUNDS.payloadBytes;
+}
+
+/** Why a document is too large to send, naming the host's bound and the document's size as sent. */
+function tooLarge(id: string, size: number, stated: number | null | undefined): string {
+  const kib = (bytes: number) => Math.ceil(bytes / 1024);
+  const bound = documentInputBound(stated);
+  return stated === null || stated === undefined
+    ? `'${id}' is ${kib(size)} KiB as sent; this host accepts up to ${kib(bound)} KiB per document (newer hosts accept about 960 KiB)`
+    : `'${id}' is ${kib(size)} KiB as sent; this host accepts up to ${kib(bound)} KiB per document`;
 }
 
 /** Why an edited root `index.md` is held where the host does not take root writes from this person. */
@@ -631,7 +650,7 @@ export function unsendable(
   rel: string,
   bytes: Uint8Array,
   stored: { frontmatter: Frontmatter } | null,
-  context: Pick<ScanContext, "bundleId" | "okfVersion">,
+  context: Pick<ScanContext, "bundleId" | "okfVersion" | "documentInputBytes">,
   /**
    * The host kernel's fence, both halves ({@link heldPathReason}, {@link heldTypeReason}), for a
    * document sent to an existing bundle: the scan and a conflict's resolution pass what the host said about
@@ -643,9 +662,8 @@ export function unsendable(
   if (fence && heldPathReason(rel, { definitionWrites: fence.definitionWrites }) === "convention_folder") {
     return held(id, rel, "convention_folder", heldPathMessage(rel, fence.definitionWrites, fence.sender));
   }
-  if (bytes.byteLength > WHOLE_DOCUMENT_BOUNDS.payloadBytes) {
-    return held(id, rel, "too_large", `'${id}' is over the ${WHOLE_DOCUMENT_BOUNDS.payloadBytes / 1024} KiB a sync write carries`);
-  }
+  const bound = documentInputBound(context.documentInputBytes);
+  if (bytes.byteLength > bound) return held(id, rel, "too_large", tooLarge(id, bytes.byteLength, context.documentInputBytes));
   const content = utf8(bytes);
   if (content === null) return held(id, rel, "not_sendable", `'${id}' is not UTF-8 text; sending it would change its bytes`);
   let request;
@@ -658,9 +676,8 @@ export function unsendable(
   // A `document.write` is never a delete; the narrowing says so to the type checker.
   if (request.kind === "delete") throw new Error(`'${id}' became a delete request`);
   const { frontmatter } = request.payload;
-  if (Buffer.byteLength(JSON.stringify(request.payload)) > WHOLE_DOCUMENT_BOUNDS.payloadBytes) {
-    return held(id, rel, "too_large", `'${id}' is over the ${WHOLE_DOCUMENT_BOUNDS.payloadBytes / 1024} KiB a sync write carries`);
-  }
+  const sent = Buffer.byteLength(JSON.stringify(request.payload));
+  if (sent > bound) return held(id, rel, "too_large", tooLarge(id, sent, context.documentInputBytes));
   if (Buffer.byteLength(JSON.stringify(frontmatter)) > FRONTMATTER_JSON_BYTES || Object.keys(frontmatter).length > FRONTMATTER_KEY_LIMIT) {
     return held(id, rel, "too_large", `'${id}' has more frontmatter than the host accepts (${FRONTMATTER_JSON_BYTES / 1024} KiB, ${FRONTMATTER_KEY_LIMIT} fields)`);
   }

@@ -145,6 +145,8 @@ export interface FakeCreateHostOptions {
   unavailable?: boolean;
   /** Each workspace with its slug, as whoami names them; absent is a host from before qualified references. */
   workspaces?: { tenantId: string; slug: string | null }[];
+  /** The whole-document write bound whoami states: absent, 983,040; null, a host from before it was stated. */
+  documentInputBytes?: number | null;
 }
 
 function fold(segment: string): string {
@@ -222,7 +224,15 @@ export class FakeCreateHost {
     if (headers.get("authorization") !== `Bearer ${TOKEN}`) return Response.json({ error: { code: "unauthenticated" } }, { status: 401 });
     const tenants = this.options.tenants ?? ["tenant:a"];
     if (route === "whoami") {
-      return Response.json({ principalId: PRINCIPAL, credentialId: "cli", tenantIds: tenants, ...(this.options.workspaces ? { workspaces: this.options.workspaces } : {}), surface: "sync" });
+      const stated = this.options.documentInputBytes === undefined ? 983_040 : this.options.documentInputBytes;
+      return Response.json({
+        principalId: PRINCIPAL,
+        credentialId: "cli",
+        tenantIds: tenants,
+        ...(this.options.workspaces ? { workspaces: this.options.workspaces } : {}),
+        surface: "sync",
+        ...(stated === null ? {} : { limits: { documentInputBytes: stated } }),
+      });
     }
     if (route === "bundles") {
       return Response.json({

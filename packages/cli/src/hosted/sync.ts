@@ -60,7 +60,7 @@ import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { ACCESS_TOKEN_ENV, defaultHostedAuthDeps, readSession, SignedOutError, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
-import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreDir, recordDefinitionWrites, type CheckoutBinding } from "./binding.js";
+import { bindingForPath, checkoutBindingDigest, checkoutLockName, checkoutStoreDir, recordHostStatement, type CheckoutBinding } from "./binding.js";
 import { hostedFailure, type createHostedSyncClient } from "./client.js";
 import { connectCheckout } from "./account.js";
 import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
@@ -482,7 +482,7 @@ async function withSession<T>(
           throw await readFailure(error, { binding, target, client }, resumeCommand, await unsent());
         }
         // The up-front Kind refusals read what the host last said, with no request of their own.
-        const bound = await recordDefinitionWrites(deps.auth.home, binding, capabilities.definitionWrites);
+        const bound = await recordHostStatement(deps.auth.home, binding, { definitionWrites: capabilities.definitionWrites, documentInputBytes: capabilities.documentInputBytes });
         projection = await readProjection(deps.auth.home, binding.checkout_id, store);
         // What the host said about root writes, for a status preview that makes no request.
         if (capabilities.rootWrites === "allowed") projection.rootWrites = "allowed";
@@ -726,6 +726,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
     remote: reader,
     routes: { create: `${session.routes}/create`, replace: `${session.routes}/replace`, delete: `${session.routes}/delete`, outcome: `${session.routes}/outcome` },
     ...(session.okfVersion ? { okfVersion: session.okfVersion } : {}),
+    documentInputBytes: session.capabilities.documentInputBytes,
     ...(via.token !== undefined ? { via: via.token } : {}),
     // Only the person's typed confirmation in this run sets it (scanCheckout's acceptance).
     ...(acceptDeletes !== undefined ? { acceptDeletes } : {}),
@@ -927,6 +928,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       projection,
       definitionWrites: session.capabilities.definitionWrites,
       rootWrites: session.capabilities.rootWrites,
+      documentInputBytes: session.capabilities.documentInputBytes,
       ...(acceptDeletes !== undefined ? { acceptDeletes, confirmAccept: confirmAtTerminal(binding, terminal) } : {}),
     });
     await session.persist();
@@ -1126,7 +1128,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     const { store, local, reader, projection } = session;
     // As in sync: an interrupted push's claims are looked up before anything could send them.
     await reclaimInFlight(local);
-    await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, definitionWrites: session.capabilities.definitionWrites, rootWrites: session.capabilities.rootWrites });
+    await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, definitionWrites: session.capabilities.definitionWrites, documentInputBytes: session.capabilities.documentInputBytes, rootWrites: session.capabilities.rootWrites });
     await session.persist();
     let report: PullReport;
     try {
@@ -1586,7 +1588,7 @@ async function runInspect(binding: CheckoutBinding, values: HostedValues, deps: 
 /** Refuse a file sync cannot send as the resolved version. */
 async function assertSendable(session: Session, id: string, file: string, bytes: Buffer, resumeCommand: CommandText): Promise<void> {
   const stored = await session.store.readWithJournal(id);
-  const held = unsendable(id, `${id}.md`, bytes, stored.document?.doc ?? null, { bundleId: session.binding.bundle_id, okfVersion: session.okfVersion }, { definitionWrites: session.capabilities.definitionWrites });
+  const held = unsendable(id, `${id}.md`, bytes, stored.document?.doc ?? null, { bundleId: session.binding.bundle_id, okfVersion: session.okfVersion, documentInputBytes: session.capabilities.documentInputBytes }, { definitionWrites: session.capabilities.definitionWrites });
   if (held) throw new CliError("CONFLICT", `${file} cannot be sent: ${held.message}`, { details: { reason: held.reason, id, file }, help: `edit ${file}, then re-run: ${resumeCommand}` });
 }
 
