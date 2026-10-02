@@ -352,7 +352,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "docRead",
         leaves: [publicLeaf("docRead", "doc read", one, undefined, DIR_DOC_READ_SURFACE)],
         usage:
-          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -) | --field <name>] [--dir <path>] [--remote <url>]",
+          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -) | --field <name> | --offset <n> [--max-bytes <n>] [--expected-version <v>]] [--dir <path>] [--remote <url>]",
         summary:
           "Read a doc, export its raw markdown/body/canonical rendered HTML, or print one raw field for scripting",
       },

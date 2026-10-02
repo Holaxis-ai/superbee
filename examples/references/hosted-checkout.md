@@ -141,6 +141,20 @@ doc history <id> --seq <n>` shows version `n` (add `--json` for its whole conten
 created in the folder has history once `superbee sync` sends it. To compare-and-swap, use the
 folder's own version from `doc read`, not the host's newest version.
 
+## Large documents
+
+A host accepts documents up to the size it states (about 960 KiB of Markdown on current hosts,
+983,040 bytes as sent, where each newline, quote or backslash counts twice; 64 KiB on older ones).
+Sync holds a larger one with reason `too_large` and sends nothing: split it, or keep the edit until
+the host accepts it. Never shorten someone else's document just to make it sync.
+
+Read a large document a page at a time instead of pulling it whole into context: `superbee doc read
+<id> --offset 0 --json` answers `body` as one page of about 32 KiB with `range` (`complete`,
+`next_offset`); continue with `--offset <next_offset> --expected-version <head_version>` until
+`complete` is true. A page is not the document: never write it back as the body. To edit, use `doc
+read <id> --body-out <path-outside-bundle>`, edit that file, then `doc update <id> --body-file
+<path> --expected-version <version>`.
+
 ## Host reads with no verb yet: `op list` and `op run`
 
 Typed verbs come first: `doc read`, `doc history`, `list`, `query` and `status`. When the host

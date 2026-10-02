@@ -217,9 +217,23 @@ kind-declared fields like progress_status/priority — and truncates a large bod
 A truncated body is published as 'body_preview' (never 'body'), with body_truncated:true, the true
 body_chars, and a marker inside the value itself. That value is a PREVIEW, not a body: writing it
 back through 'doc write'/'doc update' is refused (exit 2) unless --accept-truncated-body is passed.
-Use --body-out to get the complete body for an edit cycle.
+Use --body-out to get the complete body for an edit cycle, or --offset to read it a page at a time.
 
 Options:
+  --offset <n>         Page the record's body: 'body' is the page starting at character n (a
+                       JavaScript string index, 0 for the first page) and 'range' says where it sits:
+                       offset, end, total_chars, total_bytes, complete, and next_offset while more
+                       follows. A page ends within --max-bytes of UTF-8, never splits a character,
+                       and ends just after a line where one is near its end. A page is NOT the
+                       document: never write it back as the body.
+  --max-bytes <n>      The page's body bound in UTF-8 bytes, 1024 to 983040 (default 32768). Implies
+                       --offset 0 when --offset is absent.
+  --expected-version <v>
+                       Read the page only if the document is still at version v (the first page's
+                       head_version); otherwise exit with CONFLICT (version_conflict), so pages
+                       of two versions are never joined. Page with:
+                         superbee doc read <id> --offset 0 --json
+                         superbee doc read <id> --offset <next_offset> --expected-version <head_version> --json
   --out <path>         Write the doc's raw markdown bytes to a file (bypasses context).
                        Use --out - to stream raw bytes to stdout (the receipt goes to stderr).
                        Over --remote, bytes are the canonical OKF re-serialization (no raw-bytes
@@ -274,6 +288,7 @@ Examples:
   superbee doc read concepts/auth --body-out <path-outside-bundle>
   superbee doc read concepts/auth --rendered-out ./auth.html
   superbee doc read concepts/auth --field head_version
+  superbee doc read meetings/kickoff --offset 0 --json
 `;
 
 export const DOC_VERIFY_USAGE = `superbee doc verify — append one OKF v0.2 verification event and report the trust tier
