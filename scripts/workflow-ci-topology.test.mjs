@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import yaml from "js-yaml";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -160,8 +161,24 @@ function requiredLaneNames(candidate) {
 function assertAggregator(job, label) {
   assert.deepEqual(needsOf(job).sort(), [...manifest.required_jobs].sort(), `${label} needs every required lane`);
   assert.match(job, /^ {4}if: \$\{\{ always\(\) \}\}\s*$/m, `${label} must run after every conclusion`);
-  assert.match(job, /REQUIRED_RESULTS_JSON: \$\{\{ toJSON\(needs\) \}\}/);
-  assert.match(job, /run: npm run ci:aggregate/);
+  const parsed = yaml.safeLoad(job);
+  assert.equal(parsed["continue-on-error"], undefined);
+  assert.equal(parsed.steps.length, 3, `${label} has checkout, Node setup and gate only`);
+  assert.equal(parsed.steps[0].uses, "actions/checkout@v4");
+  assert.equal(parsed.steps[0].with?.ref, manifest.merge_queue.checkout_ref);
+  assert.equal(parsed.steps[1].uses, "actions/setup-node@v4");
+  assert.equal(parsed.steps[1].with["node-version"], manifest.singleton_node);
+  for (const step of parsed.steps) {
+    assert.equal(step.if, undefined, `${label} steps must be unconditional`);
+    assert.equal(step["continue-on-error"], undefined, `${label} steps cannot mask failures`);
+  }
+  const gate = parsed.steps[2];
+  assert.deepEqual(Object.keys(gate).sort(), ["name", "uses", "with"]);
+  assert.equal(gate.uses, "./.github/actions/ci-gate");
+  assert.deepEqual(Object.keys(gate.with).sort(), ["needs-json", "policy-json"]);
+  assert.equal(gate.with["needs-json"], "${{ toJSON(needs) }}");
+  assert.deepEqual(JSON.parse(gate.with["policy-json"]), manifest.required_jobs.map((job) => ({ job, required: true })),
+    `${label} policy must require every declared lane`);
 }
 
 function displayNameOf(job) {
@@ -370,21 +387,36 @@ function validateCiTopology(
   browserPackages = { root: rootPackage, mcpApp: mcpAppPackage, ui: uiPackage, browserLocal: browserLocalPackage },
 ) {
   const jobs = extractJobs(text);
+  const parsed = yaml.safeLoad(text);
+  assert.deepEqual(parsed.on, {
+    pull_request: null, push: { branches: ["main"] }, workflow_dispatch: null,
+    merge_group: { types: ["checks_requested"] },
+  }, "CI triggers must preserve queue candidates and main release-source evidence");
+  assert.deepEqual(parsed.concurrency, {
+    group: "ci-tests-${{ github.event_name }}-${{ github.ref }}",
+    "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+  }, "only PR runs may cancel another run");
   assert.deepEqual(
     [...candidate.required_jobs].sort(),
     requiredLaneNames(candidate).sort(),
     "required_jobs must equal the automatically run lane set",
   );
+  assert.deepEqual(Object.keys(jobs).sort(), [...candidate.required_jobs,
+    "required", "compatibility-gate-node-22", "compatibility-gate-node-26"].sort());
   assert.doesNotMatch(text, /^\s+continue-on-error:/m, "required CI jobs cannot mask a failing step");
   for (const required of candidate.required_jobs) {
     assert.ok(jobs[required], `missing required job ${required}`);
     assert.equal(displayNameOf(jobs[required]), candidate.lanes[required].display_name, `${required} display name drifted`);
+    assert.equal(parsed.jobs[required].if, undefined, `${required} must remain unconditional`);
     const steps = stepsOf(jobs[required]);
     const preflight = requiredUnconditionalStep(steps, {
       name: 'Check package version sources before installation',
       run: candidate.source_preflight,
       label: `${required} package source preflight`,
     });
+    for (const step of parsed.jobs[required].steps) {
+      assert.equal(step.if, undefined, `${required} proof steps must remain unconditional`);
+    }
     const install = steps.find(step => step.fields.run === 'npm ci');
     assert.ok(install && preflight.position < install.position, `${required} source preflight must precede installation`);
   }
@@ -405,13 +437,9 @@ function validateCiTopology(
   validateBrowserJob(jobs.browser, browserPackages);
   assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
-  assert.equal(
-    /^ {2}merge_group:/m.test(text),
-    candidate.merge_queue.enabled,
-    "workflow trigger must match the recorded current merge-queue posture",
-  );
-  assert.equal(typeof candidate.merge_queue.evidence, "string");
-  assert.equal(typeof candidate.merge_queue.enablement_requirement, "string");
+  assert.equal(candidate.merge_queue.supported, true, "workflow capability must support merge groups");
+  assert.equal(Object.hasOwn(candidate.merge_queue, "enabled"), false, "live activation is not committed capability");
+  assert.equal(typeof candidate.merge_queue.activation_authority, "string");
   return jobs;
 }
 
@@ -553,11 +581,47 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
   assert.throws(() => validateCiTopology(workflow, incomplete), /required_jobs must equal the automatically run lane set/);
 });
 
-test("merge-queue posture is current configuration, not a permanent prohibition", () => {
-  assert.equal(manifest.merge_queue.enabled, false);
-  const enabled = structuredClone(manifest);
-  enabled.merge_queue.enabled = true;
-  const withMergeGroup = workflow.replace("on:\n", "on:\n  merge_group:\n");
-  assert.doesNotThrow(() => validateCiTopology(withMergeGroup, enabled));
-  assert.throws(() => validateCiTopology(workflow, enabled), /merge-queue posture/);
+test("queue triggers, candidate checkout and main evidence cannot drift", () => {
+  for (const changed of [
+    workflow.replace("  merge_group:\n    types: [checks_requested]\n", ""),
+    workflow.replace("types: [checks_requested]", "types: [destroyed]"),
+    workflow.replace("branches: [main]", "branches: [other]"),
+    workflow.replace("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", "cancel-in-progress: true"),
+    workflow.replace("ref: ${{ github.sha }}", "ref: main"),
+    workflow.replace("          ref: ${{ github.sha }}\n", ""),
+    workflow.replace("    name: runtime compatibility", "    if: false\n    name: runtime compatibility"),
+  ]) assert.throws(() => validateQueueCheckout(changed));
+  for (const [name, job] of Object.entries(extractJobs(workflow))) {
+    const changedJob = job.replace("ref: ${{ github.sha }}", "ref: main");
+    assert.notEqual(changedJob, job, `${name} must check out the integration candidate`);
+    assert.throws(() => validateQueueCheckout(workflow.replace(job, changedJob)),
+      /checkout must use the event candidate SHA/, name);
+  }
+  validateQueueCheckout(workflow);
+});
+
+function validateQueueCheckout(text) {
+  validateCiTopology(text);
+  // Bind every proof checkout to the event candidate, including merge groups.
+  for (const job of Object.values(yaml.safeLoad(text).jobs)) {
+    for (const step of job.steps ?? []) {
+      if (step.uses?.startsWith("actions/checkout@")) {
+        assert.equal(step.with?.ref, "${{ github.sha }}", "checkout must use the event candidate SHA");
+      }
+    }
+  }
+}
+
+test("aggregate policy cannot silently weaken", () => {
+  const job = extractJobs(workflow).required;
+  for (const changed of [
+    job.replace('"required":true', '"required":false'),
+    job.replace('"job":"runtime"', '"job":"unknown"'),
+    job.replace('uses: ./.github/actions/ci-gate', 'uses: unknown/action@main'),
+    job.replace('uses: ./.github/actions/ci-gate', 'if: false\n        uses: ./.github/actions/ci-gate'),
+    job.replace('uses: ./.github/actions/ci-gate', 'continue-on-error: true\n        uses: ./.github/actions/ci-gate'),
+  ]) assert.throws(() => assertAggregator(changed, "mutated"));
+  for (const file of [".github/actions/ci-gate/evaluate.test.mjs", "infrastructure/github-ci/preflight.test.mjs"]) {
+    assert.ok(rootPackage.scripts["test:scripts"].split(" ").includes(file), `${file} must run in CI`);
+  }
 });
