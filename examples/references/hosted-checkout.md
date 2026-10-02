@@ -152,9 +152,9 @@ Read a large document a page at a time instead of pulling it whole into context:
 <id> --offset 0 --json` answers `body` as one page of about 32 KiB with `range` (`complete`,
 `next_offset`); continue with `--offset <next_offset> --expected-version <head_version>` while
 `next_offset` is present. The page without `next_offset` is the last one; `complete` is true only
-when the whole body fit in one page, so never loop on it. A page is not the document: never write it back as the body. To edit, use `doc
-read <id> --body-out <path-outside-bundle>`, edit that file, then `doc update <id> --body-file
-<path> --expected-version <version>`.
+when the whole body fit in one page, so never loop on it. A page is not the document: never write
+it back as the body. To edit, use `doc read <id> --body-out <path-outside-bundle>`, edit that file,
+then `doc update <id> --body-file <path> --expected-version <version>`.
 
 ## Host reads with no verb yet: `op list` and `op run`
 

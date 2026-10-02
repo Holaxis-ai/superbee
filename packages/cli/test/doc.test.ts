@@ -2857,6 +2857,10 @@ test("doc read --offset: pages chain to the exact body, a moved version is a con
     }
     assert.equal(joined, body);
     assert.match(DOC_READ_USAGE.replace(/\s+/g, " "), /The page without next_offset is the last/);
+    await runDoc(["write", "docs/short", "--type", "Note", "--title", "Short", "--body", "One line.\n", "--dir", dir]);
+    const single = await runDoc(["read", "docs/short", "--offset", "0", "--dir", dir]);
+    assert.equal((single.range as { complete: boolean }).complete, true, "one page holding the whole body is complete");
+    assert.equal((single.range as { next_offset?: number }).next_offset, undefined);
     await assert.rejects(runDoc(["read", "docs/long", "--offset", "0", "--expected-version", `sha256:${"0".repeat(64)}`, "--dir", dir]), (error: unknown) => (error as CliError).code === "CONFLICT");
     await assert.rejects(runDoc(["read", "docs/long", "--offset", String(body.length), "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
     await assert.rejects(runDoc(["read", "docs/long", "--max-bytes", "10", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");

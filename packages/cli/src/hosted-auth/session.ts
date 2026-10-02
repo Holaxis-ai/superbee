@@ -334,7 +334,7 @@ export function hostSourceText(source: HostSource): string {
 }
 
 /**
- * The host a hosted write that is not bound to one yet (`publish --yes`, a new `checkout`) sends
+ * The host a hosted command that is not bound to one yet (`publish --yes`, a new `checkout`) sends
  * to: `--host`, else the one host this choice cannot confuse. The candidates are every host with a
  * stored session plus the remembered last sign-in; with more than one, the last sign-in is not a
  * choice the person made for this write, so the command refuses, naming the hosts and which of

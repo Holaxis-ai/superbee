@@ -224,9 +224,10 @@ Options:
                        JavaScript string index, 0 for the first page) and 'range' says where it sits:
                        offset, end, total_chars, total_bytes, complete, and next_offset while more
                        follows. The page without next_offset is the last; complete is true only
-                       when the whole body fit in one page, so page on next_offset. A page ends within --max-bytes of UTF-8, never splits a character,
-                       and ends just after a line where one is near its end. A page is NOT the
-                       document: never write it back as the body.
+                       when the whole body fit in one page, so page on next_offset. A page ends
+                       within --max-bytes of UTF-8, never splits a character, and ends just after a
+                       line where one is near its end. A page is NOT the document: never write it
+                       back as the body.
   --max-bytes <n>      The page's body bound in UTF-8 bytes, 1024 to 983040 (default 32768). Implies
                        --offset 0 when --offset is absent.
   --expected-version <v>
