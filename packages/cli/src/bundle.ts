@@ -106,8 +106,8 @@ async function exists(p: string): Promise<boolean> {
 
 /**
  * Whether `dir` holds a bundle's root `index.md`: a plain file whose frontmatter declares an OKF
- * edition, as `init` writes it. Read-only and bounded; an `index.md` without that (a docs site's)
- * is not a bundle.
+ * edition, as `init` writes it. Read-only and bounded. Establish uses it to tell a bundle made at
+ * a work tree's top from any other `index.md` there (a docs site's).
  */
 export function looksLikeBundle(dir: string): boolean {
   const index = path.join(dir, "index.md");

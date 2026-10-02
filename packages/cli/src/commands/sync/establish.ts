@@ -80,7 +80,7 @@ function assertPlainBundleShape(bundlePath: string, inv: CommandPrefix): void {
       "RUNTIME",
       `this repository's top folder is itself a bundle, and establish shares only a '${bundleDir}/' folder — ` +
         `${TOP_LEVEL_BUNDLE_MOVE}, then re-run establish`,
-      { help: `mkdir -p ${bundleDir} && git mv index.md conventions ${bundleDir}/ (plain mv if never committed; add each document folder), then ${inv} sync --establish` },
+      { help: `mkdir -p ${bundleDir} && git mv index.md ${bundleDir}/ (plain mv if never committed), then the same for conventions/ if present and each document folder, then ${inv} sync --establish` },
     );
   }
   if (!existsSync(bundlePath)) {
