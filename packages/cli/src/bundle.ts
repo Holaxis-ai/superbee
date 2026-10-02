@@ -113,7 +113,8 @@ export function looksLikeBundle(dir: string): boolean {
   let fd: number | undefined;
   try {
     // One descriptor, never through a symlink: what is checked is what is read.
-    fd = openSync(path.join(dir, "index.md"), constants.O_RDONLY | constants.O_NOFOLLOW);
+    // Non-blocking, so a FIFO named index.md fails the isFile check instead of hanging the open.
+    fd = openSync(path.join(dir, "index.md"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     if (!fstatSync(fd).isFile()) return false;
     const buffer = Buffer.alloc(16 * 1024);
     const text = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8");
