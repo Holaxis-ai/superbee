@@ -25,7 +25,7 @@ import type { JournaledBackend } from "@superbee/core";
 import { RootWriteInputError, rootLanding, rootVersionOf, rootWriteRequest, ROOT_BUSY_CODES, type HostedRootWrites, type RootWriteOutcome } from "@superbee/core/hosted-transport";
 
 import { digestOf, placeNew, replaceGuarded, ROOT_INDEX } from "./projection.js";
-import { READ_ONLY_MESSAGE, type SyncRow } from "./sync-rows.js";
+import { ACCESS_WITHDRAWN_MESSAGE, READ_ONLY_MESSAGE, type SyncRow } from "./sync-rows.js";
 import { utf8, type ProjectionRecord } from "./sync-scan.js";
 
 /** The host's root as the capabilities answer serves it, or null when the bundle has none. */
@@ -36,20 +36,51 @@ export const ROOT_CONFLICT_MESSAGE =
 export const ROOT_NOT_LANDED_MESSAGE = "The answer was lost, and the host still has the front page this edit replaces, so it was not applied. Run sync again to send it.";
 export const ROOT_UNKNOWN_MESSAGE = "The answer was lost; the front page may have changed on the host. The next sync reads the host's front page to tell, never sending it twice.";
 
-/** The base an edit to the folder's root is sent against: the record's, or for an older record the store's root (copied from the host at checkout). */
-export async function rootBaseOf(projection: ProjectionRecord, store: JournaledBackend): Promise<string | null> {
+/**
+ * The base an edit to the folder's root is sent against: the record's. A record written before
+ * root writes has none; the store's root (copied from the host at checkout) is the base only while
+ * the file holds exactly it (or is gone). A file that differs was edited against a version nobody
+ * recorded (held by an older sync, or adopted as it was), so its base is unknown: null, which the
+ * host's root never equals, makes it a conflict rather than a write over the host's.
+ */
+export async function rootBaseOf(projection: ProjectionRecord, store: JournaledBackend, file: RootFile): Promise<string | null> {
   if (projection.rootBase !== undefined) return projection.rootBase;
-  return (await store.readReserved("", "index.md"))?.version ?? null;
+  const stored = (await store.readReserved("", "index.md"))?.version ?? null;
+  return file.kind !== "file" || digestOf(file.bytes) === stored ? stored : null;
 }
 
-async function readIfPresent(file: string): Promise<Buffer | null> {
+/** The folder's root `index.md` as it is: a regular file's bytes, absent, or something sync never reads through (a symbolic link, a folder). */
+export type RootFile = { readonly kind: "file"; readonly bytes: Buffer } | { readonly kind: "absent" } | { readonly kind: "unsafe"; readonly what: "symlink" | "not_a_file" };
+
+/**
+ * Read the root without following a symbolic link: opened with `O_NOFOLLOW` and checked to be a
+ * regular file on the open handle, so a link swapped in between is never read through.
+ */
+export async function readRootFile(folder: string): Promise<RootFile> {
+  const file = path.join(folder, ROOT_INDEX);
+  let handle;
   try {
-    return await fs.readFile(file);
+    handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    if (code === "ENOENT" || code === "ENOTDIR") return { kind: "absent" };
+    if (code === "ELOOP" || code === "EMLINK") return { kind: "unsafe", what: "symlink" };
+    if (code === "EISDIR") return { kind: "unsafe", what: "not_a_file" };
     throw error;
   }
+  try {
+    if (!(await handle.stat()).isFile()) return { kind: "unsafe", what: "not_a_file" };
+    return { kind: "file", bytes: await handle.readFile() };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The held row for a root that is not a plain file: nothing is sent or placed through it. */
+function unsafeRootRow(what: "symlink" | "not_a_file"): SyncRow {
+  return what === "symlink"
+    ? row("held", "symlink", "index.md is a symbolic link; sync sends and places only plain files. The file stays as it is and nothing is sent.")
+    : row("held", "unsafe_path", "index.md is not a plain file (a folder, say); sync sends and places only plain files. Nothing is sent or placed.");
 }
 
 /** Record that the folder's root now holds the host's root: the placed digest, the base, and the store's copy. */
@@ -59,10 +90,16 @@ export async function adoptHostRoot(projection: ProjectionRecord, store: Journal
   projection.rootBase = host.version;
 }
 
-/** Move only the base to the host's root (a kept conflict): the file and its placed digest stay. */
+/**
+ * Move the base to the host's root (a kept conflict). The placed digest is cleared, so whatever the
+ * file holds at the next sync is sent against that base, even bytes it held before; a file that
+ * holds exactly the host's bytes is in sync instead.
+ */
 export async function moveRootBase(projection: ProjectionRecord, store: JournaledBackend, host: HostRoot): Promise<void> {
   if (host && (await store.readReserved("", "index.md"))?.version !== host.version) await store.writeReserved("", "index.md", host.content);
   projection.rootBase = host?.version ?? null;
+  projection.root = null;
+  delete projection.rootConflicted;
 }
 
 /** The root conflict now, or null: the host moved past the base while the file holds an edit. */
@@ -73,9 +110,10 @@ export interface RootConflict {
 }
 
 export async function rootConflict(folder: string, projection: ProjectionRecord, store: JournaledBackend, host: HostRoot): Promise<RootConflict | null> {
-  const bytes = await readIfPresent(path.join(folder, ROOT_INDEX));
-  if (bytes === null || digestOf(bytes) === projection.root) return null;
-  const base = await rootBaseOf(projection, store);
+  const file = await readRootFile(folder);
+  if (file.kind !== "file" || digestOf(file.bytes) === projection.root) return null;
+  const bytes = file.bytes;
+  const base = await rootBaseOf(projection, store, file);
   const current = host?.version ?? null;
   if (current === base || digestOf(bytes) === current) return null;
   return { base, host, bytes };
@@ -106,12 +144,16 @@ export interface RootStepReport {
 
 const row = (state: SyncRow["state"], reason: string, message: string, version: string | null = null): SyncRow => ({ id: ROOT_INDEX, state, reason, version, message });
 
-/** Settle a root write whose answer was lost, from the host's root version now. */
-async function settleSent(context: RootStepContext, host: HostRoot): Promise<"landed" | "not_landed" | "conflict" | null> {
-  const { projection, store } = context;
+/**
+ * Settle a root write whose answer was lost, from the host's root version now. While the host still
+ * holds the base the write is kept on record (it may yet land late, which a later read then sees);
+ * it is cleared once the host's root moved, to the bytes sent or elsewhere.
+ */
+export async function settleRootSent(projection: ProjectionRecord, store: JournaledBackend, host: HostRoot, persist: () => Promise<void>): Promise<"landed" | "not_landed" | "conflict" | null> {
   const sent = projection.rootSent;
   if (!sent) return null;
   const landing = rootLanding(host?.version ?? null, sent.version, sent.base);
+  if (landing === "not_landed") return landing;
   delete projection.rootSent;
   if (landing === "landed" && host) {
     // The host holds the bytes sent: they are the base now, and what the folder last placed.
@@ -119,9 +161,11 @@ async function settleSent(context: RootStepContext, host: HostRoot): Promise<"la
     projection.rootBase = host.version;
     projection.root = host.version;
   }
-  await context.persist();
+  await persist();
   return landing;
 }
+
+const settleSent = (context: RootStepContext, host: HostRoot) => settleRootSent(context.projection, context.store, host, context.persist);
 
 /** The row one root write's outcome stands for, with the record updated for it. */
 async function settleOutcome(context: RootStepContext, outcome: RootWriteOutcome, content: string): Promise<SyncRow> {
@@ -139,6 +183,8 @@ async function settleOutcome(context: RootStepContext, outcome: RootWriteOutcome
     case "refused": {
       delete projection.rootSent;
       await context.persist();
+      if (outcome.code === "access_withdrawn") return row("refused", "access_withdrawn", ACCESS_WITHDRAWN_MESSAGE);
+      if (outcome.malformed) return row("refused", outcome.code, `The host refused the front-page request as malformed (${outcome.code}); nothing was written. This is not about your file: run sync again, and report it if it repeats.`);
       if (outcome.authorization === "AUTH_REQUIRED") return row("paused", "sign_in", "The hosted session ended before the front page was sent; sign in and run sync again.");
       if (outcome.authorization === "PERMISSION_DENIED") return row("refused", "read_only", READ_ONLY_MESSAGE);
       if (ROOT_BUSY_CODES.has(outcome.code)) return row("paused", "busy", "The host was busy and did not apply the front page; run sync again.");
@@ -164,13 +210,28 @@ async function settleOutcome(context: RootStepContext, outcome: RootWriteOutcome
  * edited one the host also changed as a conflict, and send an edit the host may take.
  */
 export async function syncRoot(context: RootStepContext): Promise<RootStepReport> {
+  const report = await rootStep(context);
+  // Kept for a status preview, which makes no request: a conflict this run reported stands until resolved.
+  const conflicted = report.row?.state === "conflict";
+  if (conflicted !== (context.projection.rootConflicted === true)) {
+    if (conflicted) context.projection.rootConflicted = true;
+    else delete context.projection.rootConflicted;
+    await context.persist();
+  }
+  return report;
+}
+
+async function rootStep(context: RootStepContext): Promise<RootStepReport> {
   const { folder, projection, store } = context;
   let host = await context.current();
   const settled = await settleSent(context, host);
   if (settled === "landed") host = await context.current();
   const file = path.join(folder, ROOT_INDEX);
-  const bytes = await readIfPresent(file);
-  const base = await rootBaseOf(projection, store);
+  const found = await readRootFile(folder);
+  // Never read, sent or replaced through: a link could point outside the checkout.
+  if (found.kind === "unsafe") return { row: unsafeRootRow(found.what), refreshed: false };
+  const bytes = found.kind === "file" ? found.bytes : null;
+  const base = await rootBaseOf(projection, store, found);
   const current = host?.version ?? null;
   // A file that holds exactly the host's bytes is in sync, whatever the record says (a run that
   // stopped after placing it, or the same edit made on both sides).

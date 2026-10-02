@@ -229,6 +229,8 @@ superbee sync --resolve keep --doc index.md     # the next sync sends yours over
 - A lost answer is settled by the host's front page itself: the next sync never sends it twice.
 - Where the host does not take front-page changes from you (an older host, or no write access), an
   edited root `index.md` is held (`reserved_file`): change it in the Superbee app.
+- A root `index.md` that is a symbolic link (`symlink`) or a folder (`unsafe_path`) is held: sync
+  never reads, sends or replaces through it.
 - A subdirectory `index.md` and every `log.md` are always held (`reserved_file`).
 
 ## Refusals that belong to the person

@@ -986,7 +986,9 @@ test("a root write's answers: success only for the bytes sent, refusals final, a
   assert.deepEqual(classify(200, rootFailure("validation_failed")), { kind: "refused", code: "validation_failed", message: "refused: validation_failed" });
   assert.equal((classify(200, rootFailure("insufficient_scope")) as { authorization?: string }).authorization, "PERMISSION_DENIED");
   assert.equal(classify(200, rootFailure("write_outcome_unknown", "unknown")).kind, "unknown");
-  assert.equal(classify(400, { error: { code: "invalid_input" } }).kind, "refused");
+  assert.deepEqual(classify(400, { error: { code: "invalid_input" } }), { kind: "refused", code: "invalid_input", message: "The host refused the request as malformed; nothing was written.", malformed: true });
+  // As the identified writes' 403 row: access withdrawn, under AUTH_REQUIRED, never a read-only refusal.
+  assert.deepEqual(classify(403, { error: "access_denied" }), { kind: "refused", code: "access_withdrawn", message: "The host denied access to this bundle.", authorization: "AUTH_REQUIRED" });
   assert.equal((classify(401, { error: { code: "unauthenticated", writeState: "not_applied" } }) as { authorization?: string }).authorization, "AUTH_REQUIRED");
   assert.equal(classify(401, { error: { code: "write_outcome_unknown", writeState: "unknown" } }).kind, "unknown");
   assert.equal(classify(503, { error: { code: "write_outcome_unknown", writeState: "unknown" } }).kind, "unknown");

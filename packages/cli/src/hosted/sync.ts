@@ -86,7 +86,7 @@ import {
   type ProjectionRecord,
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
-import { adoptHostRoot, moveRootBase, rootConflict, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
+import { adoptHostRoot, moveRootBase, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
 import { recordPulled, recordSynced } from "./freshness.js";
 import { syncEnvelope, syncVerbNotApplicable, withSyncEnvelope, type SyncEnvelope } from "../sync-outcomes.js";
 
@@ -1414,6 +1414,8 @@ async function inspectOut(binding: CheckoutBinding, values: HostedValues, deps: 
 /** The front page's conflict now, or the CLI error that says there is none. */
 async function rootConflictFor(session: Session): Promise<{ host: HostRoot; base: string | null; bytes: Buffer }> {
   const host = await hostRoot(session.reader);
+  // A write whose answer was lost is settled first: it may be the very change the host now holds.
+  await settleRootSent(session.projection, session.store, host, session.persist);
   const conflict = await rootConflict(session.binding.path, session.projection, session.store, host);
   if (!conflict) {
     throw new CliError("NOT_FOUND", `'${ROOT_INDEX}' has no conflict to resolve in this checkout`, {
@@ -1505,6 +1507,7 @@ async function runResolveRoot(binding: CheckoutBinding, choice: "keep" | "take" 
         projection.root = null;
         projection.rootBase = null;
       }
+      delete projection.rootConflicted;
       fileState = host ? "replaced" : "removed";
     } else {
       await moveRootBase(projection, store, host);

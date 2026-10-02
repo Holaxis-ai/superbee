@@ -138,6 +138,8 @@ export interface ProjectionRecord {
   rootSent?: { readonly version: string; readonly base: string | null };
   /** What the host last said about replacing the root (`rootWrites`), for a preview that makes no request. */
   rootWrites?: HostedRootWrites;
+  /** Set while the last sync reported the root as a conflict, for a preview that makes no request. */
+  rootConflicted?: true;
   /**
    * Document id to the digest of local bytes a `--resolve take` is replacing, recorded before the
    * replacement starts. A crash mid-take can leave those bytes moved aside; recovery drops them
@@ -462,6 +464,7 @@ export async function readProjection(home: string, checkoutId: string, store: Jo
       ...(raw.rootBase === null || typeof raw.rootBase === "string" ? { rootBase: raw.rootBase } : {}),
       ...(sent && typeof sent.version === "string" && (sent.base === null || typeof sent.base === "string") ? { rootSent: { version: sent.version, base: sent.base } } : {}),
       ...(raw.rootWrites === "allowed" ? { rootWrites: "allowed" as const } : {}),
+      ...((value as { rootConflicted?: unknown }).rootConflicted === true ? { rootConflicted: true as const } : {}),
       ...(Object.keys(discarded).length > 0 ? { discarded } : {}),
       ...(Object.keys(extras).length > 0 ? { extras } : {}),
     };
@@ -503,7 +506,7 @@ export async function folderMatchesProjection(folder: string, projection: Projec
 
 export async function writeProjection(home: string, checkoutId: string, record: ProjectionRecord): Promise<void> {
   const sorted = Object.fromEntries(Object.entries(record.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.rootBase !== undefined ? { rootBase: record.rootBase } : {}), ...(record.rootSent ? { rootSent: record.rootSent } : {}), ...(record.rootWrites === "allowed" ? { rootWrites: "allowed" } : {}), ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
+  await writeUserStateFileAtomic0600(home, checkoutDir(home, checkoutId), PROJECTION_FILE, `${JSON.stringify({ schema: PROJECTION_SCHEMA, files: sorted, root: record.root, ...(record.rootBase !== undefined ? { rootBase: record.rootBase } : {}), ...(record.rootSent ? { rootSent: record.rootSent } : {}), ...(record.rootWrites === "allowed" ? { rootWrites: "allowed" } : {}), ...(record.rootConflicted ? { rootConflicted: true } : {}), ...(record.discarded && Object.keys(record.discarded).length > 0 ? { discarded: record.discarded } : {}), ...(record.extras && Object.keys(record.extras).length > 0 ? { extras: record.extras } : {}) })}\n`);
 }
 
 /** Every file under the folder, relative and POSIX-spelled; dot-files and dot-folders are skipped. */
@@ -686,6 +689,8 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
     const id = isMarkdown ? conceptIdFromPath(rel) : rel;
     if (context.only && !context.only.has(id)) continue;
     if (symlink) {
+      // The root step reports a root that is not a plain file, under the one id `index.md`.
+      if (rel === ROOT_INDEX) continue;
       report.held.push(held(id, rel, "symlink", `${rel} is a symbolic link; sync sends only plain files`));
       continue;
     }
@@ -694,7 +699,7 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
       if (digestOf(bytes) === projection.root) continue;
       // Where the host takes root writes, the run's root step sends the edit (or reports its conflict).
       if (context.rootWrites === "allowed") {
-        if (context.preview) report.pending.push(ROOT_INDEX);
+        if (context.preview) (projection.rootConflicted ? report.conflicted : report.pending).push(ROOT_INDEX);
         continue;
       }
       report.held.push(held(rel, rel, "reserved_file", ROOT_HELD_MESSAGE));

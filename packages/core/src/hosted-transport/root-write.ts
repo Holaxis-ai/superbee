@@ -80,7 +80,14 @@ export function rootWriteRequest(bundleId: string, content: string, base: string
 export type RootWriteOutcome =
   | { readonly kind: "committed"; readonly version: string; readonly changed: boolean }
   | { readonly kind: "conflict"; readonly current?: string }
-  | { readonly kind: "refused"; readonly code: string; readonly message: string; readonly authorization?: AuthorizationCode }
+  | {
+      readonly kind: "refused";
+      readonly code: string;
+      readonly message: string;
+      readonly authorization?: AuthorizationCode;
+      /** The host refused the request itself as malformed (`400`): nothing about the content. */
+      readonly malformed?: true;
+    }
   | { readonly kind: "unknown" };
 
 const UNKNOWN: RootWriteOutcome = Object.freeze({ kind: "unknown" });
@@ -132,9 +139,10 @@ export function classifyRootAnswer(answer: Pick<HostedAnswer, "status" | "body">
     return { kind: "refused", code, message, ...(authorization ? { authorization } : {}) };
   }
   // A malformed binding or body: the host read nothing, and the same request can only repeat it.
-  if (status === 400) return { kind: "refused", code: typeof error?.code === "string" ? error.code : "invalid_input", message: typeof error?.message === "string" ? error.message : "The host refused the request as malformed; nothing was written." };
+  if (status === 400) return { kind: "refused", code: typeof error?.code === "string" ? error.code : "invalid_input", message: typeof error?.message === "string" ? error.message : "The host refused the request as malformed; nothing was written.", malformed: true };
   if (status === 401) return notApplied ? { kind: "refused", code: "AUTH_REQUIRED", message: "The hosted session ended; the front page was not sent.", authorization: "AUTH_REQUIRED" } : UNKNOWN;
-  if (status === 403) return { kind: "refused", code: "PERMISSION_DENIED", message: "The host denied access to this bundle.", authorization: "PERMISSION_DENIED" };
+  // As the identified writes' `403` row: access withdrawn, which signing in again cannot fix.
+  if (status === 403) return { kind: "refused", code: "access_withdrawn", message: "The host denied access to this bundle.", authorization: "AUTH_REQUIRED" };
   if (status === 503 && notApplied) return { kind: "refused", code: typeof error?.code === "string" ? error.code : "backend_unavailable", message: typeof error?.message === "string" ? error.message : "The host was unavailable; nothing was written." };
   return UNKNOWN;
 }
