@@ -195,6 +195,12 @@ export interface FakeHostOptions {
    * person without the grant would). Set, the answer carries it and the route follows it.
    */
   rootWrites?: "allowed" | "refused";
+  /**
+   * The whole-document write bound whoami and capabilities state (`limits.documentInputBytes`):
+   * absent, the fixtures' own (983,040); null, a host from before it was stated, whose answers
+   * carry no `limits`.
+   */
+  documentInputBytes?: number | null;
 }
 
 /** One root write as the fake received it. */
@@ -298,6 +304,12 @@ export class FakeHost {
       this.record(row.id, "someone-else", undefined);
       this.oldIds.add(row.id);
     }
+  }
+
+  /** The `limits` whoami and capabilities carry: the fixtures' bound, the option's, or none. */
+  private limits(): { limits?: { documentInputBytes: number } } {
+    const stated = this.options.documentInputBytes === undefined ? 983_040 : this.options.documentInputBytes;
+    return stated === null ? {} : { limits: { documentInputBytes: stated } };
   }
 
   /** A write of `id`'s current bytes, appended to its lineage. */
@@ -404,7 +416,7 @@ export class FakeHost {
           tenantIds: this.options.tenants ?? ["tenant-a"],
           ...(this.workspaces() ? { workspaces: this.workspaces() } : {}),
           surface: "sync",
-          limits: { documentInputBytes: 983_040 },
+          ...this.limits(),
         });
       case "bundles":
         return Response.json({
@@ -423,6 +435,10 @@ export class FakeHost {
             ...(this.storedRoot !== undefined ? { root: this.storedRoot } : {}),
             ...(this.options.rootWrites !== undefined ? { rootWrites: this.options.rootWrites } : {}),
           });
+        }
+        if (this.options.documentInputBytes !== undefined) {
+          const { limits: _fixture, ...rest } = JSON.parse(answer) as Record<string, unknown>;
+          answer = JSON.stringify({ ...rest, ...this.limits() });
         }
         return new Response(answer, { status: response.status, headers: response.headers });
       }

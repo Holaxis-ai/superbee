@@ -266,6 +266,16 @@ test("root writes: the client's request is the recorded one byte for byte, and e
   assert.equal(ROOT_OPERATION_ID, (JSON.parse(fixture("root-200-ok").response.body) as { operationId: string }).operationId);
 });
 
+test("capabilities 200 states the host's document write bound; an absent or malformed one reads as none, never a refusal", () => {
+  const body = JSON.parse(fixture("capabilities-200").response.body);
+  assert.equal(decodeHostedCapabilities(body).documentInputBytes, 983_040);
+  const { limits: _stated, ...older } = body;
+  assert.equal(decodeHostedCapabilities(older).documentInputBytes, null);
+  for (const limits of [{ documentInputBytes: "983040" }, { documentInputBytes: 0 }, { documentInputBytes: -1 }, { documentInputBytes: 1.5 }, [983_040], null, "big"]) {
+    assert.equal(decodeHostedCapabilities({ ...body, limits }).documentInputBytes, null);
+  }
+});
+
 test("200 definition_incompatible carries the findings; the transport's refusal names them, never beyond the host's bounds", () => {
   const exchange = fixture("replace-200-definition-incompatible");
   const expected = { operationIds: ["documents.replace.v1"], documentId: "conventions/note", bundleId: BUNDLE };
