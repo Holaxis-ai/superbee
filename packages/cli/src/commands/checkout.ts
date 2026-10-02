@@ -554,7 +554,9 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
           const version = versions.get(id);
           if (id !== ROOT_INDEX && version) files[id] = { digest, version };
         }
-        await writeProjection(deps.auth.home, binding.checkout_id, { files, root: exported.exported[ROOT_INDEX] ?? null });
+        // The root's base is the host's version of the bytes placed: what an edit to it is sent against.
+        const rootBase = exported.exported[ROOT_INDEX] !== undefined ? ((await store.readReserved("", "index.md"))?.version ?? null) : null;
+        await writeProjection(deps.auth.home, binding.checkout_id, { files, root: exported.exported[ROOT_INDEX] ?? null, rootBase });
         // The folder's read-only marker: informational, never routing (`hosted/marker.ts`).
         const markerFile = await writeCheckoutMarker(canonical, binding);
         if (markerFile) placed.set(markerFile, digestOf(checkoutMarkerBytes(binding)));

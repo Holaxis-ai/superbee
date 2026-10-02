@@ -46,6 +46,13 @@ import {
   type HostedCarrier,
   type HostedRequestOptions,
   type HostedStream,
+  classifyRootAnswer,
+  rootLanding,
+  rootVersionOf,
+  rootWriteRequest,
+  RootWriteInputError,
+  ROOT_OPERATION_ID,
+  sendRootWrite,
 } from "../src/hosted-transport/index.js";
 import { RemoteError } from "../src/remote-error.js";
 import { SNAPSHOT_TRUNCATED } from "../src/remote-parsers.js";
@@ -944,4 +951,68 @@ test("history pages: absence on the first page is the answer, and any other refu
   const refusal = { code: "insufficient_scope", message: "no", retryable: false };
   assert.deepEqual(await listing(async () => ({ ok: false, refusal }), 20), { status: "refused", refusal });
   await assert.rejects(listing(lineage(1).read, 20, { pageSize: 101 }), RangeError);
+});
+
+// ── the front page: bundles.root.replace.v1 (lane front-page wire contract) ─────────────────────
+
+const ROOT_BUNDLE = "team.knowledge";
+const ROOT_BASE = `sha256:${"a".repeat(64)}`;
+const rootPage = "---\nokf_version: \"0.2\"\ntitle: Front\n---\n# Front\n";
+const rootFailure = (code: string, writeState = "not_applied", extra: Record<string, unknown> = {}) => ({ ok: false, operationId: ROOT_OPERATION_ID, error: { code, message: `refused: ${code}`, retryable: false, writeState, ...extra } });
+
+test("a root write is a CAS replace or create, measured as encoded, refused before sending when the host could only refuse it", () => {
+  assert.deepEqual(rootWriteRequest(ROOT_BUNDLE, rootPage, ROOT_BASE).payload, { bundleId: ROOT_BUNDLE, content: rootPage, expectedVersion: ROOT_BASE });
+  assert.deepEqual(rootWriteRequest(ROOT_BUNDLE, rootPage, null).payload, { bundleId: ROOT_BUNDLE, content: rootPage, expectAbsent: true });
+  assert.equal(rootVersionOf(rootPage), versionOfBytes(rootPage), "the host's version is the digest of the UTF-8 bytes");
+  // The bound is the encoded request, not the content: escapes count.
+  const quotes = '"'.repeat(40 * 1024);
+  assert.ok(new TextEncoder().encode(quotes).byteLength < 65536);
+  assert.throws(() => rootWriteRequest(ROOT_BUNDLE, quotes, ROOT_BASE), (error: unknown) => error instanceof RootWriteInputError && error.code === "too_large");
+  assert.throws(() => rootWriteRequest(ROOT_BUNDLE, `﻿${rootPage}`, ROOT_BASE), (error: unknown) => error instanceof RootWriteInputError && error.code === "invalid_input");
+  assert.throws(() => rootWriteRequest(ROOT_BUNDLE, `${rootPage}\uD800`, ROOT_BASE), (error: unknown) => error instanceof RootWriteInputError && error.code === "invalid_input");
+});
+
+test("a root write's answers: success only for the bytes sent, refusals final, anything the host may have applied unknown", () => {
+  const sent = rootVersionOf(rootPage);
+  const expected = { bundleId: ROOT_BUNDLE, sent };
+  const classify = (status: number, body: unknown) => classifyRootAnswer({ status, body }, expected);
+  assert.deepEqual(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, data: { bundleId: ROOT_BUNDLE, version: sent, changed: true } }), { kind: "committed", version: sent, changed: true });
+  // A success for other bytes, another bundle or another operation is not evidence about this write.
+  assert.equal(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, data: { bundleId: ROOT_BUNDLE, version: ROOT_BASE, changed: true } }).kind, "unknown");
+  assert.equal(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, data: { bundleId: "other", version: sent, changed: true } }).kind, "unknown");
+  assert.equal(classify(200, { ok: true, operationId: "documents.replace.v1", data: { bundleId: ROOT_BUNDLE, version: sent, changed: true } }).kind, "unknown");
+  assert.deepEqual(classify(200, rootFailure("version_conflict", "not_applied", { currentVersion: ROOT_BASE })), { kind: "conflict", current: ROOT_BASE });
+  assert.deepEqual(classify(200, rootFailure("document_exists", "not_applied", { currentVersion: ROOT_BASE })), { kind: "conflict", current: ROOT_BASE });
+  assert.deepEqual(classify(200, rootFailure("validation_failed")), { kind: "refused", code: "validation_failed", message: "refused: validation_failed" });
+  assert.equal((classify(200, rootFailure("insufficient_scope")) as { authorization?: string }).authorization, "PERMISSION_DENIED");
+  assert.equal(classify(200, rootFailure("write_outcome_unknown", "unknown")).kind, "unknown");
+  assert.equal(classify(400, { error: { code: "invalid_input" } }).kind, "refused");
+  assert.equal((classify(401, { error: { code: "unauthenticated", writeState: "not_applied" } }) as { authorization?: string }).authorization, "AUTH_REQUIRED");
+  assert.equal(classify(401, { error: { code: "write_outcome_unknown", writeState: "unknown" } }).kind, "unknown");
+  assert.equal(classify(503, { error: { code: "write_outcome_unknown", writeState: "unknown" } }).kind, "unknown");
+  assert.equal(classify(503, { error: { code: "backend_unavailable", writeState: "not_applied" } }).kind, "refused");
+  assert.equal(classify(502, undefined).kind, "unknown");
+});
+
+test("a root write never carries a request identity, and a lost answer is settled by the root version alone", async () => {
+  const seen: HostedRequestOptions[] = [];
+  const carrier: HostedCarrier = {
+    async json(_route, _input, _signal, options) {
+      seen.push(options);
+      throw new HostedCarrierError("unavailable");
+    },
+    stream: async () => {
+      throw new Error("unused");
+    },
+  };
+  const binding = `sha256:${"b".repeat(64)}`;
+  assert.deepEqual(await sendRootWrite({ carrier, route: "/sync/v1/root", bundleId: ROOT_BUNDLE, binding, via: "claude-code", content: rootPage, base: ROOT_BASE }), { kind: "unknown" });
+  assert.equal(seen[0]!.writeRequest, undefined);
+  assert.equal(seen[0]!.binding, binding);
+  assert.equal(seen[0]!.via, "claude-code");
+  const sent = rootVersionOf(rootPage);
+  assert.equal(rootLanding(sent, sent, ROOT_BASE), "landed");
+  assert.equal(rootLanding(ROOT_BASE, sent, ROOT_BASE), "not_landed");
+  assert.equal(rootLanding(null, sent, null), "not_landed");
+  assert.equal(rootLanding(`sha256:${"c".repeat(64)}`, sent, ROOT_BASE), "conflict");
 });

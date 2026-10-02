@@ -62,6 +62,12 @@
 //   core's Kind rules: a Kind a stored document fails, or a removed Kind still in use, refuses
 //   `definition_incompatible` with `definitionDetails`. Document writes are validated against the
 //   stored Kinds (`validation_failed`). Without `definitionWrites` none of this applies.
+// - the front page (superbee-hosted `bundles.root.replace.v1`, `POST /sync/v1/root`, the lane
+//   front-page wire contract): with `rootWrites`, the capabilities answer carries it, and the route
+//   replaces the root `index.md` compare-and-swap on `expectedVersion` (or `expectAbsent`), with no
+//   request identity (a `X-Superbee-Write-Request` is refused `400` here, so a client that sends
+//   one fails loudly). A version is the SHA-256 of the stored bytes; the capabilities answer and
+//   the heads' root version header follow the stored root. `rootHook` answers or drops a write.
 // - any other route: the family's unknown-route answer, `404 {"error":"not_found"}`.
 // Every answer shape is held to the `/sync/v1` golden exchanges captured from the real hosted
 // gateway (core's `test/fixtures/hosted-sync-v1/`) by `hosted-fake-contract.test.ts`; the export
@@ -183,7 +189,24 @@ export interface FakeHostOptions {
   definitionWrites?: "allowed" | "refused";
   /** False is a gateway from before the paged export: a paged request's body is `400 invalid_input`. */
   exportPaging?: boolean;
+  /**
+   * What the capabilities answer says about replacing the root `index.md`: absent, a host from
+   * before the root write (the answer has no `rootWrites`, and the route refuses the write as a
+   * person without the grant would). Set, the answer carries it and the route follows it.
+   */
+  rootWrites?: "allowed" | "refused";
 }
+
+/** One root write as the fake received it. */
+export interface RootCall {
+  binding: string | null;
+  writeRequest: string | null;
+  via: string | null;
+  body: Record<string, unknown>;
+}
+
+/** What a test may do to one root write before the host answers it. */
+export type RootHook = (call: RootCall) => { kind: "respond"; status: number; body: unknown } | { kind: "apply-then-drop" } | { kind: "drop" } | undefined;
 
 /** One operation descriptor, as the listing route answers it. */
 export type OperationDescriptor = Record<string, unknown> & { operationId: string };
@@ -247,6 +270,11 @@ export class FakeHost {
   /** The data a run of a listed operation other than `documents.history.v1` answers. */
   runHook: ((operationId: string, input: Record<string, unknown>) => unknown) | undefined;
   capabilities: string;
+  /** The root `index.md` the host stores, once a root write or `putRoot` changed it (else the fixture's). */
+  private storedRoot: { content: string; version: string } | null | undefined;
+  /** Every root write received, in order. */
+  readonly rootCalls: RootCall[] = [];
+  rootHook: RootHook | undefined;
   principal: string;
   readonly origin: string;
   readonly token: string;
@@ -387,14 +415,21 @@ export class FakeHost {
         if (body.bundleId !== BUNDLE && String(body.bundleId).startsWith("absent.")) return bundleNotFound();
         assert.equal(body.bundleId, BUNDLE);
         const { response } = fixture(this.capabilities);
-        const answer = this.definitionWrites === null ? response.body : JSON.stringify({ ...JSON.parse(response.body), definitionWrites: this.definitionWrites });
+        let answer = this.definitionWrites === null ? response.body : JSON.stringify({ ...JSON.parse(response.body), definitionWrites: this.definitionWrites });
+        if (this.storedRoot !== undefined || this.options.rootWrites !== undefined) {
+          answer = JSON.stringify({
+            ...JSON.parse(answer),
+            ...(this.storedRoot !== undefined ? { root: this.storedRoot } : {}),
+            ...(this.options.rootWrites !== undefined ? { rootWrites: this.options.rootWrites } : {}),
+          });
+        }
         return new Response(answer, { status: response.status, headers: response.headers });
       }
       case "heads": {
         if (body.bundleId !== BUNDLE && String(body.bundleId).startsWith("absent.")) return bundleNotFound();
         assert.equal(body.bundleId, BUNDLE);
         const listing = this.heads();
-        const common = { etag: `"${listing.digest}"`, "x-superbee-root-version": this.rootVersion };
+        const common = { etag: `"${listing.digest}"`, "x-superbee-root-version": this.storedRoot === undefined ? this.rootVersion : (this.storedRoot?.version ?? "none") };
         if (body.cursor === undefined && body.ifNoneMatch === listing.digest) return new Response(null, { status: 304, headers: common });
         const page = this.page(listing, body.cursor);
         if (page === "restart") return restart();
@@ -435,10 +470,59 @@ export class FakeHost {
       case "delete":
       case "outcome":
         return this.write(route, body, headers);
+      case "root":
+        return this.rootWrite(body, headers);
       default:
         return unknownRoute();
     }
   }) as typeof fetch;
+
+  /** The root the host stores now: its exact content and version, or null without one. */
+  root(): { content: string; version: string } | null {
+    if (this.storedRoot !== undefined) return this.storedRoot;
+    const { response } = fixture(this.capabilities);
+    const root = (JSON.parse(response.body) as { root: { content: string; version: string } | null }).root;
+    return root ? { content: root.content, version: root.version } : null;
+  }
+
+  /** A change to the front page made on the host (another person, in the app). */
+  putRoot(content: string): string {
+    const version = versionOfBytes(content);
+    this.storedRoot = { content, version };
+    this.revision += 1;
+    return version;
+  }
+
+  /** `POST /sync/v1/root`: the front page's compare-and-swap replace, as the wire contract states it. */
+  private rootWrite(body: Record<string, unknown>, headers: Headers): Response {
+    const call: RootCall = { binding: headers.get("x-superbee-checkout"), writeRequest: headers.get("x-superbee-write-request"), via: headers.get("x-superbee-via"), body: structuredClone(body) };
+    this.rootCalls.push(call);
+    const invalid = () => Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    if (!call.binding || !BINDING.test(call.binding) || call.writeRequest !== null || (call.via !== null && !isAgentLabelVia(call.via))) return invalid();
+    const creates = body.expectAbsent === true;
+    if (!onlyKeys(body, creates ? ["bundleId", "content", "expectAbsent"] : ["bundleId", "content", "expectedVersion"]) || typeof body.content !== "string" || body.bundleId !== BUNDLE) return invalid();
+    if (!creates && (typeof body.expectedVersion !== "string" || !BINDING.test(body.expectedVersion))) return invalid();
+    const operationId = "bundles.root.replace.v1";
+    if (this.options.writable === false || this.options.rootWrites !== "allowed") return Response.json(failure(operationId, "insufficient_scope"));
+    const hooked = this.rootHook?.(call);
+    if (hooked?.kind === "respond") return new Response(JSON.stringify(hooked.body), { status: hooked.status, headers: { "content-type": "application/json" } });
+    if (hooked?.kind === "drop") throw new TypeError("fetch failed");
+    const content = body.content;
+    const current = this.root();
+    let answer: Record<string, unknown>;
+    if (content.startsWith("\uFEFF")) answer = failure(operationId, "invalid_input");
+    else if (creates && current) answer = failure(operationId, "document_exists", current.version);
+    else if (!creates && body.expectedVersion !== current?.version) answer = failure(operationId, "version_conflict", current?.version);
+    else if (edition(content) !== edition(current?.content ?? "")) answer = failure(operationId, "validation_failed");
+    else {
+      const version = versionOfBytes(content);
+      const changed = version !== current?.version;
+      if (changed) this.putRoot(content);
+      answer = { ok: true, operationId, data: { bundleId: BUNDLE, version, changed } };
+    }
+    if (hooked?.kind === "apply-then-drop") throw new TypeError("fetch failed");
+    return Response.json(answer);
+  }
 
   /** The workspaces whoami names, or null for a host from before qualified references. */
   private workspaces(): { tenantId: string; slug: string | null }[] | null {
@@ -448,6 +532,7 @@ export class FakeHost {
 
   /** The root index the host serves: the capabilities answer's `root.content`. */
   rootIndex(): string {
+    if (this.storedRoot) return this.storedRoot.content;
     const { response } = fixture(this.capabilities);
     return (JSON.parse(response.body) as { root: { content: string } }).root.content;
   }
@@ -750,6 +835,13 @@ export class FakeHost {
     }
     return Response.json({ ...envelope, status: "refused", result: recorded.result });
   }
+}
+
+/** The `okf_version` a root's frontmatter states, as the host compares editions (absent: none). */
+function edition(content: string): string | null {
+  const match = /^---\n([\s\S]*?)\n---/.exec(content);
+  const line = match?.[1]?.split("\n").find((text) => text.startsWith("okf_version:"));
+  return line === undefined ? null : line.slice("okf_version:".length).trim().replace(/^["']|["']$/g, "");
 }
 
 /** The family's answer to a route it does not have (a gateway from before the route). */

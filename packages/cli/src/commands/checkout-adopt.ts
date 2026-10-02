@@ -495,6 +495,9 @@ export async function bindFolderInPlace(input: {
       }
       // The root index: placed when absent; a differing one stays and is held, as in any checkout.
       let root: string | null = null;
+      // The host's version the folder's root matches; null when it differs (an edit made against no
+      // version the host had, which sync reports as a conflict rather than sending over the host's).
+      let rootBase: string | null = null;
       let rootIndex: string = "none on the host";
       const index = await store.readReserved("", "index.md");
       if (index) {
@@ -504,9 +507,15 @@ export async function bindFolderInPlace(input: {
         if (current === "unsafe") rootIndex = "kept (not a plain file; sync holds it)";
         else if (current === null) {
           const placedRoot = (await placeNew(path.join(canonical, ROOT_INDEX), hostRoot)).placed;
-          if (placedRoot) placedFiles.set(path.join(canonical, ROOT_INDEX), root);
+          if (placedRoot) {
+            placedFiles.set(path.join(canonical, ROOT_INDEX), root);
+            rootBase = index.version;
+          }
           rootIndex = placedRoot ? "placed" : "kept";
-        } else rootIndex = digestOf(current) === root ? "matches" : "kept (differs from the host's; sync holds it)";
+        } else if (digestOf(current) === root) {
+          rootBase = index.version;
+          rootIndex = "matches";
+        } else rootIndex = "kept (differs from the host's; sync reports it as a conflict, or holds it where the host takes no front-page changes from you)";
       }
       const localOnly: string[] = [];
       for (const { rel, symlink } of await walk(canonical)) {
@@ -514,7 +523,7 @@ export async function bindFolderInPlace(input: {
         const id = conceptIdFromPath(rel);
         if (!hostIds.has(id)) localOnly.push(id);
       }
-      await writeProjection(home, binding.checkout_id, { files, root, ...(input.extras && Object.keys(input.extras).length > 0 ? { extras: { ...input.extras } } : {}) });
+      await writeProjection(home, binding.checkout_id, { files, root, rootBase, ...(input.extras && Object.keys(input.extras).length > 0 ? { extras: { ...input.extras } } : {}) });
       const ready: CheckoutBinding = { ...binding, state: "ready" };
       await writeBinding(home, ready);
       await recordPulled(home, ready.checkout_id);

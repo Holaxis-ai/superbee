@@ -196,6 +196,20 @@ test("capabilities 200 says whether the caller may change the model: absent is n
   }
 });
 
+test("capabilities 200 says whether the caller may replace the root index.md: absent (an older host) and anything unknown read as refused", () => {
+  // Every capabilities answer captured before the root write states nothing: the root stays held.
+  for (const name of ["capabilities-200", "capabilities-200-definition-writes-allowed"]) {
+    const body = JSON.parse(fixture(name).response.body);
+    assert.equal("rootWrites" in body, false, name);
+    assert.equal(decodeHostedCapabilities(body).rootWrites, "refused", name);
+  }
+  const allowed = { ...JSON.parse(fixture("capabilities-200").response.body), rootWrites: "allowed" };
+  assert.equal(decodeHostedCapabilities(allowed).rootWrites, "allowed");
+  for (const value of ["refused", "yes", true, null]) {
+    assert.equal(decodeHostedCapabilities({ ...allowed, rootWrites: value }).rootWrites, "refused", String(value));
+  }
+});
+
 test("200 definition_incompatible carries the findings; the transport's refusal names them, never beyond the host's bounds", () => {
   const exchange = fixture("replace-200-definition-incompatible");
   const expected = { operationIds: ["documents.replace.v1"], documentId: "conventions/note", bundleId: BUNDLE };

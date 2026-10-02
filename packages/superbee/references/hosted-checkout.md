@@ -207,6 +207,30 @@ with a `held` row, reason `unsafe_id`, and the rest of the bundle syncs. A host 
 differs only in letter case from another is held as `case_collision`. Both are renamed in the
 Superbee app, by the person.
 
+## The bundle's front page (the root `index.md`)
+
+The root `index.md` syncs as one file of its own when the host lets you change the bundle's front
+page (anyone who may write the bundle may). An edit to it is sent with the next `superbee sync`
+against the host's version the folder last had, and a front page changed on the host replaces an
+unedited file. If both changed, the receipt has a `conflict` row for `index.md`, and nothing is
+sent:
+
+```sh
+superbee sync --inspect --doc index.md          # base, your front page, the host's
+superbee sync --resolve take --doc index.md     # use the host's
+superbee sync --resolve keep --doc index.md     # the next sync sends yours over the inspected host version
+```
+
+- `keep` needs an `--inspect` first, as for a document. It sends the file as it is at that next
+  sync, so edit it to the combined result first if you want both. `revise` does the same.
+- A front page over 64 KiB as a request is held (`too_large`), and one that is not plain UTF-8
+  text (or starts with a byte-order mark) is held (`not_sendable`). The host refuses one that
+  changes the bundle's `okf_version` (`refused`, `validation_failed`).
+- A lost answer is settled by the host's front page itself: the next sync never sends it twice.
+- Where the host does not take front-page changes from you (an older host, or no write access), an
+  edited root `index.md` is held (`reserved_file`): change it in the Superbee app.
+- A subdirectory `index.md` and every `log.md` are always held (`reserved_file`).
+
 ## Refusals that belong to the person
 
 Some commands are refused in a hosted checkout with "do this in the Superbee app". Examples:
