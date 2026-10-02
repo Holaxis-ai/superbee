@@ -38,9 +38,12 @@ import {
   resolveOriginRef,
   retargetBoardInterior,
   runGit,
+  malformedCommittedDocuments,
+  malformedOutgoingDocuments,
   stageAndCommit,
   unpushedCount,
   type CommitResult,
+  type HeldDocument,
   type DocChange,
   type FetchRebaseResolvingOutcome,
   type ProvisionOutcome,
@@ -790,6 +793,49 @@ async function receiptPhase(
   run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { sent: pushed.documents, received: delta.originDelta.length })), run.mode));
 }
 
+/**
+ * A sync with an outgoing document whose frontmatter does not parse. Publishing it would break
+ * every reader of the shared board, so nothing outgoing moves: no commit, no push, no file set
+ * aside. Incoming changes still arrive when the board fast-forwards (Git itself refuses a
+ * fast-forward that would overwrite a local edit). The receipt names each held document with the
+ * fix, and the run exits 5 so the turn-end hook hands it back to the writer.
+ */
+async function heldRun(run: SyncRun, board: SyncBoard, baseline: SyncBaseline, held: readonly HeldDocument[]): Promise<void> {
+  const pulled = ffPull(board.boardPath);
+  const delta = await deltaPhase(board, baseline);
+  await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
+  reportHeld(run, board, delta, held, "in the worktree", pulled.swallowed);
+}
+
+/** Print the held receipt (nothing pushed) and exit 5 so the turn-end hook hands it back. */
+function reportHeld(
+  run: SyncRun, board: SyncBoard, delta: SyncDelta, held: readonly HeldDocument[],
+  where: "in the worktree" | "committed locally", notPulled?: string,
+): never {
+  const receipt = buildSyncReceipt({
+    outcome: board.outcome, commitDocs: [], pushedCount: 0,
+    originDelta: delta.originDelta, limit: run.limit, reanchorNote: delta.reanchorNote,
+  });
+  receipt.sync = where === "in the worktree"
+    ? "held: nothing was committed or pushed"
+    : "held: local commits carry these documents, so nothing was pushed";
+  if (notPulled) receipt.pull = `not pulled (${notPulled}); the next sync after the fix pulls`;
+  receipt.held_documents = held.map((doc) => ({ id: doc.id, path: doc.relPath, reason: doc.reason, detail: doc.detail }));
+  const fix = `fix the lines between the --- markers of ${held.map((doc) => doc.relPath).join(", ")} ` +
+    `(quote any value that contains ': '), check with ${run.inv} status, then run ${run.inv} sync`;
+  receipt.held_help =
+    `not published: the YAML frontmatter of these documents does not parse, and publishing it would ` +
+    `break every reader of the board, so this sync sent nothing. Your files are untouched; ${fix}` +
+    (where === "committed locally" ? " (the fix is committed on top and both go out together)" : "");
+  const envelope = syncEnvelope("git", { received: delta.originDelta.length, held: held.length, next: [`${run.inv} sync`] });
+  run.stdout(render(withSyncEnvelope(receipt, envelope), run.mode));
+  throw new CliError(
+    "CONFLICT",
+    `${held.length} document(s) have invalid frontmatter (${held.map((doc) => doc.id).join(", ")}); nothing was published`,
+    { help: fix, details: { held: held.map((doc) => doc.id) }, handled: true },
+  );
+}
+
 async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const inv = cliInvocation();
@@ -859,9 +905,27 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   assertBundleOutsidePrivateState(board.boardPath);
 
   const baseline = await baselinePhase(board);
+  if (!run.pullOnly) {
+    const held = malformedOutgoingDocuments(board.boardPath);
+    if (held.length > 0) {
+      await heldRun(run, board, baseline, held);
+      return;
+    }
+  }
   const commitResult = await commitPhase(board, run.pullOnly);
+  if (commitResult.held) {
+    await heldRun(run, board, baseline, commitResult.held);
+    return;
+  }
   await pullPhase(run, board, commitResult);
   const delta = await deltaPhase(board, baseline);
+  const originRef = run.pullOnly ? null : resolveOriginRef(board.boardPath);
+  if (originRef !== null) {
+    // A malformed document already in an unpushed commit (made by hand, or by an older client
+    // whose push failed) is held the same way: nothing is pushed.
+    const held = malformedCommittedDocuments(board.boardPath, originRef, "HEAD");
+    if (held.length > 0) reportHeld(run, board, delta, held, "committed locally");
+  }
   const pushed = await pushPhase(run, board, commitResult, delta);
   await receiptPhase(run, board, commitResult, delta, pushed, establishAlreadyNote);
 }

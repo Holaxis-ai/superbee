@@ -59,7 +59,7 @@ becoming a second source of truth. Add only the layer justified by current evide
   explicit publication decision.
 - Never silently rewrite an established Kind, recipe, or its instances. Inspect dependencies and
   explain migration consequences first.
-- Writes carry an actor (`--actor`/`SUPERBEE_ACTOR`); OKF v0.2 bundles accept only `human:<id>`, `process:<id>`, or `<producer>/<version>` (e.g. `openai/codex`); a bare name is refused with the fix.
+- Writes carry an actor (`--actor`/`SUPERBEE_ACTOR`); OKF v0.2 bundles accept only `human:<id>`, `process:<id>`, or `<producer>/<version>` (e.g. `openai/codex`); a bare name is refused with the fix. After a raw file edit, run `superbee status`: it names a document whose frontmatter no longer parses (quote values containing `: `); sync publishes nothing until it parses.
 
 ## Deliver after acceptance
 

@@ -225,6 +225,30 @@ test("combo 1: --establish — full receipt, origin gets the board, working-tree
   }
 });
 
+test("--establish refuses a bundle holding a document with invalid frontmatter: names it, publishes and moves nothing", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    await initPlainBundleDir(topo.a);
+    await writeBoardDoc(topo.a, "notes/hello", { frontmatter: { type: "Note", title: "Hello" }, body: "# Hello\n" });
+    await mkdir(path.join(topo.a.board, "notes"), { recursive: true });
+    await writeFile(path.join(topo.a.board, "notes", "bad.md"), "---\ntype: Note\ntitle: Bad: unquoted\n---\nbody\n");
+
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(err?.code, "USAGE");
+    assert.match(err!.message, /invalid YAML frontmatter \(notes\/bad\); nothing was published or moved/);
+    assert.notEqual(
+      gitTry(topo.origin, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]).status,
+      0,
+      "origin never gets a board",
+    );
+    assert.equal(existsSync(path.join(topo.a.board, "notes", "bad.md")), true, "the local bundle is untouched");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("combo 1: user code + the working tree survive establish untouched", async () => {
   const topo = await makeGreenfieldTopology();
   const { home, cleanup } = await tempHome();

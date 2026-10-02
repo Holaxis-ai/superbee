@@ -6,7 +6,7 @@
 // board is never synced by the hook.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -169,6 +169,27 @@ test("a real same-document Git conflict at turn end comes back once, in Git's fo
     assert.match(decision.reason, /Git board/);
     // The sync converged (teammate's version kept, B's exported), so the next turn has nothing to report.
     assert.equal(await run(), "");
+  } finally {
+    await topo.cleanup();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a raw edit that breaks a document's frontmatter comes back to the agent at turn end, named with the fix, and nothing is pushed", async () => {
+  const topo = await makeTwoCloneTopology();
+  const home = await tempDir("sb-hab-malformed-home-");
+  try {
+    await writeFile(path.join(topo.b.board, "notes", "broken.md"), "---\ntype: Note\ntitle: Import: archive upload\n---\nx\n");
+    const before = originBoardHead(topo);
+    const out: string[] = [];
+    await withIsolatedUserEnv(home, () =>
+      withCwd(topo.b.root, () => turnEnd(["--git-boards"], { stdout: (text) => void out.push(text), env: {}, readStdin: async () => null })),
+    );
+    const decision = JSON.parse(out.join("")) as { decision: string; reason: string };
+    assert.equal(decision.decision, "block");
+    assert.match(decision.reason, /invalid frontmatter \(notes\/broken\)/);
+    assert.match(decision.reason, /quote any value that contains ': '/);
+    assert.equal(originBoardHead(topo), before, "the malformed document never reached the board");
   } finally {
     await topo.cleanup();
     await rm(home, { recursive: true, force: true });

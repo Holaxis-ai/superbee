@@ -43,8 +43,12 @@
 import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
 import { spawnSync } from "node:child_process";
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -60,6 +64,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  MalformedDocumentError,
   conceptIdFromPath,
   isReservedFile,
   mutationActorFromFrontmatter,
@@ -1547,6 +1552,8 @@ export interface CommitResult {
   subject?: string;
   /** The enriched per-doc changes that were committed (empty for a reserved-file-only commit). */
   docs: DocChange[];
+  /** Present when nothing was committed because a staged document's frontmatter does not parse. */
+  held?: HeldDocument[];
 }
 
 /**
@@ -1594,6 +1601,13 @@ export function stageAndCommit(boardPath: string): CommitResult {
   }
 
   const rows = nameStatusRows(mustGit(boardPath, ["diff", "--cached", "--name-status", "--no-renames", "-z"]));
+  // The exact bytes being committed: a file rewritten after sync's worktree check is caught here.
+  // Unstaging leaves every file as it is.
+  const held = malformedDocumentsIn(boardPath, rows, ":0");
+  if (held.length > 0) {
+    mustGit(boardPath, ["reset", "-q"]);
+    return { committed: false, docs: [], held };
+  }
   const docs: DocChange[] = [];
   for (const { letter, relPath } of rows) {
     if (!isConceptDocPath(relPath)) continue;
@@ -1617,6 +1631,100 @@ export function stageAndCommit(boardPath: string): CommitResult {
   );
   const sha = mustGit(boardPath, ["rev-parse", "HEAD"]).trim();
   return { committed: true, sha, subject, docs };
+}
+
+/** An outgoing document sync will not publish, and why. */
+export interface HeldDocument {
+  /** The document id. */
+  id: string;
+  /** Its path, relative to the board worktree. */
+  relPath: string;
+  /** Always `malformed_frontmatter` today: the YAML between the `---` lines does not parse. */
+  reason: "malformed_frontmatter";
+  /** The parser's first line, e.g. where the YAML broke. */
+  detail: string;
+}
+
+/**
+ * Added or edited documents in the board worktree whose frontmatter does not parse. Reads the
+ * worktree bytes `git add -A` would commit (`status -z`, every untracked file, no renames) without
+ * touching the index or any file: sync uses it to hold everything outgoing before it stages, so a
+ * malformed document never reaches the shared board, where it would break every reader. A symlink
+ * or a path that vanished is not a document to judge here (a symlinked `.md` is committed as a
+ * link, unchecked, as before).
+ */
+export function malformedOutgoingDocuments(boardPath: string): HeldDocument[] {
+  const listed = runGit(boardPath, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
+  if (listed.status !== 0) throw classifyGitError(failureOf(["status"], listed));
+  const held: HeldDocument[] = [];
+  for (const record of listed.stdout.split("\0")) {
+    if (record.length < 4) continue;
+    const code = record.slice(0, 2);
+    const relPath = record.slice(3);
+    if (code.includes("D") || !isConceptDocPath(relPath)) continue;
+    const file = path.join(boardPath, relPath);
+    const content = readRegularFile(file);
+    if (content === null) continue;
+    try {
+      parseMarkdown(content, relPath);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      held.push({ id: conceptIdFromPath(relPath), relPath, reason: "malformed_frontmatter", detail: error.detail });
+    }
+  }
+  return held.sort((a, b) => a.relPath.localeCompare(b.relPath));
+}
+
+/**
+ * A regular file's text, or null for a symlink, a non-file or a path that vanished. One open
+ * (never following a final symlink where the platform supports it) and a stat of that same
+ * descriptor, so the bytes read are the bytes judged.
+ */
+function readRegularFile(file: string): string | null {
+  let fd: number;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch {
+    return null;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    return readFileSync(fd, "utf8");
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Documents a push would publish whose frontmatter does not parse: those added or changed between
+ * `base` and `ref` (normally `origin/board` and `HEAD`), read at `ref`. Catches a malformed
+ * document already in an unpushed local commit (made by hand, or by an older client whose push
+ * failed), which the worktree check cannot see.
+ */
+export function malformedCommittedDocuments(boardPath: string, base: string, ref: string): HeldDocument[] {
+  const rows = nameStatusRows(mustGit(boardPath, ["diff", "--name-status", "--no-renames", "-z", base, ref]));
+  return malformedDocumentsIn(boardPath, rows, ref);
+}
+
+/** The added or edited concept documents among `rows` whose frontmatter at `rev` does not parse. */
+function malformedDocumentsIn(boardPath: string, rows: Array<{ letter: string; relPath: string }>, rev: string): HeldDocument[] {
+  const held: HeldDocument[] = [];
+  for (const { letter, relPath } of rows) {
+    if (!isConceptDocPath(relPath)) continue;
+    const verb = verbOf(letter);
+    if (verb === null || verb === "deleted") continue;
+    const shown = runGit(boardPath, ["show", `${rev}:${relPath}`]);
+    if (shown.status !== 0) continue;
+    try {
+      parseMarkdown(shown.stdout, relPath);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      held.push({ id: conceptIdFromPath(relPath), relPath, reason: "malformed_frontmatter", detail: error.detail });
+    }
+  }
+  return held.sort((a, b) => a.relPath.localeCompare(b.relPath));
 }
 
 /** A root commit assembled from a plain bundle without touching the real index or worktree. */

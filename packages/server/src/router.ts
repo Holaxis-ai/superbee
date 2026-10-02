@@ -19,6 +19,7 @@
 
 import {
   InvalidInputError,
+  MalformedDocumentError,
   VersionConflict,
   assertSafeBlobKey,
   assertSafeConceptId,
@@ -244,6 +245,15 @@ function errorFromCaught(err: unknown): Response {
   }
   if (err instanceof UnservableIdError) {
     return errorResponse(500, "RUNTIME", err.message);
+  }
+  if (err instanceof MalformedDocumentError) {
+    // The request is well formed; the stored document is what cannot be served. Naming it lets
+    // a client report the one document to fix instead of an opaque server failure.
+    // Backends attribute the error to the document's path or its id; the wire names the id.
+    const id = err.context === undefined ? undefined : err.context.endsWith(".md") ? err.context.slice(0, -3) : err.context;
+    return errorResponse(500, "RUNTIME", err.message, {
+      malformed: { ...(id === undefined ? {} : { id }), reason: err.detail },
+    });
   }
   return errorResponse(500, "RUNTIME", "internal server error");
 }
@@ -999,11 +1009,17 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     // push-down (an indexed adapter can answer without reading bodies),
     // re-applies the canonical `matchesFilter` to whatever came back, and falls back to
     // the delete-tolerant `list` + batch-read walk for every other backend (a doc deleted
-    // mid-scan is SKIPPED, not a scan-failing 404 — the server half of STATUS item 33; a
-    // MALFORMED doc still fails loudly, since quarantining it over the wire needs a
-    // `skipped` response shape — recorded as an open question). The router deliberately
-    // does NOT re-implement the prefer-else-fallback dance itself.
-    const heads = await queryHeads(backend, { prefix, type, tags });
+    // mid-scan is SKIPPED, not a scan-failing 404 — the server half of STATUS item 33). With
+    // `malformed=skip`, a MALFORMED doc is left out of the rows and named in `skipped` on every
+    // page, so one bad file never fails the listing; without it (a client that cannot read
+    // `skipped`) the listing fails naming the document, so no client silently loses one. The
+    // router deliberately does NOT re-implement the prefer-else-fallback dance itself.
+    const skipped: Array<{ id: ConceptId; reason: string }> = [];
+    const heads = await queryHeads(
+      backend,
+      { prefix, type, tags },
+      searchParams.get("malformed") === "skip" ? { onSkip: (skip) => skipped.push(skip) } : {},
+    );
 
     const count = heads.length;
     let page = heads;
@@ -1029,7 +1045,12 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
       }
       return { id, version, ...captureRemoteFrontmatter(projected) as object };
     });
-    return jsonResponse(200, { count, docs, next_cursor: nextCursor });
+    return jsonResponse(200, {
+      count,
+      docs,
+      next_cursor: nextCursor,
+      ...(skipped.length > 0 ? { skipped: skipped.map(({ id, reason }) => ({ id, reason })) } : {}),
+    });
   }
 
   /**
@@ -1040,7 +1061,8 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
    * body in one `readMany`, which is why the listing is computed here rather than through it.
    * Every document is still read once for the listing. A document deleted between `list` and
    * its batch is simply not a head, as in the engine's scan; a malformed document fails the
-   * listing exactly as it fails `GET /docs` (deviation 4): there is no skip envelope on the wire.
+   * listing, naming it (deviation 4): a working copy reads a missing head as a deletion, so heads
+   * cannot skip a document the way `GET /docs` does.
    * An id the wire cannot serve (a control character, which the digest recipe cannot delimit)
    * fails the listing closed before any document is read: heads answers `500 RUNTIME`, and the
    * snapshot fails before its header line exists, so the client sees no snapshot rather than

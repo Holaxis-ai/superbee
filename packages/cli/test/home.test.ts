@@ -702,27 +702,29 @@ test("A1.10 unreadable bundle (present but a doc failed to read): status:unreada
   assert.equal(view.getting_started, undefined);
 });
 
-test("A1.11 default summarizer distinguishes unreadable from no-bundle: a malformed doc -> unreadable, home() exit 0", async () => {
+test("A1.11 a malformed doc is named in the bundle block; the rest of the bundle still summarizes, home() exit 0", async () => {
   const bundleDir = await tempDir();
   try {
     await initBundle(bundleDir);
-    // Write a raw concept file with UNPARSEABLE YAML frontmatter (unclosed flow sequence), bypassing
-    // writeDoc's validation, so the bundle walk's frontmatter parse throws on it.
+    await writeDoc({ root: bundleDir }, { id: "notes/good", frontmatter: { type: "Note", title: "Good" }, body: "ok" });
+    // A raw write with UNPARSEABLE YAML frontmatter (an unquoted ': ' in a title), bypassing
+    // writeDoc's validation, as an agent's plain file edit would.
     await mkdir(path.join(bundleDir, "notes"), { recursive: true });
-    await writeFile(path.join(bundleDir, "notes", "bad.md"), "---\ntype: [unclosed\n---\nbody\n");
+    await writeFile(path.join(bundleDir, "notes", "bad.md"), "---\ntype: Note\ntitle: Import bundles: archive upload\n---\nbody\n");
 
     const origCwd = process.cwd();
     try {
       process.chdir(bundleDir);
       let out = "";
-      let threw = false;
-      try {
-        await home([], { stdout: (s) => (out += s) });
-      } catch {
-        threw = true;
-      }
-      assert.equal(threw, false, "home() must never throw, even on an unreadable bundle");
-      assert.ok(out.includes("unreadable"), "a present-but-unreadable bundle must report unreadable");
+      await home(["--json"], { stdout: (s) => (out += s) });
+      const bundle = (JSON.parse(out) as { bundle: Record<string, unknown> }).bundle;
+      assert.equal(bundle.status, undefined, "one bad document must not make the whole bundle unreadable");
+      assert.equal(bundle.docs, 1, "the readable document is still counted");
+      const malformed = bundle.malformed_docs as { total: number; rows: { id: string; reason: string }[] };
+      assert.equal(malformed.total, 1);
+      assert.equal(malformed.rows[0]!.id, "notes/bad");
+      assert.match(malformed.rows[0]!.reason, /mapping/);
+      assert.match(bundle.malformed_help as string, /status/);
       assert.ok(!out.includes("getting_started"), "must NOT tell the agent to init over an existing bundle");
     } finally {
       process.chdir(origCwd);
