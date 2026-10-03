@@ -42,11 +42,11 @@ for (const race of races) {
         else if (race === "FIFO") execFileSync("mkfifo", [file]);
         else fs.writeFileSync(file, bytes);
       };
-      fs.lstatSync = ((name: fs.PathLike, ...args: any[]) => {
+      Object.assign(fs, { lstatSync: ((name: fs.PathLike, ...args: any[]) => {
         const stat = (originals.lstatSync as any)(name, ...args);
         if (name === file && !injected && ["symlink", "following-open", "original-inode-link", "regular", "FIFO"].includes(race)) replace();
         return stat;
-      }) as typeof fs.lstatSync;
+      }) as typeof fs.lstatSync });
       fs.openSync = ((name: fs.PathLike, ...args: any[]) => {
         // Emulate a host whose open follows links; identity checks must still gate bytes.
         if (name === file && ["following-open", "original-inode-link"].includes(race) && typeof args[0] === "number") args[0] &= ~fs.constants.O_NOFOLLOW;
