@@ -11,7 +11,7 @@ is the durable process for every browser-local prerelease.
 | @superbee/core | 0.2.0-pre.9 | public / next |
 | @superbee/server | 0.2.0-pre.9 | public / next |
 | @superbee/browser-local | 0.1.0-pre.5 | public / next |
-| @superbee/markdown-renderer | 0.1.5 | existing restricted access / latest |
+| @superbee/markdown-renderer | 0.1.6 | existing restricted access / latest |
 
 This candidate adds the `sources[]` identity lookup and grouped field-action write
 (superbee#393): a `sources` facet on `QueryFilter` shared by query, queryHeads,
@@ -25,7 +25,9 @@ pre.9 with no browser-local source change.
 Browser-local depends exactly on core pre.9 and moves with it under the paired
 exact-pin policy; do not patch around a mismatch or publish with a wildcard
 dependency. Server moves with core under the existing paired release policy.
-Renderer 0.1.5 extends its core peer allowance through pre.9 and
+Renderer 0.1.6 extends its core peer allowance through pre.9 (a new version because
+0.1.5 may already be published with the pre.8 allowance; its publication state is not
+visible without restricted-registry access) and
 adds `data-aslite-fragment` on strict-shape same-page fragment spans (4cb4ade2); it is
 included so consumers can align their root core without overriding peer
 checks, and a published renderer version is never reused for different bytes. Its access

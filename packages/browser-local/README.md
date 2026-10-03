@@ -3,7 +3,7 @@
 Shared browser-local working-copy and editor-recovery primitives for Superbee hosts.
 This prerelease requires exactly `@superbee/core@0.2.0-pre.9`. Core 0.2.0-pre.8 added
 `retireAcknowledged` to the journaled backend seam (IndexedDB adapter included), which
-this package's body runtime calls to retire acknowledged history, and raises the body
+this package's body runtime calls to retire acknowledged history, and raised the body
 delivery bounds to the hosted document write bound. Registry core pre.6 lacks both; a
 workspace build is not proof that an older registry artifact is compatible.
 
