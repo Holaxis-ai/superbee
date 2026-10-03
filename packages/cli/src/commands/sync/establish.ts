@@ -11,7 +11,7 @@ import { existsSync, lstatSync, readdirSync, renameSync, rmSync } from "node:fs"
 import path from "node:path";
 import { query } from "@superbee/core";
 
-import { resolveProjectBinding } from "../../bundle.js";
+import { looksLikeBundle, resolveProjectBinding, TOP_LEVEL_BUNDLE_MOVE } from "../../bundle.js";
 import { CliError, classifyBundleError } from "../../errors.js";
 import {
   BOARD_BRANCH,
@@ -73,6 +73,16 @@ export function establishNextSteps(inv: CommandPrefix): string[] {
 function assertPlainBundleShape(bundlePath: string, inv: CommandPrefix): void {
   const bundleDir = path.basename(bundlePath);
   const runInitHelp = `${inv} init --create-only --dir ${commandToken(BUNDLE_DIR)}`;
+  // A bundle made at the work tree's top (plain init before it chose .superbee/) is not lost, only
+  // in the wrong place: name the move, since init there refuses to nest a second bundle.
+  if (bundleDir === BUNDLE_DIR && !existsSync(path.join(bundlePath, "index.md")) && looksLikeBundle(path.dirname(bundlePath))) {
+    throw new CliError(
+      "RUNTIME",
+      `this repository's top folder is itself a bundle, and establish shares only a '${bundleDir}/' folder — ` +
+        `${TOP_LEVEL_BUNDLE_MOVE}, then re-run establish`,
+      { help: `mkdir -p ${bundleDir} && git mv index.md ${bundleDir}/ (plain mv if never committed), then the same for conventions/ if present and each document folder, then ${inv} sync --establish` },
+    );
+  }
   if (!existsSync(bundlePath)) {
     throw new CliError(
       "RUNTIME",

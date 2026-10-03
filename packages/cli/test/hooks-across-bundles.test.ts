@@ -4,6 +4,7 @@
 // private state and local Git only. `turn-end --git-boards` gives a shared Git board the hosted
 // end-of-turn rules (quiet on success, report once, skip when unchanged); without the flag a Git
 // board is never synced by the hook.
+import { movedBoardRefusal } from "../src/hosted/moved-marker.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -301,6 +302,16 @@ test("turn-end --git-boards hands a conflict back once, stays quiet for offline,
     assert.equal(await run(), "");
     failure = conflict;
     assert.equal(JSON.parse(await run()).decision, "block", "after a clean sync the same condition is new again");
+
+    // A board moved to hosted: the refusal (FORBIDDEN, which is otherwise quiet) comes back once
+    // with the checkout command.
+    failure = movedBoardRefusal(board.root, { host: "https://hosted.example", bundle: "acme/team.board", moved_at: "2026-10-02T00:00:00.000Z" }, { commits: 1, uncommitted: 0 });
+    const moved = JSON.parse(await run()) as { decision: string; reason: string };
+    assert.equal(moved.decision, "block");
+    assert.match(moved.reason, /moved to hosted Superbee/);
+    assert.match(moved.reason, /checkout acme\/team\.board --host https:\/\/hosted\.example/);
+    assert.match(moved.reason, /your 1 unpushed commit\(s\) and 0 uncommitted file\(s\) stay in /, "the work left behind is named");
+    assert.equal(await run(), "");
 
     failure = new CliError("AUTH_REQUIRED", "git could not authenticate to origin");
     assert.match((JSON.parse(await run()) as { reason: string }).reason, /committed locally/);

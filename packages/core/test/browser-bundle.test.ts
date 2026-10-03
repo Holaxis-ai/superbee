@@ -38,6 +38,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** subpath dist module -> a symbol the bundle must still carry (proves the entry resolved, not an empty file). */
 const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
+  { module: "artifact-contract.js", symbol: "decodeDocumentTargetV1" },
   { module: "engine.js", symbol: "writeDocVersioned" },
   { module: "links.js", symbol: "resolveConceptId" },
   { module: "meaningful-change-time.js", symbol: "meaningfulChangeTimeValue" },
@@ -230,4 +231,26 @@ test("core/document-mutation updates a document body over MemoryBackend in a san
   );
   assert.equal(headVersion, updated.version, "the store's head is the write the sandbox reported");
   assert.equal(historyLength, 2, "one create and one CAS update, no retries");
+});
+
+
+test("artifact contract imports and decodes without storage, network or DOM globals", async () => {
+  const result = await build({
+    entryPoints: [path.resolve(here, "../dist/artifact-contract.js")],
+    bundle: true, platform: "browser", format: "iife", globalName: "Artifacts",
+    write: false, logLevel: "silent", metafile: true,
+  });
+  assert.ok(Object.keys(result.metafile!.inputs).every(input => !input.includes("node_modules")));
+  const sandbox = {};
+  runInNewContext(`for (const key of ["fetch", "localStorage", "sessionStorage", "indexedDB", "document", "window"]) {
+    Object.defineProperty(globalThis, key, { get() { throw new Error("unexpected effect: " + key); } });
+  }`, sandbox);
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+  assert.equal(runInNewContext(`JSON.stringify(Artifacts.decodeDocumentTargetV1({
+    schemaVersion: "superbee.document-target.v1", authority: { mode: "local", authorityKey: "local" },
+    bundleKey: "selected", documentId: "x.md"
+  }))`, sandbox), JSON.stringify({ ok: true, value: {
+    schemaVersion: "superbee.document-target.v1", authority: { mode: "local", authorityKey: "local" },
+    bundleKey: "selected", documentId: "x.md",
+  } }));
 });

@@ -11,19 +11,21 @@ name: CI tests
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
 # app-bound context, then remove the two legacy `gate (node N)` requirements. Roll back by restoring
 # the legacy requirements before removing the canonical one. The compatibility jobs stay until a
-# later workflow cleanup. `merge_group` is deferred because this repository has no merge-queue
-# workflow or settings evidence; add that trigger before enabling a merge queue.
+# later workflow cleanup. Queue candidates run the same full proof on their integration SHA.
+# Live queue enforcement is separate from this workflow capability; see infrastructure/github-ci.
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-tests-${{ github.ref }}
+  group: ci-tests-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -49,6 +51,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
@@ -71,6 +74,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24.21.0
@@ -91,6 +95,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24.21.0
@@ -113,6 +118,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24.21.0
@@ -167,6 +173,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24.21.0
@@ -184,6 +191,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24.21.0
@@ -225,13 +233,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24.21.0
       - name: Reject every non-success or missing required result
-        env:
-          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
-        run: npm run ci:aggregate
+        uses: ./.github/actions/ci-gate
+        with:
+          needs-json: ${{ toJSON(needs) }}
+          policy-json: >-
+            [{"job":"runtime","required":true},
+             {"job":"aliasing-host","required":true},
+             {"job":"smoke-node-20","required":true},
+             {"job":"distribution","required":true},
+             {"job":"browser","required":true},
+             {"job":"scripts","required":true}]
 
   compatibility-gate-node-22:
     name: gate (node 22)
@@ -243,13 +259,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24.21.0
       - name: Preserve the legacy context without weakening its coverage
-        env:
-          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
-        run: npm run ci:aggregate
+        uses: ./.github/actions/ci-gate
+        with:
+          needs-json: ${{ toJSON(needs) }}
+          policy-json: >-
+            [{"job":"runtime","required":true},
+             {"job":"aliasing-host","required":true},
+             {"job":"smoke-node-20","required":true},
+             {"job":"distribution","required":true},
+             {"job":"browser","required":true},
+             {"job":"scripts","required":true}]
 
   compatibility-gate-node-26:
     name: gate (node 26)
@@ -261,10 +285,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24.21.0
       - name: Preserve the legacy context without weakening its coverage
-        env:
-          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
-        run: npm run ci:aggregate
+        uses: ./.github/actions/ci-gate
+        with:
+          needs-json: ${{ toJSON(needs) }}
+          policy-json: >-
+            [{"job":"runtime","required":true},
+             {"job":"aliasing-host","required":true},
+             {"job":"smoke-node-20","required":true},
+             {"job":"distribution","required":true},
+             {"job":"browser","required":true},
+             {"job":"scripts","required":true}]

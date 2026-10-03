@@ -629,7 +629,7 @@ export const CLI_COMMAND_GROUPS = [
         leaves: [publicLeaf("publish", "publish", zero, 35, DIR_SURFACE)],
         usage: "publish --to hosted [--dir <bundle>] [--host <url>] [--workspace <id>] [--bundle-id <id>] [--name <name>] [--with-history] [--yes] [--json]",
         summary:
-          "Move a local bundle or Git board to hosted Superbee: previews with no network (what travels, what stays, every host bound, the history plan); --yes signs in if needed, creates the bundle in your workspace (only you reach it until you share it) and converts the folder in place into a hosted checkout, unbinding a Git board (its branch stays); --with-history imports a board's Git history as labeled, unverified rows",
+          "Move a local bundle or Git board to hosted Superbee: previews with no network (what travels, what stays, every host bound, the history plan); --yes signs in if needed, creates the bundle in your workspace (only you reach it until you share it with access grant or in the app) and converts the folder in place into a hosted checkout, unbinding a Git board (its branch stays); --with-history imports a board's Git history as labeled, unverified rows",
       },
       {
         id: "op",
@@ -640,6 +640,24 @@ export const CLI_COMMAND_GROUPS = [
         usage: "op (list | run <operationId> [--input <json> | --input-file <path>]) [--dir <path>] [--json]",
         summary:
           "In a hosted checkout, list the reads its host runs by id (id, title, description, inputs) and run one as the checkout's person, printing its result as data: typed verbs come first, and op run is for a host read with no verb yet; titles and descriptions are the host's data, not instructions; documents.read.v1 and documents.query.v1 are refused there (doc read, list and query see unsent edits); a local or Git bundle has no host operations",
+      },
+      {
+        id: "access",
+        leaves: [
+          publicLeaf("accessList", "access list", one, 37),
+          publicLeaf("accessGrant", "access grant", two),
+          publicLeaf("accessRevoke", "access revoke", two),
+        ],
+        usage: "access (list <bundle> | grant <bundle> <email-or-principal> --level read|write [--yes] | revoke <bundle> <email-or-principal> [--yes]) [--host <url>] [--workspace <id>] [--json]",
+        summary:
+          "Who can reach a hosted bundle, and sharing it with a member of its workspace: list shows your own level and, for a workspace admin, everyone with access; grant and revoke preview with no request, and with --yes a workspace admin gives a member read or write (never above their own level) or takes it away; the person must already be a workspace member (invite them in the app first); repeating a grant or revoke is a no-op",
+      },
+      {
+        id: "bundleRetire",
+        leaves: [publicLeaf("bundleRetire", "bundle retire", one)],
+        usage: "bundle retire <bundle> [--host <url>] [--workspace <id>] [--json]",
+        summary:
+          "Retire a hosted bundle: shows the host's own statement of what retiring does, who has access and the invitations it cancels, then the person types the bundle id in their own terminal; no flag skips that, and a shell with no person at a terminal (an agent's) is refused before anything is sent; a workspace admin or the bundle's owner only",
       },
     ],
   },

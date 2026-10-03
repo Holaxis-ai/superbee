@@ -62,11 +62,11 @@
 
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
 import { stringifyDoc } from "@superbee/core/document-codec";
-import { performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
+import { BODY_DELIVERY_LIMITS, performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
 import { JournalGuardConflict, JournalSnapshotConflict, assertJournalGuard, type JournalGuard, type MetaExpectation } from "@superbee/core/journaled-backend";
-import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
+import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, retireAcknowledgedBody, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
   validateBodyResolutionReceipt, validateBodyRecord, BODY_MODE_KEY, BODY_RUNTIME_LIMITS, jsonBytes, BodyRuntimeError,
   type BodyDeliveryOptions, type BodyRecord, type BodyMode, type BodyResolutionReceipt, type BodySnapshot } from "./body-journal.js";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
@@ -201,6 +201,17 @@ export interface SharedBase {
    * conflict review it is the deletion the authority named, which `keep-local` acknowledges.
    */
   tombstone?: Version;
+  /**
+   * The authority acknowledged `version` for bytes other than `content`, the bytes sent: it
+   * stamped fields of its own (an actor, a clock). The working copy is not that version, so the
+   * next pull fetches it as though the head had moved, which also clears this.
+   */
+  refetch?: true;
+}
+
+/** Whether the working copy already holds the authority's `version` as its shared base. */
+function holdsVersion(base: SharedBase | undefined, version: Version | null): boolean {
+  return base !== undefined && base.version === version && base.refetch !== true;
 }
 
 /**
@@ -983,6 +994,22 @@ export async function deleteLocal(local: LocalTarget, id: ConceptId, options: { 
   }
 }
 
+/**
+ * Retirement is cleanup: it applies whole or not at all, and a commit or settle never depends on
+ * it. A failure (another realm's write, a closing page, a storage error) leaves the history for
+ * the next commit or settle to retire.
+ */
+async function retireQuietly(backend: JournaledBackend, mode: BodyMode, target: ConceptId): Promise<void> {
+  try { await retireAcknowledgedBody(backend, mode, target); }
+  catch (error) {
+    // Only a moved target or an interrupted transaction is expected; anything else is a defect
+    // that would let history grow back to the capacity limit unnoticed.
+    const name = (error as { name?: unknown } | null)?.name;
+    if (!(error instanceof JournalGuardConflict) && !(typeof name === "string" && TRANSIENT_STORAGE_ERRORS.has(name))) throw error;
+  }
+}
+const TRANSIENT_STORAGE_ERRORS: ReadonlySet<string> = new Set(["AbortError", "InvalidStateError", "TransactionInactiveError", "UnknownError"]);
+
 export interface BodyLocalMutation { body: string; expectedVersion?: Version; actor?: string; now?: () => string }
 /** Explicit body intent, authored by the existing engine and journaled in its document CAS. */
 export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutation: BodyLocalMutation): Promise<CommitResult> {
@@ -993,6 +1020,9 @@ export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutatio
   if (!mode) throw new BodyRuntimeError("Body delivery mode was not selected.");
   await assertBodyEdition(backend, mode);
   if (!(await isComplete(local))) throw new BodyRuntimeError("Bootstrap must complete before local body commits.");
+  // History a settle could not retire (another realm moved the target, or it predates
+  // retirement) leaves before this commit reserves its own capacity.
+  await retireQuietly(backend, mode, id);
   const initial = await bodySnapshot(backend, id, mode);
   if (!initial.read.document) throw new BodyRuntimeError("Body delivery does not create documents.");
   let recorded: IntentRecord | null = null;
@@ -1016,6 +1046,10 @@ export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutatio
       const meta = [{ key, value: descriptor }], removeMeta = supersede ? retiredDescriptorKeys([supersede]) : [];
       const projected: IntentRecord = { ...intent, sequence: Number.MAX_SAFE_INTEGER, local: version, content: raw, updatedAt: createdAt, attempts: 0, state: "pending" };
       projectBodyGuard(snap.guard, { document: { version, raw }, intents: [...snap.read.intents.filter(row => row.requestId !== supersede?.requestId), projected], meta, removeMeta });
+      // Every later read validates this pair, preparing its delivery; one that cannot be prepared
+      // (an envelope over its bound once JSON escapes the body) is refused before it is journaled.
+      try { validateBodyRecord(mode, projected, descriptor); }
+      catch (error) { throw error instanceof BodyRuntimeError ? error : new BodyRuntimeError("The edit is too large to deliver once encoded."); }
       try {
         const result = await backend.writeJournaled(id, doc, { ...options, guard: snap.guard, intent, meta, removeMeta, ...(supersede ? { supersede: { requestId: supersede.requestId, expectedState: supersede.state, expectedAttempts: 0 } } : {}) });
         recorded = result.intent;
@@ -1503,7 +1537,7 @@ export async function settleIntent(
         requestId,
         "in_flight",
         { state: "acknowledged", attempts, acknowledgedVersion: outcome.version, ...(finding ? { finding } : {}) },
-        { meta: [baseRow(current.target, { version: outcome.version, content: current.content }), acknowledged] },
+        { meta: [baseRow(current.target, { version: outcome.version, content: current.content, ...(finding ? { refetch: true as const } : {}) }), acknowledged] },
       );
     }
     case "conflict": {
@@ -1578,7 +1612,7 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
       }
       case "conflict": {
         let remote = await remoteHead(options.remote, intent.target, result.outcome.actual);
-        if (jsonBytes(remote) > 2 * 1024 * 1024) { remote = { version: result.outcome.actual, content: null }; patch.finding = "Remote content exceeds the retained evidence limit."; }
+        if (jsonBytes(remote) > BODY_DELIVERY_LIMITS.envelopeBytes) { remote = { version: result.outcome.actual, content: null }; patch.finding = "Remote content exceeds the retained evidence limit."; }
         patch = { ...patch, state: "conflict", remote };
         break;
       }
@@ -1594,8 +1628,12 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
     }
     const raw = document ? stringifyDoc(document.frontmatter, document.body ?? "") : undefined;
     projectBodyGuard(fresh.guard, { intents: fresh.read.intents.map(row => row.requestId === requestId ? { ...row, ...patch } : row), meta, ...(raw === undefined ? {} : { document: { version: versionOfBytes(raw), raw } }) });
-    try { return await backend.updateIntent(requestId, "in_flight", patch, { guard: fresh.guard, meta, ...(document ? { document } : {}) }); }
-    catch (error) { if (!(error instanceof JournalGuardConflict) || retry === 2) throw error; }
+    let settled: IntentRecord;
+    try { settled = await backend.updateIntent(requestId, "in_flight", patch, { guard: fresh.guard, meta, ...(document ? { document } : {}) }); }
+    catch (error) { if (!(error instanceof JournalGuardConflict) || retry === 2) throw error; continue; }
+    // The acknowledgment is durable; older acknowledged history can leave the journal now.
+    if (settled.state === "acknowledged") await retireQuietly(backend, mode, intent.target);
+    return settled;
   }
   return null;
 }
@@ -2006,7 +2044,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       return;
     }
     const base = fenced ? fenced.base : await backend.readMeta<SharedBase>(baseKey(id));
-    if (base?.version === head.version) {
+    if (holdsVersion(base, head.version)) {
       report.unchanged.push(id);
       return;
     }
@@ -2094,7 +2132,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       continue;
     }
     const base = await backend.readMeta<SharedBase>(baseKey(head.id));
-    if (base?.version === head.version) report.unchanged.push(head.id);
+    if (holdsVersion(base, head.version)) report.unchanged.push(head.id);
     else {
       candidates.push(head.id);
       versions.set(head.id, head.version);

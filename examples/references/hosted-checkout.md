@@ -65,20 +65,62 @@ Only run it when the person asks for the move.
    link, as below), creates the bundle, and converts the folder in place into a hosted checkout.
    No file is rewritten.
 3. A Git board is unbound from its `board` branch, but the branch stays, locally and on origin.
-   Tell the person their teammates keep using the Git board until they check out the hosted bundle
-   instead. A board that is behind its upstream is refused until `superbee sync` brings it current.
+   For a board shared on origin, publish commits and pushes a moved marker on the branch:
+   teammates' next `superbee sync` refuses to push and names the checkout command. Teammates on an
+   older CLI are not stopped, so suggest protecting the `board` branch until everyone updates. If
+   the receipt says the marker push was rejected or failed, show the person its `recovery`
+   commands. After the board is moved back (the marker commit reverted on origin), teammates'
+   next `superbee sync` works again. A board that is behind its upstream is refused
+   until `superbee sync` brings it current.
 4. `--with-history` imports a Git board's earlier versions as labeled, unverified history. Use it
    only when the person asks for history.
 5. `TRANSIENT` with `write_outcome_unknown` means the creation may be partial: re-run the same
    command, which finishes or confirms the same creation.
+6. Only the person can reach the new bundle until it is shared (next section).
+
+## Sharing a hosted bundle, and retiring one
+
+`superbee access list <bundle>` shows the person's own access and, for a workspace admin, everyone
+with access. When the person asks you to share a bundle with someone, run
+`superbee access grant <bundle> <email> --level read|write` without `--yes` first, show the
+preview, then run the `--yes` command it names. `access revoke <bundle> <email>` works the same
+way. Only a workspace admin may change access. `person_not_member` means the person must invite
+them from the Members page in the Superbee app first. Repeating a grant or revoke is safe.
+
+`superbee bundle retire <bundle>` is the person's step, never yours: it needs them to type the
+bundle id in their own terminal. If it refuses with `needs_person_at_terminal`, show the person
+the host's statement and give them the command; do not try to work around it.
 
 ## Sign-in: relay the link, then retry
 
-Hosted commands start sign-in by themselves. When a command returns `AUTH_REQUIRED` (exit 4):
+First run on a machine, in order:
 
-1. Give the person `details.sign_in_url` and `details.user_code` exactly as returned.
-2. Wait until they say they have confirmed.
-3. Run the same command again (`details.resume`). It finishes sign-in and continues.
+1. `superbee whoami`. It exits 0 either way. `signed_in: false` with `status: not_signed_in` names
+   the command to run; `status: waiting_for_confirmation` lists a sign-in already started, with its
+   link. The CLI never picks a host on its own; if the person may use a host other than the one
+   named, ask them which.
+2. `superbee login --host <url>`. It returns exit 4 while it waits for the person (below).
+3. Once they confirm, re-run the same `login`. It reports `signed_in`, and later hosted reads use
+   that host until another is named with `--host`. Writes such as `checkout` and `publish` need
+   `--host` once you are signed in to more than one host.
+
+Exit 4 (`AUTH_REQUIRED`) means sign-in is needed. It is not a failure, so do not report it as one.
+Read `details.status`:
+
+- `waiting_for_confirmation`: a sign-in has started and is waiting for the person.
+  1. Give the person `details.sign_in_url` and `details.user_code` exactly as returned.
+  2. Wait until they say they have confirmed.
+  3. Run the same command again (`details.resume`). It finishes sign-in and continues.
+- `not_signed_in`: no host is known on this machine yet. Run `details.sign_in_command` (or the same
+  `login` with the person's host), then re-run the original command.
+- No `status` (for example a session that ended during a sync): run the `login` command in `help`,
+  relay the link it returns as above, then re-run the original command.
+
+A `RUNTIME` error with `details.reason: state_dir_not_writable` means this process may not write
+Superbee's private state directory, `~/.superbee-state`. The usual cause is an agent sandbox that
+allows writes only inside the workspace. Ask the person to allow writes to that directory (or to
+approve running the command outside the sandbox), then re-run it. There is no override for the
+directory's location.
 
 Never ask for a password, token or code the person did not see in their browser.
 `superbee setup hosted` signs in and records the default hosted workspace in one step. If the

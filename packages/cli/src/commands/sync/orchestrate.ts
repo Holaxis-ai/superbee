@@ -30,6 +30,7 @@ import {
   hasLocalOnlyBundle,
   healStaleRebaseBeforeProvisioning,
   inTreeFetchAndRecord,
+  fetchOrigin,
   isBoardGitError,
   originDocsBetween,
   push,
@@ -88,6 +89,7 @@ import type { BoundBoardOwner } from "../../bound-board-owner.js";
 import { recoverBoundBoardOwner } from "../../bound-board-recovery.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
 import { syncEnvelope, withSyncEnvelope } from "../../sync-outcomes.js";
+import { MOVED_MARKER_FILE, movedBoardRefusal, readMovedMarker } from "../../hosted/moved-marker.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -303,6 +305,37 @@ type SyncDispatch =
 
 /** The provision phase's result: the board checkout this run operates on. */
 interface SyncBoard { boardPath: string; key: string; outcome: ProvisionOutcome }
+
+/**
+ * Refuse a board that carries the moved-to-hosted marker (`publish --to hosted` wrote it). With
+ * `fetch` (the entry check, before anything is committed), origin is fetched first, and a board
+ * moved back passes: origin holds the commit that added the marker but no longer the marker (it
+ * was reverted), so this run's pull brings that in. Offline, the marker here stands. A marker whose
+ * commit origin never received is refused with the push that finishes the move.
+ */
+function refuseMovedBoard(boardPath: string, fetch = false): void {
+  const marker = readMovedMarker(boardPath);
+  if (marker === null) return;
+  const fetched = fetch ? fetchOrigin(boardPath) : true;
+  const where = markerOnOrigin(boardPath);
+  if (fetch && fetched && where === "moved_back") return;
+  throw movedBoardRefusal(boardPath, marker, { commits: unpushedCount(boardPath) ?? 0, uncommitted: countUncommitted(boardPath) }, where === "unpushed" ? { markerUnpushed: boardPath } : {});
+}
+
+/**
+ * Where origin's board (as last fetched) stands on this folder's marker: `moved_back` when origin
+ * holds the commit that added it but not the marker, `unpushed` when origin lacks that commit, and
+ * `on_origin` or `unknown` otherwise (no origin, or a marker no commit here added).
+ */
+function markerOnOrigin(boardPath: string): "on_origin" | "moved_back" | "unpushed" | "unknown" {
+  const origin = resolveOriginRef(boardPath);
+  if (origin === null) return "unknown";
+  const added = runGit(boardPath, ["log", "-1", "--format=%H", "--diff-filter=A", "HEAD", "--", MOVED_MARKER_FILE]);
+  const commit = added.status === 0 ? added.stdout.trim() : "";
+  if (commit === "") return "unknown";
+  if (runGit(boardPath, ["merge-base", "--is-ancestor", commit, origin]).status !== 0) return "unpushed";
+  return runGit(boardPath, ["cat-file", "-e", `${origin}:${MOVED_MARKER_FILE}`]).status === 0 ? "on_origin" : "moved_back";
+}
 
 /** Pre-pull baselines: the stored cursor and the refs captured BEFORE this run's commit/fetch. */
 interface SyncBaseline { storedCursor: SyncCursor | null; startHead: string; preFetchOriginRef: string | null }
@@ -651,13 +684,15 @@ function provisionPhase(run: SyncRun): SyncBoard | null {
  * of this run. Then the diff baselines: origin/board's OWN ref as this run understood it BEFORE
  * its own fetch — captured before the commit and pull phases, so it can never include anything local.
  */
-async function baselinePhase(board: SyncBoard): Promise<SyncBaseline> {
+async function baselinePhase(board: SyncBoard, entryOriginRef?: string | null): Promise<SyncBaseline> {
   await defaultSyncStore.refreshMarker(board.key);
   const storedCursor = await defaultSyncStore.readCursor(board.key);
   const startHead = currentHead(board.boardPath);
   const preFetchOriginRef = board.outcome.kind === "already" && board.outcome.originBaseline
     ? board.outcome.originBaseline
-    : resolveOriginRef(board.boardPath);
+    : entryOriginRef !== undefined
+      ? entryOriginRef
+      : resolveOriginRef(board.boardPath);
   return { storedCursor, startHead, preFetchOriginRef };
 }
 
@@ -903,8 +938,14 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   const board = provisionPhase(run);
   if (board === null) return;
   assertBundleOutsidePrivateState(board.boardPath);
+  // A board moved to hosted (its marker already here) takes nothing from this run. A pull-only run
+  // never pushes, so it still pulls: that is how a board moved back (its marker reverted) returns.
+  // Origin as it stood before the entry check's fetch, so the receipt's incoming counts what that
+  // fetch brought (a moved-back board's revert, say).
+  const entryOriginRef = resolveOriginRef(board.boardPath);
+  if (!run.pullOnly) refuseMovedBoard(board.boardPath, true);
 
-  const baseline = await baselinePhase(board);
+  const baseline = await baselinePhase(board, entryOriginRef);
   if (!run.pullOnly) {
     const held = malformedOutgoingDocuments(board.boardPath);
     if (held.length > 0) {
@@ -918,6 +959,8 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
     return;
   }
   await pullPhase(run, board, commitResult);
+  // The marker can arrive with this pull: then nothing is pushed, and this run's commit stays local.
+  if (!run.pullOnly) refuseMovedBoard(board.boardPath);
   const delta = await deltaPhase(board, baseline);
   const originRef = run.pullOnly ? null : resolveOriginRef(board.boardPath);
   if (originRef !== null) {

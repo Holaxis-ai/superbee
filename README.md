@@ -272,6 +272,9 @@ implemented [wire protocol](docs/WIRE-PROTOCOL.md), and private vulnerability ro
 [SECURITY.md](SECURITY.md). Other deep documentation remains in the bundle rather than creating a
 second manually coordinated product authority.
 
+One task guide lives in the repository too:
+[move a team's Git board to hosted Superbee](docs/move-a-team-board-to-hosted.md).
+
 ## License
 
 Apache-2.0 © 2026 Holaxis

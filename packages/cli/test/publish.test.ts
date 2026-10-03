@@ -4,7 +4,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -14,11 +15,13 @@ import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { hostedCheckoutAt } from "../src/autopull.js";
 import { bundleHomeAt } from "../src/bundle-home.js";
 import { publish, bundleIdFrom } from "../src/commands/publish.js";
+import { sync as gitSync } from "../src/commands/sync/orchestrate.js";
 import { CliError } from "../src/errors.js";
 import { defaultHostedAuthDeps, writeDefaultHost, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { seedHostedSession } from "./support/hosted-session.js";
 import { bindingForPath, checkoutStoreDir } from "../src/hosted/binding.js";
 import { readCheckoutMarker } from "../src/hosted/marker.js";
+import { readMovedMarker } from "../src/hosted/moved-marker.js";
 import { folderConflicts, folderMatchesProjection, readProjection, scanCheckout } from "../src/hosted/sync-scan.js";
 import { openLocalBundle } from "@superbee/browser-local";
 import { FakeCreateHost } from "./support/fake-hosted-create.js";
@@ -154,6 +157,8 @@ test("the preview makes no request and lists what travels, what stays, and the n
   assert.equal((preview.stays as { total: number }).total, 1);
   assert.equal((preview.to as Record<string, unknown>).bundle_id, "team-notes");
   assert.match(String((preview.help as string[])[0]), /publish --to hosted --dir .* --host https:\/\/hosted\.example --bundle-id team-notes --yes$/);
+  // Sharing is named as a command an agent can run, with the app as the other way.
+  assert.match(String((preview.then as string[])[0]), /until you share it: .*access grant team-notes <email> --level write --host https:\/\/hosted\.example, or in the app$/);
   assert.equal(await bindingForPath(h.home, folder), null);
 });
 
@@ -174,6 +179,7 @@ test("a host that names workspaces: the new checkout names its bundle in the wor
   const binding = (await bindingForPath(h.home, await realpath(folder)))!;
   assert.equal(binding.bundle_id, "team-notes");
   assert.equal(binding.workspace_slug, "north");
+  assert.match(String(receipt.access), /access grant north\/team-notes <email> --level write --host https:\/\/hosted\.example, or in the app\)$/);
   assert.equal(readCheckoutMarker(folder)?.workspace_slug, "north");
   // Every read after the creation names the bundle in that workspace.
   const after = fake.requests.slice(fake.requests.findIndex((r) => r.path.endsWith("/bundle-create")) + 1);
@@ -191,6 +197,7 @@ test("--yes creates the bundle and converts the folder in place, rewriting nothi
   assert.equal(receipt.published, "created");
   assert.equal(receipt.bundle_id, "team-notes");
   assert.equal(receipt.workspace, "tenant:a");
+  assert.match(String(receipt.access), /^write \(only you, until you share it: .*access grant team-notes <email> --level write --host https:\/\/hosted\.example, or in the app\)$/);
   assert.deepEqual(receipt.sent, { documents: 2, reserved_files: 2, other_files: 1, history: { imported: 0, verified: false } });
   assert.deepEqual(receipt.checkout, { matched: 2, placed: 0, conflicts: 0, local_only: 0 });
   // One creation request, identified, carrying the whole bundle.
@@ -447,15 +454,276 @@ test("a Git board is published with its history, unbound, and its branch left as
   const unbound = receipt.git as Record<string, unknown>;
   assert.equal(unbound.unbound, true);
   assert.equal(unbound.head, head);
-  // The folder is no longer a worktree; the branch and its commit are untouched.
+  // The folder is no longer a worktree. A board never shared on origin has no teammates to stop:
+  // no marker, and the branch and its commit are untouched.
   await assert.rejects(stat(path.join(canonical, ".git")));
   assert.equal(git(project, ["rev-parse", "board"]), head);
+  assert.match(String(unbound.moved_marker), /no shared board branch/);
+  assert.equal(unbound.recovery, undefined);
   assert.doesNotMatch(git(project, ["worktree", "list"]), /\.superbee/);
   assert.equal((await bundleHomeAt(canonical, { home: h.home })).home, "hosted");
   const state = await checkoutState(h.home, canonical);
   assert.equal(state.matches, true);
   // Hooks and reads run from the project root find the published board as the hosted checkout.
   assert.equal((await hostedCheckoutAt(project, h.home))?.bundle_id, "team.board");
+});
+
+test("a moved board: publish pushes the marker, and a teammate's sync then refuses to push and names the checkout", async () => {
+  const h = await harness();
+  const remote = path.join(h.cwd, "remote.git");
+  git(h.cwd, ["init", "-q", "--bare", remote]);
+  const project = path.join(h.cwd, "project");
+  await mkdir(project);
+  git(project, ["init", "-q", "-b", "main"]);
+  await writeFile(path.join(project, ".gitignore"), ".superbee/\n");
+  git(project, ["add", ".gitignore"]);
+  git(project, ["commit", "-q", "-m", "project"]);
+  git(project, ["remote", "add", "origin", remote]);
+  const board = path.join(project, ".superbee");
+  git(project, ["worktree", "add", "-q", "--detach", board]);
+  git(board, ["checkout", "-q", "--orphan", "board"]);
+  git(board, ["rm", "-q", "-rf", "--ignore-unmatch", "."]);
+  await writeBundle(board);
+  git(board, ["add", "."]);
+  git(board, ["commit", "-q", "-m", "v1"]);
+  git(board, ["push", "-q", "-u", "origin", "board"]);
+  const teammate = path.join(h.cwd, "teammate");
+  git(h.cwd, ["clone", "-q", "-b", "board", remote, teammate]);
+
+  const receipt = await run(h, ["--to", "hosted", "--dir", await realpath(board), "--host", HOST, "--bundle-id", "team.board", "--yes"], new FakeCreateHost({ email: "mover@example.com" }));
+  assert.equal(receipt.published, "created");
+  assert.match(String((receipt.git as Record<string, unknown>).moved_marker), /committed and pushed/);
+  const marker = JSON.parse(git(remote, ["show", "board:.superbee-moved-to-hosted.json"])) as Record<string, unknown>;
+  assert.equal(marker.bundle, "team.board");
+  assert.equal(marker.moved_by, "mover@example.com", "the marker names who moved the board");
+  // Teammates reach the bundle only once it is shared: that is the first next step.
+  assert.match(String((receipt.help as string[])[0]), /access grant team\.board <email> --level write --host /);
+
+  // The teammate edits and syncs: the pull brings the marker, and nothing is pushed.
+  await writeFile(path.join(teammate, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nTeammate edit.\n");
+  const before = git(remote, ["rev-parse", "board"]);
+  const error = await rejects(gitSync(["--dir", teammate, "--json"], { stdout: () => {}, stderr: () => {} }));
+  assert.equal(error.details?.reason, "board_moved", `${error.code} ${error.message} ${JSON.stringify(error.details)}`);
+  assert.equal(error.code, "FORBIDDEN");
+  assert.equal(error.details?.bundle, "team.board");
+  assert.match(error.help ?? "", /checkout team\.board --host /);
+  assert.match(error.help ?? "", /if checkout says not found, ask mover@example\.com to share it: .*access grant team\.board <your email> --level write --host /);
+  assert.equal(git(remote, ["rev-parse", "board"]), before, "nothing reached the board");
+  // A second sync refuses before committing anything else.
+  const again = await rejects(gitSync(["--dir", teammate, "--json"], { stdout: () => {}, stderr: () => {} }));
+  assert.equal(again.details?.reason, "board_moved", `${again.code} ${again.message} ${JSON.stringify(again.details)}`);
+  assert.equal(git(remote, ["rev-parse", "board"]), before);
+
+  // A teammate whose board is a project's worktree (sync run from the project) is refused the same way.
+  const project2 = path.join(h.cwd, "project2");
+  git(h.cwd, ["clone", "-q", "--no-checkout", remote, project2]);
+  git(project2, ["worktree", "add", "-q", path.join(project2, ".superbee"), "board"]);
+  const owner = await rejects(gitSync(["--dir", project2, "--json"], { stdout: () => {}, stderr: () => {} }));
+  assert.equal(owner.details?.reason, "board_moved", `${owner.code} ${owner.message} ${JSON.stringify(owner.details)}`);
+  // ... but a pull-only sync never pushes, so it is not refused.
+  await gitSync(["--dir", project2, "--pull-only", "--json"], { stdout: () => {}, stderr: () => {} });
+
+  // Moving back: the publisher reverts the marker commit on the branch and pushes it. The teammate
+  // with a local commit syncs as usual: origin no longer carries the marker, so their commit is
+  // replayed onto the revert and pushed. The other pulls the revert in with a pull-only sync.
+  const mover = path.join(h.cwd, "mover");
+  git(h.cwd, ["clone", "-q", "-b", "board", remote, mover]);
+  git(mover, ["revert", "--no-edit", "HEAD"]);
+  await writeFile(path.join(mover, "notes", "beta.md"), "---\ntype: Note\ntitle: Beta\n---\nMoved back.\n");
+  git(mover, ["commit", "-q", "-am", "beta after the move back"]);
+  git(mover, ["push", "-q", "origin", "board"]);
+  const back: string[] = [];
+  await gitSync(["--dir", teammate, "--json"], { stdout: (text) => void back.push(text), stderr: () => {} });
+  // The entry check's fetch brought the move back in; the receipt still counts it as incoming.
+  assert.match(back.join(""), /notes\/beta/, back.join(""));
+  await assert.rejects(stat(path.join(teammate, ".superbee-moved-to-hosted.json")), "the revert removed the marker");
+  assert.match(git(remote, ["show", "board:notes/alpha.md"]), /Teammate edit\./, "the teammate's edit reached the board again");
+  // A project worktree's sync records no origin baseline while provisioning: the one taken before
+  // the entry check's fetch is what lets its receipt count the move back as incoming.
+  const owned: string[] = [];
+  await gitSync(["--dir", project2, "--json"], { stdout: (text) => void owned.push(text), stderr: () => {} });
+  await assert.rejects(stat(path.join(project2, ".superbee", ".superbee-moved-to-hosted.json")));
+  assert.match(owned.join(""), /notes\/beta/, owned.join(""));
+});
+
+test("an unreadable moved marker still marks the board as moved: garbage, oversized, a link or a folder", async () => {
+  const h = await harness();
+  const root = path.join(h.cwd, "marker");
+  await mkdir(root);
+  const file = path.join(root, ".superbee-moved-to-hosted.json");
+  assert.equal(readMovedMarker(root), null);
+  await writeFile(file, JSON.stringify({ superbee_moved_to_hosted: 1, host: "https://hosted.example", bundle: "team.board", moved_at: "2026-10-03T00:00:00.000Z", moved_by: "a@example.com" }));
+  assert.deepEqual(readMovedMarker(root), { host: "https://hosted.example", bundle: "team.board", moved_at: "2026-10-03T00:00:00.000Z", moved_by: "a@example.com" });
+  await writeFile(file, "not json");
+  assert.deepEqual(readMovedMarker(root), { unreadable: true });
+  await writeFile(file, `{"pad":"${"x".repeat(5000)}"}`);
+  assert.deepEqual(readMovedMarker(root), { unreadable: true });
+  await rm(file);
+  await writeFile(path.join(root, "elsewhere.json"), JSON.stringify({ superbee_moved_to_hosted: 1, host: "h", bundle: "b", moved_at: "t" }));
+  await symlink(path.join(root, "elsewhere.json"), file);
+  assert.deepEqual(readMovedMarker(root), { unreadable: true }, "a link is never followed");
+  await rm(file);
+  await mkdir(file);
+  assert.deepEqual(readMovedMarker(root), { unreadable: true });
+
+  // A board clone carrying an unreadable marker: sync refuses and names no checkout.
+  const remote = path.join(h.cwd, "remote.git");
+  git(h.cwd, ["init", "-q", "--bare", remote]);
+  const seed = path.join(h.cwd, "seed");
+  await mkdir(seed);
+  git(seed, ["init", "-q", "-b", "board"]);
+  await writeBundle(seed);
+  await writeFile(path.join(seed, ".superbee-moved-to-hosted.json"), "{ broken");
+  git(seed, ["add", "-A"]);
+  git(seed, ["commit", "-q", "-m", "v1"]);
+  git(seed, ["remote", "add", "origin", remote]);
+  git(seed, ["push", "-q", "-u", "origin", "board"]);
+  const clone = path.join(h.cwd, "clone");
+  git(h.cwd, ["clone", "-q", "-b", "board", remote, clone]);
+  const error = await rejects(gitSync(["--dir", clone, "--json"], { stdout: () => {}, stderr: () => {} }));
+  assert.equal(error.details?.reason, "board_moved", `${error.code} ${error.message}`);
+  assert.equal(error.details?.marker, "unreadable");
+  assert.match(error.help ?? "", /is unreadable/);
+});
+
+/** A project with a board worktree pushed to a bare origin, and a teammate's clone of it. */
+async function sharedBoard(h: Harness): Promise<{ remote: string; project: string; board: string }> {
+  const remote = path.join(h.cwd, "remote.git");
+  git(h.cwd, ["init", "-q", "--bare", remote]);
+  const project = path.join(h.cwd, "project");
+  await mkdir(project);
+  git(project, ["init", "-q", "-b", "main"]);
+  await writeFile(path.join(project, ".gitignore"), ".superbee/\n");
+  git(project, ["add", ".gitignore"]);
+  git(project, ["commit", "-q", "-m", "project"]);
+  git(project, ["remote", "add", "origin", remote]);
+  const board = path.join(project, ".superbee");
+  git(project, ["worktree", "add", "-q", "--detach", board]);
+  git(board, ["checkout", "-q", "--orphan", "board"]);
+  git(board, ["rm", "-q", "-rf", "--ignore-unmatch", "."]);
+  await writeBundle(board);
+  git(board, ["add", "."]);
+  git(board, ["commit", "-q", "-m", "v1"]);
+  git(board, ["push", "-q", "-u", "origin", "board"]);
+  return { remote, project, board: await realpath(board) };
+}
+
+test("a marker push origin refuses (a protected branch) names lifting the rule, and the push", async () => {
+  const h = await harness();
+  const { remote, project, board } = await sharedBoard(h);
+  await writeFile(path.join(remote, "hooks", "pre-receive"), "#!/bin/sh\necho protected >&2\nexit 1\n", { mode: 0o755 });
+  const receipt = await run(h, ["--to", "hosted", "--dir", board, "--host", HOST, "--bundle-id", "team.board", "--yes"], new FakeCreateHost());
+  const unbound = receipt.git as { moved_marker: string; recovery: string[] };
+  assert.match(unbound.moved_marker, /origin refused the push \(a branch protection rule or server hook/);
+  assert.match(unbound.moved_marker, /lift the rule/);
+  assert.deepEqual(unbound.recovery, [`git -C ${await realpath(project)} push origin board`]);
+});
+
+test("a moved marker that cannot be committed is removed again, and the board is left clean", async () => {
+  const h = await harness();
+  const { project, board } = await sharedBoard(h);
+  const head = git(board, ["rev-parse", "HEAD"]);
+  // Another Git process holds the worktree's index: the marker's git add fails.
+  await writeFile(path.join(git(board, ["rev-parse", "--absolute-git-dir"]), "index.lock"), "");
+  const receipt = await run(h, ["--to", "hosted", "--dir", board, "--host", HOST, "--bundle-id", "team.board", "--yes"], new FakeCreateHost());
+  assert.equal(receipt.published, "created");
+  assert.match(String((receipt.git as Record<string, unknown>).moved_marker), /^could not write the moved marker/);
+  await assert.rejects(stat(path.join(board, ".superbee-moved-to-hosted.json")), "the marker file was removed again");
+  assert.equal(git(project, ["rev-parse", "board"]), head, "no marker commit");
+  assert.equal(git(project, ["status", "--porcelain"]), "");
+});
+
+test("a marker committed here but never pushed: sync refuses, naming the push that finishes the move", async () => {
+  const h = await harness();
+  const { remote } = await sharedBoard(h);
+  const clone = path.join(h.cwd, "clone");
+  git(h.cwd, ["clone", "-q", "-b", "board", remote, clone]);
+  await writeFile(path.join(clone, ".superbee-moved-to-hosted.json"), JSON.stringify({ superbee_moved_to_hosted: 1, host: HOST, bundle: "team.board", moved_at: "2026-10-03T00:00:00.000Z" }));
+  git(clone, ["add", "--force", ".superbee-moved-to-hosted.json"]);
+  git(clone, ["commit", "-q", "-m", "moved"]);
+  const before = git(remote, ["rev-parse", "board"]);
+  const error = await rejects(gitSync(["--dir", clone, "--json"], { stdout: () => {}, stderr: () => {} }));
+  assert.equal(error.details?.reason, "board_moved", `${error.code} ${error.message}`);
+  assert.match(String(error.details?.marker_unpushed), /never reached origin.*git -C .*clone push origin board$/);
+  assert.equal(git(remote, ["rev-parse", "board"]), before, "sync did not push the marker for them");
+});
+
+test("a board with origin but never pushed there gets no marker, and nothing is pushed", async () => {
+  const h = await harness();
+  const remote = path.join(h.cwd, "remote.git");
+  git(h.cwd, ["init", "-q", "--bare", remote]);
+  const project = path.join(h.cwd, "project");
+  await mkdir(project);
+  git(project, ["init", "-q", "-b", "main"]);
+  await writeFile(path.join(project, ".gitignore"), ".superbee/\n");
+  git(project, ["add", ".gitignore"]);
+  git(project, ["commit", "-q", "-m", "project"]);
+  git(project, ["remote", "add", "origin", remote]);
+  git(project, ["push", "-q", "origin", "main"]);
+  const board = path.join(project, ".superbee");
+  git(project, ["worktree", "add", "-q", "--detach", board]);
+  git(board, ["checkout", "-q", "--orphan", "board"]);
+  git(board, ["rm", "-q", "-rf", "--ignore-unmatch", "."]);
+  await writeBundle(board);
+  git(board, ["add", "."]);
+  git(board, ["commit", "-q", "-m", "v1"]);
+  const head = git(board, ["rev-parse", "HEAD"]);
+
+  const receipt = await run(h, ["--to", "hosted", "--dir", await realpath(board), "--host", HOST, "--bundle-id", "team.board", "--yes"], new FakeCreateHost());
+  assert.equal(receipt.published, "created");
+  assert.match(String((receipt.git as Record<string, unknown>).moved_marker), /no shared board branch \(no origin\/board\): no teammates to stop/);
+  assert.equal(git(project, ["ls-remote", "origin", "board"]), "", "the board branch was never pushed");
+  assert.equal(git(project, ["rev-parse", "board"]), head, "no marker commit");
+});
+
+test("a teammate's push between the upload and the marker push: rejected, named, and the recovery commands finish it", async () => {
+  const h = await harness();
+  const remote = path.join(h.cwd, "remote.git");
+  git(h.cwd, ["init", "-q", "--bare", remote]);
+  const project = path.join(h.cwd, "project");
+  await mkdir(project);
+  git(project, ["init", "-q", "-b", "main"]);
+  await writeFile(path.join(project, ".gitignore"), ".superbee/\n");
+  git(project, ["add", ".gitignore"]);
+  git(project, ["commit", "-q", "-m", "project"]);
+  git(project, ["remote", "add", "origin", remote]);
+  const board = path.join(project, ".superbee");
+  git(project, ["worktree", "add", "-q", "--detach", board]);
+  git(board, ["checkout", "-q", "--orphan", "board"]);
+  git(board, ["rm", "-q", "-rf", "--ignore-unmatch", "."]);
+  await writeBundle(board);
+  git(board, ["add", "."]);
+  git(board, ["commit", "-q", "-m", "v1"]);
+  git(board, ["push", "-q", "-u", "origin", "board"]);
+  const teammate = path.join(h.cwd, "teammate");
+  git(h.cwd, ["clone", "-q", "-b", "board", remote, teammate]);
+
+  const fake = new FakeCreateHost();
+  // The teammate pushes while the bundle is being uploaded: after publish's snapshot and fetch.
+  fake.onRequest = (route) => {
+    if (route !== "bundle-create") return;
+    writeFileSync(path.join(teammate, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nRaced edit.\n");
+    git(teammate, ["commit", "-q", "-am", "raced"]);
+    git(teammate, ["push", "-q", "origin", "board"]);
+  };
+  const receipt = await run(h, ["--to", "hosted", "--dir", await realpath(board), "--host", HOST, "--bundle-id", "team.board", "--yes"], fake);
+  assert.equal(receipt.published, "created");
+  const unbound = receipt.git as { moved_marker: string; recovery: string[] };
+  assert.match(unbound.moved_marker, /push was rejected: a teammate pushed to the board after your snapshot/);
+  const top = await realpath(project);
+  assert.equal(unbound.recovery[1], `git -C ${top} log board..origin/board`);
+  assert.equal(unbound.recovery.length, 6);
+  assert.match(unbound.recovery[2]!, /worktree add .*-board-marker board$/);
+  assert.equal((await bundleHomeAt(await realpath(board), { home: h.home })).home, "hosted", "the folder was converted before the push");
+  assert.doesNotMatch(git(remote, ["ls-tree", "--name-only", "board"]), /moved-to-hosted/, "the rejected marker is not on origin");
+
+  // The recovery commands, run as printed, put the marker on top of the teammate's commit.
+  for (const command of unbound.recovery) {
+    const result = spawnSync("sh", ["-c", command], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "Ada", GIT_AUTHOR_EMAIL: "ada@example.com", GIT_COMMITTER_NAME: "Ada", GIT_COMMITTER_EMAIL: "ada@example.com" } });
+    assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+  }
+  assert.match(git(remote, ["show", "board:.superbee-moved-to-hosted.json"]), /"bundle": "team.board"/);
+  assert.match(git(remote, ["show", "board:notes/alpha.md"]), /Raced edit\./);
 });
 
 test("a board behind its upstream is a blocker until synced", async () => {
@@ -542,4 +810,23 @@ test("a conversion that fails after the creation is finished by checkout --adopt
   const state = await checkoutState(h.home, folder);
   assert.deepEqual(state.held, [], "the blob and nested index publish sent are not held");
   assert.deepEqual(state.pending, []);
+});
+
+test("publish with no host names the sign-in: USAGE with a token set, AUTH_REQUIRED not_signed_in on a first run, never a picked host", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "notes-bundle");
+  await writeBundle(folder);
+  const fake = new FakeCreateHost();
+  const preview = await run(h, ["--to", "hosted", "--dir", folder], fake);
+  assert.equal(preview.ready, false);
+  assert.match(JSON.stringify(preview.blockers), /no_host/);
+  assert.match(String((preview.help as string[])[0]), /superbee login --host https:\/\/mcp\.getsuperbee\.com$/);
+  const withToken = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--yes"], fake));
+  assert.equal(withToken.code, "USAGE");
+  assert.match(withToken.message, /SUPERBEE_ACCESS_TOKEN alone never chooses the host/);
+  const firstRun = { ...h, auth: { ...h.auth, env: {} } };
+  const notSignedIn = await rejects(run(firstRun, ["--to", "hosted", "--dir", folder, "--yes"], fake));
+  assert.equal(notSignedIn.code, "AUTH_REQUIRED");
+  assert.equal(notSignedIn.details?.status, "not_signed_in");
+  assert.equal(fake.requests.length, 0, "nothing is sent without a host");
 });

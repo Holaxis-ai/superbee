@@ -79,6 +79,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/filesystem.d.ts"));
     assert.ok(paths.includes("dist/view-admission.js"));
     assert.ok(paths.includes("dist/view-admission.d.ts"));
+    assert.ok(paths.includes("dist/artifact-contract.js"));
+    assert.ok(paths.includes("dist/artifact-contract.d.ts"));
     assert.ok(paths.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
 
     await writeFile(
@@ -120,6 +122,13 @@ import {
 } from "@superbee/core/engine";
 import { MalformedDocumentError as StorageMalformedDocumentError } from "@superbee/core/storage";
 import { admitActiveView, MAX_ACTIVE_VIEW_BYTES, ACTIVE_VIEW_CONTENT_TYPE } from "@superbee/core/view-admission";
+
+import { decodeDocumentTargetV1, type DocumentTargetV1, type ArtifactDecodeResult } from "@superbee/core/artifact-contract";
+const decodedTarget: ArtifactDecodeResult<DocumentTargetV1> = decodeDocumentTargetV1({
+  schemaVersion: "superbee.document-target.v1", authority: { mode: "local", authorityKey: "local" },
+  bundleKey: "selected", documentId: "x.md",
+});
+if (decodedTarget.ok) { const exactId: string = decodedTarget.value.documentId; void exactId; }
 
 const admitted: { bytes: Uint8Array; contentType: "text/html; charset=utf-8" } = admitActiveView(new Uint8Array(), ACTIVE_VIEW_CONTENT_TYPE);
 void [admitted, MAX_ACTIVE_VIEW_BYTES];
@@ -290,6 +299,22 @@ export function exerciseViewAdmission() {
     });
     assert.equal(runInNewContext(viewBundle.outputFiles[0].text + '\nViewProof.exerciseViewAdmission()',
       { TextEncoder, TextDecoder }, { timeout: 5000 }), "text/html; charset=utf-8");
+
+    await writeFile(path.join(scratch, "artifact-consumer.mjs"), `
+import { decodeDocumentTargetV1, decodePresentDocumentRequestV1, decodePresentDocumentReceiptV1 } from "@superbee/core/artifact-contract";
+export function exerciseArtifacts() {
+  const target = decodeDocumentTargetV1({ schemaVersion: "superbee.document-target.v1", authority: { mode: "local", authorityKey: "local" }, bundleKey: "selected", documentId: "x.md" });
+  if (!target.ok) throw new Error("valid target refused");
+  const request = decodePresentDocumentRequestV1({ schemaVersion: "superbee.present-document.v1", operation: "present_document", invocationId: "invocation", target: target.value });
+  if (!request.ok) throw new Error("valid request refused");
+  const receipt = decodePresentDocumentReceiptV1({ schemaVersion: "superbee.present-document-receipt.v1", operation: "present_document", invocationId: "invocation", target: target.value, ok: true, presentation: { state: "open_requested" } }, request.value);
+  if (!receipt.ok || !receipt.value.ok) throw new Error("valid receipt refused");
+  return receipt.value.target.documentId;
+}
+`);
+    await run(process.execPath, ["--input-type=module", "-e", 'import { exerciseArtifacts } from "./artifact-consumer.mjs"; if (exerciseArtifacts() !== "x.md") throw new Error("identity changed");'], scratch);
+    const artifactBundle = await build({ absWorkingDir: scratch, entryPoints: ["artifact-consumer.mjs"], bundle: true, platform: "browser", format: "iife", globalName: "ArtifactProof", write: false, logLevel: "silent" });
+    assert.equal(runInNewContext(artifactBundle.outputFiles[0].text + '\nArtifactProof.exerciseArtifacts()', {}, { timeout: 5000 }), "x.md");
 
     // N3: the filesystem identity unit is not reachable from the packed package. Each negative
     // consumer must FAIL to typecheck for the named reason, and a runtime deep import must be
@@ -499,6 +524,7 @@ export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBacke
     assert.ok(installedManifest.exports["./storage"]);
     assert.ok(installedManifest.exports["./filesystem"]);
     assert.ok(installedManifest.exports["./view-admission"]);
+    assert.deepEqual(installedManifest.exports["./artifact-contract"], { types: "./dist/artifact-contract.d.ts", default: "./dist/artifact-contract.js" });
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
 

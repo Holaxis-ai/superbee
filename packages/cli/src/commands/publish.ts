@@ -23,7 +23,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { runGit } from "@superbee/board-git";
+import { fetchOrigin, runGit } from "@superbee/board-git";
 import { parseMarkdown, RemoteError, stripHostText } from "@superbee/core";
 import { CURRENT_HOST_DOCUMENT_INPUT_BYTES, HostedCarrierError } from "@superbee/core/hosted-transport";
 
@@ -36,12 +36,13 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
-import { defaultHostedAuthDeps, hostedWriteHost, hostSourceText, type HostedWriteHost } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, firstSignInCommand, hostedWriteHost, hostSourceText, notSignedInError, type HostedWriteHost } from "../hosted-auth/session.js";
 import { isHostedBundleId } from "../hosted/bundle-id.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
 import { connectHostedAccount, hostedListCommand, workspaceNames } from "../hosted/account.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
+import { commitMovedMarker, MOVED_MARKER_FILE, movedMarkerPushFailed, pushMovedMarker, type MovedMarkerCommit } from "../hosted/moved-marker.js";
 import { createBody, manifestBody, planDigest, planPublish, stagedContent, type PublishPlan } from "../hosted/publish-plan.js";
 import { isFinalBeforeReservation, runStagedCreate, StagedRefusal, type StagedProgress } from "../hosted/publish-staged.js";
 import { clearPendingCreate, clearPublishedExtras, listPendingCreates, readPendingCreate, writePendingCreate, writePublishedExtras, type PendingCreate } from "../hosted/publish-state.js";
@@ -73,7 +74,8 @@ frontmatter.
 
 With --yes, signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the
 command to re-run), creates the bundle in your workspace (only you can reach it, at write, until
-you share it in the app), then converts this folder in place into a hosted checkout: nothing in it
+you share it: superbee access grant <bundle-id> <email> --level write, or in the app), then
+converts this folder in place into a hosted checkout: nothing in it
 is rewritten, a read-only .superbee/checkout.json marker is added, and 'superbee sync' then syncs
 it with the host. A Git board is unbound first: the folder stops being a worktree of the board
 branch, which stays as it is, locally and on origin (the receipt names its commit). Teammates who
@@ -467,6 +469,15 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   const facts = await bundleHomeAt(canonical, { home });
   await assertPublishable(canonical, facts);
   const board = facts.home === "git" ? facts.board : null;
+  // Before --yes decides, the board's upstream as origin has it now (best effort: offline, the last
+  // fetch stands), so a teammate's recent push is a blocker rather than a commit the move misses.
+  if (values.yes && board?.channel === "branch") {
+    try {
+      fetchOrigin(board.top);
+    } catch {
+      // Offline or no origin: the last fetch stands.
+    }
+  }
   const boardState = board ? await boardCheck(board, canonical) : null;
 
   const bundle = await openBundle(canonical);
@@ -506,6 +517,9 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   let plan = await planFor(CURRENT_HOST_DOCUMENT_INPUT_BYTES);
 
   const yesCommand = yesCommandFor(target ? bindingHostArgument(target) : null);
+  const shareCommand = commandFragment`${cliInvocation()} access grant ${commandToken(bundleId)} <email> --level write${
+    target ? commandFragment` --host ${commandToken(bindingHostArgument(target))}` : commandFragment``
+  }`;
   // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents, read a page at a time, which is also
   // staged creation's own document bound; a larger bundle (never one this command creates) would be
   // created and the folder left as it is (a Git board stays bound), to use in the app.
@@ -518,7 +532,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         head: boardHead(board),
         sync: boardState?.block.state,
         ...(boardState && ((boardState.block.ahead as number | null) ?? 0) + ((boardState.block.uncommitted as number | null) ?? 0) > 0
-          ? { not_on_branch: { ahead: boardState.block.ahead, uncommitted: boardState.block.uncommitted, note: "these travel to hosted but not to the board branch teammates still sync" } }
+          ? { not_on_branch: { ahead: boardState.block.ahead, uncommitted: boardState.block.uncommitted, note: "unpushed commits reach the board branch with the moved-marker push (a board shared on origin); uncommitted changes travel to hosted only" } }
           : {}),
         will: converts
           ? "unbind this folder from the board branch; the branch and its commits stay, locally and on origin"
@@ -529,7 +543,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   if (!values.yes) {
     const blockers = [...plan.blockers.map((b) => ({ path: b.path, reason: b.reason, message: b.message })), ...(boardState?.blocker ? [boardState.blocker] : [])];
     if (ambiguous) blockers.push({ path: "", reason: "ambiguous_host", message: ambiguous.message });
-    else if (!target) blockers.push({ path: "", reason: "no_host", message: "no hosted Superbee host: sign in first, or pass --host" });
+    else if (!target) blockers.push({ path: "", reason: "no_host", message: notSignedInError(deps.auth.env).message });
     deps.stdout(
       render(
         {
@@ -549,11 +563,13 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           ...(blockers.length > 0 ? { blockers: { shown: Math.min(LISTED, blockers.length), total: blockers.length, rows: blockers.slice(0, LISTED) } } : {}),
           ...(gitPlan ? { git: gitPlan } : {}),
           then: [
-            "create the bundle in your workspace, reachable only by you (write) until you share it in the app",
+            `create the bundle in your workspace, reachable only by you (write) until you share it: ${shareCommand}, or in the app`,
             ...(converts
               ? [
                   "convert this folder in place into a hosted checkout: no file rewritten, a read-only .superbee/checkout.json added",
-                  ...(board ? ["unbind the Git board first; teammates keep the board branch until you tell them"] : []),
+                  ...(board
+                    ? ["commit and push a moved-to-hosted marker on the board branch, then unbind the Git board: teammates' next sync refuses to push to it and prints the hosted checkout command"]
+                    : []),
                 ]
               : [uncheckable]),
           ],
@@ -564,7 +580,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
             : ambiguous
               ? [...((ambiguous.details?.commands as string[] | undefined) ?? []), ...(blockers.length > 1 ? ["fix the blocking files, then preview again"] : [])]
               : !target
-                ? [`${cliInvocation()} login --host <url>`]
+                ? [String(firstSignInCommand())]
                 : ["fix the blocking files, then preview again"],
         },
         mode,
@@ -573,9 +589,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     return;
   }
 
-  if (!target) {
-    throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
-  }
+  if (!target) throw notSignedInError(deps.auth.env);
   if (boardState?.blocker) {
     throw new CliError("CONFLICT", boardState.blocker.message, {
       details: { reason: boardState.blocker.reason, sync: boardState.block },
@@ -614,6 +628,11 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     }
   }
 
+  // The checkout names the bundle in the workspace it was created in, so another of the person's
+  // workspaces holding the same id never makes it ambiguous; sharing names it the same way.
+  const slug = identity.workspaces.find((w) => w.tenantId === workspace)?.slug ?? null;
+  const shareFor = (inSlug: string | null) =>
+    commandFragment`${cliInvocation()} access grant ${commandToken(inSlug !== null ? `${inSlug}/${bundleId}` : bundleId)} <email> --level write --host ${commandToken(bindingHostArgument(target))}`;
   const created = await sendCreation(plan, { workspace, bundleId, name, home, canonical, target, client, yesCommand, deps, json: values.json === true });
 
   if (!converts) {
@@ -626,7 +645,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           host: target.origin,
           host_from: chosen!.source,
           workspace,
-          access: "write (only you, until you share it in the app)",
+          access: `write (only you, until you share it: ${shareFor(slug)}, or in the app)`,
           sent: {
             documents: created.documents ?? plan.documents.length,
             reserved_files: created.reserved ?? plan.reserved.length,
@@ -649,22 +668,18 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
 
   // The bundle exists on the host. From here, a failure leaves the folder adoptable: the marker
   // goes in first, so `checkout --adopt` can finish the conversion.
-  // The checkout names the bundle in the workspace it was created in, so another of the person's
-  // workspaces holding the same id never makes it ambiguous.
-  const slug = identity.workspaces.find((w) => w.tenantId === workspace)?.slug ?? null;
   const markerSource = { origin: target.origin, audience: target.audience, bundle_id: bundleId, workspace, ...(slug !== null ? { workspace_slug: slug } : {}) };
   const adoptHelp = `${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))}`;
   let unbound: Record<string, unknown> | null = null;
+  // The moved-board marker is committed while this folder is still the board's worktree, and pushed
+  // only once the folder is a hosted checkout, so a failed push never leaves it half converted.
+  const reference = slug !== null ? `${slug}/${bundleId}` : bundleId;
+  let markerCommit: MovedMarkerCommit | null = null;
   try {
     if (board && gitPlan) {
+      const movedBy = identity.email ?? identity.principalId;
+      markerCommit = await commitMovedMarker(board.top, { host: bindingHostArgument(target), bundle: reference, moved_at: new Date(deps.auth.now()).toISOString(), moved_by: movedBy });
       await unbindBoard(board, canonical);
-      unbound = {
-        unbound: true,
-        branch: board.branch,
-        upstream: board.upstream,
-        head: gitPlan.head,
-        note: `the board branch stays at ${gitPlan.head ?? "its commit"}, locally and on ${board.upstream ?? "no upstream"}; teammates keep syncing it with Git until you tell them to check out '${bundleId}' instead`,
-      };
     }
     await writeCheckoutMarker(canonical, markerSource);
   } catch (error) {
@@ -672,6 +687,38 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       details: { reason: "convert_failed", created, folder: canonical },
       help: board ? `delete ${path.join(canonical, ".git")} and run git worktree prune, then: ${adoptHelp}` : adoptHelp,
     });
+  }
+  if (board && gitPlan && markerCommit) {
+    const checkoutCommand = String(commandFragment`${cliInvocation()} checkout ${commandToken(reference)} --host ${commandToken(bindingHostArgument(target))}`);
+    let movedMarker: string;
+    let recovery: string[] | null = null;
+    let pushed = false;
+    if (markerCommit.state === "no_shared_board") {
+      movedMarker = "no shared board branch (no origin/board): no teammates to stop, so no marker was written";
+    } else if (markerCommit.state === "failed") {
+      movedMarker = `could not write the moved marker (${markerCommit.error}): teammates keep syncing the board until you tell them to check out '${reference}'`;
+    } else {
+      const push = markerCommit.project !== null ? pushMovedMarker(markerCommit.project) : ({ pushed: false, cause: "git", error: "the board's repository could not be found" } as const);
+      if (push.pushed) {
+        pushed = true;
+        movedMarker = `committed and pushed ${MOVED_MARKER_FILE} on the board branch: teammates' next sync refuses to push and prints the checkout command`;
+      } else {
+        const failed = movedMarkerPushFailed(markerCommit.project, push);
+        movedMarker = failed.message;
+        recovery = failed.recovery;
+      }
+    }
+    unbound = {
+      unbound: true,
+      branch: board.branch,
+      upstream: board.upstream,
+      head: gitPlan.head,
+      moved_marker: movedMarker,
+      ...(recovery ? { recovery } : {}),
+      note: pushed
+        ? `the board branch keeps its history, locally and on ${board.upstream ?? "no upstream"}; teammates switch with: ${checkoutCommand}`
+        : `the board branch stays at ${gitPlan.head ?? "its commit"}, locally and on ${board.upstream ?? "no upstream"}; teammates keep syncing it with Git until you tell them to check out '${reference}' instead`,
+    };
   }
   const resume = commandFragment`${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))}`;
   let bound;
@@ -699,7 +746,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         host: target.origin,
         host_from: chosen!.source,
         workspace,
-        access: "write (only you, until you share it in the app)",
+        access: `write (only you, until you share it: ${shareFor(slug)}, or in the app)`,
         sent: {
           documents: created.documents ?? plan.documents.length,
           reserved_files: created.reserved ?? plan.reserved.length,
@@ -719,7 +766,12 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         marker: path.join(canonical, ".superbee", "checkout.json"),
         catalog,
         reverse: `${cliInvocation()} checkout --release ${commandToken(canonical)} leaves a plain local folder; the hosted bundle stays until deleted in the app`,
-        help: [`${cliInvocation()} status --dir ${commandToken(canonical)}`, `${cliInvocation()} sync --dir ${commandToken(canonical)}`],
+        help: [
+          // A moved board's teammates reach the bundle only once it is shared with them.
+          ...(board ? [String(shareFor(slug))] : []),
+          `${cliInvocation()} status --dir ${commandToken(canonical)}`,
+          `${cliInvocation()} sync --dir ${commandToken(canonical)}`,
+        ],
       },
       mode,
     ),

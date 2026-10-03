@@ -660,7 +660,7 @@ test("login flag validation is USAGE (exit 2)", async () => {
     for (const argv of [["--port", "8080"], ["--timeout", "5"], ["--wait", "--timeout", "601"], ["--wait", "--loopback"]]) {
       await assert.rejects(login(["--host", h.host, ...argv], io), (e: CliError) => e.exitCode === EXIT.USAGE, argv.join(" "));
     }
-    await assert.rejects(whoami([], { ...io, auth: { ...h.deps, env: {} } }), (e: CliError) => e.code === "USAGE" && /--host/.test(e.help ?? ""));
+    await assert.rejects(login([], { ...io, auth: { ...h.deps, env: {} } }), (e: CliError) => e.code === "USAGE" && /--host/.test(e.help ?? ""));
   } finally {
     await h.cleanup();
   }
@@ -878,7 +878,7 @@ test("the file store keeps the refresh token 0600 inside the private state root"
 // ---------------------------------------------------------------------------------------------
 // Boundary: no existing command reaches hosted before the transport exists
 
-test("only the sign-in commands, the hosted checkout, export, doc history, op and hosted sync import the hosted session module", async () => {
+test("only the sign-in commands, the hosted checkout, export, doc history, op, access, bundle retire and hosted sync import the hosted session module", async () => {
   const src = path.resolve(here, "../src");
   const offenders: string[] = [];
   async function walk(dir: string): Promise<void> {
@@ -915,6 +915,10 @@ test("only the sign-in commands, the hosted checkout, export, doc history, op an
         path.join("hosted", "account.ts"),
         // `doc history`, `op list` and `op run` in a hosted checkout reach the checkout's host through it.
         path.join("hosted", "checkout-connection.ts"),
+        // `access list|grant|revoke` and `bundle retire` name a hosted bundle and sign in to reach it.
+        path.join("commands", "access.ts"),
+        path.join("commands", "bundle-retire.ts"),
+        path.join("hosted", "access.ts"),
       ];
       if (/hosted-auth\//.test(text) && !allowed.includes(path.relative(src, full))) {
         offenders.push(path.relative(src, full));

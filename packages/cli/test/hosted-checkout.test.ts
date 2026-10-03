@@ -595,8 +595,10 @@ test("built CLI: checkout is registered, and a refused command in a checkout is 
   assert.equal(read.status, 0, read.stdout);
   assert.match(read.stdout, /Alpha/);
 
+  // No host, no sign-in remembered, no session: not signed in yet (exit 4), and no host picked.
   const missingHost = await runCli(["checkout", BUNDLE]);
-  assert.equal(missingHost.status, 2);
+  assert.equal(missingHost.status, 4, missingHost.stdout);
+  assert.match(missingHost.stdout, /status: not_signed_in/);
 });
 
 test("a checkout whose folder was deleted is replaced at the same path; one emptied in place is refused", async () => {
