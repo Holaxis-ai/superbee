@@ -473,7 +473,7 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("kindFieldAdd", "kind field add", two, 15, DIR_SURFACE),
           publicLeaf("kindFieldRemove", "kind field remove", two, undefined, DIR_SURFACE),
         ],
-        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--dir <path>] [--remote <url>]',
+        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] [--type <type>] | remove <name>) [--dir <path>] [--remote <url>]',
         summary: "Edit a kind's schema — add/remove a declared field or enum value on its convention (idempotent)",
       },
       {

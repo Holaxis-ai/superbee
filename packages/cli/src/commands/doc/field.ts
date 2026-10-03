@@ -1,7 +1,7 @@
 import { renderUsage } from "../../output.js";
 import { parseArgs } from "node:util";
 import yaml from "js-yaml";
-import { isStandardDocumentSetField, loadKinds, readBundleOkfVersion, type FieldActionErrorDetails, type FieldAction, type SourceSelector } from "@superbee/core";
+import { isStandardDocumentSetField, kindFieldInputValue, loadKinds, readBundleOkfVersion, resolveKindFieldCoordinate, type FieldActionErrorDetails, type FieldAction, type SourceSelector } from "@superbee/core";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { commandFragment, commandToken, commandWords } from "../../command-text.js";
@@ -25,7 +25,7 @@ const leaves = {
 } as const;
 type Action = keyof typeof leaves;
 const descriptions: Record<Action, string> = {
-  set: "Assign one supported non-collection field. Literal values are strings; use --from-file for typed scalars or a complete list-free mapping. Other fields and the body remain unchanged.",
+  set: "Assign one supported non-collection field. Literal values are strings, except that a Kind field declared in fields.types converts the literal to its type; use --from-file for typed scalars or a complete list-free mapping. Other fields and the body remain unchanged.",
   add: "Make one exact tag string or source entry present. New members append; an identical addition is a no-op. Supply a tag literally or one source mapping with --from-file.",
   remove: "Make one exact tag membership or selected source absent. A missing member is a no-op. For sources, supply exactly one --id or --resource; no value is accepted.",
   edit: "Update supplied properties of one source, preserving its position, sibling sources and other properties. Requires --from-file, --expected-version and exactly one --id or --resource. An ID-less source may receive its first nonempty ID; an existing ID cannot be renamed.",
@@ -119,8 +119,14 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
       strict: Boolean(values.strict) || (action === "set" && !isStandardDocumentSetField(field, edition)),
       helpOnKindReject: `${cliInvocation()} kinds`, actor, persistActor: true,
       expectedVersion: expectedVersion?.trim(), remoteUrl: values.remote,
-      input: (_existing, context) => {
+      input: (existing, context) => {
         if (context.okfVersion !== edition) fail("The bundle edition changed; retry against its current declaration.");
+        // A literal for a typed Kind field converts as flag text does; --from-file is already typed.
+        if (action === "set" && literal !== undefined && fromFile === undefined) {
+          const kind = registry.kinds.get(String(existing.frontmatter.type));
+          const coordinate = kind && resolveKindFieldCoordinate(context.okfVersion, kind, field);
+          if (kind && coordinate) return { kind: "field-action", action: { action, field, value: kindFieldInputValue(kind, coordinate.storageField, [literal]) } };
+        }
         return { kind: "field-action", action: operation };
       },
       onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),

@@ -1,0 +1,55 @@
+npx --no-install superbee new 'Review Request' <id> — create a Review Request instance
+
+Description:  A durable request for a named human to judge a defined question against linked evidence.
+Fields (declared by the 'Review Request' kind convention):
+  --title <v>  required — A concise label for the review outcome being sought.
+  --progress_status <v>  required — The persisted review lifecycle state, not an activity update.
+    allowed values:
+      - value: "requested"
+        description: "Ready for the reviewer; no review is yet in progress."
+      - value: "in_review"
+        description: "The reviewer is actively considering the request."
+      - value: "changes_requested"
+        description: "Work must be addressed before another decision."
+      - value: "approved"
+        description: "The reviewer accepted the proposal; terminal for this request."
+      - value: "canceled"
+        description: "The requester withdrew the request; terminal for this request."
+  --reviewer <v>  required — The human expected to make the judgment; coordination metadata, not authorization.
+  --requested_by <v>  required — The human accountable for the scope and evidence supplied.
+  --question <v>  required — The exact judgment the reviewer is being asked to make.
+  --decision_summary <v>  optional — A concise persisted outcome recorded after the review.
+  --decided_at <v>  optional — The ISO 8601 timestamp at which the persisted decision was made.
+Required body headings (level 1; exact Markdown):
+  # Context
+  # Requested decision
+  # Acceptance criteria
+  # Reviewer response
+Links (typed edges declared by this bundle's conventions; write with --link "<type>=<target-id>" at create time, or link add --text "<type>" after the fact):
+  this kind may link:     "reviews design" → Design — A design whose reasoning or contract is under review.
+  this kind may link:     "reviews task" → Task — Implementation work whose scope or result informs the judgment.
+  this kind may link:     "reviews roadmap item" → Roadmap Item — The strategic commitment affected by the judgment.
+Id:  auto-prefixed with 'review-requests/' unless <id> already carries it
+
+Repeat a flag to set an array value (e.g. --tag a --tag b). Validation is STRICT; violations reject without creating a document.
+To ADD a field: npx --no-install superbee kind field 'Review Request' add <name> [--required] [--values <a,b,c>].
+
+Options:
+  --stale-after <iso>  Expiration instant (OKF v0.2 only); valid date, time, and zone required
+  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported).
+                   OKF v0.2 bundles accept only human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
+  --body <markdown>
+                   Use inline Markdown as the complete initial body; mutually exclusive with
+                   --body-file
+  --body-file <path>
+                   Read the complete initial Markdown body from a local file; when omitted,
+                   scaffold the declared body sections
+  --link "<type>=<target-id>"
+                   Repeatable: after creating this instance, add an outbound link of type
+                   <type> to <target-id> (same idempotent path as 'link add'; a dangling
+                   target is allowed)
+  --no-prefix      Use <id> verbatim (skip the auto path prefix above)
+  --dir <path>     Bundle directory (default: discovered from the cwd)
+  --remote <url>   Talk to a wire-protocol server instead of a local bundle
+  --json           Emit compact JSON instead of TOON
+  -h, --help       Show this help

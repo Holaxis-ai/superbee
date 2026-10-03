@@ -25,6 +25,7 @@
  */
 import { isOkfLifecycleStatus, OKF_LIFECYCLE_STATUSES } from "./okf-lifecycle.js";
 import { isUsableTimestamp } from "./frontmatter.js";
+import { parseIsoInstant } from "./verification.js";
 import type { ValidationWarning } from "./validation.js";
 import type { ConceptId, Frontmatter, OkfDocument } from "./types.js";
 
@@ -62,6 +63,37 @@ export interface KindFields {
   terminal: Record<string, string[]>;
   /** Human guidance for declared fields: `fieldName -> description`. */
   descriptions: Record<string, string>;
+  /**
+   * `fieldName -> value type` from `fields.types`, one of {@link KIND_FIELD_TYPES}. Absent when the
+   * kind declares none, so a convention without types validates exactly as before.
+   */
+  types?: Record<string, KindFieldType>;
+}
+
+/**
+ * The closed, domain-neutral value-type vocabulary a convention may declare in `fields.types`.
+ * Each type constrains a value's shape only; presence stays governed by `fields.required`.
+ * Domain composites (opening hours, money, addresses) belong to recipe tooling, not core.
+ */
+export const KIND_FIELD_TYPES = [
+  "date",
+  "datetime",
+  "https-url",
+  "https-url-list",
+  "integer",
+  "number",
+  "boolean",
+  "slug",
+  "string-list",
+  "latitude",
+  "longitude",
+] as const;
+export type KindFieldType = (typeof KIND_FIELD_TYPES)[number];
+const KIND_FIELD_TYPE_SET = new Set<string>(KIND_FIELD_TYPES);
+
+/** True when `value` names a {@link KIND_FIELD_TYPES} member. */
+export function isKindFieldType(value: unknown): value is KindFieldType {
+  return typeof value === "string" && KIND_FIELD_TYPE_SET.has(value);
 }
 
 /**
@@ -403,11 +435,12 @@ export function projectKindForAuthoring(
         : undefined,
       terminal: projectRecord(kind.fields.terminal),
       descriptions: projectRecord(kind.fields.descriptions),
+      ...(kind.fields.types ? { types: projectRecord(kind.fields.types) } : {}),
     },
   };
 }
 
-type KindFieldWarningCode = "KIND_FIELD_MISSING" | "KIND_FIELD_VALUE" | "KIND_FIELD_ARITY";
+type KindFieldWarningCode = "KIND_FIELD_MISSING" | "KIND_FIELD_VALUE" | "KIND_FIELD_ARITY" | "KIND_FIELD_TYPE";
 
 /** Whether a Kind finding names a frontmatter coordinate rather than a body heading. */
 export function isKindFieldValidationWarning(
@@ -415,7 +448,8 @@ export function isKindFieldValidationWarning(
 ): warning is ValidationWarning & { code: KindFieldWarningCode } {
   return warning.code === "KIND_FIELD_MISSING"
     || warning.code === "KIND_FIELD_VALUE"
-    || warning.code === "KIND_FIELD_ARITY";
+    || warning.code === "KIND_FIELD_ARITY"
+    || warning.code === "KIND_FIELD_TYPE";
 }
 
 /** The owning message grammar separates the field coordinate from Kind labels and value suffixes. */
@@ -427,6 +461,8 @@ function kindFieldWarningPrefix(code: KindFieldWarningCode, kind: KindConvention
       return `'${field}' value `;
     case "KIND_FIELD_ARITY":
       return `'${field}' is enum-restricted and takes exactly ONE value for '${kind.governs}'; `;
+    case "KIND_FIELD_TYPE":
+      return `'${field}' must be `;
   }
 }
 
@@ -544,6 +580,7 @@ const VALID_FIELDS_KEYS = new Set([
   "value_descriptions",
   "terminal",
   "descriptions",
+  "types",
 ]);
 
 /**
@@ -630,7 +667,7 @@ export function parseConventionDoc(
       if (!VALID_FIELDS_KEYS.has(key)) {
         warnings.push({
           code: "KIND_CONVENTION_UNKNOWN_FIELDS_KEY",
-          message: `kind convention '${doc.id}' declares an unrecognized key 'fields.${key}' (valid keys: fields.required, fields.optional, fields.values, fields.value_descriptions, fields.terminal, fields.descriptions); ignoring it.`,
+          message: `kind convention '${doc.id}' declares an unrecognized key 'fields.${key}' (valid keys: fields.required, fields.optional, fields.values, fields.value_descriptions, fields.terminal, fields.descriptions, fields.types); ignoring it.`,
           field: `fields.${key}`,
           severity: "warning",
         });
@@ -695,6 +732,59 @@ export function parseConventionDoc(
       });
     }
   }
+
+  // `fields.types` — declared value types from the closed KIND_FIELD_TYPES vocabulary. Same lenient
+  // posture as `fields.values`: a non-map shape warns and is ignored, an unknown type or a typed
+  // field the kind does not declare warns and is skipped. A definitions-only recipe therefore
+  // refuses a misspelled type instead of installing a constraint that can never fire.
+  const typesSource = fieldsRaw.types;
+  const types: Record<string, KindFieldType> = {};
+  if (typesSource !== undefined) {
+    if (!isPlainObject(typesSource)) {
+      warnings.push({
+        code: "KIND_CONVENTION_BAD_SHAPE",
+        message: `kind convention '${doc.id}' has a non-map 'fields.types' (${describeShape(typesSource)}; expected a map of field name -> type); ignoring it.`,
+        field: "fields.types",
+        severity: "warning",
+      });
+    } else {
+      for (const [field, declared] of Object.entries(typesSource)) {
+        if (dropReserved(field, `fields.types.${field}`)) continue;
+        if (!isKindFieldType(declared)) {
+          warnings.push({
+            code: "KIND_CONVENTION_UNKNOWN_FIELD_TYPE",
+            message: `kind convention '${doc.id}' declares 'fields.types.${field}' as ${isScalar(declared) ? `'${String(declared)}'` : describeShape(declared)}, which is not a field type (valid types: ${KIND_FIELD_TYPES.join(", ")}); ignoring it.`,
+            field: `fields.types.${field}`,
+            severity: "warning",
+          });
+          continue;
+        }
+        if (!declaredFieldNames.has(field)) {
+          warnings.push({
+            code: "KIND_CONVENTION_UNDECLARED_TYPES_FIELD",
+            message: `kind convention '${doc.id}' declares 'fields.types.${field}' but '${field}' is not in fields.required or fields.optional; ignoring it.`,
+            field: `fields.types.${field}`,
+            severity: "warning",
+          });
+          continue;
+        }
+        setOwn(types, field, declared);
+      }
+    }
+  }
+  // An enum over URLs is never meaningful, so values on an `https-url-list` field are skipped. Every
+  // other typed field may carry `fields.values`: a scalar picks one, a `string-list` checks each item.
+  for (const field of Object.keys(values)) {
+    if (types[field] !== "https-url-list") continue;
+    warnings.push({
+      code: "KIND_CONVENTION_VALUES_TYPE_MISMATCH",
+      message: `kind convention '${doc.id}' declares 'fields.values.${field}' on a field of type 'https-url-list', which cannot carry an enum; ignoring the values.`,
+      field: `fields.values.${field}`,
+      severity: "warning",
+    });
+    delete values[field];
+  }
+
 
   const valueDescriptionsSource = fieldsRaw.value_descriptions;
   const valueDescriptions: Record<string, Record<string, string>> = {};
@@ -1029,6 +1119,7 @@ export function parseConventionDoc(
     governs,
     fields: { required, optional, values, valueDescriptions, terminal, descriptions },
   };
+  if (Object.keys(types).length > 0) kind.fields.types = types;
   if (description !== undefined) kind.description = description;
   if (path !== undefined) kind.path = path;
   if (links !== undefined) kind.links = links;
@@ -1082,9 +1173,137 @@ export function isPresent(value: unknown): boolean {
   return true;
 }
 
+/** Human phrase for each field type, used in warnings and authoring help. */
+export const KIND_FIELD_TYPE_DESCRIPTIONS: Readonly<Record<KindFieldType, string>> = {
+  date: "a YYYY-MM-DD calendar date",
+  datetime: "an ISO-8601 date and time with an explicit UTC offset (Z or +/-HH:MM)",
+  "https-url": "an absolute https URL of at most 2048 characters, without credentials",
+  "https-url-list": "a list of distinct https URLs",
+  integer: "a safe integer",
+  number: "a finite number",
+  boolean: "true or false",
+  slug: "a lowercase slug (a-z, 0-9 and single hyphens) of at most 200 characters",
+  "string-list": "a list of distinct non-empty strings",
+  latitude: "a number from -90 to 90",
+  longitude: "a number from -180 to 180",
+};
+
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SLUG_MAX_LENGTH = 200;
+const HTTPS_URL_MAX_LENGTH = 2048;
+
+function describeValue(value: unknown): string {
+  if (typeof value === "string") return `got the string ${JSON.stringify(value.length > 60 ? `${value.slice(0, 57)}...` : value)}`;
+  if (typeof value === "number") return `got the number ${Object.is(value, -0) ? "-0" : String(value)}`;
+  if (typeof value === "boolean") return `got boolean ${String(value)}`;
+  return `got ${describeShape(value)}`;
+}
+
+function httpsUrlProblem(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > HTTPS_URL_MAX_LENGTH || /\s/.test(value)) return describeValue(value);
+  // The WHATWG parser is the authority, so scheme case is irrelevant (`HTTPS://` is https).
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return describeValue(value);
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname === "") return describeValue(value);
+  if (parsed.username !== "" || parsed.password !== "") return `${describeValue(value)} (credentials are not allowed)`;
+  return undefined;
+}
+
+function listProblem(value: unknown, itemProblem: (item: unknown) => string | undefined): string | undefined {
+  if (!Array.isArray(value)) return describeValue(value);
+  const seen = new Set<unknown>();
+  for (const [index, item] of value.entries()) {
+    const problem = itemProblem(item);
+    if (problem !== undefined) return `item ${index} ${problem}`;
+    if (seen.has(item)) return `item ${index} repeats ${JSON.stringify(item)}`;
+    seen.add(item);
+  }
+  return undefined;
+}
+
+/**
+ * Why `value` does not satisfy `type`, or `undefined` when it does. Values are judged as decoded:
+ * YAML numbers and booleans, and strings exactly as authored (core's decoder keeps dates and
+ * instants as their source strings). `null` never satisfies a type. The ONE type predicate;
+ * callers never re-implement it.
+ */
+export function kindFieldTypeProblem(type: KindFieldType, value: unknown): string | undefined {
+  switch (type) {
+    case "date": {
+      const match = typeof value === "string" ? DATE_RE.exec(value) : null;
+      if (!match) return describeValue(value);
+      const probe = new Date(0);
+      probe.setUTCFullYear(Number(match[1]), Number(match[2]), 0); // day 0 of the next month
+      const month = Number(match[2]);
+      const day = Number(match[3]);
+      return month >= 1 && month <= 12 && day >= 1 && day <= probe.getUTCDate() ? undefined : describeValue(value);
+    }
+    case "datetime":
+      // Exactly the OKF standard-timestamp instant grammar.
+      return typeof value === "string" && parseIsoInstant(value) !== null ? undefined : describeValue(value);
+    case "https-url":
+      return httpsUrlProblem(value);
+    case "https-url-list":
+      return listProblem(value, httpsUrlProblem);
+    case "integer":
+      return Number.isSafeInteger(value) && !Object.is(value, -0) ? undefined : describeValue(value);
+    case "number":
+      return typeof value === "number" && Number.isFinite(value) ? undefined : describeValue(value);
+    case "boolean":
+      return typeof value === "boolean" ? undefined : describeValue(value);
+    case "slug":
+      return typeof value === "string" && value.length <= SLUG_MAX_LENGTH && SLUG_RE.test(value)
+        ? undefined
+        : describeValue(value);
+    case "string-list":
+      return listProblem(value, (item) => (typeof item === "string" && item !== "" ? undefined : describeValue(item)));
+    case "latitude":
+    case "longitude": {
+      const limit = type === "latitude" ? 90 : 180;
+      return typeof value === "number" && Number.isFinite(value) && value >= -limit && value <= limit
+        ? undefined
+        : describeValue(value);
+    }
+  }
+}
+
+const NUMBER_INPUT_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+const INTEGER_INPUT_RE = /^[+-]?\d+$/;
+
+/**
+ * Convert command-line flag text for a declared field into its typed value: numeric types become
+ * numbers, `boolean` accepts exactly `true`/`false`, and both list types are always a list. Text that
+ * does not parse is returned unchanged so {@link validateAgainstKind} reports it, never guessed.
+ * Undeclared or untyped fields keep the historical one-value-scalar, repeated-flag-list shape.
+ */
+export function kindFieldInputValue(kind: KindConvention, field: string, inputs: readonly string[]): unknown {
+  const type = kind.fields.types && hasOwn(kind.fields.types, field) ? kind.fields.types[field] : undefined;
+  if (type === "string-list" || type === "https-url-list") return [...inputs];
+  if (inputs.length !== 1) return [...inputs];
+  const text = inputs[0]!;
+  switch (type) {
+    case "number":
+    case "latitude":
+    case "longitude":
+      return NUMBER_INPUT_RE.test(text.trim()) ? Number(text.trim()) : text;
+    case "integer":
+      return INTEGER_INPUT_RE.test(text.trim()) ? Number(text.trim()) : text;
+    case "boolean":
+      return text === "true" ? true : text === "false" ? false : text;
+    default:
+      return text;
+  }
+}
+
 /**
  * Validate `doc` against `kind`: required fields present + non-empty, enum-restricted
- * field values within the declared allowed set, and declared body `sections` present
+ * field values within the declared allowed set, typed field values of their declared
+ * `fields.types` type, and declared body `sections` present
  * (reusing the ONE heading splitter, {@link splitSections} — no second heading parser).
  * Returns core's EXISTING {@link ValidationWarning} shape; never throws. Purely
  * additive derivation — callers (the CLI) decide whether a warning blocks a write.
@@ -1117,7 +1336,8 @@ export function validateAgainstKind(doc: OkfDocument, kind: KindConvention): Val
     // validation locus, every consumer inherits: `new`, `doc update`, `doc write
     // --strict`, `status`'s bundle lint). A future kind wanting a multi-select enum
     // needs declared arity in the convention schema — not silently via arrays.
-    if (Array.isArray(raw)) {
+    // A `string-list` field declares its arity, so its enum checks each item instead.
+    if (Array.isArray(raw) && kind.fields.types?.[field] !== "string-list") {
       warnings.push({
         code: "KIND_FIELD_ARITY",
         message:
@@ -1138,6 +1358,22 @@ export function validateAgainstKind(doc: OkfDocument, kind: KindConvention): Val
           severity: "warning",
         });
       }
+    }
+  }
+
+  for (const [field, type] of Object.entries(kind.fields.types ?? {})) {
+    if (!hasOwn(fm, field)) continue;
+    const raw = fm[field];
+    // An absent field is presence, owned by `fields.required`; an explicit `null` is a wrong type.
+    if (raw === undefined) continue;
+    const problem = kindFieldTypeProblem(type, raw);
+    if (problem !== undefined) {
+      warnings.push({
+        code: "KIND_FIELD_TYPE",
+        message: kindFieldWarningPrefix("KIND_FIELD_TYPE", kind, field) + `${KIND_FIELD_TYPE_DESCRIPTIONS[type]} for '${kind.governs}'; ${problem}.`,
+        field,
+        severity: "warning",
+      });
     }
   }
 
@@ -1248,6 +1484,10 @@ export function kindConventionDoc(kind: KindConvention, prose: string, timestamp
       .map(([field, description]) => [field, description.trim()]),
   );
   if (Object.keys(descriptions).length > 0) fields.descriptions = descriptions;
+  const types = Object.fromEntries(
+    Object.entries(kind.fields.types ?? {}).filter(([, type]) => isKindFieldType(type)),
+  );
+  if (Object.keys(types).length > 0) fields.types = types;
 
   const frontmatter: Frontmatter = { type: CONVENTION_TYPE, title: kind.title, governs: kind.governs, timestamp };
   if (typeof kind.description === "string" && kind.description.trim() !== "") {

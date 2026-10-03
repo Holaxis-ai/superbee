@@ -1,0 +1,10 @@
+count: 1
+kinds[1]:
+  - governs: Venue
+    required[2]: title,latitude
+    optional[3]: website,topics,opened
+    descriptions:
+      latitude: Decimal degrees north.
+    values:
+      topics[2]: live-music,history
+    path: venues/

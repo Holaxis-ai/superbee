@@ -1,5 +1,5 @@
 /** Pure Kind schema editing. The mutation engine supplies the fresh convention. */
-import { RESERVED_KIND_FIELD_NAMES } from "./kinds.js";
+import { isKindFieldType, RESERVED_KIND_FIELD_NAMES, type KindFieldType } from "./kinds.js";
 import { InvalidInputError } from "./errors.js";
 import type { Frontmatter, OkfDocument } from "./types.js";
 import type { DocumentMutationCandidate } from "./document-mutation.js";
@@ -10,6 +10,8 @@ export interface KindFieldMutation {
   action: "add" | "remove";
   required?: boolean;
   values?: string[];
+  /** Declare the field's value type in `fields.types` (add only). Changes the declaration, never instances. */
+  type?: KindFieldType;
   okfVersion: "0.1" | "0.2";
 }
 /** Normalize a possibly-absent/malformed `fields.<list>` into a fresh string[]. */
@@ -46,7 +48,9 @@ export function prepareKindFieldMutation(existing: OkfDocument, input: KindField
   if (typeof input.field !== "string" || input.field.trim() === "" || !["add", "remove"].includes(input.action)) throw new InvalidInputError("A Kind field mutation requires add/remove and a nonempty field name.");
   if (input.action === "add" && (RESERVED_KIND_FIELD_NAMES as readonly string[]).includes(input.field)) throw new InvalidInputError(`'${input.field}' is reserved and cannot be added as a Kind field.`);
   if (input.values !== undefined && (!Array.isArray(input.values) || input.values.length === 0 || input.values.some(value => typeof value !== "string" || value.trim() === ""))) throw new InvalidInputError("Kind enum values must be nonempty strings.");
-  if (input.action === "remove" && (input.required || input.values !== undefined)) throw new InvalidInputError("required/values apply to Kind field add, not remove.");
+  if (input.type !== undefined && !isKindFieldType(input.type)) throw new InvalidInputError(`'${String(input.type)}' is not a Kind field type.`);
+  if (input.type === "https-url-list" && input.values !== undefined) throw new InvalidInputError("An https-url-list field cannot carry enum values.");
+  if (input.action === "remove" && (input.required || input.values !== undefined || input.type !== undefined)) throw new InvalidInputError("required/values/type apply to Kind field add, not remove.");
   const fm = existing.frontmatter;
   if (okfVersion !== input.okfVersion) throw new KindFieldMutationConflict("The bundle format changed while editing the Kind; reload the Kind.");
   const currentGoverns = typeof fm.governs === "string" ? fm.governs.trim() : "";
@@ -68,6 +72,11 @@ export function prepareKindFieldMutation(existing: OkfDocument, input: KindField
       let valueDescriptionsMap: Record<string, unknown> | undefined;
       let valueDescriptionsChanged = false;
       let descriptionDeleted = false;
+      let typesMap: Record<string, unknown> | undefined =
+        hasOwn(fieldsObj, "types") && isRecord(fieldsObj.types)
+          ? cloneRecord(fieldsObj.types)
+          : undefined;
+      let typesChanged = false;
 
       if (input.action === "add") {
         const targetList = input.required ? required : optional;
@@ -76,6 +85,14 @@ export function prepareKindFieldMutation(existing: OkfDocument, input: KindField
         const otherIdx = otherList.indexOf(input.field);
         if (otherIdx >= 0) otherList.splice(otherIdx, 1);
         if (!targetList.includes(input.field)) targetList.push(input.field);
+        if (input.type !== undefined) {
+          const nextTypes = typesMap ?? {};
+          if (!hasOwn(nextTypes, input.field) || nextTypes[input.field] !== input.type) {
+            setOwn(nextTypes, input.field, input.type);
+            typesMap = nextTypes;
+            typesChanged = true;
+          }
+        }
         if (input.values) {
           const vals = input.values;
           const prev = hasOwn(valuesMap, input.field) && Array.isArray(valuesMap[input.field])
@@ -112,6 +129,8 @@ export function prepareKindFieldMutation(existing: OkfDocument, input: KindField
         }
         deleteOwn(valuesMap, input.field);
         if (descriptionsMap) descriptionDeleted = deleteOwn(descriptionsMap, input.field);
+        // A removed field's declared type goes with it; a stale type would warn as undeclared.
+        if (typesMap) typesChanged = deleteOwn(typesMap, input.field);
         if (isRecord(rawValueDescriptions) && hasOwn(rawValueDescriptions, input.field)) {
           const rawFieldDescriptions = rawValueDescriptions[input.field];
           if (isRecord(rawFieldDescriptions)) {
@@ -140,6 +159,10 @@ export function prepareKindFieldMutation(existing: OkfDocument, input: KindField
       if (descriptionsMap && descriptionDeleted) {
         if (Object.keys(descriptionsMap).length > 0) newFields.descriptions = descriptionsMap;
         else delete newFields.descriptions;
+      }
+      if (typesMap && typesChanged) {
+        if (Object.keys(typesMap).length > 0) newFields.types = typesMap;
+        else delete newFields.types;
       }
       if (valueDescriptionsMap && valueDescriptionsChanged) {
         if (Object.keys(valueDescriptionsMap).length > 0) newFields.value_descriptions = valueDescriptionsMap;
