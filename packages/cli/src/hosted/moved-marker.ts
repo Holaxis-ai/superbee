@@ -9,7 +9,7 @@
 // is still the board's worktree (`commitMovedMarker`), and pushed from the project once the folder
 // is a hosted checkout (`pushMovedMarker`), so a failed push never leaves the folder half converted.
 // A board with no `origin/board` has no teammates to stop: nothing is committed.
-import { closeSync, lstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -40,19 +40,19 @@ export function movedMarkerPath(root: string): string {
 const safe = (value: unknown, max: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= max && !/[\x00-\x1f\x7f]/.test(value);
 
-/** At most `max + 1` bytes of a regular file (never following a link), or null when there is none. */
+/** At most `max + 1` bytes of a regular file (never following a link at the leaf), or null when
+ * there is none. The type is checked on the open descriptor, so nothing can swap the file between
+ * the check and the read. */
 function readBounded(file: string, max: number): Buffer | "unreadable" | null {
-  let info;
+  let fd: number | undefined;
   try {
-    info = lstatSync(file);
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     return code === "ENOENT" || code === "ENOTDIR" ? null : "unreadable";
   }
-  if (!info.isFile()) return "unreadable";
-  let fd: number | undefined;
   try {
-    fd = openSync(file, "r");
+    if (!fstatSync(fd).isFile()) return "unreadable";
     const buffer = Buffer.alloc(max + 1);
     let length = 0;
     for (let read = -1; read !== 0 && length < buffer.length; length += read) read = readSync(fd, buffer, length, buffer.length - length, null);
@@ -60,7 +60,7 @@ function readBounded(file: string, max: number): Buffer | "unreadable" | null {
   } catch {
     return "unreadable";
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    closeSync(fd);
   }
 }
 
