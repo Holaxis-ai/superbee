@@ -54,13 +54,19 @@ for (const adapter of ADAPTERS) {
       release(); await delivering;
       assert.equal((await s.runtime.read("notes/example")).doc.body.trim(), "Second");
       assert.equal((await s.runtime.read("notes/example")).provenance.state, "local-pending");
+      const predecessor = (await s.backend.listIntents())[0]!;
+      assert.equal(predecessor.state, "acknowledged");
       s.authority.knobs.delay = undefined;
       await s.runtime.sync();
       const record = await s.backend.readMeta<{ prepared: { expectedVersion: string } }>(bodyRecordKey(second.requestId));
-      const predecessor = (await s.backend.listIntents())[0]!;
       assert.equal(record!.prepared.expectedVersion, predecessor.acknowledgedVersion);
       assert.notEqual(record!.prepared.expectedVersion, predecessor.local);
       assert.equal(s.authority.counts.applied, 2);
+      // The successor's acknowledgment retires its predecessor and that row's evidence; the
+      // successor, now naming a retired predecessor, still validates.
+      assert.deepEqual((await s.backend.listIntents()).map(row => row.requestId), [second.requestId]);
+      assert.equal(await s.backend.readMeta(bodyRecordKey(predecessor.requestId)), undefined);
+      assert.equal((await bodySnapshot(s.backend, "notes/example", (await admitBodyMode(s.backend))!)).read.intents[0]!.after, predecessor.requestId);
     } finally { s.close(); }
   });
   test(`${adapter}: uncertain delivery survives close and lookup-only recovery`, async () => {
@@ -392,7 +398,7 @@ for (const adapter of ADAPTERS) {
       const reads: string[] = [];
       const read = s.backend.readWithJournal.bind(s.backend);
       s.backend.readWithJournal = async (...args) => { reads.push(args[0]); return read(...args); };
-      for (const choice of [{ kind: "revise", body: "x".repeat(65537) }, { kind: "revise", body: "Typed", frontmatter: { type: "Note" } }, { kind: "revise", body: 42 }]) {
+      for (const choice of [{ kind: "revise", body: "x".repeat(BODY_DELIVERY_LIMITS.bodyBytes + 1) }, { kind: "revise", body: "Typed", frontmatter: { type: "Note" } }, { kind: "revise", body: 42 }]) {
         await assert.rejects(resolveConflict(s.local, s.authority.backend, review, choice as ConflictChoice), { name: "BodyRuntimeError" });
       }
       s.backend.readWithJournal = read;
@@ -447,7 +453,7 @@ for (const adapter of ADAPTERS) {
     try {
       const mode = (await admitBodyMode(s.backend))!;
       const before = (await bodySnapshot(s.backend, "notes/example", mode)).guard;
-      await assert.rejects(commitBodyLocal(s.local, "notes/example", { body: "x".repeat(65537) }));
+      await assert.rejects(commitBodyLocal(s.local, "notes/example", { body: "x".repeat(BODY_DELIVERY_LIMITS.bodyBytes + 1) }));
       assert.deepEqual((await bodySnapshot(s.backend, "notes/example", mode)).guard, before);
       await s.runtime.commit("notes/example", { body: "Valid" });
       const intent = (await s.backend.listIntents())[0]!;
@@ -469,10 +475,10 @@ for (const adapter of ADAPTERS) {
       assert.doesNotThrow(() => assertBodyCapacity(snap.guard));
       const row = snap.read.intents[0]!;
       assert.throws(() => projectBodyGuard(snap.guard, { intents: [row, { ...row, requestId: "second", sequence: 2 }, { ...row, requestId: "third", sequence: 3 }] }), /capacity/);
-      assert.throws(() => projectBodyGuard(snap.guard, { document: { version: row.local, raw: "\\".repeat(1024 * 1024) } }), /capacity/);
+      assert.throws(() => projectBodyGuard(snap.guard, { document: { version: row.local, raw: "\\".repeat(BODY_DELIVERY_LIMITS.envelopeBytes / 2) } }), /capacity/);
       // Many individually bounded retained receipts still count in the complete named metadata array.
       const large = structuredClone(snap.guard);
-      for (let i = 0; i < 20; i++) large.meta.push({ key: `body-delivery:request:retained-${i}`, expected: { present: true, value: { receipt: "x".repeat(2 * 1024 * 1024 - 100) } } });
+      for (let i = 0; i < 20; i++) large.meta.push({ key: `body-delivery:request:retained-${i}`, expected: { present: true, value: { receipt: "x".repeat(BODY_DELIVERY_LIMITS.envelopeBytes - 100) } } });
       assert.throws(() => assertBodyCapacity(large), /capacity/);
       await s.runtime.sync();
       const settled = await bodySnapshot(s.backend, "notes/example", mode);
@@ -533,7 +539,8 @@ for (const adapter of ADAPTERS) {
         await push(s.local, exact, { bodyTransport: s.authority.transport, write: immediate });
         if (sameBytes) { await s.runtime.commit("notes/example", { body: "Returning body" }); await push(s.local, exact, { bodyTransport: s.authority.transport, write: immediate }); }
         const before = await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] });
-        if (sameBytes) { assert.equal(before.raw, original.raw); assert.ok(before.intents.length > original.intents.length); }
+        // Retirement keeps one acknowledged row, so identical bytes differ only in which row it is.
+        if (sameBytes) { assert.equal(before.raw, original.raw); assert.notDeepEqual(before.intents.map(row => row.requestId), original.intents.map(row => row.requestId)); }
         release(); await rejected;
         assert.deepEqual(await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] }), before);
         const control = await s.backend.readMeta<{ controls: { pull: { completedAt: string | null } } }>(BODY_MODE_KEY);
@@ -709,10 +716,10 @@ test("legacy bootstrap still mirrors root metadata; missing edition legitimately
 });
 
 test("capacity measures exact UTF-8 serialized boundaries and consumes reserved evidence monotonically", () => {
-  const E = 2 * 1024 * 1024;
+  const E = BODY_DELIVERY_LIMITS.envelopeBytes;
   const guard = { target: "notes/example", document: null, intents: [], meta: [{ key: "retained", expected: { present: true as const, value: "" } }] };
   // No unsettled work: document + shared + transition + full control headroom are reserved.
-  const reserve = 3 * E - jsonBytes(null) * 2 + BODY_RUNTIME_LIMITS.controlBytes - jsonBytes(null);
+  const reserve = 2 * E + BODY_RUNTIME_LIMITS.transitionBytes - jsonBytes(null) * 2 + BODY_RUNTIME_LIMITS.controlBytes - jsonBytes(null);
   const padding = BODY_RUNTIME_LIMITS.guardedBytes - reserve - jsonBytes(guard);
   guard.meta[0]!.expected.value = "x".repeat(padding);
   assert.doesNotThrow(() => assertBodyCapacity(guard));
