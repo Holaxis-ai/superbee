@@ -4,6 +4,7 @@ import { renderUsage } from "../../output.js";
 // version-aware logical aliases declared by core's Kind field-coordinate policy.
 import { parseArgs } from "node:util";
 import {
+  kindFieldInputValue,
   loadKinds,
   progressStatusCoordinate,
   projectKindForAuthoring,
@@ -432,7 +433,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             );
           }
           suppliedByStorageField.set(coordinate.storageField, field);
-          nextFrontmatter[coordinate.storageField] = value;
+          nextFrontmatter[coordinate.storageField] = kindFieldInputValue(kind, coordinate.storageField, [value]);
         }
       }
 
