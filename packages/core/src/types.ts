@@ -440,6 +440,24 @@ export interface QueryFilter {
    * (e.g. `tags: [a,b]`) matches on membership. A field the doc lacks never matches (empty set).
    */
   fields?: Record<string, string>;
+  /**
+   * Restrict to concepts whose `sources` list holds at least one entry carrying this identity
+   * (see {@link SourceIdentity}). A selector naming neither key imposes no constraint, like an
+   * empty `tags` list.
+   */
+  sources?: SourceIdentity;
+}
+
+/**
+ * An OKF `sources[]` identity: `resource` names the provider namespace and `id` the record within
+ * it. Each supplied key must equal the entry's own property of the same name by exact,
+ * case-sensitive string comparison: no trimming, URL normalization, or `String()` coercion. An
+ * entry that is not a mapping, or whose property is absent or not a string, never matches, and
+ * neither does a `sources` value that is not a list.
+ */
+export interface SourceIdentity {
+  resource?: string;
+  id?: string;
 }
 
 /** A single resolved outbound cross-link (a standard markdown link, never a wikilink). */

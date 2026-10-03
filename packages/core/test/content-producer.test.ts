@@ -17,6 +17,7 @@ const fieldActions: FieldAction[] = [
   { action: "remove", field: "tags", value: "old" },
   { action: "edit", field: "sources", selector: { id: "source" }, patch: { title: "changed" } },
   { action: "replace-all", field: "sources", value: [{ id: "replacement", resource: "next" }] },
+  { action: "upsert", field: "sources", value: { id: "source", resource: "original", title: "changed" } },
 ];
 for (const action of fieldActions) {
   test(`${action.action}: field preview and commit preserve separate producer and history actor`, async () => {

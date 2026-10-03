@@ -94,6 +94,12 @@ export class DocumentNotFoundError extends Error {
 
 export type DocumentMutationInput =
   | { kind: "field-action"; action: FieldAction }
+  /**
+   * Several field actions applied in order to ONE fresh read and committed as one CAS write, with
+   * one metadata, attribution and validation pass: for example scalar `set`s together with a
+   * `sources` upsert. Each action keeps its single-action rules; the result reports `scopes`.
+   */
+  | { kind: "field-actions"; actions: readonly FieldAction[] }
   | { kind: "assign"; assignments: Record<string, unknown>; body?: string; refreshTimestamp?: boolean }
   | { kind: "verify"; event: AppendVerificationOptions }
   | { kind: "kind-field"; mutation: KindFieldMutation };
@@ -150,6 +156,8 @@ export interface MutateDocumentOptions {
 
 export interface DocumentMutationResult {
   scope?: FieldActionScope;
+  /** Per-action scopes of a `field-actions` input, in input order, from the deciding attempt. */
+  scopes?: FieldActionScope[];
   doc: OkfDocument;
   changed: boolean;
   version: Version;
@@ -379,8 +387,10 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   if ((opts.input === undefined) === (opts.buildCandidate === undefined)) throw new InvalidInputError("Supply exactly one semantic input or buildCandidate.");
   if (opts.input !== undefined && opts.mode !== "patch") throw new InvalidInputError("Semantic field/domain input requires patch mode.");
   let scope: FieldActionScope | undefined;
+  let scopes: FieldActionScope[] | undefined;
   const build = async (existing: OkfDocument | undefined, decisionNow: () => string): Promise<DocumentMutationCandidate> => {
     scope = undefined;
+    scopes = undefined;
     let candidate: DocumentMutationCandidate;
     if (opts.input !== undefined) {
       if (!existing) throw new DocumentNotFoundError(opts.id);
@@ -390,6 +400,18 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         const prepared = prepareDocumentFieldAction(existing, input.action, { registry: opts.registry, okfVersion, now: decisionNow });
         candidate = prepared.candidate;
         scope = prepared.scope;
+      } else if (input.kind === "field-actions") {
+        if (!Array.isArray(input.actions) || input.actions.length === 0) throw new InvalidInputError("field-actions requires a nonempty list of field actions.");
+        if (input.actions.some(action => action?.action === "edit" || action?.action === "replace-all") && opts.expectedVersion === undefined) throw new InvalidInputError("edit and replace-all require expectedVersion from an observed document.");
+        let working: OkfDocument = existing;
+        const prepared: FieldActionScope[] = [];
+        for (const action of input.actions) {
+          const step = prepareDocumentFieldAction(working, action, { registry: opts.registry, okfVersion, now: decisionNow });
+          working = { id: existing.id, ...step.candidate };
+          prepared.push(step.scope);
+        }
+        candidate = { frontmatter: working.frontmatter, body: working.body };
+        scopes = prepared;
       } else if (input.kind === "assign") {
         candidate = prepareDocumentAssignments(existing, input.assignments);
         if (input.body !== undefined) candidate.body = input.body;
@@ -582,7 +604,8 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     maxAttempts: hardCas ? 1 : maxAttempts,
   });
 
+  const scoped = { ...(scope ? { scope } : {}), ...(scopes ? { scopes } : {}) };
   return outcome.wrote
-    ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings: outcome.result.warnings, ...(scope ? { scope } : {}) }
-    : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings: [], ...(scope ? { scope } : {}) };
+    ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings: outcome.result.warnings, ...scoped }
+    : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings: [], ...scoped };
 }
