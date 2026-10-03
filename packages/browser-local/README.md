@@ -1,11 +1,11 @@
 # @superbee/browser-local
 
 Shared browser-local working-copy and editor-recovery primitives for Superbee hosts.
-This prerelease requires exactly `@superbee/core@0.2.0-pre.6`. That core release
-returns constructed and stored document bodies in their serialized (storage-normalized)
-shape and mints byte versions through one shared SHA-256 implementation; this package's
-document codec, mutation and journal paths run on those contracts. A workspace build
-is not proof that an older registry artifact is compatible.
+This prerelease requires exactly `@superbee/core@0.2.0-pre.7`. That core release adds
+`retireAcknowledged` to the journaled backend seam (IndexedDB adapter included), which
+this package's body runtime calls to retire acknowledged history, and raises the body
+delivery bounds to the hosted document write bound. Registry core pre.6 lacks both; a
+workspace build is not proof that an older registry artifact is compatible.
 
 The root entry exports working-copy bootstrap, local mutation, synchronization,
 conflict recovery and platform runtimes. These use the shared core engine and
