@@ -47,6 +47,7 @@ import {
   captureIntentUpdate,
   captureMetaWrite,
   captureJournalValue,
+  captureRetireAcknowledged,
   JournalGuardConflict,
   assertJournalResolutionOptions,
   assertJournalSnapshot,
@@ -65,6 +66,7 @@ import {
   type JournaledReadResult,
   type JournaledWriteOptions,
   type MetaRecord,
+  type RetireAcknowledgedOptions,
 } from "./journaled-backend.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, assertSafeReservedFilename, compareStorageKeys, pathFromConceptId } from "./paths.js";
 import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
@@ -716,6 +718,28 @@ export class IndexedDbBackend implements JournaledBackend {
   // an intent another realm already settled.
 
   /** Read and compare a complete guard inside its caller's still-active transaction. */
+  /**
+   * Remove acknowledged intents of one target and named meta rows in one transaction, after
+   * comparing the target's full guard in that same transaction.
+   */
+  async retireAcknowledged(target: ConceptId, options: RetireAcknowledgedOptions): Promise<void> {
+    assertSafeConceptId(target);
+    const { guard: expected, requestIds, removeMeta } = captureRetireAcknowledged(target, options);
+    await this.#transact<void>([DOCUMENTS, INTENTS, META], "readwrite", (tx, done, fail, guard) => {
+      this.#checkJournalGuard(tx, expected, () => {
+        for (const requestId of requestIds) {
+          const removal = tx.objectStore(INTENTS).delete(requestId);
+          removal.onerror = () => fail(requestError(removal, `IndexedDB intent retirement failed for '${requestId}'`));
+        }
+        for (const key of removeMeta ?? []) {
+          const removal = tx.objectStore(META).delete(key);
+          removal.onerror = () => fail(requestError(removal, `IndexedDB meta delete failed for '${key}'`));
+        }
+        done(undefined);
+      }, fail, guard);
+    });
+  }
+
   #checkJournalGuard(tx: IdbTransactionLike, expected: JournalGuard | undefined, next: () => void, fail: (error: Error) => void, guard: (fn: () => void) => () => void): void {
     if (expected === undefined) { next(); return; }
     const current: JournalGuard = { target: expected.target, document: null, intents: [], meta: [] };

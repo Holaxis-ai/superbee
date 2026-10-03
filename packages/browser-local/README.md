@@ -79,8 +79,23 @@ bounded at 4 MiB, original journal fields at 16 MiB, reconciliation at 32 MiB an
 complete guarded target at 64 MiB. JSON escape expansion and named metadata count.
 The composite mode/control row has a 64 KiB bound with remaining growth reserved
 per target. Capacity errors retain existing work and refuse new state; they do not
-prune history or receipts. Body input is bounded at 983,040 bytes, the hosted kernel's document
-write bound. The existing document
+prune history or receipts.
+
+Acknowledged history does not accumulate. After an acknowledgment, and before each local
+commit, the runtime retires every acknowledged row of the target older than its newest
+acknowledged row, with that row's descriptor, prepared envelope and receipt, in one guarded
+transaction (`retireAcknowledged` on the journaled seam). The shared base already holds the
+acknowledged content, a successor's proof reads only its immediate predecessor (the newest
+acknowledged row, which stays), and receipt reconciliation reads only the settling row and
+newer ones. Unsettled rows are never retired. Retirement is cleanup: a commit or settle never
+depends on it, and one that fails is retried by the next. An adapter without
+`retireAcknowledged` keeps its history, as before. A library older than retirement refuses
+(fails closed on) a target whose newest acknowledged row names a retired predecessor.
+
+Body input is bounded at 983,040 UTF-8 bytes, the library's ceiling. It matches the hosted
+kernel's document write bound in raw bytes, but the host measures a write as canonical JSON
+(newlines, quotes and backslashes count twice) and keeps definition documents (`conventions/`)
+at 64 KiB, so a host preflights its own measure before committing. The existing document
 codec owns metadata normalization, including valid timestamp values.
 
 Body mode supports updates to existing documents, not creation or general metadata

@@ -66,7 +66,7 @@ import { BODY_DELIVERY_LIMITS, performBodyDelivery, prepareBodyDelivery, reconci
 import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
 import { JournalGuardConflict, JournalSnapshotConflict, assertJournalGuard, type JournalGuard, type MetaExpectation } from "@superbee/core/journaled-backend";
-import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
+import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, retireAcknowledgedBody, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
   validateBodyResolutionReceipt, validateBodyRecord, BODY_MODE_KEY, BODY_RUNTIME_LIMITS, jsonBytes, BodyRuntimeError,
   type BodyDeliveryOptions, type BodyRecord, type BodyMode, type BodyResolutionReceipt, type BodySnapshot } from "./body-journal.js";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
@@ -994,6 +994,15 @@ export async function deleteLocal(local: LocalTarget, id: ConceptId, options: { 
   }
 }
 
+/**
+ * Retirement is cleanup: it applies whole or not at all, and a commit or settle never depends on
+ * it. A failure (another realm's write, a closing page, a storage error) leaves the history for
+ * the next commit or settle to retire.
+ */
+async function retireQuietly(backend: JournaledBackend, mode: BodyMode, target: ConceptId): Promise<void> {
+  try { await retireAcknowledgedBody(backend, mode, target); } catch { /* retried by the next commit or settle */ }
+}
+
 export interface BodyLocalMutation { body: string; expectedVersion?: Version; actor?: string; now?: () => string }
 /** Explicit body intent, authored by the existing engine and journaled in its document CAS. */
 export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutation: BodyLocalMutation): Promise<CommitResult> {
@@ -1004,6 +1013,9 @@ export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutatio
   if (!mode) throw new BodyRuntimeError("Body delivery mode was not selected.");
   await assertBodyEdition(backend, mode);
   if (!(await isComplete(local))) throw new BodyRuntimeError("Bootstrap must complete before local body commits.");
+  // History a settle could not retire (another realm moved the target, or it predates
+  // retirement) leaves before this commit reserves its own capacity.
+  await retireQuietly(backend, mode, id);
   const initial = await bodySnapshot(backend, id, mode);
   if (!initial.read.document) throw new BodyRuntimeError("Body delivery does not create documents.");
   let recorded: IntentRecord | null = null;
@@ -1605,8 +1617,12 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
     }
     const raw = document ? stringifyDoc(document.frontmatter, document.body ?? "") : undefined;
     projectBodyGuard(fresh.guard, { intents: fresh.read.intents.map(row => row.requestId === requestId ? { ...row, ...patch } : row), meta, ...(raw === undefined ? {} : { document: { version: versionOfBytes(raw), raw } }) });
-    try { return await backend.updateIntent(requestId, "in_flight", patch, { guard: fresh.guard, meta, ...(document ? { document } : {}) }); }
-    catch (error) { if (!(error instanceof JournalGuardConflict) || retry === 2) throw error; }
+    let settled: IntentRecord;
+    try { settled = await backend.updateIntent(requestId, "in_flight", patch, { guard: fresh.guard, meta, ...(document ? { document } : {}) }); }
+    catch (error) { if (!(error instanceof JournalGuardConflict) || retry === 2) throw error; continue; }
+    // The acknowledgment is durable; older acknowledged history can leave the journal now.
+    if (settled.state === "acknowledged") await retireQuietly(backend, mode, intent.target);
+    return settled;
   }
   return null;
 }

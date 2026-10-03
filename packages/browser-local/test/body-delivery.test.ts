@@ -54,13 +54,19 @@ for (const adapter of ADAPTERS) {
       release(); await delivering;
       assert.equal((await s.runtime.read("notes/example")).doc.body.trim(), "Second");
       assert.equal((await s.runtime.read("notes/example")).provenance.state, "local-pending");
+      const predecessor = (await s.backend.listIntents())[0]!;
+      assert.equal(predecessor.state, "acknowledged");
       s.authority.knobs.delay = undefined;
       await s.runtime.sync();
       const record = await s.backend.readMeta<{ prepared: { expectedVersion: string } }>(bodyRecordKey(second.requestId));
-      const predecessor = (await s.backend.listIntents())[0]!;
       assert.equal(record!.prepared.expectedVersion, predecessor.acknowledgedVersion);
       assert.notEqual(record!.prepared.expectedVersion, predecessor.local);
       assert.equal(s.authority.counts.applied, 2);
+      // The successor's acknowledgment retires its predecessor and that row's evidence; the
+      // successor, now naming a retired predecessor, still validates.
+      assert.deepEqual((await s.backend.listIntents()).map(row => row.requestId), [second.requestId]);
+      assert.equal(await s.backend.readMeta(bodyRecordKey(predecessor.requestId)), undefined);
+      assert.equal((await bodySnapshot(s.backend, "notes/example", (await admitBodyMode(s.backend))!)).read.intents[0]!.after, predecessor.requestId);
     } finally { s.close(); }
   });
   test(`${adapter}: uncertain delivery survives close and lookup-only recovery`, async () => {
@@ -533,7 +539,8 @@ for (const adapter of ADAPTERS) {
         await push(s.local, exact, { bodyTransport: s.authority.transport, write: immediate });
         if (sameBytes) { await s.runtime.commit("notes/example", { body: "Returning body" }); await push(s.local, exact, { bodyTransport: s.authority.transport, write: immediate }); }
         const before = await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] });
-        if (sameBytes) { assert.equal(before.raw, original.raw); assert.ok(before.intents.length > original.intents.length); }
+        // Retirement keeps one acknowledged row, so identical bytes differ only in which row it is.
+        if (sameBytes) { assert.equal(before.raw, original.raw); assert.notDeepEqual(before.intents.map(row => row.requestId), original.intents.map(row => row.requestId)); }
         release(); await rejected;
         assert.deepEqual(await s.backend.readWithJournal("notes/example", { meta: ["base:notes/example"] }), before);
         const control = await s.backend.readMeta<{ controls: { pull: { completedAt: string | null } } }>(BODY_MODE_KEY);

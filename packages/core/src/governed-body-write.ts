@@ -7,9 +7,13 @@ import { isRequestIdentity, performUncertainWrite, type Outcome, type OperationS
 import type { IntentRecord } from "./journaled-backend.js";
 import type { Version } from "./types.js";
 
-/** One body update's bounds. `bodyBytes` is the hosted kernel's document write bound (983,040 bytes,
- * design `document-size-cap`); the envelope carries the body twice (the operation and the
- * prepared content), JSON-escaped, so it is 4 MiB. */
+/**
+ * One body update's bounds. `bodyBytes` is a library ceiling in UTF-8 bytes, equal to the hosted
+ * kernel's document write bound (983,040) in raw bytes; a host that measures differently (the
+ * kernel measures canonical JSON and keeps definition documents at 64 KiB) preflights its own
+ * measure. The envelope carries the body twice (the operation and the prepared content),
+ * JSON-escaped, so it is 4 MiB.
+ */
 export const BODY_DELIVERY_LIMITS = Object.freeze({ labelBytes: 2048, bodyBytes: 983_040, envelopeBytes: 4 * 1024 * 1024 });
 /** Complete journal reconciliation has a separate bound from each delivery envelope. */
 export const BODY_RECONCILIATION_BYTES = 32 * 1024 * 1024;
