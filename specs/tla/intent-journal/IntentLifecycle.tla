@@ -17,9 +17,6 @@
 (*   PLookup               performUncertainWrite: submissions and lookups  *)
 (*   PSettle               settleIntent                                    *)
 (*   Crash                 the page dies at any await of a push            *)
-(*   Retire                retireAcknowledgedBody (body-journal.ts):       *)
-(*                         acknowledged history older than the newest      *)
-(*                         acknowledged row leaves the journal             *)
 (*                                                                         *)
 (* Abstractions:                                                           *)
 (*  - Content is abstracted away: the authority's answer to the first      *)
@@ -47,13 +44,11 @@
 (*   AdmitRefused       exact-mode resolve admits a content-refused head,  *)
 (*                      as body mode does                                  *)
 (*   RoleDiscipline     every push runs under the push role                *)
-(*   RetireKeepsNewest  retirement keeps the newest acknowledged row, the  *)
-(*                      only one a live successor can name                 *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Pushers, MaxRid, MaxCommits, MaxCrash, MaxLoss, MaxConflict, MaxRefuse, MaxAuthRefuse,
-          ReclaimBeforePush, AdmitRefused, RoleDiscipline, RetireKeepsNewest, None
+          ReclaimBeforePush, AdmitRefused, RoleDiscipline, None
 
 Rids == 1..MaxRid
 Gone == [st |-> "gone", att |-> 0, after |-> None, code |-> None]   \* an absent journal row
@@ -161,15 +156,6 @@ Resolve(keep) ==
      /\ NoteRetired(chain)
   /\ nextRid' = IF keep THEN nextRid + 1 ELSE nextRid
   /\ UNCHANGED <<outcome, submitted, paused, role, pc, P, budget, blindResubmit>>
-
-\* retireAcknowledgedBody: an acknowledged row leaves the journal with its evidence. With
-\* RetireKeepsNewest only a row older than another acknowledged row retires; a retired row's
-\* identity stays applied, so this is not a retirement of applied work (NoRetireOfApplied).
-Retire(r) ==
-  /\ J[r] # Gone /\ J[r].st = "acked"
-  /\ RetireKeepsNewest => \E s \in Rids : s > r /\ J[s] # Gone /\ J[s].st = "acked"
-  /\ J' = [J EXCEPT ![r] = Gone]
-  /\ UNCHANGED <<nextRid, outcome, submitted, paused, role, pc, P, budget, blindResubmit, retiredApplied>>
 
 ----------------------------------------------------------------------------
 (* Push *)
@@ -320,7 +306,6 @@ UserExit == RecoveryEdit \/ Resume \/ Resolve(TRUE) \/ Resolve(FALSE)
 Next ==
   \/ Commit
   \/ UserExit
-  \/ \E r \in Rids : Retire(r)
   \/ \E p \in Pushers : PushStep(p) \/ Crash(p)
 
 \* The host keeps syncing; the person acts on what the product tells them
@@ -347,10 +332,6 @@ NoRetireOfApplied == ~retiredApplied
 \* (as an invariant: an in-flight chained intent's predecessor is acknowledged or gone).
 ChainOrder == \A r \in Rids : (J[r] # Gone /\ J[r].st = "in_flight" /\ J[r].after # None)
                  => (J[J[r].after] = Gone \/ J[J[r].after].st = "acked")
-
-\* Body mode delivers a chained intent only from its predecessor's durable receipt, so a live
-\* intent's predecessor never leaves the journal (retirement included).
-PredecessorPresent == \A r \in LiveRids : J[r].after # None => J[J[r].after] # Gone
 
 \* Every change eventually settles as acknowledged or is resolved away.
 EventuallyAllSettled == <>[](LiveRids = {})

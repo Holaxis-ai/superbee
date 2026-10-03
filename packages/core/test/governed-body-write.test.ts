@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { build } from "esbuild";
 import {
   prepareBodyDelivery, validatePreparedBodyDelivery, validateBodyReceipt, assertSameBodyDelivery,
-  performBodyDelivery, reconcileBodyReceipt, BODY_DELIVERY_LIMITS, BODY_RECONCILIATION_BYTES,
+  performBodyDelivery, reconcileBodyReceipt, BODY_DELIVERY_LIMITS,
   type PreparedBodyDelivery, type CommittedBodyReceipt, type BodyDeliveryTransport, type BodyDeliveryOutcome,
 } from "../src/governed-body-write.js";
 import { MemoryBackend } from "../src/memory-backend.js";
@@ -29,10 +29,9 @@ function journal(p = prepared(), sequence = 1): IntentRecord {
   return { requestId: p.requestId, kind: "document.write", target: p.target, base: token, local: p.local,
     content: p.content, createdAt: at, attempts: 0, state: "pending", sequence, updatedAt: at, baseContent: null };
 }
-test("complete reconciliation uses its own snapshot limit, larger than one envelope", () => {
+test("complete reconciliation uses a separate sixteen MiB snapshot limit", () => {
   const p = prepared(), r = receipt(p);
-  // Ten rows of a sixteenth of the limit fit; seven more pass it.
-  const rows = Array.from({ length: 10 }, (_, i) => ({ ...journal(p, i + 2), requestId: `retained-${i}`, content: "x".repeat(BODY_RECONCILIATION_BYTES / 16) }));
+  const rows = Array.from({ length: 10 }, (_, i) => ({ ...journal(p, i + 2), requestId: `retained-${i}`, content: "x".repeat(1024 * 1024) }));
   const snapshot = { version: p.local, intents: [journal(p), ...rows], shared: null };
   assert.equal(reconcileBodyReceipt(p, r, snapshot).action, "preserve-local");
   snapshot.intents.push(...Array.from({ length: 7 }, (_, i) => ({ ...rows[0]!, sequence: i + 20, requestId: `excess-${i}` })));

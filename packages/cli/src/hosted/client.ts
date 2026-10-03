@@ -112,6 +112,8 @@ export interface HostedIdentity {
    * none (every host before the bound was stated accepts 65,536).
    */
   readonly documentInputBytes: number | null;
+  /** The person's email, when the host names one (null otherwise). */
+  readonly email?: string | null;
 }
 
 export interface HostedWorkspace {
@@ -287,7 +289,7 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
     carrier,
     signal: controller.signal,
     async whoami() {
-      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown; workspaces?: unknown; limits?: unknown } | undefined;
+      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown; workspaces?: unknown; limits?: unknown; email?: unknown } | undefined;
       if (
         typeof body?.principalId !== "string" ||
         body.principalId === "" ||
@@ -320,6 +322,7 @@ function clientIn(options: HostedClientOptions, slug: string | undefined): Hoste
         tenantIds,
         workspaces: tenantIds.map((tenantId) => ({ tenantId, slug: slugs.get(tenantId) ?? null })),
         documentInputBytes: statedDocumentInputBytes(body.limits),
+        email: typeof body.email === "string" && /^[^\s\p{Cc}\p{Cf}]{3,320}$/u.test(body.email) ? body.email : null,
       };
     },
     async bundles() {

@@ -38,12 +38,6 @@
  *   chain whose head is a recorded conflict or refusal, with conflicted, refused, and
  *   never-attempted pending successors behind it, never uncertain delivery. The caller
  *   preserves recovery evidence in meta; retirement does not assert remote acceptance.
- * - {@link JournaledBackend.retireAcknowledged}, when an adapter offers it, is ONE transaction
- *   that removes named acknowledged intents of one target, and named meta rows, under the full
- *   guard of that target. Every named intent must be acknowledged in the guard, and the guard is
- *   compared in the same transaction, so an intent another realm moved since the caller's read is
- *   never removed. Unsettled work is never retired this way. What a retained successor may
- *   still need from a retired row is the caller's rule; the adapter only enforces the premise.
  * - {@link JournaledBackend.readWithJournal} is ONE snapshot: the document, every intent
  *   targeting it, and the named meta rows, read in one readonly transaction, so a write in
  *   another realm between separate reads can never show a caller a document of one moment
@@ -242,33 +236,6 @@ export function assertJournalMetaChanges(guard: JournalGuard | undefined, puts: 
 /** A guarded write owns one target and creates a globally fresh journal identity. */
 export function assertJournalIntentChanges(guard: JournalGuard | undefined, existingIdentity: IntentRecord | undefined, superseded: IntentRecord | undefined): void {
   if (guard && (existingIdentity !== undefined || (superseded !== undefined && superseded.target !== guard.target))) throw new JournalGuardConflict(guard.target);
-}
-
-/** Options for {@link JournaledBackend.retireAcknowledged}. */
-export interface RetireAcknowledgedOptions {
-  /** The full target snapshot the retirement was composed against, compared in its transaction. */
-  guard: JournalGuard;
-  /** Acknowledged intents of the guard's target to remove; at least one, each named once. */
-  requestIds: readonly string[];
-  /** Meta rows the guard names, removed in the same transaction. */
-  removeMeta?: readonly string[];
-}
-
-/**
- * Capture a retirement before any adapter work: the guard is required and complete, every
- * named intent is in it and acknowledged, and every removed meta row is one the guard names.
- */
-export function captureRetireAcknowledged(target: ConceptId, options: RetireAcknowledgedOptions): RetireAcknowledgedOptions {
-  if (!options || typeof options !== "object" || Array.isArray(options)) throw new JournalGuardConflict(target);
-  const guard = captureJournalGuardOption(options, target);
-  if (guard === undefined) throw new JournalGuardConflict(target);
-  const captured = captureJournalValue({ requestIds: options.requestIds, removeMeta: options.removeMeta });
-  const ids = captured.requestIds;
-  if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== "string") || new Set(ids).size !== ids.length ||
-      Object.keys(options).some(key => !["guard", "requestIds", "removeMeta"].includes(key)) ||
-      ids.some(id => guard.intents.find(row => row.requestId === id)?.state !== "acknowledged")) throw new JournalGuardConflict(target);
-  assertJournalMetaChanges(guard, [], captured.removeMeta);
-  return { guard, requestIds: ids, ...(captured.removeMeta === undefined ? {} : { removeMeta: captured.removeMeta }) };
 }
 
 /** Capture write options while retaining the existing synchronous metadata producer. */
@@ -616,14 +583,6 @@ export interface JournaledBackend extends StorageBackend {
   listIntents(state?: OperationState | readonly OperationState[]): Promise<IntentRecord[]>;
 
   readIntent(requestId: string): Promise<IntentRecord | undefined>;
-
-  /**
-   * Remove acknowledged intents of one target, and named meta rows, in ONE transaction under
-   * the target's full guard ({@link RetireAcknowledgedOptions}). A guard that no longer matches
-   * rejects with {@link JournalGuardConflict} and removes nothing. Optional: a caller that finds
-   * no such method keeps acknowledged history, as every adapter did before it existed.
-   */
-  retireAcknowledged?(target: ConceptId, options: RetireAcknowledgedOptions): Promise<void>;
 
   /**
    * Compare-and-swap on an intent's `state`: the patch applies only while the record is in

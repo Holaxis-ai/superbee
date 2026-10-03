@@ -17,7 +17,6 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { createInterface } from "node:readline/promises";
 
 import {
   baseKey,
@@ -89,6 +88,8 @@ import {
 import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
 import { adoptHostRoot, moveRootBase, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
 import { recordPulled, recordSynced } from "./freshness.js";
+import { needsPersonAtTerminal, processTerminal, type HostedTerminal } from "./terminal.js";
+export type { HostedTerminal } from "./terminal.js";
 import { syncEnvelope, syncVerbNotApplicable, withSyncEnvelope, type SyncEnvelope } from "../sync-outcomes.js";
 
 export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
@@ -173,34 +174,6 @@ export interface HostedSyncDeps {
   terminal?: HostedTerminal;
   /** The rule a host document id must pass to be pulled; a test seam for a stricter future rule. */
   idRule?: (id: string) => void;
-}
-
-/**
- * Where a person can confirm, by typing, what an agent must not decide alone. The check keeps a
- * person in the loop on the ordinary agent path (an agent's shell has no terminal); it is not a
- * security boundary. Known ways past it: a pseudo-terminal wrapper (`script`, `expect`, a pty
- * module), typing into a person's terminal (`tmux send-keys`), and importing the CLI with another
- * `HostedTerminal`. The refusal and the skill text make each of these an explicit violation.
- */
-export interface HostedTerminal {
-  /** True only when a person can answer here: standard input and standard error are both a terminal. */
-  readonly interactive: boolean;
-  /** Show `prompt` (on standard error, so standard output stays the receipt) and read one typed line. */
-  ask(prompt: string): Promise<string>;
-}
-
-function processTerminal(): HostedTerminal {
-  return {
-    interactive: process.stdin.isTTY === true && process.stderr.isTTY === true,
-    async ask(prompt) {
-      const reader = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
-      try {
-        return await reader.question(prompt);
-      } finally {
-        reader.close();
-      }
-    },
-  };
 }
 
 function hostedDeps(partial: Partial<HostedSyncDeps>): HostedSyncDeps {
@@ -908,16 +881,12 @@ function rowHelp(rows: readonly SyncRow[], binding: CheckoutBinding): string[] {
 function assertPersonAtTerminal(binding: CheckoutBinding, token: string, terminal: HostedTerminal): void {
   if (terminal.interactive) return;
   const command = syncCommand(binding, commandFragment` --accept-deletes ${commandToken(token)}`);
-  throw new CliError("FORBIDDEN", "accepting held deletions needs the person to type a confirmation in their own terminal, and this shell is not interactive; nothing was accepted or sent", {
-    details: {
-      reason: "needs_person_at_terminal",
-      token,
-      folder: binding.path,
-      agent_instruction: "Do not retry this or work around it. Name the held documents to the person and ask them to run the command in their own terminal if they want them removed from the bundle; otherwise restore the files.",
-      command_for_person: command,
-      restore: syncCommand(binding, commandLiteral(" --restore-deletes")),
-    },
-    help: `ask the person to run in their own terminal: ${command}`,
+  throw needsPersonAtTerminal("accepting held deletions needs the person to type a confirmation in their own terminal, and this shell is not interactive; nothing was accepted or sent", String(command), {
+    token,
+    folder: binding.path,
+    agent_instruction: "Do not retry this or work around it. Name the held documents to the person and ask them to run the command in their own terminal if they want them removed from the bundle; otherwise restore the files.",
+    command_for_person: command,
+    restore: syncCommand(binding, commandLiteral(" --restore-deletes")),
   });
 }
 

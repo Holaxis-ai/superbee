@@ -58,7 +58,6 @@ import {
   captureJournalValue,
   captureJournalWriteOptions,
   captureMetaWrite,
-  captureRetireAcknowledged,
   deletionIntentRecord,
   IntentHoldConflict,
   IntentStateConflict,
@@ -74,7 +73,6 @@ import {
   type JournaledHead,
   type JournaledHeadsOptions,
   type JournaledReadResult,
-  type RetireAcknowledgedOptions,
   type JournaledWriteOptions,
   type MetaRecord,
   type MetaWriteOptions,
@@ -1183,16 +1181,6 @@ export class FileJournaledBackend implements JournaledBackend {
       if (replacement) changes.push({ family: "document", key: replacement.id, value: replacement.record });
       changes.push({ family: "intent", key: requestId, value: structuredClone(next) }, ...FileJournaledBackend.#metaChanges(meta));
       return { changes, result: next };
-    });
-  }
-
-  async retireAcknowledged(target: ConceptId, options: RetireAcknowledgedOptions): Promise<void> {
-    assertSafeConceptId(target);
-    const { guard, requestIds, removeMeta } = captureRetireAcknowledged(target, options);
-    await this.#mutate((state) => {
-      this.#checkGuard(state, guard);
-      const changes: Change[] = requestIds.map((key): Change => ({ family: "intent", key, value: null }));
-      return { changes: [...changes, ...FileJournaledBackend.#metaChanges([], removeMeta ?? [])], result: undefined };
     });
   }
 
