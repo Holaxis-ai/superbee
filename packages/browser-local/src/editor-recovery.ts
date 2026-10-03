@@ -44,7 +44,7 @@ export interface EditorRecoveryOptions {
   locks?: LockManagerLike | null;
 }
 export type EditorRecoveryResult<T> = { held: true; value: T } | { held: false; reason: "held-elsewhere" | "locks-unavailable" };
-export const EDITOR_RECOVERY_LIMITS = Object.freeze({ documents: 32, envelopeBytes: 2 * 1024 * 1024, bodyBytes: 64 * 1024 });
+export const EDITOR_RECOVERY_LIMITS = Object.freeze({ documents: 32, envelopeBytes: 8 * 1024 * 1024, bodyBytes: 983_040 });
 export class EditorRecoveryError extends Error {
   override readonly name = "EditorRecoveryError";
   readonly code: "invalid" | "capacity" | "stale" | "pending" | "request-mismatch" | "closed";

@@ -75,11 +75,36 @@ or refused work is not reported as a successful complete synchronization.
 
 The runtime admits at most two unsettled intents per target. It reserves missing
 preparations, receipts and observations before accepting work: each envelope is
-bounded at 2 MiB, original journal fields at 8 MiB, reconciliation at 16 MiB and the
-complete guarded target at 32 MiB. JSON escape expansion and named metadata count.
+bounded at 4 MiB, original journal fields at 16 MiB, reconciliation at 32 MiB and the
+complete guarded target at 64 MiB. JSON escape expansion and named metadata count: a commit
+whose delivery cannot be prepared within its envelope (a body of control characters, each six
+bytes once escaped) is refused before it is journaled.
 The composite mode/control row has a 64 KiB bound with remaining growth reserved
 per target. Capacity errors retain existing work and refuse new state; they do not
-prune history or receipts. Body input is bounded at 64 KiB. The existing document
+prune history or receipts.
+
+Acknowledged history does not accumulate. After an acknowledgment, and before each local
+commit, the runtime retires every acknowledged row of the target older than its newest
+acknowledged row, with that row's descriptor, prepared envelope and receipt, in one guarded
+transaction (`retireAcknowledged` on the journaled seam). The shared base already holds the
+acknowledged content, a successor's proof reads only its immediate predecessor (the newest
+acknowledged row, which stays), and receipt reconciliation reads only the settling row and
+newer ones. Unsettled rows are never retired. Retirement is cleanup: a commit or settle never
+depends on it, and one that fails is retried by the next. An adapter without
+`retireAcknowledged` keeps its history, as before. `syncStatus` therefore counts at most one
+acknowledged row per target.
+
+A working copy written by this version cannot be read by an older one. An older library
+refuses (fails closed on) a target whose newest acknowledged row names a retired predecessor,
+and on any body, envelope or editor-recovery draft over its own smaller bounds; because its
+status, refresh and pull read every target, one such target stops them for the whole store.
+A host that ships this version should reload pages still running an older bundle, and must not
+roll the browser library back past it without clearing the working copy.
+
+Body input is bounded at 983,040 UTF-8 bytes, the library's ceiling. It matches the hosted
+kernel's document write bound in raw bytes, but the host measures a write as canonical JSON
+(newlines, quotes and backslashes count twice) and keeps definition documents (`conventions/`)
+at 64 KiB, so a host preflights its own measure before committing. The existing document
 codec owns metadata normalization, including valid timestamp values.
 
 Body mode supports updates to existing documents, not creation or general metadata
