@@ -8,25 +8,24 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.8 | public / next |
-| @superbee/server | 0.2.0-pre.8 | public / next |
-| @superbee/browser-local | 0.1.0-pre.4 | public / next |
+| @superbee/core | 0.2.0-pre.9 | public / next |
+| @superbee/server | 0.2.0-pre.9 | public / next |
+| @superbee/browser-local | 0.1.0-pre.5 | public / next |
 | @superbee/markdown-renderer | 0.1.5 | existing restricted access / latest |
 
-This candidate carries retirement of acknowledged body-journal history
-(`retireAcknowledged` on the journaled backend seam; superbee#387), body delivery and
-editor recovery bounds raised to the hosted document write bound (983,040 bytes per
-body), and the core and server changes merged since 0.2.0-pre.6, including hosted
-checkout, sync and transport, operations, lock fixes, `query.newest`, Kind reading
-order, and isolation of documents with invalid frontmatter (also in the server router). It also still carries pre.6's serialized-body read contract.
-Browser-local 0.1.0-pre.4 was prepared for pre.6 and never published; it now pins pre.8.
-The `libraries/v0.2.0-pre.7` tag (b2a15567) never staged: main moved before its run, and
-the next merge reverted this candidate's journal changes, so the pair is cut again as pre.8.
+This candidate adds the `sources[]` identity lookup and grouped field-action write
+(superbee#393): a `sources` facet on `QueryFilter` shared by query, queryHeads,
+browser-local and the View bridge, `matchesSourceIdentity`/`hasSourceIdentity`, a
+`field-actions` input to `mutateDocument`, and a sources `upsert` action. It also adds
+the `@superbee/core/artifact-contract` subpath export for document artifact contracts
+(superbee#391). Everything else in 0.2.0-pre.8 is carried unchanged. Browser-local 0.1.0-pre.4 (published,
+pinned to core pre.8) is unchanged on the registry; 0.1.0-pre.5 moves its exact pin to
+pre.9 with no browser-local source change.
 
-Browser-local depends exactly on core pre.8 and moves with it under the paired
+Browser-local depends exactly on core pre.9 and moves with it under the paired
 exact-pin policy; do not patch around a mismatch or publish with a wildcard
 dependency. Server moves with core under the existing paired release policy.
-Renderer 0.1.5 (also never published) extends its core peer allowance through pre.8 and
+Renderer 0.1.5 extends its core peer allowance through pre.9 and
 adds `data-aslite-fragment` on strict-shape same-page fragment spans (4cb4ade2); it is
 included so consumers can align their root core without overriding peer
 checks, and a published renderer version is never reused for different bytes. Its access
