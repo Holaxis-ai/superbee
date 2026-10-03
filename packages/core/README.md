@@ -7,6 +7,12 @@ writes, cross-links and storage backends. It is a library; installing it does no
 Core and `@superbee/server` are released together, independently of the `superbee` CLI. A CLI
 release bundles the engine source selected at build time; it does not load `@superbee/core@latest`.
 
+## Document presentation values
+
+The additive `@superbee/core/artifact-contract` subpath provides pure v1 document target,
+observation, request, receipt and capability decoders. See the [contract reference](https://github.com/Holaxis-ai/superbee/blob/main/packages/core/ARTIFACT-CONTRACT.md)
+for identity, provenance, lifecycle and host responsibilities.
+
 ## Filesystem platform migration
 
 The Windows extraction changes the default Node.js filesystem backend. Its built-in host policy
