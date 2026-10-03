@@ -16,15 +16,17 @@ is the durable process for every browser-local prerelease.
 This candidate carries retirement of acknowledged body-journal history
 (`retireAcknowledged` on the journaled backend seam; superbee#387), body delivery and
 editor recovery bounds raised to the hosted document write bound (983,040 bytes per
-body), and the core and server changes merged since 0.2.0-pre.6 (hosted checkout, sync,
-operations and lock fixes). It also still carries pre.6's serialized-body read contract.
+body), and the core and server changes merged since 0.2.0-pre.6, including hosted
+checkout, sync and transport, operations, lock fixes, `query.newest`, Kind reading
+order, and isolation of documents with invalid frontmatter (also in the server router). It also still carries pre.6's serialized-body read contract.
 Browser-local 0.1.0-pre.4 was prepared for pre.6 and never published; it now pins pre.7.
 
 Browser-local depends exactly on core pre.7 and moves with it under the paired
 exact-pin policy; do not patch around a mismatch or publish with a wildcard
 dependency. Server moves with core under the existing paired release policy.
-Renderer 0.1.5 (also never published) only extends its core peer allowance, now through
-pre.7; it is included so consumers can align their root core without overriding peer
+Renderer 0.1.5 (also never published) extends its core peer allowance through pre.7 and
+adds `data-aslite-fragment` on strict-shape same-page fragment spans (4cb4ade2); it is
+included so consumers can align their root core without overriding peer
 checks, and a published renderer version is never reused for different bytes. Its access
 remains restricted: do not make other private packages public.
 
