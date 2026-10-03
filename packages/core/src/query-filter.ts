@@ -1,8 +1,9 @@
 /** Browser-safe, storage-free query predicate shared by every head-projection consumer. */
-import type { ConceptId, Frontmatter, QueryFilter } from "./types.js";
+import type { ConceptId, Frontmatter, QueryFilter, SourceIdentity } from "./types.js";
 
 /**
- * THE canonical {@link QueryFilter} predicate — every facet (`prefix`, `type`, `tags`, `fields`),
+ * THE canonical {@link QueryFilter} predicate — every facet (`prefix`, `type`, `tags`, `fields`,
+ * `sources`),
  * ANDed. Kept in a storage-free module so both Node consumers and the browser View bridge can use
  * the same scalar/array/string-coercion semantics without importing the filesystem-backed engine.
  */
@@ -27,5 +28,25 @@ export function matchesFilter(
       if (!actual.includes(expected)) return false;
     }
   }
+  if (filter.sources && (filter.sources.resource !== undefined || filter.sources.id !== undefined)) {
+    if (!hasSourceIdentity(doc.frontmatter.sources, filter.sources)) return false;
+  }
   return true;
+}
+
+/** THE `sources[]` identity predicate for one entry; see {@link SourceIdentity} for the rule. */
+export function matchesSourceIdentity(entry: unknown, identity: SourceIdentity): boolean {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
+  const row = entry as Record<string, unknown>;
+  for (const key of ["resource", "id"] as const) {
+    const expected = identity[key];
+    if (expected === undefined) continue;
+    if (!Object.hasOwn(row, key) || typeof row[key] !== "string" || row[key] !== expected) return false;
+  }
+  return true;
+}
+
+/** True when a frontmatter `sources` value is a list holding an entry with this identity. */
+export function hasSourceIdentity(sources: unknown, identity: SourceIdentity): boolean {
+  return Array.isArray(sources) && sources.some((entry) => matchesSourceIdentity(entry, identity));
 }
