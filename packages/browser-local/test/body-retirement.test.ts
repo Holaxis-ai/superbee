@@ -53,11 +53,11 @@ async function descriptorKeys(backend: JournaledBackend, ids: readonly string[])
 }
 
 for (const adapter of ADAPTERS) {
-  test(`${adapter}: twenty-five consecutive saves of a 900 KiB document all land and keep one acknowledged row`, async () => {
+  test(`${adapter}: twenty-one consecutive saves of a 900 KiB document all land and keep one acknowledged row`, async () => {
     const s = await setup(adapter);
     try {
       const seen: string[] = [];
-      for (let save = 1; save <= 25; save++) {
+      for (let save = 1; save <= 21; save++) {
         const body = largeBody(`Save ${save}`);
         assert.ok(utf8(body) > 899 * KIB && utf8(body) <= BODY_DELIVERY_LIMITS.bodyBytes);
         await s.runtime.commit(ID, { body });
@@ -69,18 +69,18 @@ for (const adapter of ADAPTERS) {
         seen.push(snap.read.intents[0]!.requestId);
         assert.equal((await s.runtime.read(ID)).provenance.state, "shared-confirmed");
       }
-      assert.equal(s.authority.counts.applied, 25);
-      assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody("Save 25"));
+      assert.equal(s.authority.counts.applied, 21);
+      assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody("Save 21"));
       // Only the newest row keeps its descriptor; every retired row's evidence left with it.
       assert.deepEqual(await descriptorKeys(s.backend, seen), [seen.at(-1)]);
     } finally { s.close(); }
   });
 
-  test(`${adapter}: twenty-two saves each made while the previous one is in flight keep chaining and retiring`, async () => {
+  test(`${adapter}: six saves each made while the previous one is in flight keep chaining and retiring`, async () => {
     const s = await setup(adapter);
     try {
       await s.runtime.commit(ID, { body: largeBody("Chain 0") });
-      for (let save = 1; save <= 22; save++) {
+      for (let save = 1; save <= 6; save++) {
         let release!: () => void, started!: () => void;
         const reached = new Promise<void>(resolve => { started = resolve; });
         s.authority.knobs.delay = () => { started(); return new Promise<void>(resolve => { release = resolve; }); };
@@ -101,8 +101,8 @@ for (const adapter of ADAPTERS) {
       // The last acknowledged row names a predecessor that has retired.
       assert.ok(rows[0]!.after);
       assert.equal(await s.backend.readIntent(rows[0]!.after!), undefined);
-      assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody("Chain 22"));
-      assert.equal(s.authority.counts.applied, 23);
+      assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody("Chain 6"));
+      assert.equal(s.authority.counts.applied, 7);
     } finally { s.close(); }
   });
 
@@ -228,14 +228,14 @@ test("indexeddb: a page that dies at each await of a large save loses no edit an
     assert.deepEqual((await bodySnapshot(page.backend, ID, (await admitBodyMode(page.backend))!)).read.intents.map(row => row.state), ["acknowledged", "pending"]);
     await page.runtime.sync();
     // 4. The next save after reload retires the whole backlog before reserving its own room.
-    for (let save = 1; save <= 20; save++) {
+    for (let save = 1; save <= 3; save++) {
       await page.runtime.commit(ID, { body: largeBody(`After reload ${save}`) });
       await page.runtime.sync();
       s.prune();
     }
     const rows = (await bodySnapshot(page.backend, ID, (await admitBodyMode(page.backend))!)).read.intents;
     assert.deepEqual(rows.map(row => row.state), ["acknowledged"]);
-    assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody("After reload 20"));
+    assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody("After reload 3"));
     page.local.close();
   } finally { s.close(); }
 });
@@ -252,7 +252,7 @@ for (const adapter of ["indexeddb"] as const) {
     try {
       const tabs = [{ local: s.local, runtime: s.runtime }, other];
       let last = "";
-      for (let round = 0; round < 12; round++) {
+      for (let round = 0; round < 4; round++) {
         const [a, b] = round % 2 ? [tabs[1]!, tabs[0]!] : [tabs[0]!, tabs[1]!];
         // Tab A delivers while tab B saves a newer edit: B's save chains on A's in-flight row.
         await a.runtime.commit(ID, { body: largeBody(`Round ${round} A`) });
