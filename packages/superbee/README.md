@@ -53,11 +53,7 @@ Requires Node.js 20 or newer on macOS and Linux. Native Windows is not supported
 npm install -g superbee
 ```
 
-Stable releases publish on npm's `latest` tag and prereleases on `next`. To try the prerelease:
-
-```sh
-npm install -g superbee@next
-```
+Stable releases publish on npm's `latest` tag and prereleases on `next`.
 
 Windows adapters and the `superbee-windows` executable live in a separate repository and are
 not included in `superbee`. Most Windows users should run Superbee in WSL2, where npm sees a
