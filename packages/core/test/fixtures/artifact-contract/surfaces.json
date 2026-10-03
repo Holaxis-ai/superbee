@@ -1,0 +1,317 @@
+[
+  {
+    "surface": "cli",
+    "request": {
+      "schemaVersion": "superbee.present-document.v1",
+      "operation": "present_document",
+      "invocationId": "cli",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "local",
+          "authorityKey": "root-digest"
+        },
+        "bundleKey": "selected",
+        "documentId": "docs/x.md"
+      }
+    },
+    "receipt": {
+      "schemaVersion": "superbee.present-document-receipt.v1",
+      "operation": "present_document",
+      "invocationId": "cli",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "local",
+          "authorityKey": "root-digest"
+        },
+        "bundleKey": "selected",
+        "documentId": "docs/x.md"
+      },
+      "ok": true,
+      "presentation": {
+        "state": "open_requested",
+        "observation": {
+          "schemaVersion": "superbee.document-observation.v1",
+          "target": {
+            "schemaVersion": "superbee.document-target.v1",
+            "authority": {
+              "mode": "local",
+              "authorityKey": "root-digest"
+            },
+            "bundleKey": "selected",
+            "documentId": "docs/x.md"
+          },
+          "provenance": {
+            "state": "shared-confirmed",
+            "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "acknowledged": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "lifecycle": {
+            "state": "unverified"
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "schemaVersion": "superbee.document-presentation-capabilities.v1",
+      "states": [
+        "open_requested"
+      ]
+    }
+  },
+  {
+    "surface": "local-apps",
+    "request": {
+      "schemaVersion": "superbee.present-document.v1",
+      "operation": "present_document",
+      "invocationId": "local-apps",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "local",
+          "authorityKey": "root-digest"
+        },
+        "bundleKey": "selected",
+        "documentId": "docs/x.md"
+      }
+    },
+    "receipt": {
+      "schemaVersion": "superbee.present-document-receipt.v1",
+      "operation": "present_document",
+      "invocationId": "local-apps",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "local",
+          "authorityKey": "root-digest"
+        },
+        "bundleKey": "selected",
+        "documentId": "docs/x.md"
+      },
+      "ok": true,
+      "presentation": {
+        "state": "payload_prepared",
+        "observation": {
+          "schemaVersion": "superbee.document-observation.v1",
+          "target": {
+            "schemaVersion": "superbee.document-target.v1",
+            "authority": {
+              "mode": "local",
+              "authorityKey": "root-digest"
+            },
+            "bundleKey": "selected",
+            "documentId": "docs/x.md"
+          },
+          "provenance": {
+            "state": "shared-confirmed",
+            "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "acknowledged": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "lifecycle": {
+            "state": "unverified"
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "schemaVersion": "superbee.document-presentation-capabilities.v1",
+      "states": [
+        "payload_prepared"
+      ]
+    }
+  },
+  {
+    "surface": "hosted-reveal-offer",
+    "request": {
+      "schemaVersion": "superbee.present-document.v1",
+      "operation": "present_document",
+      "invocationId": "hosted-reveal-offer",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "hosted",
+          "authorityKey": "host",
+          "workspaceKey": "workspace"
+        },
+        "bundleKey": "bundle",
+        "documentId": "docs/x.md"
+      }
+    },
+    "receipt": {
+      "schemaVersion": "superbee.present-document-receipt.v1",
+      "operation": "present_document",
+      "invocationId": "hosted-reveal-offer",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "hosted",
+          "authorityKey": "host",
+          "workspaceKey": "workspace"
+        },
+        "bundleKey": "bundle",
+        "documentId": "docs/x.md"
+      },
+      "ok": true,
+      "presentation": {
+        "state": "offered",
+        "observation": {
+          "schemaVersion": "superbee.document-observation.v1",
+          "target": {
+            "schemaVersion": "superbee.document-target.v1",
+            "authority": {
+              "mode": "hosted",
+              "authorityKey": "host",
+              "workspaceKey": "workspace"
+            },
+            "bundleKey": "bundle",
+            "documentId": "docs/x.md"
+          },
+          "provenance": {
+            "state": "shared-confirmed",
+            "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "acknowledged": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "lifecycle": {
+            "state": "unverified"
+          }
+        },
+        "expiresAt": 0
+      }
+    },
+    "capabilities": {
+      "schemaVersion": "superbee.document-presentation-capabilities.v1",
+      "states": [
+        "offered"
+      ]
+    }
+  },
+  {
+    "surface": "hosted-reveal-navigation",
+    "request": {
+      "schemaVersion": "superbee.present-document.v1",
+      "operation": "present_document",
+      "invocationId": "hosted-reveal-navigation",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "hosted",
+          "authorityKey": "host",
+          "workspaceKey": "workspace"
+        },
+        "bundleKey": "bundle",
+        "documentId": "docs/x.md"
+      }
+    },
+    "receipt": {
+      "schemaVersion": "superbee.present-document-receipt.v1",
+      "operation": "present_document",
+      "invocationId": "hosted-reveal-navigation",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "hosted",
+          "authorityKey": "host",
+          "workspaceKey": "workspace"
+        },
+        "bundleKey": "bundle",
+        "documentId": "docs/x.md"
+      },
+      "ok": true,
+      "presentation": {
+        "state": "navigated",
+        "observation": {
+          "schemaVersion": "superbee.document-observation.v1",
+          "target": {
+            "schemaVersion": "superbee.document-target.v1",
+            "authority": {
+              "mode": "hosted",
+              "authorityKey": "host",
+              "workspaceKey": "workspace"
+            },
+            "bundleKey": "bundle",
+            "documentId": "docs/x.md"
+          },
+          "provenance": {
+            "state": "shared-confirmed",
+            "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "acknowledged": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "lifecycle": {
+            "state": "unverified"
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "schemaVersion": "superbee.document-presentation-capabilities.v1",
+      "states": [
+        "navigated"
+      ]
+    }
+  },
+  {
+    "surface": "mobile-observation",
+    "request": {
+      "schemaVersion": "superbee.present-document.v1",
+      "operation": "present_document",
+      "invocationId": "mobile-observation",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "hosted",
+          "authorityKey": "host",
+          "workspaceKey": "workspace"
+        },
+        "bundleKey": "bundle",
+        "documentId": "docs/x.md"
+      }
+    },
+    "receipt": {
+      "schemaVersion": "superbee.present-document-receipt.v1",
+      "operation": "present_document",
+      "invocationId": "mobile-observation",
+      "target": {
+        "schemaVersion": "superbee.document-target.v1",
+        "authority": {
+          "mode": "hosted",
+          "authorityKey": "host",
+          "workspaceKey": "workspace"
+        },
+        "bundleKey": "bundle",
+        "documentId": "docs/x.md"
+      },
+      "ok": true,
+      "presentation": {
+        "state": "navigated",
+        "observation": {
+          "schemaVersion": "superbee.document-observation.v1",
+          "target": {
+            "schemaVersion": "superbee.document-target.v1",
+            "authority": {
+              "mode": "hosted",
+              "authorityKey": "host",
+              "workspaceKey": "workspace"
+            },
+            "bundleKey": "bundle",
+            "documentId": "docs/x.md"
+          },
+          "provenance": {
+            "state": "shared-confirmed",
+            "version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "acknowledged": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "lifecycle": {
+            "state": "unverified"
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "schemaVersion": "superbee.document-presentation-capabilities.v1",
+      "states": [
+        "navigated"
+      ]
+    }
+  }
+]

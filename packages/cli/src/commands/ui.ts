@@ -15,6 +15,9 @@ import { currentHost, captureRuntimeCallback } from "../runtime-context.js";
 // stays in the foreground until SIGINT/SIGTERM close the listener cleanly.
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { sha256Hex } from "@superbee/core/versioning";
+import { decodePresentDocumentRequestV1, decodePresentDocumentReceiptV1, type DocumentObservationV1, type PresentDocumentReceiptV1 } from "@superbee/core/artifact-contract";
 import { readDocVersioned, type Bundle } from "@superbee/core";
 import { createRouter } from "@superbee/server";
 import type { UiManagementOptions } from "@superbee/ui-server";
@@ -218,7 +221,7 @@ export async function openDocumentUi(argv: string[], deps: Partial<UiCliDeps> = 
     await runUi(parsed, deps, { kind: "document" });
     return;
   }
-  await runManagedDocumentUi(parsed, deps);
+  await presentManagedLocalDocument(parsed, deps);
 }
 
 function parsedPort(raw: string | undefined, commandPath: string): number | undefined {
@@ -232,10 +235,11 @@ function parsedPort(raw: string | undefined, commandPath: string): number | unde
   return Number(trimmed);
 }
 
-async function runManagedDocumentUi(
+/** Internal local adapter; the public command continues to emit only its legacy receipt. */
+export async function presentManagedLocalDocument(
   { values, positionals }: ParsedUiArgs,
   deps: Partial<UiCliDeps>,
-): Promise<void> {
+): Promise<PresentDocumentReceiptV1> {
   if (values.status || values.stop || values.abandon) {
     throw new CliError("USAGE", "doc open does not accept --status, --stop, or --abandon");
   }
@@ -244,9 +248,30 @@ async function runManagedDocumentUi(
   await assertResolvedLocalRouteIdentity(route);
   const target = route.target;
   const bundle = route.bundle;
-  const documentId = await resolveConceptIdCliArgument(bundle, rawDocumentId);
+  const canonicalId = await resolveConceptIdCliArgument(bundle, rawDocumentId);
+  const decoded = decodePresentDocumentRequestV1({
+    schemaVersion: "superbee.present-document.v1",
+    operation: "present_document",
+    invocationId: randomUUID(),
+    target: {
+      schemaVersion: "superbee.document-target.v1",
+      authority: { mode: "local", authorityKey: sha256Hex(target.canonicalRoot) },
+      bundleKey: "selected",
+      documentId: canonicalId,
+    },
+  });
+  if (!decoded.ok) throw new Error("Invalid managed local document binding");
+  const request = decoded.value;
+  const documentId = request.target.documentId;
+  let observation: DocumentObservationV1;
   try {
-    await readDocVersioned(bundle, documentId);
+    const read = await readDocVersioned(bundle, documentId);
+    observation = {
+      schemaVersion: "superbee.document-observation.v1",
+      target: request.target,
+      provenance: { state: "shared-confirmed", version: read.version, acknowledged: read.version },
+      lifecycle: { state: "unverified" },
+    };
   } catch (error) {
     throw readErrorToCliError(error, documentId, undefined);
   }
@@ -271,6 +296,16 @@ async function runManagedDocumentUi(
     help: [`open ${receipt.url} in a browser`, `${cliInvocation()} ui --status --dir ${commandToken(target.canonicalRoot)}`],
   }, resolveMode(values)));
   openBrowser(receipt.url);
+  const presented = decodePresentDocumentReceiptV1({
+    schemaVersion: "superbee.present-document-receipt.v1",
+    operation: "present_document",
+    invocationId: request.invocationId,
+    target: request.target,
+    ok: true,
+    presentation: { state: "open_requested", observation },
+  }, request);
+  if (!presented.ok) throw new Error("Invalid managed local presentation evidence");
+  return presented.value;
 }
 
 async function runManagedUiControl(
