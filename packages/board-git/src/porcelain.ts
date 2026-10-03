@@ -1697,6 +1697,32 @@ function readRegularFile(file: string): string | null {
   }
 }
 
+/** Read one raw Git entry while binding its type and bytes to the inspected leaf. */
+function readBundleEntry(file: string, symlink: boolean): Buffer {
+  const before = lstatSync(file);
+  const sameEntry = (after: typeof before): boolean =>
+    before.dev === after.dev && before.ino === after.ino &&
+    (symlink ? after.isSymbolicLink() : after.isFile() && !after.isSymbolicLink());
+  if (symlink ? !before.isSymbolicLink() : !before.isFile() || before.isSymbolicLink()) {
+    throw new Error("bundle entry type changed");
+  }
+  if (symlink) {
+    const bytes = readlinkSync(file, { encoding: "buffer" });
+    if (!sameEntry(lstatSync(file))) throw new Error("bundle symlink changed");
+    return bytes;
+  }
+  // Nonblocking open allows fstat to reject a substituted FIFO without waiting for a writer.
+  const fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    if (!sameEntry(fstatSync(fd))) throw new Error("bundle file changed before open");
+    const bytes = readFileSync(fd);
+    if (!sameEntry(lstatSync(file))) throw new Error("bundle file changed during read");
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
  * Documents a push would publish whose frontmatter does not parse: those added or changed between
  * `base` and `ref` (normally `origin/board` and `HEAD`), read at `ref`. Catches a malformed
@@ -1796,13 +1822,8 @@ export function assertBundleBytesMatchCommit(top: string, bundlePath: string, co
       });
     }
     try {
-      const stat = lstatSync(absolute);
-      const actual = mode === "120000" ? readlinkSync(absolute, { encoding: "buffer" }) : readFileSync(absolute);
-      if ((mode === "120000" && !stat.isSymbolicLink()) || (mode !== "120000" && !stat.isFile())) {
-        mismatches.push(relPath);
-      } else if (!Buffer.from(actual).equals(stored.stdout)) {
-        mismatches.push(relPath);
-      }
+      const actual = readBundleEntry(absolute, mode === "120000");
+      if (!actual.equals(stored.stdout)) mismatches.push(relPath);
     } catch {
       mismatches.push(relPath);
     }

@@ -13,6 +13,8 @@
 //     folder / empty / no index.md, a folder already committed at HEAD, a `board/…` namespace
 //     branch, a nested `.git`) and the USAGE flag-combination guards.
 import test from "node:test";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, writeFile, mkdir, rename, symlink } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -1236,5 +1238,44 @@ test("sync flag combinations: --establish is mutually exclusive with --pull-only
     }
   } finally {
     await cleanup();
+  }
+});
+
+
+test("entry replacement during backup verification preserves establishment recovery bytes", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  const originalLstat = fs.lstatSync;
+  let injected = false;
+  try {
+    await initPlainBundleDir(topo.a);
+    await writeBoardDoc(topo.a, "notes/original", {
+      frontmatter: { type: "Note", title: "Original" }, body: "snapshot content\n",
+    });
+    const backup = `${topo.a.board}.establish-backup`;
+    const file = path.join(backup, "notes", "original.md");
+    const retained = path.join(topo.a.root, "retained-original.md");
+    const outside = path.join(topo.a.root, "same-bytes.md");
+    const bytes = readFileSync(path.join(topo.a.board, "notes", "original.md"));
+    writeFileSync(outside, bytes);
+    Object.assign(fs, { lstatSync: ((name: fs.PathLike, ...args: any[]) => {
+      const stat = (originalLstat as any)(name, ...args);
+      if (name === file && !injected) {
+        injected = true;
+        fs.renameSync(file, retained);
+        fs.symlinkSync(outside, file);
+      }
+      return stat;
+    }) as typeof fs.lstatSync });
+    syncBuiltinESMExports();
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(injected, true, "replacement must occur at the backup reader");
+    assert.ok(err, "verification must refuse the replaced entry");
+    assert.equal(existsSync(backup), true, "recovery backup must remain");
+    assert.deepEqual(readFileSync(retained), bytes);
+    assert.deepEqual(readFileSync(outside), bytes);
+  } finally {
+    Object.assign(fs, { lstatSync: originalLstat }); syncBuiltinESMExports();
+    await cleanup(); await topo.cleanup();
   }
 });
