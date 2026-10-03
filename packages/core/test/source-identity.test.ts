@@ -29,7 +29,6 @@ import type { Bundle, OkfDocument, QueryFilter, WriteOptions, Version } from "..
 
 const FEED = "https://calendar.example.org/feed.ics";
 const OTHER = "https://other.example.org/feed.ics";
-const EMPTY: KindRegistry = { kinds: new Map(), warnings: [] };
 const T1 = "2026-10-03T10:00:00.000Z";
 const T2 = "2026-10-03T11:00:00.000Z";
 
