@@ -224,6 +224,13 @@ The existing CI install jobs run this check before `npm ci`; no new build lane i
 Its timing covers JSON validation only, not registry availability or artifact compatibility.
 Existing packed consumer proofs and release controls remain required and separate.
 
+The private build-only `packages/package-verification` workspace owns shared isolated subprocess,
+cleanup, exact byte/identity comparison, and bounded metadata-access primitives. The installed CLI
+proof consumes it directly; it is absent from product runtime dependencies and tarballs. Docs and
+Portal import generated snapshots before dependency installation. The workspace README owns the
+explicit refresh and separate offline integrity/source-provenance checks. Product journeys,
+release selection, provider range policy, approvals, and retained receipts remain consumer-owned.
+
 For in-process recipe parsing and record checks, see the
 [core recipe validation API](packages/core/RECIPES.md).
 
