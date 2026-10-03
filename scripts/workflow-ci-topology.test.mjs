@@ -602,13 +602,18 @@ test("queue triggers, candidate checkout and main evidence cannot drift", () => 
 
 function validateQueueCheckout(text) {
   validateCiTopology(text);
+  validateProofCheckouts(text);
+}
+
+function validateProofCheckouts(text) {
   // Bind every proof checkout to the event candidate, including merge groups.
-  for (const job of Object.values(yaml.safeLoad(text).jobs)) {
-    for (const step of job.steps ?? []) {
-      if (step.uses?.startsWith("actions/checkout@")) {
-        assert.equal(step.with?.ref, "${{ github.sha }}", "checkout must use the event candidate SHA");
-      }
-    }
+  for (const [name, job] of Object.entries(yaml.safeLoad(text).jobs)) {
+    assert.equal(job.concurrency, undefined, `${name} must use workflow concurrency`);
+    const checkouts = job.steps.filter(step => step.uses?.startsWith("actions/checkout@"));
+    assert.equal(checkouts.length, 1, `${name} must check out the event commit once`);
+    assert.equal(checkouts[0].with?.ref, "${{ github.sha }}", "checkout must use the event candidate SHA");
+    assert.deepEqual(checkouts[0].with, { "fetch-depth": 1, ref: "${{ github.sha }}" },
+      `${name} must test the event commit in the current repository and root directory`);
   }
 }
 
@@ -623,5 +628,23 @@ test("aggregate policy cannot silently weaken", () => {
   ]) assert.throws(() => assertAggregator(changed, "mutated"));
   for (const file of [".github/actions/ci-gate/evaluate.test.mjs", "infrastructure/github-ci/preflight.test.mjs"]) {
     assert.ok(rootPackage.scripts["test:scripts"].split(" ").includes(file), `${file} must run in CI`);
+  }
+});
+
+test("queue checkout scope and job concurrency mutations fail closed", () => {
+  for (const name of Object.keys(yaml.safeLoad(workflow).jobs)) {
+    for (const [label, mutate] of [
+      ["missing checkout", job => { job.steps = job.steps.filter(step => !step.uses?.startsWith("actions/checkout@")); }],
+      ["duplicate checkout", job => { job.steps.push(structuredClone(job.steps[0])); }],
+      ["other repository", job => { job.steps[0].with.repository = "other/repository"; }],
+      ["other checkout directory", job => { job.steps[0].with.path = "other"; }],
+      ["job concurrency", job => { job.concurrency = "all-ci"; }],
+    ]) {
+      const changed = yaml.safeLoad(workflow);
+      mutate(changed.jobs[name]);
+      assert.throws(() => validateProofCheckouts(yaml.safeDump(changed)),
+        /must use workflow concurrency|must check out the event commit once|must test the event commit/,
+        `${name}: ${label}`);
+    }
   }
 });
