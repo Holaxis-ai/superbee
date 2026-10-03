@@ -147,6 +147,8 @@ export interface FakeCreateHostOptions {
   workspaces?: { tenantId: string; slug: string | null }[];
   /** The whole-document write bound whoami states: absent, 983,040; null, a host from before it was stated. */
   documentInputBytes?: number | null;
+  /** The person's email whoami names (absent: none, as the captured exchanges have it). */
+  email?: string;
 }
 
 function fold(segment: string): string {
@@ -230,6 +232,7 @@ export class FakeCreateHost {
         credentialId: "cli",
         tenantIds: tenants,
         ...(this.options.workspaces ? { workspaces: this.options.workspaces } : {}),
+        ...(this.options.email ? { email: this.options.email } : {}),
         surface: "sync",
         ...(stated === null ? {} : { limits: { documentInputBytes: stated } }),
       });

@@ -383,50 +383,6 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
     });
   });
 
-  test(`${name} snapshot CAS: acknowledged retirement removes only named acknowledged rows under the full guard`, async () => {
-    await withFixture(create, async backend => {
-      const id = "guard/retire", other = "guard/retire-other";
-      assert.equal(typeof backend.retireAcknowledged, "function");
-      const retire = backend.retireAcknowledged!.bind(backend);
-      const first = await backend.writeJournaled(id, doc(id, "first"), { intent: newIntent("retire-1", id, null), meta: [{ key: "base", value: "first" }, { key: "evidence-1", value: 1 }, { key: "evidence-2", value: 2 }] });
-      await backend.updateIntent("retire-1", "pending", { state: "acknowledged", attempts: 1, acknowledgedVersion: first.version });
-      const second = await backend.writeJournaled(id, doc(id, "second"), { intent: newIntent("retire-2", id, first.version) });
-      await backend.updateIntent("retire-2", "pending", { state: "acknowledged", attempts: 1, acknowledgedVersion: second.version });
-      await backend.writeJournaled(id, doc(id, "third"), { intent: newIntent("retire-3", id, second.version, "retire-2") });
-      await backend.writeJournaled(other, doc(other, "other"), { intent: newIntent("retire-foreign", other, null) });
-      await backend.updateIntent("retire-foreign", "pending", { state: "acknowledged", attempts: 1 });
-      const keys = ["base", "evidence-1", "evidence-2", "missing"];
-      const expected = await snapshot(backend, id, keys);
-      const refusals: unknown[] = [
-        { requestIds: ["retire-1"] },
-        { guard: expected, requestIds: [] },
-        { guard: expected, requestIds: ["retire-1", "retire-1"] },
-        { guard: expected, requestIds: ["retire-3"] },
-        { guard: expected, requestIds: ["retire-foreign"] },
-        { guard: expected, requestIds: ["absent"] },
-        { guard: expected, requestIds: ["retire-1"], removeMeta: ["unobserved"] },
-        { guard: expected, requestIds: ["retire-1"], removeMeta: ["evidence-1", "evidence-1"] },
-        { guard: expected, requestIds: ["retire-1"], extra: true },
-        { guard: await snapshot(backend, other, keys), requestIds: ["retire-foreign"] },
-      ];
-      for (const options of refusals) await assert.rejects(retire(id, options as never), { name: "JournalGuardConflict" });
-      // A guard another realm moved retires nothing.
-      await backend.updateIntent("retire-3", "pending", { finding: "moved" });
-      await assert.rejects(retire(id, { guard: expected, requestIds: ["retire-1"], removeMeta: ["evidence-1"] }), { name: "JournalGuardConflict" });
-      const current = await snapshot(backend, id, keys);
-      assert.deepEqual(current.intents.map(row => row.requestId), ["retire-1", "retire-2", "retire-3"]);
-      assert.deepEqual(current.meta, expected.meta);
-      await retire(id, { guard: current, requestIds: ["retire-1"], removeMeta: ["evidence-1"] });
-      const after = await backend.readWithJournal(id, { meta: keys });
-      assert.deepEqual(after.intents.map(row => row.requestId), ["retire-2", "retire-3"]);
-      assert.deepEqual([...after.meta.keys()].sort(), ["base", "evidence-2"]);
-      assert.equal(after.raw, current.document!.raw);
-      assert.equal(await backend.readIntent("retire-1"), undefined);
-      assert.equal((await backend.readIntent("retire-foreign"))?.state, "acknowledged");
-      assert.deepEqual((await backend.listIntents()).map(row => row.requestId), ["retire-2", "retire-3", "retire-foreign"]);
-    });
-  });
-
   test(`${name} snapshot CAS: guarded metadata removal refuses overlap and rolls back with the write`, async () => {
     await withFixture(create, async backend => {
       const id = "guard/removal";

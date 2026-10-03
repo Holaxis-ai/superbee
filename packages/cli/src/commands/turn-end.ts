@@ -509,6 +509,8 @@ function gitReasonFor(root: string, error: CliError): string {
         : `See the kept version with ${cliInvocation()} sync --show-incoming <id>, write your merged version with doc update <id> --body-file <export-file>, then run: ${sync}`,
     );
   }
+  // A board moved to hosted names the work that stays behind in this folder.
+  if (typeof error.details?.local_work === "string") lines.push(error.details.local_work);
   return lines.join("\n");
 }
 
@@ -536,7 +538,7 @@ async function gitTurnEnd(dir: string | undefined, home: string, partial: Partia
     // The sync a person would run here: from the same directory, so it routes exactly as they would.
     await run([...(dir === undefined ? [] : ["--dir", dir]), "--limit", String(REASON_ROWS), "--json"], () => {});
   } catch (error) {
-    if (error instanceof CliError && (error.code === "CONFLICT" || error.code === "AUTH_REQUIRED")) blocking = error;
+    if (error instanceof CliError && (error.code === "CONFLICT" || error.code === "AUTH_REQUIRED" || error.details?.reason === "board_moved")) blocking = error;
   }
   if (!blocking) {
     if ((await readGitBlock(home, board.root)) !== null) await recordGitBlock(home, board.root, null).catch(() => {});

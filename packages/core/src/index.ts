@@ -133,7 +133,6 @@ export type {
   JournaledWriteOptions,
   MetaRecord,
   NewIntentRecord,
-  RetireAcknowledgedOptions,
 } from "./journaled-backend.js";
 
 // Internal-workspace filesystem arbitration authority. CLI create-only policy reuses this

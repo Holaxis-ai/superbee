@@ -10,7 +10,7 @@ so a change to one of those functions should be mirrored in the spec.
 | --- | --- | --- |
 | `filesystem-lock/` | `FsLock.tla` | The cross-process mkdir lock (`packages/core/src/filesystem-lock.ts`) and the filesystem push role (`packages/core/src/filesystem-push-role.ts`) |
 | `intent-journal/` | `WorkingCopy.tla` | Browser-local sync data flow: push, pull by heads, digest recording and deletion reconciliation (`packages/browser-local/src/local-bundle.ts`) |
-| `intent-journal/` | `IntentLifecycle.tla` | The lifecycle of one document's intents: compose, claim, uncertain delivery, settle, reclaim, resume, resolve and retirement of acknowledged history |
+| `intent-journal/` | `IntentLifecycle.tla` | The lifecycle of one document's intents: compose, claim, uncertain delivery, settle, reclaim, resume and resolve |
 | `identified-write/` | `IdentifiedWrite.tla` | At-most-once delivery of an identified guarded write across lost answers, outcome expiry and store restarts (`packages/core/src/uncertain-write.ts`, `packages/server/src/router.ts`) |
 
 ## Status: fixes on `main` and design targets
@@ -138,18 +138,14 @@ them.
 authority conflicts, content and authorization refusals, and an authority that records each
 request identity's outcome. Its invariants say a request identity is resubmitted only after a
 lookup found nothing, a possibly delivered identity is durably marked, an identity that may have
-been applied is never superseded or resolved away, chained intents are submitted in order, and
-retiring acknowledged history never removes the predecessor a live intent names. `Retire` models
-only the keep-the-newest rule; the code's further preconditions (no older unsettled row, no kept
-row naming a retired one) and its relaxed validation of the newest row are not modeled.
+been applied is never superseded or resolved away, and chained intents are submitted in order.
 `EventuallyAllSettled` says every change is eventually acknowledged or resolved away.
 
 | Config | Checks | Expected |
 | --- | --- | --- |
-| `IntentLifecycle.fixed.cfg` | All invariants (including `PredecessorPresent` under retirement as `retireAcknowledgedBody` does it) and `EventuallyAllSettled` with `ReclaimBeforePush` and `AdmitRefused` (design targets), every fault kind | pass |
+| `IntentLifecycle.fixed.cfg` | All invariants and `EventuallyAllSettled` with `ReclaimBeforePush` and `AdmitRefused` (design targets), every fault kind | pass |
 | `IntentLifecycle.bug-never-reclaim.cfg` | Open: exact-mode `pushWithRole` never reclaims, so a crash after the claim leaves the intent in flight forever | `EventuallyAllSettled` violated |
 | `IntentLifecycle.bug-refused-head-wedge.cfg` | Open: a content-refused head with a chained successor has no exit in exact mode | `EventuallyAllSettled` violated |
-| `IntentLifecycle.bug-retire-newest.cfg` | Retirement allowed to remove the newest acknowledged row (`retireAcknowledgedBody` keeps it, `RetireKeepsNewest`) strands a live successor | `PredecessorPresent` violated |
 | `IntentLifecycle.bug-claim-aba.cfg` | Open: `push` called outside the push role; the claim compares state only, so an intent claimed before can skip its lookup | `NoBlindResubmit` violated |
 
 Abstractions: a pull or push step is one IndexedDB transaction or one await; the push role is a

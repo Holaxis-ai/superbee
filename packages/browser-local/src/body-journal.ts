@@ -9,7 +9,7 @@ import type { OkfDocument, Version, StorageBackend } from "@superbee/core";
 import { assertJournalGuard } from "@superbee/core/journaled-backend";
 
 export const BODY_MODE_KEY = "body-delivery:mode";
-export const BODY_RUNTIME_LIMITS = Object.freeze({ journalBytes: 16 * 1024 * 1024, guardedBytes: 64 * 1024 * 1024, unsettled: 2, transitionBytes: 4 * 1024 * 1024, controlBytes: 64 * 1024 });
+export const BODY_RUNTIME_LIMITS = Object.freeze({ journalBytes: 8 * 1024 * 1024, guardedBytes: 32 * 1024 * 1024, unsettled: 2, transitionBytes: 2 * 1024 * 1024, controlBytes: 64 * 1024 });
 const E = BODY_DELIVERY_LIMITS.envelopeBytes;
 export interface BodyMode { schema: 1; kind: "document.body.update"; scope: string; okfVersion: "0.1" | "0.2" }
 export interface BodyDeliveryOptions { scope: string; okfVersion: "0.1" | "0.2"; dedicated?: true }
@@ -73,9 +73,7 @@ export function isBoundedBody(value: unknown): value is string {
  * content refusal) and whose successors were never attempted. The second case amends the
  * earlier rule that only a superseded never-attempted request retires its descriptor: a
  * definitively refused or conflicted head is never resubmitted, so its evidence retires with
- * it. A third case retires acknowledged history ({@link retireAcknowledgedBody}): every
- * acknowledged row older than the target's newest acknowledged row leaves with its descriptor
- * and receipt, because no later delivery, reconciliation or successor proof reads them.
+ * it. Acknowledged rows, their descriptors and their receipts are never removed.
  */
 export function retiredDescriptorKeys(intents: readonly IntentRecord[]): string[] {
   return intents.map(row => bodyRecordKey(row.requestId));
@@ -279,17 +277,14 @@ export function validateBodyEvidence(evidence: BodyEvidence, mode: BodyMode): { 
   const records = new Map(intents.map(row => [row.requestId, validateBodyRecord(mode, row, meta.get(bodyRecordKey(row.requestId)))]));
   for (const row of intents) {
     const record = records.get(row.requestId)!;
-    const predecessor = row.after === undefined ? undefined : intents.find(prior => prior.requestId === row.after);
-    if (row.after !== undefined && !predecessor) {
-      // A retired predecessor ({@link retireAcknowledgedBody}): only the target's oldest row may
-      // name one, and only once it is itself acknowledged with its receipt, so no delivery or
-      // successor proof can still need the retired row.
-      if (row.state !== "acknowledged" || !record.receipt || intents.some(other => other.sequence < row.sequence) || row.baseContent === null || versionOfBytes(row.baseContent) !== row.base) throw new BodyRuntimeError("Body successor has invalid original history.");
-    } else if (predecessor && (predecessor.sequence >= row.sequence || predecessor.local !== row.base || predecessor.content !== row.baseContent)) throw new BodyRuntimeError("Body successor has invalid original history.");
-    if (predecessor && record.prepared) {
-      const prior = records.get(predecessor.requestId);
-      if (!prior?.prepared || !prior.receipt) throw new BodyRuntimeError("Successor lacks predecessor evidence.");
-      const candidate = prepareBodyDelivery({ scope: mode.scope, requestId: row.requestId, target, okfVersion: mode.okfVersion, operation: record.prepared.operation, local: row.local, content: row.content, createdAt: row.createdAt }, { prepared: prior.prepared, receipt: prior.receipt });
+    if (row.after !== undefined) {
+      const predecessor = intents.find(prior => prior.requestId === row.after);
+      if (!predecessor || predecessor.sequence >= row.sequence || predecessor.local !== row.base || predecessor.content !== row.baseContent) throw new BodyRuntimeError("Body successor has invalid original history.");
+    }
+    if (row.after !== undefined && record.prepared) {
+      const predecessor = records.get(row.after);
+      if (!predecessor?.prepared || !predecessor.receipt) throw new BodyRuntimeError("Successor lacks predecessor evidence.");
+      const candidate = prepareBodyDelivery({ scope: mode.scope, requestId: row.requestId, target, okfVersion: mode.okfVersion, operation: record.prepared.operation, local: row.local, content: row.content, createdAt: row.createdAt }, { prepared: predecessor.prepared, receipt: predecessor.receipt });
       assertSameBodyDelivery(record.prepared, candidate);
     }
   }
@@ -340,44 +335,6 @@ export function assertBodyCapacity(guard: JournalGuard): void {
   }
   const pure = { version: guard.document?.version ?? null, intents: guard.intents, shared: base?.version ? base : null };
   if (jsonBytes(pure) + remoteReserve + Math.max(0, E - sharedCost) + BODY_RUNTIME_LIMITS.transitionBytes > BODY_RECONCILIATION_BYTES || jsonBytes(guard) + reserve + remoteReserve > BODY_RUNTIME_LIMITS.guardedBytes) throw new BodyCapacityError();
-}
-
-/**
- * Retire one target's acknowledged history: every acknowledged row older than its newest
- * acknowledged row, with each row's descriptor (prepared envelope and receipt), in one guarded
- * transaction. The shared base already carries the acknowledged content, a successor's proof
- * reads only its immediate predecessor (the newest acknowledged row, which stays), and receipt
- * reconciliation reads only the settling row and newer ones. Unsettled rows are never touched,
- * and nothing retires while an unsettled row is older than the newest acknowledged one or names
- * an older row as its predecessor.
- *
- * Best effort and idempotent: an adapter without `retireAcknowledged`, or a target another
- * realm keeps moving, keeps its history and the next commit or settle retries. Returns how many
- * rows retired.
- */
-export async function retireAcknowledgedBody(backend: JournaledBackend, mode: BodyMode, target: string): Promise<number> {
-  if (typeof backend.retireAcknowledged !== "function") return 0;
-  // Most commits and settles find at most one acknowledged row; skip the validated snapshot then.
-  if ((await backend.readWithJournal(target)).intents.filter(row => row.state === "acknowledged").length < 2) return 0;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const snap = await bodySnapshot(backend, target, mode);
-    const intents = snap.read.intents;
-    const newest = intents.filter(row => row.state === "acknowledged").at(-1);
-    if (!newest) return 0;
-    const retired = intents.filter(row => row.state === "acknowledged" && row.sequence < newest.sequence);
-    const kept = intents.filter(row => !retired.includes(row));
-    if (!retired.length || kept.some(row => row.sequence < newest.sequence || (row !== newest && row.after !== undefined && retired.some(old => old.requestId === row.after)))) return 0;
-    const removeMeta = retiredDescriptorKeys(retired);
-    const projected = projectBodyGuard(snap.guard, { intents: kept, removeMeta });
-    // The retained evidence must still validate on its own before anything is removed.
-    validateBodyEvidence({ target, document: projected.document, intents: kept, keys: projected.meta.map(row => row.key),
-      meta: new Map(projected.meta.filter(row => row.expected.present).map(row => [row.key, (row.expected as { value: unknown }).value])) }, mode);
-    try {
-      await backend.retireAcknowledged(target, { guard: snap.guard, requestIds: retired.map(row => row.requestId), removeMeta });
-      return retired.length;
-    } catch (error) { if (!(error instanceof JournalGuardConflict)) throw error; }
-  }
-  return 0;
 }
 
 const CONTROL_KEYS = new Set(["sync", "bootstrap", "pull"]);

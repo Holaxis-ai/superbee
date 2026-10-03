@@ -8,14 +8,18 @@ import { bundleHomeAt, homeDetail } from "../bundle-home.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
+import type { BundleRetireDeps } from "./bundle-retire.js";
 
-export const BUNDLE_USAGE = `superbee bundle — inspect local bundle targeting
+export const BUNDLE_USAGE = `superbee bundle — inspect local bundle targeting, or retire a hosted bundle
 
 Usage:
   superbee bundle locate [--dir <path>]
+  superbee bundle retire <bundle> [--host <url>] [--workspace <id>] [--json]
 
 Commands:
   locate                  Resolve the exact local bundle this invocation would use
+  retire                  Retire a hosted bundle: shows the host's preview, then the person types its id
+                          in their own terminal (see: superbee bundle retire --help)
 
 Options:
   --dir <path>            Resolve this bundle root or its direct .superbee (or legacy .agentstate-lite) child
@@ -39,10 +43,14 @@ export interface BundleCliDeps {
   cwd: () => string;
   /** The home whose private state holds hosted checkout bindings (default: the OS home). */
   home: string;
+  /** `bundle retire`'s sign-in, fetch and terminal (tests supply them). */
+  retire: Partial<BundleRetireDeps>;
 }
 
 export async function bundleCommand(argv: string[], deps: Partial<BundleCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
+  // Loaded only for retire, so `bundle locate` never loads the hosted sign-in modules.
+  if (argv[0] === "retire") return (await import("./bundle-retire.js")).bundleRetire(argv.slice(1), { stdout, ...(deps.retire ?? {}) });
   const cwd = deps.cwd ?? (() => process.cwd());
   const parsed = parseSelectorOrUsage(
     () =>
