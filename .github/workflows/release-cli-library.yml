@@ -33,8 +33,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.14.0
+          node-version: 24.21.0
           cache: npm
+      - name: Check Node runtime policy before installation
+        run: node scripts/node-runtime-policy.mjs
       - run: npm ci --ignore-scripts
       - name: Resolve the CLI version from the tag
         id: meta
@@ -202,7 +204,7 @@ jobs:
           test "$(sha256sum "out/${{ needs.build.outputs.tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.sha256 }}"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.14.0
+          node-version: 24.21.0
           registry-url: "https://registry.npmjs.org"
       - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund --registry https://registry.npmjs.org/
       - name: Stage the exact CLI tarball
