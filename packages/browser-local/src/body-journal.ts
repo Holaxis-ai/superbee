@@ -357,6 +357,8 @@ export function assertBodyCapacity(guard: JournalGuard): void {
  */
 export async function retireAcknowledgedBody(backend: JournaledBackend, mode: BodyMode, target: string): Promise<number> {
   if (typeof backend.retireAcknowledged !== "function") return 0;
+  // Most commits and settles find at most one acknowledged row; skip the validated snapshot then.
+  if ((await backend.listIntents("acknowledged")).filter(row => row.target === target).length < 2) return 0;
   for (let attempt = 0; attempt < 3; attempt++) {
     const snap = await bodySnapshot(backend, target, mode);
     const intents = snap.read.intents;

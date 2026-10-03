@@ -717,7 +717,6 @@ export class IndexedDbBackend implements JournaledBackend {
   // intent is a compare-and-swap on the intent's own `state`, so a stale realm cannot settle
   // an intent another realm already settled.
 
-  /** Read and compare a complete guard inside its caller's still-active transaction. */
   /**
    * Remove acknowledged intents of one target and named meta rows in one transaction, after
    * comparing the target's full guard in that same transaction.
@@ -740,6 +739,7 @@ export class IndexedDbBackend implements JournaledBackend {
     });
   }
 
+  /** Read and compare a complete guard inside its caller's still-active transaction. */
   #checkJournalGuard(tx: IdbTransactionLike, expected: JournalGuard | undefined, next: () => void, fail: (error: Error) => void, guard: (fn: () => void) => () => void): void {
     if (expected === undefined) { next(); return; }
     const current: JournalGuard = { target: expected.target, document: null, intents: [], meta: [] };

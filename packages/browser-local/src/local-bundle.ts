@@ -1000,8 +1000,15 @@ export async function deleteLocal(local: LocalTarget, id: ConceptId, options: { 
  * the next commit or settle to retire.
  */
 async function retireQuietly(backend: JournaledBackend, mode: BodyMode, target: ConceptId): Promise<void> {
-  try { await retireAcknowledgedBody(backend, mode, target); } catch { /* retried by the next commit or settle */ }
+  try { await retireAcknowledgedBody(backend, mode, target); }
+  catch (error) {
+    // Only a moved target or an interrupted transaction is expected; anything else is a defect
+    // that would let history grow back to the capacity limit unnoticed.
+    const name = (error as { name?: unknown } | null)?.name;
+    if (!(error instanceof JournalGuardConflict) && !(typeof name === "string" && TRANSIENT_STORAGE_ERRORS.has(name))) throw error;
+  }
 }
+const TRANSIENT_STORAGE_ERRORS: ReadonlySet<string> = new Set(["AbortError", "InvalidStateError", "TransactionInactiveError", "UnknownError"]);
 
 export interface BodyLocalMutation { body: string; expectedVersion?: Version; actor?: string; now?: () => string }
 /** Explicit body intent, authored by the existing engine and journaled in its document CAS. */
@@ -1039,6 +1046,10 @@ export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutatio
       const meta = [{ key, value: descriptor }], removeMeta = supersede ? retiredDescriptorKeys([supersede]) : [];
       const projected: IntentRecord = { ...intent, sequence: Number.MAX_SAFE_INTEGER, local: version, content: raw, updatedAt: createdAt, attempts: 0, state: "pending" };
       projectBodyGuard(snap.guard, { document: { version, raw }, intents: [...snap.read.intents.filter(row => row.requestId !== supersede?.requestId), projected], meta, removeMeta });
+      // Every later read validates this pair, preparing its delivery; one that cannot be prepared
+      // (an envelope over its bound once JSON escapes the body) is refused before it is journaled.
+      try { validateBodyRecord(mode, projected, descriptor); }
+      catch (error) { throw error instanceof BodyRuntimeError ? error : new BodyRuntimeError("The edit is too large to deliver once encoded."); }
       try {
         const result = await backend.writeJournaled(id, doc, { ...options, guard: snap.guard, intent, meta, removeMeta, ...(supersede ? { supersede: { requestId: supersede.requestId, expectedState: supersede.state, expectedAttempts: 0 } } : {}) });
         recorded = result.intent;

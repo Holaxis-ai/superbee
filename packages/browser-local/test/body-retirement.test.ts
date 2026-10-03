@@ -107,7 +107,7 @@ for (const adapter of ADAPTERS) {
   });
 
   test(`${adapter}: two unsettled maximum-size intents are admitted beside an acknowledged one`, async () => {
-    // A body at the bound whose every byte JSON escapes is the worst case for each envelope.
+    // A body at the bound whose every byte JSON escapes to two (newlines) beside realistic Markdown.
     for (const fill of ["realistic", "escaped"] as const) {
       const s = await setup(adapter);
       try {
@@ -202,22 +202,31 @@ test("indexeddb: a page that dies at each await of a large save loses no edit an
     assert.equal(s.authority.counts.applied, applied, "the lost answer was looked up, not applied twice");
     assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody("Lost answer"));
 
-    // 3. Dies between the acknowledgment and its retirement, several times over.
-    for (let save = 1; save <= 3; save++) {
-      page.local.close();
-      const backend = open();
-      backend.retireAcknowledged = async () => { throw new Error("page closed"); };
-      page = tab(backend);
-      await page.runtime.commit(ID, { body: largeBody(`Unretired ${save}`) });
+    // 3. Dies between each acknowledgment and its retirement until the history fills the
+    //    target's capacity: the next save is refused with the edit kept out of the journal.
+    page.local.close();
+    const backend = open();
+    backend.retireAcknowledged = async () => { throw new DOMException("page closed", "AbortError"); };
+    page = tab(backend);
+    let unretired = 0;
+    for (;;) {
+      try { await page.runtime.commit(ID, { body: largeBody(`Unretired ${unretired + 1}`) }); }
+      catch (error) { assert.equal((error as Error).name, "BodyCapacityError"); break; }
+      unretired++;
       // The settle is durable; the failed retirement leaves its history for a later save.
       assert.equal((await page.runtime.sync()).pending, 0);
       s.prune();
-      assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody(`Unretired ${save}`));
+      assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody(`Unretired ${unretired}`));
+      assert.ok(unretired < 20, "history without retirement reaches capacity");
     }
     page.local.close();
     page = tab(open());
     const backlog = (await bodySnapshot(page.backend, ID, (await admitBodyMode(page.backend))!)).read.intents;
-    assert.ok(backlog.length >= 2 && backlog.every(row => row.state === "acknowledged"));
+    assert.ok(backlog.length >= 3 && backlog.every(row => row.state === "acknowledged"));
+    // The same save, refused at capacity a moment ago, fits because the commit retires first.
+    await page.runtime.commit(ID, { body: largeBody("After reload 0") });
+    assert.deepEqual((await bodySnapshot(page.backend, ID, (await admitBodyMode(page.backend))!)).read.intents.map(row => row.state), ["acknowledged", "pending"]);
+    await page.runtime.sync();
     // 4. The next save after reload retires the whole backlog before reserving its own room.
     for (let save = 1; save <= 20; save++) {
       await page.runtime.commit(ID, { body: largeBody(`After reload ${save}`) });
@@ -231,10 +240,12 @@ test("indexeddb: a page that dies at each await of a large save loses no edit an
   } finally { s.close(); }
 });
 
-for (const adapter of ADAPTERS) {
+// Two tabs are two realms with their own connections to one database; only the IndexedDB
+// adapter can be shared that way.
+for (const adapter of ["indexeddb"] as const) {
   test(`${adapter}: two tabs saving one large document interleave without losing an edit`, async () => {
     const s = await setup(adapter);
-    const backendFor = (): JournaledBackend => adapter === "memory" ? s.backend : new IndexedDbBackend({ databaseName: s.name, indexedDB: s.factory });
+    const backendFor = (): JournaledBackend => new IndexedDbBackend({ databaseName: s.name, indexedDB: s.factory });
     const options = { scope: "fixture", okfVersion: "0.2" as const, dedicated: true as const };
     const local = openLocalBundle("body-test", { backend: backendFor(), bodyDelivery: options });
     const other = { local, runtime: createBrowserLocalRuntime({ local, remote: s.authority.backend, transport: exact, bodyTransport: s.authority.transport, actor: "process:local", now: () => "2026-09-15T00:30:00.000Z", write: immediate }) };
@@ -275,3 +286,21 @@ test("commitBodyLocal still refuses a body over the library ceiling before any j
     await assert.rejects(commitBodyLocal(s.local, ID, { body: "x".repeat(BODY_DELIVERY_LIMITS.bodyBytes + 1) }), { name: "BodyRuntimeError" });
   } finally { s.close(); }
 });
+
+for (const adapter of ADAPTERS) {
+  test(`${adapter}: a body within the byte ceiling whose escaped envelope is over its bound is refused before it is journaled`, async () => {
+    // A control character is one byte and six once JSON-escaped; the envelope carries the body twice.
+    const s = await setup(adapter);
+    try {
+      const before = await journal(s);
+      const body = "# x\n" + "\u0001".repeat(450_000);
+      assert.ok(utf8(body) <= BODY_DELIVERY_LIMITS.bodyBytes);
+      await assert.rejects(s.runtime.commit(ID, { body }), { name: "BodyRuntimeError" });
+      assert.deepEqual((await journal(s)).guard, before.guard);
+      assert.deepEqual(await s.backend.listIntents(), []);
+      await s.runtime.commit(ID, { body: largeBody("Still editable") });
+      assert.equal((await s.runtime.sync()).pending, 0);
+      assert.equal((await s.authority.backend.read(ID)).doc.body, largeBody("Still editable"));
+    } finally { s.close(); }
+  });
+}
