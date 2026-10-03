@@ -30,6 +30,7 @@ export type {
   Bundle,
   InitBundleOptions,
   QueryFilter,
+  SourceIdentity,
   Link,
   EdgeFilter,
   FreshnessVerdict,
@@ -217,7 +218,7 @@ export type { QueryOptions, SkippedDoc } from "./bundle.js";
 // (`readManyExisting`) is internal: its one-time export for the reference router was
 // withdrawn when the router switched to consuming `queryHeads` wholesale.
 export { queryHeads } from "./bundle.js";
-export { matchesFilter } from "./query-filter.js";
+export { matchesFilter, matchesSourceIdentity, hasSourceIdentity } from "./query-filter.js";
 export { applyQuerySelectionFilters } from "./query-selection.js";
 export type { QuerySelectionParams } from "./query-selection.js";
 export type { HeadResult } from "./types.js";
