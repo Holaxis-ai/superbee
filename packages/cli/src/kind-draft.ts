@@ -70,6 +70,7 @@ const FIELDS_DECLARES: Record<keyof KindFields, (fields: KindFields) => boolean>
   valueDescriptions: (f) => f.valueDescriptions !== undefined && Object.keys(f.valueDescriptions).length > 0,
   terminal: (f) => Object.keys(f.terminal).length > 0,
   descriptions: (f) => Object.keys(f.descriptions).length > 0,
+  types: (f) => f.types !== undefined && Object.keys(f.types).length > 0,
 };
 
 const DECLARES: Record<DeclarationKey, (kind: KindConvention) => boolean> = {

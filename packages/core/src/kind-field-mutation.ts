@@ -68,6 +68,11 @@ export function prepareKindFieldMutation(existing: OkfDocument, input: KindField
       let valueDescriptionsMap: Record<string, unknown> | undefined;
       let valueDescriptionsChanged = false;
       let descriptionDeleted = false;
+      const typesMap: Record<string, unknown> | undefined =
+        hasOwn(fieldsObj, "types") && isRecord(fieldsObj.types)
+          ? cloneRecord(fieldsObj.types)
+          : undefined;
+      let typeDeleted = false;
 
       if (input.action === "add") {
         const targetList = input.required ? required : optional;
@@ -112,6 +117,8 @@ export function prepareKindFieldMutation(existing: OkfDocument, input: KindField
         }
         deleteOwn(valuesMap, input.field);
         if (descriptionsMap) descriptionDeleted = deleteOwn(descriptionsMap, input.field);
+        // A removed field's declared type goes with it; a stale type would warn as undeclared.
+        if (typesMap) typeDeleted = deleteOwn(typesMap, input.field);
         if (isRecord(rawValueDescriptions) && hasOwn(rawValueDescriptions, input.field)) {
           const rawFieldDescriptions = rawValueDescriptions[input.field];
           if (isRecord(rawFieldDescriptions)) {
@@ -140,6 +147,10 @@ export function prepareKindFieldMutation(existing: OkfDocument, input: KindField
       if (descriptionsMap && descriptionDeleted) {
         if (Object.keys(descriptionsMap).length > 0) newFields.descriptions = descriptionsMap;
         else delete newFields.descriptions;
+      }
+      if (typesMap && typeDeleted) {
+        if (Object.keys(typesMap).length > 0) newFields.types = typesMap;
+        else delete newFields.types;
       }
       if (valueDescriptionsMap && valueDescriptionsChanged) {
         if (Object.keys(valueDescriptionsMap).length > 0) newFields.value_descriptions = valueDescriptionsMap;
