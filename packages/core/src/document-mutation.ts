@@ -133,7 +133,9 @@ export interface MutateDocumentOptions {
    * Defaults to actor when omitted; ignored by v0.1. Does not alter history or
    * persisted attribution, and a producer-only change is not a content edit. */
   producer?: string;
-  /** Also persist the advisory actor in the edition-appropriate frontmatter field after no-op detection. */
+  /** Persist the advisory actor in edition-appropriate frontmatter when a write occurs.
+   * Defaults to true when actor is supplied. Explicit false leaves candidate attribution alone.
+   * Supplying actor alone never turns an otherwise unchanged candidate into a write. */
   persistActor?: boolean;
   /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
   expectedVersion?: Version;
@@ -331,6 +333,7 @@ export interface PrepareDocumentMutationOptions {
   actor?: string;
   /** Content producer for generated.by; defaults to actor when omitted. */
   producer?: string;
+  /** Same default and explicit opt-out as MutateDocumentOptions.persistActor. */
   persistActor?: boolean;
   compareTimestamp?: boolean;
   seedGenerationClock?: boolean;
@@ -342,15 +345,16 @@ export function prepareDocumentMutationCandidate(
   rawCandidate: DocumentMutationCandidate,
   opts: PrepareDocumentMutationOptions,
 ): { candidate: DocumentMutationCandidate; changed: boolean; warnings: ValidationWarning[] } {
+  const persistActor = resolvePersistActor(opts);
   const decisionNow = onceNow(opts.now ?? (() => new Date().toISOString()));
   const comparison = withV02Metadata(structuredClone(rawCandidate), existing, opts.okfVersion, opts.registry,
     decisionNow, opts.seedGenerationClock ?? true, opts.actor, opts.compareTimestamp ?? false, opts.producer);
   if (existing && isNoopMutation(existing, comparison, opts.compareTimestamp ?? false, opts.okfVersion,
-    opts.okfVersion === "0.2" && !!opts.persistActor && opts.actor !== undefined,
+    opts.okfVersion === "0.2" && persistActor && opts.actor !== undefined,
     opts.registry.kinds.get(String(comparison.frontmatter.type))?.fields.required.includes("actor") ?? false)) {
     return { candidate: { frontmatter: structuredClone(existing.frontmatter), body: existing.body }, changed: false, warnings: [] };
   }
-  const candidate = attributeCandidate(comparison, opts.actor, opts.persistActor ?? false, opts.okfVersion, opts.registry);
+  const candidate = attributeCandidate(comparison, opts.actor, persistActor, opts.okfVersion, opts.registry);
   const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
   return { candidate, changed: true, warnings };
 }
@@ -370,11 +374,15 @@ function conforms(existing: OkfDocument, registry: KindRegistry): boolean {
   return validateAgainstKind(existing, kind).length === 0;
 }
 
+function resolvePersistActor(opts: { actor?: string; persistActor?: boolean }): boolean {
+  return opts.persistActor ?? (opts.actor !== undefined);
+}
+
 export async function mutateDocument(opts: MutateDocumentOptions): Promise<DocumentMutationResult> {
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const onAbsent = opts.onAbsent ?? "fail";
   const compareTimestamp = opts.compareTimestamp ?? false;
-  const persistActor = opts.persistActor ?? false;
+  const persistActor = resolvePersistActor(opts);
   const seedClock = opts.seedGenerationClock ?? true;
   const okfVersion = await readBundleOkfVersion(opts.bundle) ?? "0.1";
   if (okfVersion !== "0.1" && okfVersion !== "0.2") {

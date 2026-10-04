@@ -1397,7 +1397,7 @@ test("recipe evolve: recipe-authored provenance and mutation attribution are nev
     const plan = await planRecipeEvolution(bundle, desired);
     assert.equal(plan.ready, true);
     assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
-    await applyRecipeEvolution(bundle, desired, plan.plan_token);
+    await applyRecipeEvolution(bundle, desired, plan.plan_token, "process:recipe-writer");
     const evolved = await readDoc(bundle, "conventions/widget");
     assert.equal(evolved.frontmatter.generated, undefined);
     assert.equal(evolved.frontmatter.verified, undefined);

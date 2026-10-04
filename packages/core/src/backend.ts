@@ -50,7 +50,7 @@ import {
   type PortHandle,
 } from "./filesystem-identity.js";
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
-import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
+import { blobVersion, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
   BlobKey,
   ConceptId,
@@ -263,7 +263,7 @@ export class FilesystemBackend implements StorageBackend {
     if (observed.state === "absent") return [];
     const { raw, mtime } = observed.value;
     const { frontmatter } = parseMarkdown(raw, rel);
-    const actor = mutationActorFromFrontmatter(frontmatter) ?? defaultActor();
+    const actor = mutationActorFromFrontmatter(frontmatter) ?? "unattributed";
     const timestamp = firstString(frontmatter.timestamp) ?? mtime.toISOString();
     // Single current revision: a plain filesystem retains no prior versions.
     return [{ version: versionOfBytes(raw), actor, timestamp }];

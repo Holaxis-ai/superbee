@@ -2470,14 +2470,15 @@ test("doc history --remote: a revision recorded WITH agent renders both actor an
   }
 });
 
-test("doc history over --dir (FilesystemBackend): reports actor (the file's OS owner) and NO agent — the filesystem backend persists neither --actor nor any agent", async () => {
+test("doc history over --dir reports unattributed and current-version-only for a document without mutation attribution", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     await writeDoc({ root: dir }, { id: "concepts/a", frontmatter: { type: "Concept", timestamp: T }, body: "one" });
     const result = await runDoc(["history", "concepts/a", "--dir", dir]);
     const versions = result.versions as Array<{ actor: string; agent?: string }>;
     assert.equal(versions.length, 1);
-    assert.ok(versions[0]!.actor, "the filesystem backend reports SOME actor (its OS-owner default)");
+    assert.equal(versions[0]!.actor, "unattributed");
+    assert.match((result.help as string[]).join("\n"), /current version only/);
     assert.ok(!("agent" in versions[0]!), "a local --dir bundle never records an agent");
   } finally {
     await cleanup();
@@ -2631,7 +2632,7 @@ test("doc history --limit 0 is treated as the all-escape, not an error: exits 0 
   }
 });
 
-test("doc history byte-identity pin (DoD 4): a single-version filesystem-backed doc's default (no --limit) render carries EXACTLY the pre-cap field set {id,count,versions,help}, in that order — no new fields when total <= cap", async () => {
+test("local doc history preserves the structured field set and adds current-version scope to help in JSON and TOON", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     const written = await writeDocVersioned(
@@ -2651,6 +2652,7 @@ test("doc history byte-identity pin (DoD 4): a single-version filesystem-backed 
     assert.equal(result.shown, undefined, "no shown field when nothing was truncated");
     assert.deepEqual(result.versions, [{ version: written.version, actor: "pin-actor", timestamp: T }]);
     assert.deepEqual(result.help, [
+      "Local bundle: current version only; no prior versions are retained.",
       `${cliInvocation()} doc update concepts/pin --expected-version ${written.version}`,
     ]);
 
@@ -2664,7 +2666,8 @@ test("doc history byte-identity pin (DoD 4): a single-version filesystem-backed 
       id: "concepts/pin",
       count: 1,
       versions: [{ version: written.version, actor: "pin-actor", timestamp: T }],
-      help: [`${cliInvocation()} doc update concepts/pin --expected-version ${written.version}`],
+      help: ["Local bundle: current version only; no prior versions are retained.",
+        `${cliInvocation()} doc update concepts/pin --expected-version ${written.version}`],
     };
     assert.equal(raw, `${encode(expected)}\n`);
   } finally {
@@ -4386,8 +4389,9 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
   const historyHelp = await capture(["history", "--help"]);
   assert.match(historyHelp, /resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy\s+AGENTSTATE_LITE_ACTOR/);
   assert.match(historyHelp, /authenticated principal \(server-set, unforgeable\)/);
-  assert.match(historyHelp, /compatible advisory attribution/);
-  assert.match(historyHelp, /falling back to\s+the local user identity/);
+  assert.match(historyHelp, /compatible\s+advisory attribution/);
+  assert.match(historyHelp, /"unattributed" when none is present/);
+  assert.match(historyHelp, /generated.by names the content\s+producer/);
 
   const updateHelp = await capture(["update", "--help"]);
   assert.match(updateHelp, /bundle's compatible advisory field/);

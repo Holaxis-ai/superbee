@@ -152,7 +152,8 @@ export interface ReadBlobResult {
 export interface VersionInfo {
   /** Opaque content-addressed version token for this revision. */
   version: Version;
-  /** Who wrote this revision. Defaults to a local identity when the write was unattributed. */
+  /** Who wrote this revision. History-keeping backends default at write time to a local identity.
+   * FilesystemBackend reports `unattributed` when document bytes carry no mutation attribution. */
   actor: string;
   /** ISO-8601 instant this revision was recorded. */
   timestamp: string;
