@@ -296,14 +296,19 @@ function monotonicEvolutionBlockers(
     }
   }
 
+  // An enum on a field this plan newly declares is additive: instance revalidation against the
+  // desired kind still blocks any instance already carrying that key with a disallowed value.
+  const currentDeclared = new Set([...current.fields.required, ...current.fields.optional]);
+  const desiredDeclared = new Set([...desired.fields.required, ...desired.fields.optional]);
   for (const [field, desiredValues] of Object.entries(desired.fields.values)) {
     const currentValues = current.fields.values[field];
     if (!currentValues) {
+      if (desiredDeclared.has(field) && !currentDeclared.has(field)) continue;
       evolutionBlocker(
         blockers,
         "RECIPE_EVOLUTION_NON_MONOTONIC",
         desired.id,
-        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'`,
+        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'; only a field newly declared by the same plan may gain one`,
         field,
       );
       continue;
