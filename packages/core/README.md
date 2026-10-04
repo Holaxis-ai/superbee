@@ -13,6 +13,21 @@ The additive `@superbee/core/artifact-contract` subpath provides pure v1 documen
 observation, request, receipt and capability decoders. See the [contract reference](https://github.com/Holaxis-ai/superbee/blob/main/packages/core/ARTIFACT-CONTRACT.md)
 for identity, provenance, lifecycle and host responsibilities.
 
+## Mutation attribution and local history
+
+`mutateDocument` and `prepareDocumentMutationCandidate` persist a supplied `actor` by default:
+`actor` in OKF v0.1, `superbee_updated_by` in v0.2 (plus `actor` when the Kind requires it).
+Use `persistActor: false` to keep candidate attribution unchanged, or `persistActor: true` to apply
+the attribution policy even without a supplied actor. An identical mutation remains a no-op and
+preserves its original attribution and bytes. This default changes library writes that previously
+required `persistActor: true`; callers needing the old opt-in behavior can explicitly pass false.
+
+`producer` controls `generated.by` independently of the version mutator. Local filesystem history
+returns only the current revision, including for Git-tracked bundles. It reads mutation attribution
+from `superbee_updated_by`, legacy `updated_by`, or `actor`; when absent it returns the stable string
+`unattributed`. It does not infer an identity from the reader's environment or the content producer.
+History-keeping backends retain their existing per-write attribution.
+
 ## Filesystem platform migration
 
 The Windows extraction changes the default Node.js filesystem backend. Its built-in host policy

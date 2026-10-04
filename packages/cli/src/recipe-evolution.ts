@@ -752,6 +752,8 @@ export async function applyRecipeEvolution(
         // Recipe definitions remain source-comparable; like initial recipe installation, evolution
         // explicitly opts out of seeding provenance when the installed definition has none.
         seedGenerationClock: false,
+        // Evolution preserves source-comparable attribution; the backend still records its writer.
+        persistActor: false,
         actor,
         now: () => now,
         buildCandidate: (_existing, context) => {
