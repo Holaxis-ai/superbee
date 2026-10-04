@@ -1681,6 +1681,150 @@ test("recipe evolve: an active View asset change blocks instead of updating a re
   assert.equal(Buffer.from(installed!.bytes).toString("utf8"), "<!doctype html><title>Board v1</title>");
 });
 
+const AT_PLACE = "links:\n  at: Place\n";
+
+function linkedRecipe(version: string, eventLinks: string): LoadedRecipe {
+  const files: RecipeFile[] = [
+    {
+      path: "recipe.md",
+      bytes: `---\ntype: Recipe\nid: link-evolution\ntitle: Link evolution\nversion: "${version}"\nsummary: Link evolution fixture.\n---\n`,
+    },
+    {
+      path: "conventions/event.md",
+      bytes: `---\ntype: Convention\ngoverns: Event\npath: events/\n${eventLinks}---\n# Event\n`,
+    },
+    { path: "conventions/place.md", bytes: "---\ntype: Convention\ngoverns: Place\npath: places/\n---\n# Place\n" },
+    { path: "conventions/notice.md", bytes: "---\ntype: Convention\ngoverns: Notice\npath: notices/\n---\n# Notice\n" },
+  ];
+  const parsed = parseRecipeFiles(files, `test:link-evolution:${version}`);
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) throw new Error(parsed.error.message);
+  return parsed.recipe;
+}
+
+async function linkedBundle(root: string, eventBody: string, extra: OkfDocument[] = []): Promise<Bundle> {
+  const bundle: Bundle = { root, backend: new MemoryBackend() };
+  await applyRecipe(bundle, linkedRecipe("1", AT_PLACE), T);
+  await writeDoc(bundle, { id: "places/hall", frontmatter: { type: "Place", title: "Hall" }, body: "A hall." });
+  await writeDoc(bundle, { id: "notices/vote", frontmatter: { type: "Notice", title: "Vote" }, body: "A vote." });
+  await writeDoc(bundle, { id: "events/meeting", frontmatter: { type: "Event", title: "Meeting" }, body: eventBody });
+  for (const doc of extra) await writeDoc(bundle, doc);
+  return bundle;
+}
+
+test("recipe evolve: a new outbound link type is additive and revalidates the edges that already use its text", async () => {
+  const bundle = await linkedBundle(
+    "mem://recipe-evolution-link-added",
+    "[at](../places/hall.md)\n[explained in](../notices/vote.md)\n",
+  );
+  const desired = linkedRecipe("2", `${AT_PLACE}  explained in: Notice\n`);
+
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+  const event = plan.definitions.find((definition) => definition.id === "conventions/event")!;
+  assert.equal(event.action, "update");
+  assert.deepEqual(event.added_paths, ["/frontmatter/links/explained in"]);
+  assert.equal(plan.counts.instances_checked, 1);
+
+  await applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent");
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place", "explained in": "Notice" });
+  const settled = await planRecipeEvolution(bundle, desired);
+  assert.equal(settled.changed, false);
+});
+
+test("recipe evolve: a new link type blocks when an existing edge with its text would violate it, from any kind", async () => {
+  const bundle = await linkedBundle(
+    "mem://recipe-evolution-link-violation",
+    "[explained in](../places/hall.md)\n",
+    [{ id: "places/annex", frontmatter: { type: "Place", title: "Annex" }, body: "[explained in](../notices/vote.md)\n" }],
+  );
+  const desired = linkedRecipe("2", `${AT_PLACE}  explained in: Notice\n`);
+
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, false);
+  const invalid = plan.blockers.filter((blocker) => blocker.code === "RECIPE_EVOLUTION_INSTANCE_INVALID");
+  assert.deepEqual(invalid.map((blocker) => blocker.id).sort(), ["events/meeting", "places/annex"]);
+  assert.ok(invalid.every((blocker) => blocker.field === "links.explained in"));
+  // The other-kind doc is bound into the plan token like a changing kind's instance.
+  assert.equal(plan.counts.instances_checked, 2);
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+  );
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place" });
+});
+
+test("recipe evolve: an edge added to another kind's doc after the plan invalidates its token", async () => {
+  const bundle = await linkedBundle(
+    "mem://recipe-evolution-link-race",
+    "[explained in](../notices/vote.md)\n",
+    [{ id: "places/annex", frontmatter: { type: "Place", title: "Annex" }, body: "No links yet.\n" }],
+  );
+  const desired = linkedRecipe("2", `${AT_PLACE}  explained in: Notice\n`);
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+  await writeDoc(bundle, {
+    id: "places/annex",
+    frontmatter: { type: "Place", title: "Annex" },
+    body: "[explained in](../notices/vote.md)\n",
+  });
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), (error: unknown) => error instanceof CliError);
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place" });
+});
+
+test("recipe evolve: removing or retargeting an installed link type still blocks", async () => {
+  const bundle = await linkedBundle("mem://recipe-evolution-link-retarget", "[at](../places/hall.md)\n");
+  for (const [desired, code] of [
+    [linkedRecipe("2", "links:\n  near: Place\n"), "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED"],
+    [linkedRecipe("2", "links:\n  at: Notice\n"), "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED"],
+  ] as const) {
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, false);
+    assert.ok(
+      plan.blockers.some((blocker) => blocker.code === code && blocker.field === "/frontmatter/links/at"),
+      JSON.stringify(plan.blockers),
+    );
+  }
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place" });
+});
+
+test("recipe evolve: a link key that differs only by whitespace cannot retarget an installed link type", async () => {
+  const bundle = await linkedBundle("mem://recipe-evolution-link-whitespace", "[at](../places/hall.md)\n");
+  const desired = linkedRecipe("2", `${AT_PLACE}  "at ": Notice\n`);
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, false);
+  assert.ok(
+    plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE" && blocker.field === "links.at"),
+    JSON.stringify(plan.blockers),
+  );
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+  );
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place" });
+});
+
+test("recipe evolve: an edge that already violates another Kind's declaration of the same text is not blamed on the plan", async () => {
+  // Place already declares `explained in: Notice`; an Event edge with that text is a violation today.
+  const files = (version: string, eventLinks: string): LoadedRecipe => {
+    const recipe = linkedRecipe(version, eventLinks);
+    const place = recipe.docs.find((doc) => doc.id === "conventions/place")!;
+    place.frontmatter = { ...place.frontmatter, links: { "explained in": "Notice" } };
+    return recipe;
+  };
+  const bundle: Bundle = { root: "mem://recipe-evolution-link-preexisting", backend: new MemoryBackend() };
+  await applyRecipe(bundle, files("1", AT_PLACE), T);
+  await writeDoc(bundle, { id: "places/hall", frontmatter: { type: "Place", title: "Hall" }, body: "A hall." });
+  await writeDoc(bundle, { id: "notices/vote", frontmatter: { type: "Notice", title: "Vote" }, body: "A vote." });
+  await writeDoc(bundle, { id: "notices/memo", frontmatter: { type: "Notice", title: "Memo" }, body: "[explained in](vote.md)\n" });
+  await writeDoc(bundle, { id: "events/meeting", frontmatter: { type: "Event", title: "Meeting" }, body: "[explained in](../notices/vote.md)\n" });
+
+  const plan = await planRecipeEvolution(bundle, files("2", `${AT_PLACE}  explained in: Notice\n`));
+  assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+  // The Notice edge was a violation before and stays one; the Event edge becomes conformant.
+  assert.equal(plan.counts.instances_checked, 2);
+});
+
 test("portable Review Workflow: clean-room install carries Kinds, a View, and its authoring Reference but zero Review Request instances", async () => {
   const dir = await tempDir();
   try {
