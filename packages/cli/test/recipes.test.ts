@@ -1497,6 +1497,136 @@ test("recipe evolve: terminal-set changes block because they alter open-work vis
   assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_TERMINAL_CHANGE"));
 });
 
+test("recipe evolve: an enum on a field the same plan declares is additive", async () => {
+  const bundle: Bundle = { root: "mem://recipe-evolution-new-field-enum", backend: new MemoryBackend() };
+  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One" }, body: "One." });
+  const desired = widgetRecipe("2", widgetFields(["title"], ["setting"], { setting: ["indoor", "outdoor"] }));
+
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+  assert.equal(plan.definitions[0]!.action, "update");
+  assert.deepEqual(plan.definitions[0]!.added_paths, [
+    "/frontmatter/fields/optional/setting",
+    "/frontmatter/fields/values",
+  ]);
+  assert.equal(plan.counts.instances_checked, 1);
+
+  await applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent");
+  const widget = (await loadKinds(bundle)).kinds.get("Widget")!;
+  assert.deepEqual(widget.fields.optional, ["setting"]);
+  assert.deepEqual(widget.fields.values.setting, ["indoor", "outdoor"]);
+  assert.equal((await planRecipeEvolution(bundle, desired)).changed, false);
+});
+
+test("recipe evolve: a new field's enum blocks when an instance already carries a disallowed value", async () => {
+  const bundle: Bundle = { root: "mem://recipe-evolution-new-field-enum-instance", backend: new MemoryBackend() };
+  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  await writeDoc(bundle, {
+    id: "widgets/one",
+    frontmatter: { type: "Widget", title: "One", setting: "garden" },
+    body: "Undeclared key written before the field existed.",
+  });
+  const desired = widgetRecipe("2", widgetFields(["title"], ["setting"], { setting: ["indoor", "outdoor"] }));
+
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, false);
+  assert.deepEqual(
+    plan.blockers.map((blocker) => [blocker.code, blocker.id, blocker.field]),
+    [["RECIPE_EVOLUTION_INSTANCE_INVALID", "widgets/one", "setting"]],
+  );
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+  );
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.optional, []);
+});
+
+test("recipe evolve: enum, retype and in-use removal changes still block with their own codes", async () => {
+  const withFieldTypes = (recipe: LoadedRecipe, types: Record<string, string>): LoadedRecipe => {
+    recipe.docs[0] = { ...recipe.docs[0]!, frontmatter: { ...recipe.docs[0]!.frontmatter, x_field_types: types } };
+    return recipe;
+  };
+  const installed = () => withFieldTypes(
+    widgetRecipe("1", widgetFields(["title"], ["setting", "size"], { setting: ["indoor", "outdoor"] })),
+    { size: "string" },
+  );
+  const rows: Array<{ name: string; desired: LoadedRecipe; code: string; field: string; message: RegExp }> = [
+    {
+      name: "enum on an installed field",
+      desired: withFieldTypes(
+        widgetRecipe("2", widgetFields(["title"], ["setting", "size"], { setting: ["indoor", "outdoor"], size: ["s", "m"] })),
+        { size: "string" },
+      ),
+      code: "RECIPE_EVOLUTION_NON_MONOTONIC",
+      field: "size",
+      message: /cannot add an enum restriction to 'size'/,
+    },
+    {
+      name: "enum on a field no plan declares",
+      desired: withFieldTypes(
+        widgetRecipe("2", widgetFields(["title"], ["setting", "size"], { setting: ["indoor", "outdoor"], colour: ["red"] })),
+        { size: "string" },
+      ),
+      code: "RECIPE_EVOLUTION_NON_MONOTONIC",
+      field: "colour",
+      message: /cannot add an enum restriction to 'colour'/,
+    },
+    {
+      name: "narrowed enum",
+      desired: withFieldTypes(
+        widgetRecipe("2", widgetFields(["title"], ["setting", "size"], { setting: ["indoor"] })),
+        { size: "string" },
+      ),
+      code: "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
+      field: "/frontmatter/fields/values/setting",
+      message: /preserves the existing declaration value/,
+    },
+    {
+      name: "retyped field",
+      desired: withFieldTypes(
+        widgetRecipe("2", widgetFields(["title"], ["setting", "size"], { setting: ["indoor", "outdoor"] })),
+        { size: "integer" },
+      ),
+      code: "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED",
+      field: "/frontmatter/x_field_types/size",
+      message: /will not replace the existing declaration/,
+    },
+    {
+      name: "removed in-use field",
+      desired: withFieldTypes(
+        widgetRecipe("2", widgetFields(["title"], ["setting"], { setting: ["indoor", "outdoor"] })),
+        { size: "string" },
+      ),
+      code: "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
+      field: "/frontmatter/fields/optional",
+      message: /preserves the existing declaration value/,
+    },
+  ];
+  for (const row of rows) {
+    const bundle: Bundle = { root: `mem://recipe-evolution-refusal-${row.name.replaceAll(" ", "-")}`, backend: new MemoryBackend() };
+    await applyRecipe(bundle, installed(), T);
+    await writeDoc(bundle, {
+      id: "widgets/one",
+      frontmatter: { type: "Widget", title: "One", setting: "outdoor", size: "large" },
+      body: "In use.",
+    });
+    const before = await readDoc(bundle, "conventions/widget");
+
+    const plan = await planRecipeEvolution(bundle, row.desired);
+    assert.equal(plan.ready, false, row.name);
+    const blocker = plan.blockers.find((candidate) => candidate.code === row.code && candidate.field === row.field);
+    assert.ok(blocker, `${row.name}: ${JSON.stringify(plan.blockers)}`);
+    assert.match(blocker.message, row.message, row.name);
+    await assert.rejects(
+      applyRecipeEvolution(bundle, row.desired, plan.plan_token),
+      (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+      row.name,
+    );
+    assert.deepEqual(await readDoc(bundle, "conventions/widget"), before, row.name);
+  }
+});
+
 test("recipe evolve: a race after exact-plan recomputation fails with completed/pending recovery and preserves the winner", async () => {
   class EvolutionRaceBackend extends MemoryBackend {
     armed = false;
