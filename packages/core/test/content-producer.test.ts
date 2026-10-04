@@ -181,6 +181,40 @@ for (const edition of ["0.1", "0.2"] as const) {
   }
 }
 
+for (const edition of ["0.1", "0.2"] as const) {
+  for (const mode of ["patch", "overwrite", "replace-document"] as const) {
+    for (const existingActor of [undefined, "human:previous"] as const) {
+      for (const persistActor of [undefined, false] as const) {
+        test(`${edition} ${mode} existing actor=${existingActor} persistActor=${persistActor}: candidate actor edits retain authored-field semantics`, async () => {
+          const backend = new MemoryBackend();
+          await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
+          const bundle = { root: "/unused", backend };
+          const field = edition === "0.1" ? "actor" : "superbee_updated_by";
+          const original = { id: "notes/actor-only", frontmatter: { type: "Note", timestamp: FIRST,
+            ...(existingActor === undefined ? {} : { [field]: existingActor }) }, body: "unchanged\n" };
+          const version = await backend.write(original.id, original);
+          const registry: KindRegistry = { kinds: new Map(), warnings: [] };
+          const opts = { id: original.id, registry, strict: false, actor: "human:new-writer", persistActor, now: () => NEXT };
+          const raw = { frontmatter: { ...original.frontmatter, [field]: opts.actor }, body: original.body };
+          const preview = prepareDocumentMutationCandidate(original, raw, { ...opts, okfVersion: edition });
+          const result = await mutateDocument({ ...opts, bundle, mode, buildCandidate: () => raw });
+          const changed = persistActor === false || (edition === "0.1" && mode !== "overwrite");
+          // The pure preview prepares patches; legacy overwrite has a distinct actor comparison.
+          assert.equal(preview.changed, persistActor === false || edition === "0.1");
+          assert.equal(result.changed, changed);
+          if (mode !== "overwrite") assert.deepEqual(result.doc.frontmatter, preview.candidate.frontmatter);
+          assert.equal((await backend.versions(original.id)).length, changed ? 2 : 1);
+          if (changed) assert.equal(result.doc.frontmatter[field], opts.actor);
+          else {
+            assert.equal(result.version, version);
+            assert.deepEqual(result.doc, original);
+          }
+        });
+      }
+    }
+  }
+}
+
 const rows = [
   { actor: undefined, producer: undefined, expected: "process:superbee" },
   { actor: "human:alice", producer: undefined, expected: "human:alice" },

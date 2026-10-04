@@ -18,8 +18,11 @@ for identity, provenance, lifecycle and host responsibilities.
 `mutateDocument` and `prepareDocumentMutationCandidate` persist a supplied `actor` by default:
 `actor` in OKF v0.1, `superbee_updated_by` in v0.2 (plus `actor` when the Kind requires it).
 Use `persistActor: false` to keep candidate attribution unchanged, or `persistActor: true` to apply
-the attribution policy even without a supplied actor. An identical mutation remains a no-op and
-preserves its original attribution and bytes. This default changes library writes that previously
+the attribution policy even without a supplied actor. Supplying the actor option alone leaves an
+otherwise unchanged candidate a no-op, preserving its original attribution and bytes. In v0.1,
+deliberate edits to the candidate's legacy `actor` field still count as authored changes in `patch`
+and `replace-document` modes; overwrite retains its automatic attribution comparison. The pure preview
+prepares patches. This default changes library writes that previously
 required `persistActor: true`; callers needing the old opt-in behavior can explicitly pass false.
 
 `producer` controls `generated.by` independently of the version mutator. Local filesystem history

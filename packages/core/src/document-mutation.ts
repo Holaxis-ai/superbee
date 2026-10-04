@@ -135,7 +135,7 @@ export interface MutateDocumentOptions {
   producer?: string;
   /** Persist the advisory actor in edition-appropriate frontmatter when a write occurs.
    * Defaults to true when actor is supplied. Explicit false leaves candidate attribution alone.
-   * Attribution alone never turns a semantic no-op into a write. */
+   * Supplying actor alone never turns an otherwise unchanged candidate into a write. */
   persistActor?: boolean;
   /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
   expectedVersion?: Version;
