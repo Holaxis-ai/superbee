@@ -33,7 +33,7 @@ import {
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { CliError, classifyBundleError } from "./errors.js";
-import { collectLinkDeclarations } from "./link-types.js";
+import { collectLinkDeclarations, type LinkTypeDeclaration } from "./link-types.js";
 import type { LoadedRecipe } from "./recipe-source.js";
 import {
   materializeRecipeForEdition,
@@ -334,9 +334,20 @@ function monotonicEvolutionBlockers(
     }
   }
 
-  // Outbound `links` need no check here: the additive merge already refuses removing or
-  // retargeting an installed link type, and a new one is revalidated over existing edges by
-  // linkTypeAdditionBlockers.
+  // A new outbound link type is additive (its existing edges are revalidated by
+  // linkTypeAdditionBlockers). Removing or retargeting an installed one is not. Compare the PARSED
+  // maps: the parser trims keys, so a raw key such as "at " can redefine "at" through the merge.
+  const desiredLinks = desired.links ?? {};
+  for (const [linkType, target] of Object.entries(current.links ?? {})) {
+    if (Object.hasOwn(desiredLinks, linkType) && desiredLinks[linkType] === target) continue;
+    evolutionBlocker(
+      blockers,
+      "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE",
+      desired.id,
+      `automatic evolution does not remove or retarget the outbound link type '${linkType}' for '${desired.governs}'`,
+      `links.${linkType}`,
+    );
+  }
   if (!isDeepStrictEqual(current.expectsInbound ?? {}, desired.expectsInbound ?? {})) {
     evolutionBlocker(
       blockers,
@@ -372,10 +383,12 @@ function addedLinkTypes(current: KindConvention, desired: KindConvention): strin
 function linkTypeAdditionBlockers(
   docs: readonly OkfDocument[],
   addedTexts: ReadonlySet<string>,
+  currentRegistry: KindRegistry,
   registry: KindRegistry,
   blockers: RecipeEvolutionBlocker[],
 ): OkfDocument[] {
   const declarations = collectLinkDeclarations(registry);
+  const currentDeclarations = collectLinkDeclarations(currentRegistry);
   const docsById = new Map(docs.map((doc) => [doc.id, doc]));
   const docType = (doc: OkfDocument): string => typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
   const checked: OkfDocument[] = [];
@@ -386,12 +399,17 @@ function linkTypeAdditionBlockers(
       carries = true;
       const target = docsById.get(link.to);
       if (!target) continue; // unresolved edges are their own `status` finding
-      const declared = declarations.get(link.text) ?? [];
-      if (declared.length === 0) continue;
       const sourceType = docType(doc);
-      const matched = declared.find((declaration) => declaration.governs === sourceType);
-      if (matched && docType(target) === matched.target) continue;
-      const expected = matched ?? declared[0]!;
+      const violates = (declared: readonly LinkTypeDeclaration[]): LinkTypeDeclaration | null => {
+        if (declared.length === 0) return null;
+        const matched = declared.find((declaration) => declaration.governs === sourceType);
+        return matched && docType(target) === matched.target ? null : matched ?? declared[0]!;
+      };
+      const expected = violates(declarations.get(link.text) ?? []);
+      if (!expected) continue;
+      // Already a violation before this evolution (another Kind declared the text): status
+      // reports it today; this plan neither creates nor fixes it.
+      if (violates(currentDeclarations.get(link.text) ?? [])) continue;
       evolutionBlocker(
         blockers,
         "RECIPE_EVOLUTION_INSTANCE_INVALID",
@@ -437,6 +455,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     );
   }
   const prospectiveById = new Map(installedConventions.map((doc) => [doc.id, doc]));
+  const currentRegistry = buildKindRegistry(installedConventions, [], { okfVersion });
 
   for (const authored of recipe.docs) {
     const target = recipeDocumentForApply(authored, okfVersion, "1970-01-01T00:00:00.000Z");
@@ -704,7 +723,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     }
     if (addedLinkTexts.size > 0) {
       const proven = new Set(instanceProofs.map((proof) => proof.id));
-      for (const doc of linkTypeAdditionBlockers(docs, addedLinkTexts, prospectiveRegistry, blockers)) {
+      for (const doc of linkTypeAdditionBlockers(docs, addedLinkTexts, currentRegistry, prospectiveRegistry, blockers)) {
         if (proven.has(doc.id)) continue;
         proven.add(doc.id);
         instancesChecked += 1;

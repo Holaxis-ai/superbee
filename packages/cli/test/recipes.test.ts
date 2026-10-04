@@ -1788,6 +1788,43 @@ test("recipe evolve: removing or retargeting an installed link type still blocks
   assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place" });
 });
 
+test("recipe evolve: a link key that differs only by whitespace cannot retarget an installed link type", async () => {
+  const bundle = await linkedBundle("mem://recipe-evolution-link-whitespace", "[at](../places/hall.md)\n");
+  const desired = linkedRecipe("2", `${AT_PLACE}  "at ": Notice\n`);
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, false);
+  assert.ok(
+    plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE" && blocker.field === "links.at"),
+    JSON.stringify(plan.blockers),
+  );
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+  );
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place" });
+});
+
+test("recipe evolve: an edge that already violates another Kind's declaration of the same text is not blamed on the plan", async () => {
+  // Place already declares `explained in: Notice`; an Event edge with that text is a violation today.
+  const files = (version: string, eventLinks: string): LoadedRecipe => {
+    const recipe = linkedRecipe(version, eventLinks);
+    const place = recipe.docs.find((doc) => doc.id === "conventions/place")!;
+    place.frontmatter = { ...place.frontmatter, links: { "explained in": "Notice" } };
+    return recipe;
+  };
+  const bundle: Bundle = { root: "mem://recipe-evolution-link-preexisting", backend: new MemoryBackend() };
+  await applyRecipe(bundle, files("1", AT_PLACE), T);
+  await writeDoc(bundle, { id: "places/hall", frontmatter: { type: "Place", title: "Hall" }, body: "A hall." });
+  await writeDoc(bundle, { id: "notices/vote", frontmatter: { type: "Notice", title: "Vote" }, body: "A vote." });
+  await writeDoc(bundle, { id: "notices/memo", frontmatter: { type: "Notice", title: "Memo" }, body: "[explained in](vote.md)\n" });
+  await writeDoc(bundle, { id: "events/meeting", frontmatter: { type: "Event", title: "Meeting" }, body: "[explained in](../notices/vote.md)\n" });
+
+  const plan = await planRecipeEvolution(bundle, files("2", `${AT_PLACE}  explained in: Notice\n`));
+  assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+  // The Notice edge was a violation before and stays one; the Event edge becomes conformant.
+  assert.equal(plan.counts.instances_checked, 2);
+});
+
 test("portable Review Workflow: clean-room install carries Kinds, a View, and its authoring Reference but zero Review Request instances", async () => {
   const dir = await tempDir();
   try {
