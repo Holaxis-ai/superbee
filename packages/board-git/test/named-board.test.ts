@@ -156,6 +156,17 @@ test("named boards: an undeclared or mis-declared board-<name> checkout is refus
     assert.equal(resolveStandaloneBoardCheckout(renamed), null);
     assert.equal(isDeclaredBoardBranch(renamed, "board-renamed"), false);
     assert.ok(isBoardGitError(capture(() => boardRefOf(renamed))));
+
+    // Renamed to `board` and pointed at origin/board, the clone would publish the named tree as the
+    // default board: its marker names another branch, so it is not a default-board root either.
+    const toDefault = cloneNamed(topo, NAME, "renamed-to-default");
+    git(toDefault, ["branch", "-m", NAME, BOARD_BRANCH]);
+    git(toDefault, ["fetch", "-q", "origin", `${BOARD_BRANCH}:refs/remotes/origin/${BOARD_BRANCH}`]);
+    git(toDefault, ["branch", "-u", `origin/${BOARD_BRANCH}`]);
+    assert.equal(resolveStandaloneBoardCheckout(toDefault), null);
+    const refusedDefault = capture(() => provisionBoardWorktree(toDefault, { allowLocalBranch: false }));
+    assert.ok(isBoardGitError(refusedDefault));
+    assert.equal(refusedDefault.details?.state, "standalone-board-wrong-branch");
   } finally {
     await topo.cleanup();
   }

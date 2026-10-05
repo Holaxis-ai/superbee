@@ -835,12 +835,21 @@ test("sync: a pulled commit that removes a named board's marker stops the sync b
     assert.equal(refused.err?.code, "CONFLICT");
     assert.equal(refused.err?.details?.state, "named-board-undeclared");
     assert.match(refused.err?.help ?? "", /restore \.superbee-board\.json/);
+    assert.notEqual(gitTry(topo.origin, ["cat-file", "-e", `${name}:notes/victim-work.md`]).status, 0, "nothing was pushed to the named board either");
+
+    // Once the teammate restores the marker upstream, the clone is told how to pick it up.
+    git(teammate, ["revert", "--no-edit", "HEAD"]);
+    git(teammate, ["push", "-q", "origin", name]);
+    git(victim, ["fetch", "-q", "origin"]);
+    const stuck = await runSync(homes[1]!, ["--dir", victim]);
+    assert.equal(stuck.err?.code, "CONFLICT");
+    assert.match(stuck.err?.help ?? "", new RegExp(`git pull --rebase origin ${name}`));
+    git(victim, ["pull", "-q", "--rebase", "origin", name]);
+    const recovered = await runSync(homes[1]!, ["--dir", victim]);
+    assert.equal(recovered.err, undefined, recovered.err?.message);
+    assert.equal(git(topo.origin, ["rev-parse", name]).trim(), git(victim, ["rev-parse", "HEAD"]).trim());
     assert.equal(git(topo.origin, ["rev-parse", BOARD_BRANCH]).trim(), defaultBoard, "origin/board is untouched");
-    assert.equal(
-      gitTry(topo.origin, ["cat-file", "-e", `${name}:notes/victim-work.md`]).status === 0,
-      false,
-      "nothing was pushed to the named board either",
-    );
+
   } finally {
     await cleanup();
     await topo.cleanup();

@@ -132,9 +132,24 @@ export function declaredBoardBranchAtRef(dir: string, ref: string): string | nul
  * `board-<name>` branch whose local tip carries the marker declaring exactly that name.
  */
 export function isDeclaredBoardBranch(dir: string, branch: string): boolean {
-  if (branch === BOARD_BRANCH) return true;
+  // A `board` tip carrying a named board's marker is a named clone renamed to `board`: syncing it
+  // would publish the named board's tree as the default board.
+  if (branch === BOARD_BRANCH) return declaredBoardBranchAtRef(dir, `refs/heads/${BOARD_BRANCH}`) === null;
   if (!isBoardBranchName(branch)) return false;
   return declaredBoardBranchAtRef(dir, `refs/heads/${branch}`) === branch;
+}
+
+/**
+ * Recovery for a named board's clone whose tip lost its declaration: when the remote branch still
+ * (or again) declares it, pulling restores the marker; otherwise the marker is restored by hand.
+ */
+function namedBoardRecoveryHelp(dir: string, branch: string): string {
+  if (declaredBoardBranchAtRef(dir, `refs/remotes/${BOARD_REMOTE}/${branch}`) === branch) {
+    return `${BOARD_REMOTE}/${branch} still declares the board: git pull --rebase ${BOARD_REMOTE} ${branch} ` +
+      `restores ${BOARD_MARKER_FILE} here, then re-run sync`;
+  }
+  return `restore ${BOARD_MARKER_FILE} with {"schema": ${BOARD_MARKER_SCHEMA}, "branch": "${branch}"} in a new commit ` +
+    `(git log -- ${BOARD_MARKER_FILE} shows who changed it), then re-run sync`;
 }
 
 /** The branch a wedged rebase in `dir` started from (git's own `head-name`), or null. */
@@ -176,9 +191,7 @@ export function boardBranchOf(boardPath: string): string {
       `${BOARD_MARKER_FILE} is missing or names another branch — sync will not guess which board to use`,
     {
       details: { path: boardPath, state: "named-board-undeclared", branch: name },
-      help:
-        `restore ${BOARD_MARKER_FILE} with {"schema": ${BOARD_MARKER_SCHEMA}, "branch": "${name}"} in a new commit ` +
-        `(git log -- ${BOARD_MARKER_FILE} shows who changed it), then re-run sync`,
+      help: namedBoardRecoveryHelp(boardPath, name),
     },
   );
 }
@@ -747,9 +760,10 @@ function standaloneRootWrongBranch(top: string, branch: string): BoardGitError {
       `named board branch (board-<name>) whose committed ${BOARD_MARKER_FILE} declares that name`,
     {
       details: { path: top, state: "standalone-board-wrong-branch", branch },
-      help:
-        `use a separate checkout attached to '${BOARD_BRANCH}' (or to the named board branch), or run sync ` +
-        `from the repository's code checkout and let it provision the conventional bundle worktree`,
+      help: branch !== BOARD_BRANCH && isBoardBranchName(branch)
+        ? namedBoardRecoveryHelp(top, branch)
+        : `use a separate checkout attached to '${BOARD_BRANCH}' (or to the named board branch), or run sync ` +
+          `from the repository's code checkout and let it provision the conventional bundle worktree`,
     },
   );
 }
