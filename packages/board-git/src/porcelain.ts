@@ -144,12 +144,14 @@ export function isDeclaredBoardBranch(dir: string, branch: string): boolean {
  * (or again) declares it, pulling restores the marker; otherwise the marker is restored by hand.
  */
 function namedBoardRecoveryHelp(dir: string, branch: string): string {
+  const restore = `restore ${BOARD_MARKER_FILE} with {"schema": ${BOARD_MARKER_SCHEMA}, "branch": "${branch}"} in a new commit ` +
+    `(git log -- ${BOARD_MARKER_FILE} shows who changed it)`;
   if (declaredBoardBranchAtRef(dir, `refs/remotes/${BOARD_REMOTE}/${branch}`) === branch) {
     return `${BOARD_REMOTE}/${branch} still declares the board: git pull --rebase ${BOARD_REMOTE} ${branch} ` +
       `restores ${BOARD_MARKER_FILE} here, then re-run sync`;
   }
-  return `restore ${BOARD_MARKER_FILE} with {"schema": ${BOARD_MARKER_SCHEMA}, "branch": "${branch}"} in a new commit ` +
-    `(git log -- ${BOARD_MARKER_FILE} shows who changed it), then re-run sync`;
+  return `git fetch ${BOARD_REMOTE} ${branch}; if ${BOARD_REMOTE}/${branch} declares the board again, ` +
+    `git pull --rebase ${BOARD_REMOTE} ${branch} restores the marker, otherwise ${restore}; then re-run sync`;
 }
 
 /** The branch a wedged rebase in `dir` started from (git's own `head-name`), or null. */
@@ -752,6 +754,21 @@ export function resolveProvisionedBoardPath(dir: string, hostPolicy?: BoardHostP
 }
 
 function standaloneRootWrongBranch(top: string, branch: string): BoardGitError {
+  const stray = branch === BOARD_BRANCH ? declaredBoardBranchAtRef(top, `refs/heads/${BOARD_BRANCH}`) : null;
+  if (stray !== null) {
+    return new BoardGitError(
+      "CONFLICT",
+      `this '${BOARD_BRANCH}' checkout's tip carries ${BOARD_MARKER_FILE} declaring the named board '${stray}' — ` +
+        `a named board's marker does not belong on the default board, so sync will not publish this tree`,
+      {
+        details: { path: top, state: "default-board-carries-named-marker", branch, declares: stray },
+        help:
+          `if this clone is the named board, rename it back (git branch -m ${stray} and track ${BOARD_REMOTE}/${stray}); ` +
+          `otherwise remove the stray marker (git rm ${BOARD_MARKER_FILE} && git commit; git log -- ${BOARD_MARKER_FILE} ` +
+          `shows who added it), then re-run sync`,
+      },
+    );
+  }
   const shown = branch === "HEAD" ? "detached HEAD" : `'${branch}'`;
   return new BoardGitError(
     "CONFLICT",

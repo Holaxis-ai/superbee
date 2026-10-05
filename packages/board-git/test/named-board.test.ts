@@ -166,7 +166,8 @@ test("named boards: an undeclared or mis-declared board-<name> checkout is refus
     assert.equal(resolveStandaloneBoardCheckout(toDefault), null);
     const refusedDefault = capture(() => provisionBoardWorktree(toDefault, { allowLocalBranch: false }));
     assert.ok(isBoardGitError(refusedDefault));
-    assert.equal(refusedDefault.details?.state, "standalone-board-wrong-branch");
+    assert.equal(refusedDefault.details?.state, "default-board-carries-named-marker");
+    assert.match(refusedDefault.help ?? "", /git rm \.superbee-board\.json/);
   } finally {
     await topo.cleanup();
   }
