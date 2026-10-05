@@ -19,6 +19,7 @@ import { parseArgs } from "node:util";
 import {
   BOARD_BRANCH,
   BOARD_REMOTE,
+  boardBranchOf,
   BUNDLE_DIR,
   bundleDirNameForProject,
   committedBundleAtHead,
@@ -178,7 +179,7 @@ locked repository), the receipt still reports what committed/pulled successfully
 saved locally either way, and re-running sync retries the push. A push that loses a race to
 another writer (non-fast-forward, including the remote's "incorrect old value" refusal) is not a
 permission problem: sync re-fetches, rebases with the same converging mechanic, re-runs the gate,
-and pushes again, up to 4 attempts in all, then exits 1 with \`details.reason: non-fast-forward\`.
+and pushes again, up to 5 attempts in all, then exits 1 with \`details.reason: non-fast-forward\`.
 
 A clone can declare a SYNC GATE: a command sync runs on the converged tree after rebasing onto
 the remote board and before every push that sends commits (\`git config superbee.syncGate
@@ -817,11 +818,11 @@ async function deltaPhase(board: SyncBoard, baseline: SyncBaseline): Promise<Syn
 }
 
 /** Push attempts per sync: the first, plus re-fetch/rebase/re-gate retries after lost races. */
-export const SYNC_PUSH_ATTEMPTS = 4;
+export const SYNC_PUSH_ATTEMPTS = 5;
 
 /** A short randomized pause before a retry, so two writers that lost to each other desynchronize. */
 function raceBackoffMs(attempt: number): number {
-  return Math.floor(150 * attempt + Math.random() * 350 * attempt);
+  return Math.floor(250 * attempt + Math.random() * 750 * attempt);
 }
 
 /**
@@ -838,6 +839,9 @@ async function pushPhase(
 ): Promise<{ commits: number; documents: number; delta: SyncDelta; gate?: Record<string, unknown> }> {
   if (run.pullOnly) return { commits: 0, documents: 0, delta };
   const gate = declaredSyncGate(board.boardPath);
+  // Resolved once: the gate judges for this branch, every attempt pushes to it, and a retry
+  // refuses if anything moved the checkout off it.
+  const branch = boardBranchOf(board.boardPath);
   let gateDetails: Record<string, unknown> | undefined;
   for (let attempt = 1; ; attempt += 1) {
     // One head per attempt: the gate judges it, the counts describe it, and exactly it is pushed.
@@ -848,18 +852,24 @@ async function pushPhase(
     const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), head).map((change) => change.docId)).size : 0;
     // An unknown count is gated too: the gate is skipped only when nothing is known to be sent.
     if (gate && (counted === null || ahead > 0)) {
-      const judged = runSyncGate(board.boardPath, gate, attempt);
+      const judged = await runSyncGate(board.boardPath, branch, gate, attempt);
       if (!judged.passed) await failGate(run, board, commitResult, delta, judged.reason ?? "failed", judged.details);
       gateDetails = judged.details;
     }
     try {
-      push(board.boardPath, head);
+      push(board.boardPath, head, branch);
       return { commits: ahead, documents: outgoing, delta, ...(gateDetails ? { gate: gateDetails } : {}) };
     } catch (err) {
       const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
       const raced = classified.code === "TRANSIENT" && classified.details?.reason === "non-fast-forward";
       if (raced && attempt < SYNC_PUSH_ATTEMPTS) {
         await new Promise((resolve) => setTimeout(resolve, raceBackoffMs(attempt)));
+        if (boardBranchOf(board.boardPath) !== branch) {
+          throw new CliError("CONFLICT", `the board checkout left '${branch}' during sync; nothing more was pushed`, {
+            details: { state: "board-branch-moved", branch },
+            help: `check out '${branch}' in ${board.boardPath}, then ${run.inv} sync`,
+          });
+        }
         await convergingRebase(run, board, commitResult.committed);
         refuseMovedBoard(board.boardPath);
         delta = await deltaPhase(board, baseline);
@@ -872,8 +882,8 @@ async function pushPhase(
       const exhausted = raced
         ? new CliError(
           classified.code,
-          `another writer pushed to the board each time sync tried (${attempt} attempts, each re-fetched, ` +
-            "rebased and re-gated) — re-run sync to try again",
+          `another writer pushed to the board each time sync tried (${attempt} attempts, each re-fetched ` +
+            `and rebased${gate ? " and re-gated" : ""}) — re-run sync to try again`,
           { details },
         )
         : classified;
@@ -908,14 +918,18 @@ async function failGate(
   const warning =
     `committed to the board locally — your work is saved. The sync gate ${reason} on the rebased ` +
     "board, so nothing was pushed; fix what it reports, then re-run sync";
+  const help = `run the gate yourself from ${board.boardPath} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${run.inv} sync`;
   const partial = buildPushFailurePartial(
     board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote, { gate: details },
   );
+  // The error is reported through this receipt (exit 5), so it carries the code and next step too.
+  partial.code = "GATE_FAILED";
+  partial.help = help;
   const envelope = syncEnvelope("git", { received: delta.originDelta.length, next: [`${run.inv} sync`] });
   run.stdout(render(withSyncEnvelope(partial, envelope), run.mode));
   await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
   throw new CliError("GATE_FAILED", `the sync gate ${reason}; nothing was pushed`, {
-    help: `run the gate yourself from ${board.boardPath} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${run.inv} sync`,
+    help,
     details: { gate: details },
     handled: true,
   });

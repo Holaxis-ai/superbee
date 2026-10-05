@@ -19,6 +19,7 @@ import {
   git,
   makeTwoCloneTopology,
   modifyBoardDoc,
+  publishNamedBoard,
   pushBoard,
   readBoardFile,
   writeBoardDoc,
@@ -108,6 +109,8 @@ test("sync gate: a failing gate holds the push with the work committed; a passin
     assert.equal(held.err?.exitCode, 5);
     assert.match(held.out, /your work is saved\. The sync gate exited 3 on the rebased board, so nothing was pushed/);
     assert.match(held.out, /gate output line/, "the failing gate's output tail is reported");
+    assert.match(held.out, /code: GATE_FAILED/, "the receipt names the code");
+    assert.match(held.out, /help: "run the gate yourself/);
     assert.equal(originBoard(topo), before, "nothing was pushed");
     assert.equal(git(topo.a.board, ["rev-list", "--count", "origin/board..HEAD"]).trim(), "1", "the work stays committed locally");
     assert.equal(git(topo.a.board, ["status", "--porcelain"]), "");
@@ -273,6 +276,52 @@ test("sync race: a re-pull that merges two frontmatter edits into a malformed do
     assert.equal(result.err?.code, "CONFLICT", result.out);
     assert.match(result.out, /held: local commits carry these documents, so nothing was pushed/);
     assert.doesNotMatch(git(topo.origin, ["show", `${BOARD_BRANCH}:notes/dup.md`]), /status: mine/, "the malformed merge never reached origin");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync gate: a gate that moves HEAD off a named board's branch fails; nothing reaches origin/board", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { dir: state, cleanup } = await scratch();
+  const name = "board-fairport";
+  try {
+    publishNamedBoard(topo, name);
+    const clone = path.join(topo.dir, "named-gated");
+    git(topo.dir, ["clone", "--no-local", "--branch", name, topo.origin, clone]);
+    const defaultBoard = originBoard(topo);
+    const named = git(topo.origin, ["rev-parse", name]).trim();
+    await writeBoardDoc({ name: "n", root: clone, board: clone }, "notes/fairport-only", { frontmatter: { type: "Note", title: "x" }, body: "# x\n" });
+    // A plausible gate pins the judged commit first — which detaches HEAD.
+    git(clone, ["config", "superbee.syncGate", 'git checkout -q --detach "$SUPERBEE_BOARD_HEAD_SHA" && test -f index.md']);
+
+    const result = await runSync(path.join(state, "home"), ["--dir", clone]);
+    assert.equal(result.err?.code, "GATE_FAILED");
+    assert.equal((result.err?.details?.gate as { modified_board?: boolean }).modified_board, true);
+    assert.equal(originBoard(topo), defaultBoard, "origin/board is untouched");
+    assert.equal(git(topo.origin, ["rev-parse", name]).trim(), named, "nothing was pushed");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync gate: a timed-out gate's whole process group is stopped", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { dir: state, cleanup } = await scratch();
+  try {
+    await note(topo, "a", "notes/slow");
+    const late = path.join(state, "late.txt");
+    git(topo.a.root, ["config", "superbee.syncGate", `(sleep 2; echo late > '${late}') & sleep 30`]);
+    git(topo.a.root, ["config", "superbee.syncGateTimeoutSeconds", "1"]);
+    const started = Date.now();
+    const result = await runSync(path.join(state, "home"), ["--dir", topo.a.root]);
+    assert.equal(result.err?.code, "GATE_FAILED");
+    assert.equal((result.err?.details?.gate as { timed_out?: boolean }).timed_out, true);
+    assert.ok(Date.now() - started < 15_000, "the timeout bounds the run");
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    assert.equal(existsSync(late), false, "nothing the gate started outlives it");
   } finally {
     await cleanup();
     await topo.cleanup();

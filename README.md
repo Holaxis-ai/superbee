@@ -160,7 +160,7 @@ that sends commits. A failing gate pushes nothing, keeps your work committed loc
 `SUPERBEE_BOARD_UPSTREAM_SHA` and `SUPERBEE_BOARD_HEAD_SHA`, and exactly that head is pushed. Keep
 the gate's code outside the board: a script inside it runs whatever a teammate last pushed. When
 another writer pushes between
-the rebase and the push, sync re-fetches, rebases, re-runs the gate and retries (up to 4 attempts)
+the rebase and the push, sync re-fetches, rebases, re-runs the gate and retries (up to 5 attempts)
 instead of failing.
 
 `sync --establish` also handles a project that already committed `.superbee/` or legacy
