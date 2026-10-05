@@ -137,7 +137,10 @@ test("named boards: an undeclared or mis-declared board-<name> checkout is refus
       publishNamedBoard(topo, c.name, c.marker);
       const root = cloneNamed(topo, c.name, `refused-${c.name}`);
       assert.equal(isDeclaredBoardBranch(root, c.name), false, c.why);
-      assert.equal(boardBranchOf(root), BOARD_BRANCH, `${c.why}: ops fall back to the default board name`);
+      const undeclared = capture(() => boardBranchOf(root));
+      assert.ok(isBoardGitError(undeclared), `${c.why}: a board root on an undeclared board-* branch is refused, never defaulted`);
+      assert.equal(undeclared.code, "CONFLICT", c.why);
+      assert.equal(undeclared.details?.state, "named-board-undeclared", c.why);
       assert.equal(resolveStandaloneBoardCheckout(root), null, c.why);
       const err = capture(() => provisionBoardWorktree(root, { allowLocalBranch: false }));
       assert.ok(isBoardGitError(err), c.why);
@@ -152,6 +155,7 @@ test("named boards: an undeclared or mis-declared board-<name> checkout is refus
     git(renamed, ["branch", "-m", NAME, "board-renamed"]);
     assert.equal(resolveStandaloneBoardCheckout(renamed), null);
     assert.equal(isDeclaredBoardBranch(renamed, "board-renamed"), false);
+    assert.ok(isBoardGitError(capture(() => boardRefOf(renamed))));
   } finally {
     await topo.cleanup();
   }
@@ -214,8 +218,12 @@ test("named boards: the default board's checkouts are unchanged", async () => {
     git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, standalone]);
     assert.equal(boardBranchOf(standalone), BOARD_BRANCH);
     assert.equal(resolveStandaloneBoardCheckout(standalone), standalone);
-    // The project checkout on `main` never reads a board branch from `main`.
+    // The project checkout on `main` never reads a board branch from `main`, and a code checkout on
+    // a board-shaped branch (no tracked OKF root) is still a code checkout.
     assert.equal(boardBranchOf(topo.a.root), BOARD_BRANCH);
+    git(topo.a.root, ["checkout", "-q", "-b", "board-feature"]);
+    assert.equal(boardBranchOf(topo.a.root), BOARD_BRANCH);
+    assert.equal(isBoardBranchName("board-cleanup"), false, "establish's cleanup branch is never a named board");
   } finally {
     await topo.cleanup();
   }

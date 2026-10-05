@@ -9,7 +9,8 @@ export { ffSwallowToError, inTreeNoBasisNote, syncInTreeRefusalMessage, upstream
 
 import { homedir } from "node:os";
 
-import { CliError } from "../errors.js";
+import { isBoardGitError } from "@superbee/board-git";
+import { CliError, cliErrorFromBoardGit } from "../errors.js";
 import { renderUsage } from "../output.js";
 import type { SyncCliDeps } from "../sync-cli.js";
 import { dirArgument, hostedCheckoutFor, hostedSync, HOSTED_SYNC_USAGE, type HostedSyncDeps } from "../hosted/sync.js";
@@ -57,7 +58,11 @@ export async function sync(argv: string[], deps: UnifiedSyncDeps = {}): Promise<
   // converged sync saved and finish its reconcile chain. The deletion verbs stay hosted-only.
   if (requestsHostedOnlyVerb(argv)) throw hostedOnlyVerbError(await targetHome(argv, deps.cwd ?? process.cwd(), home), argv);
   if (requestsConflictVerb(argv)) {
-    await gitConflictVerb(argv, deps);
+    try {
+      await gitConflictVerb(argv, deps);
+    } catch (err) {
+      throw isBoardGitError(err) ? cliErrorFromBoardGit(err) : err;
+    }
     return;
   }
   await gitSync(argv, deps);

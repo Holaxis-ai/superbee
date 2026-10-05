@@ -783,6 +783,17 @@ test("sync: a named board (board-<name>) syncs from a standalone clone without t
     assert.match(await readBoardFile(readerRepo, "tasks/seed-one.md"), /Writer wins the race/);
     assert.equal(git(topo.origin, ["rev-parse", BOARD_BRANCH]).trim(), defaultBoard, "origin/board is untouched");
 
+    // The conflict verbs read the named board's upstream, never origin/board (which this clone also fetched).
+    const inspected = await runSync(homes[1]!, ["--dir", reader, "--inspect", "--doc", "tasks/seed-one"]);
+    assert.equal(inspected.err, undefined, inspected.err?.message);
+    assert.match(inspected.out, new RegExp(`origin/${name} \\(as of the last fetch\\)`));
+    assert.match(inspected.out, /Writer wins the race/);
+    const taken = await runSync(homes[1]!, ["--dir", reader, "--resolve", "take", "--doc", "tasks/seed-one"]);
+    assert.equal(taken.err, undefined, taken.err?.message);
+    assert.equal((await runSync(homes[1]!, ["--dir", reader])).err, undefined);
+    assert.match(git(topo.origin, ["show", `${name}:tasks/seed-one.md`]), /Writer wins the race/);
+    assert.equal(git(topo.origin, ["rev-parse", BOARD_BRANCH]).trim(), defaultBoard, "origin/board is untouched");
+
     const home = await import("../src/bundle-home.js");
     const facts = await home.gitBoardAt(writer);
     assert.equal(facts?.branch, name);
@@ -794,6 +805,42 @@ test("sync: a named board (board-<name>) syncs from a standalone clone without t
     assert.equal(established.err, undefined, established.err?.message);
     assert.match(established.out, /already established/);
     assert.notEqual(gitTry(topo.origin, ["show-ref", "--verify", `refs/heads/${BOARD_BRANCH}`]).status, 0);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: a pulled commit that removes a named board's marker stops the sync before any push", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const name = "board-fairport";
+  try {
+    publishNamedBoard(topo, name);
+    const teammate = path.join(topo.dir, "marker-remover");
+    const victim = path.join(topo.dir, "marker-victim");
+    git(topo.dir, ["clone", "--no-local", "--branch", name, topo.origin, teammate]);
+    git(topo.dir, ["clone", "--no-local", "--branch", name, topo.origin, victim]);
+    // The victim also holds an unpushed commit on a local `board` branch: nothing may publish it.
+    git(victim, ["branch", BOARD_BRANCH, `origin/${BOARD_BRANCH}`]);
+    const privateWork = git(victim, ["commit-tree", "-p", BOARD_BRANCH, "-m", "private default-board work", `${BOARD_BRANCH}^{tree}`]).trim();
+    git(victim, ["update-ref", `refs/heads/${BOARD_BRANCH}`, privateWork]);
+    git(teammate, ["rm", "-q", ".superbee-board.json"]);
+    git(teammate, ["commit", "-q", "-m", "drop the marker"]);
+    git(teammate, ["push", "-q", "origin", name]);
+    const defaultBoard = git(topo.origin, ["rev-parse", BOARD_BRANCH]).trim();
+
+    await cliDocWrite(victim, "notes/victim-work", ["--type", "Note", "--title", "Victim", "--body", "# mine\n"]);
+    const refused = await runSync(homes[1]!, ["--dir", victim]);
+    assert.equal(refused.err?.code, "CONFLICT");
+    assert.equal(refused.err?.details?.state, "named-board-undeclared");
+    assert.match(refused.err?.help ?? "", /restore \.superbee-board\.json/);
+    assert.equal(git(topo.origin, ["rev-parse", BOARD_BRANCH]).trim(), defaultBoard, "origin/board is untouched");
+    assert.equal(
+      gitTry(topo.origin, ["cat-file", "-e", `${name}:notes/victim-work.md`]).status === 0,
+      false,
+      "nothing was pushed to the named board either",
+    );
   } finally {
     await cleanup();
     await topo.cleanup();

@@ -95,9 +95,13 @@ const BOARD_MARKER_BYTES = 4 * 1024;
  */
 const NAMED_BOARD_BRANCH = /^board-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/** `sync --establish`'s committed-folder case prepares its code-branch cleanup commit on this branch. */
+const RESERVED_BOARD_LIKE_BRANCHES: ReadonlySet<string> = new Set(["board-cleanup"]);
+
 /** True for `board` and for a well-formed named board branch (`board-<name>`). */
 export function isBoardBranchName(name: string): boolean {
-  return name === BOARD_BRANCH || (name.length <= 100 && NAMED_BOARD_BRANCH.test(name));
+  return name === BOARD_BRANCH ||
+    (name.length <= 100 && NAMED_BOARD_BRANCH.test(name) && !RESERVED_BOARD_LIKE_BRANCHES.has(name));
 }
 
 /**
@@ -150,14 +154,33 @@ function rebaseStartBranch(dir: string): string | null {
 
 /**
  * The board branch the checkout at `boardPath` syncs: its attached branch (or the branch a wedged
- * rebase started from) when that is a declared named board, otherwise the default `board`. Every
- * fetch, rebase, push and count against a checkout reads its branch here, so a named board's
- * checkout never touches `origin/board`.
+ * rebase started from) when that is a named board, otherwise the default `board`. Every fetch,
+ * rebase, push and count against a checkout reads its branch here, so a named board's checkout
+ * never touches `origin/board`.
+ *
+ * A checkout on a `board-<name>` branch whose tip no longer declares that name (its marker was
+ * removed or changed, locally or by a pulled commit) is REFUSED, never treated as the default
+ * board: falling back would aim the rest of a sync at `origin/board`.
  */
 export function boardBranchOf(boardPath: string): string {
   const attached = runGit(boardPath, ["symbolic-ref", "-q", "--short", "HEAD"]);
   const name = attached.status === 0 ? attached.stdout.trim() : rebaseStartBranch(boardPath);
-  return name !== null && name !== BOARD_BRANCH && isDeclaredBoardBranch(boardPath, name) ? name : BOARD_BRANCH;
+  if (name === null || name === BOARD_BRANCH || !isBoardBranchName(name)) return BOARD_BRANCH;
+  if (isDeclaredBoardBranch(boardPath, name)) return name;
+  // A code checkout that merely sits on a board-shaped branch is not a board root: it keeps the
+  // default board, exactly as for any other code branch.
+  if (!hasTrackedBundleRootAtRef(boardPath, `refs/heads/${name}`)) return BOARD_BRANCH;
+  throw new BoardGitError(
+    "CONFLICT",
+    `this checkout is on the named board branch '${name}', but its tip no longer declares it: ` +
+      `${BOARD_MARKER_FILE} is missing or names another branch — sync will not guess which board to use`,
+    {
+      details: { path: boardPath, state: "named-board-undeclared", branch: name },
+      help:
+        `restore ${BOARD_MARKER_FILE} with {"schema": ${BOARD_MARKER_SCHEMA}, "branch": "${name}"} in a new commit ` +
+        `(git log -- ${BOARD_MARKER_FILE} shows who changed it), then re-run sync`,
+    },
+  );
 }
 
 /** The explicit remote-tracking ref (`origin/<board branch>`) for the checkout at `boardPath`. */
