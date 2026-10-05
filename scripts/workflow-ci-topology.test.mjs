@@ -22,6 +22,16 @@ const PLAYWRIGHT_IMAGE_DIGEST = "sha256:5b8f294aff9041b7191c34a4bab3ac270157a287
 const PLAYWRIGHT_VERSION = packageLock.packages["node_modules/playwright-core"]?.version;
 const PLAYWRIGHT_IMAGE = `mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble@${PLAYWRIGHT_IMAGE_DIGEST}`;
 
+function actionPin(key) {
+  const rows = manifest.github_actions.pins.filter((row) => row.key === key);
+  assert.equal(rows.length, 1, `manifest must declare one GitHub Action pin for ${key}`);
+  return `${rows[0].identity}@${rows[0].revision}`;
+}
+
+function countLiteral(text, literal) {
+  return text.split(literal).length - 1;
+}
+
 const BROWSER_PREFLIGHT = `      - name: Verify baked Playwright browser artifacts
         shell: bash
         run: |
@@ -79,9 +89,9 @@ function assertAggregator(job, label) {
   const parsed = yaml.safeLoad(job);
   assert.equal(parsed["continue-on-error"], undefined);
   assert.equal(parsed.steps.length, 3, `${label} has checkout, Node setup and gate only`);
-  assert.equal(parsed.steps[0].uses, "actions/checkout@v4");
+  assert.equal(parsed.steps[0].uses, actionPin("checkout_v4"));
   assert.equal(parsed.steps[0].with?.ref, manifest.merge_queue.checkout_ref);
-  assert.equal(parsed.steps[1].uses, "actions/setup-node@v4");
+  assert.equal(parsed.steps[1].uses, actionPin("setup_node_v4"));
   assert.equal(parsed.steps[1].with["node-version"], manifest.singleton_node);
   for (const step of parsed.steps) {
     assert.equal(step.if, undefined, `${label} steps must be unconditional`);
@@ -101,7 +111,7 @@ function displayNameOf(job) {
 }
 
 function assertSmokeJob(job, lane) {
-  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2, "floor smoke needs build and floor runtimes");
+  assert.equal(countLiteral(job, actionPin("setup_node_v4")), 2, "floor smoke needs build and floor runtimes");
   assert.deepEqual(
     [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => match[1]),
     [lane.build_runtime, lane.runtime_setup_node],
