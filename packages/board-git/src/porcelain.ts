@@ -2330,9 +2330,15 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
 
 // ── push ──────────────────────────────────────────────────────────────────────
 
-/** `git push origin <board branch>`. Failures classify (AUTH exit 4 vs network exit 1, best-effort). */
-export function push(boardPath: string): void {
-  mustGit(boardPath, ["push", BOARD_REMOTE, boardBranchOf(boardPath)], { timeoutMs: NETWORK_TIMEOUT_MS });
+/**
+ * `git push origin <board branch>`, or, given `commit`, exactly that commit as the board branch
+ * (`<commit>:refs/heads/<board branch>`) — what a caller judged is what is published, even if the
+ * branch moved since. A caller that resolved the board branch earlier passes it, so nothing that
+ * ran in between (a gate, a hook) can change where the push goes. Failures classify (AUTH exit 4 vs network exit 1, best-effort).
+ */
+export function push(boardPath: string, commit?: string, branch: string = boardBranchOf(boardPath)): void {
+  const refspec = commit === undefined ? branch : `${commit}:refs/heads/${branch}`;
+  mustGit(boardPath, ["push", BOARD_REMOTE, refspec], { timeoutMs: NETWORK_TIMEOUT_MS });
 }
 
 /**

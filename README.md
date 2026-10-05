@@ -153,6 +153,16 @@ your normal commit/push/pull, `sync --pull-only` fetches the branch's upstream a
 incoming board changes (session start shows the same awareness), and a full `sync` refuses
 with guidance — `sync --establish` is the explicit conversion to a dedicated board branch.
 
+A clone can hold its own pushes to a check: `git config superbee.syncGate '<command>'` makes
+`sync` run that command on the rebased board (the exact commit it would push) before every push
+that sends commits. A failing gate pushes nothing, keeps your work committed locally, and exits 5
+(`GATE_FAILED`) with the gate's output; the gate learns what it judges from
+`SUPERBEE_BOARD_UPSTREAM_SHA` and `SUPERBEE_BOARD_HEAD_SHA`, and exactly that head is pushed. Keep
+the gate's code outside the board: a script inside it runs whatever a teammate last pushed. When
+another writer pushes between
+the rebase and the push, sync re-fetches, rebases, re-runs the gate and retries (up to 5 attempts)
+instead of failing.
+
 `sync --establish` also handles a project that already committed `.superbee/` or legacy
 `.agentstate-lite/` to
 its code branch: it prints a preview first, and `--yes` executes — publishing the board
