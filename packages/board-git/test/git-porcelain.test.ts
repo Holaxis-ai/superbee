@@ -1486,6 +1486,12 @@ test("classifyGitError: non-fast-forward push signals → actionable retry", () 
     "To /tmp/origin.git\n ! [rejected]        board -> board (fetch first)\nerror: failed to push some refs to '/tmp/origin.git'",
     "To github.com:x/y.git\n ! [rejected]        board -> board (non-fast-forward)\nerror: failed to push some refs",
     "Updates were rejected because the tip of your current branch is behind its remote counterpart.",
+    // The receive-side race: the ref moved between the remote's advertisement and the update.
+    "remote: error: cannot lock ref 'refs/heads/board': is at 61c1967 but expected cc54dd8\n" +
+      "To /tmp/origin.git\n ! [remote rejected] board -> board (incorrect old value provided)\n" +
+      "error: failed to push some refs to '/tmp/origin.git'",
+    " ! [remote rejected] board-fairport -> board-fairport (incorrect old value provided)",
+    "remote: error: cannot lock ref 'refs/heads/board': is at 61c1967 but expected cc54dd8",
   ]) {
     const err = classifyGitError({ args: ["push"], status: 1, stdout: "", stderr });
     assert.equal(err.code, "TRANSIENT", stderr);

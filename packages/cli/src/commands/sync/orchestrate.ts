@@ -67,6 +67,7 @@ import {
   writeAwarenessCache,
 } from "./converge.js";
 import { showIncoming } from "./show-incoming.js";
+import { SYNC_GATE_CONFIG, declaredSyncGate, runSyncGate } from "./gate.js";
 import { ffSwallowToError, syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
 import { CliError, asHandled, cliErrorFromBoardGit, toExit } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
@@ -174,7 +175,21 @@ any error envelope) on stderr. A doc absent upstream renders as an expected stat
 
 If the push fails after a local commit already landed (offline, revoked/expired credentials, or a
 locked repository), the receipt still reports what committed/pulled successfully — your work is
-saved locally either way, and re-running sync retries the push.
+saved locally either way, and re-running sync retries the push. A push that loses a race to
+another writer (non-fast-forward, including the remote's "incorrect old value" refusal) is not a
+permission problem: sync re-fetches, rebases with the same converging mechanic, re-runs the gate,
+and pushes again, up to 4 attempts in all, then exits 1 with \`details.reason: non-fast-forward\`.
+
+A clone can declare a SYNC GATE: a command sync runs on the converged tree after rebasing onto
+the remote board and before every push that sends commits (\`git config superbee.syncGate
+'<command>'\`, any Git config scope; an empty value declares none; \`superbee.syncGateTimeoutSeconds\`
+overrides the 600s timeout). It runs through the shell from the board root with
+SUPERBEE_BOARD_BRANCH, SUPERBEE_BOARD_UPSTREAM_REF, SUPERBEE_BOARD_UPSTREAM_SHA (the remote tip
+rebased onto), SUPERBEE_BOARD_HEAD_SHA (what would be pushed) and SUPERBEE_SYNC_ATTEMPT set. A
+non-zero exit, a timeout, or any edit to the board holds the push: the work stays committed
+locally and sync exits 5 with code GATE_FAILED and the gate's last output lines. The gate comes
+from Git configuration, never from board files, so board content cannot choose what runs.
+\`--pull-only\` never runs it, and neither does \`--establish\`'s first publication of a board.
 
 A board can also ride IN-TREE: \`.superbee/\` or legacy \`.agentstate-lite/\` committed WITH the code on the current
 branch, with no dedicated \`board\` branch anywhere. That is a supported, read-side mode — sync
@@ -725,7 +740,7 @@ async function commitPhase(board: SyncBoard, pullOnly: boolean): Promise<CommitR
  * {@link throwPostCommitFailure}.
  */
 async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult): Promise<void> {
-  const { boardPath, key, outcome } = board;
+  const { boardPath, outcome } = board;
   if (run.pullOnly) {
     const ff = ffPull(boardPath);
     if (ff.swallowed) {
@@ -733,9 +748,19 @@ async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
     }
     return;
   }
+  await convergingRebase(run, board, commitResult.committed);
+}
+
+/**
+ * Fetch and rebase onto the remote board with the converging conflict mechanic — the full sync's
+ * pull, and the re-pull after a lost push race. A conflict is the CONFLICT(5) terminal; nothing
+ * is pushed after it.
+ */
+async function convergingRebase(run: SyncRun, board: SyncBoard, committedThisRun: boolean): Promise<void> {
+  const { boardPath, key, outcome } = board;
   // Every failure composes in one order: withProvisionAnnouncement, then throwPostCommitFailure.
   const fail = (err: CliError): Promise<never> =>
-    throwPostCommitFailure(withProvisionAnnouncement(err, outcome), commitResult.committed, key, boardPath);
+    throwPostCommitFailure(withProvisionAnnouncement(err, outcome), committedThisRun, key, boardPath);
   let rebaseOutcome: FetchRebaseResolvingOutcome;
   try {
     rebaseOutcome = fetchRebaseResolving(boardPath, defaultSyncStore.exportsDir(key));
@@ -787,30 +812,91 @@ async function deltaPhase(board: SyncBoard, baseline: SyncBaseline): Promise<Syn
   return { originDelta, changes: [], reanchorNote: REANCHOR_NOTE };
 }
 
+/** Push attempts per sync: the first, plus re-fetch/rebase/re-gate retries after lost races. */
+export const SYNC_PUSH_ATTEMPTS = 4;
+
+/** A short randomized pause before a retry, so two writers that lost to each other desynchronize. */
+function raceBackoffMs(attempt: number): number {
+  return Math.floor(150 * attempt + Math.random() * 350 * attempt);
+}
+
 /**
- * The push phase (skipped for `--pull-only`). A push failure AFTER a successful commit+pull gets
- * a PARTIAL envelope LEADING with the safety message, then throws `asHandled` so the bin wrapper
- * sets the exit code without a second (conflicting) error envelope.
+ * The push phase (skipped for `--pull-only`). Before each push that sends commits, the clone's
+ * declared sync gate (Git config `superbee.syncGate`) judges the converged tree; a failing gate
+ * holds the push with the work committed locally (GATE_FAILED, exit 5). A push that loses a race
+ * to another writer (non-fast-forward) re-fetches, rebases with the converging mechanic, re-runs
+ * the gate, and pushes again, up to {@link SYNC_PUSH_ATTEMPTS} attempts. A push failure AFTER a
+ * successful commit+pull gets a PARTIAL envelope LEADING with the safety message, then throws
+ * `asHandled` so the bin wrapper sets the exit code without a second (conflicting) error envelope.
  */
-async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta): Promise<{ commits: number; documents: number }> {
-  if (run.pullOnly) return { commits: 0, documents: 0 };
-  const ahead = unpushedCount(board.boardPath) ?? 0;
-  // The documents the push sends: every one the unpushed commits change, this run's or earlier.
-  const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), currentHead(board.boardPath)).map((change) => change.docId)).size : 0;
-  try {
-    push(board.boardPath);
-    return { commits: ahead, documents: outgoing };
-  } catch (err) {
-    const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
-    const warning = pushFailureMessage(classified);
-    const partial = buildPushFailurePartial(
-      board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote,
-      classified.details,
-    );
-    run.stdout(render(withSyncEnvelope(partial, syncEnvelope("git", { received: delta.originDelta.length })), run.mode));
-    await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
-    throw asHandled(new CliError(classified.code, warning, { details: classified.details }));
+async function pushPhase(
+  run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta, baseline: SyncBaseline,
+): Promise<{ commits: number; documents: number; delta: SyncDelta; gate?: Record<string, unknown> }> {
+  if (run.pullOnly) return { commits: 0, documents: 0, delta };
+  const gate = declaredSyncGate(board.boardPath);
+  let gateDetails: Record<string, unknown> | undefined;
+  for (let attempt = 1; ; attempt += 1) {
+    const ahead = unpushedCount(board.boardPath) ?? 0;
+    // The documents the push sends: every one the unpushed commits change, this run's or earlier.
+    const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), currentHead(board.boardPath)).map((change) => change.docId)).size : 0;
+    if (gate && ahead > 0) {
+      const judged = runSyncGate(board.boardPath, gate, attempt);
+      if (!judged.passed) await failGate(run, board, commitResult, delta, judged.reason ?? "failed", judged.details);
+      gateDetails = judged.details;
+    }
+    try {
+      push(board.boardPath);
+      return { commits: ahead, documents: outgoing, delta, ...(gateDetails ? { gate: gateDetails } : {}) };
+    } catch (err) {
+      const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
+      const raced = classified.code === "TRANSIENT" && classified.details?.reason === "non-fast-forward";
+      if (raced && attempt < SYNC_PUSH_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, raceBackoffMs(attempt)));
+        await convergingRebase(run, board, commitResult.committed);
+        refuseMovedBoard(board.boardPath);
+        delta = await deltaPhase(board, baseline);
+        continue;
+      }
+      const details = raced ? { ...classified.details, attempts: attempt } : classified.details;
+      const exhausted = raced
+        ? new CliError(
+          classified.code,
+          `another writer pushed to the board each time sync tried (${attempt} attempts, each re-fetched, ` +
+            "rebased and re-gated) — re-run sync to try again",
+          { details },
+        )
+        : classified;
+      const warning = pushFailureMessage(exhausted);
+      const partial = buildPushFailurePartial(
+        board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote,
+        details,
+      );
+      run.stdout(render(withSyncEnvelope(partial, syncEnvelope("git", { received: delta.originDelta.length })), run.mode));
+      await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
+      throw asHandled(new CliError(exhausted.code, warning, { details }));
+    }
   }
+}
+
+/** A failing gate: print the partial receipt (nothing pushed) and exit GATE_FAILED (5). */
+async function failGate(
+  run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta,
+  reason: string, details: Record<string, unknown>,
+): Promise<never> {
+  const warning =
+    `committed to the board locally — your work is saved. The sync gate ${reason} on the rebased ` +
+    "board, so nothing was pushed; fix what it reports, then re-run sync";
+  const partial = buildPushFailurePartial(
+    board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote, { gate: details },
+  );
+  const envelope = syncEnvelope("git", { received: delta.originDelta.length, next: [`${run.inv} sync`] });
+  run.stdout(render(withSyncEnvelope(partial, envelope), run.mode));
+  await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
+  throw new CliError("GATE_FAILED", `the sync gate ${reason}; nothing was pushed`, {
+    help: `run the gate yourself from ${board.boardPath} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${run.inv} sync`,
+    details: { gate: details },
+    handled: true,
+  });
 }
 
 /**
@@ -821,7 +907,7 @@ async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
  */
 async function receiptPhase(
   run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta,
-  pushed: { commits: number; documents: number }, establishAlreadyNote: string | undefined,
+  pushed: { commits: number; documents: number; gate?: Record<string, unknown> }, establishAlreadyNote: string | undefined,
 ): Promise<void> {
   await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
   const hookHint = await hookInstallHintOnce(board.key, run.inv, run.deps.hookInstalled);
@@ -830,6 +916,7 @@ async function receiptPhase(
     originDelta: delta.originDelta, limit: run.limit,
     establishAlreadyNote, reanchorNote: delta.reanchorNote, hookHint,
   });
+  if (pushed.gate) receipt.gate = `passed: ${String(pushed.gate.command)} (attempt ${String(pushed.gate.attempt)})`;
   run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { sent: pushed.documents, received: delta.originDelta.length })), run.mode));
 }
 
@@ -974,6 +1061,6 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
     const held = malformedCommittedDocuments(board.boardPath, originRef, "HEAD");
     if (held.length > 0) reportHeld(run, board, delta, held, "committed locally");
   }
-  const pushed = await pushPhase(run, board, commitResult, delta);
-  await receiptPhase(run, board, commitResult, delta, pushed, establishAlreadyNote);
+  const pushed = await pushPhase(run, board, commitResult, delta, baseline);
+  await receiptPhase(run, board, commitResult, pushed.delta, pushed, establishAlreadyNote);
 }

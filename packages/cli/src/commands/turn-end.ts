@@ -517,7 +517,7 @@ function gitReasonFor(root: string, error: CliError): string {
 /**
  * The opt-in Git turn end: the hosted rules on a Git board. Nothing to send and a fetch under five
  * minutes old means no Git network call at all. A converged conflict (the teammate's version kept,
- * yours exported) or a Git sign-in failure is handed back to the agent once; offline, a busy
+ * yours exported), a failed sync gate or a Git sign-in failure is handed back to the agent once; offline, a busy
  * repository and everything else wait for the next turn or an explicit sync. Git's own per-command
  * timeouts bound the network; the host's Stop-hook timeout is the outer bound, and a sync cut off
  * there is healed at the next sync's entry.
@@ -538,7 +538,7 @@ async function gitTurnEnd(dir: string | undefined, home: string, partial: Partia
     // The sync a person would run here: from the same directory, so it routes exactly as they would.
     await run([...(dir === undefined ? [] : ["--dir", dir]), "--limit", String(REASON_ROWS), "--json"], () => {});
   } catch (error) {
-    if (error instanceof CliError && (error.code === "CONFLICT" || error.code === "AUTH_REQUIRED" || error.details?.reason === "board_moved")) blocking = error;
+    if (error instanceof CliError && (error.code === "CONFLICT" || error.code === "GATE_FAILED" || error.code === "AUTH_REQUIRED" || error.details?.reason === "board_moved")) blocking = error;
   }
   if (!blocking) {
     if ((await readGitBlock(home, board.root)) !== null) await recordGitBlock(home, board.root, null).catch(() => {});
