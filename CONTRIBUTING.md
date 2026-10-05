@@ -185,10 +185,13 @@ A Dependabot pull request is therefore deliberately red after it changes only wo
 version-comment pairs. Before making it green, verify each proposed release tag resolves to that
 commit in the action's official upstream repository and inspect the upstream commit's signature
 evidence. Then update the matching `github_actions.pins` registry row and the independent
-`REVIEWED_PINS` literal in the same pull request. Run
-`node --test scripts/workflow-action-pins.test.mjs` and `npm run ci:scripts`; normal human review
-and CI still decide whether the renewal merges. Do not weaken the test to accept an unreviewed
-Dependabot-only change.
+`REVIEWED_PINS` literal in the same pull request. For a major-version proposal, also rename or
+consolidate the versioned key in both authorities (without duplicating an existing
+identity/revision pair), update each topology test's `actionPin(...)` reference that selects the
+old major, and recalculate any affected remote-reference, identity, and pair inventory assertions.
+Then run `node --test scripts/workflow-action-pins.test.mjs` and `npm run ci:scripts`; normal human
+review and CI still decide whether the renewal merges. Do not weaken the test to accept an
+unreviewed Dependabot-only change.
 
 Minimum iteration lanes by reach:
 
