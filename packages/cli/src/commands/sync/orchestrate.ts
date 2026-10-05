@@ -126,6 +126,11 @@ board changes.
 The same verb also works when an automation or chat agent clones the shared \`board\` branch as
 the repository root: a tracked OKF root index plus the exact attached \`board\` branch identifies
 that standalone checkout, so sync operates there directly and never creates a nested bundle.
+A repository can carry more than one board: a NAMED board lives on its own \`board-<name>\` branch
+(lowercase letters, digits and hyphens) whose root commits \`.superbee-board.json\` containing
+\`{"schema": 1, "branch": "board-<name>"}\`. A standalone clone of that branch, tracking
+\`origin/board-<name>\`, syncs exactly as above against \`origin/board-<name>\` and never touches
+\`origin/board\`; the conventional \`.superbee\` worktree always uses \`board\`.
 \`--establish\` on an already-established project is a safe no-op that notes \`already established\`
 and proceeds as an ordinary sync.
 

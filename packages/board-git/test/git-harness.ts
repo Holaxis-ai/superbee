@@ -593,3 +593,19 @@ export async function plantNonEmptyBundleDir(repo: BoardRepo): Promise<void> {
   await mkdir(repo.board, { recursive: true });
   await writeFile(path.join(repo.board, "stray.md"), "# not a worktree — a pre-existing dir\n");
 }
+
+/**
+ * Publish a NAMED board on origin the way a project joins one to existing history: branch off the
+ * default board's history, commit the `.superbee-board.json` marker declaring `name`, and push
+ * `name`. `marker` overrides the committed marker bytes (null commits none) for refusal fixtures.
+ */
+export function publishNamedBoard(topo: TwoCloneTopology, name: string, marker?: string | null): void {
+  const seed = path.join(topo.dir, `named-seed-${name}`);
+  git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, seed]);
+  git(seed, ["checkout", "-b", name]);
+  const bytes = marker === undefined ? `${JSON.stringify({ schema: 1, branch: name }, null, 2)}\n` : marker;
+  if (bytes !== null) writeFileSync(path.join(seed, ".superbee-board.json"), bytes);
+  git(seed, ["add", "-A"]);
+  git(seed, ["commit", "--allow-empty", "-m", `board: declare ${name}`]);
+  git(seed, ["push", "origin", name]);
+}

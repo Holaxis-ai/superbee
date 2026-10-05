@@ -170,6 +170,22 @@ never merges into `main` (it shares no history with it, by design). Protect it t
 you protect `main`: enable delete and force-push protection on `board` in the repo
 settings — sync only ever appends commits to it.
 
+**More than one board in a repository.** A repository whose `board` branch is taken can carry
+further NAMED boards, each on its own `board-<name>` branch (lowercase letters, digits and
+hyphens). The branch declares itself with a committed root file, `.superbee-board.json`:
+
+```json
+{ "schema": 1, "branch": "board-fairport" }
+```
+
+Work on a named board from a standalone clone of that branch (`git clone --branch
+board-fairport <url>`); `superbee sync` there commits, rebases onto and pushes
+`origin/board-fairport` and never touches `origin/board`. A named board can start from existing
+history: branch it, add the root `index.md` (with `okf_version`) and the marker in one commit, and
+push it with tracking (`git push -u origin board-fairport`). A clone whose branch is renamed, or
+whose marker names another branch, is refused rather than synced. The conventional `.superbee/`
+worktree beside your code always uses `board`.
+
 ## How it works
 
 Tools that need a small, portable bundle identity can import the versioned JSON Schema and
