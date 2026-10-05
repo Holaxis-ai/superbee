@@ -16,6 +16,7 @@ import {
   contentVersion,
   mutateDocument,
   parseConventionDoc,
+  parseLinksFromDoc,
   query,
   readBlob,
   readBundleOkfVersion,
@@ -32,6 +33,7 @@ import {
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { CliError, classifyBundleError } from "./errors.js";
+import { collectLinkDeclarations, type LinkTypeDeclaration } from "./link-types.js";
 import type { LoadedRecipe } from "./recipe-source.js";
 import {
   materializeRecipeForEdition,
@@ -294,14 +296,19 @@ function monotonicEvolutionBlockers(
     }
   }
 
+  // An enum on a field this plan newly declares is additive: instance revalidation against the
+  // desired kind still blocks any instance already carrying that key with a disallowed value.
+  const currentDeclared = new Set([...current.fields.required, ...current.fields.optional]);
+  const desiredDeclared = new Set([...desired.fields.required, ...desired.fields.optional]);
   for (const [field, desiredValues] of Object.entries(desired.fields.values)) {
     const currentValues = current.fields.values[field];
     if (!currentValues) {
+      if (desiredDeclared.has(field) && !currentDeclared.has(field)) continue;
       evolutionBlocker(
         blockers,
         "RECIPE_EVOLUTION_NON_MONOTONIC",
         desired.id,
-        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'`,
+        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'; only a field newly declared by the same plan may gain one`,
         field,
       );
       continue;
@@ -332,13 +339,18 @@ function monotonicEvolutionBlockers(
     }
   }
 
-  if (!isDeepStrictEqual(current.links ?? {}, desired.links ?? {})) {
+  // A new outbound link type is additive (its existing edges are revalidated by
+  // linkTypeAdditionBlockers). Removing or retargeting an installed one is not. Compare the PARSED
+  // maps: the parser trims keys, so a raw key such as "at " can redefine "at" through the merge.
+  const desiredLinks = desired.links ?? {};
+  for (const [linkType, target] of Object.entries(current.links ?? {})) {
+    if (Object.hasOwn(desiredLinks, linkType) && desiredLinks[linkType] === target) continue;
     evolutionBlocker(
       blockers,
       "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE",
       desired.id,
-      `automatic evolution does not change the outbound relationship vocabulary for '${desired.governs}'`,
-      "links",
+      `automatic evolution does not remove or retarget the outbound link type '${linkType}' for '${desired.governs}'`,
+      `links.${linkType}`,
     );
   }
   if (!isDeepStrictEqual(current.expectsInbound ?? {}, desired.expectsInbound ?? {})) {
@@ -361,6 +373,61 @@ function monotonicEvolutionBlockers(
   }
 }
 
+/** Outbound link types a changing kind declares that its installed convention did not. */
+function addedLinkTypes(current: KindConvention, desired: KindConvention): string[] {
+  const currentLinks = current.links ?? {};
+  return Object.keys(desired.links ?? {}).filter((linkType) => !Object.hasOwn(currentLinks, linkType));
+}
+
+/**
+ * Declaring a link type turns every existing edge with that exact text into a typed edge, across
+ * the whole bundle (the vocabulary is global; see `collectLinkDeclarations`). Apply the same rule
+ * `status` uses for `link_type_violations` to those edges under the prospective registry, so an
+ * evolution never introduces a violation. Returns the docs whose edges were checked.
+ */
+function linkTypeAdditionBlockers(
+  docs: readonly OkfDocument[],
+  addedTexts: ReadonlySet<string>,
+  currentRegistry: KindRegistry,
+  registry: KindRegistry,
+  blockers: RecipeEvolutionBlocker[],
+): OkfDocument[] {
+  const declarations = collectLinkDeclarations(registry);
+  const currentDeclarations = collectLinkDeclarations(currentRegistry);
+  const docsById = new Map(docs.map((doc) => [doc.id, doc]));
+  const docType = (doc: OkfDocument): string => typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
+  const checked: OkfDocument[] = [];
+  for (const doc of docs) {
+    let carries = false;
+    for (const link of parseLinksFromDoc(doc)) {
+      if (!addedTexts.has(link.text)) continue;
+      carries = true;
+      const target = docsById.get(link.to);
+      if (!target) continue; // unresolved edges are their own `status` finding
+      const sourceType = docType(doc);
+      const violates = (declared: readonly LinkTypeDeclaration[]): LinkTypeDeclaration | null => {
+        if (declared.length === 0) return null;
+        const matched = declared.find((declaration) => declaration.governs === sourceType);
+        return matched && docType(target) === matched.target ? null : matched ?? declared[0]!;
+      };
+      const expected = violates(declarations.get(link.text) ?? []);
+      if (!expected) continue;
+      // Already a violation before this evolution (another Kind declared the text): status
+      // reports it today; this plan neither creates nor fixes it.
+      if (violates(currentDeclarations.get(link.text) ?? [])) continue;
+      evolutionBlocker(
+        blockers,
+        "RECIPE_EVOLUTION_INSTANCE_INVALID",
+        doc.id,
+        `declaring link type '${link.text}' would make the edge to '${link.to}' a violation (expected ${expected.governs} -> ${expected.target}, found ${sourceType || "untyped"} -> ${docType(target) || "untyped"})`,
+        `links.${link.text}`,
+      );
+    }
+    if (carries) checked.push(doc);
+  }
+  return checked;
+}
+
 function evolutionPlanToken(input: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(input), "utf8").digest("hex")}`;
 }
@@ -379,6 +446,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   const proofs: EvolutionProof[] = [];
   const desiredKinds = new Map<string, KindConvention>();
 
+  const addedLinkTexts = new Set<string>();
   const skippedConventions: Array<{ id: ConceptId; reason: string }> = [];
   const installedConventions = await query(bundle, { prefix: CONVENTIONS_PREFIX, type: "Convention" }, {
     onSkip: (skipped) => skippedConventions.push(skipped),
@@ -392,6 +460,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     );
   }
   const prospectiveById = new Map(installedConventions.map((doc) => [doc.id, doc]));
+  const currentRegistry = buildKindRegistry(installedConventions, [], { okfVersion });
 
   for (const authored of recipe.docs) {
     const target = recipeDocumentForApply(authored, okfVersion, "1970-01-01T00:00:00.000Z");
@@ -542,6 +611,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       && parsedCurrent.kind.governs === parsedCandidate.kind.governs
     ) {
       monotonicEvolutionBlockers(parsedCurrent.kind, parsedCandidate.kind, blockers);
+      for (const linkType of addedLinkTypes(parsedCurrent.kind, parsedCandidate.kind)) addedLinkTexts.add(linkType);
     }
   }
 
@@ -656,6 +726,15 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
         }
       }
     }
+    if (addedLinkTexts.size > 0) {
+      const proven = new Set(instanceProofs.map((proof) => proof.id));
+      for (const doc of linkTypeAdditionBlockers(docs, addedLinkTexts, currentRegistry, prospectiveRegistry, blockers)) {
+        if (proven.has(doc.id)) continue;
+        proven.add(doc.id);
+        instancesChecked += 1;
+        instanceProofs.push({ kind: "instance", id: doc.id, current_version: contentVersion(doc) });
+      }
+    }
   }
   proofs.push(...instanceProofs.sort((a, b) => a.id.localeCompare(b.id)));
 
@@ -752,6 +831,8 @@ export async function applyRecipeEvolution(
         // Recipe definitions remain source-comparable; like initial recipe installation, evolution
         // explicitly opts out of seeding provenance when the installed definition has none.
         seedGenerationClock: false,
+        // Evolution preserves source-comparable attribution; the backend still records its writer.
+        persistActor: false,
         actor,
         now: () => now,
         buildCandidate: (_existing, context) => {

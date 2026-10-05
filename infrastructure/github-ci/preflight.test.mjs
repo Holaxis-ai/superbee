@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { fileURLToPath } from "node:url";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -222,5 +225,72 @@ for (const [name, mutate] of Object.entries({
     const snapshot = collectedFixture(mutate);
     assert.equal(snapshot.reviewedFiles[SOURCE_FILES[0]].checkoutMatches, false);
     assert.equal(evaluateSnapshot(snapshot).ready, false);
+  });
+}
+
+for (const race of ["symlink", "mode", "FIFO", "read-error", "fstat-error", "close-error", "after-open"]) {
+  test(`collector descriptor evidence: ${race}`, () => {
+    if (race === "FIFO" && process.env.PREFLIGHT_FIFO_CHILD !== "1") {
+      const child = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "--test-name-pattern=descriptor evidence: FIFO$", fileURLToPath(import.meta.url)], {
+        env: { ...process.env, NODE_TEST_CONTEXT: undefined, PREFLIGHT_FIFO_CHILD: "1" }, encoding: "utf8", timeout: 10_000,
+      });
+      assert.ifError(child.error); assert.equal(child.status, 0, child.stdout + child.stderr); assert.match(child.stdout, /# pass 1/); return;
+    }
+    const originals = { lstatSync: fs.lstatSync, openSync: fs.openSync, fstatSync: fs.fstatSync, readFileSync: fs.readFileSync, closeSync: fs.closeSync };
+    let injected = false, fd, closed = 0, reads = 0;
+    try {
+      const snapshot = collectedFixture(({ root }) => {
+        const file = path.join(root, SOURCE_FILES[0]);
+        const bytes = readFileSync(file);
+        const replacement = path.join(root, "replacement");
+        writeFileSync(replacement, bytes, { mode: race === "mode" ? 0o755 : 0o644 });
+        const replace = () => {
+          if (injected) return;
+          injected = true;
+          fs.renameSync(file, path.join(root, "original"));
+          if (race === "symlink") symlinkSync(replacement, file);
+          else if (race === "FIFO") execFileSync("mkfifo", [file]);
+          else fs.renameSync(replacement, file);
+        };
+        // Cover the old lstat/read seam and the decisive open in the descriptor reader.
+        fs.lstatSync = (name, ...args) => {
+          const stat = originals.lstatSync(name, ...args);
+          if (name === file && ["symlink", "mode", "FIFO"].includes(race)) replace();
+          return stat;
+        };
+        fs.openSync = (name, ...args) => {
+          if (name === file && ["symlink", "mode", "FIFO"].includes(race)) replace();
+          const result = originals.openSync(name, ...args);
+          if (name === file) { fd = result; if (race === "after-open") replace(); }
+          return result;
+        };
+        fs.fstatSync = (value, ...args) => {
+          if (value === fd && race === "fstat-error") { injected = true; throw new Error("injected fstat failure"); }
+          return originals.fstatSync(value, ...args);
+        };
+        fs.readFileSync = (name, ...args) => {
+          if (name === fd || name === file) {
+            reads += 1;
+            if (race === "read-error") { injected = true; throw new Error("injected read failure"); }
+          }
+          return originals.readFileSync(name, ...args);
+        };
+        fs.closeSync = (value) => {
+          const target = value === fd;
+          if (target) closed += 1;
+          originals.closeSync(value);
+          if (target) {
+            fd = undefined;
+            if (race === "close-error") { injected = true; throw new Error("injected close failure"); }
+          }
+        };
+        syncBuiltinESMExports();
+      });
+      assert.equal(injected, true, "the requested interleaving must execute");
+      assert.equal(snapshot.reviewedFiles[SOURCE_FILES[0]].checkoutMatches, race === "after-open");
+      if (race !== "after-open") assert.equal(evaluateSnapshot(snapshot).ready, false);
+      if (race !== "symlink") assert.equal(closed, 1, "descriptor closes on success and refusal");
+      if (["symlink", "mode", "FIFO", "fstat-error"].includes(race)) assert.equal(reads, 0, "invalid descriptor must not supply bytes");
+    } finally { Object.assign(fs, originals); syncBuiltinESMExports(); }
   });
 }

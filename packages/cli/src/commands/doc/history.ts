@@ -138,8 +138,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
   }
 
   // Bound the page like `list`/`status`/`blobs` do: `count` always reports the TRUE total (the
-  // filesystem backend's single-entry chain never triggers this — total<=DEFAULT_LIMIT means no new
-  // fields appear and the render is byte-identical to the pre-cap output). `versions` is already
+  // filesystem backend's single-entry chain never triggers this). `versions` is already
   // newest-first, so slicing from the front keeps the newest revision and drops only the oldest tail.
   const total = versions.length;
   const shown = limit > 0 ? versions.slice(0, limit) : versions;
@@ -160,6 +159,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
   if (truncated) out.shown = shown.length;
 
   const help: string[] = [];
+  if (!remote) help.push("Local bundle: current version only; no prior versions are retained.");
   if (truncated) {
     help.push(truncationHelp(id, shown.length, total));
   }

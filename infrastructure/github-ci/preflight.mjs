@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -128,6 +128,19 @@ function rulesets(repository) {
   return paged(`repos/${repository}/rulesets`).map((rule) => api(`repos/${repository}/rulesets/${rule.id}`));
 }
 
+// The descriptor supplies both the mode/type evidence and the compared bytes.
+function checkoutFileMatches(file, mode, bytes) {
+  if (!constants.O_NOFOLLOW) throw new Error("source proof requires no-follow open support");
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0));
+  try {
+    const stat = fstatSync(fd);
+    return stat.isFile() && Boolean(stat.mode & 0o111) === (mode === "100755") &&
+      readFileSync(fd).equals(bytes);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function collectSnapshot(root) {
   const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   const reviewedSha = git("rev-parse", "HEAD");
@@ -156,9 +169,7 @@ export function collectSnapshot(root) {
         if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("nonregular source parent");
       }
       const local = path.join(root, file);
-      const stat = lstatSync(local);
-      source.checkoutMatches = stat.isFile() && !stat.isSymbolicLink() &&
-        Boolean(stat.mode & 0o111) === (mode === "100755") && readFileSync(local).equals(bytes);
+      source.checkoutMatches = checkoutFileMatches(local, mode, bytes);
     } catch { source.checkoutMatches = false; }
   }
   const repository = api(`repos/${ENGINE}`);

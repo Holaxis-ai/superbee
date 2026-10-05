@@ -29,7 +29,7 @@ Usage:
   superbee doc verify  <id> --actor <a>                 Append an OKF v0.2 verification event
   superbee doc read    <id> [--out <p> | --body-out <p> | --rendered-out <p>] Read/export a doc
   superbee doc open    <id>                             Open the rendered doc in a browser
-  superbee doc history <id>                             Show a doc's attributed version chain
+  superbee doc history <id>                             Show versions (local: current only)
   superbee doc delete  <id> [--expected-version <v>]    Hard-delete a doc (idempotent)
 
 Authoring paths:
@@ -343,8 +343,9 @@ history-keeping backend (a remote deployment) returns the full chain and its rea
 attribution; on an AUTH'D remote, actor is your authenticated principal (server-set, unforgeable)
 and agent is the resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy
 AGENTSTATE_LITE_ACTOR. A local --dir bundle keeps no history, so it returns just the single current
-revision. Its actor is resolved from the doc's compatible advisory attribution, falling back to
-the local user identity when none is present. The newest version is the token to
+revision, even when its files are tracked in Git. Its actor is resolved from the doc's compatible
+advisory attribution, or "unattributed" when none is present. generated.by names the content
+producer and is not used as the version's mutator. The newest version is the token to
 pass to --expected-version for an optimistic doc update/delete.
 
 In a hosted checkout (and without --remote) the chain is the host's: every sent version, each with

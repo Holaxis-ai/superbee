@@ -565,22 +565,38 @@ test("pin: MemoryBackend list and listBlobs are lexicographically sorted regardl
 // kills: backend.ts:58:34 MethodExpression #10
 // kills: backend.ts:58:47 StringLiteral #11
 // kills: backend.ts:357:19 LogicalOperator #168
-test("pin: FilesystemBackend versions() derives actor from the portable projection with type+trim guards, else defaultActor", async () => {
+test("FilesystemBackend history uses portable mutation attribution or unattributed, independently of the reader", async () => {
   await withFsBundle(async (bundle) => {
     const { writeFile } = await import("node:fs/promises");
     const cases: Array<[string, string, string]> = [
       ["portable", 'superbee_updated_by: "  carol  "\nupdated_by: "alice"\nactor: "bob"', "carol"],
       ["a", 'updated_by: "alice"', "alice"],
-      ["b", "updated_by: 42", defaultActor()],
-      ["c", 'updated_by: "   "', defaultActor()],
-      ["d", "", defaultActor()],
+      ["b", "updated_by: 42", "unattributed"],
+      ["c", 'updated_by: "   "', "unattributed"],
+      ["d", "", "unattributed"],
       ["e", 'actor: "bob"', "bob"],
+      ["producer-only", 'generated: { by: "process:producer" }', "unattributed"],
+      ["malformed", 'superbee_updated_by: []\nupdated_by: false\nactor: {}', "unattributed"],
+      ["legacy-fallback", 'superbee_updated_by: "  "\nupdated_by: " alice "\nactor: "bob"', "alice"],
+      ["actor-fallback", 'superbee_updated_by: 42\nupdated_by: []\nactor: " bob "', "bob"],
     ];
     for (const [id, line, expected] of cases) {
       const fm = ["type: Concept", `timestamp: "${T_DOC}"`, line].filter(Boolean).join("\n");
       await writeFile(path.join(bundle.root, `${id}.md`), `---\n${fm}\n---\nbody\n`);
-      const history = await bundle.backend.versions(id);
-      assert.equal(history[0]?.actor, expected, `id '${id}'`);
+      const before = await readFile(path.join(bundle.root, `${id}.md`));
+      const savedUser = process.env.USER;
+      try {
+        process.env.USER = "reader-one";
+        const first = await bundle.backend.versions(id);
+        process.env.USER = "reader-two";
+        const second = await bundle.backend.versions(id);
+        assert.equal(first[0]?.actor, expected, `id '${id}'`);
+        assert.equal(first.length, 1);
+        assert.deepEqual(second, first);
+        assert.deepEqual(await readFile(path.join(bundle.root, `${id}.md`)), before);
+      } finally {
+        if (savedUser === undefined) delete process.env.USER; else process.env.USER = savedUser;
+      }
     }
   });
 });
