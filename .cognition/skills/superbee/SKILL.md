@@ -44,8 +44,8 @@ becoming a second source of truth. Add only the layer justified by current evide
 
 ## Preserve boundaries and authority
 
-- Operate only on the bundle resolved from the current project or one the user explicitly selects.
-  A catalog entry is available for selection; it is not ambient project context.
+- Prioritize the Superbee CLI or the selected bundle's Superbee MCP tools over direct reads, grep, and edits inside `.superbee/` or any other resolved bundle root. If the available tooling cannot perform an operation, explain the limitation and ask whether the user authorizes direct file access for that specific operation; wait for approval. Never bypass validation errors, version conflicts, or permission refusals through direct file access. Before requesting a direct edit, describe the proposed change and which parsing, Kind validation, attribution, or version guarantees it would bypass. After an authorized edit, run available validation (including `superbee status`) and report its result and any guarantees it cannot verify.
+- Operate only on the bundle resolved from the current project or one the user explicitly selects. A catalog entry is available for selection; it is not ambient project context.
 - Before remote publication, ask whether the intended remote repository exists, then whether
   `origin/board` exists. If either is unknown, stop remote mutation and diagnose access.
 - Superbee does not create the remote repository. If absence is confirmed, create it externally if authorized, or ask an authorized owner/teammate.
@@ -59,7 +59,7 @@ becoming a second source of truth. Add only the layer justified by current evide
   explicit publication decision.
 - Never silently rewrite an established Kind, recipe, or its instances. Inspect dependencies and
   explain migration consequences first.
-- Writes carry an actor (`--actor`/`SUPERBEE_ACTOR`); OKF v0.2 bundles accept only `human:<id>`, `process:<id>`, or `<producer>/<version>` (e.g. `openai/codex`); a bare name is refused with the fix. After a raw file edit, run `superbee status`: it names a document whose frontmatter no longer parses (quote values containing `: `); sync publishes nothing until it parses.
+- Writes carry an actor (`--actor`/`SUPERBEE_ACTOR`); OKF v0.2 bundles accept only `human:<id>`, `process:<id>`, or `<producer>/<version>` (e.g. `openai/codex`); a bare name is refused with the fix. If `superbee status` reports malformed frontmatter, report the affected document and use a supported repair path; if none exists, follow the specific fallback-approval policy above.
 
 ## Deliver after acceptance
 
@@ -71,7 +71,7 @@ When the user accepts a domain-modeling offer, read `$REFS/modeling-and-delivery
 existing documents, Kinds, recipes, and links before choosing a shape. Create the smallest coherent
 representation, normally with one representative example, verify it, remove temporary authoring
 files, and stop. Use `superbee <command> --help` for exact current syntax rather than relying on a
-copied command manual. Use `--body-file` for multiline Markdown.
+copied command manual. Use `--body-file` for multiline Markdown. `list` / `query` filter metadata, not body text; `doc update` / `doc field` patch metadata while preserving omitted fields and body. For body edits, read the complete body with `doc read <id> --body-out <temp-file>` outside the bundle, edit that temporary file, then `doc update <id> --body-file <temp-file> --expected-version <head_version> --actor <actor>` using the version from the read. Re-read and reconcile on a version conflict. Never feed a truncated preview or a full-document `--out` export to `--body-file`: body input is Markdown only; tooling owns YAML frontmatter. With MCP, use available tools and version preconditions; check tool schemas rather than inventing search or patch verbs.
 
 Focused shipped material is available under `$REFS/recipes/` for portable examples,
 `$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop.
