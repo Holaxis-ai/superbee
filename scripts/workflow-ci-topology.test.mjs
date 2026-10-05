@@ -147,7 +147,7 @@ function assertHostExpectations(jobs, candidate) {
     assert.equal(typeof lane.script, "string", `${name} must declare the script its job runs`);
     assert.match(job, new RegExp(`run: npm run ${lane.script}$`, "m"), `${name} must run its declared script`);
   }
-  assert.deepEqual(expectations, { runtime: "0", "aliasing-host": "1" }, "both host classes must be pinned");
+  assert.deepEqual(expectations, { runtime: "0", "runtime-common": "0", "aliasing-host": "1" }, "both host classes must be pinned");
 }
 
 // The runtime lane splits each Node version into shards. Every shard index must be a matrix leg and
@@ -344,8 +344,17 @@ function validateCiTopology(
     assert.ok(install && preflight.position < install.position, `${required} source preflight must precede installation`);
   }
   assert.match(jobs.runtime, new RegExp(`node-version: \\[${candidate.runtime_nodes.join(", ")}\\]`));
-  assert.match(jobs.runtime, /run: npm run ci:runtime/);
+  assert.match(jobs.runtime, /run: npm run ci:runtime-cli$/m);
+  assert.equal(parsed.jobs["runtime-common"].needs, undefined, "common tests must be independent of CLI shards");
+  assert.equal(parsed.jobs["runtime-common"].env.SUPERBEE_TEST_SHARD, undefined);
   assertRuntimeShards(jobs.runtime, candidate.lanes.runtime);
+  assert.deepEqual(parsed.jobs.runtime.strategy, {
+    "fail-fast": false,
+    matrix: { "node-version": candidate.runtime_nodes, shard: Array.from({ length: candidate.lanes.runtime.shards }, (_, i) => i + 1) },
+  }, "runtime matrix must execute every Node and shard without exclusions");
+  assert.deepEqual(parsed.jobs["runtime-common"].strategy, {
+    "fail-fast": false, matrix: { "node-version": candidate.runtime_nodes },
+  }, "runtime-common must execute once per Node without exclusions");
   assert.match(jobs["aliasing-host"], new RegExp(`node-version: ${candidate.singleton_node.replaceAll(".", "\\.")}`));
   assert.match(text, /^permissions:\n {2}contents: read$/m, "required CI must retain read-only contents permission");
   assertHostExpectations(jobs, candidate);
@@ -476,7 +485,7 @@ test("renamed or removed aggregator dependencies are detected statically", () =>
 
 test("workflow mutation attacks cannot hide failures or weaken required job identity", () => {
   assert.throws(
-    () => validateCiTopology(workflow.replace("        run: npm run ci:runtime", "        run: npm run ci:runtime\n        continue-on-error: true")),
+    () => validateCiTopology(workflow.replace("        run: npm run ci:runtime-cli", "        run: npm run ci:runtime-cli\n        continue-on-error: true")),
     /cannot mask a failing step/,
   );
   assert.throws(
@@ -485,7 +494,7 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
   );
   for (const [from, to, error] of [
     ["    runs-on: macos-latest", "    runs-on: ubuntu-latest", /aliasing-host must run on macos-latest/],
-    ["        run: npm run ci:aliasing-host", "        run: npm run ci:runtime", /aliasing-host must run its declared script/],
+    ["        run: npm run ci:aliasing-host", "        run: npm run ci:runtime-cli", /aliasing-host must run its declared script/],
     ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', /aliasing-host must pin the host-class expectation/],
     ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', /runtime must pin the host-class expectation/],
     ['test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /aliasing-host must self-check its host class/],
@@ -493,9 +502,9 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
     ["          node-version: 22.14.0", "          node-version: 22.15.0", /second setup-node|deep-equal/],
     ["          test \"$(node --version)\" = \"v22.14.0\"", "          node --version", /self-check/],
     ["          npm run verify:cli-tarball -- out/node-floor/superbee-cli.tgz", "          node --version", /cli-tarball/],
-    ["        shard: [1, 2]", "        shard: [1]", /every declared shard/],
-    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2\n", "", /export its shard/],
-    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2", "      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/3", /export its shard/],
+    ["        shard: [1, 2, 3, 4]", "        shard: [1]", /every declared shard/],
+    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/4\n", "", /export its shard/],
+    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/4", "      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/3", /export its shard/],
   ]) {
     assert.throws(() => validateCiTopology(workflow.replace(from, to)), error);
   }
@@ -569,5 +578,19 @@ test("queue checkout scope and job concurrency mutations fail closed", () => {
         /must use workflow concurrency|must check out the event commit once|must test the event commit/,
         `${name}: ${label}`);
     }
+  }
+});
+
+test("common runtime coverage and matrix exclusions cannot disappear", () => {
+  for (const changed of [
+    workflow.replace("  runtime-common:\n", "  runtime-common:\n    if: false\n"),
+    workflow.replace("        run: npm run ci:runtime-common", "        run: npm run ci:runtime-cli"),
+    workflow.replace("  runtime-common:\n", "  runtime-common:\n    needs: runtime\n"),
+    workflow.replace("        shard: [1, 2, 3, 4]", "        shard: [1, 2, 3, 4]\n        exclude: [{node-version: 22, shard: 4}]"),
+  ]) assert.throws(() => validateCiTopology(changed));
+  for (const name of ["required", "compatibility-gate-node-22", "compatibility-gate-node-26"]) {
+    const job = extractJobs(workflow)[name];
+    assert.throws(() => assertAggregator(job.replace("runtime-common, ", ""), name));
+    assert.throws(() => assertAggregator(job.replace('{"job":"runtime-common","required":true}', '{"job":"runtime-common","required":false}'), name));
   }
 });
