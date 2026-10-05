@@ -12,7 +12,6 @@
 // The probe is `<leaf> --<flag>` with no value: a configured option answers "requires a value", an
 // unconfigured one answers "unknown option". Both fail during argument parsing, before any effect.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -23,7 +22,8 @@ import {
   PUBLIC_LEAVES,
   type CliLeafSpec,
 } from "../src/command-spec.js";
-import { BUILT_CLI, runCli, scratch } from "./support/private-state-fixtures.js";
+import { runCli, scratch } from "./support/private-state-fixtures.js";
+import { assertCommandParity, runCommandBatch } from "./support/command-batch.js";
 
 const ALL_LEAVES: readonly CliLeafSpec[] = [...PUBLIC_LEAVES, HOME_LEAF];
 
@@ -75,43 +75,6 @@ function probeArgv(leaf: CliLeafSpec, flag: string): string[] {
   return [...leaf.path.split(" "), ...positionals, `--${flag}`];
 }
 
-function spawnProbe(argv: readonly string[], cwd: string, home: string): Promise<string> {
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BUILT_CLI, ...argv], {
-      cwd,
-      env: {
-        ...process.env,
-        ASLITE_NO_UPDATE_CHECK: "1",
-        SUPERBEE_NO_UPDATE_CHECK: "1",
-        AGENTSTATE_LITE_NO_AUTOPULL: "1",
-        SUPERBEE_NO_AUTOPULL: "1",
-        HOME: home,
-      },
-      encoding: "utf8",
-    });
-    let output = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => { output += chunk; });
-    child.stderr.on("data", (chunk: string) => { output += chunk; });
-    child.on("close", () => resolve(output));
-  });
-}
-
-async function mapConcurrently<T, R>(items: readonly T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length) as R[];
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    for (;;) {
-      const index = next;
-      next += 1;
-      if (index >= items.length) return;
-      results[index] = await worker(items[index]!);
-    }
-  }));
-  return results;
-}
-
 type Acceptance = "accepted" | "rejected";
 
 function classify(output: string): Acceptance | null {
@@ -141,10 +104,23 @@ test("registry path flags: every declared flag is accepted by the built CLI, and
   const candidates = [...new Set([...declaredNames, ...PATH_FLAG_CANDIDATES])].sort();
 
   const jobs = ALL_LEAVES.flatMap((leaf) => candidates.map((flag) => ({ leaf, flag })));
-  const observed = await mapConcurrently(jobs, 12, async ({ leaf, flag }) => {
-    const output = await spawnProbe(probeArgv(leaf, flag), workspace.cwd, workspace.home);
+  const batchRows = jobs.map(({ leaf, flag }) => ({ id: `${leaf.id}:${flag}`, argv: probeArgv(leaf, flag) }));
+  const results = runCommandBatch(batchRows, workspace);
+  const observed = jobs.map(({ leaf, flag }) => {
+    const result = results.get(`${leaf.id}:${flag}`)!;
+    assert.equal(result.status, 2, `${leaf.path} --${flag}: parser probe must fail`);
+    const output = result.stdout + result.stderr;
     return { leaf, flag, acceptance: classify(output), output };
   });
+  // Ordinary, selector, schema and dynamic parsers, including negative path candidates.
+  for (const id of ["list:dir", "list:output", "catalogResolve:dir", "new:body-file", "docUpdate:output", "mcp:dir"]) {
+    const row = batchRows.find((candidate) => candidate.id === id)!;
+    assert.ok(row, `missing executable sentinel: ${id}`);
+    const built = runCli(row.argv, workspace);
+    assert.ifError(built.error);
+    assert.equal(built.signal, null);
+    assertCommandParity(results.get(id)!, { status: built.status!, stdout: built.stdout, stderr: built.stderr }, id);
+  }
 
   const unclassified = observed.filter((row) => row.acceptance === null);
   assert.deepEqual(

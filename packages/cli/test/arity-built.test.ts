@@ -20,6 +20,7 @@ import {
   validateBehaviorCoverage,
 } from "./arity-equivalence-matrix.js";
 import { isolatedUserEnv } from "./support/user-env.js";
+import { assertCommandParity, runCommandBatch, type CommandResult, type CommandRow } from "./support/command-batch.js";
 
 const CLI = resolve(import.meta.dirname, "../../superbee/dist/superbee.mjs");
 const SURPLUS = "arity-surplus-sentinel";
@@ -205,7 +206,7 @@ interface DecodedError {
   };
 }
 
-function decodedError(result: ReturnType<typeof run>, row: LeafCase, path: string): DecodedError {
+function decodedError(result: Pick<CommandResult, "stdout" | "stderr">, row: LeafCase, path: string): DecodedError {
   const channel = row.errorChannel ?? "stdout";
   const output = channel === "stderr" ? result.stderr : result.stdout;
   const reserved = channel === "stderr" ? result.stdout : result.stderr;
@@ -293,6 +294,21 @@ test("built key owners and review sentinels prove missing and help precedence", 
   const ctx = createFixture();
   const rows = leafCases(ctx);
   const bundleBefore = treeSnapshot(ctx.bundle);
+  const batchRows: CommandRow[] = BUILT_REPRESENTATIVE_IDS.flatMap((id) => {
+    const row = rows[id];
+    return [
+      ...(row.leaf.arity.count > 0 ? [{ id: `${id}:missing`, argv: row.argv(row.operands.slice(0, row.leaf.arity.count - 1)) }] : []),
+      { id: `${id}:help`, argv: [...row.argv([...row.operands, SURPLUS]), "--help"] },
+    ];
+  });
+  const results = runCommandBatch(batchRows, { cwd: ctx.scratch, home: ctx.env.HOME!, env: ctx.env });
+  for (const id of ["new:missing", "new:help", "docUpdate:help", "kindFieldAdd:missing", "blobs:help", "docRead:missing", "catalogResolve:missing", "mcp:help"]) {
+    const row = batchRows.find((candidate) => candidate.id === id)!;
+    const built = run(row.argv, ctx.scratch, ctx.env);
+    assert.ifError(built.error);
+    assert.equal(built.signal, null);
+    assertCommandParity(results.get(id)!, { status: built.status!, stdout: built.stdout, stderr: built.stderr }, id);
+  }
 
   for (const id of BUILT_REPRESENTATIVE_IDS) {
     const row = rows[id];
@@ -300,7 +316,7 @@ test("built key owners and review sentinels prove missing and help precedence", 
     const path = row.leaf.path;
     if (contract.count > 0) {
       const expected = contract.kind === "bounded" ? `${contract.count} to ${contract.max} positionals` : `exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}`;
-      const missing = run(row.argv(row.operands.slice(0, contract.count - 1)), ctx.scratch, ctx.env);
+      const missing = results.get(`${id}:missing`)!;
       assert.equal(missing.status, 2, `${path} missing boundary\n${missing.stdout}${missing.stderr}`);
       const envelope = decodedError(missing, row, path);
       assert.equal(envelope.error.code, "USAGE", path);
@@ -313,7 +329,7 @@ test("built key owners and review sentinels prove missing and help precedence", 
       assert.equal(envelope.error.help?.endsWith(`${row.leaf.canonical.path} --help`), true, path);
     }
 
-    const help = run([...row.argv([...row.operands, SURPLUS]), "--help"], ctx.scratch, ctx.env);
+    const help = results.get(`${id}:help`)!;
     assert.equal(help.status, 0, `${path} help precedence\nstdout=${help.stdout}\nstderr=${help.stderr}`);
     assert.notEqual(help.stdout, "", `${path}: help should be visible on stdout`);
     assert.equal(help.stderr, "", `${path}: help must not use the error channel`);
