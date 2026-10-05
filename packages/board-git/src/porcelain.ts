@@ -79,6 +79,91 @@ export const BOARD_BRANCH = "board";
 export const BOARD_REMOTE = "origin";
 /** The EXPLICIT remote-tracking ref every pull/rebase/count uses — never `@{u}`. */
 export const BOARD_REF = `${BOARD_REMOTE}/${BOARD_BRANCH}`;
+/**
+ * A repository may carry more boards than the default one: a NAMED board lives on its own
+ * `board-<name>` branch and is used from a standalone checkout of that branch. The branch declares
+ * itself with this committed marker at its root, naming exactly that branch, so a clone of the
+ * branch is recognized with no local configuration and a renamed local branch is not.
+ */
+export const BOARD_MARKER_FILE = ".superbee-board.json";
+/** The one marker schema this client reads and writes. */
+export const BOARD_MARKER_SCHEMA = 1;
+const BOARD_MARKER_BYTES = 4 * 1024;
+/**
+ * Named board branches: `board-` then lowercase kebab segments. Lowercase only, because refs are
+ * files on case-insensitive filesystems; the prefix keeps a code branch from ever being declared.
+ */
+const NAMED_BOARD_BRANCH = /^board-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** True for `board` and for a well-formed named board branch (`board-<name>`). */
+export function isBoardBranchName(name: string): boolean {
+  return name === BOARD_BRANCH || (name.length <= 100 && NAMED_BOARD_BRANCH.test(name));
+}
+
+/**
+ * The branch the marker committed at `ref` declares, or null when there is no regular marker
+ * file there or it does not parse as a schema-1 declaration of a named board branch.
+ */
+export function declaredBoardBranchAtRef(dir: string, ref: string): string | null {
+  const entry = runGit(dir, ["ls-tree", "-z", ref, "--", BOARD_MARKER_FILE]);
+  const escaped = BOARD_MARKER_FILE.replace(/\./g, "\\.");
+  if (entry.status !== 0 || !new RegExp(`^100644 blob [0-9a-f]+\\t${escaped}\\0$`).test(entry.stdout)) return null;
+  const size = runGit(dir, ["cat-file", "-s", `${ref}:${BOARD_MARKER_FILE}`]);
+  if (size.status !== 0 || Number(size.stdout.trim()) > BOARD_MARKER_BYTES) return null;
+  const shown = runGit(dir, ["show", `${ref}:${BOARD_MARKER_FILE}`]);
+  if (shown.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(shown.stdout) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const { schema, branch } = parsed as { schema?: unknown; branch?: unknown };
+    if (schema !== BOARD_MARKER_SCHEMA || typeof branch !== "string") return null;
+    return branch !== BOARD_BRANCH && isBoardBranchName(branch) ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `branch` is a board branch in the repository at `dir`: the default `board`, or a named
+ * `board-<name>` branch whose local tip carries the marker declaring exactly that name.
+ */
+export function isDeclaredBoardBranch(dir: string, branch: string): boolean {
+  if (branch === BOARD_BRANCH) return true;
+  if (!isBoardBranchName(branch)) return false;
+  return declaredBoardBranchAtRef(dir, `refs/heads/${branch}`) === branch;
+}
+
+/** The branch a wedged rebase in `dir` started from (git's own `head-name`), or null. */
+function rebaseStartBranch(dir: string): string | null {
+  for (const state of ["rebase-merge", "rebase-apply"]) {
+    const headNamePath = path.join(worktreeGitPath(dir, state), "head-name");
+    if (!existsSync(headNamePath)) continue;
+    try {
+      const name = readFileSync(headNamePath, "utf8").trim();
+      if (name.startsWith("refs/heads/")) return name.slice("refs/heads/".length);
+    } catch {
+      /* an unreadable head-name proves nothing either way — keep checking the other backend */
+    }
+  }
+  return null;
+}
+
+/**
+ * The board branch the checkout at `boardPath` syncs: its attached branch (or the branch a wedged
+ * rebase started from) when that is a declared named board, otherwise the default `board`. Every
+ * fetch, rebase, push and count against a checkout reads its branch here, so a named board's
+ * checkout never touches `origin/board`.
+ */
+export function boardBranchOf(boardPath: string): string {
+  const attached = runGit(boardPath, ["symbolic-ref", "-q", "--short", "HEAD"]);
+  const name = attached.status === 0 ? attached.stdout.trim() : rebaseStartBranch(boardPath);
+  return name !== null && name !== BOARD_BRANCH && isDeclaredBoardBranch(boardPath, name) ? name : BOARD_BRANCH;
+}
+
+/** The explicit remote-tracking ref (`origin/<board branch>`) for the checkout at `boardPath`. */
+export function boardRefOf(boardPath: string): string {
+  return `${BOARD_REMOTE}/${boardBranchOf(boardPath)}`;
+}
 /** The canonical folder used for every newly-created project bundle and board worktree. */
 export const BUNDLE_DIR = ".superbee";
 /**
@@ -575,44 +660,49 @@ function hasTrackedBundleRootAtHead(top: string): boolean {
   return hasTrackedBundleRootAtRef(top, "HEAD");
 }
 
-/** Durable provenance for a root clone: the local board branch explicitly tracks origin/board. */
-function boardBranchTracksOrigin(top: string): boolean {
-  const remote = runGit(top, ["config", "--get", `branch.${BOARD_BRANCH}.remote`]);
-  const merge = runGit(top, ["config", "--get", `branch.${BOARD_BRANCH}.merge`]);
+/** Durable provenance for a root clone: the local board branch explicitly tracks its origin branch. */
+function boardBranchTracksOrigin(top: string, branch: string = BOARD_BRANCH): boolean {
+  const remote = runGit(top, ["config", "--get", `branch.${branch}.remote`]);
+  const merge = runGit(top, ["config", "--get", `branch.${branch}.merge`]);
   return remote.status === 0 && remote.stdout.trim() === BOARD_REMOTE &&
-    merge.status === 0 && merge.stdout.trim() === `refs/heads/${BOARD_BRANCH}`;
+    merge.status === 0 && merge.stdout.trim() === `refs/heads/${branch}`;
 }
 
 /** The shared-board histories have a real common ancestor; an unrelated root is never adopted. */
-function standaloneHistoryBase(top: string): string | null {
-  const r = runGit(top, ["merge-base", `refs/heads/${BOARD_BRANCH}`, `refs/remotes/${BOARD_REF}`]);
+function standaloneHistoryBase(top: string, branch: string = BOARD_BRANCH): string | null {
+  const r = runGit(top, ["merge-base", `refs/heads/${branch}`, `refs/remotes/${BOARD_REMOTE}/${branch}`]);
   return r.status === 0 && r.stdout.trim().length > 0 ? r.stdout.trim() : null;
 }
 
 /**
  * Resolve the one supported standalone topology without mutating or touching the network.  This
- * is deliberately stricter than "branch happens to be named board": the root index is a regular
- * tracked OKF document, the branch carries explicit upstream provenance, and cached remote
- * history (when required) is related.  Home, autopull, and provisioning consume this same seam.
+ * is deliberately stricter than "branch happens to be named board": the branch is `board` or a
+ * declared named board ({@link isDeclaredBoardBranch}), the root index is a regular tracked OKF
+ * document, the branch carries explicit upstream provenance, and cached remote history (when
+ * required) is related.  Home, autopull, and provisioning consume this same seam.
  */
 export function resolveStandaloneBoardCheckout(
   dir: string,
   opts: { requireRemoteRef?: boolean } = {},
 ): string | null {
   const top = repoTopLevel(dir);
-  if (!top || currentBranch(top) !== BOARD_BRANCH) return null;
-  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${BOARD_BRANCH}`) || !boardBranchTracksOrigin(top)) return null;
-  const remote = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]);
+  if (!top) return null;
+  const branch = currentBranch(top);
+  if (!isDeclaredBoardBranch(top, branch)) return null;
+  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${branch}`) || !boardBranchTracksOrigin(top, branch)) return null;
+  const remote = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REMOTE}/${branch}`]);
   if (remote.status !== 0) return opts.requireRemoteRef === false ? top : null;
-  return standaloneHistoryBase(top) ? top : null;
+  return standaloneHistoryBase(top, branch) ? top : null;
 }
 
 /** A crashed standalone rebase whose exact pre-rebase branch still proves shared-board authority. */
 export function isRecoverableStandaloneBoardCheckout(dir: string): boolean {
   const top = repoTopLevel(dir);
-  if (!top || !detectStaleRebase(top) || !rebaseWasFromBoardBranch(top)) return false;
-  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${BOARD_BRANCH}`) || !boardBranchTracksOrigin(top)) return false;
-  return standaloneHistoryBase(top) !== null;
+  if (!top || !detectStaleRebase(top)) return false;
+  const branch = rebaseStartBranch(top);
+  if (branch === null || !isDeclaredBoardBranch(top, branch)) return false;
+  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${branch}`) || !boardBranchTracksOrigin(top, branch)) return false;
+  return standaloneHistoryBase(top, branch) !== null;
 }
 
 /** The active board path for read-side consumers: standalone root first, then conventional worktree. */
@@ -630,12 +720,13 @@ function standaloneRootWrongBranch(top: string, branch: string): BoardGitError {
   return new BoardGitError(
     "CONFLICT",
     `this repository root is an OKF bundle, but it is checked out at ${shown}; a standalone root ` +
-      `checkout may sync only when it is attached to the dedicated '${BOARD_BRANCH}' branch`,
+      `checkout may sync only when it is attached to the dedicated '${BOARD_BRANCH}' branch or to a ` +
+      `named board branch (board-<name>) whose committed ${BOARD_MARKER_FILE} declares that name`,
     {
       details: { path: top, state: "standalone-board-wrong-branch", branch },
       help:
-        `use a separate checkout attached to '${BOARD_BRANCH}', or run sync from the repository's ` +
-        `code checkout and let it provision the conventional bundle worktree`,
+        `use a separate checkout attached to '${BOARD_BRANCH}' (or to the named board branch), or run sync ` +
+        `from the repository's code checkout and let it provision the conventional bundle worktree`,
     },
   );
 }
@@ -1131,13 +1222,17 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   if (!top) return { kind: "no_repo" };
   const rootIsBundle = hasTrackedBundleRootAtHead(top);
   const rootBranch = rootIsBundle ? currentBranch(top) : undefined;
-  if (rootBranch !== undefined && rootBranch !== BOARD_BRANCH) {
+  if (rootBranch !== undefined && !isDeclaredBoardBranch(top, rootBranch)) {
     throw standaloneRootWrongBranch(top, rootBranch);
   }
-  const rootOriginBefore = rootBranch === BOARD_BRANCH
-    ? runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`])
+  // The board branch this run probes: a standalone root's own (default or named) board branch, or
+  // the default `board` that a conventional worktree checks out.
+  const branch = rootBranch ?? BOARD_BRANCH;
+  const remoteRef = `refs/remotes/${BOARD_REMOTE}/${branch}`;
+  const rootOriginBefore = rootBranch !== undefined
+    ? runGit(top, ["rev-parse", "--verify", "--quiet", remoteRef])
     : null;
-  const rootCheckout = rootBranch === BOARD_BRANCH
+  const rootCheckout = rootBranch !== undefined
     ? resolveStandaloneBoardCheckout(top, { requireRemoteRef: false })
     : null;
   // Preserve a proven cached baseline before the exact live probe below. Standalone recognition
@@ -1182,14 +1277,14 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
       "ls-remote",
       "--exit-code",
       BOARD_REMOTE,
-      `refs/heads/${BOARD_BRANCH}`,
+      `refs/heads/${branch}`,
     ]);
     if (probe?.status === 0) {
       // Exact `board` cannot coexist remotely with `board/*`; any local children are stale.
       const children = runGit(top, [
         "for-each-ref",
         "--format=%(refname)",
-        `refs/remotes/${BOARD_REF}/`,
+        `${remoteRef}/`,
       ]);
       let namespaceReady = children.status === 0;
       for (const child of children.stdout.split("\n").filter(Boolean)) {
@@ -1201,7 +1296,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
           "--prune",
           "--no-tags",
           BOARD_REMOTE,
-          `+refs/heads/${BOARD_BRANCH}:refs/remotes/${BOARD_REF}`,
+          `+refs/heads/${branch}:${remoteRef}`,
         ]);
         remoteState = fetch?.status === 0 ? "absent" : "unknown";
         liveFetch = fetch?.status === 0;
@@ -1210,14 +1305,14 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
       }
     } else if (probe?.status === 2) {
       remoteBoardKnownAbsent = true;
-      runGit(top, ["update-ref", "-d", `refs/remotes/${BOARD_REF}`]);
+      runGit(top, ["update-ref", "-d", remoteRef]);
     } else {
       remoteState = "unknown";
     }
   }
 
-  const localBoard = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]);
-  const remoteBoard = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]);
+  const localBoard = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  const remoteBoard = runGit(top, ["rev-parse", "--verify", "--quiet", remoteRef]);
   const hasLocal = localBoard.status === 0;
   const hasRemote = remoteBoard.status === 0 && !remoteBoardKnownAbsent;
   // A root checkout is already the exact worktree the remaining sync phases need.  Require the
@@ -1225,7 +1320,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   // authority; a merely local or unrelated branch named `board` keeps the existing explicit-
   // establishment refusal. When this run created the first cached remote ref, carry the proven
   // merge-base forward so the receipt can still describe what arrived during this fetch.
-  if (rootIsBundle && rootBranch === BOARD_BRANCH) {
+  if (rootIsBundle && rootBranch !== undefined) {
     // Standalone publication authority is re-proven live for every sync. A cached ref remains
     // useful for read-side discovery, but it cannot authorize commit/push after an indeterminate
     // exact probe: the remote branch may have been deleted while an ambient fetch refspec excludes
@@ -1238,7 +1333,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
       const fetchedOrigin = remoteBoard.stdout.trim();
       const originBaseline = rootCachedBaseline !== null
         ? rootCachedBaseline === fetchedOrigin ? null : rootCachedBaseline
-        : standaloneHistoryBase(top);
+        : standaloneHistoryBase(top, branch);
       return originBaseline === null
         ? { kind: "already", boardPath: top }
         : { kind: "already", boardPath: top, originBaseline };
@@ -1963,7 +2058,8 @@ export function fetchRebase(boardPath: string): FetchRebaseOutcome {
   // nothing): a replayed commit needs COMMITTER identity too, the same failure class as a plain
   // commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
-  const r = runGit(boardPath, [...idFlags, "rebase", BOARD_REF], {
+  const boardRef = boardRefOf(boardPath);
+  const r = runGit(boardPath, [...idFlags, "rebase", boardRef], {
     rebase: true,
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
@@ -1977,7 +2073,7 @@ export function fetchRebase(boardPath: string): FetchRebaseOutcome {
     mustGit(boardPath, ["rebase", "--abort"], { rebase: true });
     return { status: "conflict", conflictedDocIds: conflicted };
   }
-  throw classifyGitError(failureOf(["rebase", BOARD_REF], r));
+  throw classifyGitError(failureOf(["rebase", boardRef], r));
 }
 
 // ── fetch + rebase, converging ────────────────────────────────────────────────
@@ -2068,19 +2164,20 @@ const MAX_REBASE_STOPS = 1000;
  */
 export function fetchRebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
   mustGit(boardPath, ["fetch", "--prune", BOARD_REMOTE], { timeoutMs: NETWORK_TIMEOUT_MS });
+  const boardRef = boardRefOf(boardPath);
   // The fetch above is a LIVE view of origin, but there is no `origin/board` to rebase onto —
   // checked structurally (not by parsing rebase's failure prose) so this never collides with the
   // conflict-detection loop below.
-  if (runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status !== 0) {
+  if (runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRef}`]).status !== 0) {
     return { status: "no_upstream" };
   }
   // Computed ONCE and reused for every rebase invocation in this function (never `--abort`, which
   // commits nothing): a replayed commit needs COMMITTER identity too, the same failure class as a
   // plain commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
-  const r = runGit(boardPath, [...idFlags, "rebase", BOARD_REF], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
+  const r = runGit(boardPath, [...idFlags, "rebase", boardRef], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
   if (r.status === 0) return { status: "clean" };
-  if (!detectStaleRebase(boardPath)) throw classifyGitError(failureOf(["rebase", BOARD_REF], r));
+  if (!detectStaleRebase(boardPath)) throw classifyGitError(failureOf(["rebase", boardRef], r));
 
   // `-z` NUL framing: the conflict list is the one parse whose corruption
   // means a STUCK LOOP (a mis-parsed path fails `show :3:`/`checkout`/`rm` on every iteration),
@@ -2144,8 +2241,8 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
         }
         // 2+3. Keep the UPSTREAM (teammate's) version — explicit ref, never --ours/--theirs. An
         // upstream-side DELETION keeps upstream's state by removing the path instead.
-        if (runGit(boardPath, ["cat-file", "-e", `refs/remotes/${BOARD_REF}:${relPath}`]).status === 0) {
-          mustGit(boardPath, ["checkout", BOARD_REF, "--", relPath]);
+        if (runGit(boardPath, ["cat-file", "-e", `refs/remotes/${boardRef}:${relPath}`]).status === 0) {
+          mustGit(boardPath, ["checkout", boardRef, "--", relPath]);
           mustGit(boardPath, ["add", "--", relPath]);
         } else {
           mustGit(boardPath, ["rm", "-f", "--", relPath]);
@@ -2180,9 +2277,9 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
 
 // ── push ──────────────────────────────────────────────────────────────────────
 
-/** `git push origin board`. Failures classify (AUTH exit 4 vs network exit 1, best-effort). */
+/** `git push origin <board branch>`. Failures classify (AUTH exit 4 vs network exit 1, best-effort). */
 export function push(boardPath: string): void {
-  mustGit(boardPath, ["push", BOARD_REMOTE, BOARD_BRANCH], { timeoutMs: NETWORK_TIMEOUT_MS });
+  mustGit(boardPath, ["push", BOARD_REMOTE, boardBranchOf(boardPath)], { timeoutMs: NETWORK_TIMEOUT_MS });
 }
 
 /**
@@ -2386,7 +2483,7 @@ export function ffPull(boardPath: string, budget: NetworkBudgetOptions = {}): Ff
       fetchReason = swallowReason(classifyGitError(failureOf(["fetch", "--prune"], fetched)));
     }
 
-    const merged = runGit(boardPath, ["merge", "--ff-only", BOARD_REF]);
+    const merged = runGit(boardPath, ["merge", "--ff-only", boardRefOf(boardPath)]);
     if (merged.status !== 0) {
       const text = `${merged.stderr}\n${merged.stdout}`;
       if (/Not possible to fast-forward/i.test(text) || /have diverged/i.test(text)) {
@@ -2417,10 +2514,11 @@ export function ffPull(boardPath: string, budget: NetworkBudgetOptions = {}): Ff
  * against" (the awareness backstop needs both).
  */
 export function unpushedCount(boardPath: string): number | null {
-  if (runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status !== 0) {
+  const boardRef = boardRefOf(boardPath);
+  if (runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRef}`]).status !== 0) {
     return null;
   }
-  const out = mustGit(boardPath, ["rev-list", "--count", `${BOARD_REF}..HEAD`]).trim();
+  const out = mustGit(boardPath, ["rev-list", "--count", `${boardRef}..HEAD`]).trim();
   const n = Number.parseInt(out, 10);
   return Number.isFinite(n) ? n : 0;
 }

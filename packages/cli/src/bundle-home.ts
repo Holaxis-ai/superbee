@@ -21,8 +21,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import {
-  BOARD_BRANCH,
-  BOARD_REF,
+  BOARD_REMOTE,
+  isDeclaredBoardBranch,
   committedBundleAtHead,
   countUncommitted,
   hasWorktreeSignature,
@@ -92,13 +92,15 @@ export async function gitBoardAt(canonicalRoot: string): Promise<GitBoardFacts |
   if (top === null) return null;
 
   if (top === canonicalRoot) {
-    // The bundle is a working tree's root: a board only when the `board` branch is checked out there.
+    // The bundle is a working tree's root: a board only when a board branch (`board`, or a declared
+    // named `board-<name>`) is checked out there.
     const branch = gitText(top, ["symbolic-ref", "-q", "--short", "HEAD"]);
-    if (branch !== BOARD_BRANCH) return null;
-    // Sync compares the board with `origin/board` whether or not the branch tracks it.
+    if (branch === null || !isDeclaredBoardBranch(top, branch)) return null;
+    // Sync compares the board with `origin/<branch>` whether or not the branch tracks it.
+    const boardRef = `${BOARD_REMOTE}/${branch}`;
     const upstream =
       gitText(top, ["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`]) ??
-      (gitText(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]) === null ? null : BOARD_REF);
+      (gitText(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRef}`]) === null ? null : boardRef);
     return { channel: "branch", branch, upstream, shared: upstream !== null, top, prefix: "" };
   }
 
