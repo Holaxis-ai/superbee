@@ -187,8 +187,12 @@ overrides the 600s timeout). It runs through the shell from the board root with
 SUPERBEE_BOARD_BRANCH, SUPERBEE_BOARD_UPSTREAM_REF, SUPERBEE_BOARD_UPSTREAM_SHA (the remote tip
 rebased onto), SUPERBEE_BOARD_HEAD_SHA (what would be pushed) and SUPERBEE_SYNC_ATTEMPT set. A
 non-zero exit, a timeout, or any edit to the board holds the push: the work stays committed
-locally and sync exits 5 with code GATE_FAILED and the gate's last output lines. The gate comes
-from Git configuration, never from board files, so board content cannot choose what runs.
+locally and sync exits 5 with code GATE_FAILED and the gate's last output lines. Exactly the
+judged commit is pushed. The command comes from Git configuration, never from board files, so
+board content cannot choose the command; keep the gate's code outside the board too (a script
+inside the board runs whatever a teammate last pushed). A gate must leave the board as it found
+it: an untracked, non-ignored file it writes counts as an edit. The opt-in turn-end sync runs
+the gate as well, inside the agent host's hook time limit, so keep a gate fast there.
 \`--pull-only\` never runs it, and neither does \`--establish\`'s first publication of a board.
 
 A board can also ride IN-TREE: \`.superbee/\` or legacy \`.agentstate-lite/\` committed WITH the code on the current
@@ -836,16 +840,20 @@ async function pushPhase(
   const gate = declaredSyncGate(board.boardPath);
   let gateDetails: Record<string, unknown> | undefined;
   for (let attempt = 1; ; attempt += 1) {
-    const ahead = unpushedCount(board.boardPath) ?? 0;
+    // One head per attempt: the gate judges it, the counts describe it, and exactly it is pushed.
+    const head = currentHead(board.boardPath);
+    const counted = unpushedCount(board.boardPath);
+    const ahead = counted ?? 0;
     // The documents the push sends: every one the unpushed commits change, this run's or earlier.
-    const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), currentHead(board.boardPath)).map((change) => change.docId)).size : 0;
-    if (gate && ahead > 0) {
+    const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), head).map((change) => change.docId)).size : 0;
+    // An unknown count is gated too: the gate is skipped only when nothing is known to be sent.
+    if (gate && (counted === null || ahead > 0)) {
       const judged = runSyncGate(board.boardPath, gate, attempt);
       if (!judged.passed) await failGate(run, board, commitResult, delta, judged.reason ?? "failed", judged.details);
       gateDetails = judged.details;
     }
     try {
-      push(board.boardPath);
+      push(board.boardPath, head);
       return { commits: ahead, documents: outgoing, delta, ...(gateDetails ? { gate: gateDetails } : {}) };
     } catch (err) {
       const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
@@ -855,6 +863,9 @@ async function pushPhase(
         await convergingRebase(run, board, commitResult.committed);
         refuseMovedBoard(board.boardPath);
         delta = await deltaPhase(board, baseline);
+        // The re-pull merged new upstream work into this clone's commits; hold a document that
+        // merge made malformed exactly as the first pull would have.
+        holdMalformedCommitted(run, board, delta);
         continue;
       }
       const details = raced ? { ...classified.details, attempts: attempt } : classified.details;
@@ -876,6 +887,17 @@ async function pushPhase(
       throw asHandled(new CliError(exhausted.code, warning, { details }));
     }
   }
+}
+
+/**
+ * A malformed document in an unpushed commit (made by hand, by an older client whose push failed,
+ * or by a rebase merging two edits of one frontmatter) is held: nothing is pushed.
+ */
+function holdMalformedCommitted(run: SyncRun, board: SyncBoard, delta: SyncDelta): void {
+  const originRef = resolveOriginRef(board.boardPath);
+  if (originRef === null) return;
+  const held = malformedCommittedDocuments(board.boardPath, originRef, "HEAD");
+  if (held.length > 0) reportHeld(run, board, delta, held, "committed locally");
 }
 
 /** A failing gate: print the partial receipt (nothing pushed) and exit GATE_FAILED (5). */
@@ -1054,13 +1076,7 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   // The marker can arrive with this pull: then nothing is pushed, and this run's commit stays local.
   if (!run.pullOnly) refuseMovedBoard(board.boardPath);
   const delta = await deltaPhase(board, baseline);
-  const originRef = run.pullOnly ? null : resolveOriginRef(board.boardPath);
-  if (originRef !== null) {
-    // A malformed document already in an unpushed commit (made by hand, or by an older client
-    // whose push failed) is held the same way: nothing is pushed.
-    const held = malformedCommittedDocuments(board.boardPath, originRef, "HEAD");
-    if (held.length > 0) reportHeld(run, board, delta, held, "committed locally");
-  }
+  if (!run.pullOnly) holdMalformedCommitted(run, board, delta);
   const pushed = await pushPhase(run, board, commitResult, delta, baseline);
   await receiptPhase(run, board, commitResult, pushed.delta, pushed, establishAlreadyNote);
 }

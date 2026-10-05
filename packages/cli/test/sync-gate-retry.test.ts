@@ -254,3 +254,27 @@ test("sync race: a conflicting commit that wins the race converges (exit 5) and 
     await topo.cleanup();
   }
 });
+
+test("sync race: a re-pull that merges two frontmatter edits into a malformed document holds it", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { dir: state, cleanup } = await scratch();
+  try {
+    const base = "---\ntype: Note\ntitle: dup\na: 1\nb: 2\nc: 3\nd: 4\ne: 5\n---\n# dup\n";
+    await writeFile(path.join(topo.b.board, "notes", "dup.md"), base);
+    commitBoard(topo.b, "seed dup");
+    pushBoard(topo.b);
+    assert.equal((await runSync(path.join(state, "home"), ["--dir", topo.a.root, "--pull-only"])).err, undefined);
+
+    // Each side's edit is valid alone; git merges them cleanly into a duplicated `status` key.
+    await writeFile(path.join(topo.a.board, "notes", "dup.md"), base.replace("type: Note\n", "type: Note\nstatus: mine\n"));
+    await installRacingHook(topo, state, 1, "notes/dup", base.replace("e: 5\n", "e: 5\nstatus: theirs\n"));
+
+    const result = await runSync(path.join(state, "home"), ["--dir", topo.a.root]);
+    assert.equal(result.err?.code, "CONFLICT", result.out);
+    assert.match(result.out, /held: local commits carry these documents, so nothing was pushed/);
+    assert.doesNotMatch(git(topo.origin, ["show", `${BOARD_BRANCH}:notes/dup.md`]), /status: mine/, "the malformed merge never reached origin");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});

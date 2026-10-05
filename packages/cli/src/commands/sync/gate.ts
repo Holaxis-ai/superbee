@@ -1,8 +1,9 @@
 // The sync gate: a command a Git board's clone declares, which sync runs on the converged tree
 // after rebasing onto the remote board and before every push. A non-zero exit holds the push
 // with the work committed locally. The command comes from Git configuration, never from the
-// board's own files: a teammate's pushed content must not be able to choose what every syncing
-// machine executes, just as it cannot install a Git hook.
+// board's own files: a teammate's pushed content must not be able to choose the command every
+// syncing machine executes, just as it cannot install a Git hook. (A command that runs a script
+// stored in the board still runs that script's current, pulled content; the docs say so.)
 import { spawnSync } from "node:child_process";
 import { boardBranchOf, countUncommitted, currentHead, resolveOriginRef, runGit } from "@superbee/board-git";
 
