@@ -244,7 +244,7 @@ jobs:
           policy-json: >-
             [{"job":"runtime","required":true},
              {"job":"aliasing-host","required":true},
-             {"job":"smoke-node-20","required":true},
+             {"job":"smoke-node-22","required":true},
              {"job":"distribution","required":true},
              {"job":"browser","required":true},
              {"job":"scripts","required":true}]
@@ -270,7 +270,7 @@ jobs:
           policy-json: >-
             [{"job":"runtime","required":true},
              {"job":"aliasing-host","required":true},
-             {"job":"smoke-node-20","required":true},
+             {"job":"smoke-node-22","required":true},
              {"job":"distribution","required":true},
              {"job":"browser","required":true},
              {"job":"scripts","required":true}]
@@ -296,7 +296,7 @@ jobs:
           policy-json: >-
             [{"job":"runtime","required":true},
              {"job":"aliasing-host","required":true},
-             {"job":"smoke-node-20","required":true},
+             {"job":"smoke-node-22","required":true},
              {"job":"distribution","required":true},
              {"job":"browser","required":true},
              {"job":"scripts","required":true}]

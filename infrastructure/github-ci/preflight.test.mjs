@@ -110,8 +110,8 @@ test("readiness inventory retains all maintained shards, lanes and security anal
     "ci-tests.yml": [
       "runtime compatibility (node 22, shard 1/2)", "runtime compatibility (node 22, shard 2/2)",
       "runtime compatibility (node 26, shard 1/2)", "runtime compatibility (node 26, shard 2/2)",
-      "host-class proofs on an aliasing host (macos, node 26)",
-      "built-CLI smoke on the engines floor (node 20)",
+      "host-class proofs on an aliasing host (macos, node 24.21.0)",
+      "installed-package smoke on the engines floor (node 22.14.0)",
       "distribution package and installed behavior", "browser and UI", "repository scripts and CI topology",
       "CI required lanes", "gate (node 22)", "gate (node 26)",
     ],

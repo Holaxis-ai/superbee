@@ -8,7 +8,7 @@ import test from "node:test";
 import { evaluateJson, evaluateResults } from "./evaluate.mjs";
 
 const actionPath = path.dirname(fileURLToPath(import.meta.url));
-const engine = ["runtime", "aliasing-host", "smoke-node-20", "distribution", "browser", "scripts"];
+const engine = ["runtime", "aliasing-host", "smoke-node-22", "distribution", "browser", "scripts"];
 const hosted = ["scope", "check", "storage", "core", "browser", "application-tests"];
 const windows = ["inputs", "consumer-build", "native-installed", "native-readme-build"];
 const policyFor = (jobs) => jobs.map((job) => ({ job, required: true }));
