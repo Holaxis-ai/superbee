@@ -110,8 +110,7 @@ export function isBoardBranchName(name: string): boolean {
  */
 export function declaredBoardBranchAtRef(dir: string, ref: string): string | null {
   const entry = runGit(dir, ["ls-tree", "-z", ref, "--", BOARD_MARKER_FILE]);
-  const escaped = BOARD_MARKER_FILE.replace(/\./g, "\\.");
-  if (entry.status !== 0 || !new RegExp(`^100644 blob [0-9a-f]+\\t${escaped}\\0$`).test(entry.stdout)) return null;
+  if (entry.status !== 0 || !/^100644 blob [0-9a-f]+\t\.superbee-board\.json\0$/.test(entry.stdout)) return null;
   const size = runGit(dir, ["cat-file", "-s", `${ref}:${BOARD_MARKER_FILE}`]);
   if (size.status !== 0 || Number(size.stdout.trim()) > BOARD_MARKER_BYTES) return null;
   const shown = runGit(dir, ["show", `${ref}:${BOARD_MARKER_FILE}`]);
