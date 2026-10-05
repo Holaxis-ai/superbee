@@ -46,8 +46,7 @@ export const WORKFLOW_JOBS = {
   "ci-tests.yml": [
     ...manifest.required_jobs.flatMap((id) => {
       const lane = manifest.lanes[id];
-      if (!lane.shards) return [lane.display_name];
-      return lane.nodes.flatMap((node) => Array.from({ length: lane.shards }, (_, index) => lane.display_name
+      return lane.nodes.flatMap((node) => Array.from({ length: lane.shards ?? 1 }, (_, index) => lane.display_name
         .replace("${{ matrix.node-version }}", String(node)).replace("${{ matrix.shard }}", String(index + 1))));
     }),
     "CI required lanes", "gate (node 22)", "gate (node 26)",

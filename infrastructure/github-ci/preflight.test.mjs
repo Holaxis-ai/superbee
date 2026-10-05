@@ -108,8 +108,11 @@ for (const [name, mutate] of Object.entries({
 test("readiness inventory retains all maintained shards, lanes and security analyses", () => {
   assert.deepEqual(WORKFLOW_JOBS, {
     "ci-tests.yml": [
-      "runtime compatibility (node 22, shard 1/2)", "runtime compatibility (node 22, shard 2/2)",
-      "runtime compatibility (node 26, shard 1/2)", "runtime compatibility (node 26, shard 2/2)",
+      "runtime compatibility (node 22, shard 1/4)", "runtime compatibility (node 22, shard 2/4)",
+      "runtime compatibility (node 22, shard 3/4)", "runtime compatibility (node 22, shard 4/4)",
+      "runtime compatibility (node 26, shard 1/4)", "runtime compatibility (node 26, shard 2/4)",
+      "runtime compatibility (node 26, shard 3/4)", "runtime compatibility (node 26, shard 4/4)",
+      "common runtime contracts (node 22)", "common runtime contracts (node 26)",
       "host-class proofs on an aliasing host (macos, node 24.21.0)",
       "installed-package smoke on the engines floor (node 22.14.0)",
       "distribution package and installed behavior", "browser and UI", "repository scripts and CI topology",
