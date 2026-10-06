@@ -50,7 +50,8 @@ vocabulary for acquisition adapters; the parser itself reports a missing manifes
   file records, not an arbitrary untrusted JSON request or an archive.
 - Inspect recipe and registry warnings. A missing Kind is distinct from a record passing its
   declared checks. Consumers choose whether warnings block their workflow.
-- Kind validation checks declared fields and sections. It does not prove linked targets exist,
+- Kind validation checks declared fields, enum values, declared value types (`fields.types`), and
+  sections. It does not prove linked targets exist,
   relationship cardinalities, authorization, or compatibility with an installed bundle.
 - Keep example records separate from distributable definitions-only recipes.
 - Use the CLI for existing recipe installation and evolution workflows. Parsing does not grant

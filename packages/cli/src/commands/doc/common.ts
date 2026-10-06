@@ -178,8 +178,9 @@ Options:
   --<field> <value>      Set a kind-declared field of the doc's type (e.g. --progress_status done).
                          The field
                          MUST be declared by the kind governing the doc's type — run 'superbee
-                         kinds' to see them. An unknown field, or an out-of-enum value, is rejected
-                         (exit 2, no write). Use 'doc write' to rewrite the whole doc if you must set
+                         kinds' to see them. An unknown field, an out-of-enum value, or a value
+                         that does not match the field's declared type is rejected (exit 2, no
+                         write); a typed numeric or boolean field is stored as that YAML type. Use 'doc write' to rewrite the whole doc if you must set
                          a not-yet-declared value.
   --expected-version <v> Optimistic compare-and-swap: patch ONLY if the doc still matches this token
                          (from a prior read/write/history receipt) — a conflict is STALE_HEAD (exit

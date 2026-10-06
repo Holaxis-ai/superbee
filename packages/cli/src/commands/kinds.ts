@@ -9,6 +9,7 @@ import { renderUsage } from "../output.js";
 import { parseArgs } from "node:util";
 import {
   freshnessHorizonMs,
+  KIND_FIELD_TYPES,
   loadKinds,
   projectKindForAuthoring,
   readBundleOkfVersion,
@@ -26,7 +27,7 @@ Usage:
   superbee kinds [--dir <path>] [--remote <url>]
 
 A kind convention is a plain OKF doc (type: Convention) under conventions/ declaring a document
-kind's purpose, required/optional fields and their descriptions, allowed enum values, typed-link vocabulary, expected body
+kind's purpose, required/optional fields and their descriptions, allowed enum values, value types, typed-link vocabulary, expected body
 sections, and an optional freshness horizon. See 'superbee new --help' to create an
 instance of a declared kind.
 
@@ -53,6 +54,13 @@ Kind schema vocabulary (the product-facing projection; raw document reads remain
                                  also warns. Drives 'list --open' (excludes terminal instances) and
                                  the 'status' command's missing_expected_links sweep (excludes them
                                  from the count/rows and its sort)
+  fields.types         map      field name -> value type, one of: ${KIND_FIELD_TYPES.join(", ")}.
+                                 date is YYYY-MM-DD; datetime requires an explicit UTC offset (Z or
+                                 +/-HH:MM); url is absolute http(s), https-url https only; latitude
+                                 and longitude are numbers within +/-90 and +/-180. A present value
+                                 of the wrong type is a KIND_FIELD_TYPE violation, rejected by 'new'
+                                 and strict writes like an enum violation; presence stays governed
+                                 by fields.required. An unknown type is a registry warning
   links                map      link type name -> allowed TARGET kind, for typed edges instances
                                  of this kind may carry as link SOURCE (e.g. contains: Task). A
                                  link whose display text exactly matches a declared type is a
@@ -110,6 +118,7 @@ function toRow(kind: KindConvention, okfVersion: string | undefined): Record<str
     row.value_descriptions = kind.fields.valueDescriptions;
   }
   if (Object.keys(kind.fields.terminal).length > 0) row.terminal = kind.fields.terminal;
+  if (Object.keys(kind.fields.types ?? {}).length > 0) row.types = kind.fields.types;
   if (kind.links && Object.keys(kind.links).length > 0) row.links = kind.links;
   if (kind.linkDescriptions && Object.keys(kind.linkDescriptions).length > 0) {
     row.link_descriptions = kind.linkDescriptions;

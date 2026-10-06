@@ -321,6 +321,11 @@ export {
   compareReadingOrder,
   splitSections,
   isTerminal,
+  KIND_FIELD_TYPES,
+  KIND_FIELD_TYPE_DESCRIPTIONS,
+  isKindFieldType,
+  kindFieldTypeProblem,
+  kindFieldInputValue,
 } from "./kinds.js";
 export { loadKinds } from "./kinds-load.js";
 export type {
@@ -329,6 +334,7 @@ export type {
   KindConvention,
   KindFieldCoordinate,
   KindFields,
+  KindFieldType,
   KindRegistry,
   RegistryValidationResult,
 } from "./kinds.js";

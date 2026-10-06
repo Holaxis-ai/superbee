@@ -528,7 +528,7 @@ export function materializeRecipeForEdition(
         materializedFields[key] = listField(fields[key]);
       }
     }
-    for (const key of ["values", "value_descriptions", "terminal", "descriptions"]) {
+    for (const key of ["values", "value_descriptions", "terminal", "descriptions", "types"]) {
       if (Object.prototype.hasOwnProperty.call(fields, key)) {
         materializedFields[key] = renameLogicalFieldMap(fields[key], storageField, recipe.id, doc.id);
       }

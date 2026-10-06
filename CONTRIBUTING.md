@@ -401,6 +401,17 @@ engine reads and writes never load it implicitly. Validation reuses core's headi
 primitives rather than defining parallel parsers or clocks. Convention seeding belongs to generic
 CLI recipes, never to `initBundle` or another engine special case.
 
+A convention may declare value types in `fields.types` (`field: type`) from one closed, deliberately
+small vocabulary owned by `KIND_FIELD_TYPES` in `packages/core/src/kinds.ts`: `date`, `datetime`,
+`url`, `https-url`, `number`, `integer`, `boolean`, `latitude`, `longitude`, and `string-list`.
+`datetime` uses the same explicit-offset instant grammar as the OKF standard timestamps. An unknown
+type or a typed field the kind does not declare is a convention warning, so a definitions-only
+recipe refuses it. A present value of the wrong type is a `KIND_FIELD_TYPE` validation warning with
+the same blocking posture as an enum violation; presence stays governed by `fields.required`.
+Command-line input for a typed numeric or boolean field is converted through the one core helper
+before validation. Domain composites such as opening hours or money belong to recipe tooling, not
+this vocabulary.
+
 ## Findings and commitments
 
 A discovery must land in the shared row table for its defect class. The project bundle document

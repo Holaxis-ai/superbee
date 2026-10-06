@@ -52,7 +52,9 @@ import { renderUsage } from "../output.js";
 import { parseArgs } from "node:util";
 import { assertAuthoredLegacyTimestamp } from "../legacy-timestamp.js";
 import {
+  KIND_FIELD_TYPE_DESCRIPTIONS,
   loadKinds,
+  kindFieldInputValue,
   kindInputFieldNames,
   progressStatusCoordinate,
   projectKindForAuthoring,
@@ -93,8 +95,11 @@ declared by the kind is a USAGE error. When timestamp is declared, explicit --ti
 OKF v0.2 requires a real ISO-8601 date and time with an explicit UTC offset (Z or numeric).
 The kind's declared body 'sections' (if any) are scaffolded as empty '# Heading' blocks; its
 'path' prefix (if any) is prepended onto <id> unless <id> already carries it. Validation is
-STRICT: a missing required field or a disallowed enum value rejects the write (exit 2) rather
-than writing-with-a-warning.
+STRICT: a missing required field, a disallowed enum value, or a value that does not match the
+field's declared type (fields.types) rejects the write (exit 2) rather than writing-with-a-warning.
+A typed number, integer, latitude, longitude, or boolean field is stored as that YAML type
+(--latitude 43.1 stores the number 43.1; pass a negative number as --longitude=-77.4); a
+string-list field is always stored as a list.
 
 'new' is CREATE-ONLY: if the (prefixed) <id> already carries a document, the write is rejected
 (exit 5) instead of silently replacing it — run 'doc update' to patch an existing doc, or 'doc
@@ -300,7 +305,9 @@ function renderKindHelp(
       : undefined;
     const describedValues = allowed?.map((value) => ({ value, description: ownDescription(valueDescriptions, value) }));
     const hasValueDescriptions = describedValues?.some((entry) => entry.description !== undefined) ?? false;
-    const fieldLine = `  --${commandToken(field)} <v>  ${requirement}`;
+    const declaredType = kind.fields.types && hasOwn(kind.fields.types, field) ? kind.fields.types[field] : undefined;
+    const typeNote = declaredType ? `; type: ${declaredType} (${KIND_FIELD_TYPE_DESCRIPTIONS[declaredType]})` : "";
+    const fieldLine = `  --${commandToken(field)} <v>  ${requirement}${typeNote}`;
     if (!allowed || allowed.length === 0) return fieldLine + (description ? ` — ${description}` : "");
     if (!hasValueDescriptions) {
       return `${fieldLine}; allowed: ${allowed.join(" | ")}` + (description ? ` — ${description}` : "");
@@ -599,7 +606,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       );
     }
     suppliedByStorageField.set(coordinate.storageField, field);
-    setOwn(frontmatter, coordinate.storageField, vals.length === 1 ? vals[0]! : vals);
+    setOwn(frontmatter, coordinate.storageField, kindFieldInputValue(kind, coordinate.storageField, vals));
   }
   // `mutateDoc` applies the resolved actor to frontmatter before strict validation, so the actor
   // control flag (or environment default) still satisfies a kind that declares actor as required.
