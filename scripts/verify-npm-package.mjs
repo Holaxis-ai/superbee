@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isMainModule } from "./is-main-module.mjs";
 import { packNpmPackage } from "./pack-npm-package.mjs";
+import { assertArtifact, assertIdentity, createWorkspace, isolatedEnvironment, runProcess } from "../packages/package-verification/src/harness.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -474,7 +475,8 @@ async function writeOfflineRecipe(root, version, withDetail = false) {
 async function runInstalledProof(spec) {
   assertSupportedPlatform(process.platform);
   const target = spec.target ?? SUCCESSOR_TARGET;
-  const scratch = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-npm-proof-")));
+  const workspace = await createWorkspace();
+  const scratch = workspace.root;
   const packDir = path.join(scratch, "pack");
   const prefix = path.join(scratch, "prefix");
   const home = path.join(scratch, "home");
@@ -596,15 +598,18 @@ async function runInstalledProof(spec) {
     await symlink(process.execPath, path.join(binDir, "node"));
     const npmShim = path.join(binDir, "npm");
     await writeFile(npmShim, npmPrefixShimSource(prefix), { mode: 0o755 });
-    const commandEnv = {
-      ...sanitizedNpmEnvironment(process.env, npmUserConfig, npmCache),
+    const commandEnv = isolatedEnvironment({ home, values: {
       PATH: `${binDir}${path.delimiter}${path.dirname(process.execPath)}`,
       npm_config_prefix: prefix,
-      HOME: home,
-      USERPROFILE: home,
+      npm_config_userconfig: npmUserConfig,
+      npm_config_cache: npmCache,
+      npm_config_dry_run: "false",
+      npm_config_bin_links: "true",
       XDG_CONFIG_HOME: path.join(home, ".config"),
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
-    };
+      SUPERBEE_NO_UPDATE_CHECK: "1",
+      SUPERBEE_NO_TURN_SYNC: "1",
+    } });
     const canonicalState = expectedPrivateStateRoot(home, process.platform, commandEnv);
     for (const command of target.expected_commands) await assertCommandInBin(command, commandEnv, binDir);
     for (const absent of ["superbee", "aslite", "agentstate-lite"].filter((command) => !target.expected_commands.includes(command))) {
@@ -619,15 +624,17 @@ async function runInstalledProof(spec) {
     const runCli = (command, args, options = {}) => {
       const cwd = options.cwd ?? scratch;
       const env = { ...commandEnv, ...(options.env ?? {}) };
-      return run(command, args, { cwd, env });
+      assert.ok(manifest.bin[command], "installed proof command must be declared by the package");
+      return runProcess(process.execPath, ["--import", path.join(repoRoot, "packages/package-verification/src/no-network.mjs"), path.join(installedRoot, manifest.bin[command]), ...args], { cwd, env });
     };
 
     // Every command declared by the selected release target agrees with the immutable build
     // identity; the adjacent installed manifest is diagnostic rather than authority.
-    const preferredVersion = (await runCli(target.preferred_command, ["--version"])).stdout.trim();
+    // Execute the npm-installed command shim too; Node preloads below must not replace this proof.
+    const preferredVersion = (await runProcess(target.preferred_command, ["--version"], { cwd: scratch, env: commandEnv })).stdout.trim();
     assert.equal(preferredVersion, manifest.version, `${target.preferred_command} --version must equal the package manifest`);
     for (const command of target.expected_commands.filter((command) => command !== target.preferred_command)) {
-      const versionOut = (await runCli(command, command === "agentstate-lite" ? ["-v"] : ["--version"])).stdout.trim();
+      const versionOut = (await runProcess(command, command === "agentstate-lite" ? ["-v"] : ["--version"], { cwd: scratch, env: commandEnv })).stdout.trim();
       assert.equal(versionOut, manifest.version, `${command} --version must equal the package manifest`);
     }
     const preferredIdentity = parseJson(
@@ -642,13 +649,8 @@ async function runInstalledProof(spec) {
       assert.deepEqual(identity, preferredIdentity, `${command} alias must report the canonical target identity`);
     }
     assert.equal(preferredIdentity.identity.schema, SUCCESSOR_BUILD_IDENTITY_SCHEMA);
-    assert.deepEqual(preferredIdentity.identity.package, {
-      name: target.package.name,
-      version: manifest.version,
-    });
-    assert.equal(preferredIdentity.identity.artifact.channel, spec.expectedChannel);
-    const installedSha = `sha256:${createHash("sha256").update(await readFile(installedEntrypoint)).digest("hex")}`;
-    assert.equal(preferredIdentity.identity.artifact.sha256, installedSha);
+    assertIdentity(preferredIdentity.identity, { package: { name: target.package.name, version: manifest.version }, artifact: { channel: spec.expectedChannel } });
+    await assertArtifact(installedEntrypoint, preferredIdentity.identity.artifact.sha256);
     const installedEntrypointRealPath = await realpath(installedEntrypoint);
     assert.equal(preferredIdentity.identity.runtime.executable_path, installedEntrypointRealPath);
     assert.deepEqual(preferredIdentity.identity.compatibility_contracts, { skill: 1, hook: 1, mcp: 1 });
@@ -1400,7 +1402,7 @@ async function runInstalledProof(spec) {
       },
     };
   } finally {
-    await rm(scratch, { recursive: true, force: true });
+    await workspace.close();
   }
 }
 
