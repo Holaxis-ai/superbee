@@ -31,12 +31,14 @@ import {
   fetchOriginRequired,
   folderPresentInCodeIndex,
   committedBundleAtHead,
+  currentBranch,
   isAncestor,
   pushBoardCommit,
   pushBoardUpstream,
   readGitDirMarker,
   refCommit,
   repoTopLevel,
+  resolveStandaloneBoardCheckout,
   resolveBundleKey,
   runGit,
   setBoardUpstream,
@@ -502,6 +504,12 @@ export async function establishBoard(
     throw syncOutcomeError("establish.origin-unconfigured", { inv });
   }
   assertNotLinkedWorktree(top, inv);
+
+  // A standalone checkout of a named board branch is already shared (its upstream is the named
+  // board); establishment only ever creates the default board, so this is the ordinary sync.
+  if (currentBranch(top) !== BOARD_BRANCH && resolveStandaloneBoardCheckout(top, { requireRemoteRef: false }) !== null) {
+    return { already: true };
+  }
 
   // The COMMITTED-FOLDER case routes structurally, before any network op: a selected conventional
   // tree committed at HEAD means the greenfield safety model (rename + convert the folder) must

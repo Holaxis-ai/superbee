@@ -317,6 +317,16 @@ test("turn-end --git-boards hands a conflict back once, stays quiet for offline,
     assert.match((JSON.parse(await run()) as { reason: string }).reason, /committed locally/);
     assert.equal(await run(), "");
 
+    // A failed sync gate is the writer's to fix: handed back once, with the gate's own next step.
+    failure = new CliError("GATE_FAILED", "the sync gate exited 1; nothing was pushed", {
+      help: "run the gate yourself from /x (git config --get superbee.syncGate), fix what it reports, then superbee sync",
+    });
+    const gated = JSON.parse(await run()) as { decision: string; reason: string };
+    assert.equal(gated.decision, "block");
+    assert.match(gated.reason, /sync gate exited 1; nothing was pushed/);
+    assert.match(gated.reason, /Next: run the gate yourself/);
+    assert.equal(await run(), "");
+
     assert.equal(await turnEndQuietWith({ SUPERBEE_NO_TURN_SYNC: "1" }, home, board), "");
   } finally {
     await rm(home, { recursive: true, force: true });
