@@ -407,11 +407,27 @@ export function projectKindForAuthoring(
   };
 }
 
+type KindFieldWarningCode = "KIND_FIELD_MISSING" | "KIND_FIELD_VALUE" | "KIND_FIELD_ARITY";
+
 /** Whether a Kind finding names a frontmatter coordinate rather than a body heading. */
-export function isKindFieldValidationWarning(warning: ValidationWarning): boolean {
+export function isKindFieldValidationWarning(
+  warning: ValidationWarning,
+): warning is ValidationWarning & { code: KindFieldWarningCode } {
   return warning.code === "KIND_FIELD_MISSING"
     || warning.code === "KIND_FIELD_VALUE"
     || warning.code === "KIND_FIELD_ARITY";
+}
+
+/** The owning message grammar separates the field coordinate from Kind labels and value suffixes. */
+function kindFieldWarningPrefix(code: KindFieldWarningCode, kind: KindConvention, field: string): string {
+  switch (code) {
+    case "KIND_FIELD_MISSING":
+      return `'${kind.governs}' requires a non-empty '${field}' field `;
+    case "KIND_FIELD_VALUE":
+      return `'${field}' value `;
+    case "KIND_FIELD_ARITY":
+      return `'${field}' is enum-restricted and takes exactly ONE value for '${kind.governs}'; `;
+  }
 }
 
 /** Project Kind-validation findings into the same authoring vocabulary as the Kind schema. */
@@ -422,17 +438,18 @@ export function projectKindValidationWarnings(
 ): ValidationWarning[] {
   const progress = progressStatusCoordinate(okfVersion, kind);
   if (!progress) return warnings;
-  const stored = `'${progress.storageField}'`;
-  const logical = `'${progress.logicalField}'`;
-  return warnings.map((warning) => isKindFieldValidationWarning(warning) && warning.field === progress.storageField
-    ? {
-        ...warning,
-        field: progress.logicalField,
-        // Core's Kind warnings name the field first. Replace that one coordinate only; a later
-        // occurrence may be the user's literal value and must remain byte-truthful.
-        message: warning.message.replace(stored, logical),
-      }
-    : warning);
+  return warnings.map((warning) => {
+    if (!isKindFieldValidationWarning(warning) || warning.field !== progress.storageField) return warning;
+    const storedPrefix = kindFieldWarningPrefix(warning.code, kind, progress.storageField);
+    const logicalPrefix = kindFieldWarningPrefix(warning.code, kind, progress.logicalField);
+    return {
+      ...warning,
+      field: progress.logicalField,
+      message: warning.message.startsWith(storedPrefix)
+        ? logicalPrefix + warning.message.slice(storedPrefix.length)
+        : warning.message,
+    };
+  });
 }
 
 /** True for a plain YAML/JSON map (excludes arrays, `null`, dates, and other object instances). */
@@ -1080,7 +1097,7 @@ export function validateAgainstKind(doc: OkfDocument, kind: KindConvention): Val
     if (!hasOwn(fm, field) || !isPresent(fm[field])) {
       warnings.push({
         code: "KIND_FIELD_MISSING",
-        message: `'${kind.governs}' requires a non-empty '${field}' field (declared by ${kind.id}).`,
+        message: kindFieldWarningPrefix("KIND_FIELD_MISSING", kind, field) + `(declared by ${kind.id}).`,
         field,
         severity: "warning",
       });
@@ -1104,7 +1121,7 @@ export function validateAgainstKind(doc: OkfDocument, kind: KindConvention): Val
       warnings.push({
         code: "KIND_FIELD_ARITY",
         message:
-          `'${field}' is enum-restricted and takes exactly ONE value for '${kind.governs}'; ` +
+          kindFieldWarningPrefix("KIND_FIELD_ARITY", kind, field) +
           `got ${raw.length} (${raw.map((v) => String(v)).join(", ")}).`,
         field,
         severity: "warning",
@@ -1116,7 +1133,7 @@ export function validateAgainstKind(doc: OkfDocument, kind: KindConvention): Val
       if (!allowedStrs.includes(v)) {
         warnings.push({
           code: "KIND_FIELD_VALUE",
-          message: `'${field}' value '${v}' is not one of the allowed values for '${kind.governs}': ${allowedStrs.join(", ")}.`,
+          message: kindFieldWarningPrefix("KIND_FIELD_VALUE", kind, field) + `'${v}' is not one of the allowed values for '${kind.governs}': ${allowedStrs.join(", ")}.`,
           field,
           severity: "warning",
         });

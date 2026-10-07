@@ -48,34 +48,42 @@ async function rejected(command: typeof newCommand | typeof doc | typeof status,
 }
 for (const edition of ["0.1", "0.2"] as const) {
   const stored = edition === "0.2" ? "superbee_progress_status" : "status";
+  for (const governs of ["Task", stored, `Kind '${stored}' label`]) {
   for (const row of [
     { name: "missing", value: undefined, code: "KIND_FIELD_MISSING" },
     { name: "literal bad value", value: stored, code: "KIND_FIELD_VALUE" },
     { name: "enum arity", value: ["todo", "done"], code: "KIND_FIELD_ARITY" },
-  ]) test(`Kind command agreement ${edition}: ${row.name}`, async () => {
+  ]) test(`Kind command agreement ${edition} ${governs}: ${row.name}`, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "sb-kind-feedback-")); const bundle = { root: dir };
     try {
       await initBundle(dir, { okfVersion: edition });
-      await writeDoc(bundle, { id: "conventions/task", frontmatter: { type: "Convention", governs: "Task", path: "tasks/", fields: { required: ["title", stored], optional: [], values: { [stored]: ["todo", "done"] } } }, body: "" });
+      await writeDoc(bundle, { id: "conventions/task", frontmatter: { type: "Convention", governs, path: "tasks/", fields: { required: ["title", stored], optional: [], values: { [stored]: ["todo", "done"] } } }, body: "" });
       const suffix = ["--dir", dir];
       const fieldArgs = row.value === undefined ? [] : (Array.isArray(row.value) ? row.value : [row.value]).flatMap(v => ["--progress_status", v]);
-      const newWarnings = await rejected(newCommand, ["Task", "new", "--title", "A", ...fieldArgs, ...suffix]);
+      const newWarnings = await rejected(newCommand, [governs, "new", "--title", "A", ...fieldArgs, ...suffix]);
       await assert.rejects(() => readDoc(bundle, "tasks/new"));
-      const strictWrite = await rejected(doc, ["write", "tasks/strict", "--type", "Task", "--title", "A", "--body", "hi", "--strict", ...suffix]);
+      const strictWrite = await rejected(doc, ["write", "tasks/strict", "--type", governs, "--title", "A", "--body", "hi", "--strict", ...suffix]);
       assert.equal(strictWrite[0]?.field, "progress_status");
       await assert.rejects(() => readDoc(bundle, "tasks/strict"));
-      const write = await json(doc, ["write", "tasks/write", "--type", "Task", "--title", "A", "--body", "hi", ...suffix]);
-      if (row.value !== undefined) await writeDoc(bundle, { id: "tasks/write", frontmatter: { type: "Task", title: "A", [stored]: row.value }, body: "hi" });
+      const write = await json(doc, ["write", "tasks/write", "--type", governs, "--title", "A", "--body", "hi", ...suffix]);
+      if (row.value !== undefined) await writeDoc(bundle, { id: "tasks/write", frontmatter: { type: governs, title: "A", [stored]: row.value }, body: "hi" });
       const before = await readFile(path.join(dir, "tasks/write.md")); const head = await readDocVersioned(bundle, "tasks/write");
       const advisory = await json(doc, ["update", "tasks/write", "--title", "A", ...suffix]);
       const strict = await rejected(doc, ["update", "tasks/write", "--title", "A", "--strict", ...suffix]);
       const registry = await loadKinds(bundle); let hooks = 0;
       const seam = await mutateDoc({ bundle, id: "tasks/write", registry, strict: false, mode: "overwrite", helpOnKindReject: "fix", errors: {}, onPersisted: () => { hooks++; }, buildCandidate: () => ({ frontmatter: structuredClone(head.doc.frontmatter), body: head.doc.body }) });
       const patchSeam = await mutateDoc({ bundle, id: "tasks/write", registry, strict: false, mode: "patch", helpOnKindReject: "fix", errors: {}, onPersisted: () => { hooks++; }, buildCandidate: () => ({ frontmatter: structuredClone(head.doc.frontmatter), body: head.doc.body }) });
+      const blockers = await blockedEvolution(dir);
       const groups: ValidationWarning[][] = [patchSeam.warnings, newWarnings, advisory.warnings, strict, seam.warnings, ...(row.value === undefined ? [write.warnings] : [])];
       for (const warnings of groups) {
         const warning = warnings.find(w => w.code === row.code); assert.ok(warning, JSON.stringify(warnings));
-        assert.equal(warning.field, "progress_status"); assert.match(warning.message, /'progress_status'/);
+        assert.equal(warning.field, "progress_status");
+        const expected = row.code === "KIND_FIELD_MISSING"
+          ? `'${governs}' requires a non-empty 'progress_status' field (declared by conventions/task).`
+          : row.code === "KIND_FIELD_VALUE"
+            ? `'progress_status' value '${stored}' is not one of the allowed values for '${governs}': todo, done.`
+            : `'progress_status' is enum-restricted and takes exactly ONE value for '${governs}'; got 2 (todo, done).`;
+        assert.equal(warning.message, expected);
         if (row.name === "literal bad value") assert.ok(warning.message.includes(`'${stored}'`));
       }
       const health = await json(status, ["--limit", "0", ...suffix]);
@@ -83,7 +91,6 @@ for (const edition of ["0.1", "0.2"] as const) {
       assert.deepEqual(health.kind_lint.rows, [{ id: "tasks/write", field: "progress_status", code: row.code }]);
       assert.equal(health.conformance_debt, 1);
       assert.equal(health.conformance_debt_docs.total, 1);
-      const blockers = await blockedEvolution(dir);
       assert.equal(blockers.length, 1);
       assert.equal(blockers[0]?.code, "RECIPE_EVOLUTION_INSTANCE_INVALID");
       assert.equal(blockers[0]?.field, "progress_status");
@@ -93,6 +100,7 @@ for (const edition of ["0.1", "0.2"] as const) {
       assert.equal((await readDocVersioned(bundle, "tasks/write")).version, head.version);
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
+}
 }
 test("same-value dynamic update rejects other missing requirements; help gives supported field authoring", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sb-kind-dynamic-"));
