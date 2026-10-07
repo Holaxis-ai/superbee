@@ -1,6 +1,6 @@
 name: CI tests
 
-# Runtime-sensitive suites run identically on Node 22 and 26 (two shards each), then once more on
+# Runtime-sensitive suites run identically on Node 22 and 26 (four CLI shards each), then once more on
 # Node 24.21.0/macOS so that tests whose native branch only executes on a case-aliasing filesystem run.
 # Distribution, browser/UI, local release policy, and exhaustive target proofs are
 # platform-independent lanes on one supported runtime. Windows adapters and their native
@@ -32,21 +32,19 @@ env:
   AGENTSTATE_LITE_NO_AUTOPULL: 1
 
 jobs:
-  # Each runtime is split into two shards so the lane stays well inside its timeout as tests grow.
-  # Both shards build and typecheck; the CLI suite (the dominant cost) is divided by file through
-  # SUPERBEE_TEST_SHARD, and the smaller workspace suites run in both shards.
+  # CLI shards build independently; common workspace tests and typechecking run once per Node.
   runtime:
-    name: runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/2)
+    name: runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
     strategy:
       fail-fast: false
       matrix:
         node-version: [22, 26]
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"
-      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2
+      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/4
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -62,7 +60,34 @@ jobs:
       - name: Confirm the runner filesystem does not alias case
         run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
       - name: Run the identical runtime-sensitive contract
-        run: npm run ci:runtime
+        run: npm run ci:runtime-cli
+
+  runtime-common:
+    name: common runtime contracts (node ${{ matrix.node-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 26]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
+      - run: npm ci
+      - name: Confirm the runner filesystem does not alias case
+        run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
+      - name: Run common workspace contracts and remaining typechecks
+        run: npm run ci:runtime-common
 
   aliasing-host:
     name: host-class proofs on an aliasing host (macos, node 24.21.0)
@@ -225,7 +250,7 @@ jobs:
 
   required:
     name: CI required lanes
-    needs: [runtime, aliasing-host, smoke-node-22, distribution, browser, scripts]
+    needs: [runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -243,6 +268,7 @@ jobs:
           needs-json: ${{ toJSON(needs) }}
           policy-json: >-
             [{"job":"runtime","required":true},
+             {"job":"runtime-common","required":true},
              {"job":"aliasing-host","required":true},
              {"job":"smoke-node-22","required":true},
              {"job":"distribution","required":true},
@@ -251,7 +277,7 @@ jobs:
 
   compatibility-gate-node-22:
     name: gate (node 22)
-    needs: [runtime, aliasing-host, smoke-node-22, distribution, browser, scripts]
+    needs: [runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -269,6 +295,7 @@ jobs:
           needs-json: ${{ toJSON(needs) }}
           policy-json: >-
             [{"job":"runtime","required":true},
+             {"job":"runtime-common","required":true},
              {"job":"aliasing-host","required":true},
              {"job":"smoke-node-22","required":true},
              {"job":"distribution","required":true},
@@ -277,7 +304,7 @@ jobs:
 
   compatibility-gate-node-26:
     name: gate (node 26)
-    needs: [runtime, aliasing-host, smoke-node-22, distribution, browser, scripts]
+    needs: [runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -295,6 +322,7 @@ jobs:
           needs-json: ${{ toJSON(needs) }}
           policy-json: >-
             [{"job":"runtime","required":true},
+             {"job":"runtime-common","required":true},
              {"job":"aliasing-host","required":true},
              {"job":"smoke-node-22","required":true},
              {"job":"distribution","required":true},

@@ -603,17 +603,17 @@ function validateLaneManifest(candidate, packageJson = pkg, sources = wrapperSou
       const component = components.get(id);
       assert.ok(component, `${laneName} references unknown executable component ${id}`);
       assert.ok(
-        command.includes(component.command),
+        command.includes(component.lane_commands?.[laneName] ?? component.command),
         `${laneName} script ${lane.script} does not execute ${id}: ${component.command}`,
       );
     }
   }
   for (const component of candidate.components) {
-    assert.deepEqual(claimed.get(component.id), [component.owner], `${component.id} must have one intentional owner`);
+    assert.deepEqual(claimed.get(component.id), component.owners ?? [component.owner], `${component.id} must have its intentional owners`);
   }
 }
 
-test("the lane manifest owns every complete local-check component exactly once", () => {
+test("the lane manifest accounts for every complete local-check component", () => {
   validateLaneManifest(manifest);
   assert.deepEqual(REQUIRED_JOBS, manifest.required_jobs);
 });
@@ -673,13 +673,13 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and platform lane
   assert.deepEqual(manifest.runtime_nodes, [22, 26]);
   assert.deepEqual(manifest.lanes.runtime.nodes, manifest.runtime_nodes);
   assert.equal(
-    pkg.scripts[manifest.lanes.runtime.script],
+    pkg.scripts["ci:runtime"],
     "npm run build && npm run typecheck:after-build && npm test --workspaces --if-present --ignore-scripts",
   );
   assert.equal(cliPkg.scripts.pretest, "node build.mjs local-dev", "ordinary npm test must keep its build prerequisite");
   assert.doesNotMatch(cliPkg.scripts.test, /build\.mjs/, "the CI runtime lane must be able to skip the pretest rebuild");
   for (const [name, lane] of Object.entries(manifest.lanes)) {
-    if (name === "runtime" || name === "smoke-node-22") continue;
+    if (name === "runtime" || name === "runtime-common" || name === "smoke-node-22") continue;
     assert.deepEqual(lane.nodes, [manifest.singleton_node], `${name} must not amplify across runtime versions`);
   }
   assert.deepEqual(cliPkg.os, ["darwin", "linux"], "the maintained executable admits only its supported hosts");
@@ -687,7 +687,7 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and platform lane
 
 test("the runtime shard variable partitions the CLI suite by file and rejects malformed shards", async () => {
   const lane = manifest.lanes.runtime;
-  assert.equal(lane.shards, 2);
+  assert.equal(lane.shards, 4);
   assert.equal(lane.shard_variable, "SUPERBEE_TEST_SHARD");
   const cliTest = JSON.parse(readFileSync(path.join(root, "packages", "cli", "package.json"), "utf8")).scripts.test;
   assert.match(cliTest, /^node scripts\/run-test-command\.mjs node --test /, "the CLI suite must run through the sharding wrapper");
@@ -739,9 +739,9 @@ test("the aliasing-host lane pins a fail-closed host expectation on both host cl
 test("the fail-closed result contract accepts success only", () => {
   const green = Object.fromEntries(REQUIRED_JOBS.map((name) => [name, { result: "success", outputs: {} }]));
   assert.deepEqual(evaluateRequiredResults(green), { ok: true, errors: [] });
-  for (const rejected of ["failure", "cancelled", "timed_out", "neutral", "skipped", undefined]) {
+  for (const job of REQUIRED_JOBS) for (const rejected of ["failure", "cancelled", "timed_out", "neutral", "skipped", undefined]) {
     const results = structuredClone(green);
-    results[REQUIRED_JOBS[0]] = rejected === undefined ? {} : { result: rejected };
+    results[job] = rejected === undefined ? {} : { result: rejected };
     assert.equal(evaluateRequiredResults(results).ok, false, `${String(rejected)} must fail closed`);
   }
   const missing = structuredClone(green);
