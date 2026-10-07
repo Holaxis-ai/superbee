@@ -184,22 +184,28 @@ and which fixed configs model changes that have not merged.
 
 ### GitHub Action pin renewal
 
-Every remote action reference uses a full commit SHA plus its semantic release in a same-line
-comment. `scripts/ci-lanes.json` is the repository registry, and
-`scripts/workflow-action-pins.test.mjs` carries a separate reviewed literal so a workflow and its
-registry cannot drift together unnoticed. Dependabot checks the root workflows weekly.
+Every remote action reference uses a full lowercase commit SHA plus its exact `vX.Y.Z` release
+in a same-line comment. Workflow files own the version and SHA inventory.
+`scripts/ci-lanes.json` owns the reviewed allowlist of exact `owner/repo[/subpath]` identities.
+New identities require an explicit policy edit and review. Referenced local actions must be
+repository-contained composites; their nested action references follow the same policy. Reusable
+workflows and local JavaScript or Docker actions require a separately reviewed policy extension.
 
-A Dependabot pull request is therefore deliberately red after it changes only workflow SHA and
-version-comment pairs. Before making it green, verify each proposed release tag resolves to that
-commit in the action's official upstream repository and inspect the upstream commit's signature
-evidence. Then update the matching `github_actions.pins` registry row and the independent
-`REVIEWED_PINS` literal in the same pull request. For a major-version proposal, also rename or
-consolidate the versioned key in both authorities (without duplicating an existing
-identity/revision pair), update each topology test's `actionPin(...)` reference that selects the
-old major, and recalculate any affected remote-reference, identity, and pair inventory assertions.
-Then run `node --test scripts/workflow-action-pins.test.mjs` and `npm run ci:scripts`; normal human
-review and CI still decide whether the renewal merges. Do not weaken the test to accept an
-unreviewed Dependabot-only change.
+Dependabot checks root workflows weekly. A renewal of an approved identity can pass with only its
+workflow SHA and version-comment edits, including removal of the last use of an old major.
+`npm run ci:scripts` runs offline syntax, identity, source-agreement, and topology tests.
+The required hosted scripts job separately runs `npm run verify:action-upstreams` on every CI
+trigger, with only the existing read-only GitHub token passed to that step. It checks every observed
+pin against the exact upstream release tag, resolves annotated tags to a commit, and checks action
+metadata at that immutable commit and approved subpath. Missing, mismatched, or unverifiable evidence
+fails the job; bounded retries handle transient API failures. Locally, run the verifier with a
+read-only `GITHUB_TOKEN` when API limits require authentication.
+
+Commit and annotated-tag signature metadata is reported as diagnostic evidence. Upstream tag
+correspondence does not establish code safety, enforce signatures, inspect transitive upstream
+dependencies, or isolate Actions before other workflow jobs execute them. Human PR review and the
+existing merge queue remain required; major renewals also need compatibility review. Refresh
+Dependabot branches after this policy lands so their checks evaluate the current validators.
 
 Minimum iteration lanes by reach:
 

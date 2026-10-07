@@ -207,6 +207,10 @@ jobs:
         run: npm run check:package-versions
       - run: npm ci
       - run: npm run ci:scripts
+      - name: Verify GitHub Action upstream correspondence
+        run: npm run verify:action-upstreams
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
   smoke-node-22:
     name: installed-package smoke on the engines floor (node 22.14.0)
