@@ -119,7 +119,7 @@ test("SIGKILL at every step of pull, export and push, then re-run: nothing lost 
   const { server, url } = await bridge();
   const failures: string[] = [];
   const litter: string[] = [];
-  const progress = new CrashSweepProgress();
+  const progress = new CrashSweepProgress({ singlePoint: only !== undefined });
   try {
     for (let killAt = only ?? 1; killAt < (only ? only + 1 : 400); killAt += 1) {
       const s = await scenario();

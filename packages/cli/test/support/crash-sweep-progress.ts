@@ -5,6 +5,12 @@ export class CrashSweepProgress {
   steps = 0;
   completed = false;
 
+  private readonly options: { singlePoint?: boolean };
+
+  constructor(options: { singlePoint?: boolean } = {}) {
+    this.options = options;
+  }
+
   observe(killAt: number, result: { signal: NodeJS.Signals | null; code: number | null; stderr: string }): void {
     assert.equal(this.completed, false, "child launched after sweep completed");
     if (result.signal === "SIGKILL") {
@@ -17,7 +23,11 @@ export class CrashSweepProgress {
     assert.ok(match, "uninterrupted child must report its side effects");
     this.steps = Number(match[1]);
     assert.ok(this.steps > 0, "sweep must exercise positive side effects");
-    assert.equal(this.steps, killAt - 1, "terminal child must follow the final kill point");
+    if (this.options.singlePoint) {
+      assert.ok(this.steps < killAt, "selected kill point must exceed completed side effects");
+    } else {
+      assert.equal(this.steps, killAt - 1, "terminal child must follow the final kill point");
+    }
     this.completed = true;
   }
 

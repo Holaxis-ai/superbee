@@ -237,9 +237,14 @@ const CASES: Case[] = [
 ];
 
 // One case per file preserves the module-global fake-host bridge's process isolation.
+export function selectedCrashCaseKeys(only: string | undefined = process.env.QA_ONLY): CrashCaseKey[] {
+  return CASES.filter(c => !only || c.name.startsWith(only)).map(c => c.key);
+}
+
 export function registerCrashCase(key: CrashCaseKey): void {
   const cases = CASES.filter(c => c.key === key);
   assert.equal(cases.length, 1, `unknown or duplicated crash case: ${key}`);
+  if (!selectedCrashCaseKeys().includes(key)) return;
   registerCase(cases[0]!);
 }
 

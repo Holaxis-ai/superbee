@@ -290,7 +290,7 @@ test("built key owners and review sentinels reject surplus with the exact envelo
   assert.equal(shadow.status, 2);
 });
 
-test("built key owners and review sentinels prove missing and help precedence", () => {
+test("built runtime batches prove missing and help precedence, with executable parity samples", () => {
   const ctx = createFixture();
   const rows = leafCases(ctx);
   const bundleBefore = treeSnapshot(ctx.bundle);

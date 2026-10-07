@@ -5,7 +5,7 @@
 // exact artifact that let four review rounds each miss a different crossing point — so this file
 // is the gate that makes the declaration TRUE:
 //
-//   • every declared path flag is accepted by the built CLI, and
+//   • every declared path flag is accepted by the built CLI runtime, and
 //   • no UNDECLARED path-shaped flag is accepted anywhere, and
 //   • every declared non-`rejected` path flag appears in its command's usage line.
 //
@@ -97,7 +97,7 @@ function probeWorkspace(): { cwd: string; home: string; cleanup: () => void } {
   return { cwd, home, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-test("registry path flags: every declared flag is accepted by the built CLI, and no undeclared path-shaped flag is", async (t) => {
+test("registry path flags: the built runtime accepts declared flags and rejects undeclared flags, with executable parity samples", async (t) => {
   const workspace = probeWorkspace();
   t.after(() => workspace.cleanup());
   const declaredNames = [...new Set(ALL_LEAVES.flatMap((leaf) => leaf.pathFlags.map((entry) => entry.flag)))].sort();

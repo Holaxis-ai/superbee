@@ -11,6 +11,7 @@ import { partitionFiles, timing } from "../packages/cli/scripts/test-shards.mjs"
 const cli = fileURLToPath(new URL("../packages/cli/", import.meta.url));
 test("weighted CLI partition is deterministic, disjoint and exhaustive, including new files", () => {
   const discovered = readdirSync(path.join(cli, "test")).filter(file => file.endsWith(".test.ts"));
+  assert.deepEqual(Object.keys(timing.weights).filter(file => !discovered.includes(file)), [], "timing weights must name existing test files");
   const files = [...discovered, "new-undocumented.test.ts"];
   const shards = partitionFiles(files, 4);
   assert.deepEqual(shards.flatMap(shard => shard.files).sort(), files.sort());

@@ -145,6 +145,7 @@ The independent required `runtime-common` job builds, runs remaining post-build 
 discovers every non-CLI workspace test script once per Node version. It excludes the CLI by package
 identity and fails if workspace patterns change without an updated discovery rule. Without a shard
 variable, `npm run ci:runtime` remains the complete local runtime command, including every workspace.
+An explicitly empty `SUPERBEE_TEST_SHARD` is invalid; unset it to run the complete suite.
 
 CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, merge-group
 candidates, a weekly schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
