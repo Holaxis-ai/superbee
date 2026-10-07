@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 
@@ -105,6 +105,15 @@ export function workflowTexts(root) {
     .map(name => [`.github/workflows/${name}`, readFileSync(path.join(root, '.github/workflows', name), 'utf8')]));
 }
 
+function readActionDefinition(file) {
+  // Validate and read the same opened object. Nonblocking open lets us reject FIFOs too.
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    assert.ok(fstatSync(fd).isFile(), 'local action definition must be a regular file');
+    return readFileSync(fd, 'utf8');
+  } finally { closeSync(fd); }
+}
+
 export function discoverActions(root, { workflows = workflowTexts(root), identities } = {}) {
   const approved = validateIdentities(identities ?? JSON.parse(readFileSync(path.join(root, 'scripts/ci-lanes.json'), 'utf8')).github_actions.identities);
   const realRoot = realpathSync(root);
@@ -120,14 +129,14 @@ export function discoverActions(root, { workflows = workflowTexts(root), identit
       occurrences.push(occurrence);
       if (!occurrence.local) continue;
       const directory = contained(path.resolve(realRoot, occurrence.value));
-      const definitions = ['action.yml', 'action.yaml'].map(name => path.join(directory, name)).filter(existsSync);
+      const definitions = readdirSync(directory).filter(name => name === 'action.yml' || name === 'action.yaml')
+        .map(name => path.join(directory, name));
       assert.equal(definitions.length, 1, `${file} local action needs exactly one action.yml/action.yaml: ${occurrence.value}`);
       const definition = contained(definitions[0]);
-      assert.ok(statSync(definition).isFile(), 'local action definition must be a regular file');
       assert.ok(!active.has(definition), `local composite cycle: ${definition}`);
       if (visited.has(definition)) continue;
       active.add(definition);
-      visit(path.relative(realRoot, definition), readFileSync(definition, 'utf8'), true);
+      visit(path.relative(realRoot, definition), readActionDefinition(definition), true);
       active.delete(definition); visited.add(definition);
     }
   };

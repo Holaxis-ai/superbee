@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import yaml from 'js-yaml';
-import { discoverActions, parseActionDocument, validateIdentities, workflowTexts } from './workflow-actions.mjs';
+import { discoverActions, parseActionDocument, validateIdentities } from './workflow-actions.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const manifest = JSON.parse(readFileSync(path.join(root, 'scripts/ci-lanes.json'), 'utf8'));
 const dependabot = readFileSync(path.join(root, '.github/dependabot.yml'), 'utf8');
 const sha = 'a'.repeat(40), next = 'b'.repeat(40);
 const identities = ['actions/checkout', 'actions/cache/restore', 'actions/cache/save'];
@@ -100,6 +101,44 @@ test('local composite closure is recursive, contained, cycle-safe and complete',
   put('b/action.yml', composite('    - run: true'));
   assert.throws(() => check('      - uses: ./b'), /exactly one/);
 });
+test('local definitions are read from the checked descriptor and close it on success or rejection', t => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'action-descriptor-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const actionDirectory = path.join(dir, 'a');
+  mkdirSync(actionDirectory);
+  const action = path.join(actionDirectory, 'action.yml');
+  const text = `runs:\n  using: composite\n  steps:\n${line().slice(2)}\n`;
+  const stat = fs.fstatSync;
+  const check = () => discoverActions(dir, {
+    workflows: new Map([['fixture.yml', fixtureWorkflow('      - uses: ./a')]]), identities,
+  });
+  for (const regular of [true, false]) {
+    if (regular) writeFileSync(action, text);
+    else mkdirSync(action);
+    let descriptor;
+    const probe = t.mock.method(fs, 'fstatSync', fd => {
+      descriptor = fd;
+      const result = stat(fd);
+      if (regular) {
+        fs.renameSync(action, path.join(dir, 'retained.yml'));
+        writeFileSync(action, 'invalid replacement');
+      }
+      return result;
+    });
+    syncBuiltinESMExports();
+    try {
+      if (regular) assert.equal(check().filter(row => !row.local)[0].revision, sha);
+      else assert.throws(check, /must be a regular file/);
+      assert.equal(typeof descriptor, 'number');
+      assert.throws(() => stat(descriptor), { code: 'EBADF' });
+    } finally {
+      probe.mock.restore();
+      syncBuiltinESMExports();
+      rmSync(action, { recursive: true, force: true });
+    }
+  }
+});
+
 test("Dependabot has one effective root weekly updater and permits distinct ecosystems", () => {
   for (const [label, text, expected] of [
     ["missing", "version: 2\nupdates: []\n", /exactly one/],
