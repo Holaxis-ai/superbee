@@ -180,7 +180,7 @@ test("finalize accepts staged-publish metadata with an empty registry readme", (
     "",
     "## Install",
     "",
-    "Node.js 20 or newer on macOS and Linux",
+    "Requires a supported Node.js 22, 24, or 26 release (22.14.0 minimum) on macOS or Linux.",
     "",
     "`latest` and `next`",
     "",
@@ -191,7 +191,7 @@ test("finalize accepts staged-publish metadata with an empty registry readme", (
     "Run `superbee setup` and follow its instructions.",
     "",
   ].join("\n");
-  const platform = { engines: { node: ">=20" }, os: ["darwin", "linux"] };
+  const platform = { engines: { node: "^22.14.0 || ^24.0.0 || ^26.0.0" }, os: ["darwin", "linux"] };
   writeFileSync(path.join(out, "registry-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme: "", ...platform }));
   writeFileSync(path.join(out, "registry-tags.json"), JSON.stringify({ latest: "0.1.3", next: "0.1.5-pre.1" }));
   writeFileSync(path.join(out, "tarball-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme, ...platform }));

@@ -82,7 +82,9 @@ duplication — a plain overwrite that converges to the same on-disk state).
 
 If a declared Kind governs the document type, prefer 'superbee new "<Kind>" <id> ...'; its
 authoring is strict and create-only. Use 'doc write' for a generic type or a deliberate full
-replacement.
+replacement. Kind validation is advisory by default: violations appear as warnings, including on
+no-ops. --strict rejects violations without writing. A changed replacement of a previously conforming
+document cannot be nonconforming, even in advisory mode.
 
 Options:
   --type <t>           OKF concept type (non-empty)                          [required]
@@ -143,6 +145,10 @@ Usage:
 Only the fields you pass change; everything else — including the body when no body source is given —
 is preserved verbatim. Idempotent: a patch that changes NOTHING (ignoring the auto-refreshed
 timestamp) converges to changed:false (no write, no timestamp refresh).
+
+Standard-field patches use advisory Kind validation by default, returning warnings even on no-ops;
+--strict rejects violations without writing. Dynamic declared fields are always strict: passing a
+--<field> flag requires the whole resulting document to satisfy its Kind, even for a same-value patch.
 
 Options:
   --title <t>            Replace the title

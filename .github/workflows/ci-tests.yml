@@ -1,7 +1,7 @@
 name: CI tests
 
-# Runtime-sensitive suites run identically on Node 22 and 26 (two shards each), then once more on
-# macOS so that tests whose native branch only executes on a case-aliasing filesystem actually run.
+# Runtime-sensitive suites run identically on Node 22 and 26 (four CLI shards each), then once more on
+# Node 24.21.0/macOS so that tests whose native branch only executes on a case-aliasing filesystem run.
 # Distribution, browser/UI, local release policy, and exhaustive target proofs are
 # platform-independent lanes on one supported runtime. Windows adapters and their native
 # installed-package proof live in the separate Windows distribution repository. Required lanes
@@ -32,27 +32,25 @@ env:
   AGENTSTATE_LITE_NO_AUTOPULL: 1
 
 jobs:
-  # Each runtime is split into two shards so the lane stays well inside its timeout as tests grow.
-  # Both shards build and typecheck; the CLI suite (the dominant cost) is divided by file through
-  # SUPERBEE_TEST_SHARD, and the smaller workspace suites run in both shards.
+  # CLI shards build independently; common workspace tests and typechecking run once per Node.
   runtime:
-    name: runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/2)
+    name: runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
     strategy:
       fail-fast: false
       matrix:
         node-version: [22, 26]
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"
-      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2
+      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -62,22 +60,49 @@ jobs:
       - name: Confirm the runner filesystem does not alias case
         run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
       - name: Run the identical runtime-sensitive contract
-        run: npm run ci:runtime
+        run: npm run ci:runtime-cli
+
+  runtime-common:
+    name: common runtime contracts (node ${{ matrix.node-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 26]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - name: Check package version sources before installation
+        run: npm run check:package-versions
+      - run: npm ci
+      - name: Confirm the runner filesystem does not alias case
+        run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
+      - name: Run common workspace contracts and remaining typechecks
+        run: npm run ci:runtime-common
 
   aliasing-host:
-    name: host-class proofs on an aliasing host (macos, node 26)
+    name: host-class proofs on an aliasing host (macos, node 24.21.0)
     runs-on: macos-latest
     timeout-minutes: 30
     env:
       SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
@@ -92,13 +117,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
@@ -115,13 +140,13 @@ jobs:
     env:
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
@@ -170,127 +195,136 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
       - run: npm ci
       - run: npm run ci:scripts
 
-  smoke-node-20:
-    name: built-CLI smoke on the engines floor (node 20)
+  smoke-node-22:
+    name: installed-package smoke on the engines floor (node 22.14.0)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 26
+          node-version: 24.21.0
           cache: npm
       - name: Check package version sources before installation
         run: npm run check:package-versions
       - run: npm ci
       - run: npm run build
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Drive the built bundle on Node 20
+      - name: Pack both public artifacts once on the default runtime
         run: |
-          node --version | grep -q '^v20\.'
-          CLI=packages/superbee/dist/superbee.mjs
-          DIR="$RUNNER_TEMP/smoke-bundle"
-          node "$CLI" init --dir "$DIR"
-          node "$CLI" doc write specs/auth --type Spec --title "Auth" --body "smoke body" --dir "$DIR"
-          node "$CLI" doc read specs/auth --dir "$DIR"
-          node "$CLI" doc write notes/one --type Note --title "One" --body "x" --dir "$DIR"
-          node "$CLI" link add specs/auth notes/one --dir "$DIR"
-          node "$CLI" link show specs/auth --dir "$DIR"
-          node "$CLI" list --dir "$DIR"
-          node "$CLI" status --dir "$DIR"
+          set -euo pipefail
+          npm run build:npm-package -w superbee
+          mkdir -p out/node-floor
+          npm run --silent pack:npm-package -- --pack-destination out/node-floor > out/node-floor/superbee-pack.json
+          SUPERBEE_PACKED="$(node -p 'require("./out/node-floor/superbee-pack.json")[0].filename')"
+          mv -- "out/node-floor/$SUPERBEE_PACKED" out/node-floor/superbee.tgz
+          npm pack -w @superbee/cli --ignore-scripts --json --pack-destination out/node-floor > out/node-floor/cli-pack.json
+          CLI_PACKED="$(node -p 'require("./out/node-floor/cli-pack.json")[0].filename')"
+          mv -- "out/node-floor/$CLI_PACKED" out/node-floor/superbee-cli.tgz
+          sha256sum out/node-floor/superbee.tgz out/node-floor/superbee-cli.tgz > out/node-floor/before.sha256
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.14.0
+      - name: Prove both installed artifacts on exact Node 22.14.0
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v22.14.0"
+          npm run verify:npm-package:tarball -- out/node-floor/superbee.tgz --json
+          npm run verify:cli-tarball -- out/node-floor/superbee-cli.tgz
+          sha256sum --check out/node-floor/before.sha256
 
   required:
     name: CI required lanes
-    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 26
+          node-version: 24.21.0
       - name: Reject every non-success or missing required result
         uses: ./.github/actions/ci-gate
         with:
           needs-json: ${{ toJSON(needs) }}
           policy-json: >-
             [{"job":"runtime","required":true},
+             {"job":"runtime-common","required":true},
              {"job":"aliasing-host","required":true},
-             {"job":"smoke-node-20","required":true},
+             {"job":"smoke-node-22","required":true},
              {"job":"distribution","required":true},
              {"job":"browser","required":true},
              {"job":"scripts","required":true}]
 
   compatibility-gate-node-22:
     name: gate (node 22)
-    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 26
+          node-version: 24.21.0
       - name: Preserve the legacy context without weakening its coverage
         uses: ./.github/actions/ci-gate
         with:
           needs-json: ${{ toJSON(needs) }}
           policy-json: >-
             [{"job":"runtime","required":true},
+             {"job":"runtime-common","required":true},
              {"job":"aliasing-host","required":true},
-             {"job":"smoke-node-20","required":true},
+             {"job":"smoke-node-22","required":true},
              {"job":"distribution","required":true},
              {"job":"browser","required":true},
              {"job":"scripts","required":true}]
 
   compatibility-gate-node-26:
     name: gate (node 26)
-    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, runtime-common, aliasing-host, smoke-node-22, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 26
+          node-version: 24.21.0
       - name: Preserve the legacy context without weakening its coverage
         uses: ./.github/actions/ci-gate
         with:
           needs-json: ${{ toJSON(needs) }}
           policy-json: >-
             [{"job":"runtime","required":true},
+             {"job":"runtime-common","required":true},
              {"job":"aliasing-host","required":true},
-             {"job":"smoke-node-20","required":true},
+             {"job":"smoke-node-22","required":true},
              {"job":"distribution","required":true},
              {"job":"browser","required":true},
              {"job":"scripts","required":true}]

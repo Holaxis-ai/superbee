@@ -311,6 +311,7 @@ export {
   projectLogicalKindFields,
   projectKindForAuthoring,
   projectKindValidationWarnings,
+  isKindFieldValidationWarning,
   validateAgainstKind,
   isPresent,
   defaultTimestampAndValidateAgainstRegistry,
@@ -363,3 +364,5 @@ export type {
   BodyDeliveryTransport, BodyDeliveryResult, BodyDeliveryInput, BodyDeliveryPremise,
   BodyLocalSnapshot, BodyReconciliationProposal,
 } from "./governed-body-write.js";
+
+export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";

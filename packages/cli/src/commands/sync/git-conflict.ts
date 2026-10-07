@@ -12,7 +12,7 @@
 import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { assertSafeConceptId, conceptIdFromPath, isReservedFile, parseMarkdown, pathFromConceptId, versionOfBytes } from "@superbee/core";
-import { BOARD_REF, bundleDirNameForProject, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit } from "@superbee/board-git";
+import { boardRefOf, bundleDirNameForProject, readDocBytesAtRef, repoTopLevel, resolveBundleKey, retargetBoardInterior, runGit } from "@superbee/board-git";
 import { resolveLocalBundleRoute } from "../../bundle.js";
 import { commandFragment, commandToken, type CommandText } from "../../command-text.js";
 import { defaultSyncStore } from "../../cursor.js";
@@ -181,7 +181,7 @@ async function locateBoard(args: ConflictArgs, cwd: string): Promise<Board> {
     throw new CliError("CONFLICT", "the selected private board has a board-origin rebase pending; run sync first to recover it", { help: `${inv} sync${dirSuffix(args)}` });
   }
   const root = route.kind === "bound-board" ? route.owner.bundleRoot : route.bundle.root;
-  if (repoTopLevel(root) === null || runGit(root, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status !== 0) {
+  if (repoTopLevel(root) === null || runGit(root, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRefOf(root)}`]).status !== 0) {
     throw new CliError("USAGE", "--inspect and --resolve apply to a shared Git board or a hosted checkout; this bundle is neither, so sync has no conflicts to show", {
       details: { bundle: root },
       help: `${inv} sync --help`,
@@ -273,7 +273,7 @@ function commandFor(args: ConflictArgs, choice: Choice): string {
 
 async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promise<Record<string, unknown>> {
   const local = await fs.readFile(board.exportPath);
-  const remote = readDocBytesAtRef(board.root, `refs/remotes/${BOARD_REF}`, board.relPath);
+  const remote = readDocBytesAtRef(board.root, `refs/remotes/${boardRefOf(board.root)}`, board.relPath);
   if (args.out !== undefined) {
     if (remote === null) throw new CliError("NOT_FOUND", `the teammate's side has no version of '${args.id}' to write: it was deleted there`, { details: { id: args.id } });
     const outHelp = `${cliInvocation()} sync --inspect --doc ${commandToken(args.id)} --out <file outside the bundle>`;
@@ -320,7 +320,7 @@ async function runInspect(args: ConflictArgs, board: Board, cwd: string): Promis
     file: board.file,
     reason: deleted ? "deleted_remotely" : "changed_remotely",
     local: { version: versionOfBytes(localText), saved_at: board.exportPath, ...preview(localText) },
-    remote: { version: remoteText === null ? null : versionOfBytes(remoteText), ref: `${BOARD_REF} (as of the last fetch)`, ...(deleted ? { deleted: true } : {}), ...preview(remoteText) },
+    remote: { version: remoteText === null ? null : versionOfBytes(remoteText), ref: `${boardRefOf(board.root)} (as of the last fetch)`, ...(deleted ? { deleted: true } : {}), ...preview(remoteText) },
     ...claimFields(divergence),
     ...(differs.length > 0 ? { frontmatter_differs: differs } : {}),
     ...(args.out !== undefined ? { remote_written_to: path.resolve(cwd, args.out) } : {}),
@@ -366,7 +366,7 @@ async function discardSavedCopy(board: Board): Promise<void> {
 
 async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd: string): Promise<Record<string, unknown>> {
   const inv = cliInvocation();
-  const remote = readDocBytesAtRef(board.root, `refs/remotes/${BOARD_REF}`, board.relPath);
+  const remote = readDocBytesAtRef(board.root, `refs/remotes/${boardRefOf(board.root)}`, board.relPath);
   const bundleDir = conflictBundleDir(args.dir, cwd);
   const dirArgs = bundleDir !== undefined ? ["--dir", bundleDir] : [];
   const local = await fs.readFile(board.exportPath);
@@ -414,7 +414,7 @@ async function runResolve(args: ConflictArgs, choice: Choice, board: Board, cwd:
     } else if (present !== null && present.equals(remote)) {
       fileState = "unchanged";
     } else {
-      const restored = runGit(board.root, ["restore", `--source=refs/remotes/${BOARD_REF}`, "--worktree", "--", board.relPath]);
+      const restored = runGit(board.root, ["restore", `--source=refs/remotes/${boardRefOf(board.root)}`, "--worktree", "--", board.relPath]);
       if (restored.status !== 0) {
         throw new CliError("RUNTIME", `could not restore the teammate's version of '${args.id}'; your saved copy was kept`, {
           details: { id: args.id, git: restored.stderr.trim() },

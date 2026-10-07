@@ -15,7 +15,7 @@ under test. The honest breakdown is below — read it before depending on anythi
 
 ## Install
 
-**Requirements: macOS or Linux, and Node.js 20 or newer.**
+**Requirements: macOS or Linux, and a supported Node.js 22, 24, or 26 release (22.14.0 minimum).**
 
 The current test release is on npm's `next` prerelease channel; `latest` provides the stable
 release. Install the prerelease with:
@@ -153,6 +153,16 @@ your normal commit/push/pull, `sync --pull-only` fetches the branch's upstream a
 incoming board changes (session start shows the same awareness), and a full `sync` refuses
 with guidance — `sync --establish` is the explicit conversion to a dedicated board branch.
 
+A clone can hold its own pushes to a check: `git config superbee.syncGate '<command>'` makes
+`sync` run that command on the rebased board (the exact commit it would push) before every push
+that sends commits. A failing gate pushes nothing, keeps your work committed locally, and exits 5
+(`GATE_FAILED`) with the gate's output; the gate learns what it judges from
+`SUPERBEE_BOARD_UPSTREAM_SHA` and `SUPERBEE_BOARD_HEAD_SHA`, and exactly that head is pushed. Keep
+the gate's code outside the board: a script inside it runs whatever a teammate last pushed. When
+another writer pushes between
+the rebase and the push, sync re-fetches, rebases, re-runs the gate and retries (up to 5 attempts)
+instead of failing.
+
 `sync --establish` also handles a project that already committed `.superbee/` or legacy
 `.agentstate-lite/` to
 its code branch: it prints a preview first, and `--yes` executes — publishing the board
@@ -169,6 +179,22 @@ board — an orphan branch carrying only the knowledge bundle, written by `super
 never merges into `main` (it shares no history with it, by design). Protect it the way
 you protect `main`: enable delete and force-push protection on `board` in the repo
 settings — sync only ever appends commits to it.
+
+**More than one board in a repository.** A repository whose `board` branch is taken can carry
+further NAMED boards, each on its own `board-<name>` branch (lowercase letters, digits and
+hyphens). The branch declares itself with a committed root file, `.superbee-board.json`:
+
+```json
+{ "schema": 1, "branch": "board-fairport" }
+```
+
+Work on a named board from a standalone clone of that branch (`git clone --branch
+board-fairport <url>`); `superbee sync` there commits, rebases onto and pushes
+`origin/board-fairport` and never touches `origin/board`. A named board can start from existing
+history: branch it, add the root `index.md` (with `okf_version`) and the marker in one commit, and
+push it with tracking (`git push -u origin board-fairport`). A clone whose branch is renamed, or
+whose marker names another branch, is refused rather than synced. The conventional `.superbee/`
+worktree beside your code always uses `board`.
 
 ## How it works
 

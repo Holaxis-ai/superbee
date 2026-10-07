@@ -2,16 +2,124 @@
   "schema": "superbee.ci-lanes.v1",
   "path_skipping": false,
   "source_preflight": "npm run check:package-versions",
+  "node_policy": {
+    "compatibility_floor": "22.14.0",
+    "supported_majors": [
+      22,
+      24,
+      26
+    ],
+    "engine_range": "^22.14.0 || ^24.0.0 || ^26.0.0",
+    "build_target": "node22",
+    "default_runtime": "24.21.0",
+    "forward_probe": 26,
+    "release_pin_owner": "process:release-preflight",
+    "release_pin_reviewed_at": "2026-09-24",
+    "release_pin_refresh_by": "2026-10-24",
+    "forward_review": {
+      "review_after": "2026-10-28",
+      "disposition": "pending",
+      "decided_at": null,
+      "decided_by": null,
+      "evidence": null,
+      "revisit_by": null
+    },
+    "floor_retirement": {
+      "retire_by": "2027-04-30"
+    }
+  },
   "runtime_nodes": [
     22,
     26
   ],
-  "singleton_node": 26,
+  "singleton_node": "24.21.0",
   "host_expectation_variable": "SUPERBEE_TEST_EXPECT_ALIASING_HOST",
   "merge_queue": {
     "supported": true,
     "activation_authority": "Live GitHub settings verified by infrastructure/github-ci preflight and recorded in the project bundle; workflow capability does not imply queue activation",
     "checkout_ref": "${{ github.sha }}"
+  },
+  "github_actions": {
+    "pins": [
+      {
+        "key": "attest_build_provenance_v4",
+        "identity": "actions/attest-build-provenance",
+        "revision": "4d101475d8b20a2381f78447822ac1eab6504dd8",
+        "version": "v4.2.2"
+      },
+      {
+        "key": "cache_restore_v4",
+        "identity": "actions/cache/restore",
+        "revision": "0057852bfaa89a56745cba8c7296529d2fc39830",
+        "version": "v4.3.0"
+      },
+      {
+        "key": "cache_save_v4",
+        "identity": "actions/cache/save",
+        "revision": "0057852bfaa89a56745cba8c7296529d2fc39830",
+        "version": "v4.3.0"
+      },
+      {
+        "key": "checkout_v4",
+        "identity": "actions/checkout",
+        "revision": "11d5960a326750d5838078e36cf38b85af677262",
+        "version": "v4.4.0"
+      },
+      {
+        "key": "checkout_v7",
+        "identity": "actions/checkout",
+        "revision": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "version": "v7.0.1"
+      },
+      {
+        "key": "codeql_analyze_v4",
+        "identity": "github/codeql-action/analyze",
+        "revision": "cdf488f595d80d6e07e03d4674febd5ab45fa938",
+        "version": "v4.37.9"
+      },
+      {
+        "key": "codeql_init_v4",
+        "identity": "github/codeql-action/init",
+        "revision": "cdf488f595d80d6e07e03d4674febd5ab45fa938",
+        "version": "v4.37.9"
+      },
+      {
+        "key": "download_artifact_v8",
+        "identity": "actions/download-artifact",
+        "revision": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "version": "v8.0.1"
+      },
+      {
+        "key": "setup_java_v4",
+        "identity": "actions/setup-java",
+        "revision": "cf277c60eb25467037889841efdb72551f06f6c3",
+        "version": "v4.9.1"
+      },
+      {
+        "key": "setup_node_v4",
+        "identity": "actions/setup-node",
+        "revision": "49933ea5288caeca8642d1e84afbd3f7d6820020",
+        "version": "v4.4.0"
+      },
+      {
+        "key": "setup_node_v7",
+        "identity": "actions/setup-node",
+        "revision": "820762786026740c76f36085b0efc47a31fe5020",
+        "version": "v7.0.0"
+      },
+      {
+        "key": "upload_artifact_v4",
+        "identity": "actions/upload-artifact",
+        "revision": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "version": "v4.6.2"
+      },
+      {
+        "key": "upload_artifact_v7",
+        "identity": "actions/upload-artifact",
+        "revision": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        "version": "v7.0.1"
+      }
+    ]
   },
   "security_analysis": {
     "workflow": ".github/workflows/codeql.yml",
@@ -32,11 +140,6 @@
       "actions": "read",
       "contents": "read",
       "security-events": "write"
-    },
-    "action_pins": {
-      "checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "codeql_init": "github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938",
-      "codeql_analyze": "github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938"
     },
     "checkout_persist_credentials": false,
     "query_suite": "security-extended",
@@ -100,8 +203,9 @@
   },
   "required_jobs": [
     "runtime",
+    "runtime-common",
     "aliasing-host",
-    "smoke-node-20",
+    "smoke-node-22",
     "distribution",
     "browser",
     "scripts"
@@ -115,12 +219,19 @@
     {
       "id": "typecheck",
       "command": "npm run typecheck",
-      "owner": "runtime"
+      "owner": "runtime-common"
     },
     {
       "id": "workspace-tests",
       "command": "npm test --workspaces --if-present",
-      "owner": "runtime"
+      "owners": [
+        "runtime",
+        "runtime-common"
+      ],
+      "lane_commands": {
+        "runtime": "npm test -w @superbee/cli --ignore-scripts",
+        "runtime-common": "npm run test:runtime-common"
+      }
     },
     {
       "id": "script-tests",
@@ -155,29 +266,46 @@
   ],
   "lanes": {
     "runtime": {
-      "display_name": "runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/2)",
-      "script": "ci:runtime",
+      "display_name": "runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)",
+      "script": "ci:runtime-cli",
       "components": [
         "build",
-        "typecheck",
         "workspace-tests"
       ],
       "nodes": [
         22,
         26
       ],
-      "shards": 2,
+      "shards": 4,
       "shard_variable": "SUPERBEE_TEST_SHARD",
       "runs_on": "ubuntu-latest",
       "expect_aliasing_host": "0",
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
     },
+    "runtime-common": {
+      "display_name": "common runtime contracts (node ${{ matrix.node-version }})",
+      "script": "ci:runtime-common",
+      "components": [
+        "typecheck",
+        "workspace-tests"
+      ],
+      "prerequisites": [
+        "build"
+      ],
+      "nodes": [
+        22,
+        26
+      ],
+      "runs_on": "ubuntu-latest",
+      "expect_aliasing_host": "0",
+      "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
+    },
     "aliasing-host": {
-      "display_name": "host-class proofs on an aliasing host (macos, node 26)",
+      "display_name": "host-class proofs on an aliasing host (macos, node 24.21.0)",
       "script": "ci:aliasing-host",
       "components": [],
       "nodes": [
-        26
+        "24.21.0"
       ],
       "runs_on": "macos-latest",
       "expect_aliasing_host": "1",
@@ -191,7 +319,7 @@
         "skill-drift-proof"
       ],
       "nodes": [
-        26
+        "24.21.0"
       ]
     },
     "browser": {
@@ -206,7 +334,7 @@
         "build"
       ],
       "nodes": [
-        26
+        "24.21.0"
       ]
     },
     "scripts": {
@@ -219,28 +347,21 @@
         "build"
       ],
       "nodes": [
-        26
+        "24.21.0"
       ]
     },
-    "smoke-node-20": {
-      "display_name": "built-CLI smoke on the engines floor (node 20)",
+    "smoke-node-22": {
+      "display_name": "installed-package smoke on the engines floor (node 22.14.0)",
       "workflow_only": true,
       "components": [],
       "nodes": [
-        20
+        "22.14.0"
       ],
-      "runtime_setup_node": 20,
-      "version_guard": "node --version | grep -q '^v20\\.'",
-      "built_cli": "packages/superbee/dist/superbee.mjs",
-      "built_cli_commands": [
-        "init",
-        "doc write",
-        "doc read",
-        "link add",
-        "link show",
-        "list",
-        "status"
-      ]
+      "build_runtime": "24.21.0",
+      "runtime_setup_node": "22.14.0",
+      "version_guard": "test \"$(node --version)\" = \"v22.14.0\"",
+      "superbee_tarball": "out/node-floor/superbee.tgz",
+      "cli_tarball": "out/node-floor/superbee-cli.tgz"
     }
   }
 }

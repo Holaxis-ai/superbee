@@ -15,7 +15,8 @@ answer.
    decision, make it explicit and order it first.
 4. Build from the repository root. Use the root `./superbee` shim when exercising the freshly built
    CLI.
-5. Develop with Node.js 20 or newer on macOS or Linux. Windows-specific adapters, installation,
+5. Develop with Node.js 24.21.0 by default on macOS or Linux. Published packages run on supported
+   Node.js 22, 24, or 26 releases, with 22.14.0 as the minimum. Windows-specific adapters, installation,
    and native runtime checks belong to the separate Windows distribution repository. Shared
    engine and CLI protocols remain here; changing them does not promise Windows compatibility.
 
@@ -124,19 +125,27 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 <!-- contributing-ci-lanes:start -->
 | Lane | Local command | CI job | Node |
 | --- | --- | --- | --- |
-| runtime | `npm run ci:runtime` | `runtime` | 22, 26 (2 shards each) |
-| aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 26 |
-| distribution | `npm run ci:distribution` | `distribution` | 26 |
-| browser | `npm run ci:browser` | `browser` | 26 |
-| scripts | `npm run ci:scripts` | `scripts` | 26 |
-| smoke-node-20 | workflow only | `smoke-node-20` | 20 |
+| runtime | `npm run ci:runtime-cli` | `runtime` | 22, 26 (4 shards each) |
+| runtime-common | `npm run ci:runtime-common` | `runtime-common` | 22, 26 |
+| aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 24.21.0 |
+| distribution | `npm run ci:distribution` | `distribution` | 24.21.0 |
+| browser | `npm run ci:browser` | `browser` | 24.21.0 |
+| scripts | `npm run ci:scripts` | `scripts` | 24.21.0 |
+| smoke-node-22 | workflow only | `smoke-node-22` | 22.14.0 |
 <!-- contributing-ci-lanes:end -->
 
-The `runtime` job runs two shards per Node version so it stays well inside its 20-minute timeout.
-Each shard builds and typechecks; the CLI suite, the dominant cost, is divided by file through
-Node's `--test-shard`, and the smaller workspace suites run in both shards. Reproduce one shard
-locally with `SUPERBEE_TEST_SHARD=1/2 npm run ci:runtime`; without the variable, `ci:runtime` runs
-everything.
+The `runtime` job runs four CLI shards per Node version. Each shard builds, then assigns the
+caller's discovered test files by descending estimated duration to the least-loaded shard, with
+stable filename/index tie breaks. `packages/cli/scripts/test-durations.json` records timing
+provenance and a positive fallback for new files; weights affect scheduling only. Refresh estimates
+from exact-SHA CI timings after large suite changes. Each crash scenario has its own test file and
+process. Reproduce a CLI shard with `SUPERBEE_TEST_SHARD=1/4 npm run ci:runtime-cli`.
+
+The independent required `runtime-common` job builds, runs remaining post-build typechecks, and
+discovers every non-CLI workspace test script once per Node version. It excludes the CLI by package
+identity and fails if workspace patterns change without an updated discovery rule. Without a shard
+variable, `npm run ci:runtime` remains the complete local runtime command, including every workspace.
+An explicitly empty `SUPERBEE_TEST_SHARD` is invalid; unset it to run the complete suite.
 
 CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, merge-group
 candidates, a weekly schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
@@ -172,6 +181,25 @@ The `TLA+ specs` workflow in `.github/workflows/tla-specs.yml` model-checks the 
 manual dispatch. It is not a required lane and is outside the lane projection above.
 [`specs/tla/README.md`](specs/tla/README.md) owns how to run the models, what each config checks,
 and which fixed configs model changes that have not merged.
+
+### GitHub Action pin renewal
+
+Every remote action reference uses a full commit SHA plus its semantic release in a same-line
+comment. `scripts/ci-lanes.json` is the repository registry, and
+`scripts/workflow-action-pins.test.mjs` carries a separate reviewed literal so a workflow and its
+registry cannot drift together unnoticed. Dependabot checks the root workflows weekly.
+
+A Dependabot pull request is therefore deliberately red after it changes only workflow SHA and
+version-comment pairs. Before making it green, verify each proposed release tag resolves to that
+commit in the action's official upstream repository and inspect the upstream commit's signature
+evidence. Then update the matching `github_actions.pins` registry row and the independent
+`REVIEWED_PINS` literal in the same pull request. For a major-version proposal, also rename or
+consolidate the versioned key in both authorities (without duplicating an existing
+identity/revision pair), update each topology test's `actionPin(...)` reference that selects the
+old major, and recalculate any affected remote-reference, identity, and pair inventory assertions.
+Then run `node --test scripts/workflow-action-pins.test.mjs` and `npm run ci:scripts`; normal human
+review and CI still decide whether the renewal merges. Do not weaken the test to accept an
+unreviewed Dependabot-only change.
 
 Minimum iteration lanes by reach:
 

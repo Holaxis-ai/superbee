@@ -14,8 +14,9 @@ import { createHash } from "node:crypto";
 import {
   isPresent,
   RESERVED_KIND_FIELD_NAMES,
+  SUPERBEE_PROGRESS_STATUS_FIELD,
   splitSections,
-  SUPERBEE_UPDATED_BY_FIELD,
+  isManagedDocumentMetadataField,
   validateAgainstKind,
   type KindConvention,
   type OkfDocument,
@@ -32,8 +33,12 @@ export const ENUM_MAX_DISTINCT = 6;
  */
 export const SECTION_PROMOTION_FLOOR = 0.6;
 
-/** Fields the inference never proposes: CLI-reserved names plus engine-owned attribution. */
-const EXCLUDED_FIELDS = new Set<string>([...RESERVED_KIND_FIELD_NAMES, SUPERBEE_UPDATED_BY_FIELD]);
+/** Inference omits ownership metadata and receipts, without changing field-action policy. */
+const EXCLUDED_FIELDS = new Set<string>([...RESERVED_KIND_FIELD_NAMES, "head_version"]);
+function excludedInferenceField(field: string): boolean {
+  return EXCLUDED_FIELDS.has(field) || isManagedDocumentMetadataField(field) ||
+    (field.startsWith("superbee_") && field !== SUPERBEE_PROGRESS_STATUS_FIELD);
+}
 
 /**
  * The keys of a `KindConvention` that carry NO declaration: the record's own identity, its display
@@ -184,7 +189,7 @@ export function inferKindCandidate(
   const optional: string[] = [];
   const values: Record<string, string[]> = {};
   for (const [key, present] of Object.entries(stats.keyPresence)) {
-    if (EXCLUDED_FIELDS.has(key)) continue;
+    if (excludedInferenceField(key)) continue;
     if (present === count && count > 0) {
       required.push(key);
       if (count >= ENUM_MIN_INSTANCES && everyValueScalarString(instances, key)) {
