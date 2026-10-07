@@ -352,11 +352,11 @@ function renderKindHelp(
     `Required body headings (level 1; exact Markdown):\n${sectionLines}\n` +
     linksBlock +
     `${pathLine}\n\n` +
-    `Repeat a flag to set an array value (e.g. --tag a --tag b). Validation is STRICT.\n` +
+    `Repeat a flag to set an array value (e.g. --tag a --tag b). Validation is STRICT; violations reject without creating a document.\n` +
     (req.includes("timestamp") || opt.includes("timestamp")
       ? `In OKF v0.2, --timestamp requires a real ISO-8601 date and time with an explicit UTC offset (Z or numeric).\n`
       : "") +
-    `To ADD a field to this kind, edit its convention doc (${inv} kinds names it; then pull → edit fields.optional → promote).\n\n` +
+    `To ADD a field: ${inv} kind field ${commandToken(kind.governs)} add <name> [--required] [--values <a,b,c>].\n\n` +
     `Options:\n` +
     `  --stale-after <iso>  Expiration instant (OKF v0.2 only); valid date, time, and zone required\n` +
     `  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported).\n` +

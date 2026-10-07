@@ -1,4 +1,5 @@
 /** Explicit frontmatter intent. Collection construction is owned here, before CAS metadata. */
+import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { InvalidInputError } from "./errors.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { kindInputFieldNames, resolveKindFieldCoordinate, type KindRegistry } from "./kinds.js";
@@ -57,7 +58,6 @@ export interface PreparedDocumentFieldAction {
   storageField: string;
 }
 
-const managed = new Set(["generated", "verified", "superbee_updated_by", "actor", "timestamp"]);
 const standard = new Set(["title", "description", "type", "resource"]);
 const v02 = new Set(["status", "stale_after", "usage_window"]);
 export function isStandardDocumentSetField(field: string, okfVersion: "0.1" | "0.2"): boolean {
@@ -96,7 +96,7 @@ export function assertOrdinaryPatch(existing: Frontmatter, proposed: Frontmatter
   }
 }
 function assertAssignmentName(field: string): void {
-  if (managed.has(field)) throw new InvalidInputError(`'${field}' is managed metadata and cannot be assigned by a field action.`);
+  if (isManagedDocumentMetadataField(field)) throw new InvalidInputError(`'${field}' is managed metadata and cannot be assigned by a field action.`);
   if (field === "tags" || field === "sources") throw new InvalidInputError(`'${field}' requires an explicit collection add/remove/replace-all action.`);
 }
 /** Semantic legacy assignments retain input intent, including explicitly equal assignments. */
@@ -162,7 +162,7 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
         ...(context.okfVersion === "0.2" ? v02 : []),
         ...(kind ? kindInputFieldNames(context.okfVersion, kind) : []),
       ])].filter(field => {
-        if (managed.has(field) || field === "tags" || field === "sources") return false;
+        if (isManagedDocumentMetadataField(field) || field === "tags" || field === "sources") return false;
         if (context.okfVersion === "0.1" && (field === "stale_after" || field === "usage_window")) return false;
         const storage = kind && resolveKindFieldCoordinate(context.okfVersion, kind, field);
         return !containsCollection(existing.frontmatter[storage?.storageField ?? field]);
