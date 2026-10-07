@@ -282,6 +282,21 @@ function validateCandidate(
   return result;
 }
 
+/** Validate unchanged stored content without manufacturing clocks or attribution. */
+function validateUnchangedDocument(
+  existing: OkfDocument,
+  registry: KindRegistry,
+  strict: boolean,
+  okfVersion: "0.1" | "0.2",
+): ValidationWarning[] {
+  const kind = registry.kinds.get(String(existing.frontmatter.type));
+  const warnings = kind ? validateAgainstKind(existing, kind) : [];
+  if (strict && kind && warnings.length > 0) {
+    throw new KindConformanceError(existing.id, kind.governs, warnings, okfVersion);
+  }
+  return warnings;
+}
+
 function withV02Metadata(
   candidate: DocumentMutationCandidate,
   existing: OkfDocument | undefined,
@@ -352,7 +367,7 @@ export function prepareDocumentMutationCandidate(
   if (existing && isNoopMutation(existing, comparison, opts.compareTimestamp ?? false, opts.okfVersion,
     opts.okfVersion === "0.2" && persistActor && opts.actor !== undefined,
     opts.registry.kinds.get(String(comparison.frontmatter.type))?.fields.required.includes("actor") ?? false)) {
-    return { candidate: { frontmatter: structuredClone(existing.frontmatter), body: existing.body }, changed: false, warnings: [] };
+    return { candidate: { frontmatter: structuredClone(existing.frontmatter), body: existing.body }, changed: false, warnings: validateUnchangedDocument(existing, opts.registry, opts.strict, opts.okfVersion) };
   }
   const candidate = attributeCandidate(comparison, opts.actor, persistActor, opts.okfVersion, opts.registry);
   const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
@@ -519,6 +534,14 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           okfVersion,
           opts.registry,
         );
+        if (existing && isNoopMutation(
+          existing, candidate, compareTimestamp, okfVersion,
+          persistActor && opts.actor !== undefined,
+          opts.registry.kinds.get(String(candidate.frontmatter.type))?.fields.required.includes("actor") ?? false,
+        )) {
+          warnings = validateUnchangedDocument(existing, opts.registry, opts.strict, okfVersion);
+          return { action: "done", result: { doc: existing } };
+        }
         const validated = validateCandidate(
           opts.id,
           candidate,
@@ -541,20 +564,6 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         // Every overwrite caller, including `promote`, inherits this rule from this shared boundary.
         if (!opts.strict && existing && warnings.length > 0 && conforms(existing, opts.registry)) {
           throw new KindConformanceError(opts.id, validated.kind!.governs, warnings, okfVersion);
-        }
-
-        if (
-          existing
-          && isNoopMutation(
-            existing,
-            candidate,
-            compareTimestamp,
-            okfVersion,
-            persistActor && opts.actor !== undefined,
-            validated.kind?.fields.required.includes("actor") ?? false,
-          )
-        ) {
-          return { action: "done", result: { doc: existing } };
         }
 
         return { action: "write", next: { id: opts.id, ...candidate }, result: {} };
@@ -598,7 +607,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
         actor: opts.actor, producer: opts.producer, persistActor, compareTimestamp, seedGenerationClock: seedClock,
       });
-      if (!changed) return { action: "done", result: { doc: existing, warnings: [] } };
+      if (!changed) return { action: "done", result: { doc: existing, warnings } };
       return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings } };
     },
     write: async (next, expectedVersion) => {
@@ -615,5 +624,5 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   const scoped = { ...(scope ? { scope } : {}), ...(scopes ? { scopes } : {}) };
   return outcome.wrote
     ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings: outcome.result.warnings, ...scoped }
-    : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings: [], ...scoped };
+    : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings: outcome.result.warnings, ...scoped };
 }

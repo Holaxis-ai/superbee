@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import yaml from "js-yaml";
+import { actionIdentity, parseActionDocument, validateIdentities } from "./workflow-actions.mjs";
 import { fileURLToPath } from "node:url";
 
 import { extractJobs, requiredUnconditionalStep, stepsOf } from "./workflow-step-test-helper.mjs";
@@ -21,16 +22,6 @@ const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.js
 const PLAYWRIGHT_IMAGE_DIGEST = "sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48";
 const PLAYWRIGHT_VERSION = packageLock.packages["node_modules/playwright-core"]?.version;
 const PLAYWRIGHT_IMAGE = `mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble@${PLAYWRIGHT_IMAGE_DIGEST}`;
-
-function actionPin(key) {
-  const rows = manifest.github_actions.pins.filter((row) => row.key === key);
-  assert.equal(rows.length, 1, `manifest must declare one GitHub Action pin for ${key}`);
-  return `${rows[0].identity}@${rows[0].revision}`;
-}
-
-function countLiteral(text, literal) {
-  return text.split(literal).length - 1;
-}
 
 const BROWSER_PREFLIGHT = `      - name: Verify baked Playwright browser artifacts
         shell: bash
@@ -89,9 +80,9 @@ function assertAggregator(job, label) {
   const parsed = yaml.safeLoad(job);
   assert.equal(parsed["continue-on-error"], undefined);
   assert.equal(parsed.steps.length, 3, `${label} has checkout, Node setup and gate only`);
-  assert.equal(parsed.steps[0].uses, actionPin("checkout_v4"));
+  assert.equal(actionIdentity(parsed.steps[0].uses), "actions/checkout");
   assert.equal(parsed.steps[0].with?.ref, manifest.merge_queue.checkout_ref);
-  assert.equal(parsed.steps[1].uses, actionPin("setup_node_v4"));
+  assert.equal(actionIdentity(parsed.steps[1].uses), "actions/setup-node");
   assert.equal(parsed.steps[1].with["node-version"], manifest.singleton_node);
   for (const step of parsed.steps) {
     assert.equal(step.if, undefined, `${label} steps must be unconditional`);
@@ -111,7 +102,9 @@ function displayNameOf(job) {
 }
 
 function assertSmokeJob(job, lane) {
-  assert.equal(countLiteral(job, actionPin("setup_node_v4")), 2, "floor smoke needs build and floor runtimes");
+  const setups = yaml.safeLoad(job).steps.filter(step => step.uses && actionIdentity(step.uses) === "actions/setup-node");
+  assert.equal(setups.length, 2, "floor smoke needs build and floor runtimes");
+  assert.deepEqual(setups.map(step => String(step.with["node-version"])), [lane.build_runtime, lane.runtime_setup_node]);
   assert.deepEqual(
     [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => match[1]),
     [lane.build_runtime, lane.runtime_setup_node],
@@ -320,7 +313,7 @@ function validateCiTopology(
   browserPackages = { root: rootPackage, mcpApp: mcpAppPackage, ui: uiPackage, browserLocal: browserLocalPackage },
 ) {
   const jobs = extractJobs(text);
-  const parsed = yaml.safeLoad(text);
+  const parsed = parseActionDocument(text, "CI workflow", { identities: validateIdentities(candidate.github_actions.identities) }).document;
   assert.deepEqual(parsed.on, {
     pull_request: null, push: { branches: ["main"] }, workflow_dispatch: null,
     merge_group: { types: ["checks_requested"] },
@@ -376,6 +369,24 @@ function validateCiTopology(
     assert.match(jobs[job], new RegExp(`node-version: ${candidate.singleton_node.replaceAll(".", "\\.")}`));
     assert.match(jobs[job], new RegExp(`run: npm run ${script.replace(":", "\\:")}`));
   }
+  assert.deepEqual(parsed.permissions, { contents: "read" });
+  assert.equal(parsed.env?.GITHUB_TOKEN, undefined);
+  for (const [name, job] of Object.entries(parsed.jobs)) {
+    assert.equal(job.permissions, undefined, `${name} must inherit read-only permissions`);
+    assert.equal(job.env?.GITHUB_TOKEN, undefined);
+    assert.equal(actionIdentity(job.steps[0].uses), "actions/checkout", `${name} first action must check out`);
+    assert.equal(actionIdentity(job.steps[1].uses), "actions/setup-node", `${name} second action must set up Node`);
+    for (const step of job.steps) {
+      if (name !== "scripts" || step.name !== "Verify GitHub Action upstream correspondence") assert.equal(step.env?.GITHUB_TOKEN, undefined);
+    }
+  }
+  const upstream = parsed.jobs.scripts.steps.filter(step => step.name === "Verify GitHub Action upstream correspondence");
+  assert.deepEqual(upstream, [{
+    name: "Verify GitHub Action upstream correspondence",
+    run: "npm run verify:action-upstreams",
+    env: { GITHUB_TOKEN: "${{ github.token }}" },
+  }], "upstream verification must be unconditional, unmasked and read-only");
+  assert.equal(rootPackage.scripts["verify:action-upstreams"], "node scripts/verify-action-upstreams.mjs");
   validateBrowserJob(jobs.browser, browserPackages);
   assertSmokeJob(jobs["smoke-node-22"], candidate.lanes["smoke-node-22"]);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
@@ -603,4 +614,20 @@ test("common runtime coverage and matrix exclusions cannot disappear", () => {
     assert.throws(() => assertAggregator(job.replace("runtime-common, ", ""), name));
     assert.throws(() => assertAggregator(job.replace('{"job":"runtime-common","required":true}', '{"job":"runtime-common","required":false}'), name));
   }
+});
+
+test("upstream verification and expected action identities cannot disappear or be replaced", () => {
+  for (const changed of [
+    workflow.replace("        run: npm run verify:action-upstreams", "        run: true"),
+    workflow.replace("        run: npm run verify:action-upstreams", "        if: false\n        run: npm run verify:action-upstreams"),
+    workflow.replace("        run: npm run verify:action-upstreams", "        continue-on-error: true\n        run: npm run verify:action-upstreams"),
+    workflow.replace("GITHUB_TOKEN: ${{ github.token }}", "GITHUB_TOKEN: ${{ secrets.OTHER }}"),
+    workflow.replace(/      - name: Verify GitHub Action upstream correspondence\n        run: npm run verify:action-upstreams\n        env:\n          GITHUB_TOKEN: \$\{\{ github.token \}\}\n/, ""),
+    workflow.replace("uses: actions/checkout@", "uses: actions/setup-node@"),
+    workflow.replace(/      - uses: actions\/checkout@[^\n]+\n        with:\n          fetch-depth: 1\n          ref: \$\{\{ github.sha \}\}\n/, ""),
+  ]) { assert.notEqual(changed, workflow); assert.throws(() => validateCiTopology(changed)); }
+});
+
+test("CI topology accepts workflow-only version renewals", () => {
+  validateCiTopology(workflow.replace(/(uses: [^@\n]+)@[a-f0-9]{40} # v[0-9.]+/g, `$1@${"b".repeat(40)} # v99.0.0`));
 });
