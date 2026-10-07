@@ -311,6 +311,7 @@ export {
   projectLogicalKindFields,
   projectKindForAuthoring,
   projectKindValidationWarnings,
+  isKindFieldValidationWarning,
   validateAgainstKind,
   isPresent,
   defaultTimestampAndValidateAgainstRegistry,

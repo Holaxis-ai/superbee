@@ -407,6 +407,13 @@ export function projectKindForAuthoring(
   };
 }
 
+/** Whether a Kind finding names a frontmatter coordinate rather than a body heading. */
+export function isKindFieldValidationWarning(warning: ValidationWarning): boolean {
+  return warning.code === "KIND_FIELD_MISSING"
+    || warning.code === "KIND_FIELD_VALUE"
+    || warning.code === "KIND_FIELD_ARITY";
+}
+
 /** Project Kind-validation findings into the same authoring vocabulary as the Kind schema. */
 export function projectKindValidationWarnings(
   okfVersion: string | undefined,
@@ -417,7 +424,7 @@ export function projectKindValidationWarnings(
   if (!progress) return warnings;
   const stored = `'${progress.storageField}'`;
   const logical = `'${progress.logicalField}'`;
-  return warnings.map((warning) => warning.field === progress.storageField
+  return warnings.map((warning) => isKindFieldValidationWarning(warning) && warning.field === progress.storageField
     ? {
         ...warning,
         field: progress.logicalField,
