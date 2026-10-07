@@ -83,8 +83,8 @@ duplication — a plain overwrite that converges to the same on-disk state).
 If a declared Kind governs the document type, prefer 'superbee new "<Kind>" <id> ...'; its
 authoring is strict and create-only. Use 'doc write' for a generic type or a deliberate full
 replacement. Kind validation is advisory by default: violations appear as warnings, including on
-no-ops. --strict rejects violations without writing. A previously conforming document cannot be
-replaced with a nonconforming one, even in advisory mode.
+no-ops. --strict rejects violations without writing. A changed replacement of a previously conforming
+document cannot be nonconforming, even in advisory mode.
 
 Options:
   --type <t>           OKF concept type (non-empty)                          [required]

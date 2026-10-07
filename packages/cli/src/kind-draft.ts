@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import {
   isPresent,
   RESERVED_KIND_FIELD_NAMES,
+  SUPERBEE_PROGRESS_STATUS_FIELD,
   splitSections,
   isManagedDocumentMetadataField,
   validateAgainstKind,
@@ -35,7 +36,8 @@ export const SECTION_PROMOTION_FLOOR = 0.6;
 /** Inference omits ownership metadata and receipts, without changing field-action policy. */
 const EXCLUDED_FIELDS = new Set<string>([...RESERVED_KIND_FIELD_NAMES, "head_version"]);
 function excludedInferenceField(field: string): boolean {
-  return EXCLUDED_FIELDS.has(field) || isManagedDocumentMetadataField(field) || field.startsWith("superbee_");
+  return EXCLUDED_FIELDS.has(field) || isManagedDocumentMetadataField(field) ||
+    (field.startsWith("superbee_") && field !== SUPERBEE_PROGRESS_STATUS_FIELD);
 }
 
 /**
