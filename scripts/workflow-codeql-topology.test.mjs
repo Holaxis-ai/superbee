@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
-import { normalizeWorkflowActions } from "./workflow-actions.mjs";
+import { normalizeWorkflowActions, parseActionDocument } from "./workflow-actions.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
@@ -202,6 +202,11 @@ function expectedConfig(candidate) {
 
 function validateCodeqlTopology(workflowText = workflow, configText = config, candidate = manifest.security_analysis) {
   validateSecurityManifest(candidate);
+  const codeql = parseActionDocument(workflowText, "CodeQL workflow").occurrences
+    .filter(({ identity }) => identity?.startsWith("github/codeql-action/"));
+  // init writes versioned configuration that analyze must read with the same release.
+  assert.equal(new Set(codeql.map(({ revision, version }) => `${revision} ${version}`)).size, 1,
+    "CodeQL actions must use the same revision and version");
   assert.deepEqual(
     normalizeWorkflowActions(workflowText, "CodeQL workflow", manifest.github_actions.identities),
     expectedWorkflow(candidate),
@@ -304,4 +309,24 @@ test("CodeQL accepts version renewals but rejects approved identities in the wro
   validateCodeqlTopology(workflow.replace(/(uses: [^@\n]+)@[a-f0-9]{40} # v[0-9.]+/g, `$1@${"b".repeat(40)} # v99.0.0`));
   assert.throws(() => validateCodeqlTopology(workflow.replace("uses: github/codeql-action/init@", "uses: github/codeql-action/analyze@")));
   assert.throws(() => validateCodeqlTopology(workflow.replace(/      - name: Analyze JavaScript\/TypeScript\n        uses:[^\n]+\n        with:\n          category:[^\n]+\n/, "")));
+});
+
+test("CodeQL rejects partial upgrades and accepts a coordinated release change", () => {
+  const baseline = workflow.replace(/(github\/codeql-action\/[^@\n]+)@[a-f0-9]{40} # v[0-9.]+/g,
+    `$1@${"a".repeat(40)} # v1.0.0`);
+  validateCodeqlTopology(baseline);
+  const lines = baseline.split("\n");
+  for (const [index, line] of lines.entries()) {
+    if (!line.includes("uses: github/codeql-action/")) continue;
+    for (const changed of [
+      line.replace("a".repeat(40), "b".repeat(40)),
+      line.replace("v1.0.0", "v1.0.1"),
+      line.replace("a".repeat(40), "b".repeat(40)).replace("v1.0.0", "v1.0.1"),
+    ]) {
+      const partial = [...lines];
+      partial[index] = changed;
+      assert.throws(() => validateCodeqlTopology(partial.join("\n")), /same revision and version/);
+    }
+  }
+  validateCodeqlTopology(baseline.replaceAll("a".repeat(40), "b".repeat(40)).replaceAll("v1.0.0", "v1.0.1"));
 });
