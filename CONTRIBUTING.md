@@ -61,9 +61,10 @@ Start from current `origin/main`, not another PR tip. Commit one reviewed unit w
 message and no AI-attribution or tool-generated authorship trailers. Do not force-push an open PR
 except for an explicitly coordinated rebase; preserve review deltas as appended commits. The human
 maintainer owns the PR and merge gate. An orchestrator may open or merge a named PR only when a
-human maintainer explicitly delegates that action. Delegation is scoped to the named branch or PR,
-requires every applicable review and required CI check to pass, and does not imply release,
-publication, deployment, or other external authority.
+human maintainer explicitly delegates that action. Delegation is scoped to the named branch or PR.
+Opening the explicitly delegated PR after the branch push starts PR CI; it does not declare the
+change ready. Merging requires every applicable review and required CI check to pass. Delegation
+does not imply release, publication, deployment, or other external authority.
 
 After merging another branch into a working branch, re-read generated prose near the change and the
 front-door README. A generator can prove byte agreement; it cannot prove that retained prose is
@@ -86,6 +87,18 @@ to an orchestrator acting under a human maintainer's explicit instruction for a 
 CI on the pushed SHA is the authoritative gate. During implementation, run the smallest lane that
 owns the affected behavior. `npm run check` is the fullest local stand-in only when CI is
 unavailable; the pre-commit smoke is not the full gate.
+
+For code changes, builder smoke is root build and typecheck plus the owning targeted tests named in
+the task packet. Select the affected test files or supported test filters; a package script that
+runs every test is not automatically the required smoke. Cover the changed public behavior and
+preserve any load-bearing adversarial probe. Documentation-only changes use their relevant document
+checks. Reviewer and QA packets reuse valid exact-SHA evidence and add focused probes, not broad
+suite reruns.
+
+Expand local coverage only for a named risk or coverage gap, or when CI is unavailable. Record the
+reason in the packet before starting; routine caution alone is not a reason to duplicate CI's full
+suites. Before long runs, verify the packet's supported Node runtime and required fixture permissions.
+Keep source and generated artifacts frozen while tests execute, and report each command's own exit.
 
 The runtime lane builds each TypeScript project before running `typecheck:after-build`. That
 command retains checks for bundled/Vite packages and any additional or newly introduced check;
