@@ -17,6 +17,7 @@ import {
   mutateDocument,
   parseConventionDoc,
   parseLinksFromDoc,
+  projectKindValidationWarnings,
   query,
   readBlob,
   readBundleOkfVersion,
@@ -715,7 +716,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
           id: doc.id,
           current_version: contentVersion(doc),
         });
-        for (const warning of validateAgainstKind(doc, kind)) {
+        for (const warning of projectKindValidationWarnings(okfVersion, kind, validateAgainstKind(doc, kind))) {
           evolutionBlocker(
             blockers,
             "RECIPE_EVOLUTION_INSTANCE_INVALID",
