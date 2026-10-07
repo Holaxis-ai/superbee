@@ -191,7 +191,12 @@ New identities require an explicit policy edit and review. Referenced local acti
 repository-contained composites; their nested action references follow the same policy. Reusable
 workflows and local JavaScript or Docker actions require a separately reviewed policy extension.
 
-Dependabot checks root workflows weekly. A renewal of an approved identity can pass with only its
+Dependabot checks root workflows weekly and groups `github/codeql-action*` updates into one PR.
+CodeQL `init` and `analyze` exchange versioned configuration, so all CodeQL steps must use the same
+commit SHA and release label. The CodeQL topology test checks this agreement without fixing a
+particular release.
+
+A renewal of an approved identity can pass with only its
 workflow SHA and version-comment edits, including removal of the last use of an old major.
 `npm run ci:scripts` runs offline syntax, identity, source-agreement, and topology tests.
 The required hosted scripts job separately runs `npm run verify:action-upstreams` on every CI

@@ -16,7 +16,7 @@ const line = (identity = identities[0], revision = sha, version = 'v1.2.3') => `
 const fixtureWorkflow = (body = line()) => `name: fixture\non: push\njobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n${body}\n`;
 const parse = text => parseActionDocument(text, 'fixture.yml', { identities: validateIdentities(identities) }).occurrences;
 const yamlMapping = text => yaml.safeLoad(text);
-const DEPENDABOT_GITHUB_ACTIONS = 'version: 2\nupdates:\n  - package-ecosystem: github-actions\n    directory: /\n    schedule:\n      interval: weekly\n';
+const DEPENDABOT_GITHUB_ACTIONS = 'version: 2\nupdates:\n  - package-ecosystem: github-actions\n    directory: /\n    schedule:\n      interval: weekly\n    groups:\n      codeql:\n        patterns:\n          - \"github/codeql-action*\"\n';
 function validateDependabot(text) {
   const document = yamlMapping(text, "Dependabot configuration");
   assert.equal(document.version, 2, "Dependabot configuration must use version 2");
@@ -26,13 +26,15 @@ function validateDependabot(text) {
   const updater = actionUpdaters[0];
   assert.deepEqual(
     Object.keys(updater).sort(),
-    ["directory", "package-ecosystem", "schedule"],
+    ["directory", "groups", "package-ecosystem", "schedule"],
     "github-actions Dependabot updater must use only approved keys",
   );
   assert.equal(updater.directory, "/", "github-actions Dependabot updater must cover the repository root");
   assert.ok(updater.schedule && typeof updater.schedule === "object" && !Array.isArray(updater.schedule), "github-actions Dependabot schedule must be a mapping");
   assert.deepEqual(Object.keys(updater.schedule), ["interval"], "github-actions Dependabot schedule must use only approved keys");
   assert.equal(updater.schedule.interval, "weekly", "github-actions Dependabot updater must run weekly");
+  assert.deepEqual(updater.groups, { codeql: { patterns: ["github/codeql-action*"] } },
+    "Dependabot must group all CodeQL actions together without grouping unrelated actions");
   return actionUpdaters.length;
 }
 
@@ -150,6 +152,10 @@ test("Dependabot has one effective root weekly updater and permits distinct ecos
     ["excluded paths", `${DEPENDABOT_GITHUB_ACTIONS}    exclude-paths:\n      - .github\/workflows\/**\n`, /only approved keys/],
     ["redirected branch", `${DEPENDABOT_GITHUB_ACTIONS}    target-branch: maintenance\n`, /only approved keys/],
     ["pull request limit", `${DEPENDABOT_GITHUB_ACTIONS}    open-pull-requests-limit: 1\n`, /only approved keys/],
+    ["missing group", DEPENDABOT_GITHUB_ACTIONS.replace(/    groups:[\s\S]*/, ""), /only approved keys/],
+    ["init only group", DEPENDABOT_GITHUB_ACTIONS.replace("github/codeql-action*", "github/codeql-action/init"), /group all CodeQL/],
+    ["overbroad group", DEPENDABOT_GITHUB_ACTIONS.replace("github/codeql-action*", "*"), /group all CodeQL/],
+    ["excluded analyze", `${DEPENDABOT_GITHUB_ACTIONS}        exclude-patterns: [github/codeql-action/analyze]\n`, /group all CodeQL/],
     ["scheduled day", DEPENDABOT_GITHUB_ACTIONS.replace("      interval: weekly", "      interval: weekly\n      day: monday"), /schedule must use only approved keys/],
   ]) assert.throws(() => validateDependabot(text), expected, label);
 
