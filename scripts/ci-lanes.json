@@ -203,6 +203,7 @@
   },
   "required_jobs": [
     "runtime",
+    "runtime-common",
     "aliasing-host",
     "smoke-node-22",
     "distribution",
@@ -218,12 +219,19 @@
     {
       "id": "typecheck",
       "command": "npm run typecheck",
-      "owner": "runtime"
+      "owner": "runtime-common"
     },
     {
       "id": "workspace-tests",
       "command": "npm test --workspaces --if-present",
-      "owner": "runtime"
+      "owners": [
+        "runtime",
+        "runtime-common"
+      ],
+      "lane_commands": {
+        "runtime": "npm test -w @superbee/cli --ignore-scripts",
+        "runtime-common": "npm run test:runtime-common"
+      }
     },
     {
       "id": "script-tests",
@@ -258,19 +266,36 @@
   ],
   "lanes": {
     "runtime": {
-      "display_name": "runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/2)",
-      "script": "ci:runtime",
+      "display_name": "runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)",
+      "script": "ci:runtime-cli",
       "components": [
         "build",
-        "typecheck",
         "workspace-tests"
       ],
       "nodes": [
         22,
         26
       ],
-      "shards": 2,
+      "shards": 4,
       "shard_variable": "SUPERBEE_TEST_SHARD",
+      "runs_on": "ubuntu-latest",
+      "expect_aliasing_host": "0",
+      "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
+    },
+    "runtime-common": {
+      "display_name": "common runtime contracts (node ${{ matrix.node-version }})",
+      "script": "ci:runtime-common",
+      "components": [
+        "typecheck",
+        "workspace-tests"
+      ],
+      "prerequisites": [
+        "build"
+      ],
+      "nodes": [
+        22,
+        26
+      ],
       "runs_on": "ubuntu-latest",
       "expect_aliasing_host": "0",
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""

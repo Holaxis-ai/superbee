@@ -235,9 +235,9 @@ const fixturePolicy = (overrides = {}) => validateActionPolicy({
   ...overrides,
 });
 
-test("all workflows use 58 immutable reviewed references across 10 identities and 13 pairs", () => {
+test("all workflows use 60 immutable reviewed references across 10 identities and 13 pairs", () => {
   assert.deepEqual(validateActionPolicy(), {
-    remoteUses: 58,
+    remoteUses: 60,
     identities: 10,
     pairs: 13,
     mutableRefs: 0,
@@ -361,7 +361,7 @@ test("a reviewed coordinated renewal of workflow, registry, and literal passes",
     pins: manifest.github_actions.pins.map(renew),
     reviewedPins: REVIEWED_PINS.map(renew),
   }), {
-    remoteUses: 58,
+    remoteUses: 60,
     identities: 10,
     pairs: 13,
     mutableRefs: 0,

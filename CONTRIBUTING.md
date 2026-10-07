@@ -125,7 +125,8 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 <!-- contributing-ci-lanes:start -->
 | Lane | Local command | CI job | Node |
 | --- | --- | --- | --- |
-| runtime | `npm run ci:runtime` | `runtime` | 22, 26 (2 shards each) |
+| runtime | `npm run ci:runtime-cli` | `runtime` | 22, 26 (4 shards each) |
+| runtime-common | `npm run ci:runtime-common` | `runtime-common` | 22, 26 |
 | aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 24.21.0 |
 | distribution | `npm run ci:distribution` | `distribution` | 24.21.0 |
 | browser | `npm run ci:browser` | `browser` | 24.21.0 |
@@ -133,11 +134,18 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 | smoke-node-22 | workflow only | `smoke-node-22` | 22.14.0 |
 <!-- contributing-ci-lanes:end -->
 
-The `runtime` job runs two shards per Node version so it stays well inside its 20-minute timeout.
-Each shard builds and typechecks; the CLI suite, the dominant cost, is divided by file through
-Node's `--test-shard`, and the smaller workspace suites run in both shards. Reproduce one shard
-locally with `SUPERBEE_TEST_SHARD=1/2 npm run ci:runtime`; without the variable, `ci:runtime` runs
-everything.
+The `runtime` job runs four CLI shards per Node version. Each shard builds, then assigns the
+caller's discovered test files by descending estimated duration to the least-loaded shard, with
+stable filename/index tie breaks. `packages/cli/scripts/test-durations.json` records timing
+provenance and a positive fallback for new files; weights affect scheduling only. Refresh estimates
+from exact-SHA CI timings after large suite changes. Each crash scenario has its own test file and
+process. Reproduce a CLI shard with `SUPERBEE_TEST_SHARD=1/4 npm run ci:runtime-cli`.
+
+The independent required `runtime-common` job builds, runs remaining post-build typechecks, and
+discovers every non-CLI workspace test script once per Node version. It excludes the CLI by package
+identity and fails if workspace patterns change without an updated discovery rule. Without a shard
+variable, `npm run ci:runtime` remains the complete local runtime command, including every workspace.
+An explicitly empty `SUPERBEE_TEST_SHARD` is invalid; unset it to run the complete suite.
 
 CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, merge-group
 candidates, a weekly schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
