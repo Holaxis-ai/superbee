@@ -37,6 +37,7 @@ import {
   push,
   repoTopLevel,
   resolveBundleKey,
+  boardRefOf,
   resolveOriginRef,
   retargetBoardInterior,
   runGit,
@@ -79,6 +80,7 @@ import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
+import { refuseOutgoingCommitsPrivateState, refuseOutgoingWorktreePrivateState } from "../../private-state-publication.js";
 import {
   boundBoardWorktreeError,
   emptyDirectory,
@@ -850,6 +852,15 @@ async function pushPhase(
     const ahead = counted ?? 0;
     // The documents the push sends: every one the unpushed commits change, this run's or earlier.
     const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), head).map((change) => change.docId)).size : 0;
+    // F8's backstop on exactly what this push sends, including commits made by hand: refused
+    // before the gate runs or anything leaves the machine.
+    if (counted === null || ahead > 0) {
+      refuseOutgoingCommitsPrivateState(board.boardPath, head, {
+        operation: "sync",
+        rerun: `${run.inv} sync`,
+        base: resolveOriginRef(board.boardPath) === null ? null : boardRefOf(board.boardPath),
+      });
+    }
     // An unknown count is gated too: the gate is skipped only when nothing is known to be sent.
     if (gate && (counted === null || ahead > 0)) {
       const judged = await runSyncGate(board.boardPath, branch, gate, attempt);
@@ -1080,6 +1091,8 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
       await heldRun(run, board, baseline, held);
       return;
     }
+    // F8: private state copied into the bundle is refused before anything is staged or committed.
+    refuseOutgoingWorktreePrivateState(board.boardPath, "sync", `${run.inv} sync`);
   }
   const commitResult = await commitPhase(board, run.pullOnly);
   if (commitResult.held) {

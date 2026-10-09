@@ -55,6 +55,7 @@ import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";
 import { syncOutcomeError, withSharingDetails } from "../../sync-outcomes.js";
 import { clearStaleCommittedMarker, establishCommitted } from "./establish-committed.js";
 import { assertBundleOutsidePrivateState } from "../../private-state-bundle-boundary.js";
+import { asPrivateStateRefusal, refuseOutgoingCommitsPrivateState } from "../../private-state-publication.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
 import { syncEnvelope, withSyncEnvelope } from "../../sync-outcomes.js";
 
@@ -298,6 +299,9 @@ function pushAndConfirmRemote(top: string, sha: string, inv: CommandPrefix): str
   try {
     pushBoardCommit(top, sha);
   } catch (err) {
+    // The push backstop's private-state refusal is not a sharing failure: report it as itself.
+    const refused = asPrivateStateRefusal(err);
+    if (refused) throw refused;
     // The required preflight already proved repository existence in this run. This recheck owns
     // only the create outcome: if it fails, board state becomes unknown without erasing that fact.
     const fetched = fetchOrigin(top);
@@ -382,9 +386,16 @@ async function publishLocalBoardBranch(
   if (!existsSync(indexPath) || lstatSync(indexPath).isSymbolicLink() || !lstatSync(indexPath).isFile()) {
     throw new CliError("RUNTIME", `the local '${BOARD_BRANCH}' worktree is not a valid bundle (root index.md missing)`);
   }
+  refuseOutgoingCommitsPrivateState(boardPath, `refs/heads/${BOARD_BRANCH}`, {
+    operation: "sync --establish",
+    rerun: `${inv} sync --establish`,
+  });
   try {
     pushBoardUpstream(boardPath);
   } catch (err) {
+    // The push backstop's private-state refusal is not a sharing failure: report it as itself.
+    const refused = asPrivateStateRefusal(err);
+    if (refused) throw refused;
     const fetched = fetchOrigin(top);
     const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
     throw withSharingDetails(
@@ -455,6 +466,14 @@ async function publishGreenfieldBoard(
   await assertNoMalformedDocuments(boardPath, inv);
 
   const snapshot = snapshotBundleCommit(top, boardPath);
+  // F8: the snapshot is exactly what establishment publishes. It is unreachable until pushed, so a
+  // refusal here leaves no marker, ref or index behind: moving the files out is the whole remedy.
+  refuseOutgoingCommitsPrivateState(top, snapshot.sha, {
+    operation: "sync --establish",
+    root: boardPath,
+    stage: "files",
+    rerun: `${inv} sync --establish`,
+  });
   writeGitDirMarker(top, ESTABLISH_MARKER_KEY, snapshot.sha);
   const remoteCommit = pushAndConfirmRemote(top, snapshot.sha, inv);
   if (!remoteCommit || !isAncestor(top, snapshot.sha, remoteCommit)) {

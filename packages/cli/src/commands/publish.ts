@@ -49,6 +49,7 @@ import { clearPendingCreate, clearPublishedExtras, listPendingCreates, readPendi
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
+import { refuseTreePrivateState } from "../private-state-publication.js";
 import { bindFolderInPlace } from "./checkout-adopt.js";
 import { CHECKOUT_DOCUMENT_LIMIT, connectHostedBundle, registerInCatalog, type CheckoutDeps } from "./checkout.js";
 
@@ -468,6 +469,9 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   assertBundleOutsidePrivateState(canonical, home);
   const facts = await bundleHomeAt(canonical, { home });
   await assertPublishable(canonical, facts);
+  // F8: private state copied into the bundle refuses the whole publication, the preview included,
+  // before anything is planned, asked or sent.
+  refuseTreePrivateState(canonical, "publish --to hosted", String(commandFragment`${cliInvocation()} publish --to hosted${values.dir !== undefined ? commandFragment` --dir ${commandToken(canonical)}` : commandFragment``}`));
   const board = facts.home === "git" ? facts.board : null;
   // Before --yes decides, the board's upstream as origin has it now (best effort: offline, the last
   // fetch stands), so a teammate's recent push is a blocker rather than a commit the move misses.
