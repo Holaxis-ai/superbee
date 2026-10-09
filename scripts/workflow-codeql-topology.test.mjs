@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
+import { normalizeWorkflowActions } from "./workflow-actions.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
@@ -55,12 +56,6 @@ function yamlDocument(text, subject) {
   const parsed = yaml.safeLoad(text);
   assert.ok(parsed && typeof parsed === "object" && !Array.isArray(parsed), `${subject} must be a YAML mapping`);
   return parsed;
-}
-
-function actionPin(key) {
-  const rows = manifest.github_actions.pins.filter((row) => row.key === key);
-  assert.equal(rows.length, 1, `manifest must declare one GitHub Action pin for ${key}`);
-  return `${rows[0].identity}@${rows[0].revision}`;
 }
 
 function validateSecurityManifest(candidate = manifest.security_analysis) {
@@ -126,12 +121,12 @@ function expectedAnalysisJob(expected, initWith) {
     permissions: manifest.security_analysis.permissions,
     steps: [
       {
-        uses: actionPin("checkout_v7"),
+        uses: "actions/checkout",
         with: { ref: manifest.security_analysis.checkout_ref, "persist-credentials": manifest.security_analysis.checkout_persist_credentials },
       },
       {
         name: `Initialize ${label} analysis`,
-        uses: actionPin("codeql_init_v4"),
+        uses: "github/codeql-action/init",
         with: {
           languages: expected.language,
           "build-mode": expected.build_mode,
@@ -140,7 +135,7 @@ function expectedAnalysisJob(expected, initWith) {
       },
       {
         name: `Analyze ${label}`,
-        uses: actionPin("codeql_analyze_v4"),
+        uses: "github/codeql-action/analyze",
         with: { category: expected.category },
       },
     ],
@@ -208,7 +203,7 @@ function expectedConfig(candidate) {
 function validateCodeqlTopology(workflowText = workflow, configText = config, candidate = manifest.security_analysis) {
   validateSecurityManifest(candidate);
   assert.deepEqual(
-    yamlDocument(workflowText, "CodeQL workflow"),
+    normalizeWorkflowActions(workflowText, "CodeQL workflow", manifest.github_actions.identities),
     expectedWorkflow(candidate),
     "CodeQL workflow executable topology must match the manifest exactly",
   );
@@ -235,16 +230,16 @@ test("CodeQL topology mutations cannot weaken sources, queries, permissions, sco
     workflow.replace("security-events: write", "security-events: read"),
     workflow.replace("      security-events: write", "      security-events: write\n      id-token: write"),
     workflow.replace("      security-events: write", "      security-events: write\n\n      id-token: write"),
-    workflow.replace(actionPin("checkout_v7"), "actions/checkout@v7"),
-    workflow.replace(actionPin("codeql_init_v4"), "github/codeql-action/init@v4"),
-    workflow.replace(actionPin("codeql_analyze_v4"), "github/codeql-action/analyze@v4"),
+    workflow.replace(/actions\/checkout@[a-f0-9]{40}/, "actions/checkout@v7"),
+    workflow.replace(/github\/codeql-action\/init@[a-f0-9]{40}/, "github/codeql-action/init@v4"),
+    workflow.replace(/github\/codeql-action\/analyze@[a-f0-9]{40}/, "github/codeql-action/analyze@v4"),
     workflow.replace(
-      `uses: ${actionPin("codeql_analyze_v4")}`,
-      `uses: attacker/example-action@v1 # uses: ${actionPin("codeql_analyze_v4")}`,
+      "uses: github/codeql-action/analyze",
+      "uses: attacker/example-action@v1 # uses: github/codeql-action/analyze",
     ),
     workflow.replace(
-      `      - uses: ${actionPin("checkout_v7")}`,
-      `      - run: echo unsafe\n      - uses: ${actionPin("checkout_v7")}`,
+      "      - uses: actions/checkout",
+      "      - run: echo unsafe\n      - uses: actions/checkout",
     ),
     workflow.replace("queries: security-extended", "queries: default"),
     workflow.replace("  merge_group:\n    types: [checks_requested]\n", ""),
@@ -260,7 +255,7 @@ test("CodeQL topology mutations cannot weaken sources, queries, permissions, sco
     workflow.replace('test "$GITHUB_ACTIONS_RESULT" = "success"', 'test "$GITHUB_ACTIONS_RESULT" = "success"\n          true'),
     workflow.replace("    timeout-minutes: 30", "    timeout-minutes: 300"),
     workflow.replace("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", "cancel-in-progress: true"),
-  ]) assert.throws(() => validateCodeqlTopology(changed), /executable topology/);
+  ]) assert.throws(() => validateCodeqlTopology(changed));
 
   assert.throws(
     () => validateCodeqlTopology(workflow, config.replace("threat-models: local", "threat-models: remote")),
@@ -303,4 +298,10 @@ test("contributor guidance distinguishes analysis completion from merge enforcem
     "Evaluate",
     "Threat models are a beta CodeQL capability",
   ]) assert.ok(contributing.includes(statement), `CONTRIBUTING.md is missing CodeQL guidance: ${statement}`);
+});
+
+test("CodeQL accepts version renewals but rejects approved identities in the wrong position", () => {
+  validateCodeqlTopology(workflow.replace(/(uses: [^@\n]+)@[a-f0-9]{40} # v[0-9.]+/g, `$1@${"b".repeat(40)} # v99.0.0`));
+  assert.throws(() => validateCodeqlTopology(workflow.replace("uses: github/codeql-action/init@", "uses: github/codeql-action/analyze@")));
+  assert.throws(() => validateCodeqlTopology(workflow.replace(/      - name: Analyze JavaScript\/TypeScript\n        uses:[^\n]+\n        with:\n          category:[^\n]+\n/, "")));
 });

@@ -50,7 +50,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -77,7 +77,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -100,7 +100,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
           cache: npm
@@ -121,7 +121,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
           cache: npm
@@ -144,7 +144,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
           cache: npm
@@ -199,7 +199,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
           cache: npm
@@ -207,6 +207,10 @@ jobs:
         run: npm run check:package-versions
       - run: npm ci
       - run: npm run ci:scripts
+      - name: Verify GitHub Action upstream correspondence
+        run: npm run verify:action-upstreams
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
   smoke-node-22:
     name: installed-package smoke on the engines floor (node 22.14.0)
@@ -217,7 +221,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
           cache: npm
@@ -237,7 +241,7 @@ jobs:
           CLI_PACKED="$(node -p 'require("./out/node-floor/cli-pack.json")[0].filename')"
           mv -- "out/node-floor/$CLI_PACKED" out/node-floor/superbee-cli.tgz
           sha256sum out/node-floor/superbee.tgz out/node-floor/superbee-cli.tgz > out/node-floor/before.sha256
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.14.0
       - name: Prove both installed artifacts on exact Node 22.14.0
@@ -259,7 +263,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
       - name: Reject every non-success or missing required result
@@ -286,7 +290,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
       - name: Preserve the legacy context without weakening its coverage
@@ -313,7 +317,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.21.0
       - name: Preserve the legacy context without weakening its coverage

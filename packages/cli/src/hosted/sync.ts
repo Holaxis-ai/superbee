@@ -86,6 +86,7 @@ import {
   type ProjectionRecord,
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
+import { refuseTreePrivateState } from "../private-state-publication.js";
 import { adoptHostRoot, moveRootBase, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
 import { recordPulled, recordSynced } from "./freshness.js";
 import { needsPersonAtTerminal, processTerminal, type HostedTerminal } from "./terminal.js";
@@ -915,6 +916,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
   const acceptDeletes = values["accept-deletes"];
   const terminal = deps.terminal ?? processTerminal();
   if (acceptDeletes !== undefined) assertPersonAtTerminal(binding, acceptDeletes, terminal);
+  // F8: private state copied into the checkout refuses the run before anything is journaled or sent.
+  refuseTreePrivateState(binding.path, "sync", String(resumeCommand));
   const takeHostDeletions = values["take-host-deletions"];
   let failure: CliError | null = null;
   const receipt = await withSession(binding, deps, resumeCommand, async (session) => {

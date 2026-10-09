@@ -62,7 +62,7 @@
     "prepublishOnly": "node -e \"console.error('superbee is released by .github/workflows/release.yml (npm stage publish); do not run npm publish here'); process.exit(1)\""
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@superbee/board-git": "*",
     "@superbee/bundle-descriptor": "*",
     "@superbee/core": "*",
