@@ -80,3 +80,20 @@ test("F8 push backstop: every board push refuses objects carrying private state,
     await topo.cleanup();
   }
 });
+
+test("F8 push backstop: a state-root FOLDER is refused by its tree even when its blobs are already public", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    const before = originBoardHead(topo);
+    const published = git(topo.a.board, ["show", "HEAD:notes/welcome.md"]);
+    await mkdir(path.join(topo.a.board, ".superbee-state"), { recursive: true });
+    await writeFile(path.join(topo.a.board, ".superbee-state", "copy.md"), published);
+    git(topo.a.board, ["add", "-f", "-A"]);
+    git(topo.a.board, ["commit", "-q", "-m", "a byte-identical copy under a state-root name"]);
+    assert.deepEqual(privateStateInOutgoingCommits(topo.a.board, "HEAD").map((row) => row.remove), [".superbee-state"]);
+    assert.throws(() => push(topo.a.board), (error: unknown) => isPrivateStateRefusal(error));
+    assert.equal(originBoardHead(topo), before);
+  } finally {
+    await topo.cleanup();
+  }
+});

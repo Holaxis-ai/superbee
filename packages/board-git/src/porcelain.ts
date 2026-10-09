@@ -75,6 +75,7 @@ import { normalizeGitLexicalPath } from "./git-path.js";
 import {
   PRIVATE_STATE_MAX_RECORD_BYTES,
   privateStateFinding,
+  privateStatePathEvidence,
   privateStateRefusalError,
   readPrivateStateCandidate,
   sortPrivateStateFindings,
@@ -2387,7 +2388,16 @@ export function privateStateInOutgoingCommits(dir: string, head: string): Privat
   const toRead: { sha: string; size: number }[] = [];
   for (const line of checked.stdout.split("\n")) {
     const [sha, type, sizeText] = line.split(" ");
-    if (!sha || type !== "blob") continue;
+    if (!sha) continue;
+    if (type === "tree") {
+      // A new tree named like a guarded root is refused by its path even when every blob under it
+      // is already on the remote (rev-list names a shared blob only at its first path).
+      const treePath = named.get(sha)!;
+      const folder = privateStatePathEvidence(`${treePath}/-`);
+      if (folder?.evidence === "state_folder") found.set(treePath, { path: treePath, evidence: "state_folder", remove: folder.remove });
+      continue;
+    }
+    if (type !== "blob") continue;
     const relPath = named.get(sha)!;
     const byName = privateStateFinding(relPath, null);
     if (byName) {
