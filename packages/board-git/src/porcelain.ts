@@ -72,6 +72,14 @@ import {
 } from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
 import { normalizeGitLexicalPath } from "./git-path.js";
+import {
+  PRIVATE_STATE_MAX_RECORD_BYTES,
+  privateStateFinding,
+  privateStateRefusalError,
+  readPrivateStateCandidate,
+  sortPrivateStateFindings,
+  type PrivateStateFinding,
+} from "./private-state.js";
 
 /** The dedicated branch that carries ONLY the bundle (its root IS the bundle root). */
 export const BOARD_BRANCH = "board";
@@ -2328,6 +2336,116 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
   return { status: "resolved", conflicts: [...byPath.values()] };
 }
 
+// ── private state: the publication backstop (specification F8) ───────────────
+
+/**
+ * Private state among the worktree files `git add -A` would stage in the board worktree (every
+ * changed or untracked file, no renames), read from the worktree before anything is staged: sync
+ * refuses on a finding, so a refusal never leaves the index staged or a commit made.
+ */
+export function privateStateInOutgoingWorktree(boardPath: string): PrivateStateFinding[] {
+  const listed = runGit(boardPath, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
+  if (listed.status !== 0) throw classifyGitError(failureOf(["status"], listed));
+  const found: PrivateStateFinding[] = [];
+  for (const record of listed.stdout.split("\0")) {
+    if (record.length < 4) continue;
+    const code = record.slice(0, 2);
+    const relPath = record.slice(3);
+    if (code.includes("D")) continue;
+    const finding = privateStateFinding(relPath, readPrivateStateCandidate(path.join(boardPath, relPath)));
+    if (finding) found.push(finding);
+  }
+  return sortPrivateStateFindings(found);
+}
+
+/** Bytes git's `cat-file --batch` is asked for at once, well under the spawn wrapper's buffer. */
+const PRIVATE_STATE_BATCH_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Private state among the objects pushing `head` would send: every blob reachable from `head` and
+ * from no `origin` remote-tracking ref, so an unpushed commit made by hand, a blob added and then
+ * deleted in an unpushed commit, or a snapshot commit's whole tree are all judged on the bytes Git
+ * would transmit. Blobs are matched by path first, then (when small enough to be a record) by
+ * content, read in bounded `cat-file --batch` rounds.
+ */
+export function privateStateInOutgoingCommits(dir: string, head: string): PrivateStateFinding[] {
+  const listed = runGit(dir, ["rev-list", "--objects", head, "--not", `--remotes=${BOARD_REMOTE}`]);
+  if (listed.status !== 0) throw classifyGitError(failureOf(["rev-list", "--objects"], listed));
+  const named = new Map<string, string>();
+  for (const line of listed.stdout.split("\n")) {
+    const space = line.indexOf(" ");
+    if (space <= 0) continue;
+    const relPath = line.slice(space + 1);
+    if (relPath.length > 0 && !named.has(line.slice(0, space))) named.set(line.slice(0, space), relPath);
+  }
+  if (named.size === 0) return [];
+  const checked = runGit(dir, ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], {
+    input: `${[...named.keys()].join("\n")}\n`,
+  });
+  if (checked.status !== 0) throw classifyGitError(failureOf(["cat-file", "--batch-check"], checked));
+  const found = new Map<string, PrivateStateFinding>();
+  const toRead: { sha: string; size: number }[] = [];
+  for (const line of checked.stdout.split("\n")) {
+    const [sha, type, sizeText] = line.split(" ");
+    if (!sha || type !== "blob") continue;
+    const relPath = named.get(sha)!;
+    const byName = privateStateFinding(relPath, null);
+    if (byName) {
+      found.set(relPath, byName);
+      continue;
+    }
+    const size = Number(sizeText);
+    if (size > 0 && size <= PRIVATE_STATE_MAX_RECORD_BYTES) toRead.push({ sha, size });
+  }
+  for (let start = 0; start < toRead.length;) {
+    const batch: { sha: string; size: number }[] = [];
+    let bytes = 0;
+    while (start < toRead.length && (batch.length === 0 || bytes + toRead[start]!.size <= PRIVATE_STATE_BATCH_BYTES)) {
+      bytes += toRead[start]!.size;
+      batch.push(toRead[start]!);
+      start += 1;
+    }
+    const read = runGitBytes(dir, ["cat-file", "--batch"], { input: `${batch.map((row) => row.sha).join("\n")}\n` });
+    if (read.status !== 0) throw classifyGitError({ args: ["cat-file", "--batch"], status: read.status, stdout: "", stderr: read.stderr });
+    let offset = 0;
+    for (const row of batch) {
+      const newline = read.stdout.indexOf(0x0a, offset);
+      if (newline === -1) break;
+      const header = read.stdout.subarray(offset, newline).toString("utf8").split(" ");
+      const size = Number(header[2]);
+      const content = read.stdout.subarray(newline + 1, newline + 1 + size);
+      offset = newline + 1 + size + 1;
+      if (header[0] !== row.sha || header[1] !== "blob") continue;
+      const relPath = named.get(row.sha)!;
+      const finding = privateStateFinding(relPath, content);
+      if (finding) found.set(relPath, finding);
+    }
+  }
+  return sortPrivateStateFindings(found.values());
+}
+
+/**
+ * The backstop every board push runs before it sends anything: refuse (CONFLICT) when the objects
+ * the push would transmit carry private state. `base` names the remote ref those commits sit on,
+ * for the remedy.
+ */
+export function assertNoPrivateStateOutgoing(
+  dir: string,
+  head: string,
+  context: { operation: string; rerun: string; base?: string | null },
+): void {
+  const found = privateStateInOutgoingCommits(dir, head);
+  if (found.length === 0) return;
+  throw privateStateRefusalError(found, { operation: context.operation, root: dir, stage: "commits", base: context.base ?? null, rerun: context.rerun });
+}
+
+const PUSH_BACKSTOP = { operation: "publishing the board", rerun: "re-run the command" } as const;
+
+function remoteRefIfPresent(dir: string, branch: string): string | null {
+  const ref = `refs/remotes/${BOARD_REMOTE}/${branch}`;
+  return runGit(dir, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).status === 0 ? `${BOARD_REMOTE}/${branch}` : null;
+}
+
 // ── push ──────────────────────────────────────────────────────────────────────
 
 /**
@@ -2335,9 +2453,11 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
  * (`<commit>:refs/heads/<board branch>`) — what a caller judged is what is published, even if the
  * branch moved since. A caller that resolved the board branch earlier passes it, so nothing that
  * ran in between (a gate, a hook) can change where the push goes. Failures classify (AUTH exit 4 vs network exit 1, best-effort).
+ * Every push first runs the private-state backstop on exactly what it would send.
  */
 export function push(boardPath: string, commit?: string, branch: string = boardBranchOf(boardPath)): void {
   const refspec = commit === undefined ? branch : `${commit}:refs/heads/${branch}`;
+  assertNoPrivateStateOutgoing(boardPath, commit ?? `refs/heads/${branch}`, { ...PUSH_BACKSTOP, base: remoteRefIfPresent(boardPath, branch) });
   mustGit(boardPath, ["push", BOARD_REMOTE, refspec], { timeoutMs: NETWORK_TIMEOUT_MS });
 }
 
@@ -2351,6 +2471,7 @@ export function push(boardPath: string, commit?: string, branch: string = boardB
  * config can be written for free.
  */
 export function pushBoardUpstream(top: string): void {
+  assertNoPrivateStateOutgoing(top, `refs/heads/${BOARD_BRANCH}`, { ...PUSH_BACKSTOP, base: remoteRefIfPresent(top, BOARD_BRANCH) });
   mustGit(top, ["push", "-u", BOARD_REMOTE, BOARD_BRANCH], { timeoutMs: NETWORK_TIMEOUT_MS });
 }
 
@@ -2360,6 +2481,7 @@ export function pushBoardUpstream(top: string): void {
  * folder, code worktree, code index, and branch namespace untouched.
  */
 export function pushBoardCommit(top: string, commit: string): void {
+  assertNoPrivateStateOutgoing(top, commit, PUSH_BACKSTOP);
   mustGit(top, ["push", BOARD_REMOTE, `${commit}:refs/heads/${BOARD_BRANCH}`], {
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
