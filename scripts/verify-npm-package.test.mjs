@@ -47,6 +47,10 @@ const manifest = {
       types: "./dist/publication/bridge-entry.d.ts",
       default: "./dist/publication-bridge.mjs",
     },
+    "./portable-export": {
+      types: "./dist/portable-export.d.ts",
+      default: "./dist/portable-export.mjs",
+    },
     "./bundle-descriptor": {
       types: "./dist/bundle-descriptor/index.d.ts",
       default: "./dist/bundle-descriptor.mjs",
@@ -280,6 +284,8 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "dist/bundle-descriptor/index.d.ts",
     "dist/bundle-descriptor/schema.d.ts",
     "dist/bundle-descriptor/schema/bundle-descriptor-v1.schema.json",
+    "dist/portable-export.d.ts",
+    "dist/portable-export.mjs",
     "dist/publication-bridge.mjs",
     "dist/publication.mjs",
     "dist/publication/bridge-entry.d.ts",
@@ -292,6 +298,7 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "dist/publication/schema.d.ts",
     "dist/publication/schema/publication-snapshot-v1.schema.json",
     "dist/publication/snapshot-backend.d.ts",
+    "dist/publication/source-exclusions.d.ts",
     "dist/publication/types.d.ts",
     "dist/superbee.mjs",
     "package.json",

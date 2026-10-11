@@ -37,6 +37,10 @@
     "./bundle-descriptor": {
       "types": "./dist/bundle-descriptor/index.d.ts",
       "default": "./dist/bundle-descriptor.mjs"
+    },
+    "./portable-export": {
+      "types": "./dist/portable-export.d.ts",
+      "default": "./dist/portable-export.mjs"
     }
   },
   "files": [
