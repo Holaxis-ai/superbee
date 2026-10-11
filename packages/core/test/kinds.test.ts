@@ -1892,3 +1892,67 @@ test("kindConventionDoc: an order declaration round-trips through write/loadKind
     assert.equal("order" in stored!.frontmatter, false);
   });
 });
+
+import { kindCoverage } from "../src/kind-coverage.js";
+
+test("Kind coverage measures two domains through the canonical registry, aliases and graph", () => {
+  for (const [kindName, targetName] of [["Venue", "District"], ["Instrument", "Laboratory"]]) {
+    const convention = (name: string, fields: Record<string, unknown>, extra: Record<string, unknown> = {}): OkfDocument => ({ id: `conventions/${name.toLowerCase()}`, frontmatter: { type: "Convention", governs: name, fields, ...extra }, body: "" });
+    const registry = buildKindRegistry([
+      convention(kindName!, { required: ["title"], optional: ["capacity", "notes", "empty_map", "checked_on", "never", "superbee_progress_status"], values: { superbee_progress_status: ["planned", "done"] } }, { links: { located: targetName }, freshness_horizon: "30d" }),
+      convention(targetName!, { required: ["title"], optional: [] }),
+      convention("Unused", { required: ["title"], optional: [] }),
+    ], [], { okfVersion: "0.2" });
+    const records: OkfDocument[] = [
+      { id: "elsewhere/nested/a", frontmatter: { type: kindName!, title: "A", capacity: 0, notes: "Unknown", empty_map: {}, checked_on: "2026-10-01", unexpected: "x", superbee_progress_status: "done", sources: [{ resource: "https://www.example.org/a" }, { resource: "local:catalog" }, {}] }, body: "# A\n\nActual prose\n\n# Related\n- [located](/targets/t.md)\n- [located](/targets/t.md)\n- [citation](/missing.md)\n" },
+      { id: "elsewhere/b", frontmatter: { type: kindName!, title: "B", capacity: false, checked_on: "2026-08-01", sources: [] }, body: "# B\n\n[ordinary](/targets/t.md)" },
+      { id: "elsewhere/c", frontmatter: { type: kindName!, title: "C", checked_on: "2026-02-30" }, body: "Prose without a title" },
+      { id: "targets/t", frontmatter: { type: targetName!, title: "Target" }, body: "[back](/elsewhere/nested/a.md)" },
+      { id: "unregistered/a", frontmatter: { type: "Undeclared" }, body: "" },
+    ];
+    const before = JSON.stringify(records);
+    const options = { now: new Date("2026-10-11T00:00:00Z"), okfVersion: "0.2" };
+    const result = kindCoverage(registry, records, options);
+    assert.deepEqual(result, kindCoverage(registry, [...records].reverse(), options));
+    assert.equal(JSON.stringify(records), before);
+    const measured = result.kinds.find(row => row.governs === kindName)!;
+    assert.equal(measured.records, 3);
+    const field = (name: string) => measured.coverage.fields.find(row => row.field === name)!;
+    assert.equal(field("capacity").filled, 2); // zero and false are present data
+    assert.equal(field("notes").sentinel, 1);
+    assert.equal(field("empty_map").filled, 0);
+    assert.equal(field("empty_map").present, 1);
+    assert.equal(field("progress_status").filled, 1);
+    assert.equal(measured.coverage.body_prose.filled, 2);
+    assert.deepEqual(measured.drift.undeclared.map(row => row.key), ["unexpected"]);
+    assert.ok(measured.drift.declared_unused.includes("never"));
+    assert.ok(!measured.drift.declared_unused.includes("empty_map"));
+    assert.deepEqual(measured.links.typed, [{ relation: "located", target_kind: targetName, target_matches: true, records: 1, links: 2, rate: 0.3333 }]);
+    assert.equal(measured.links.untyped_citations, 2);
+    assert.equal(measured.links.dangling, 1);
+    assert.equal(measured.links.no_inbound, 2);
+    assert.equal(measured.freshness.invalid, 1);
+    assert.equal(measured.freshness.older_than_horizon, 1);
+    assert.equal(measured.sources.zero, 2);
+    assert.equal(measured.sources.total, 2);
+    assert.equal(measured.sources.invalid_entries, 1);
+    assert.equal(measured.sources.non_url_resources, 1);
+    assert.deepEqual(measured.sources.top_domains, [{ domain: "example.org", sources: 1 }]);
+    assert.equal(result.kinds.find(row => row.governs === "Unused")!.coverage.fields[0]!.rate, null);
+    assert.deepEqual(result.undeclared_kinds, ["Undeclared"]);
+    assert.equal(kindCoverage(registry, records, { ...options, kind: targetName }).kinds.length, 1);
+  }
+});
+
+test("Kind coverage bounds examples/domains and preserves unknown horizon and future dates", () => {
+  const registry = buildKindRegistry([{ id: "conventions/item", frontmatter: { type: "Convention", governs: "Item", fields: { required: ["title"], optional: ["checked_on"] }, freshness_horizon: "1w" }, body: "" }]);
+  const docs = Array.from({ length: 20 }, (_, n): OkfDocument => ({ id: `items/${String(n).padStart(2, "0")}`, frontmatter: { type: "Item", title: "X", drift: n, checked_on: n === 0 ? "2026-10-12" : "", sources: [{ resource: `https://domain${n}.example/a` }] }, body: "" }));
+  const row = kindCoverage(registry, docs, { now: new Date("2026-10-11T00:00:00Z") }).kinds[0]!;
+  assert.equal(row.drift.undeclared[0]!.examples.length, 3);
+  assert.equal(row.drift.undeclared[0]!.examples_total, 20);
+  assert.equal(row.sources.distinct_domains, 20);
+  assert.equal(row.sources.top_domains.length, 15);
+  assert.equal(row.freshness.horizon_ms, null);
+  assert.equal(row.freshness.older_than_horizon, null);
+  assert.equal(row.freshness.buckets.future, 1);
+});

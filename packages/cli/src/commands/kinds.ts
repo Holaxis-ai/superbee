@@ -1,3 +1,4 @@
+import { CliError } from "../errors.js";
 import { renderUsage } from "../output.js";
 // `superbee kinds` — list the kind conventions declared by this bundle.
 //
@@ -9,6 +10,9 @@ import { renderUsage } from "../output.js";
 import { parseArgs } from "node:util";
 import {
   freshnessHorizonMs,
+  kindCoverage,
+  query,
+  parseTimestamp,
   loadKinds,
   projectKindForAuthoring,
   readBundleOkfVersion,
@@ -24,6 +28,7 @@ export const KINDS_USAGE = `superbee kinds — list the kind conventions declare
 
 Usage:
   superbee kinds [--dir <path>] [--remote <url>]
+  superbee kinds --coverage [--kind <Kind>] [--now <ISO instant or date>] [--dir <path>] [--json]
 
 A kind convention is a plain OKF doc (type: Convention) under conventions/ declaring a document
 kind's purpose, required/optional fields and their descriptions, allowed enum values, typed-link vocabulary, expected body
@@ -82,7 +87,21 @@ A misshaped or misplaced key here is a non-fatal registry warning (visible in 'k
 output), never a silent no-op. See 'superbee doc read conventions/context-note' on any
 --init'd bundle for a full worked example with a values: enum and sections:.
 
+Coverage is local and read-only: group all readable concepts by actual type, using the same
+registry, logical field aliases and concept-link resolver. Filled excludes null, blank strings,
+empty lists/maps and case-insensitive unknown/n/a/na/none/tbd/null/-/? sentinels; it is a measurement,
+not required-field validation. Zero-record rates are null. Body prose excludes headings, standalone
+links and the Related section. Drift separates standard/envelope fields. Typed links use exact
+Kind-declared labels; other concept links are untyped citations, not undeclared relation violations.
+Freshness measures checked_on domain date metadata against the Kind's minute/hour/day horizon,
+not its meaningful-change clock. Missing/invalid dates and absent horizons remain explicit.
+Examples are capped at 3 per drift field; source domains at 15 with total/shown counts. A skipped
+malformed document makes coverage partial; no remote, sync or network access is performed.
+
 Options:
+  --coverage           Add per-Kind field, drift, link, freshness and source measurements
+  --kind <Kind>        Select one exact declared type (requires --coverage)
+  --now <ISO>          Fixed UTC date or explicit-zone instant for coverage (requires --coverage)
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
@@ -139,6 +158,9 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
       parseArgs({
         args: argv,
         options: {
+          coverage: { type: "boolean" },
+          kind: { type: "string" },
+          now: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
           json: { type: "boolean" },
@@ -152,6 +174,14 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
     stdout(renderUsage(KINDS_USAGE));
     return;
   }
+
+  if (!values.coverage && (values.kind !== undefined || values.now !== undefined)) {
+    throw new CliError("USAGE", "--kind and --now require --coverage");
+  }
+  if (values.coverage && values.remote !== undefined) throw new CliError("USAGE", "Kind coverage reads local bundles only; omit --remote");
+  const nowText = values.now;
+  const nowMs = nowText === undefined ? Date.now() : parseTimestamp(/^\d{4}-\d{2}-\d{2}$/.test(nowText) ? `${nowText}T00:00:00Z` : nowText, "0.2");
+  if (nowMs === null) throw new CliError("USAGE", "--now requires a valid ISO date or explicit-zone instant");
 
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
   const [registry, okfVersion] = await Promise.all([
@@ -167,7 +197,20 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
     : declared.sort((a, b) => a.governs.localeCompare(b.governs));
   const rows = ordered.map((kind) => toRow(kind, okfVersion));
 
+  if (values.coverage && values.kind !== undefined && !registry.kinds.has(values.kind)) {
+    throw new CliError("USAGE", "--kind must name an exact declared Kind");
+  }
   const out: Record<string, unknown> = { count: rows.length, kinds: rows };
+  if (values.coverage) {
+    const skipped: string[] = [];
+    const documents = await query(bundle, {}, { onSkip: ({ id }) => skipped.push(id) });
+    const measurements = kindCoverage(registry, documents, { now: new Date(nowMs), okfVersion, kind: values.kind });
+    const byKind = new Map(measurements.kinds.map((row) => [row.governs, row]));
+    const selected = rows.filter((row) => byKind.has(String(row.governs))).map((row) => ({ ...row, ...byKind.get(String(row.governs))! }));
+    out.count = selected.length;
+    out.kinds = selected;
+    out.coverage = { now: measurements.now, documents: measurements.documents, complete: skipped.length === 0, skipped_documents: skipped.length, skipped_examples: skipped.sort().slice(0, 3), undeclared_kinds: measurements.undeclared_kinds };
+  }
   if (registry.warnings.length > 0) out.warnings = registry.warnings;
   if (rows.length === 0) {
     out.help = [`${cliInvocation()} new "<Kind>" <id> --<field> <value>  (once a kind is declared)`];
