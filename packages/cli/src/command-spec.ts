@@ -445,7 +445,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "kinds",
         leaves: [publicLeaf("kinds", "kinds", zero, 14, DIR_SURFACE)],
-        usage: "kinds [--dir <path>] [--remote <url>]",
+        usage: "kinds [--coverage [--kind <Kind>] [--now <ISO>]] [--dir <path>] [--remote <url>]",
         summary: "List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)",
       },
       {

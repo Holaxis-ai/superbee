@@ -1579,3 +1579,34 @@ test("kinds --help documents the order field", () => {
     assert.match(out, /^\s+order\s+number\s+optional/m);
   });
 });
+
+test("kinds coverage is fixed-time local/read-only and retains registry warnings and malformed scan facts", async () => {
+  const { dir, cleanup } = await makeSeededBundle();
+  try {
+    const bundle = { root: dir };
+    await writeDoc(bundle, { id: "conventions/item", frontmatter: { type: "Convention", governs: "Item", path: "items/", fields: { required: ["title"], optional: ["checked_on", "count"] }, freshness_horizon: "24h" }, body: "" });
+    await writeDoc(bundle, { id: "unexpected/nested/item", frontmatter: { type: "Item", title: "One", checked_on: "2026-10-09", count: 0 }, body: "# One\n\nBody" });
+    await writeFile(path.join(dir, "conventions", "bad.md"), "---\ntype: Convention\ngoverns: [\n---\n");
+    const before = await readFile(path.join(dir, "unexpected", "nested", "item.md"), "utf8");
+    const first = await runJson(kinds, ["--dir", dir, "--coverage", "--kind", "Item", "--now", "2026-10-11"]);
+    assert.equal(first.count, 1);
+    const rows = first.kinds as Array<Record<string, any>>;
+    assert.equal(rows[0]!.records, 1);
+    assert.equal(rows[0]!.coverage.fields.find((row: any) => row.field === "count").filled, 1);
+    assert.equal(rows[0]!.freshness.older_than_horizon, 1);
+    assert.equal((first.coverage as any).complete, false);
+    assert.equal((first.coverage as any).skipped_documents, 1);
+    assert.ok((first.warnings as unknown[]).length > 0);
+    assert.deepEqual(first, await runJson(kinds, ["--dir", dir, "--coverage", "--kind", "Item", "--now", "2026-10-11"]));
+    assert.equal(await readFile(path.join(dir, "unexpected", "nested", "item.md"), "utf8"), before);
+    const plain = await runJson(kinds, ["--dir", dir]);
+    assert.equal(plain.coverage, undefined);
+    for (const args of [["--coverage", "--remote", "http://127.0.0.1:1"], ["--now", "2026-10-11"], ["--coverage", "--now", "2026-02-30"], ["--coverage", "--kind", "missing"]]) {
+      await assert.rejects(kinds(["--dir", dir, ...args]), (error: unknown) => error instanceof CliError && error.code === "USAGE");
+    }
+    let toon = "";
+    await kinds(["--dir", dir, "--coverage", "--kind", "Item", "--now", "2026-10-11"], { stdout: value => { toon += value; } });
+    assert.match(toon, /coverage:/);
+    assert.match(toon, /records: 1/);
+  } finally { await cleanup(); }
+});

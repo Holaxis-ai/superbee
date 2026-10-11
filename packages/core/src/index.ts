@@ -366,3 +366,5 @@ export type {
 } from "./governed-body-write.js";
 
 export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
+
+export { kindCoverage } from "./kind-coverage.js";
