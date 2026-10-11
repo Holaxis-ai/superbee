@@ -91,7 +91,8 @@ Coverage is local and read-only: group all readable concepts by actual type, usi
 registry, logical field aliases and concept-link resolver. Filled excludes null, blank strings,
 empty lists/maps and case-insensitive unknown/n/a/na/none/tbd/null/-/? sentinels; it is a measurement,
 not required-field validation. Zero-record rates are null. Body prose excludes headings, standalone
-links and the Related section. Drift separates standard/envelope fields. Typed links use exact
+links and Related sections at any ATX heading level (including descendants until the next same
+or higher-level heading). This is line measurement, not Markdown rendering. Drift separates standard/envelope fields. Typed links use exact
 Kind-declared labels; other concept links are untyped citations, not undeclared relation violations.
 Freshness measures checked_on domain date metadata against the Kind's minute/hour/day horizon,
 not its meaningful-change clock. Missing/invalid dates and absent horizons remain explicit.

@@ -1956,3 +1956,24 @@ test("Kind coverage bounds examples/domains and preserves unknown horizon and fu
   assert.equal(row.freshness.older_than_horizon, null);
   assert.equal(row.freshness.buckets.future, 1);
 });
+
+
+test("Kind coverage keeps repeated-heading prose and excludes nested Related subtrees losslessly", () => {
+  const registry = buildKindRegistry([{ id: "conventions/item", frontmatter: { type: "Convention", governs: "Item", fields: { required: ["title"], optional: [] } }, body: "" }]);
+  const cases: [string, number][] = [
+    ["# Intro\n\nActual substantive prose\n\n# Intro\n", 1],
+    ["# Intro\n\n## Related\nOnly relationship commentary\n### Detail\nMore commentary\n", 0],
+    ["# Intro\n\n## Related\nOnly relationship commentary\n## Evidence\nActual substantive prose\n", 1],
+    ["# Related\nCommentary\n## Child\nMore commentary\n# Intro\nActual prose\n", 1],
+    ["### Related ###\nCommentary\n#### Child\nMore commentary\n", 0],
+    ["Preamble prose\n# Intro\n# Intro\n", 1],
+    ["# Intro\n[reference](/notes/a.md)\n## Related\nCommentary\n", 0],
+  ];
+  for (const [body, expected] of cases) {
+    const doc: OkfDocument = { id: "items/a", frontmatter: { type: "Item", title: "A" }, body };
+    const before = JSON.stringify(doc);
+    const row = kindCoverage(registry, [doc], { now: new Date("2026-10-11T00:00:00Z") }).kinds[0]!;
+    assert.equal(row.coverage.body_prose.filled, expected, body);
+    assert.equal(JSON.stringify(doc), before);
+  }
+});

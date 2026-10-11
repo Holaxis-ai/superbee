@@ -1,6 +1,6 @@
 /** Read-only measurements over canonical documents and the already-loaded Kind registry. */
 import { isStandardDocumentSetField } from "./document-field-actions.js";
-import { freshnessHorizonMs, projectKindForAuthoring, readKindField, resolveKindFieldCoordinate, splitSections, type KindConvention, type KindRegistry } from "./kinds.js";
+import { freshnessHorizonMs, projectKindForAuthoring, readKindField, resolveKindFieldCoordinate, type KindConvention, type KindRegistry } from "./kinds.js";
 import { extractMarkdownLinks, parseLinksFromDoc } from "./links.js";
 import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { parseTimestamp } from "./freshness.js";
@@ -19,15 +19,25 @@ const filled = (value: unknown) => !empty(value) && !sentinel(value);
 const envelope = (key: string) => isManagedDocumentMetadataField(key) || isStandardDocumentSetField(key, "0.2") || key === "sources" || key === "tags";
 
 function bodyProse(body: string): boolean {
-  const sections = splitSections(body);
-  const preamble = body.split(/^# /m)[0] ?? "";
-  const prose = preamble + "\n" + Object.entries(sections).filter(([heading]) => heading.toLowerCase() !== "related").map(([, text]) => text).join("\n");
-  return prose.split("\n").some((line) => {
-    const text = line.trim().replace(/^[-*] +/, "");
-    if (!text || /^#{1,6} /.test(text)) return false;
-    const links = extractMarkdownLinks(text);
-    return !(links.length === 1 && text === `[${links[0]!.text}](${links[0]!.href})`);
-  });
+  // Lossless line measurement, not Markdown rendering: every ATX heading is ignored;
+  // a Related heading excludes its descendants until the next same/higher-level heading.
+  let relatedLevel: number | undefined;
+  for (const line of body.split("\n")) {
+    const text = line.trim();
+    const heading = /^(#{1,6})[ \t]+(.+?)\s*#*\s*$/.exec(text);
+    if (heading) {
+      const level = heading[1]!.length;
+      if (relatedLevel !== undefined && level <= relatedLevel) relatedLevel = undefined;
+      if (heading[2]!.trim().toLowerCase() === "related" && relatedLevel === undefined) relatedLevel = level;
+      continue;
+    }
+    if (relatedLevel !== undefined) continue;
+    const prose = text.replace(/^[-*] +/, "");
+    if (!prose) continue;
+    const links = extractMarkdownLinks(prose);
+    if (!(links.length === 1 && prose === `[${links[0]!.text}](${links[0]!.href})`)) return true;
+  }
+  return false;
 }
 
 function fieldStats(docs: OkfDocument[], value: (doc: OkfDocument) => unknown) {
