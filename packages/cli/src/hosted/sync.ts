@@ -1264,15 +1264,15 @@ function folderResolutionKey(id: string): string {
 
 interface ResolutionRecord {
   choice?: string;
-  /** The journal's latest sequence before the resolution journaled anything: its intents come after it. */
+  /** Interrupted resolution evidence only; sequence order cannot identify its replacement intent. */
   after?: number;
   /** The intents the resolution journaled, once it completed. */
   requestIds?: string[];
 }
 
 /**
- * Record a keep or revise before it journals anything, so a crash between its journal write and
- * the record's completion still recognizes the pending change as this resolution.
+ * Record an unfinished filesystem choice before it journals anything. Until exact identities
+ * are recorded, recovery preserves pending work rather than inferring identity from sequence order.
  */
 async function beginFolderResolution(store: JournaledBackend, id: string, choice: "keep" | "take" | "revise"): Promise<void> {
   if (choice === "take") return;
@@ -1290,10 +1290,8 @@ async function recordFolderResolution(store: JournaledBackend, id: string, choic
 }
 
 /** True when `row` is the change the recorded resolution journaled. */
-function isResolution(record: ResolutionRecord | null | undefined, row: { requestId: string; sequence: number }): boolean {
-  if (!record?.choice) return false;
-  if (Array.isArray(record.requestIds)) return record.requestIds.includes(row.requestId);
-  return typeof record.after === "number" && row.sequence > record.after;
+function isResolution(record: ResolutionRecord | null | undefined, row: { requestId: string }): boolean {
+  return !!record?.choice && Array.isArray(record.requestIds) && record.requestIds.includes(row.requestId);
 }
 
 /**
@@ -1316,8 +1314,14 @@ async function resolveAgain(session: Session, id: string, choice: "keep" | "take
   // Legacy metadata is read only for stores predating the engine index. New journal resolutions
   // never write it; keep this fallback until those pending resolutions have been drained.
   const earlier = folder && rows[0] && isResolution(folder, rows[0]) ? folder
-    : journal ?? await store.readMeta<ResolutionRecord | null>(`cli-resolved:${id}`);
+    : journal ?? folder ?? await store.readMeta<ResolutionRecord | null>(`cli-resolved:${id}`);
   const sync = syncCommand(binding);
+  if (earlier?.choice && rows.length > 0 && !Array.isArray(earlier.requestIds) && typeof earlier.after === "number") {
+    throw new CliError("CONFLICT", `'${id}' has an interrupted resolution whose replacement identity is unknown; its pending work is preserved`, {
+      details: { reason: "resolution_identity_unknown", id, earlier: earlier.choice, states: rows.map((row) => row.state) },
+      help: `run ${sync} to send the existing edit; if it reports a conflict on '${id}', inspect and resolve that one`,
+    });
+  }
   if (!earlier?.choice || rows.length === 0 || !isResolution(earlier, rows[0]!)) {
     throw new CliError("CONFLICT", `'${id}' has an unsent change but no conflict to resolve; the next sync sends it`, {
       details: { reason: "unsent_change", id, states: rows.map((row) => row.state) },
