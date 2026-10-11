@@ -27,6 +27,7 @@ import {
   pull,
   push,
   reclaimInFlight,
+  readConflictResolution,
   resolveConflict,
   resume,
   UNSETTLED_STATES,
@@ -1256,9 +1257,9 @@ function resolvedRecord(binding: CheckoutBinding, id: string, choice: string, fi
   };
 }
 
-/** The meta row that records a keep or revise resolution waiting to send: its choice and the intents it journaled. */
-function resolvedKey(id: string): string {
-  return `cli-resolved:${id}`;
+/** Filesystem conflict resolutions have no engine receipt, so retain their local recovery evidence. */
+function folderResolutionKey(id: string): string {
+  return `cli-folder-resolved:${id}`;
 }
 
 interface ResolutionRecord {
@@ -1273,19 +1274,19 @@ interface ResolutionRecord {
  * Record a keep or revise before it journals anything, so a crash between its journal write and
  * the record's completion still recognizes the pending change as this resolution.
  */
-async function beginResolution(store: JournaledBackend, id: string, choice: "keep" | "take" | "revise"): Promise<void> {
+async function beginFolderResolution(store: JournaledBackend, id: string, choice: "keep" | "take" | "revise"): Promise<void> {
   if (choice === "take") return;
   const after = (await store.listIntents()).reduce((max, row) => Math.max(max, row.sequence), 0);
-  await store.writeMeta(resolvedKey(id), { choice, after } satisfies ResolutionRecord);
+  await store.writeMeta(folderResolutionKey(id), { choice, after } satisfies ResolutionRecord);
 }
 
-async function recordResolution(store: JournaledBackend, id: string, choice: "keep" | "take" | "revise"): Promise<void> {
+async function recordFolderResolution(store: JournaledBackend, id: string, choice: "keep" | "take" | "revise"): Promise<void> {
   if (choice === "take") {
-    await store.writeMeta(resolvedKey(id), null);
+    await store.writeMeta(folderResolutionKey(id), null);
     return;
   }
   const requestIds = (await store.readWithJournal(id)).intents.filter((row) => row.state !== "acknowledged").map((row) => row.requestId);
-  await store.writeMeta(resolvedKey(id), { choice, requestIds } satisfies ResolutionRecord);
+  await store.writeMeta(folderResolutionKey(id), { choice, requestIds } satisfies ResolutionRecord);
 }
 
 /** True when `row` is the change the recorded resolution journaled. */
@@ -1304,10 +1305,18 @@ function isResolution(record: ResolutionRecord | null | undefined, row: { reques
  * resolution is never silently ignored.
  */
 async function resolveAgain(session: Session, id: string, choice: "keep" | "take" | "revise", resumeCommand: CommandText): Promise<Record<string, unknown>> {
-  const { binding, store, projection } = session;
+  const { binding, store, projection, local } = session;
   const file = path.join(binding.path, `${id}.md`);
-  const earlier = await store.readMeta<ResolutionRecord | null>(resolvedKey(id));
   const rows = (await store.readWithJournal(id)).intents.filter((row) => row.state !== "acknowledged");
+  const receipt = await readConflictResolution(local, id);
+  const folder = await store.readMeta<ResolutionRecord | null>(folderResolutionKey(id));
+  const journal: ResolutionRecord | undefined = receipt
+    ? { choice: receipt.choice === "keep-local" ? "keep" : receipt.choice === "revise" ? "revise" : "take", requestIds: receipt.replacementRequestId === null ? [] : [receipt.replacementRequestId] }
+    : undefined;
+  // Legacy metadata is read only for stores predating the engine index. New journal resolutions
+  // never write it; keep this fallback until those pending resolutions have been drained.
+  const earlier = folder && rows[0] && isResolution(folder, rows[0]) ? folder
+    : journal ?? await store.readMeta<ResolutionRecord | null>(`cli-resolved:${id}`);
   const sync = syncCommand(binding);
   if (!earlier?.choice || rows.length === 0 || !isResolution(earlier, rows[0]!)) {
     throw new CliError("CONFLICT", `'${id}' has an unsent change but no conflict to resolve; the next sync sends it`, {
@@ -1338,12 +1347,15 @@ async function resolveAgain(session: Session, id: string, choice: "keep" | "take
   await store.writeJournaled(id, { id, frontmatter: parsed.frontmatter, body: parsed.body }, {
     expectedVersion: current.document?.version ?? null,
     supersede: { requestId: row.requestId, expectedState: "pending", expectedAttempts: 0 },
-    meta: [{ key: baseKey(id), value: { version: row.base, content: row.baseContent } }],
+    meta: [
+      { key: baseKey(id), value: { version: row.base, content: row.baseContent } },
+      { key: folderResolutionKey(id), value: null },
+      { key: `cli-resolved:${id}`, value: null },
+    ],
   });
   // A missing file (a kept deletion) is placed back; a file still holding its recorded bytes is replaced.
   if (bytes === null) delete projection.files[id];
   const exported = await exportCheckout(binding.path, store, projection, { only: new Set([id]), placeMissing: true });
-  await store.writeMeta(resolvedKey(id), null);
   await session.persist();
   return resolvedRecord(binding, id, choice, exported.placed.length > 0 ? (bytes === null ? "restored" : "replaced") : "unchanged", false, false, earlier.choice);
 }
@@ -1677,11 +1689,11 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       throw error;
     }
     await assertInspectedCurrent(session, id, remoteVersionOf(conflict), choice);
-    await beginResolution(store, id, choice);
     let fileState: string;
     if (conflict.kind === "folder") {
       // A folder conflict knows no tombstone; its re-create still waits for an inspection of the deletion.
       if (conflict.deleted && choice !== "take") await assertInspectedTombstone(session, id, null, choice);
+      await beginFolderResolution(store, id, choice);
       fileState = await resolveFolder(session, id, choice, conflict, resumeCommand);
     } else {
       const deleting = conflict.review.local.deleted === true;
@@ -1742,7 +1754,7 @@ async function runResolve(binding: CheckoutBinding, values: HostedValues, deps: 
       }
     }
     await store.writeMeta(inspectedKey(id), null);
-    await recordResolution(store, id, choice);
+    if (conflict.kind === "folder") await recordFolderResolution(store, id, choice);
     await session.persist();
     return resolvedRecord(binding, id, choice, fileState, choice !== "take");
   });
