@@ -1110,6 +1110,19 @@ export class ConflictReviewStaleError extends Error {
  */
 export function conflictResolutionKey(id: string): string { return `conflict-resolution:${id}`; }
 
+/** Latest exact-document receipt's identity; an index written with the receipt, never a second receipt. */
+function documentResolutionKey(id: ConceptId): string { return `conflict-resolution-document:${id}`; }
+
+/** Read the latest exact-document resolution, including one that journaled no replacement. */
+export async function readConflictResolution(local: LocalTarget, id: ConceptId): Promise<ConflictResolutionReceipt | undefined> {
+  const backend = backendOf(local);
+  const identity = await backend.readMeta<string>(documentResolutionKey(id));
+  if (typeof identity !== "string") return undefined;
+  const receipt = await backend.readMeta<ConflictResolutionReceipt>(conflictResolutionKey(identity));
+  // The index cannot grant one document another document's resolution.
+  return receipt?.id === identity && receipt.reviewed?.id === id ? receipt : undefined;
+}
+
 async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promise<{ base: SharedBase; doc: OkfDocument | null }> {
   try {
     const read = await remote.read(id);
@@ -1228,7 +1241,7 @@ export async function resolveConflict(
   if (reviewedShared.version !== review.remote.version || reviewedShared.content !== review.remote.content || reviewedShared.tombstone !== review.remote.tombstone) throw new ConflictReviewStaleError();
   if (current.deleting && selected.kind === "revise") throw new InvalidInputError("A deletion in conflict is resolved by keeping the deletion or taking the shared version.");
   const resolvedAt = options.now?.() ?? new Date().toISOString();
-  const requestId = selected.kind === "take-remote" ? null : mintRequestId();
+  const requestId = selected.kind === "take-remote" || (current.deleting && shared.base.version === null) ? null : mintRequestId();
   const receipt: ConflictResolutionReceipt = {
     // The original conflict identity lets a caller recover the receipt after a lost local reply.
     id: current.intents[0]!.requestId,
@@ -1238,6 +1251,7 @@ export async function resolveConflict(
   const resolveIntents = { expected: current.intents };
   const meta: MetaRecord[] = [
     { key: conflictResolutionKey(receipt.id), value: receipt },
+    { key: documentResolutionKey(review.id), value: receipt.id },
     // Someone else's deletion is never remembered as this working copy's own: a later create of
     // the id acknowledges nothing and meets the conflict again, until an explicit keep.
     { key: baseKey(review.id), value: { version: shared.base.version, content: shared.base.content } satisfies SharedBase },
@@ -1249,7 +1263,7 @@ export async function resolveConflict(
     // A head that is already gone has nothing to delete, so the chain simply retires.
     if (shared.base.version === null) {
       await backend.deleteJournaled(review.id, common);
-      return { receipt: { ...receipt, replacementRequestId: null }, version: null, intent: null };
+      return { receipt, version: null, intent: null };
     }
     const deleted = await backend.deleteJournaled(review.id, {
       ...common,

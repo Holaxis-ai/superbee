@@ -24,6 +24,10 @@ latest bytes match the document can be resolved. Two tabs cannot both resolve th
 The returned receipt retains the reviewed base/local/remote data and original intents in meta at
 `conflictResolutionKey(receipt.id)`, in the same transaction. The receipt id is the original
 conflicted request id, so a caller can find it even if the resolution reply was lost. Receipts are not pruned by this API.
+In exact-document mode, `readConflictResolution(local, documentId)` reads the latest receipt through
+an index committed in that same transaction. Its replacement identity is null when no intent was
+journaled; callers must match a current intent's exact identity before treating it as a pending
+resolution. The index does not grant a later unrelated edit the earlier resolution's choice.
 They survive reload with the working copy but are not a backup against browser eviction. Hosts
 must scope stores and remote access correctly; this API does not add account or retention policy.
 
