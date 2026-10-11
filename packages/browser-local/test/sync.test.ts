@@ -51,6 +51,7 @@ import {
   settleIntent,
   syncStatus,
   type BootstrapMarker,
+  type FetchOptions,
   type LocalBundle,
   type SharedBase,
 } from "../src/local-bundle.ts";
@@ -1330,23 +1331,69 @@ test("an authority that stops serving reads part-way still leaves a concurrent b
   }
 });
 
-test("concurrency below 1 or not an integer is refused before anything is written", async () => {
-  const fixture = await seededFixture();
-  const local = openLocal(new IDBFactory());
-  try {
-    for (const concurrency of [0, -1, 1.5, Number.NaN]) {
-      await assert.rejects(bootstrap(fixture.remote, local, { concurrency }), (error: unknown) => error instanceof InvalidInputError);
-      await assert.rejects(pull(local, fixture.remote, { concurrency }), (error: unknown) => error instanceof InvalidInputError);
-    }
-    assert.equal(await local.backend.readMeta("bootstrap"), undefined);
-    assert.equal(await local.backend.readMeta("pull"), undefined);
-    assert.deepEqual(await local.backend.list(), []);
-    // The minimum is one batch at a time: the sequential shape, still valid.
-    assert.equal((await bootstrap(fixture.remote, local, { concurrency: 1 })).complete, true);
-  } finally {
-    local.close();
-  }
-});
+const INVALID_FETCH_OPTIONS: Array<{ field: "batchSize" | "concurrency"; values: number[] }> = [
+  { field: "batchSize", values: [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1] },
+  { field: "concurrency", values: [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY] },
+];
+
+for (const { field, values } of INVALID_FETCH_OPTIONS) for (const value of values) {
+  test(`fetch option admission: ${field}=${String(value)} is refused before store access or fetching`, async () => {
+    const fixture = await seededFixture();
+    const local = openLocal(new IDBFactory());
+    try {
+      await local.backend.write("notes/retained", doc("notes/retained", "retained local bytes\n"));
+      const markers = { bootstrap: { generation: 3, startedAt: NOW, complete: false }, pull: { startedAt: NOW, completedAt: null, refreshed: 0, unchanged: false } };
+      for (const [key, marker] of Object.entries(markers)) await local.backend.writeMeta(key, marker);
+      const before = await local.backend.readWithJournal("notes/retained");
+      const calls: string[] = [];
+      // Stop at the first side effect even on a regressed implementation: invalid chunking
+      // must never reach its synchronous loop, which cannot be bounded by a test timer.
+      const guarded = <T extends object>(target: T, side: string): T => new Proxy(target, {
+        get(inner, key) {
+          const method = Reflect.get(inner, key, inner);
+          if (typeof method !== "function") return method;
+          return () => { calls.push(`${side}.${String(key)}`); throw new Error("fetch admission reached a side effect"); };
+        },
+      });
+      const backend = guarded(local.backend, "local");
+      const target = { ...local, backend, bundle: { ...local.bundle, backend } };
+      const remote = guarded(fixture.remote, "remote");
+      const options: FetchOptions = { [field]: value };
+      for (const run of [() => bootstrap(remote, target, options), () => pull(target, remote, options)]) {
+        await assert.rejects(run(), (error: unknown) => error instanceof InvalidInputError && error.message.includes(field));
+      }
+      assert.deepEqual(calls, [], "neither verb touched the store or remote");
+      assert.deepEqual(await local.backend.readWithJournal("notes/retained"), before);
+      for (const [key, marker] of Object.entries(markers)) assert.deepEqual(await local.backend.readMeta(key), marker);
+    } finally { local.close(); }
+  });
+}
+
+for (const options of [{}, { batchSize: 1, concurrency: 1 }, { batchSize: 2, concurrency: 2 }, { batchSize: Number.MAX_SAFE_INTEGER }] satisfies FetchOptions[]) {
+  test(`fetch option admission: valid ${JSON.stringify(options)} preserves batching and completion`, async () => {
+    const fixture = await seededFixture();
+    const local = openLocal(new IDBFactory());
+    const batches: number[] = [];
+    const remote = new Proxy(fixture.remote, { get(inner, key) {
+      if (key === "readMany") return async (ids: ConceptId[]) => { batches.push(ids.length); return inner.readMany(ids); };
+      const value = Reflect.get(inner, key, inner);
+      return typeof value === "function" ? value.bind(inner) : value;
+    } });
+    const expected = options.batchSize === 1 ? [1, 1, 1] : options.batchSize === 2 ? [2, 1] : [3];
+    try {
+      assert.equal((await bootstrap(remote, local, { ...options, wire: { snapshot: false } })).complete, true);
+      assert.deepEqual(batches, expected);
+      assert.deepEqual(await local.backend.list(), await fixture.authority.list());
+      batches.length = 0;
+      await fixture.authority.write("notes/alpha", doc("notes/alpha", "changed remotely\n"));
+      const report = await pull(local, remote, { ...options, wire: { heads: false } });
+      assert.deepEqual(batches, expected);
+      assert.deepEqual(report.refreshed, ["notes/alpha"]);
+      assert.equal((await local.backend.read("notes/alpha")).doc.body, "changed remotely\n");
+      assert.notEqual((await local.backend.readMeta<{ completedAt: string | null }>("pull"))!.completedAt, null);
+    } finally { local.close(); }
+  });
+}
 
 // ── snapshot and heads ─────────────────────────────────────────────────────────────────────
 

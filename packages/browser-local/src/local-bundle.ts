@@ -322,7 +322,10 @@ export interface WireOptions {
 
 /** Options both fetching verbs share: how the remote document set is split and how many splits travel at once. */
 export interface FetchOptions {
-  /** Documents fetched per `readMany` round trip, and written per batch as a snapshot streams. */
+  /**
+   * Documents fetched per `readMany` round trip, and written per batch as a snapshot streams.
+   * A positive safe integer, default 25; invalid values are refused before store or remote access.
+   */
   batchSize?: number;
   /** Wire features to use or refuse; see {@link WireOptions}. */
   wire?: WireOptions;
@@ -334,10 +337,12 @@ export interface FetchOptions {
   concurrency?: number;
 }
 
-function concurrencyOf(options: FetchOptions): number {
-  const value = options.concurrency ?? DEFAULT_CONCURRENCY;
-  if (!Number.isInteger(value) || value < 1) throw new InvalidInputError(`concurrency must be an integer of at least 1, got ${String(value)}`);
-  return value;
+function admitFetchOptions(options: FetchOptions): { batchSize: number; concurrency: number } {
+  const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new InvalidInputError(`concurrency must be an integer of at least 1, got ${String(concurrency)}`);
+  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new InvalidInputError(`batchSize must be a safe integer of at least 1, got ${String(batchSize)}`);
+  return { batchSize, concurrency };
 }
 
 /**
@@ -596,7 +601,7 @@ export interface BootstrapOptions extends FetchOptions {
  * marker incomplete and its error propagates once the batches in flight have finished.
  */
 export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
-  const concurrency = concurrencyOf(options);
+  const { batchSize, concurrency } = admitFetchOptions(options);
   const backend = await runtimeBackend(local);
   const bodyMode = await admitBodyMode(backendOf(local));
   const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
@@ -617,7 +622,6 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
   }
 
-  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const findings: string[] = [];
   const held: ConceptId[] = [];
   /** The documents this run wrote, at the version the authority served; what a resumed snapshot keeps. */
@@ -1984,7 +1988,7 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<{ digest: str
  * unfenced, as before.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
-  const concurrency = concurrencyOf(options);
+  const { batchSize, concurrency } = admitFetchOptions(options);
   const backend = await runtimeBackend(local);
   const bodyMode = await admitBodyMode(backendOf(local));
   const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
@@ -2099,7 +2103,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
    * listing's state, so its digest must not be recorded.
    */
   const fetchAndApply = (candidates: ConceptId[], listing?: { listed: Set<ConceptId>; versions: Map<ConceptId, Version> }): Promise<void> =>
-    forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
+    forEachBatch(chunked(candidates, batchSize), concurrency, async (batch) => {
       if (superseded) return;
       const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
       if (!listing) {
