@@ -371,7 +371,7 @@ export function verifyExport(archive: Uint8Array, bundleId: string, options: { r
     entries,
     bytes,
     ...(page ? { page } : {}),
-  }, [{ sha256: sha256Hex(manifests[0]!.data), bytes: manifests[0]!.data.byteLength }]);
+  }, [{ sha256: sha256Hex(manifests[0]!.data), bytes: manifests[0]!.data.byteLength }], archive.byteLength);
 }
 
 /**
@@ -386,11 +386,13 @@ export class ExportPageChain {
   readonly #pages: VerifiedExport[] = [];
   #from = 0;
   #ended = false;
+  #archiveBytes = 0;
 
   /** Adds the next page; answers its next cursor, or undefined once the export is whole. */
   add(verified: VerifiedExport): string | undefined {
     exportProvenance(verified);
-    const accepted = verifiedStates.get(verified)!.snapshot;
+    const state = verifiedStates.get(verified)!;
+    const accepted = state.snapshot;
     const page = accepted.page;
     const first = this.#pages[0] ?? accepted;
     if (!page || !first.page || this.#ended) throw new ExportArchiveError("manifest_mismatch", "a paged export answered a page outside its run");
@@ -410,6 +412,9 @@ export class ExportPageChain {
       throw new ExportArchiveError("manifest_mismatch", "the pages do not describe one export of one revision");
     }
     if (page.from !== this.#from) throw new ExportArchiveError("manifest_mismatch", "the pages leave a gap or overlap");
+    // Charge exact ZIP bytes, including headers and manifests, before retaining another page.
+    if (state.archiveBytes > MAX_EXPORT_BYTES - this.#archiveBytes) throw malformed("the pages are larger than an export carries");
+    this.#archiveBytes += state.archiveBytes;
     this.#pages.push(accepted);
     this.#from += page.count;
     if (page.next === undefined) this.#ended = true;
@@ -426,7 +431,7 @@ export class ExportPageChain {
     let bytes = 0;
     for (const verified of this.#pages) {
       for (const entry of verified.entries) {
-        entries.push(entry);
+        entries.push({ ...entry, bytes: Uint8Array.from(entry.bytes) });
         tally[entry.kind === "document" ? "documents" : entry.kind === "reserved" ? "reserved" : "blobs"] += 1;
         bytes += entry.bytes.byteLength;
       }
@@ -444,7 +449,7 @@ export class ExportPageChain {
     if (collision) {
       throw new ExportArchiveError("unsafe_path", `the archive holds paths one folder cannot keep apart: ${JSON.stringify(collision[0])} and ${JSON.stringify(collision[1])}`);
     }
-    return rememberVerified({ source: first.source, exportedAt: first.exportedAt, counts: tally, entries, bytes }, this.#pages.flatMap((verified) => exportProvenance(verified).manifests));
+    return rememberVerified({ source: { ...first.source }, exportedAt: first.exportedAt, counts: tally, entries, bytes }, this.#pages.flatMap((verified) => exportProvenance(verified).manifests), this.#archiveBytes);
   }
 }
 
@@ -467,6 +472,7 @@ export interface ExportProvenance {
 
 interface VerifiedState {
   readonly fingerprint: string;
+  readonly archiveBytes: number;
   readonly snapshot: VerifiedExport;
   readonly provenance: ExportProvenance;
 }
@@ -489,14 +495,14 @@ function fingerprintOf(verified: VerifiedExport): string {
   });
 }
 
-function rememberVerified(verified: VerifiedExport, manifests: ExportProvenance["manifests"]): VerifiedExport {
+function rememberVerified(verified: VerifiedExport, manifests: ExportProvenance["manifests"], archiveBytes: number): VerifiedExport {
   const snapshot: VerifiedExport = {
     source: { ...verified.source }, exportedAt: verified.exportedAt, counts: { ...verified.counts },
     entries: verified.entries.map((entry) => ({ ...entry, bytes: Uint8Array.from(entry.bytes) })), bytes: verified.bytes,
     ...(verified.page ? { page: { ...verified.page, counts: { ...verified.page.counts } } } : {}),
   };
   const state: VerifiedState = {
-    snapshot,
+    snapshot, archiveBytes,
     fingerprint: fingerprintOf(verified),
     provenance: {
       source: { ...verified.source }, exportedAt: verified.exportedAt,

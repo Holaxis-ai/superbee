@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ExportArchiveError, ExportPageChain, exportProvenance, joinExportPages, materializeExport, readStoredZip, verifyExport } from "../src/portable-export.js";
+import { crc32, MAX_EXPORT_BYTES, ExportArchiveError, ExportPageChain, exportProvenance, joinExportPages, materializeExport, readStoredZip, verifyExport } from "../src/portable-export.js";
 
 const archive = (name: string) => Buffer.from(JSON.parse(readFileSync(new URL(`./fixtures/hosted-sync-v1/${name}.json`, import.meta.url), "utf8")).response.bodyBase64, "base64");
 const whole = () => verifyExport(archive("export-200"), "notes.a");
@@ -70,4 +70,64 @@ test("page-chain refuses incomplete, repeated, reversed and changed verified pag
   const first = page("first"); const last = page("last");
   (last.source as { revision: number }).revision = 3;
   assert.throws(() => joinExportPages([first, last]), ExportArchiveError);
+});
+
+test("mutating a joined result cannot alter accepted pages or subsequent joins", () => {
+  const first = page("first"); const last = page("last");
+  const chain = new ExportPageChain(); chain.add(first); chain.add(last);
+  const joined = chain.joined();
+  (joined.source as { revision: number }).revision = 900;
+  joined.entries[0]!.bytes.fill(0);
+  for (const repeated of [chain.joined(), joinExportPages([first, last])]) {
+    assert.deepEqual(repeated.source, whole().source);
+    assert.deepEqual(repeated.entries.map((entry) => Buffer.from(entry.bytes)), whole().entries.map((entry) => Buffer.from(entry.bytes)));
+    assert.equal(exportProvenance(repeated).inventorySha256, exportProvenance(whole()).inventorySha256);
+  }
+});
+
+/** Fixture writer: stored ZIP records let the test charge real headers and padded manifests. */
+function zip(entries: readonly { name: string; bytes: Uint8Array }[]): Uint8Array {
+  const parts: Uint8Array[] = []; const directory: Uint8Array[] = []; let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name); const checksum = crc32(entry.bytes);
+    const local = Buffer.alloc(30 + name.length);
+    local.writeUInt32LE(0x04034b50); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x800, 6);
+    local.writeUInt32LE(checksum, 14); local.writeUInt32LE(entry.bytes.length, 18); local.writeUInt32LE(entry.bytes.length, 22); local.writeUInt16LE(name.length, 26); name.copy(local, 30);
+    const central = Buffer.alloc(46 + name.length);
+    central.writeUInt32LE(0x02014b50); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x800, 8);
+    central.writeUInt32LE(checksum, 16); central.writeUInt32LE(entry.bytes.length, 20); central.writeUInt32LE(entry.bytes.length, 24); central.writeUInt16LE(name.length, 28); central.writeUInt32LE(offset, 42); name.copy(central, 46);
+    parts.push(local, entry.bytes); directory.push(central); offset += local.length + entry.bytes.length;
+  }
+  const end = Buffer.alloc(22); const size = directory.reduce((sum, record) => sum + record.length, 0);
+  end.writeUInt32LE(0x06054b50); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(size, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, ...directory, end]);
+}
+
+test("page-chain aggregate ZIP budget includes manifests and refuses before retaining the excess page", () => {
+  const chain = new ExportPageChain(); let acceptedZipBytes = 0; const count = 129;
+  for (let from = 0; from < count; from++) {
+    const name = `notes/page-${from}.md`; const bytes = Buffer.from("a");
+    const manifest = Buffer.from(JSON.stringify({ format: "superbee-export/1", source: { tenantId: "tenant:a", bundleId: "notes.a", revision: 2, okfEdition: null }, exportedAt: "2030-01-01T00:00:00.000Z",
+      counts: { documents: count, reserved: 0, blobs: 0 }, entries: [{ path: name, bytes: bytes.length, sha256: sha(bytes) }],
+      page: { from, count: 1, total: count, ...(from + 1 < count ? { next: String(from + 1) } : {}) }, padding: "x".repeat(1024 * 1024) }));
+    const raw = zip([{ name, bytes }, { name: "superbee-export.json", bytes: manifest }]);
+    const next = verifyExport(raw, "notes.a", { paged: true });
+    if (acceptedZipBytes + raw.byteLength <= MAX_EXPORT_BYTES) {
+      chain.add(next); acceptedZipBytes += raw.byteLength;
+    } else {
+      assert.ok(acceptedZipBytes <= MAX_EXPORT_BYTES);
+      assert.throws(() => chain.add(next), (error: unknown) => error instanceof ExportArchiveError && error.problem === "malformed");
+      assert.throws(() => chain.add(next), ExportArchiveError);
+      assert.throws(() => chain.joined(), ExportArchiveError);
+      const compact = JSON.parse(manifest.toString()); delete compact.padding;
+      assert.equal(chain.add(verifyExport(zip([{ name, bytes }, { name: "superbee-export.json", bytes: Buffer.from(JSON.stringify(compact)) }]), "notes.a", { paged: true })), String(from + 1));
+      const lastName = `notes/page-${from + 1}.md`;
+      compact.entries[0].path = lastName; compact.page.from += 1; delete compact.page.next;
+      assert.equal(chain.add(verifyExport(zip([{ name: lastName, bytes }, { name: "superbee-export.json", bytes: Buffer.from(JSON.stringify(compact)) }]), "notes.a", { paged: true })), undefined);
+      assert.equal(chain.joined().entries.length, count);
+      assert.equal(chain.joined().bytes, count);
+      return;
+    }
+  }
+  assert.fail("the aggregate fixture must exceed the budget while every individual ZIP is valid");
 });

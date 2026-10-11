@@ -116,7 +116,9 @@ package names or version labels.
 
 `@superbee/core/portable-export` (also bundled as `superbee/portable-export`) exposes the same
 store-only archive verifier used by the CLI: `verifyExport`, `ExportPageChain` and
-`joinExportPages`. It performs no acquisition, sign-in or network access. A complete accepted
+`joinExportPages`. The page chain charges the sum of complete ZIP sizes, including manifests
+and headers, against `MAX_EXPORT_BYTES` before retaining a page; returned `bytes` counts only
+stored bundle content. It performs no acquisition, sign-in or network access. A complete accepted
 handle can be passed to `materializeExport(handle, existingPrivateParent)` to create a fresh
 private directory; callers own its cleanup and isolation while publishing. No target is replaced.
 `exportProvenance(handle)` returns exact ordered raw-manifest SHA-256/size evidence plus a combined
