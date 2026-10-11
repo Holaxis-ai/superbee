@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Stable read-only publication snapshot façade bundled into the public superbee package.",
+  "description": "Stable read-only publication snapshot fa\u00e7ade bundled into the public superbee package.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "sideEffects": false,
@@ -16,7 +16,8 @@
     "check:generated": "node scripts/generate-types.mjs --check",
     "build": "npm run check:generated && tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --test ./test/*.test.mjs"
+    "test": "node --test ./test/*.test.mjs",
+    "test:host-class": "node --test ./test/source-exclusions.test.mjs"
   },
   "dependencies": {
     "@superbee/core": "*",

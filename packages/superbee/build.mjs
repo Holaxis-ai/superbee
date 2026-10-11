@@ -22,7 +22,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { isMainModule } from "../../scripts/is-main-module.mjs";
-import { buildBundleDescriptorBundle, buildCliBundle, buildPublicationBundle } from "./scripts/build-bundle.mjs";
+import { buildBundleDescriptorBundle, buildCliBundle, buildPublicationBundle, buildPortableExportBundle } from "./scripts/build-bundle.mjs";
 import { prepareCliBundleInputs } from "../cli/scripts/prepare-bundle-inputs.mjs";
 import { FUNCTIONAL_VERSION_FLOOR } from "./scripts/functional-version-floor.mjs";
 
@@ -111,6 +111,8 @@ export async function buildCli(artifactChannel, { source, packageIdentity, updat
     buildPublicationBundle(publicationBridgeOutfile, "bridge"),
     buildBundleDescriptorBundle(bundleDescriptorOutfile),
     buildPublicationTypes(),
+    buildPortableExportBundle(r("dist/portable-export.mjs")),
+    cp(r("../core/dist/portable-export.d.ts"), r("dist/portable-export.d.ts")),
     buildBundleDescriptorTypes(),
   ]);
   // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
