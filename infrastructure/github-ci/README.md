@@ -21,7 +21,18 @@ It also verifies successful current
 main-push CI and CodeQL evidence (every runtime shard, maintained proof lane,
 both security analyses, and their stable aggregate statuses), existing protection
 invariants, and the absence
-of a Windows queue. Its tests run in the engine scripts lane:
+of a Windows queue.
+
+The legacy smoke requirement uses the maintained engines-floor lane's display
+name from `scripts/ci-lanes.json`, with GitHub Actions ownership preserved.
+Engine queues are inventoried by `merge_queue` rule type and main-branch scope,
+independent of display name. Multiple relevant queues, including disabled or
+evaluate candidates, require reconciliation. Literal branch refs and GitHub's
+all/default-branch selectors are supported; other patterns or incomplete queue
+identity/scope refuse readiness until reconciled. An inventory with no queue is
+valid for initial setup; this check does not require or authorize activation.
+
+Its tests run in the engine scripts lane:
 
 ```sh
 node --test infrastructure/github-ci/preflight.test.mjs

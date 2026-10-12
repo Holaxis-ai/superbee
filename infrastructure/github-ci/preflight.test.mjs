@@ -9,6 +9,17 @@ import os from "node:os";
 import path from "node:path";
 import { collectSnapshot, evaluateSnapshot, ENGINE, WINDOWS, LEGACY_CHECKS, RELEASE_TAGS, SOURCE_FILES, WORKFLOW_JOBS } from "./preflight.mjs";
 
+function queueRule(overrides = {}) {
+  return { id: 24399242, name: "Superbee Merge Queue", enforcement: "active", target: "branch",
+    source_type: "Repository", source: ENGINE,
+    conditions: { ref_name: { include: ["refs/heads/main"], exclude: [] } }, bypass_actors: [],
+    rules: [{ type: "merge_queue", parameters: { check_response_timeout_minutes: 60,
+      grouping_strategy: "ALLGREEN", max_entries_to_build: 2, max_entries_to_merge: 1,
+      merge_method: "SQUASH", min_entries_to_merge: 1, min_entries_to_merge_wait_minutes: 0 } },
+    { type: "required_status_checks", parameters: { required_status_checks: [{ context: "CI required lanes", integration_id: 15368 }],
+      strict_required_status_checks_policy: false, do_not_enforce_on_create: false } }, { type: "deletion" }], ...overrides };
+}
+
 function fixture() {
   const mainSha = "a".repeat(40);
   const run = (names) => ({ event: "push", head_sha: mainSha, status: "completed", conclusion: "success", jobs: names.map((name) => ({ name, head_sha: mainSha, status: "completed", conclusion: "success" })) });
@@ -18,7 +29,7 @@ function fixture() {
     reviewedFiles: Object.fromEntries(SOURCE_FILES.map((file) => [file, { sha: "e".repeat(40), type: "blob", mode: "100644", checkoutMatches: true, indexVisible: true }])),
     protection: { required_status_checks: { strict: true, checks: LEGACY_CHECKS.map((context) => ({ context, app_id: 15368 })) } },
     engineRulesets: [{ id: 20914366, enforcement: "active", target: "tag", source_type: "Repository", source: ENGINE,
-      conditions: { ref_name: { include: [...RELEASE_TAGS], exclude: [] } }, bypass_actors: [], rules: [{ type: "update" }, { type: "deletion" }] }], windowsRulesets: [],
+      conditions: { ref_name: { include: [...RELEASE_TAGS], exclude: [] } }, bypass_actors: [], rules: [{ type: "update" }, { type: "deletion" }] }, queueRule()], windowsRulesets: [],
     workflows: { ...Object.fromEntries(Object.entries(WORKFLOW_JOBS).map(([file, names]) => [file, run(names)])) },
   };
 }
@@ -40,6 +51,8 @@ for (const [name, mutate] of Object.entries({
   "hidden source index flag": (s) => { s.reviewedFiles[SOURCE_FILES[0]].indexVisible = false; },
   "missing legacy protection": (s) => { delete s.protection; },
   "wrong check application": (s) => { s.protection.required_status_checks.checks[0].app_id = 1; },
+  "obsolete smoke context": (s) => { s.protection.required_status_checks.checks[2].context = "built-CLI smoke on the engines floor (node 20)"; },
+  "wrong smoke application": (s) => { s.protection.required_status_checks.checks[2].app_id = 1; },
   "weakened strict policy": (s) => { s.protection.required_status_checks.strict = false; },
   "lost tag protection": (s) => { s.engineRulesets = []; },
   "empty tag restrictions": (s) => { s.engineRulesets[0].rules = []; },
@@ -54,7 +67,13 @@ for (const [name, mutate] of Object.entries({
   "unknown Windows inventory": (s) => { delete s.windowsRulesets; },
   "incomplete Windows inventory": (s) => { s.windowsRulesets = [{ enforcement: "active" }]; },
   "Windows queue enabled": (s) => { s.windowsRulesets = [{ enforcement: "active", rules: [{ type: "merge_queue" }] }]; },
-  "duplicate engine queue": (s) => { s.engineRulesets.push({ name: "Superbee merge queue" }, { name: "Superbee merge queue" }); },
+  "duplicate engine queue under another name": (s) => { s.engineRulesets.push(queueRule({ id: 2, name: "Other queue" })); },
+  "wildcard engine queue overlap": (s) => { s.engineRulesets.push(queueRule({ id: 2, name: "All branches queue", conditions: { ref_name: { include: ["refs/heads/*"], exclude: [] } } })); },
+  "unknown engine inventory row": (s) => { s.engineRulesets.push({ id: 2, name: "Other control", enforcement: "active", target: "branch" }); },
+  "malformed engine queue conditions": (s) => { delete s.engineRulesets[1].conditions; },
+  "unknown engine queue pattern": (s) => { s.engineRulesets[1].conditions.ref_name.include = ["refs/heads/m[ai]in"]; },
+  "unknown engine queue exclusion": (s) => { s.engineRulesets[1].conditions.ref_name.exclude = ["refs/heads/release/**"]; },
+  "missing engine queue identity": (s) => { delete s.engineRulesets[1].id; },
   "missing workflow run": (s) => { delete s.workflows["ci-tests.yml"]; },
   "stale successful run": (s) => { s.workflows["ci-tests.yml"].head_sha = "c".repeat(40); },
   "PR evidence only": (s) => { s.workflows["ci-tests.yml"].event = "pull_request"; },
@@ -71,6 +90,37 @@ for (const [name, mutate] of Object.entries({
     assert.equal(evaluateSnapshot(snapshot).ready, false);
   });
 }
+
+test("legacy protection requires the maintained manifest smoke context", () => {
+  assert.deepEqual(LEGACY_CHECKS, ["gate (node 22)", "gate (node 26)",
+    "installed-package smoke on the engines floor (node 22.14.0)"]);
+});
+
+test("queue inventory recognizes main queues independent of display name and enforcement", () => {
+  for (const name of ["Superbee Merge Queue", "Superbee merge queue", "Renamed queue"]) {
+    for (const enforcement of ["active", "evaluate", "disabled"]) {
+      const snapshot = fixture();
+      snapshot.engineRulesets[1] = queueRule({ name, enforcement });
+      assert.equal(evaluateSnapshot(snapshot).ready, true);
+      snapshot.engineRulesets.push(queueRule({ id: 2, name: "Another queue" }));
+      assert.ok(evaluateSnapshot(snapshot).errors.includes("multiple engine queue rulesets require reconciliation"));
+    }
+  }
+});
+
+test("initial setup and proven nonoverlapping queues do not require reconciliation", () => {
+  const snapshot = fixture(); snapshot.engineRulesets.pop();
+  assert.equal(evaluateSnapshot(snapshot).ready, true);
+  snapshot.engineRulesets.push(queueRule());
+  for (const ref_name of [
+    { include: ["refs/heads/develop"], exclude: [] },
+    { include: ["~ALL"], exclude: ["refs/heads/main"] },
+    { include: ["~DEFAULT_BRANCH"], exclude: ["~ALL"] },
+  ]) {
+    snapshot.engineRulesets[2] = queueRule({ id: 2, name: "Another queue", conditions: { ref_name } });
+    assert.equal(evaluateSnapshot(snapshot).ready, true);
+  }
+});
 
 function squashFixture() {
   const snapshot = fixture();
@@ -174,8 +224,8 @@ function collectedFixture(mutate = () => {}) {
       })) };
     }
     data[`repos/${ENGINE}/branches/main/protection`] = snapshot.protection;
-    data[`repos/${ENGINE}/rulesets?per_page=100&page=1`] = [{ id: 20914366 }];
-    data[`repos/${ENGINE}/rulesets/20914366`] = snapshot.engineRulesets[0];
+    data[`repos/${ENGINE}/rulesets?per_page=100&page=1`] = snapshot.engineRulesets.map(({ id }) => ({ id }));
+    for (const rule of snapshot.engineRulesets) data[`repos/${ENGINE}/rulesets/${rule.id}`] = rule;
     data[`repos/${WINDOWS}/rulesets?per_page=100&page=1`] = [];
     writeFileSync(path.join(bin, "data.json"), JSON.stringify(data));
     writeFileSync(path.join(bin, "gh"), '#!/usr/bin/env node\nconst fs=require("node:fs"),path=require("node:path");const data=JSON.parse(fs.readFileSync(path.join(__dirname,"data.json")));const key=process.argv[3];if(!(key in data))process.exit(3);console.log(JSON.stringify(data[key]));\n', { mode: 0o755 });
