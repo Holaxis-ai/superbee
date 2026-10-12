@@ -5,11 +5,6 @@ import { fileURLToPath } from "node:url";
 
 export const ENGINE = "Holaxis-ai/superbee";
 export const WINDOWS = "Holaxis-ai/superbee-windows-cli";
-export const LEGACY_CHECKS = [
-  "gate (node 22)",
-  "gate (node 26)",
-  "built-CLI smoke on the engines floor (node 20)",
-];
 export const SOURCE_FILES = [
   ".github/workflows/ci-tests.yml",
   ".github/workflows/codeql.yml",
@@ -40,6 +35,43 @@ function preservesReleaseTags(rule) {
     ["update", "deletion"].every((type) => rule.rules.some((entry) => entry?.type === type));
 }
 const manifest = JSON.parse(readFileSync(new URL("../../scripts/ci-lanes.json", import.meta.url), "utf8"));
+const floorSmoke = manifest.required_jobs.map((id) => manifest.lanes[id])
+  .filter((lane) => lane.workflow_only === true && lane.runtime_setup_node === manifest.node_policy.compatibility_floor);
+if (floorSmoke.length !== 1) throw new Error("maintained engines-floor smoke owner is ambiguous or missing");
+export const LEGACY_CHECKS = ["gate (node 22)", "gate (node 26)", floorSmoke[0].display_name];
+
+// Only literal refs and GitHub's universal/default-branch selectors are proven
+// here. Other patterns need operator reconciliation rather than guessed overlap.
+function selectsMain(selectors) {
+  if (!Array.isArray(selectors) || selectors.some((value) => typeof value !== "string" || value.length === 0)) return null;
+  let selected = false;
+  for (const value of selectors) {
+    if (["refs/heads/main", "~DEFAULT_BRANCH", "~ALL", "refs/heads/*", "*"].includes(value)) selected = true;
+    else if (!/^refs\/heads\/[^*?\[\]{}\\]+$/.test(value)) return null;
+  }
+  return selected;
+}
+
+function mainQueueInventory(rulesets, errors) {
+  const queues = [];
+  if (!Array.isArray(rulesets)) { errors.push("engine ruleset inventory missing or incomplete"); return queues; }
+  for (const rule of rulesets) {
+    if (!rule || !["active", "disabled", "evaluate"].includes(rule.enforcement) || !Array.isArray(rule.rules) ||
+        rule.rules.some((entry) => !entry || typeof entry.type !== "string")) {
+      errors.push("engine ruleset inventory missing or incomplete"); continue;
+    }
+    if (!rule.rules.some((entry) => entry.type === "merge_queue")) continue;
+    if (rule.target !== "branch" || !Number.isSafeInteger(rule.id) || rule.id <= 0 ||
+        typeof rule.name !== "string" || rule.name.length === 0 || rule.source_type !== "Repository" || rule.source !== ENGINE) {
+      errors.push("engine queue identity or target is incomplete"); continue;
+    }
+    const included = selectsMain(rule.conditions?.ref_name?.include);
+    const excluded = selectsMain(rule.conditions?.ref_name?.exclude);
+    if (included === null || excluded === null) errors.push("engine queue main-branch scope is unknown");
+    else if (included && !excluded) queues.push(rule);
+  }
+  return queues;
+}
 // A successful workflow can include skipped jobs. Require each maintained lane and
 // every matrix leg on the exact main candidate, as well as the stable aggregates.
 export const WORKFLOW_JOBS = {
@@ -89,7 +121,7 @@ export function evaluateSnapshot(snapshot) {
   else if (snapshot.windowsRulesets.some((rule) => rule.enforcement === "active" && rule.rules?.some((entry) => entry.type === "merge_queue"))) {
     errors.push("Windows has an active merge queue");
   }
-  const queueRules = Array.isArray(snapshot.engineRulesets) ? snapshot.engineRulesets.filter((rule) => rule?.name === "Superbee merge queue") : [];
+  const queueRules = mainQueueInventory(snapshot.engineRulesets, errors);
   if (queueRules.length > 1) errors.push("multiple engine queue rulesets require reconciliation");
   for (const [file, requiredNames] of Object.entries(WORKFLOW_JOBS)) {
     const run = snapshot.workflows?.[file];
