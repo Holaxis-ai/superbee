@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import yaml from "js-yaml";
+import { normalizeWorkflowActions } from "./workflow-actions.mjs";
 
 export function extractJobs(text) {
   const lines = text.split("\n");
@@ -94,6 +94,7 @@ export function requiredTrustedReleasePrefix(text, {
   checkoutInputs = {},
   checkoutAction,
   setupNodeAction,
+  actionIdentities,
   nodeVersion,
   preflightName,
   preflightRun,
@@ -101,7 +102,7 @@ export function requiredTrustedReleasePrefix(text, {
 }) {
   let workflow;
   try {
-    workflow = yaml.safeLoad(text);
+    workflow = normalizeWorkflowActions(text, label, actionIdentities);
   } catch (error) {
     assert.fail(`${label} must be valid, unambiguous YAML: ${error.message}`);
   }

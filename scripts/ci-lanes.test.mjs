@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { evaluateRequiredResults, REQUIRED_JOBS } from "./ci-aggregate.mjs";
 import { validateNodeRuntimeManifest, validateNodeRuntimePolicy } from "./node-runtime-policy.mjs";
 import { requiredTrustedReleasePrefix } from "./workflow-step-test-helper.mjs";
+import { parseActionDocument } from "./workflow-actions.mjs";
 const clockModule = new URL("../packages/core/dist/meaningful-change-time.js", import.meta.url);
 let meaningfulChangeTimeValue;
 try {
@@ -44,8 +45,8 @@ const wrapperSources = Object.fromEntries(
 const REVIEW_EVIDENCE = `reviews/node-26-promotion@sha256:${"a".repeat(64)}`;
 const RELEASE_PREFLIGHT_NAME = "Check Node runtime policy before installation";
 const RELEASE_PREFLIGHT_RUN = "node scripts/node-runtime-policy.mjs";
-const CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
-const SETUP_NODE_ACTION = "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020";
+const CHECKOUT_ACTION = "actions/checkout";
+const SETUP_NODE_ACTION = "actions/setup-node";
 const RELEASE_CHECKOUT_INPUTS = {
   ".github/workflows/release.yml": {},
   ".github/workflows/release-libraries.yml": { "fetch-depth": 0 },
@@ -68,6 +69,7 @@ function assertReleasePreflightOrder(text, relative) {
     checkoutInputs: RELEASE_CHECKOUT_INPUTS[relative],
     checkoutAction: CHECKOUT_ACTION,
     setupNodeAction: SETUP_NODE_ACTION,
+    actionIdentities: manifest.github_actions.identities,
     nodeVersion: "24.21.0",
     preflightName: RELEASE_PREFLIGHT_NAME,
     preflightRun: RELEASE_PREFLIGHT_RUN,
@@ -357,6 +359,8 @@ test("release build jobs have one closed checkout, runtime, and policy trust pre
 
   for (const relative of Object.keys(RELEASE_CHECKOUT_INPUTS)) {
     const workflow = readFileSync(path.join(root, relative), "utf8");
+    const { document } = parseActionDocument(workflow, relative);
+    const [checkout, setupNode] = document.jobs.build.steps;
     const mutations = new Map([
       ["fake shim before checkout", workflow.replace("    steps:\n", `    steps:\n${shim}\n`)],
       ["fake shim between runtime setup and policy", workflow.replace(preflight, `${shim}\n${preflight}`)],
@@ -368,13 +372,17 @@ test("release build jobs have one closed checkout, runtime, and policy trust pre
       ["job services", workflow.replace("  build:\n", "  build:\n    services:\n      fake:\n        image: node:24\n")],
       ["job continue-on-error", workflow.replace("  build:\n", "  build:\n    continue-on-error: true\n")],
       ["changed runs-on", workflow.replace("    runs-on: ubuntu-latest", "    runs-on: macos-latest")],
-      ["changed checkout action", workflow.replace(CHECKOUT_ACTION, "actions/checkout@main")],
-      ["checkout condition", workflow.replace(`      - uses: ${CHECKOUT_ACTION}`, `      - uses: ${CHECKOUT_ACTION}\n        if: true`)],
-      ["changed setup-node action", workflow.replace(SETUP_NODE_ACTION, "actions/setup-node@main")],
+      ["changed checkout action", workflow.replace(checkout.uses, "actions/checkout@main")],
+      ["wrong checkout identity", workflow.replace(checkout.uses, checkout.uses.replace(CHECKOUT_ACTION, SETUP_NODE_ACTION))],
+      ["checkout version label", workflow.replace(`${checkout.uses} # v`, `${checkout.uses} # invalid-v`)],
+      ["checkout condition", workflow.replace(`      - uses: ${checkout.uses}`, `      - uses: ${checkout.uses}\n        if: true`)],
+      ["changed setup-node action", workflow.replace(setupNode.uses, "actions/setup-node@main")],
+      ["wrong setup-node identity", workflow.replace(setupNode.uses, setupNode.uses.replace(SETUP_NODE_ACTION, CHECKOUT_ACTION))],
+      ["setup-node version label", workflow.replace(`${setupNode.uses} # v`, `${setupNode.uses} # invalid-v`)],
       ["changed setup-node version", workflow.replace("          node-version: 24.21.0", "          node-version: 24.20.0")],
       ["changed setup-node inputs", workflow.replace("          cache: npm", "          cache: yarn")],
       ["unknown setup-node input", workflow.replace("          cache: npm", "          cache: npm\n          registry-url: https://registry.npmjs.org")],
-      ["setup-node condition", workflow.replace(`      - uses: ${SETUP_NODE_ACTION}`, `      - uses: ${SETUP_NODE_ACTION}\n        if: true`)],
+      ["setup-node condition", workflow.replace(`      - uses: ${setupNode.uses}`, `      - uses: ${setupNode.uses}\n        if: true`)],
       ["commented preflight", workflow.replace(preflight, preflight.split("\n").map((line) => `${line.slice(0, 6)}# ${line.slice(6)}`).join("\n"))],
       ["late preflight", workflow.replace(`${preflight}\n      - run: npm ci --ignore-scripts`, `      - run: npm ci --ignore-scripts\n${preflight}`)],
     ]);
@@ -398,6 +406,27 @@ test("release build jobs have one closed checkout, runtime, and policy trust pre
         undefined,
         `${relative} must reject ${name}`,
       );
+    }
+  }
+});
+
+test("release preflight accepts workflow-only checkout and setup-node renewals", () => {
+  for (const relative of Object.keys(RELEASE_CHECKOUT_INPUTS)) {
+    const workflow = readFileSync(path.join(root, relative), "utf8");
+    for (const identities of [
+      ["actions/checkout"],
+      ["actions/setup-node"],
+      ["actions/checkout", "actions/setup-node"],
+    ]) {
+      const renewed = workflow.replace(
+        /(actions\/(?:checkout|setup-node))@[a-f0-9]{40} # v[0-9.]+/g,
+        (reference, identity) => identities.includes(identity)
+          ? `${identity}@${"b".repeat(40)} # v99.0.0`
+          : reference,
+      );
+      assert.notEqual(renewed, workflow, `${relative} renewal must apply`);
+      assert.doesNotThrow(() => validateNodePolicyAgreement({ files: { [relative]: renewed } }),
+        `${relative} must accept ${identities.join(" and ")} renewal`);
     }
   }
 });
@@ -766,6 +795,7 @@ test("a missing core build gives local scripts callers an actionable message", a
       "is-main-module.mjs",
       "node-runtime-policy.mjs",
       "workflow-step-test-helper.mjs",
+      "workflow-actions.mjs",
     ]) {
       await copyFile(path.join(root, "scripts", name), path.join(scratch, "scripts", name));
     }
