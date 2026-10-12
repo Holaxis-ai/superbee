@@ -81,6 +81,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/view-admission.d.ts"));
     assert.ok(paths.includes("dist/artifact-contract.js"));
     assert.ok(paths.includes("dist/artifact-contract.d.ts"));
+    assert.ok(paths.includes("dist/site-capabilities.js"));
+    assert.ok(paths.includes("dist/site-capabilities.d.ts"));
     assert.ok(paths.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
 
     await writeFile(
@@ -315,6 +317,26 @@ export function exerciseArtifacts() {
     await run(process.execPath, ["--input-type=module", "-e", 'import { exerciseArtifacts } from "./artifact-consumer.mjs"; if (exerciseArtifacts() !== "x.md") throw new Error("identity changed");'], scratch);
     const artifactBundle = await build({ absWorkingDir: scratch, entryPoints: ["artifact-consumer.mjs"], bundle: true, platform: "browser", format: "iife", globalName: "ArtifactProof", write: false, logLevel: "silent" });
     assert.equal(runInNewContext(artifactBundle.outputFiles[0].text + '\nArtifactProof.exerciseArtifacts()', {}, { timeout: 5000 }), "x.md");
+
+    // Site capabilities run where a Worker or a page runs them: bundled for the browser and
+    // evaluated with only the globals those runtimes share, no Node built-in.
+    await writeFile(path.join(scratch, "site-capability-consumer.mjs"), `
+import { composeSiteCapabilities, siteRecordSource } from "@superbee/core/site-capabilities";
+export async function exerciseSiteCapabilities() {
+  const tool = { name: "guide_open_now", implementationId: "guide.open_now.v1", description: "Places open now.",
+    inputSchema: { type: "object" }, annotations: { readOnlyHint: true }, execute: async () => ({ ok: true }) };
+  const composed = composeSiteCapabilities([{ tier: "pack", namespace: "guide", capabilities: [tool] }], { surface: "ask", requireReadOnly: true });
+  if (!composed.ok) throw new Error("conforming capability refused");
+  const refused = composeSiteCapabilities([{ tier: "pack", namespace: "guide", capabilities: [{ ...tool, name: "superbee_x" }] }], { surface: "ask" });
+  if (refused.ok || refused.refused !== "reserved_prefix") throw new Error("reserved prefix accepted");
+  const source = siteRecordSource({ sourceId: "s", siteId: "site", publication: { artifactDigest: "a", snapshotDigest: "p" },
+    citation: { recordId: "r", path: "/r", asOf: "2026-10-12" }, admittedPath: (p) => p === "/r" });
+  return composed.identityDigest.slice(0, 7) + ":" + source.kind;
+}
+`);
+    const siteBundle = await build({ absWorkingDir: scratch, entryPoints: ["site-capability-consumer.mjs"], bundle: true, platform: "browser", format: "iife", globalName: "SiteProof", write: false, logLevel: "silent" });
+    assert.doesNotMatch(siteBundle.outputFiles[0].text, /require\(|node:/);
+    assert.equal(await runInNewContext(siteBundle.outputFiles[0].text + '\nSiteProof.exerciseSiteCapabilities()', { TextEncoder, URL }, { timeout: 5000 }), "sha256::site-record");
 
     // N3: the filesystem identity unit is not reachable from the packed package. Each negative
     // consumer must FAIL to typecheck for the named reason, and a runtime deep import must be

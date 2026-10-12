@@ -13,6 +13,27 @@ The additive `@superbee/core/artifact-contract` subpath provides pure v1 documen
 observation, request, receipt and capability decoders. See the [contract reference](https://github.com/Holaxis-ai/superbee/blob/main/packages/core/ARTIFACT-CONTRACT.md)
 for identity, provenance, lifecycle and host responsibilities.
 
+## Site capabilities
+
+The additive `@superbee/core/site-capabilities` subpath is the contract for read-only tools a
+site or a recipe pack provides (`SiteCapability`), and the one owner of their composition rules:
+`composeSiteCapabilities` refuses duplicate names, `superbee_` names outside the generic tier and
+names outside a pack's or site's namespace, orders generic, pack and site tools deterministically,
+applies a surface's exclusions after those checks, enforces size limits and, with
+`requireReadOnly`, refuses any capability not declared read-only. It returns frozen snapshots and
+an identity digest for the surface's list. `toProviderTool`, `toPortalAdditionalTool`,
+`toToolDescriptor` and `siteCapabilityFromPortalTool` are the explicit mappings to the existing
+tool shapes. `checkSiteCapability` and `siteCapabilityConformanceCases` test a capability against
+recorded fixtures (read-only declaration, dated results, closed error codes that never echo input,
+bounded and deterministic output, same-origin URLs, citations of records the result contains, and
+refusal of unknown arguments). `siteRecordSource` mints a `site-record` citation only for a path
+the host admits, bound to the publication's digests.
+
+Annotations such as `readOnlyHint` and `untrustedContentHint` are self-declared and enforce
+nothing at runtime; the checks above test recorded fixtures, not the code. Treat them as a control
+only for in-process code from the same reviewed deploy. The module has no Node built-in import, so
+it runs unchanged in a Worker or a browser.
+
 ## Mutation attribution and local history
 
 `mutateDocument` and `prepareDocumentMutationCandidate` persist a supplied `actor` by default:
