@@ -71,6 +71,10 @@ Without --yes, previews only, with no network: what travels (documents, reserved
 files), what stays (dot-files, links), how it is sent, every bound the host enforces, the history
 plan, and what will happen to the folder.
 
+Each document's provenance (generated, timestamp, actor, okf_version) travels as its file states
+it, a claim rather than a verification; verified and superbee_updated_by never travel. The
+preview and the receipt count both, per field.
+
 A bundle within one request's bounds (at most 1,000 documents, 100 other files of 1 MB each,
 1,000 earlier versions, 1,500 objects in all, 3 MiB) is sent in one request. A larger one is sent
 staged: a list of everything, then parts of about 1 MiB, then each file, then commits until the
@@ -260,6 +264,16 @@ function summary(plan: PublishPlan): Record<string, unknown> {
     other_files: plan.blobs.length,
     sent: plan.path.mode === "one-shot" ? "one request" : `staged: ${plan.path.why}; a list of everything, parts of about 1 MiB, each file, then commits until created (resumable)`,
     history: { mode: plan.historyPlan.mode, versions: plan.historyPlan.versions, ...(plan.historyPlan.skipped > 0 ? { skipped: plan.historyPlan.skipped } : {}), note: plan.historyPlan.note },
+    provenance: provenanceOf(plan),
+  };
+}
+
+/** Per managed field, how many documents carry it and how many hold one that stays behind. */
+function provenanceOf(plan: PublishPlan): Record<string, unknown> {
+  return {
+    carried: plan.provenance.carried,
+    dropped: plan.provenance.dropped,
+    note: "provenance travels as each file states it (a claim, not a verification); verification events and the last-editor attribution stay in the folder, and the host attributes the creation to you",
   };
 }
 
@@ -667,6 +681,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
             reserved_files: created.reserved ?? plan.reserved.length,
             other_files: created.blobs ?? plan.blobs.length,
             history: created.history ?? { imported: plan.history.length, verified: false },
+            provenance: { carried: plan.provenance.carried, dropped: plan.provenance.dropped },
           },
           folder: canonical,
           home: facts.home,
@@ -768,6 +783,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           reserved_files: created.reserved ?? plan.reserved.length,
           other_files: created.blobs ?? plan.blobs.length,
           history: created.history ?? { imported: plan.history.length, verified: false },
+          provenance: { carried: plan.provenance.carried, dropped: plan.provenance.dropped },
         },
         folder: canonical,
         home: "hosted",

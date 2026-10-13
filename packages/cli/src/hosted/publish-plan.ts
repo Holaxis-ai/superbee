@@ -5,7 +5,9 @@
 // will not travel. Reads the folder and local Git only.
 //
 // What travels:
-//   documents       every `.md` file that is not a reserved file, as `{id, frontmatter, body}`
+//   documents       every `.md` file that is not a reserved file, as `{id, frontmatter, body}`;
+//                   provenance (`generated`, `timestamp`, `actor`, `okf_version`) as the file
+//                   states it, never `verified` or `superbee_updated_by` (`provenance` counts both)
 //   reserved        `index.md` and `log.md` at any level, as their exact text
 //   blobs           every other plain file, with a content type from its extension (base64 in
 //                   the one-shot request, raw bytes in a staged creation)
@@ -39,12 +41,12 @@ import {
   stringifyDoc,
   type OkfDocument,
 } from "@superbee/core";
-import { wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
+import { IMPORT_CARRIED_FIELDS, IMPORT_DROPPED_FIELDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { versionOfBytes } from "@superbee/core/versioning";
 
 import type { GitBoardFacts } from "../bundle-home.js";
 import { digestOf, findPathCollision, fold } from "./projection.js";
-import { unsendable, utf8 } from "./sync-scan.js";
+import { FRONTMATTER_JSON_BYTES, unsendable, utf8 } from "./sync-scan.js";
 import { stripHostText } from "@superbee/core";
 
 const MiB = 1024 * 1024;
@@ -138,6 +140,11 @@ export interface PublishPlan {
    * they are unchanged.
    */
   readonly extras: Record<string, string>;
+  /**
+   * Per managed field, how many documents carry it to the host as the folder states it
+   * (`IMPORT_CARRIED_FIELDS`) and how many hold one that is dropped (`IMPORT_DROPPED_FIELDS`).
+   */
+  readonly provenance: { carried: Record<string, number>; dropped: Record<string, number> };
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -234,7 +241,10 @@ function gitVersions(board: GitBoardFacts, id: string, rel: string, current: str
       label: `imported:git/${sha}`,
       author: cleanAuthor(author ?? ""),
       authoredAt: new Date(when).toISOString(),
-      frontmatter: parsed.frontmatter as Record<string, unknown>,
+      // An imported version never asserts verification or host attribution, as a current document does not.
+      frontmatter: Object.fromEntries(
+        Object.entries(parsed.frontmatter as Record<string, unknown>).filter(([key]) => !IMPORT_DROPPED_FIELDS.includes(key)),
+      ),
       body: parsed.body ?? "",
     });
   }
@@ -346,6 +356,10 @@ export async function planPublish(
   const blockers: PublishBlocker[] = [];
   const extras: Record<string, string> = {};
   const documentFiles: { id: string; rel: string; text: string }[] = [];
+  const provenance: PublishPlan["provenance"] = {
+    carried: Object.fromEntries(IMPORT_CARRIED_FIELDS.map((field) => [field, 0])),
+    dropped: Object.fromEntries(IMPORT_DROPPED_FIELDS.map((field) => [field, 0])),
+  };
 
   const entries = await walkAll(folder);
   let rootIndex: string | null = null;
@@ -418,7 +432,7 @@ export async function planPublish(
     }
     let request;
     try {
-      request = wholeDocumentRequest("publish", { kind: "document.write", target: id, base: null, content: utf8(bytes)! }, okfVersion);
+      request = wholeDocumentRequest("publish", { kind: "document.write", target: id, base: null, content: utf8(bytes)! }, okfVersion, { mode: "import" });
     } catch (error) {
       if (error instanceof WholeDocumentInputError) {
         blockers.push({ path: entry.rel, reason: "not_sendable", message: error.message });
@@ -426,7 +440,15 @@ export async function planPublish(
       }
       throw error;
     }
-    if (request.kind === "delete") throw new Error(`'${id}' became a delete request`);
+    if (request.kind !== "create") throw new Error(`'${id}' became a ${request.kind} request`);
+    // The host bounds the whole stored frontmatter, carried provenance included; `unsendable`
+    // measured only what a later write sends.
+    if (Buffer.byteLength(JSON.stringify(request.payload.frontmatter)) > FRONTMATTER_JSON_BYTES) {
+      blockers.push({ path: entry.rel, reason: "too_large", message: `'${id}' has more than the ${FRONTMATTER_JSON_BYTES / 1024} KiB of frontmatter the host stores, counting ${request.provenance!.carried.join(", ")}` });
+      continue;
+    }
+    for (const field of request.provenance!.carried) provenance.carried[field] = (provenance.carried[field] ?? 0) + 1;
+    for (const field of request.provenance!.dropped) provenance.dropped[field] = (provenance.dropped[field] ?? 0) + 1;
     documents.push({ id, frontmatter: request.payload.frontmatter as Record<string, unknown>, body: request.payload.body ?? "" });
     documentFiles.push({ id, rel: entry.rel, text: utf8(bytes)! });
   }
@@ -476,7 +498,7 @@ export async function planPublish(
   const draft = { documents, reserved, blobs, history };
   const sendPath = publishPath(draft);
   if (sendPath.mode === "staged") blockers.push(...stagedBlockers(draft));
-  return { documents, reserved, blobs, history, path: sendPath, skipped, blockers, historyPlan, extras };
+  return { documents, reserved, blobs, history, path: sendPath, skipped, blockers, historyPlan, extras, provenance };
 }
 
 export type PlanContent = Pick<PublishPlan, "documents" | "reserved" | "blobs" | "history">;
