@@ -527,7 +527,10 @@ test("a Git board is published with its history, unbound, and its branch left as
   await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha v0.\n");
   git(board, ["add", "."]);
   git(board, ["commit", "-q", "-m", "v0"]);
-  await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha v1.\n");
+  await writeFile(
+    path.join(board, "notes", "alpha.md"),
+    "---\ntype: Note\ntitle: Alpha\ngenerated:\n  by: process:importer\n  at: '2026-01-01T00:00:00.000Z'\nsuperbee_updated_by: person:someone-else\nverified:\n  - by: person:someone-else\n    at: '2026-01-02T00:00:00.000Z'\n---\nAlpha v1.\n",
+  );
   gitAs(board, ["commit", "-q", "-am", "v1"], "😀".repeat(150));
   await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha body é.\n");
   git(board, ["commit", "-q", "-am", "v2"]);
@@ -552,6 +555,13 @@ test("a Git board is published with its history, unbound, and its branch left as
   assert.equal(history[0]!.documentId, "notes/alpha");
   assert.match(history[0]!.label, /^imported:git\/[0-9a-f]{40}$/);
   assert.equal(history[0]!.author, "Ada <ada@example.com>");
+  // An imported version carries provenance but never verification or host attribution.
+  const versionFields = (history as unknown as { frontmatter: Record<string, unknown> }[]).map((row) => row.frontmatter);
+  assert.deepEqual(versionFields[1]!.generated, { by: "process:importer", at: "2026-01-01T00:00:00.000Z" });
+  for (const frontmatter of versionFields) {
+    assert.equal("verified" in frontmatter, false);
+    assert.equal("superbee_updated_by" in frontmatter, false);
+  }
   assert.equal(history[1]!.author.length, 200, "an author is cut to the host's 200 UTF-16 units");
   assert.equal(history[1]!.author, "😀".repeat(100), "never half a surrogate pair");
   const unbound = receipt.git as Record<string, unknown>;

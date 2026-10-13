@@ -241,7 +241,10 @@ function gitVersions(board: GitBoardFacts, id: string, rel: string, current: str
       label: `imported:git/${sha}`,
       author: cleanAuthor(author ?? ""),
       authoredAt: new Date(when).toISOString(),
-      frontmatter: parsed.frontmatter as Record<string, unknown>,
+      // An imported version never asserts verification or host attribution, as a current document does not.
+      frontmatter: Object.fromEntries(
+        Object.entries(parsed.frontmatter as Record<string, unknown>).filter(([key]) => !IMPORT_DROPPED_FIELDS.includes(key)),
+      ),
       body: parsed.body ?? "",
     });
   }
