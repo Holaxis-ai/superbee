@@ -5,6 +5,8 @@
 // native CLI client. Nothing about the issuer or client is trusted from anywhere else, so a
 // refresh token is only ever sent to the issuer the host itself named at sign-in.
 import { CliError } from "../errors.js";
+import { commandToken } from "../command-text.js";
+import { isWorkspaceSlug } from "../hosted/reference.js";
 
 /** The default resource path on a hosted origin: the Superbee API audience is `<origin>/mcp`. */
 export const DEFAULT_RESOURCE_PATH = "/mcp";
@@ -196,7 +198,13 @@ export async function discoverIssuer(fetchImpl: FetchLike, issuer: string): Prom
 
 /** Discover the issuer (and any published CLI client id) from the host's protected-resource metadata. */
 export async function discoverHosted(fetchImpl: FetchLike, target: HostedTarget): Promise<Discovery> {
-  const prm = await fetchJson(fetchImpl, target.metadataUrl, "protected-resource metadata");
+  let prm: Record<string, unknown>;
+  try {
+    prm = await fetchJson(fetchImpl, target.metadataUrl, "protected-resource metadata");
+  } catch (error) {
+    if (error instanceof CliError && error.details?.status === 404) throw missingMetadataError(target);
+    throw error;
+  }
   // RFC 9728 section 3.3: `resource` is required and must equal the resource the metadata was fetched for.
   const resource = optionalString(prm.resource);
   if (resource === undefined) {
@@ -256,4 +264,132 @@ export function resolveClientId(sources: ClientIdSources): { clientId: string; s
     help: "this host has no Superbee CLI client yet; if its operator gave you one, pass --client-id <id> or set SUPERBEE_OAUTH_CLIENT_ID",
     details,
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Workspace origins
+
+/**
+ * Where a workspace browser origin (`<slug>.<parent>`) points at the gateway that serves its
+ * protected-resource metadata. The pointer only says where to look: the gateway's own RFC 9728
+ * metadata must still name the same resource, and the issuer still comes from that metadata alone.
+ */
+export const WORKSPACE_POINTER_PATH = "/.well-known/superbee-workspace";
+
+export interface WorkspaceOrigin {
+  /** The gateway the pointer names, resolved as if the person had typed it to `--host`. */
+  readonly target: HostedTarget;
+  /** The workspace the origin belongs to. */
+  readonly workspaceSlug: string;
+  /** The origin the person named. */
+  readonly requestedOrigin: string;
+}
+
+const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+const MAX_POINTER_RESOURCE_LENGTH = 2048;
+
+/** The hostname without its first label, when that leaves at least two labels; null otherwise. */
+function parentDomain(hostname: string): string | null {
+  if (hostname.startsWith("[") || IPV4.test(hostname)) return null;
+  const labels = hostname.split(".");
+  if (labels.length < 3 || labels.some((label) => label === "")) return null;
+  return labels.slice(1).join(".");
+}
+
+/**
+ * True when a target may be a workspace origin: the default resource on a bare https origin with
+ * no explicit port, on a named host under a parent domain of two or more labels.
+ */
+export function mayBeWorkspaceOrigin(target: HostedTarget): boolean {
+  const url = new URL(target.origin);
+  return url.protocol === "https:" && url.port === "" && target.audience === `${target.origin}${DEFAULT_RESOURCE_PATH}` && parentDomain(url.hostname) !== null;
+}
+
+/**
+ * The gateway a pointer's `resource` names, when this origin may send the person there: https, no
+ * credentials, query, fragment or explicit port, and a different host under the same parent domain
+ * as the origin. Null for anything else.
+ */
+export function trustedPointerTarget(origin: string, resource: unknown): HostedTarget | null {
+  if (typeof resource !== "string" || resource.length > MAX_POINTER_RESOURCE_LENGTH || resource.includes("@")) return null;
+  let from: URL;
+  let to: URL;
+  try {
+    from = new URL(origin);
+    to = new URL(resource);
+  } catch {
+    return null;
+  }
+  if (from.protocol !== "https:" || to.protocol !== "https:") return null;
+  if (to.username || to.password || to.port !== "" || from.port !== "" || to.search || to.hash) return null;
+  if (to.hostname === from.hostname) return null;
+  const parent = parentDomain(from.hostname);
+  if (parent === null || parentDomain(to.hostname) !== parent) return null;
+  try {
+    return resolveHostedTarget(resource);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The refusal for a host with no protected-resource metadata. A host `<label>.<parent>` is often a
+ * workspace address, so the help names the gateway form as a likely fix, not a certain one.
+ */
+export function missingMetadataError(target: HostedTarget): CliError {
+  const hostname = new URL(target.origin).hostname;
+  const parent = parentDomain(hostname);
+  const label = hostname.split(".")[0]!;
+  const suggestion = parent !== null && label !== "mcp" && isWorkspaceSlug(label) ? { host: `https://mcp.${parent}`, workspace: label } : null;
+  return new CliError("RUNTIME", `protected-resource metadata at ${target.metadataUrl} returned HTTP 404`, {
+    details: {
+      status: 404,
+      reason: "no_protected_resource_metadata",
+      host: target.origin,
+      ...(suggestion ? { suggested_host: suggestion.host, suggested_workspace: suggestion.workspace } : {}),
+    },
+    help: suggestion
+      ? `${target.origin} may be a workspace address rather than the sign-in host; if so, re-run with --host ${commandToken(suggestion.host)} --workspace ${commandToken(suggestion.workspace)} (--workspace only where the command takes it)`
+      : `${target.origin} publishes no Superbee sign-in metadata; check the URL, or ask the host's operator which Superbee host to use`,
+  });
+}
+
+/** The pointer at an origin, validated; null when it is absent, unreadable or not trusted. */
+async function readWorkspacePointer(fetchImpl: FetchLike, target: HostedTarget): Promise<WorkspaceOrigin | null> {
+  let pointer: Record<string, unknown>;
+  try {
+    pointer = await fetchJson(fetchImpl, `${target.origin}${WORKSPACE_POINTER_PATH}`, "workspace pointer");
+  } catch {
+    return null;
+  }
+  if (pointer.schema_version !== 1 || !isWorkspaceSlug(pointer.workspace_slug)) return null;
+  const gateway = trustedPointerTarget(target.origin, pointer.resource);
+  if (gateway === null) return null;
+  return { target: gateway, workspaceSlug: pointer.workspace_slug, requestedOrigin: target.origin };
+}
+
+/**
+ * Follow a workspace origin to its gateway, one hop at most: the gateway is never asked for a
+ * pointer of its own. Null when the target is not a possible workspace origin, or its metadata
+ * answers anything but 404 (normal discovery then reads or reports it). Metadata absent with no
+ * trusted pointer is refused with {@link missingMetadataError}.
+ */
+export async function followWorkspaceOrigin(fetchImpl: FetchLike, target: HostedTarget): Promise<WorkspaceOrigin | null> {
+  if (!mayBeWorkspaceOrigin(target)) return null;
+  let status: number;
+  try {
+    const response = await fetchImpl(target.metadataUrl, {
+      headers: { accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    });
+    status = response.status;
+    await response.body?.cancel().catch(() => undefined);
+  } catch {
+    return null;
+  }
+  if (status !== 404) return null;
+  const followed = await readWorkspacePointer(fetchImpl, target);
+  if (followed === null) throw missingMetadataError(target);
+  return followed;
 }

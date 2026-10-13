@@ -28,10 +28,18 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
-import { defaultHostedAuthDeps, hostArgument, hostedWriteHost, notSignedInError, type HostedAuthDeps } from "../hosted-auth/session.js";
+import {
+  defaultHostedAuthDeps,
+  hostArgument,
+  hostedWriteHost,
+  notSignedInError,
+  workspaceForNamedHost,
+  workspaceOriginView,
+  type HostedAuthDeps,
+} from "../hosted-auth/session.js";
 import { checkoutTarget, connectHostedAccount, hostedListCommand, resolveBundleReference, workspaceNames } from "../hosted/account.js";
 import { recordPulled } from "../hosted/freshness.js";
-import type { HostedTarget } from "../hosted-auth/discovery.js";
+import type { FetchLike, HostedTarget } from "../hosted-auth/discovery.js";
 import {
   bindingForPath,
   bindingReference,
@@ -379,11 +387,12 @@ async function checkoutHost(
   values: { readonly workspace?: string; readonly json?: boolean },
   home: string,
   env: NodeJS.ProcessEnv,
-): Promise<HostedTarget> {
+  fetchImpl: FetchLike,
+): Promise<{ readonly target: HostedTarget; readonly workspace: string | undefined; readonly origin: Record<string, string> }> {
   if (flag === undefined) {
     const real = await realpath(folder).catch(() => null);
     const bound = real ? await bindingForPath(home, real).catch(() => null) : null;
-    if (bound) return checkoutTarget(bound);
+    if (bound) return { target: checkoutTarget(bound), workspace: values.workspace, origin: {} };
   }
   const retry = (host: string) =>
     String(
@@ -391,9 +400,9 @@ async function checkoutHost(
         values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
       }${values.json ? commandFragment` --json` : commandFragment``}`,
     );
-  const chosen = await hostedWriteHost(flag, home, retry);
+  const chosen = await hostedWriteHost(flag, home, retry, fetchImpl);
   if (!chosen) throw notSignedInError(env);
-  return chosen.target;
+  return { target: chosen.target, workspace: workspaceForNamedHost(chosen, values.workspace), origin: workspaceOriginView(chosen) };
 }
 
 export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = {}): Promise<void> {
@@ -447,10 +456,10 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   // The chosen host is fixed in the binding and echoed in the receipt. Without --host, a folder
   // that is already a checkout keeps its own host; a new one takes the last sign-in only when it
   // is the one host signed in.
-  const target = await checkoutHost(values.host, folder, typed, values, deps.auth.home, deps.auth.env);
+  const { target, workspace: workspaceFlag, origin: hostOrigin } = await checkoutHost(values.host, folder, typed, values, deps.auth.home, deps.auth.env, deps.auth.fetch);
   const prefix = syncRoutePrefix(target);
   const resume: CommandText = commandFragment`${cliInvocation()} checkout ${commandToken(hostedBundleReferenceText(typed))} --host ${commandToken(hostArgument(target))} --dir ${commandToken(folder)}${
-    values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
+    workspaceFlag !== undefined ? commandFragment` --workspace ${commandToken(workspaceFlag)}` : commandFragment``
   }${values.json ? commandFragment` --json` : commandFragment``}`;
 
   const found = await entryKind(folder);
@@ -463,7 +472,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
     // A bare id matches the checkout of that id in whichever workspace it names, unless --workspace
     // names another workspace than the one the checkout recorded.
     const sameWorkspace =
-      values.workspace === undefined || values.workspace === existing?.workspace_slug || values.workspace === existing?.workspace;
+      workspaceFlag === undefined || workspaceFlag === existing?.workspace_slug || workspaceFlag === existing?.workspace;
     const asked = typed.slug === null && sameWorkspace ? { slug: existing?.workspace_slug ?? null, bundleId } : typed;
     if (existing && bindsBundle(existing, target, asked)) {
       deps.stdout(render({ checkout: "unchanged", ...bindingView(existing), help: nextSteps(existing.path) }, mode));
@@ -478,7 +487,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   }
   await assertStandaloneFolder(folder);
 
-  const { identity, reader, listed, workspace, reference, definitionWrites, documentInputBytes } = await connectHostedBundle(typed, target, values.workspace, deps, resume);
+  const { identity, reader, listed, workspace, reference, definitionWrites, documentInputBytes } = await connectHostedBundle(typed, target, workspaceFlag, deps, resume);
   const canonical = await canonicalFolder(folder);
   let createdFolder = false;
   const placed = new Map<string, string>();
@@ -597,6 +606,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       {
         checkout: "created",
         ...bindingView(result.binding),
+        ...hostOrigin,
         catalog: cataloged,
         documents: result.documents,
         root_index: result.root,

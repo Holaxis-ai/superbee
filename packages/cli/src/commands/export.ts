@@ -41,7 +41,7 @@ import { render, renderUsage, resolveMode, type OutputMode } from "../output.js"
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 import { hostedCheckoutAt } from "../autopull.js";
-import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, workspaceForNamedHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { bindingForPath, checkoutLockName, checkoutStoreDir, releaseCheckout, type CheckoutBinding } from "../hosted/binding.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
@@ -1008,11 +1008,12 @@ export async function exportCommand(argv: string[], partial: Partial<ExportDeps>
 
   let source: Source;
   if (reference) {
+    const named = await requireHostedBundleHost(values.host, deps.auth);
     source = {
-      target: await requireHostedBundleHost(values.host, deps.auth.home, deps.auth.env),
+      target: named.target,
       bundleId: reference.bundleId,
       slug: reference.slug,
-      workspace: values.workspace ?? null,
+      workspace: workspaceForNamedHost(named, values.workspace) ?? null,
       binding: null,
     };
   } else {

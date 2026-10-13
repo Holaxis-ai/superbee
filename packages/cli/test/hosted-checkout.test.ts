@@ -306,29 +306,29 @@ test("the implicit write host: every way it is chosen or refused, from stored se
   const fresh = async () => (await harness()).home;
 
   // Nothing: no host.
-  assert.equal(await hostedWriteHost(undefined, await fresh(), retry), null);
+  assert.equal(await hostedWriteHost(undefined, await fresh(), retry, null), null);
   // --host "" is not "no --host".
-  assert.equal((await rejects(hostedWriteHost("", await fresh(), retry))).code, "USAGE");
+  assert.equal((await rejects(hostedWriteHost("", await fresh(), retry, null))).code, "USAGE");
 
   // One session, no remembered sign-in: that host.
   let home = await fresh();
   await seedHostedSession(home, { host: HOST, accessToken: TOKEN, expiresAtMs: live });
-  assert.deepEqual(await hostedWriteHost(undefined, home, retry).then((c) => [c?.target.origin, c?.source]), [HOST, "only-session"]);
+  assert.deepEqual(await hostedWriteHost(undefined, home, retry, null).then((c) => [c?.target.origin, c?.source]), [HOST, "only-session"]);
 
   // The same host in another spelling is one host, not two.
   home = await fresh();
   await seedHostedSession(home, { host: `${HOST}/mcp/`, accessToken: TOKEN, expiresAtMs: live });
   await writeDefaultHost(home, HOST);
-  assert.deepEqual(await hostedWriteHost(undefined, home, retry).then((c) => [c?.target.origin, c?.source]), [HOST, "last-sign-in"]);
+  assert.deepEqual(await hostedWriteHost(undefined, home, retry, null).then((c) => [c?.target.origin, c?.source]), [HOST, "last-sign-in"]);
 
   // Signed out of everything, a sign-in still remembered: that host, labeled as having no session.
   home = await fresh();
   await writeDefaultHost(home, OTHER);
-  assert.deepEqual(await hostedWriteHost(undefined, home, retry).then((c) => [c?.target.origin, c?.source]), [OTHER, "last-sign-in-signed-out"]);
+  assert.deepEqual(await hostedWriteHost(undefined, home, retry, null).then((c) => [c?.target.origin, c?.source]), [OTHER, "last-sign-in-signed-out"]);
 
   // Signed out of the last sign-in's host but still holding another's session: refused, naming which has none.
   await seedHostedSession(home, { host: HOST, accessToken: TOKEN, expiresAtMs: live });
-  const error = await rejects(hostedWriteHost(undefined, home, retry));
+  const error = await rejects(hostedWriteHost(undefined, home, retry, null));
   assert.equal(error.details?.reason, "ambiguous_host");
   assert.deepEqual(error.details?.hosts, [HOST, OTHER]);
   assert.deepEqual(error.details?.with_session, [HOST]);
@@ -337,7 +337,7 @@ test("the implicit write host: every way it is chosen or refused, from stored se
   assert.deepEqual(error.details?.commands, [`publish --host ${HOST}`, `publish --host ${OTHER}`]);
 
   // Named, it is always the host named.
-  assert.deepEqual(await hostedWriteHost(OTHER, home, retry).then((c) => [c?.target.origin, c?.source]), [OTHER, "flag"]);
+  assert.deepEqual(await hostedWriteHost(OTHER, home, retry, null).then((c) => [c?.target.origin, c?.source]), [OTHER, "flag"]);
 });
 
 test("a session record copied into another session's directory does not count as a signed-in host", async () => {

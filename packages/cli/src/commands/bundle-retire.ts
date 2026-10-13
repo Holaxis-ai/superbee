@@ -16,7 +16,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken } from "../command-text.js";
 import { CliError } from "../errors.js";
-import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, workspaceForNamedHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { accessRefusal, postRoute } from "../hosted/access.js";
 import { connectHostedAccount, resolveBundleReference } from "../hosted/account.js";
 import { hostedBundleReferenceText, parseHostedBundleReference } from "../hosted/reference.js";
@@ -80,12 +80,14 @@ export async function bundleRetire(argv: string[], partial: Partial<BundleRetire
   if (!typed) {
     throw new CliError("USAGE", `'${positionals[0]!}' is not a hosted bundle id or <workspace>/<bundle-id>`, { help: `${cliInvocation()} bundle retire --help` });
   }
-  const target = await requireHostedBundleHost(values.host, deps.auth.home, deps.auth.env);
+  const named = await requireHostedBundleHost(values.host, deps.auth);
+  const target = named.target;
+  const workspace = workspaceForNamedHost(named, values.workspace);
   const host = commandToken(hostArgument(target));
   const command = (reference: string) =>
-    commandFragment`${cliInvocation()} bundle retire ${commandToken(reference)} --host ${host}${values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``}`;
+    commandFragment`${cliInvocation()} bundle retire ${commandToken(reference)} --host ${host}${workspace !== undefined ? commandFragment` --workspace ${commandToken(workspace)}` : commandFragment``}`;
   const resume = commandFragment`${command(hostedBundleReferenceText(typed))}${values.json ? commandFragment` --json` : commandFragment``}`;
-  const account = await connectHostedAccount(target, { ...(values.workspace !== undefined ? { workspace: values.workspace } : {}), resume }, { auth: deps.auth, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+  const account = await connectHostedAccount(target, { ...(workspace !== undefined ? { workspace } : {}), resume }, { auth: deps.auth, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
   const resolved = resolveBundleReference(typed, account, target, command).reference;
   const client = resolved.slug === null ? account.client : account.client.within(resolved.slug);
   const reference = hostedBundleReferenceText(resolved);

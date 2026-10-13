@@ -31,8 +31,10 @@ import {
   logoutHosted,
   readPending,
   readSession,
+  resolveHostChoice,
   resolveHostSelection,
   resolveHostSelectionOrNull,
+  workspaceOriginView,
   waitForHostedSignIn,
   waitingSignIns,
   type AccessToken,
@@ -60,8 +62,11 @@ and it completes sign-in. --wait polls instead, for at most --timeout seconds
 --loopback signs in through a browser redirect to 127.0.0.1 (PKCE), waits at most --timeout
 seconds, then falls back to device sign-in. The link is printed on stderr.
 
-The host is --host, then ${HOST_ENV}, then the host of the last sign-in. The issuer comes from the
-host's protected-resource metadata. The CLI client id comes from --client-id, then
+The host is --host, then ${HOST_ENV}, then the host of the last sign-in. A workspace address
+(<workspace>.<domain>) with no metadata of its own is followed, through its
+/.well-known/superbee-workspace pointer, to the gateway it names under the same domain; the
+session is kept for that gateway (reported as host_from: workspace-origin). The issuer comes from
+the host's protected-resource metadata. The CLI client id comes from --client-id, then
 ${CLIENT_ID_ENV}, then the host's metadata. The refresh token is kept in the OS credential store
 (macOS Keychain, Linux Secret Service); ${CREDENTIAL_STORE_ENV}=file opts in to a 0600 file
 instead. ${ACCESS_TOKEN_ENV} (for CI) is used as given by hosted commands and is never stored.
@@ -205,7 +210,8 @@ export async function login(argv: string[], partial: Partial<HostedAuthCommandDe
   const clientIdFlag = values["client-id"] || undefined;
   // Sign-in stores a session; the CI override stays an override for hosted commands only.
   const auth: HostedAuthDeps = { ...deps.auth, env: { ...deps.auth.env, [ACCESS_TOKEN_ENV]: undefined } };
-  const target = await resolveHostSelection(values.host, auth);
+  const choice = await resolveHostChoice(values.host, auth);
+  const target = choice.target;
   const signIn = { ...(clientIdFlag ? { clientIdFlag } : {}) };
 
   let token: AccessToken | undefined;
@@ -248,6 +254,7 @@ export async function login(argv: string[], partial: Partial<HostedAuthCommandDe
         status: token.source === "sign-in" ? "signed_in" : "already_signed_in",
         host: target.origin,
         audience: target.audience,
+        ...workspaceOriginView(choice),
         ...(session ? sessionView(session) : {}),
         ...(deps.auth.env[ACCESS_TOKEN_ENV] ? { env_override: `${ACCESS_TOKEN_ENV} is set and takes precedence for hosted commands` } : {}),
         help: [`${cliInvocation()} whoami --host ${commandToken(hostArgument(target))}`],
