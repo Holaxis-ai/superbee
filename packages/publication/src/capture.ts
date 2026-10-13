@@ -218,10 +218,13 @@ async function readInventory(
     documents.push({ id, version: row.version, bytes: admitBytes(row.bytes, id) });
   }
   // A document the pass's end check could not confirm is read again on its own; a different
-  // answer means the source changed during capture, which the caller already retries.
+  // answer, or none, means the source changed during capture, which the caller already retries.
   for (const id of await documentPass.finish()) {
-    const row = await readRawFilesystemDocument(backend, id);
-    if (documents.some((document) => document.id === id && document.version !== row.version)) {
+    const row = await readRawFilesystemDocument(backend, id).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+      return null;
+    });
+    if (row === null || documents.some((document) => document.id === id && document.version !== row.version)) {
       throw new PublicationError("SOURCE_CHANGED", "a publication object changed during capture", { retryable: true });
     }
   }
