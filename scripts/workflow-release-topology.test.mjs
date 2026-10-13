@@ -162,7 +162,7 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /gh release download "\$TAG"[\s\S]*differs from the bytes npm serves/, "every finalize path verifies the release asset against the npm bytes");
 });
 
-test("finalize accepts staged-publish metadata with an empty registry readme", () => {
+test("finalize accepts empty staged README metadata while retaining packed identity checks", () => {
   const start = finalize.indexOf("- name: Prove the installed README and npm platform metadata");
   assert.notEqual(start, -1, "release-finalize.yml declares the installed metadata proof");
   const heredoc = finalize.indexOf("node --input-type=module <<'NODE'", start);
@@ -204,6 +204,25 @@ test("finalize accepts staged-publish metadata with an empty registry readme", (
     encoding: "utf8",
   });
   assert.equal(result.status, 0, `metadata proof rejected supported staged-publish state: ${result.stderr}`);
+  const prove = (registryPatch = {}, manifestPatch = {}) => {
+    writeFileSync(path.join(out, "registry-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "", readme: "", ...platform, ...registryPatch }));
+    writeFileSync(path.join(out, "tarball-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme, ...platform, ...manifestPatch }));
+    return spawnSync(process.execPath, ["--input-type=module"], {
+      cwd: dir, env: { ...process.env, V: "0.1.5-pre.1", T: "next" }, input: script, encoding: "utf8",
+    });
+  };
+  assert.equal(prove().status, 0, "empty registry README filename must defer to the attested tarball");
+  for (const [registryPatch, manifestPatch] of [
+    [{ readmeFilename: "OTHER.md" }, {}],
+    [{ readmeFilename: null }, {}],
+    [{}, { readmeFilename: "OTHER.md" }],
+    [{}, { readme: "different bytes" }],
+    [{ engines: { node: ">=20" } }, {}],
+    [{ os: ["win32"] }, {}],
+  ]) {
+    assert.notEqual(prove(registryPatch, manifestPatch).status, 0, "contradictory metadata or packed README must still fail");
+  }
+
 });
 
 test("an ordinary npm publish from the package directory trips before it can publish", () => {
