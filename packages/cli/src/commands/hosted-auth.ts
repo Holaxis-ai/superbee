@@ -92,7 +92,7 @@ claims (not yet confirmed by the gateway), scopes, token expiry, where the refre
 and any sign-in waiting on the person. Never prints a token. Not signed in is a successful result,
 including on a first run with no host selected yet (it names the sign-in command).
 It reads local state only, except that a host with no stored session that turns out to be a
-workspace's browser address is resolved to its gateway first (one metadata request).
+workspace's browser address is resolved to its gateway first (its metadata and pointer requests).
 
 Options:
   --host <url>   Hosted Superbee URL (default: ${HOST_ENV}, then the last sign-in)

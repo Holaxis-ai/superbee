@@ -207,6 +207,7 @@ const ADVERSARIAL: readonly { readonly name: string; readonly route: Route; read
   { name: "another workspace origin", route: pointer("https://other-org.getsuperbee.com/mcp"), foreign: "https://other-org.getsuperbee.com" },
   { name: "schema_version 2", route: pointer(`${GATEWAY}/mcp`, { schema_version: 2 }), foreign: GATEWAY },
   { name: "a bad slug", route: pointer(`${GATEWAY}/mcp`, { workspace_slug: "Holaxis_Sites" }), foreign: GATEWAY },
+  { name: "another workspace's slug", route: pointer(`${GATEWAY}/mcp`, { workspace_slug: "victim-org" }), foreign: GATEWAY },
   { name: "a missing slug", route: { status: 200, body: { schema_version: 1, resource: `${GATEWAY}/mcp` } }, foreign: GATEWAY },
   { name: "no pointer", route: { status: 404 }, foreign: GATEWAY },
   { name: "a non-object pointer", route: { status: 200, body: [`${GATEWAY}/mcp`] }, foreign: GATEWAY },

@@ -364,6 +364,8 @@ async function readWorkspacePointer(fetchImpl: FetchLike, target: HostedTarget):
     return null;
   }
   if (pointer.schema_version !== 1 || !isWorkspaceSlug(pointer.workspace_slug)) return null;
+  // The slug is the origin's own first label, so an origin cannot select another workspace.
+  if (pointer.workspace_slug !== new URL(target.origin).hostname.split(".")[0]) return null;
   const gateway = trustedPointerTarget(target.origin, pointer.resource);
   if (gateway === null) return null;
   return { target: gateway, workspaceSlug: pointer.workspace_slug, requestedOrigin: target.origin };
