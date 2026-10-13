@@ -85,7 +85,8 @@ jobs:
           ]);
           assert.equal(registry.version, version, "registry metadata version differs from the approved version");
           assert.equal(tags[tag], version, `registry ${tag} tag differs from the approved version`);
-          assert.equal(registry.readmeFilename, "README.md", "registry metadata does not name README.md");
+          // Staged publishing may omit README metadata; the attested tarball below owns its bytes and name.
+          assert.ok(registry.readmeFilename === "" || registry.readmeFilename === "README.md", "registry metadata names an unexpected README file");
           // npm staged publishing leaves the registry document's `readme` field empty. The exact
           // public tarball was verified against release.yml's build attestation in the prior step,
           // so its installed README and embedded manifest are the supported byte authorities.
