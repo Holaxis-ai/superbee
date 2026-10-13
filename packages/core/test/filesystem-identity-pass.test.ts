@@ -248,7 +248,8 @@ test("readMany answers exactly what per-document reads answer, including the fir
     assert.deepEqual(batched, single);
 
     const absent = [ids[0]!, "menu-items/missing", ids[1]!];
-    await assert.rejects(backend.readMany(absent), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
+    // The backend's own not-found (no `errno`), never a raw filesystem error.
+    await assert.rejects(backend.readMany(absent), (error: NodeJS.ErrnoException) => error.code === "ENOENT" && error.errno === undefined);
     await writeFile(path.join(root, "menu-items", "item-00003.md"), "---\ntype: [unclosed\n---\nbroken\n");
     await assert.rejects(backend.readMany(ids), (error: Error) => error.name === "MalformedDocumentError");
   } finally {

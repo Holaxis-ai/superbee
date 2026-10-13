@@ -166,9 +166,11 @@ test("ADV-5: readMany through the backend with a mid-batch alias created in-tick
     const backend = new FilesystemBackend(root);
     const ids = Array.from({ length: 20 }, (_, i) => `m/item-${String(i).padStart(2, "0")}`);
     // The backend's typed absence: the ENOENT-shaped rejection `notFound` builds, naming the exact
-    // requested path. `readManyExisting` keys its per-document fallback on this code.
+    // requested path. `readManyExisting` keys its per-document fallback on this code. `notFound`
+    // sets no `errno`, which a raw `fs.open` rejection always carries, so a raw error escaping
+    // the observation fails this predicate.
     const isNotFound = (rel: string) => (e: NodeJS.ErrnoException): boolean =>
-      e.code === "ENOENT" && e.syscall === "open" && e.path === path.join(root, rel);
+      e.code === "ENOENT" && e.errno === undefined && e.syscall === "open" && e.path === path.join(root, rel);
     // Respell before the batch. A case-insensitive host still reaches the file through the other
     // spelling, which is an alias; a case-sensitive host (ext4) has no `item-09.md` at all, which is
     // absence. Either way the batch rejects exactly as a per-document read of the same state does.
