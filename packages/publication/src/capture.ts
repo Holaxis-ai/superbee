@@ -12,6 +12,7 @@ import {
 } from "@superbee/core";
 import {
   listFilesystemReservedObjects,
+  openRawFilesystemDocumentPass,
   readRawFilesystemDocument,
   readRawFilesystemReserved,
 } from "@superbee/core/publication-filesystem";
@@ -211,9 +212,21 @@ async function readInventory(
   };
 
   const documents: RawDocument[] = [];
+  const documentPass = openRawFilesystemDocumentPass(backend);
   for (const id of documentIds) {
-    const row = await readRawFilesystemDocument(backend, id);
+    const row = await documentPass.read(id);
     documents.push({ id, version: row.version, bytes: admitBytes(row.bytes, id) });
+  }
+  // A document the pass's end check could not confirm is read again on its own; a different
+  // answer, or none, means the source changed during capture, which the caller already retries.
+  for (const id of await documentPass.finish()) {
+    const row = await readRawFilesystemDocument(backend, id).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+      return null;
+    });
+    if (row === null || documents.some((document) => document.id === id && document.version !== row.version)) {
+      throw new PublicationError("SOURCE_CHANGED", "a publication object changed during capture", { retryable: true });
+    }
   }
   const reserved: RawReserved[] = [];
   for (const identity of reservedIds) {

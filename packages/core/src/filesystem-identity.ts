@@ -15,6 +15,15 @@
  *   entirely between two probes of one observation can be traversed by the operating system
  *   during a listing or open, but its bytes can never be returned as EXACT, because the leaf
  *   witness at the post-walk must match the entry the requested path reaches.
+ * - A bulk read runs its observations inside one {@link ObservationPass}: the same protocol per
+ *   path, but a directory's listing is taken once and reused while the directory's change
+ *   witness proves its entry set unchanged, and every EXACT verdict that used a reused listing has
+ *   its post-walk repeated at the end of the pass without trusting timestamps. Listing the parent
+ *   per observation would make a pass over a directory of N documents read O(N²) directory
+ *   entries. The speedup assumes local disks, whose directory times advance on every entry change;
+ *   on Linux any other filesystem type lists per use, and elsewhere a mount whose times can lie
+ *   (network or FUSE attribute caches, settable Windows directory times) is covered by the
+ *   end-of-pass re-verification, short of an inode number reused within the pass.
  * - Mutations hold one cross-process lock keyed by a pure fold of the root and `rel`, decide
  *   inside it, create directories one segment at a time with a spelling check, and publish a
  *   first-created leaf with `link` so the host's own equivalence refuses a second spelling the
@@ -84,6 +93,19 @@ export interface IdentityDescriptor {
 }
 
 /**
+ * A directory's change witness: its `(dev, ino)` plus nanosecond modification and status-change
+ * times. Every entry created, removed, or renamed in a directory advances both times, so an
+ * unchanged witness taken after the times have settled means the directory's entry set has not
+ * changed since.
+ */
+export interface DirectoryWitness {
+  dev: bigint;
+  ino: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}
+
+/**
  * The complete filesystem surface the protocol needs. `probe` is `lstat` and never follows a
  * symlink; `mkdir` is deliberately NON-recursive: exact directory creation is decided one
  * segment at a time against the parent listing.
@@ -96,6 +118,13 @@ export interface FilesystemIdentityPort {
   probe(target: string): Promise<ProbeResult | null>;
   /** Directory listing, names and kinds only; `null` when the directory is absent. */
   entries(dir: string): Promise<ListedEntry[] | null>;
+  /**
+   * `stat` of `dir` as a {@link DirectoryWitness}; `null` when nothing is there. It follows a final
+   * symbolic link, as `entries` does, so a bundle root reached through a link is witnessed by the
+   * directory that is listed (a link at a `rel` segment is refused by the walk's probes). Optional:
+   * an observation pass over a port without it reuses no listing and lists as single reads do.
+   */
+  directoryWitness?(dir: string): Promise<DirectoryWitness | null>;
   /** Open for reading and `fstat` the handle; throws the filesystem error otherwise. */
   open(target: string): Promise<OpenedFile>;
   readAll(handle: PortHandle): Promise<Buffer>;
@@ -327,6 +356,22 @@ function hasExact(listing: ListedEntry[], segment: string): boolean {
   return listing.some((entry) => entry.name === segment);
 }
 
+/** What a verifying walk needs from a parent listing: exact-spelling membership. */
+interface ListingView {
+  has(name: string): boolean;
+}
+
+/** Where a verifying walk gets each parent listing; `null` when the directory is absent. */
+type ListingSource = (dir: string) => Promise<ListingView | null>;
+
+/** One fresh `entries` call per use: the single-read protocol. */
+function freshListings(port: FilesystemIdentityPort): ListingSource {
+  return async (dir) => {
+    const listing = await port.entries(dir);
+    return listing === null ? null : { has: (name) => hasExact(listing, name) };
+  };
+}
+
 type Realization =
   | { state: "exact"; leaf: ProbeResult }
   /** `rel` segments `[0, depth)` exist and are directories; segment `depth` is absent. */
@@ -409,14 +454,15 @@ async function confirmedWalk(
   rel: string,
   recorded: ProbeResult[],
   handle: EntryWitness | null,
+  listings: ListingSource = freshListings(port),
 ): Promise<WalkVerdict | "exact"> {
   let parent = rootResolved;
   for (let index = 0; index < segments.length; index++) {
     const segment = segments[index]!;
     const candidate = path.join(parent, segment);
-    const listing = await port.entries(parent);
+    const listing = await listings(parent);
     if (listing === null) return "absent";
-    const listed = hasExact(listing, segment);
+    const listed = listing.has(segment);
     if (handle !== null && index === segments.length - 1) {
       const verdict = classifyLeaf({ listed, probe: await probeSegment(port, candidate, rel, segment), handle });
       if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, segment);
@@ -450,14 +496,25 @@ export async function observeExact<T>(
   rel: string,
   read: (handle: PortHandle, target: string) => Promise<T | null>,
 ): Promise<Observation<T>> {
+  return observeWith(port, path.resolve(root), rel, read, freshListings(port));
+}
+
+/** The observation protocol of {@link observeExact}, with the parent listings drawn from `listings`. */
+async function observeWith<T>(
+  port: FilesystemIdentityPort,
+  rootResolved: string,
+  rel: string,
+  read: (handle: PortHandle, target: string) => Promise<T | null>,
+  listings: ListingSource,
+  onExact?: (recorded: ProbeResult[], handle: EntryWitness) => void,
+): Promise<Observation<T>> {
   const segments = relSegments(rel);
-  const rootResolved = path.resolve(root);
   const target = path.join(rootResolved, ...segments);
 
   for (let restarts = 0; ; ) {
     const recorded = await recordWalk(port, rootResolved, segments, rel);
     if (recorded === null) return { state: "absent" };
-    const verified = await confirmedWalk(port, rootResolved, segments, rel, recorded, null);
+    const verified = await confirmedWalk(port, rootResolved, segments, rel, recorded, null, listings);
     if (verified === "absent") return { state: "absent" };
     if (verified === "restart") {
       restarts = countRestart(restarts, rel);
@@ -482,11 +539,14 @@ export async function observeExact<T>(
     try {
       value = await read(opened.handle, target);
       if (value === null) return { state: "absent" };
-      verdict = await confirmedWalk(port, rootResolved, segments, rel, recorded, opened);
+      verdict = await confirmedWalk(port, rootResolved, segments, rel, recorded, opened, listings);
     } finally {
       await port.close(opened.handle);
     }
-    if (verdict === "exact") return { state: "exact", value };
+    if (verdict === "exact") {
+      onExact?.(recorded, { dev: opened.dev, ino: opened.ino });
+      return { state: "exact", value };
+    }
     if (verdict === "absent") return { state: "absent" };
     restarts = countRestart(restarts, rel);
   }
@@ -514,6 +574,187 @@ export async function probeExact(
     if (verdict === "absent") return { state: "absent" };
     restarts = countRestart(restarts, rel);
   }
+}
+
+// ── observation pass ──────────────────────────────────────────────────────────
+
+/**
+ * How long a directory's modification and status-change times must have been still before a
+ * listing of it may be reused. A change that lands in the same timestamp tick as the directory's
+ * previous change leaves both times unchanged, so a witness is only a change detector once the
+ * clock has moved past that tick. Three seconds covers the coarsest supported granularity (FAT's
+ * two-second mtime) plus margin; finer clocks (APFS, ext4, NTFS) are covered with room to spare.
+ * A time in the future (clock skew) is never settled.
+ */
+const SETTLED_AFTER_NS = 3_000_000_000n;
+
+function witnessKey(witness: DirectoryWitness): string {
+  return `${witness.dev}:${witness.ino}:${witness.mtimeNs}:${witness.ctimeNs}`;
+}
+
+interface KeptListing {
+  readonly witness: string;
+  readonly names: Set<string>;
+}
+
+/** An EXACT verdict reached through at least one reused listing, re-verified by `finish`. */
+interface ReusedVerdict {
+  readonly rel: string;
+  readonly segments: string[];
+  readonly recorded: ProbeResult[];
+  readonly handle: EntryWitness;
+}
+
+/**
+ * An observation pass: many observations over one bundle that share each directory's listing
+ * instead of listing the parent twice per observation. One pass belongs to one bulk operation
+ * (a `readMany`, a publication inventory) and to one sequential caller: `observe` calls must not
+ * overlap each other or `finish`. Nothing about it is global, and `finish` discards it.
+ */
+export interface ObservationPass {
+  /** {@link observeExact} for one path, with this pass's listings. Refusals and absence are final. */
+  observe<T>(rel: string, read: (handle: PortHandle, target: string) => Promise<T | null>): Promise<Observation<T>>;
+  /**
+   * End-of-pass re-verification, then discard. Returns, without duplicates, every path whose
+   * EXACT verdict relied on a reused listing and whose post-walk does not hold against the state
+   * at `finish`. The caller re-observes each returned path with {@link observeExact} and uses that
+   * verdict instead.
+   */
+  finish(): Promise<string[]>;
+}
+
+/**
+ * Open an {@link ObservationPass} over `(port, root)`.
+ *
+ * Every observation runs the exact single-read protocol of {@link observeExact} — recorded walk,
+ * confirmed pre-walk, open, read, confirmed post-walk with the handle still open, bounded
+ * restarts — and differs only in where a walk's parent listing comes from. The first time a
+ * directory is needed the pass takes `witness, entries, witness`; when the two witnesses agree and
+ * the directory's times have settled, that listing is kept. Each later use re-takes the witness
+ * (one `stat`, constant cost) and reuses the kept listing only if the witness is unchanged;
+ * otherwise it lists afresh exactly as a single read would.
+ *
+ * Two independent arguments make a reused listing safe:
+ *
+ * 1. Timestamps (the fast path is right in the moment). Where a directory's times advance on every
+ *    entry change — local APFS, HFS+, ext4, XFS, btrfs, NTFS, FAT — an unchanged settled witness
+ *    means the entry set is the kept listing at the moment of use, so every verdict is the one a
+ *    single read reaches against the same state.
+ * 2. Re-verification (no timestamps trusted). Where the witness can lie — attribute caches on
+ *    network and FUSE mounts, settable directory times on Windows, a clock stepped backwards — an
+ *    observation that used a reused listing may be wrong in the moment, so its verdict is not
+ *    trusted: a refusal or absence reached through a reused listing is re-taken at once by
+ *    {@link observeExact}, and `finish` repeats the post-walk of every EXACT verdict that used one
+ *    against fresh listings (one per directory) and fresh probes. Each segment must still be
+ *    listed under its exact spelling and reach the inode recorded for it, the leaf the inode the
+ *    bytes were read from; anything else is returned for a fresh single read. Since published
+ *    bytes are immutable per inode, a verdict that passes is a state of this identity at `finish`.
+ *    What this cannot see is the read file being deleted and its inode NUMBER reused by a new file
+ *    under the same spelling within the pass, because the handle is closed by then.
+ *
+ * On Linux, a mount whose filesystem type is not a known local one (NFS, SMB, FUSE, 9p, ...) gets
+ * no directory witness at all, so it lists exactly as single reads do.
+ */
+export function openObservationPass(port: FilesystemIdentityPort, root: string, now: () => number = Date.now): ObservationPass {
+  const rootResolved = path.resolve(root);
+  const kept = new Map<string, KeptListing>();
+  const reusedVerdicts: ReusedVerdict[] = [];
+  const fresh = freshListings(port);
+  const witnessOf = port.directoryWitness?.bind(port);
+
+  const settled = (witness: DirectoryWitness): boolean => {
+    const nowNs = BigInt(Math.floor(now())) * 1_000_000n;
+    const latest = witness.mtimeNs > witness.ctimeNs ? witness.mtimeNs : witness.ctimeNs;
+    return nowNs - latest >= SETTLED_AFTER_NS;
+  };
+
+  /** Listings for one observation; `reused()` says whether any came from the kept set. */
+  const listingsFor = (): { source: ListingSource; reused(): boolean } => {
+    let reused = false;
+    if (witnessOf === undefined) return { source: fresh, reused: () => false };
+    const source: ListingSource = async (dir) => {
+      const keep = kept.get(dir);
+      if (keep !== undefined) {
+        const current = await witnessOf(dir);
+        if (current !== null && witnessKey(current) === keep.witness) {
+          reused = true;
+          return keep.names;
+        }
+        kept.delete(dir);
+      }
+      const before = await witnessOf(dir);
+      const listing = await port.entries(dir);
+      if (listing === null) return null;
+      const names = new Set(listing.map((entry) => entry.name));
+      const after = await witnessOf(dir);
+      if (before !== null && after !== null && witnessKey(before) === witnessKey(after) && settled(after)) {
+        kept.set(dir, { witness: witnessKey(after), names });
+      }
+      return names;
+    };
+    return { source, reused: () => reused };
+  };
+
+  return {
+    async observe<T>(rel: string, read: (handle: PortHandle, target: string) => Promise<T | null>): Promise<Observation<T>> {
+      const listings = listingsFor();
+      let exact: ReusedVerdict | undefined;
+      let observed: Observation<T>;
+      try {
+        observed = await observeWith(port, rootResolved, rel, read, listings.source, (recorded, handle) => {
+          exact = { rel, segments: relSegments(rel), recorded, handle };
+        });
+      } catch (error) {
+        if (!listings.reused()) throw error;
+        return observeExact(port, rootResolved, rel, read);
+      }
+      if (!listings.reused()) return observed;
+      if (observed.state === "absent") return observeExact(port, rootResolved, rel, read);
+      if (exact !== undefined) reusedVerdicts.push(exact);
+      return observed;
+    },
+    async finish() {
+      const retry = new Set<string>();
+      const endListings = new Map<string, Set<string> | null>();
+      const listedAtEnd = async (dir: string): Promise<Set<string> | null> => {
+        if (!endListings.has(dir)) {
+          const listing = await port.entries(dir);
+          endListings.set(dir, listing === null ? null : new Set(listing.map((entry) => entry.name)));
+        }
+        return endListings.get(dir)!;
+      };
+      try {
+        for (const verdict of reusedVerdicts) {
+          if (!(await holdsAtEnd(port, rootResolved, verdict, listedAtEnd))) retry.add(verdict.rel);
+        }
+      } finally {
+        kept.clear();
+        reusedVerdicts.length = 0;
+      }
+      return [...retry];
+    },
+  };
+}
+
+/** The post-walk of one EXACT verdict, repeated against end-of-pass listings and fresh probes. */
+async function holdsAtEnd(
+  port: FilesystemIdentityPort,
+  rootResolved: string,
+  verdict: ReusedVerdict,
+  listedAtEnd: (dir: string) => Promise<Set<string> | null>,
+): Promise<boolean> {
+  let parent = rootResolved;
+  for (let index = 0; index < verdict.segments.length; index++) {
+    const segment = verdict.segments[index]!;
+    const listing = await listedAtEnd(parent);
+    if (listing === null || !listing.has(segment)) return false;
+    const candidate = path.join(parent, segment);
+    const probed = await port.probe(candidate);
+    const expected = index === verdict.segments.length - 1 ? verdict.handle : verdict.recorded[index]!;
+    if (probed === null || probed.kind === "symlink" || !sameWitness(probed, expected)) return false;
+    parent = candidate;
+  }
+  return true;
 }
 
 // ── mutation ──────────────────────────────────────────────────────────────────
@@ -759,9 +1000,56 @@ function kindOf(stats: { isSymbolicLink(): boolean; isDirectory(): boolean; isFi
   return "other";
 }
 
+/**
+ * Linux filesystem types (`statfs` magic numbers) whose directory times are kept by the local
+ * kernel and advance on every entry change. Anything else on Linux — NFS, SMB/CIFS, FUSE, 9p,
+ * Ceph, and every type not named here — gets no directory witness, so an observation pass lists it
+ * exactly as single reads do. Other platforms expose no stable type through Node, so their
+ * witnesses are offered and the pass's end-of-pass re-verification is what covers a remote mount.
+ */
+const LOCAL_LINUX_FILESYSTEMS = new Set<number>([
+  0xef53, // ext2/3/4
+  0x58465342, // xfs
+  0x9123683e, // btrfs
+  0x01021994, // tmpfs
+  0x858458f6, // ramfs
+  0x794c7630, // overlayfs
+  0x2fc12fc1, // zfs
+  0xf2f52010, // f2fs
+  0xca451a4e, // bcachefs
+  0x4d44, // vfat
+  0x2011bab0, // exfat
+  0x7366746e, // ntfs3
+  0x482b, // hfsplus
+]);
+
+/** Whether a directory witness may be offered on `platform` for a filesystem of `filesystemType`. */
+export function directoryWitnessTrusted(platform: NodeJS.Platform, filesystemType: number | null): boolean {
+  if (platform !== "linux") return true;
+  return filesystemType !== null && LOCAL_LINUX_FILESYSTEMS.has(filesystemType);
+}
+
+/** Whether `dir`'s filesystem may offer directory witnesses, asked once per device per port. */
+function witnessTrust(): (dev: bigint, dir: string) => Promise<boolean> {
+  const devices = new Map<bigint, Promise<boolean>>();
+  return (dev, dir) => {
+    if (process.platform !== "linux") return Promise.resolve(true);
+    let trusted = devices.get(dev);
+    if (trusted === undefined) {
+      trusted = fs.statfs(dir).then(
+        (info) => directoryWitnessTrusted("linux", Number(info.type)),
+        () => false,
+      );
+      devices.set(dev, trusted);
+    }
+    return trusted;
+  };
+}
+
 /** The one production binding: `node:fs`, the temp-file convention, and the identity lock. */
 export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPolicy): FilesystemIdentityPort {
   const policy = captureFilesystemHostPolicy(hostPolicy);
+  const witnessTrustedOn = witnessTrust();
   return Object.freeze({
     isTransientOpenError: policy.isTransientOpenError,
     isReplacementConflict: policy.isReplacementConflict,
@@ -783,6 +1071,17 @@ export function createNodeFilesystemIdentityPort(hostPolicy?: FilesystemHostPoli
         if (isAbsentPathError(err)) return null;
         throw err;
       }
+    },
+    async directoryWitness(dir: string): Promise<DirectoryWitness | null> {
+      let stats;
+      try {
+        stats = await fs.stat(dir, { bigint: true });
+      } catch (err) {
+        if (isAbsentPathError(err)) return null;
+        throw err;
+      }
+      if (!(await witnessTrustedOn(stats.dev, dir))) return null;
+      return { dev: stats.dev, ino: stats.ino, mtimeNs: stats.mtimeNs, ctimeNs: stats.ctimeNs };
     },
     async open(target: string): Promise<OpenedFile> {
       const handle = await fs.open(target, "r");
