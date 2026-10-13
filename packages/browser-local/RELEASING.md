@@ -8,29 +8,27 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.9 | public / next |
-| @superbee/server | 0.2.0-pre.9 | public / next |
-| @superbee/browser-local | 0.1.0-pre.5 | public / next |
-| @superbee/markdown-renderer | 0.1.6 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.10 | public / next |
+| @superbee/server | 0.2.0-pre.10 | public / next |
+| @superbee/browser-local | 0.1.0-pre.6 | public / next |
+| @superbee/markdown-renderer | 0.1.7 | existing restricted access / latest |
 
-This candidate adds the `sources[]` identity lookup and grouped field-action write
-(superbee#393): a `sources` facet on `QueryFilter` shared by query, queryHeads,
-browser-local and the View bridge, `matchesSourceIdentity`/`hasSourceIdentity`, a
-`field-actions` input to `mutateDocument`, and a sources `upsert` action. It also adds
-the `@superbee/core/artifact-contract` subpath export for document artifact contracts
-(superbee#391). Everything else in 0.2.0-pre.8 is carried unchanged. Browser-local 0.1.0-pre.4 (published,
-pinned to core pre.8) is unchanged on the registry; 0.1.0-pre.5 moves its exact pin to
-pre.9 with no browser-local source change.
+This candidate makes bulk filesystem reads list each directory once per pass instead of
+twice per document (superbee#437): `FilesystemBackend.readMany` (query, list, status, Kind
+loading) and publication capture share one observation pass, with an end-of-pass check that
+re-verifies every answer that relied on a reused listing. It also carries the core changes
+merged since 0.2.0-pre.9: refusal to publish private-state files (superbee#423), verified
+portable exports for offline publication (superbee#427), sync fetch option validation
+(superbee#428), atomic conflict receipts (superbee#430) and NUL-framed Git status and
+conflict paths (superbee#429). Browser-local 0.1.0-pre.5 (pinned to core pre.9) is unchanged
+on the registry; 0.1.0-pre.6 moves its exact pin to pre.10 with no browser-local source change.
 
-Browser-local depends exactly on core pre.9 and moves with it under the paired
+Browser-local depends exactly on core pre.10 and moves with it under the paired
 exact-pin policy; do not patch around a mismatch or publish with a wildcard
 dependency. Server moves with core under the existing paired release policy.
-Renderer 0.1.6 extends its core peer allowance through pre.9 (a new version because
-0.1.5 may already be published with the pre.8 allowance; its publication state is not
-visible without restricted-registry access) and
-adds `data-aslite-fragment` on strict-shape same-page fragment spans (4cb4ade2); it is
-included so consumers can align their root core without overriding peer
-checks, and a published renderer version is never reused for different bytes. Its access
+Renderer 0.1.7 extends its core peer allowance through pre.10 with no source change (a new
+version because a published renderer version is never reused for different bytes); it is
+included so consumers can align their root core without overriding peer checks. Its access
 remains restricted: do not make other private packages public.
 
 ## Before release
