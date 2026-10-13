@@ -339,7 +339,7 @@ test("N4: backend.ts imports exactly the protocol entry points and the productio
     ts.forEachChild(node, visit);
   };
   visit(backend);
-  assert.deepEqual(values.sort(), ["createNodeFilesystemIdentityPort", "mutateExact", "observeExact", "probeExact"]);
+  assert.deepEqual(values.sort(), ["createNodeFilesystemIdentityPort", "mutateExact", "observeExact", "openObservationPass", "probeExact"]);
 });
 
 test("N4: production ports are constructed per backend rather than exported as mutable singleton state", async () => {

@@ -4,6 +4,7 @@
  */
 export {
   listFilesystemReservedObjects,
+  openRawFilesystemDocumentPass,
   readRawFilesystemDocument,
   readRawFilesystemReserved,
 } from "./backend.js";
