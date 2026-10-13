@@ -13,7 +13,8 @@
 import { sha256HexOfUtf8 } from "./sha256.js";
 
 /**
- * MCP tool hints, plus Portal's `untrustedContentHint`. Other keys pass through unchanged.
+ * MCP tool hints, plus Portal's `untrustedContentHint` and `privateInputHint`. Other keys pass
+ * through unchanged.
  *
  * These are self-declared: a capability states them about itself and nothing at runtime enforces
  * them. `checkSiteCapability` tests recorded fixtures, and `composeSiteCapabilities` with
@@ -28,6 +29,8 @@ export interface SiteCapabilityAnnotations {
   readonly openWorldHint?: boolean;
   /** The result carries text authored or copied by others: a model must treat it as data. */
   readonly untrustedContentHint?: boolean;
+  /** The input may carry private data: a surface takes it only in a request body (POST) and never caches or stores it. */
+  readonly privateInputHint?: boolean;
   readonly [hint: string]: unknown;
 }
 
@@ -169,7 +172,9 @@ export function canonicalJson(value: unknown): string {
 /**
  * Whether `path` is a plain same-origin page path: absolute, not protocol-relative, no query,
  * fragment, backslash, control character, encoded slash or dot segment, and unchanged by URL
- * normalization. The same checks as agent-surface's `portalAssistantRoute`.
+ * normalization. The same checks as agent-surface's `portalAssistantRoute`. Syntax only: a path
+ * such as `/a/%252e%252e/b` or `/a/..;/b` passes, so the host's route-membership check
+ * (`admittedPath` in `siteRecordSource`) must still refuse any path it does not serve.
  */
 export function isSafeSitePath(path: unknown): path is string {
   if (
@@ -196,8 +201,10 @@ export function isSafeSitePath(path: unknown): path is string {
   }
 }
 
+/** An ISO 8601 calendar date, or a date and time with a `Z` or numeric offset. */
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
 const isDate = (value: unknown): value is string =>
-  typeof value === "string" && value.length > 0 && value.length <= 64 && !Number.isNaN(Date.parse(value));
+  typeof value === "string" && ISO_DATE_PATTERN.test(value) && !Number.isNaN(Date.parse(value));
 
 /**
  * The host-minted `site-record` source for one citation a capability returned, or `undefined`
@@ -215,22 +222,29 @@ export function siteRecordSource(options: {
   admittedPath: (path: string) => boolean;
 }): SiteRecordSourceRef | undefined {
   const { sourceId, siteId, publication, citation, admittedPath } = options;
-  if (typeof admittedPath !== "function" || !isRecord(publication)) return undefined;
+  if (typeof admittedPath !== "function" || !isRecord(publication) || !isRecord(citation)) return undefined;
+  // Each field is read once; only these copies are checked and returned, so a getter cannot pass
+  // the checks with one value and mint a source with another.
+  const artifactDigest: unknown = publication.artifactDigest,
+    snapshotDigest: unknown = publication.snapshotDigest;
+  const recordId: unknown = citation.recordId,
+    path: unknown = citation.path,
+    asOf: unknown = citation.asOf;
   const bounded = (value: unknown): value is string =>
     typeof value === "string" && value.length > 0 && utf8Bytes(value) <= MAX_IDENTIFIER_BYTES;
-  if (!bounded(sourceId) || !bounded(siteId) || !isRecord(citation)) return undefined;
-  if (!bounded(publication.artifactDigest) || !bounded(publication.snapshotDigest)) return undefined;
-  if (!bounded(citation.recordId) || !isSafeSitePath(citation.path) || !isDate(citation.asOf)) return undefined;
-  if (admittedPath(citation.path) !== true) return undefined;
+  if (!bounded(sourceId) || !bounded(siteId)) return undefined;
+  if (!bounded(artifactDigest) || !bounded(snapshotDigest)) return undefined;
+  if (!bounded(recordId) || typeof path !== "string" || !isSafeSitePath(path) || !isDate(asOf)) return undefined;
+  if (admittedPath(path) !== true) return undefined;
   return Object.freeze({
     sourceId,
     kind: "site-record",
     siteId,
-    recordId: citation.recordId,
-    path: citation.path,
-    asOf: citation.asOf,
-    artifactDigest: publication.artifactDigest,
-    snapshotDigest: publication.snapshotDigest,
+    recordId,
+    path,
+    asOf,
+    artifactDigest,
+    snapshotDigest,
   });
 }
 
@@ -310,13 +324,16 @@ export function toToolDescriptor(capability: SiteCapability): {
  * One annotation set from several declarations of the same capability (for example a WebMCP
  * declaration and an MCP declaration that each carry some hints). For the MCP hints the more
  * cautious value wins: `readOnlyHint` and `idempotentHint` are true only if no set says false;
- * `destructiveHint`, `openWorldHint` and `untrustedContentHint` are true if any set says true.
- * Any other key must not disagree between sets; a disagreement throws.
+ * `destructiveHint`, `openWorldHint`, `untrustedContentHint` and `privateInputHint` are true if any
+ * set says true. A hint a set leaves out does not count either way, so the result can carry a hint
+ * only some sets declared; MCP's defaults for absent hints (`readOnlyHint` false, `openWorldHint`
+ * true) apply only when no set declares it. Any other key must not disagree between sets; a
+ * disagreement throws.
  */
 export function mergeAnnotations(...sets: readonly (SiteCapabilityAnnotations | undefined)[]): SiteCapabilityAnnotations {
-  const merged: Record<string, unknown> = {};
+  const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const allTrue = new Set(["readOnlyHint", "idempotentHint"]);
-  const anyTrue = new Set(["destructiveHint", "openWorldHint", "untrustedContentHint"]);
+  const anyTrue = new Set(["destructiveHint", "openWorldHint", "untrustedContentHint", "privateInputHint"]);
   for (const set of sets) {
     if (set === undefined) continue;
     if (!isRecord(set)) throw new TypeError("mergeAnnotations: annotations must be objects");
@@ -331,7 +348,7 @@ export function mergeAnnotations(...sets: readonly (SiteCapabilityAnnotations | 
       } else merged[key] = value;
     }
   }
-  return merged as SiteCapabilityAnnotations;
+  return { ...merged } as SiteCapabilityAnnotations;
 }
 
 /** The descriptor a surface shows a model: what the descriptor limits and the identity cover. */
@@ -384,9 +401,19 @@ function descriptorProblem(capability: SiteCapability): string | undefined {
   return undefined;
 }
 
-/** One owned, frozen copy taken once, so validation, the digest and every surface see the same
- * values even when the caller passes getters or later mutates its objects. */
-function snapshot(capability: SiteCapability): SiteCapability {
+/** Thrown by `capture` when a JSON field of a capability is not plain JSON. */
+class NotPlainJson extends Error {}
+
+/**
+ * Reads each field of a capability exactly once into a plain object, with its JSON fields
+ * (`inputSchema`, `outputSchema`, `annotations`) cloned through canonical JSON. Validation, the
+ * frozen snapshot, the digest and every surface then see the same values even when the caller
+ * passes getters or later mutates its objects. A non-object is returned unchanged for
+ * `descriptorProblem` to report. Throws when a field cannot be read, and `NotPlainJson` when a JSON
+ * field is not plain JSON.
+ */
+function capture(capability: SiteCapability): SiteCapability {
+  if (!isRecord(capability)) return capability;
   const source = capability;
   const name = source.name,
     implementationId = source.implementationId,
@@ -398,20 +425,44 @@ function snapshot(capability: SiteCapability): SiteCapability {
     maximumOutputBytes = source.maximumOutputBytes,
     execute = source.execute,
     mintSources = source.mintSources;
-  const frozen = <T>(value: T): T => deepFreeze(JSON.parse(canonicalJson(value)) as T);
-  return Object.freeze({
+  const clone = <T>(value: T): T => {
+    if (value === undefined) return value;
+    let text: string;
+    try {
+      text = canonicalJson(value);
+    } catch {
+      throw new NotPlainJson();
+    }
+    return JSON.parse(text) as T;
+  };
+  return {
     name,
     implementationId,
     ...(title === undefined ? {} : { title }),
     description,
-    inputSchema: frozen(inputSchema),
-    ...(outputSchema === undefined ? {} : { outputSchema: frozen(outputSchema) }),
-    ...(annotations === undefined ? {} : { annotations: frozen(annotations) }),
+    inputSchema: clone(inputSchema),
+    ...(outputSchema === undefined ? {} : { outputSchema: clone(outputSchema) }),
+    ...(annotations === undefined ? {} : { annotations: clone(annotations) }),
     ...(maximumOutputBytes === undefined ? {} : { maximumOutputBytes }),
-    execute: (input: unknown, invocation: SiteCapabilityInvocation) => execute.call(source, input, invocation),
-    ...(mintSources === undefined
-      ? {}
-      : { mintSources: (result: unknown) => mintSources.call(source, result) as readonly SiteRecordCitation[] }),
+    execute: execute === undefined ? execute : bindTo(source, execute),
+    ...(mintSources === undefined ? {} : { mintSources: bindTo(source, mintSources) }),
+  } as SiteCapability;
+}
+
+/** `method` called with `source` as `this`, or `method` itself when it is not a function, so
+ * `descriptorProblem` still sees what the caller passed. */
+function bindTo<F>(source: object, method: F): F {
+  if (typeof method !== "function") return method;
+  return ((...args: unknown[]) => (method as (...a: unknown[]) => unknown).apply(source, args)) as F;
+}
+
+/** The validated capture, frozen at every depth. */
+function snapshot(captured: SiteCapability): SiteCapability {
+  return Object.freeze({
+    ...captured,
+    inputSchema: deepFreeze(captured.inputSchema),
+    ...(captured.outputSchema === undefined ? {} : { outputSchema: deepFreeze(captured.outputSchema) }),
+    ...(captured.annotations === undefined ? {} : { annotations: deepFreeze(captured.annotations) }),
   });
 }
 
@@ -530,7 +581,17 @@ export function composeSiteCapabilities(
     detail: string,
     names: readonly string[] = [],
   ): SiteCapabilityComposition => Object.freeze({ ok: false, refused, names: Object.freeze([...names]), detail });
-  const limits: SiteCapabilityLimits = { ...DEFAULT_SITE_CAPABILITY_LIMITS, ...options.limits };
+  // A limit that is not a non-negative safe integer (undefined, NaN, Infinity) keeps its default,
+  // so a malformed override can never switch a limit off.
+  const limit = (key: keyof SiteCapabilityLimits): number => {
+    const value = (options.limits as Partial<SiteCapabilityLimits> | undefined)?.[key];
+    return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : DEFAULT_SITE_CAPABILITY_LIMITS[key];
+  };
+  const limits: SiteCapabilityLimits = {
+    maxTools: limit("maxTools"),
+    maxDescriptorBytes: limit("maxDescriptorBytes"),
+    maxTotalDescriptorBytes: limit("maxTotalDescriptorBytes"),
+  };
   if (typeof options.surface !== "string" || options.surface.length === 0 || utf8Bytes(options.surface) > 256)
     return refuse("invalid_surface", "surface must be a non-empty string of at most 256 bytes");
 
@@ -561,15 +622,15 @@ export function composeSiteCapabilities(
       for (const capability of group.capabilities) {
         let owned: SiteCapability;
         try {
-          const problem = descriptorProblem(capability);
+          // Validate the one capture, never the caller's object, so a getter cannot pass the
+          // checks with one value and ship another.
+          const captured = capture(capability);
+          const problem = descriptorProblem(captured);
           if (problem)
-            return refuse(
-              "invalid_descriptor",
-              problem,
-              typeof capability?.name === "string" ? [capability.name] : [],
-            );
-          owned = snapshot(capability);
-        } catch {
+            return refuse("invalid_descriptor", problem, typeof captured?.name === "string" ? [captured.name] : []);
+          owned = snapshot(captured);
+        } catch (error) {
+          if (error instanceof NotPlainJson) return refuse("invalid_descriptor", "descriptor must be plain JSON");
           return refuse("invalid_descriptor", "descriptor could not be read");
         }
         entries.push({ tier, namespace: tier === "generic" ? null : group.namespace!, capability: owned });
@@ -703,6 +764,11 @@ function* strings(value: unknown, depth = 0): Generator<string> {
   else if (isRecord(value)) for (const entry of Object.values(value)) yield* strings(entry, depth + 1);
 }
 
+/** A script or data URL as a whole string, or as a Markdown link, quoted or attribute value. */
+const SCRIPT_URL_IN_TEXT = /(?:^\s*|\]\(\s*|["'<=]\s*)(?:javascript|data|vbscript):/iu;
+/** An absolute URL with a scheme, or a protocol-relative one at the start of a word, in text. */
+const URL_IN_TEXT = /(?:\b[a-z][a-z0-9+.-]*:\/\/|(?<![^\s("'<[])\/\/)[^\s<>"'`)\]]+/giu;
+
 /**
  * Tests one capability against recorded fixtures and the site capability requirements:
  * a valid, read-only descriptor; results that are deterministic for a pinned clock, bounded,
@@ -775,21 +841,24 @@ export async function checkSiteCapability(
       return;
     }
     for (const text of strings(result)) {
-      if (/^(javascript|data|vbscript):/i.test(text.trim())) {
+      if (SCRIPT_URL_IN_TEXT.test(text)) {
         add("public_urls", "a result carries a script or data URL", label);
         continue;
       }
-      if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text) || /\s/.test(text)) continue;
-      let url: URL;
-      try {
-        url = new URL(text);
-      } catch {
-        continue;
+      // Every absolute or protocol-relative URL in the text, not only a string that is one URL:
+      // prose and Markdown links can carry them too.
+      for (const [match] of text.matchAll(URL_IN_TEXT)) {
+        let url: URL;
+        try {
+          url = new URL(match.startsWith("//") ? `${new URL(origin).protocol}${match}` : match);
+        } catch {
+          continue;
+        }
+        if (url.origin === origin) continue;
+        if ((url.protocol === "https:" || url.protocol === "http:") && externalHosts.has(url.hostname.toLowerCase()))
+          continue;
+        add("public_urls", `a result links off the site: ${url.origin}`, label);
       }
-      if (url.origin === origin) continue;
-      if ((url.protocol === "https:" || url.protocol === "http:") && externalHosts.has(url.hostname.toLowerCase()))
-        continue;
-      add("public_urls", `a result links off the site: ${url.origin}`, label);
     }
     if (fixture.expect === "ok") {
       if (result.ok !== true) {
