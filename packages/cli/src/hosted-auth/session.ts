@@ -32,6 +32,7 @@ import { ensureUserStateRoot, readUserStateFile, userStateDir, userStateWriteRef
 import {
   REQUESTED_SCOPE,
   discoverHosted,
+  followWorkspaceOrigin,
   isSecureUrl,
   trimTrailingSlashes,
   resolveClientId,
@@ -308,11 +309,65 @@ export function notSignedInError(env: NodeJS.ProcessEnv = {}): CliError {
   );
 }
 
-/** {@link hostedBundleHost}, refusing with {@link notSignedInError} when there is none. */
-export async function requireHostedBundleHost(flag: string | undefined, home: string, env: NodeJS.ProcessEnv = {}): Promise<HostedTarget> {
-  const chosen = await hostedBundleHost(flag, home);
-  if (!chosen) throw notSignedInError(env);
-  return resolveHostedTarget(chosen);
+/**
+ * {@link hostedBundleHost}, refusing with {@link notSignedInError} when there is none. A named
+ * `--host` is resolved through {@link resolveNamedHost}, so a workspace origin reaches its gateway;
+ * a caller that must make no request (a preview) passes a null fetch and gets the host as typed.
+ */
+export async function requireHostedBundleHost(
+  flag: string | undefined,
+  deps: Pick<HostedAuthDeps, "home" | "env"> & { readonly fetch: FetchLike | null },
+): Promise<NamedHost> {
+  if (flag && deps.fetch !== null) return resolveNamedHost(flag, { home: deps.home, fetch: deps.fetch });
+  const chosen = await hostedBundleHost(flag, deps.home);
+  if (!chosen) throw notSignedInError(deps.env);
+  return { target: resolveHostedTarget(chosen), workspaceSlug: null, requestedOrigin: null };
+}
+
+/**
+ * A host the person named (`--host`, SUPERBEE_HOST), resolved. A workspace origin serves no
+ * protected-resource metadata; its trusted pointer names the gateway and the workspace, and the
+ * gateway is then used exactly as if the person had typed it, so its session is the one stored and
+ * reused. `requestedOrigin` is set only when the host was reached that way.
+ */
+export interface NamedHost {
+  readonly target: HostedTarget;
+  /** The workspace the named origin belongs to, when it was a workspace origin. */
+  readonly workspaceSlug: string | null;
+  /** The workspace origin the person named, when the target is the gateway it points at. */
+  readonly requestedOrigin: string | null;
+}
+
+/**
+ * Resolve a named host. A host with a stored or pending sign-in is known to serve its own metadata,
+ * so it is used without a request; any other bare https origin is asked for its metadata first.
+ */
+export async function resolveNamedHost(host: string, deps: Pick<HostedAuthDeps, "home" | "fetch">): Promise<NamedHost> {
+  const target = resolveHostedTarget(host);
+  const plain: NamedHost = { target, workspaceSlug: null, requestedOrigin: null };
+  if ((await readSession(deps.home, target)) || (await readPending(deps.home, target))) return plain;
+  const followed = await followWorkspaceOrigin(deps.fetch, target);
+  if (!followed) return plain;
+  return { target: followed.target, workspaceSlug: followed.workspaceSlug, requestedOrigin: followed.requestedOrigin };
+}
+
+/** A receipt's fields for a host reached through a workspace origin; empty for any other host. */
+export function workspaceOriginView(named: Pick<NamedHost, "workspaceSlug" | "requestedOrigin">): Record<string, string> {
+  if (named.requestedOrigin === null || named.workspaceSlug === null) return {};
+  return { host_from: "workspace-origin", requested_host: named.requestedOrigin, workspace_slug: named.workspaceSlug };
+}
+
+/**
+ * The workspace a command uses when its host was a workspace origin: that origin's workspace, or
+ * `--workspace` when it names the same one. A different `--workspace` is a USAGE refusal naming both.
+ */
+export function workspaceForNamedHost(named: Pick<NamedHost, "workspaceSlug" | "requestedOrigin">, flag: string | undefined): string | undefined {
+  if (named.workspaceSlug === null) return flag;
+  if (flag === undefined || flag === named.workspaceSlug) return named.workspaceSlug;
+  throw new CliError("USAGE", `--host ${commandToken(named.requestedOrigin ?? "")} is the address of workspace '${named.workspaceSlug}', but --workspace names '${flag}'`, {
+    details: { reason: "workspace_conflict", host_workspace: named.workspaceSlug, workspace: flag },
+    help: `drop --workspace to use '${named.workspaceSlug}', or pass the other workspace's own address (or its slug) instead`,
+  });
 }
 
 /**
@@ -374,12 +429,13 @@ export async function waitingSignIns(home: string, now: number): Promise<{ targe
 /**
  * Where a hosted write's host came from: named on the command; the remembered last sign-in, the one
  * host holding a session; the one host holding a session, with no sign-in remembered; or the
- * remembered last sign-in, which holds no session now (the write starts a sign-in to it).
+ * remembered last sign-in, which holds no session now (the write starts a sign-in to it). A
+ * workspace origin named on the command is reported as `workspace-origin`: the target is the
+ * gateway its pointer names.
  */
-export type HostSource = "flag" | "last-sign-in" | "only-session" | "last-sign-in-signed-out";
+export type HostSource = "flag" | "workspace-origin" | "last-sign-in" | "only-session" | "last-sign-in-signed-out";
 
-export interface HostedWriteHost {
-  readonly target: HostedTarget;
+export interface HostedWriteHost extends NamedHost {
   readonly source: HostSource;
 }
 
@@ -388,6 +444,8 @@ export function hostSourceText(source: HostSource): string {
   switch (source) {
     case "flag":
       return "--host";
+    case "workspace-origin":
+      return "the gateway the workspace address in --host points to";
     case "last-sign-in":
       return "your last sign-in, the only host with a session";
     case "only-session":
@@ -403,13 +461,23 @@ export function hostSourceText(source: HostSource): string {
  * stored session plus the remembered last sign-in; with more than one, the last sign-in is not a
  * choice the person made for this write, so the command refuses, naming the hosts and which of
  * them has no session. SUPERBEE_HOST never selects it, as for {@link hostedBundleHost}. Null when
- * there is no host at all.
+ * there is no host at all. A named `--host` is resolved through {@link resolveNamedHost} when
+ * `fetchImpl` is given; a caller that must make no request (a preview) passes null and gets the
+ * host as typed.
  */
-export async function hostedWriteHost(flag: string | undefined, home: string, retry: (host: string) => string): Promise<HostedWriteHost | null> {
+export async function hostedWriteHost(
+  flag: string | undefined,
+  home: string,
+  retry: (host: string) => string,
+  fetchImpl: FetchLike | null,
+): Promise<HostedWriteHost | null> {
   if (flag !== undefined) {
     if (flag.trim() === "") throw new CliError("USAGE", "--host is empty: name the hosted Superbee URL", { help: retry("<url>") });
-    return { target: resolveHostedTarget(flag), source: "flag" };
+    if (fetchImpl === null) return { target: resolveHostedTarget(flag), source: "flag", workspaceSlug: null, requestedOrigin: null };
+    const named = await resolveNamedHost(flag, { home, fetch: fetchImpl });
+    return { ...named, source: named.requestedOrigin !== null ? "workspace-origin" : "flag" };
   }
+  const unnamed = { workspaceSlug: null, requestedOrigin: null } as const;
   const remembered = await readDefaultHost(home);
   const stored = await storedSessionHosts(home);
   const candidates = new Set(stored);
@@ -433,26 +501,42 @@ export async function hostedWriteHost(flag: string | undefined, home: string, re
       help: `re-run with --host set to the host you mean (one of: ${hosts.join(", ")}); the last sign-in is not used when sessions are held for more than one host or it has none`,
     });
   }
-  if (rememberedHost) return { target: resolveHostedTarget(rememberedHost), source: stored.length === 0 ? "last-sign-in-signed-out" : "last-sign-in" };
-  if (stored.length === 1) return { target: resolveHostedTarget(stored[0]!), source: "only-session" };
+  if (rememberedHost) return { target: resolveHostedTarget(rememberedHost), source: stored.length === 0 ? "last-sign-in-signed-out" : "last-sign-in", ...unnamed };
+  if (stored.length === 1) return { target: resolveHostedTarget(stored[0]!), source: "only-session", ...unnamed };
   return null;
 }
 
-/** `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in; null when none. */
-export async function resolveHostSelectionOrNull(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget | null> {
-  const chosen = flag ?? (deps.env[HOST_ENV] || undefined) ?? (await readDefaultHost(deps.home)) ?? undefined;
-  return chosen ? resolveHostedTarget(chosen) : null;
+/**
+ * `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in; null when none. A
+ * named host (flag or env) is resolved through {@link resolveNamedHost}; the remembered one is
+ * always a host that served its own metadata.
+ */
+export async function resolveHostChoiceOrNull(flag: string | undefined, deps: HostedAuthDeps): Promise<NamedHost | null> {
+  const named = flag ?? (deps.env[HOST_ENV] || undefined);
+  if (named !== undefined) return resolveNamedHost(named, deps);
+  const remembered = await readDefaultHost(deps.home);
+  return remembered ? { target: resolveHostedTarget(remembered), workspaceSlug: null, requestedOrigin: null } : null;
 }
 
-/** {@link resolveHostSelectionOrNull}, refusing when there is no host: `login` needs one named. */
-export async function resolveHostSelection(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget> {
-  const target = await resolveHostSelectionOrNull(flag, deps);
-  if (!target) {
+/** {@link resolveHostChoiceOrNull}, as the target alone. */
+export async function resolveHostSelectionOrNull(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget | null> {
+  return (await resolveHostChoiceOrNull(flag, deps))?.target ?? null;
+}
+
+/** {@link resolveHostChoiceOrNull}, refusing when there is no host: `login` needs one named. */
+export async function resolveHostChoice(flag: string | undefined, deps: HostedAuthDeps): Promise<NamedHost> {
+  const choice = await resolveHostChoiceOrNull(flag, deps);
+  if (!choice) {
     throw new CliError("USAGE", "no hosted Superbee host selected", {
       help: `pass --host <url> (for example ${String(firstSignInCommand())}) or set ${HOST_ENV}`,
     });
   }
-  return target;
+  return choice;
+}
+
+/** {@link resolveHostChoice}, as the target alone. */
+export async function resolveHostSelection(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget> {
+  return (await resolveHostChoice(flag, deps)).target;
 }
 
 // ---------------------------------------------------------------------------------------------

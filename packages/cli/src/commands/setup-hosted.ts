@@ -18,7 +18,9 @@ import { render, renderUsage, resolveMode } from "../output.js";
 import {
   defaultHostedAuthDeps,
   hostArgument,
-  resolveHostSelection,
+  resolveHostChoice,
+  workspaceForNamedHost,
+  workspaceOriginView,
   writeDefaultHost,
   type HostedAuthDeps,
 } from "../hosted-auth/session.js";
@@ -71,9 +73,9 @@ export async function setupHosted(argv: string[], partial: Partial<SetupHostedDe
     return;
   }
   const mode = resolveMode(values);
-  let target;
+  let choice;
   try {
-    target = await resolveHostSelection(values.url, auth);
+    choice = await resolveHostChoice(values.url, auth);
   } catch (error) {
     if (error instanceof CliError && error.code === "USAGE" && values.url === undefined) {
       throw new CliError("USAGE", "no hosted Superbee URL: pass --url", { help: `${cliInvocation()} setup hosted --url <hosted-url>` });
@@ -83,21 +85,24 @@ export async function setupHosted(argv: string[], partial: Partial<SetupHostedDe
     }
     throw error;
   }
+  const target = choice.target;
+  const requested = workspaceForNamedHost(choice, values.workspace);
   const host = hostArgument(target);
   const resume = commandFragment`${cliInvocation()} setup hosted --url ${commandToken(host)}${
-    values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``
+    requested !== undefined ? commandFragment` --workspace ${commandToken(requested)}` : commandFragment``
   }${values.json ? commandFragment` --json` : commandFragment``}`;
 
   // AUTH_REQUIRED passes through unchanged with its one link; the resume is this command.
   const { identity, workspace: chosen } = await connectHostedAccount(
     target,
-    { workspace: values.workspace, resume, otherWorkspace: `${cliInvocation()} setup hosted --url ${commandToken(host)} --workspace <id>` },
+    { workspace: requested, resume, otherWorkspace: `${cliInvocation()} setup hosted --url ${commandToken(host)} --workspace <id>` },
     { auth, ...(partial.fetch ? { fetch: partial.fetch } : {}) },
   );
   await writeDefaultHost(auth.home, host);
   const workspaces = identity.tenantIds;
   const base = {
     host: target.origin,
+    ...workspaceOriginView(choice),
     signed_in: true,
     principal: identity.principalId,
     workspaces,

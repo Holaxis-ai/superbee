@@ -70,13 +70,13 @@ test("first run: hosted reads and writes with no host are AUTH_REQUIRED not_sign
       assert.match(e.help ?? "", FIRST_SIGN_IN);
       return true;
     };
-    await assert.rejects(requireHostedBundleHost(undefined, home), assertNotSignedIn);
+    await assert.rejects(requireHostedBundleHost(undefined, { home, env: {}, fetch: null }), assertNotSignedIn);
     await assert.rejects(
       catalog(["list", "--hosted", "--json"], { stdout: () => {}, home: () => home, auth: freshDeps(home) }),
       assertNotSignedIn,
     );
     // Writes keep #367: with no host there is nothing to pick, and nothing is picked.
-    assert.equal(await hostedWriteHost(undefined, home, (host) => host), null);
+    assert.equal(await hostedWriteHost(undefined, home, (host) => host, null), null);
     // login itself must be told which host: SUPERBEE_HOST or --host, never a default.
     await assert.rejects(
       login(["--json"], { stdout: () => {}, stderr: () => {}, auth: freshDeps(home) }),

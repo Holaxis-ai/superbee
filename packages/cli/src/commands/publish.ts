@@ -36,7 +36,15 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
-import { defaultHostedAuthDeps, firstSignInCommand, hostedWriteHost, hostSourceText, notSignedInError, type HostedWriteHost } from "../hosted-auth/session.js";
+import {
+  defaultHostedAuthDeps,
+  firstSignInCommand,
+  hostedWriteHost,
+  hostSourceText,
+  notSignedInError,
+  workspaceForNamedHost,
+  type HostedWriteHost,
+} from "../hosted-auth/session.js";
 import { isHostedBundleId } from "../hosted/bundle-id.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
@@ -497,22 +505,26 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     });
   }
   const withHistory = values["with-history"] === true;
+  // `--workspace`, or the workspace of a workspace origin named by --host (resolved only at --yes).
+  let workspaceFlag = values.workspace;
   const yesCommandFor = (host: string | null) =>
     commandFragment`${cliInvocation()} publish --to hosted${values.dir !== undefined ? commandFragment` --dir ${commandToken(canonical)}` : commandFragment``}${
       host !== null ? commandFragment` --host ${commandToken(host)}` : commandFragment``
-    }${values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``} --bundle-id ${commandToken(bundleId)}${
+    }${workspaceFlag !== undefined ? commandFragment` --workspace ${commandToken(workspaceFlag)}` : commandFragment``} --bundle-id ${commandToken(bundleId)}${
       values.name !== undefined ? commandFragment` --name ${commandToken(name)}` : commandFragment``
     }${withHistory ? commandFragment` --with-history` : commandFragment``} --yes${values.json ? commandFragment` --json` : commandFragment``}`;
   // An implicit host is used only when it is the one host signed in; the preview reports an
-  // ambiguous one as a blocker, and --yes refuses it.
+  // ambiguous one as a blocker, and --yes refuses it. The preview makes no request, so a workspace
+  // origin is followed to its gateway only at --yes.
   let chosen: HostedWriteHost | null = null;
   let ambiguous: CliError | null = null;
   try {
-    chosen = await hostedWriteHost(values.host, home, (host) => String(yesCommandFor(host)));
+    chosen = await hostedWriteHost(values.host, home, (host) => String(yesCommandFor(host)), values.yes ? deps.auth.fetch : null);
   } catch (error) {
     if (values.yes || !(error instanceof CliError) || error.details?.reason !== "ambiguous_host") throw error;
     ambiguous = error;
   }
+  if (chosen) workspaceFlag = workspaceForNamedHost(chosen, values.workspace);
   const target = chosen?.target ?? null;
   // The preview makes no request, so it plans against the bound current hosts state; `--yes` asks
   // the host and plans again under what it states, before anything is sent.
@@ -613,7 +625,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   const otherWorkspace = `${cliInvocation()} publish --to hosted --host ${commandToken(bindingHostArgument(target))} --workspace <id> --bundle-id ${commandToken(bundleId)} --yes`;
   const { client, identity, workspace } = await connectHostedAccount(
     target,
-    { workspace: values.workspace, resume: yesCommand, otherWorkspace, deadlineMs: CREATE_DEADLINE_MS },
+    { workspace: workspaceFlag, resume: yesCommand, otherWorkspace, deadlineMs: CREATE_DEADLINE_MS },
     { auth: deps.auth, ...(deps.fetch ? { fetch: deps.fetch } : {}) },
   );
   if (workspace === null) {

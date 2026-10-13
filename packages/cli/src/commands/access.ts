@@ -16,7 +16,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
-import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, type HostedAuthDeps } from "../hosted-auth/session.js";
+import { defaultHostedAuthDeps, hostArgument, requireHostedBundleHost, workspaceForNamedHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { accessRefusal, accessRequestId, postRoute, settleAccessRequest } from "../hosted/access.js";
 import { connectHostedAccount, resolveBundleReference } from "../hosted/account.js";
 import type { HostedSyncClient } from "../hosted/client.js";
@@ -153,10 +153,12 @@ async function accessList(argv: string[], deps: AccessDeps): Promise<void> {
     return;
   }
   const typed = typedReference(positionals[0]!);
-  const target = await requireHostedBundleHost(values.host, deps.auth.home, deps.auth.env);
+  const named = await requireHostedBundleHost(values.host, deps.auth);
+  const target = named.target;
+  const workspace = workspaceForNamedHost(named, values.workspace);
   const command = (reference: string) => commandFragment`${cliInvocation()} access list ${commandToken(reference)}${hostFlag(target)}`;
-  const resume = commandFragment`${command(hostedBundleReferenceText(typed))}${workspaceFlag(values.workspace)}${values.json ? commandFragment` --json` : commandFragment``}`;
-  const reached = await reach(typed, target, values.workspace, resume, deps, command);
+  const resume = commandFragment`${command(hostedBundleReferenceText(typed))}${workspaceFlag(workspace)}${values.json ? commandFragment` --json` : commandFragment``}`;
+  const reached = await reach(typed, target, workspace, resume, deps, command);
   const answer = await postRoute({ client: reached.client, resume, reference: reached.reference }, "access-list", { bundleId: reached.bundleId });
   if (!answer.ok) throw accessRefusal(answer.code, answer.message, { reference: reached.reference, host: target, again: resume });
   const data = answer.data;
@@ -240,9 +242,12 @@ async function accessChange(action: "grant" | "revoke", argv: string[], deps: Ac
     throw usage(wanted === undefined ? "grant needs --level read or --level write" : `'${wanted}' is not a level: read or write`);
   }
   const mode = resolveMode(values);
-  const target = await requireHostedBundleHost(values.host, deps.auth.home, deps.auth.env);
+  // The preview makes no request, so a workspace origin is followed to its gateway only at --yes.
+  const named = await requireHostedBundleHost(values.host, { ...deps.auth, fetch: values.yes ? deps.auth.fetch : null });
+  const target = named.target;
+  const workspace = workspaceForNamedHost(named, values.workspace);
   const command = (reference: string) =>
-    commandFragment`${cliInvocation()} access ${commandToken(action)} ${commandToken(reference)} ${commandToken(person)}${action === "grant" ? commandFragment` --level ${commandToken(wanted)}` : commandFragment``}${hostFlag(target)}${workspaceFlag(values.workspace)} --yes`;
+    commandFragment`${cliInvocation()} access ${commandToken(action)} ${commandToken(reference)} ${commandToken(person)}${action === "grant" ? commandFragment` --level ${commandToken(wanted)}` : commandFragment``}${hostFlag(target)}${workspaceFlag(workspace)} --yes`;
   const typedText = hostedBundleReferenceText(typed);
   const yesCommand = commandFragment`${command(typedText)}${values.json ? commandFragment` --json` : commandFragment``}`;
 
@@ -256,7 +261,7 @@ async function accessChange(action: "grant" | "revoke", argv: string[], deps: Ac
           person,
           ...(action === "grant" ? { level: wanted } : {}),
           host: target.origin,
-          ...(values.workspace !== undefined ? { workspace: values.workspace } : {}),
+          ...(workspace !== undefined ? { workspace } : {}),
           will:
             action === "grant"
               ? `give ${person} ${wanted} access to '${typedText}' (or change their level to ${wanted}); they must already be a member of the workspace (invite them from the Members page in the Superbee app first)`
@@ -271,7 +276,7 @@ async function accessChange(action: "grant" | "revoke", argv: string[], deps: Ac
     return;
   }
 
-  const reached = await reach(typed, target, values.workspace, yesCommand, deps, (reference) => command(reference));
+  const reached = await reach(typed, target, workspace, yesCommand, deps, (reference) => command(reference));
   const route = action === "grant" ? "access-grant" : "access-revoke";
   const home = deps.auth.home;
   const requestId = await accessRequestId(home, target.origin, reached.reference, person, action === "grant" ? `grant:${wanted}` : "revoke", deps.auth.now());
