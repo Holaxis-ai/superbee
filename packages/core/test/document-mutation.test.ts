@@ -1622,7 +1622,7 @@ test("pin: compareTimestamp:true makes a timestamp-only refresh a REAL write", a
 
 // kills: document-mutation.ts:129:7 LogicalOperator #834
 // kills: document-mutation.ts:150:45 BooleanLiteral #858
-test("pin: actor is NOT persisted into frontmatter unless persistActor is set", async () => {
+test("explicit persistActor:false leaves frontmatter alone while history backends record the writer", async () => {
   const backend = new MemoryBackend();
   const bundle = bundleFor(backend);
   const result = await mutateDocument({
@@ -1632,6 +1632,7 @@ test("pin: actor is NOT persisted into frontmatter unless persistActor is set", 
     registry: EMPTY_REGISTRY,
     strict: false,
     actor: "alice",
+    persistActor: false,
     buildCandidate: () => candidate("A", "body"),
   });
   assert.equal(Object.prototype.hasOwnProperty.call(result.doc.frontmatter, "actor"), false);

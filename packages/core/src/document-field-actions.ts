@@ -1,7 +1,9 @@
 /** Explicit frontmatter intent. Collection construction is owned here, before CAS metadata. */
+import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { InvalidInputError } from "./errors.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { kindInputFieldNames, resolveKindFieldCoordinate, type KindRegistry } from "./kinds.js";
+import { matchesSourceIdentity } from "./query-filter.js";
 import type { Frontmatter, OkfDocument } from "./types.js";
 import type { DocumentMutationCandidate } from "./document-mutation.js";
 
@@ -33,6 +35,13 @@ export type FieldAction =
   | { action: "remove"; field: "tags"; value: string }
   | { action: "remove"; field: "sources"; selector: SourceSelector }
   | { action: "edit"; field: "sources"; selector: SourceSelector; patch: Record<string, unknown> }
+  /**
+   * Select the one entry whose (`resource`, `id`) pair equals the value's, by the shared
+   * `sources[]` identity rule, and merge the value's properties into it; append the value when
+   * no entry carries the pair. The ID must be nonempty because an upsert may mint it, and it
+   * may not already name an entry under another resource.
+   */
+  | { action: "upsert"; field: "sources"; value: SourceEntry & { id: string } }
   | { action: "replace-all"; field: "tags"; value: string[] }
   | { action: "replace-all"; field: "sources"; value: SourceEntry[] };
 export interface FieldActionScope {
@@ -49,7 +58,6 @@ export interface PreparedDocumentFieldAction {
   storageField: string;
 }
 
-const managed = new Set(["generated", "verified", "superbee_updated_by", "actor", "timestamp"]);
 const standard = new Set(["title", "description", "type", "resource"]);
 const v02 = new Set(["status", "stale_after", "usage_window"]);
 export function isStandardDocumentSetField(field: string, okfVersion: "0.1" | "0.2"): boolean {
@@ -88,7 +96,7 @@ export function assertOrdinaryPatch(existing: Frontmatter, proposed: Frontmatter
   }
 }
 function assertAssignmentName(field: string): void {
-  if (managed.has(field)) throw new InvalidInputError(`'${field}' is managed metadata and cannot be assigned by a field action.`);
+  if (isManagedDocumentMetadataField(field)) throw new InvalidInputError(`'${field}' is managed metadata and cannot be assigned by a field action.`);
   if (field === "tags" || field === "sources") throw new InvalidInputError(`'${field}' requires an explicit collection add/remove/replace-all action.`);
 }
 /** Semantic legacy assignments retain input intent, including explicitly equal assignments. */
@@ -154,7 +162,7 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
         ...(context.okfVersion === "0.2" ? v02 : []),
         ...(kind ? kindInputFieldNames(context.okfVersion, kind) : []),
       ])].filter(field => {
-        if (managed.has(field) || field === "tags" || field === "sources") return false;
+        if (isManagedDocumentMetadataField(field) || field === "tags" || field === "sources") return false;
         if (context.okfVersion === "0.1" && (field === "stale_after" || field === "usage_window")) return false;
         const storage = kind && resolveKindFieldCoordinate(context.okfVersion, kind, field);
         return !containsCollection(existing.frontmatter[storage?.storageField ?? field]);
@@ -170,7 +178,7 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
     return { candidate, scope, storageField };
   }
   if (action.field !== "tags" && action.field !== "sources") throw new InvalidInputError("Collection actions support only tags and sources.");
-  if (!["add", "remove", "edit", "replace-all"].includes(action.action)) throw new InvalidInputError("Unknown field action.");
+  if (!["add", "remove", "edit", "replace-all", "upsert"].includes(action.action)) throw new InvalidInputError("Unknown field action.");
   if (action.field === "sources" && context.okfVersion !== "0.2") throw new InvalidInputError("sources actions require OKF v0.2.");
   const previous = existing.frontmatter[action.field];
   let rows: unknown[];
@@ -184,10 +192,39 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
     if (previous !== undefined && !Array.isArray(previous)) throw new InvalidInputError(`'${action.field}' is not a list; repair it with version-guarded replace-all.`);
     rows = structuredClone(previous ?? []) as unknown[];
     if (action.field === "tags") {
-      if ((action as { action: string }).action === "edit") throw new InvalidInputError("tags supports add/remove/replace-all, not edit.");
+      if (["edit", "upsert"].includes((action as { action: string }).action)) throw new InvalidInputError(`tags supports add/remove/replace-all, not ${(action as { action: string }).action}.`);
       if (typeof action.value !== "string") throw new InvalidInputError("A tag must be a string.");
       if (action.action === "add" && !rows.includes(action.value)) { rows.push(action.value); scope.outcome = "added"; }
       if (action.action === "remove" && rows.includes(action.value)) { rows = rows.filter(row => row !== action.value); scope.outcome = "removed"; }
+    } else if (action.action === "upsert") {
+      sourceRow(action.value);
+      const value = action.value;
+      if (typeof value.id !== "string" || value.id.trim() === "") throw new InvalidInputError("A source upsert requires a nonempty id.");
+      for (const [property, entry] of Object.entries(value)) {
+        if (entry === undefined) throw new InvalidInputError("Source upsert properties must have values.");
+        if (containsCollection(entry)) throw new InvalidInputError(`Cannot assign source property '${property}': the new subtree contains a list. Use sources replace-all with an observed version.`);
+      }
+      const identity = { resource: value.resource, id: value.id };
+      const matches = rows.flatMap((row, index) => matchesSourceIdentity(row, identity) ? [index] : []);
+      if (matches.length > 1) throw new FieldActionError(`Source identity is ambiguous (${matches.length} matches); repair duplicates with version-guarded replace-all.`, {
+        reason: "ambiguous-source", field: "sources", selector: { id: value.id }, ...sourceCandidates(matches.map(index => rows[index])),
+      });
+      scope.affectedSourceIds = [value.id];
+      if (matches.length === 1) {
+        const old = rows[matches[0]!] as SourceEntry;
+        for (const property of Object.keys(value)) {
+          if (containsCollection(old[property])) throw new InvalidInputError(`Cannot assign source property '${property}': the old subtree contains a list. Use sources replace-all with an observed version.`);
+        }
+        const next = { ...old, ...structuredClone(value) };
+        if (!okfValuesEqual(old, next)) { rows[matches[0]!] = next; scope.outcome = "edited"; }
+      } else {
+        const sameId = rows.filter(row => record(row) && row.id === value.id);
+        if (sameId.length > 0) throw new FieldActionError(`Source ID '${value.id}' already names an entry under another resource; a document-local ID is never minted twice.`, {
+          reason: "source-id-conflict", field: "sources", selector: { id: value.id }, recommendedSelector: { id: value.id }, ...sourceCandidates(sameId),
+        });
+        rows.push(structuredClone(value));
+        scope.outcome = "added";
+      }
     } else if (action.action === "add") {
       sourceRow(action.value);
       if (has(action.value, "id")) {

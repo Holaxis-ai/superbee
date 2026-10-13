@@ -8,7 +8,7 @@ import path from "node:path";
 
 import {
   BOARD_BRANCH,
-  BOARD_REF,
+  boardRefOf,
   BOARD_REMOTE,
   BUNDLE_DIRS,
   bundleDirNameForProject,
@@ -46,9 +46,9 @@ export function localBranchExists(top: string, name: string): boolean {
   return runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]).status === 0;
 }
 
-/** The `refs/remotes/origin/board` sha, or `null` when it doesn't resolve (mirrors `unpushedCount`'s own check). */
+/** The checkout's `refs/remotes/origin/<board branch>` sha, or `null` when it doesn't resolve (mirrors `unpushedCount`'s own check). */
 export function resolveOriginRef(boardPath: string): string | null {
-  const r = runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]);
+  const r = runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRefOf(boardPath)}`]);
   return r.status === 0 ? r.stdout.trim() : null;
 }
 

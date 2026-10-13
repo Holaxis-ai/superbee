@@ -47,6 +47,10 @@ const manifest = {
       types: "./dist/publication/bridge-entry.d.ts",
       default: "./dist/publication-bridge.mjs",
     },
+    "./portable-export": {
+      types: "./dist/portable-export.d.ts",
+      default: "./dist/portable-export.mjs",
+    },
     "./bundle-descriptor": {
       types: "./dist/bundle-descriptor/index.d.ts",
       default: "./dist/bundle-descriptor.mjs",
@@ -226,7 +230,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   );
   assert.match(
     npmReadme,
-    /Node\.js 20 or newer on macOS and Linux/,
+    /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\) on macOS or Linux/,
     "npm README must advertise every supported native platform",
   );
   assert.match(npmReadme, /Native Windows is not supported by this package/);
@@ -266,6 +270,7 @@ test("lockfile workspace metadata preserves the npm package platform contract", 
   assert.equal(locked.version, npmManifest.version, "lockfile CLI version must match the publish manifest");
   assert.deepEqual(locked.os, npmManifest.os, "lockfile must not retain a stale OS restriction");
   assert.deepEqual(locked.cpu, npmManifest.cpu, "lockfile must not retain a stale CPU restriction");
+  assert.deepEqual(locked.engines, npmManifest.engines, "lockfile must not retain a stale Node support policy");
 });
 
 test("the expected tarball set is the fixed base plus the references tree", () => {
@@ -279,6 +284,8 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "dist/bundle-descriptor/index.d.ts",
     "dist/bundle-descriptor/schema.d.ts",
     "dist/bundle-descriptor/schema/bundle-descriptor-v1.schema.json",
+    "dist/portable-export.d.ts",
+    "dist/portable-export.mjs",
     "dist/publication-bridge.mjs",
     "dist/publication.mjs",
     "dist/publication/bridge-entry.d.ts",
@@ -291,6 +298,7 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "dist/publication/schema.d.ts",
     "dist/publication/schema/publication-snapshot-v1.schema.json",
     "dist/publication/snapshot-backend.d.ts",
+    "dist/publication/source-exclusions.d.ts",
     "dist/publication/types.d.ts",
     "dist/superbee.mjs",
     "package.json",

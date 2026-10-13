@@ -36,7 +36,11 @@
 // - `/export` (superbee-hosted PR 650, `src/sync-v1-export.ts`): the portable export of the fake's
 //   bundle as the host writes it (`fake-export-archive.ts`): the documents' stored bytes, the root
 //   index, and any reserved files or blobs a test adds to `exportExtras`; a 404 `bundle_not_found`
-//   for another bundle and a 400 `invalid_input` for any body but `{ bundleId }`.
+//   for another bundle and a 400 `invalid_input` for any body but `{ bundleId }` or the paged
+//   `{ bundleId, paged: true, cursor? }`. A paged request answers `exportPageObjects` objects a page,
+//   each page's manifest stating `page` with the `<revision>.<from>` cursor of the next; a cursor
+//   whose revision is no longer the bundle's is `409 concurrent_change`. `exportPaging: false` is a
+//   gateway from before the paged export.
 // - qualified references (superbee-hosted `docs/data-organizations.md`, "Qualified references"):
 //   with `workspaces`, whoami names each workspace's slug; a bundle-scoped body may name the bundle
 //   `<slug>/<bundle-id>`, which reaches the bundle only when `slug` is its workspace's (another
@@ -58,6 +62,12 @@
 //   core's Kind rules: a Kind a stored document fails, or a removed Kind still in use, refuses
 //   `definition_incompatible` with `definitionDetails`. Document writes are validated against the
 //   stored Kinds (`validation_failed`). Without `definitionWrites` none of this applies.
+// - the front page (superbee-hosted `bundles.root.replace.v1`, `POST /sync/v1/root`, the lane
+//   front-page wire contract): with `rootWrites`, the capabilities answer carries it, and the route
+//   replaces the root `index.md` compare-and-swap on `expectedVersion` (or `expectAbsent`), with no
+//   request identity (a `X-Superbee-Write-Request` is refused `400` here, so a client that sends
+//   one fails loudly). A version is the SHA-256 of the stored bytes; the capabilities answer and
+//   the heads' root version header follow the stored root. `rootHook` answers or drops a write.
 // - any other route: the family's unknown-route answer, `404 {"error":"not_found"}`.
 // Every answer shape is held to the `/sync/v1` golden exchanges captured from the real hosted
 // gateway (core's `test/fixtures/hosted-sync-v1/`) by `hosted-fake-contract.test.ts`; the export
@@ -74,7 +84,7 @@ import { versionOfBytes } from "@superbee/core/versioning";
 import { isAcceptedDeletionCount, isAgentLabelVia } from "@superbee/core/hosted-transport";
 import { deletionHold } from "../../src/hosted/sync-scan.js";
 
-import { exportArchive, type ExportState } from "./fake-export-archive.js";
+import { exportArchive, exportInventorySize, type ExportState } from "./fake-export-archive.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.resolve(here, "../../../core/test/fixtures/hosted-transport");
@@ -177,7 +187,32 @@ export interface FakeHostOptions {
    * follow it (the model-changes item above).
    */
   definitionWrites?: "allowed" | "refused";
+  /** False is a gateway from before the paged export: a paged request's body is `400 invalid_input`. */
+  exportPaging?: boolean;
+  /**
+   * What the capabilities answer says about replacing the root `index.md`: absent, a host from
+   * before the root write (the answer has no `rootWrites`, and the route refuses the write as a
+   * person without the grant would). Set, the answer carries it and the route follows it.
+   */
+  rootWrites?: "allowed" | "refused";
+  /**
+   * The whole-document write bound whoami and capabilities state (`limits.documentInputBytes`):
+   * absent, the fixtures' own (983,040); null, a host from before it was stated, whose answers
+   * carry no `limits`.
+   */
+  documentInputBytes?: number | null;
 }
+
+/** One root write as the fake received it. */
+export interface RootCall {
+  binding: string | null;
+  writeRequest: string | null;
+  via: string | null;
+  body: Record<string, unknown>;
+}
+
+/** What a test may do to one root write before the host answers it. */
+export type RootHook = (call: RootCall) => { kind: "respond"; status: number; body: unknown } | { kind: "apply-then-drop" } | { kind: "drop" } | undefined;
 
 /** One operation descriptor, as the listing route answers it. */
 export type OperationDescriptor = Record<string, unknown> & { operationId: string };
@@ -230,6 +265,10 @@ export class FakeHost {
   exportState: ExportState | undefined;
   /** The export instant. */
   exportedAt: () => Date = () => new Date();
+  /** Objects one page of a paged export carries (the host's is 500). */
+  exportPageObjects = 500;
+  /** Called before each export answer, with the request body: a test moves the bundle between pages. */
+  exportBefore: ((body: Record<string, unknown>) => void) | undefined;
   /** What a test does to the archive bytes before they are answered (truncate, tamper). */
   exportHook: ((archive: Uint8Array) => Uint8Array | Response) | undefined;
   /** The listing `/operations` answers, when a test sets it; otherwise the golden `operations-200` listing. */
@@ -237,6 +276,11 @@ export class FakeHost {
   /** The data a run of a listed operation other than `documents.history.v1` answers. */
   runHook: ((operationId: string, input: Record<string, unknown>) => unknown) | undefined;
   capabilities: string;
+  /** The root `index.md` the host stores, once a root write or `putRoot` changed it (else the fixture's). */
+  private storedRoot: { content: string; version: string } | null | undefined;
+  /** Every root write received, in order. */
+  readonly rootCalls: RootCall[] = [];
+  rootHook: RootHook | undefined;
   principal: string;
   readonly origin: string;
   readonly token: string;
@@ -260,6 +304,12 @@ export class FakeHost {
       this.record(row.id, "someone-else", undefined);
       this.oldIds.add(row.id);
     }
+  }
+
+  /** The `limits` whoami and capabilities carry: the fixtures' bound, the option's, or none. */
+  private limits(): { limits?: { documentInputBytes: number } } {
+    const stated = this.options.documentInputBytes === undefined ? 983_040 : this.options.documentInputBytes;
+    return stated === null ? {} : { limits: { documentInputBytes: stated } };
   }
 
   /** A write of `id`'s current bytes, appended to its lineage. */
@@ -366,6 +416,7 @@ export class FakeHost {
           tenantIds: this.options.tenants ?? ["tenant-a"],
           ...(this.workspaces() ? { workspaces: this.workspaces() } : {}),
           surface: "sync",
+          ...this.limits(),
         });
       case "bundles":
         return Response.json({
@@ -377,14 +428,25 @@ export class FakeHost {
         if (body.bundleId !== BUNDLE && String(body.bundleId).startsWith("absent.")) return bundleNotFound();
         assert.equal(body.bundleId, BUNDLE);
         const { response } = fixture(this.capabilities);
-        const answer = this.definitionWrites === null ? response.body : JSON.stringify({ ...JSON.parse(response.body), definitionWrites: this.definitionWrites });
+        let answer = this.definitionWrites === null ? response.body : JSON.stringify({ ...JSON.parse(response.body), definitionWrites: this.definitionWrites });
+        if (this.storedRoot !== undefined || this.options.rootWrites !== undefined) {
+          answer = JSON.stringify({
+            ...JSON.parse(answer),
+            ...(this.storedRoot !== undefined ? { root: this.storedRoot } : {}),
+            ...(this.options.rootWrites !== undefined ? { rootWrites: this.options.rootWrites } : {}),
+          });
+        }
+        if (this.options.documentInputBytes !== undefined) {
+          const { limits: _fixture, ...rest } = JSON.parse(answer) as Record<string, unknown>;
+          answer = JSON.stringify({ ...rest, ...this.limits() });
+        }
         return new Response(answer, { status: response.status, headers: response.headers });
       }
       case "heads": {
         if (body.bundleId !== BUNDLE && String(body.bundleId).startsWith("absent.")) return bundleNotFound();
         assert.equal(body.bundleId, BUNDLE);
         const listing = this.heads();
-        const common = { etag: `"${listing.digest}"`, "x-superbee-root-version": this.rootVersion };
+        const common = { etag: `"${listing.digest}"`, "x-superbee-root-version": this.storedRoot === undefined ? this.rootVersion : (this.storedRoot?.version ?? "none") };
         if (body.cursor === undefined && body.ifNoneMatch === listing.digest) return new Response(null, { status: 304, headers: common });
         const page = this.page(listing, body.cursor);
         if (page === "restart") return restart();
@@ -425,10 +487,64 @@ export class FakeHost {
       case "delete":
       case "outcome":
         return this.write(route, body, headers);
+      case "root":
+        return this.rootWrite(body, headers);
       default:
         return unknownRoute();
     }
   }) as typeof fetch;
+
+  /** The root the host stores now: its exact content and version, or null without one. */
+  root(): { content: string; version: string } | null {
+    if (this.storedRoot !== undefined) return this.storedRoot;
+    const { response } = fixture(this.capabilities);
+    const root = (JSON.parse(response.body) as { root: { content: string; version: string } | null }).root;
+    return root ? { content: root.content, version: root.version } : null;
+  }
+
+  /** A bundle with no root `index.md` at all (the heads' root version is `none`). */
+  clearRoot(): void {
+    this.storedRoot = null;
+  }
+
+  /** A change to the front page made on the host (another person, in the app). */
+  putRoot(content: string): string {
+    const version = versionOfBytes(content);
+    this.storedRoot = { content, version };
+    this.revision += 1;
+    return version;
+  }
+
+  /** `POST /sync/v1/root`: the front page's compare-and-swap replace, as the wire contract states it. */
+  private rootWrite(body: Record<string, unknown>, headers: Headers): Response {
+    const call: RootCall = { binding: headers.get("x-superbee-checkout"), writeRequest: headers.get("x-superbee-write-request"), via: headers.get("x-superbee-via"), body: structuredClone(body) };
+    this.rootCalls.push(call);
+    const invalid = () => Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    if (!call.binding || !BINDING.test(call.binding) || call.writeRequest !== null || (call.via !== null && !isAgentLabelVia(call.via))) return invalid();
+    const creates = body.expectAbsent === true;
+    if (!onlyKeys(body, creates ? ["bundleId", "content", "expectAbsent"] : ["bundleId", "content", "expectedVersion"]) || typeof body.content !== "string" || body.bundleId !== BUNDLE) return invalid();
+    if (!creates && (typeof body.expectedVersion !== "string" || !BINDING.test(body.expectedVersion))) return invalid();
+    const operationId = "bundles.root.replace.v1";
+    if (this.options.writable === false || this.options.rootWrites !== "allowed") return Response.json(failure(operationId, "insufficient_scope"));
+    const hooked = this.rootHook?.(call);
+    if (hooked?.kind === "respond") return new Response(JSON.stringify(hooked.body), { status: hooked.status, headers: { "content-type": "application/json" } });
+    if (hooked?.kind === "drop") throw new TypeError("fetch failed");
+    const content = body.content;
+    const current = this.root();
+    let answer: Record<string, unknown>;
+    if (content.startsWith("\uFEFF")) answer = failure(operationId, "invalid_input");
+    else if (creates && current) answer = failure(operationId, "document_exists", current.version);
+    else if (!creates && body.expectedVersion !== current?.version) answer = failure(operationId, "version_conflict", current?.version);
+    else if (edition(content) !== edition(current?.content ?? "")) answer = failure(operationId, "validation_failed");
+    else {
+      const version = versionOfBytes(content);
+      const changed = version !== current?.version;
+      if (changed) this.putRoot(content);
+      answer = { ok: true, operationId, data: { bundleId: BUNDLE, version, changed } };
+    }
+    if (hooked?.kind === "apply-then-drop") throw new TypeError("fetch failed");
+    return Response.json(answer);
+  }
 
   /** The workspaces whoami names, or null for a host from before qualified references. */
   private workspaces(): { tenantId: string; slug: string | null }[] | null {
@@ -438,6 +554,7 @@ export class FakeHost {
 
   /** The root index the host serves: the capabilities answer's `root.content`. */
   rootIndex(): string {
+    if (this.storedRoot) return this.storedRoot.content;
     const { response } = fixture(this.capabilities);
     return (JSON.parse(response.body) as { root: { content: string } }).root.content;
   }
@@ -514,7 +631,16 @@ export class FakeHost {
   }
 
   private export(body: Record<string, unknown>): Response {
-    if (!onlyKeys(body, ["bundleId"]) || typeof body.bundleId !== "string") return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    const invalid = () => Response.json({ error: { code: "invalid_input" } }, { status: 400 });
+    const paged = this.options.exportPaging !== false && body.paged === true;
+    if (typeof body.bundleId !== "string" || !(paged ? onlyKeys(body, ["bundleId", "paged", "cursor"]) : onlyKeys(body, ["bundleId"]))) return invalid();
+    let cursor: { revision: number; from: number } | undefined;
+    if (paged && body.cursor !== undefined) {
+      const match = typeof body.cursor === "string" ? /^(0|[1-9][0-9]{0,14})\.([1-9][0-9]{0,5})$/.exec(body.cursor) : null;
+      if (!match) return invalid();
+      cursor = { revision: Number(match[1]), from: Number(match[2]) };
+    }
+    this.exportBefore?.(body);
     const state = this.currentExportState();
     if (body.bundleId !== state.bundleId) {
       return Response.json(
@@ -522,7 +648,15 @@ export class FakeHost {
         { status: 404 },
       );
     }
-    const archive = exportArchive(state, this.exportedAt());
+    let page: { from: number; size: number } | undefined;
+    if (paged) {
+      if (cursor && cursor.revision !== state.revision) {
+        return Response.json({ error: { code: "concurrent_change", message: "The bundle changed since the first page. Start again from the first page.", retryable: true } }, { status: 409 });
+      }
+      if (cursor && cursor.from >= exportInventorySize(state)) return invalid();
+      page = { from: cursor?.from ?? 0, size: this.exportPageObjects };
+    }
+    const archive = exportArchive(state, this.exportedAt(), page);
     const answered = this.exportHook ? this.exportHook(archive) : archive;
     if (answered instanceof Response) return answered;
     return new Response(answered, {
@@ -723,6 +857,13 @@ export class FakeHost {
     }
     return Response.json({ ...envelope, status: "refused", result: recorded.result });
   }
+}
+
+/** The `okf_version` a root's frontmatter states, as the host compares editions (absent: none). */
+function edition(content: string): string | null {
+  const match = /^---\n([\s\S]*?)\n---/.exec(content);
+  const line = match?.[1]?.split("\n").find((text) => text.startsWith("okf_version:"));
+  return line === undefined ? null : line.slice("okf_version:".length).trim().replace(/^["']|["']$/g, "");
 }
 
 /** The family's answer to a route it does not have (a gateway from before the route). */

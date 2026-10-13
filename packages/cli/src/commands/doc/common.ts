@@ -29,7 +29,7 @@ Usage:
   superbee doc verify  <id> --actor <a>                 Append an OKF v0.2 verification event
   superbee doc read    <id> [--out <p> | --body-out <p> | --rendered-out <p>] Read/export a doc
   superbee doc open    <id>                             Open the rendered doc in a browser
-  superbee doc history <id>                             Show a doc's attributed version chain
+  superbee doc history <id>                             Show versions (local: current only)
   superbee doc delete  <id> [--expected-version <v>]    Hard-delete a doc (idempotent)
 
 Authoring paths:
@@ -82,7 +82,9 @@ duplication — a plain overwrite that converges to the same on-disk state).
 
 If a declared Kind governs the document type, prefer 'superbee new "<Kind>" <id> ...'; its
 authoring is strict and create-only. Use 'doc write' for a generic type or a deliberate full
-replacement.
+replacement. Kind validation is advisory by default: violations appear as warnings, including on
+no-ops. --strict rejects violations without writing. A changed replacement of a previously conforming
+document cannot be nonconforming, even in advisory mode.
 
 Options:
   --type <t>           OKF concept type (non-empty)                          [required]
@@ -143,6 +145,10 @@ Usage:
 Only the fields you pass change; everything else — including the body when no body source is given —
 is preserved verbatim. Idempotent: a patch that changes NOTHING (ignoring the auto-refreshed
 timestamp) converges to changed:false (no write, no timestamp refresh).
+
+Standard-field patches use advisory Kind validation by default, returning warnings even on no-ops;
+--strict rejects violations without writing. Dynamic declared fields are always strict: passing a
+--<field> flag requires the whole resulting document to satisfy its Kind, even for a same-value patch.
 
 Options:
   --title <t>            Replace the title
@@ -217,9 +223,25 @@ kind-declared fields like progress_status/priority — and truncates a large bod
 A truncated body is published as 'body_preview' (never 'body'), with body_truncated:true, the true
 body_chars, and a marker inside the value itself. That value is a PREVIEW, not a body: writing it
 back through 'doc write'/'doc update' is refused (exit 2) unless --accept-truncated-body is passed.
-Use --body-out to get the complete body for an edit cycle.
+Use --body-out to get the complete body for an edit cycle, or --offset to read it a page at a time.
 
 Options:
+  --offset <n>         Page the record's body: 'body' is the page starting at character n (a
+                       JavaScript string index, 0 for the first page) and 'range' says where it sits:
+                       offset, end, total_chars, total_bytes, complete, and next_offset while more
+                       follows. The page without next_offset is the last; complete is true only
+                       when the whole body fit in one page, so page on next_offset. A page ends
+                       within --max-bytes of UTF-8, never splits a character, and ends just after a
+                       line where one is near its end. A page is NOT the document: never write it
+                       back as the body.
+  --max-bytes <n>      The page's body bound in UTF-8 bytes, 1024 to 983040 (default 32768). Implies
+                       --offset 0 when --offset is absent.
+  --expected-version <v>
+                       Read the page only if the document is still at version v (the first page's
+                       head_version); otherwise exit with CONFLICT (version_conflict), so pages
+                       of two versions are never joined. Page with:
+                         superbee doc read <id> --offset 0 --json
+                         superbee doc read <id> --offset <next_offset> --expected-version <head_version> --json
   --out <path>         Write the doc's raw markdown bytes to a file (bypasses context).
                        Use --out - to stream raw bytes to stdout (the receipt goes to stderr).
                        Over --remote, bytes are the canonical OKF re-serialization (no raw-bytes
@@ -274,6 +296,7 @@ Examples:
   superbee doc read concepts/auth --body-out <path-outside-bundle>
   superbee doc read concepts/auth --rendered-out ./auth.html
   superbee doc read concepts/auth --field head_version
+  superbee doc read meetings/kickoff --offset 0 --json
 `;
 
 export const DOC_VERIFY_USAGE = `superbee doc verify — append one OKF v0.2 verification event and report the trust tier
@@ -326,8 +349,9 @@ history-keeping backend (a remote deployment) returns the full chain and its rea
 attribution; on an AUTH'D remote, actor is your authenticated principal (server-set, unforgeable)
 and agent is the resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy
 AGENTSTATE_LITE_ACTOR. A local --dir bundle keeps no history, so it returns just the single current
-revision. Its actor is resolved from the doc's compatible advisory attribution, falling back to
-the local user identity when none is present. The newest version is the token to
+revision, even when its files are tracked in Git. Its actor is resolved from the doc's compatible
+advisory attribution, or "unattributed" when none is present. generated.by names the content
+producer and is not used as the version's mutator. The newest version is the token to
 pass to --expected-version for an optimistic doc update/delete.
 
 In a hosted checkout (and without --remote) the chain is the host's: every sent version, each with

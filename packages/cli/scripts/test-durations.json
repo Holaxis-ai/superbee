@@ -1,0 +1,25 @@
+{
+  "schema": "superbee.cli-test-durations.v1",
+  "unit": "seconds",
+  "provenance": {
+    "measured_at": "2026-10-05",
+    "runs": [
+      "https://github.com/Holaxis-ai/superbee/actions/runs/37347398966",
+      "https://github.com/Holaxis-ai/superbee/actions/runs/37052205160"
+    ],
+    "method": "Conservative whole-second scheduling estimates from October 5 Node 22/26 scenario timings and October 2 audit. Original sweep uses the prior 248.6s observation (October 5 max 229s); remote re-create reserves 100s (observed 85s / prior 90s). Command-matrix estimates reserve 20s for path and 60s for arity after the paired builder measured 13.55s combined versus 79.76s before on the same host; these are conservative CI estimates, not measured post-change CI durations. Unknown files receive a positive 10-second estimate. Weights schedule work only and never select coverage. Refresh from exact-SHA CI when costs change."
+  },
+  "fallback_seconds": 10,
+  "weights": {
+    "hosted-sync-crash.test.ts": 249,
+    "qa-r2-crash-bulk-window.test.ts": 194,
+    "qa-r2-crash-scan-delete.test.ts": 129,
+    "qa-r2-crash-conflict-keep.test.ts": 103,
+    "qa-r2-crash-conflict-take.test.ts": 97,
+    "qa-r2-crash-own-recreate.test.ts": 206,
+    "qa-r2-crash-remote-recreate.test.ts": 100,
+    "cli-path-surface.test.ts": 20,
+    "arity-built.test.ts": 60,
+    "private-state-bundle-boundary.test.ts": 60
+  }
+}

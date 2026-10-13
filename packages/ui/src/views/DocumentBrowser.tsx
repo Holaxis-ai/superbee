@@ -1,7 +1,7 @@
 /**
  * The home's "Documents" browser (designs/document-discovery Decision 1): every bundle doc grouped
  * by kind, so the human can find ANY doc — not just the recent pulse the activity feed shows. Data
- * is head projections only (`listAllHeads` — frontmatter, never bodies), shared with the reader's
+ * is head projections only (`listAllHeadsReport` — frontmatter, never bodies), shared with the reader's
  * `["all-heads"]` cache, so a render costs one cheap scan.
  *
  * Each group is collapsible; a kind whose convention declares `browse_collapsed: true`
@@ -12,7 +12,8 @@
  */
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { listAllHeads } from "../api/client.js";
+import { listAllHeadsReport } from "../api/client.js";
+import type { SkippedDoc } from "../api/types.js";
 import { fetchKinds } from "../api/pages.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { navigate } from "../routing.js";
@@ -25,7 +26,7 @@ export const SEARCH_LIMIT = 40;
 
 export function DocumentBrowser() {
   const queryClient = useQueryClient();
-  const headsQuery = useQuery({ queryKey: ["all-heads"], queryFn: () => listAllHeads({}) });
+  const headsQuery = useQuery({ queryKey: ["all-heads"], queryFn: () => listAllHeadsReport({}) });
   const kindsQuery = useQuery({ queryKey: ["kinds"], queryFn: fetchKinds, refetchInterval: false });
   const [query, setQuery] = useState("");
 
@@ -40,7 +41,8 @@ export function DocumentBrowser() {
     return subscribeToResync(() => void queryClient.invalidateQueries({ queryKey: ["all-heads"] }));
   }, [queryClient]);
 
-  const heads = headsQuery.data ?? [];
+  const heads = headsQuery.data?.heads ?? [];
+  const skipped = headsQuery.data?.skipped ?? [];
   const collapsedKinds = new Set((kindsQuery.data ?? []).filter((k) => k.browseCollapsed).map((k) => k.governs));
 
   // Wait for BOTH heads AND kinds: collapsedKinds derives from kinds, and a group's collapsed-start
@@ -54,14 +56,21 @@ export function DocumentBrowser() {
 
   const groups = browseGroups(heads, collapsedKinds);
   const total = groups.reduce((n, g) => n + g.rows.length, 0);
+  const unreadable = skipped.length > 0 ? <UnreadableDocs skipped={skipped} /> : null;
   if (total === 0) {
-    return <p className="browse-empty">No documents yet. Everything your agents write shows up here, grouped by kind.</p>;
+    return (
+      <>
+        {unreadable}
+        <p className="browse-empty">No documents yet. Everything your agents write shows up here, grouped by kind.</p>
+      </>
+    );
   }
 
   const search = query.trim() ? searchRows(heads, query, SEARCH_LIMIT) : null;
 
   return (
     <div className="browse">
+      {unreadable}
       <input
         type="search"
         className="browse-filter"
@@ -136,5 +145,28 @@ function DocRow({ row, showKind = false }: { row: BrowseRow; showKind?: boolean 
         {row.when && <span className="browse-when">{row.when}</span>}
       </button>
     </li>
+  );
+}
+
+/**
+ * Documents the listing left out because their frontmatter does not parse. One bad file never
+ * hides the rest of the bundle; it is named here, with the parser's reason, so it can be fixed.
+ */
+function UnreadableDocs({ skipped }: { skipped: SkippedDoc[] }) {
+  return (
+    <div className="view-status view-status-error browse-unreadable" role="alert">
+      <p>
+        {skipped.length === 1 ? "1 document" : `${skipped.length} documents`} could not be read (invalid
+        frontmatter) and {skipped.length === 1 ? "is" : "are"} left out below. Fix the YAML between the
+        {" "}<code>---</code> lines; a value containing <code>: </code> must be quoted.
+      </p>
+      <ul>
+        {skipped.map((row) => (
+          <li key={row.id}>
+            <code>{row.id}</code>: {row.reason}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

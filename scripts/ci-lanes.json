@@ -2,16 +2,56 @@
   "schema": "superbee.ci-lanes.v1",
   "path_skipping": false,
   "source_preflight": "npm run check:package-versions",
+  "node_policy": {
+    "compatibility_floor": "22.14.0",
+    "supported_majors": [
+      22,
+      24,
+      26
+    ],
+    "engine_range": "^22.14.0 || ^24.0.0 || ^26.0.0",
+    "build_target": "node22",
+    "default_runtime": "24.21.0",
+    "forward_probe": 26,
+    "release_pin_owner": "process:release-preflight",
+    "release_pin_reviewed_at": "2026-09-24",
+    "release_pin_refresh_by": "2026-10-24",
+    "forward_review": {
+      "review_after": "2026-10-28",
+      "disposition": "pending",
+      "decided_at": null,
+      "decided_by": null,
+      "evidence": null,
+      "revisit_by": null
+    },
+    "floor_retirement": {
+      "retire_by": "2027-04-30"
+    }
+  },
   "runtime_nodes": [
     22,
     26
   ],
-  "singleton_node": 26,
+  "singleton_node": "24.21.0",
   "host_expectation_variable": "SUPERBEE_TEST_EXPECT_ALIASING_HOST",
   "merge_queue": {
-    "enabled": false,
-    "evidence": "No merge-queue workflow or repository-settings evidence exists at this revision",
-    "enablement_requirement": "Set enabled true and add the merge_group trigger before enabling merge queue"
+    "supported": true,
+    "activation_authority": "Live GitHub settings verified by infrastructure/github-ci preflight and recorded in the project bundle; workflow capability does not imply queue activation",
+    "checkout_ref": "${{ github.sha }}"
+  },
+  "github_actions": {
+    "identities": [
+      "actions/attest-build-provenance",
+      "actions/cache/restore",
+      "actions/cache/save",
+      "actions/checkout",
+      "actions/download-artifact",
+      "actions/setup-java",
+      "actions/setup-node",
+      "actions/upload-artifact",
+      "github/codeql-action/analyze",
+      "github/codeql-action/init"
+    ]
   },
   "security_analysis": {
     "workflow": ".github/workflows/codeql.yml",
@@ -20,7 +60,8 @@
       "pull_request",
       "push",
       "schedule",
-      "workflow_dispatch"
+      "workflow_dispatch",
+      "merge_group"
     ],
     "schedule": "23 7 * * 1",
     "concurrency": {
@@ -32,17 +73,14 @@
       "contents": "read",
       "security-events": "write"
     },
-    "action_pins": {
-      "checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-      "codeql_init": "github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938",
-      "codeql_analyze": "github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938"
-    },
     "checkout_persist_credentials": false,
     "query_suite": "security-extended",
     "threat_model": "local",
     "paths": [
       "packages",
-      "scripts"
+      "scripts",
+      ".github/actions/ci-gate",
+      "infrastructure/github-ci"
     ],
     "paths_ignore": [
       "**/node_modules/**",
@@ -58,7 +96,9 @@
       "packages/cli/src/args.ts",
       "packages/core/src/publication-filesystem.ts",
       "packages/publication/src/generated/publication-snapshot-v1.ts",
-      "scripts/verify-npm-package.mjs"
+      "scripts/verify-npm-package.mjs",
+      ".github/actions/ci-gate/evaluate.mjs",
+      "infrastructure/github-ci/preflight.mjs"
     ],
     "representative_excludes": [
       "packages/board-git/test/git-porcelain.test.ts",
@@ -90,12 +130,14 @@
         "timeout_minutes": 5
       }
     },
-    "merge_enforcement": "human-owned GitHub ruleset after hosted evidence; workflow success proves analysis completion only"
+    "merge_enforcement": "human-owned GitHub ruleset after hosted evidence; workflow success proves analysis completion only",
+    "checkout_ref": "${{ github.sha }}"
   },
   "required_jobs": [
     "runtime",
+    "runtime-common",
     "aliasing-host",
-    "smoke-node-20",
+    "smoke-node-22",
     "distribution",
     "browser",
     "scripts"
@@ -109,12 +151,19 @@
     {
       "id": "typecheck",
       "command": "npm run typecheck",
-      "owner": "runtime"
+      "owner": "runtime-common"
     },
     {
       "id": "workspace-tests",
       "command": "npm test --workspaces --if-present",
-      "owner": "runtime"
+      "owners": [
+        "runtime",
+        "runtime-common"
+      ],
+      "lane_commands": {
+        "runtime": "npm test -w @superbee/cli --ignore-scripts",
+        "runtime-common": "npm run test:runtime-common"
+      }
     },
     {
       "id": "script-tests",
@@ -149,29 +198,46 @@
   ],
   "lanes": {
     "runtime": {
-      "display_name": "runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/2)",
-      "script": "ci:runtime",
+      "display_name": "runtime compatibility (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)",
+      "script": "ci:runtime-cli",
       "components": [
         "build",
-        "typecheck",
         "workspace-tests"
       ],
       "nodes": [
         22,
         26
       ],
-      "shards": 2,
+      "shards": 4,
       "shard_variable": "SUPERBEE_TEST_SHARD",
       "runs_on": "ubuntu-latest",
       "expect_aliasing_host": "0",
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
     },
+    "runtime-common": {
+      "display_name": "common runtime contracts (node ${{ matrix.node-version }})",
+      "script": "ci:runtime-common",
+      "components": [
+        "typecheck",
+        "workspace-tests"
+      ],
+      "prerequisites": [
+        "build"
+      ],
+      "nodes": [
+        22,
+        26
+      ],
+      "runs_on": "ubuntu-latest",
+      "expect_aliasing_host": "0",
+      "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
+    },
     "aliasing-host": {
-      "display_name": "host-class proofs on an aliasing host (macos, node 26)",
+      "display_name": "host-class proofs on an aliasing host (macos, node 24.21.0)",
       "script": "ci:aliasing-host",
       "components": [],
       "nodes": [
-        26
+        "24.21.0"
       ],
       "runs_on": "macos-latest",
       "expect_aliasing_host": "1",
@@ -185,7 +251,7 @@
         "skill-drift-proof"
       ],
       "nodes": [
-        26
+        "24.21.0"
       ]
     },
     "browser": {
@@ -200,7 +266,7 @@
         "build"
       ],
       "nodes": [
-        26
+        "24.21.0"
       ]
     },
     "scripts": {
@@ -213,28 +279,21 @@
         "build"
       ],
       "nodes": [
-        26
+        "24.21.0"
       ]
     },
-    "smoke-node-20": {
-      "display_name": "built-CLI smoke on the engines floor (node 20)",
+    "smoke-node-22": {
+      "display_name": "installed-package smoke on the engines floor (node 22.14.0)",
       "workflow_only": true,
       "components": [],
       "nodes": [
-        20
+        "22.14.0"
       ],
-      "runtime_setup_node": 20,
-      "version_guard": "node --version | grep -q '^v20\\.'",
-      "built_cli": "packages/superbee/dist/superbee.mjs",
-      "built_cli_commands": [
-        "init",
-        "doc write",
-        "doc read",
-        "link add",
-        "link show",
-        "list",
-        "status"
-      ]
+      "build_runtime": "24.21.0",
+      "runtime_setup_node": "22.14.0",
+      "version_guard": "test \"$(node --version)\" = \"v22.14.0\"",
+      "superbee_tarball": "out/node-floor/superbee.tgz",
+      "cli_tarball": "out/node-floor/superbee-cli.tgz"
     }
   }
 }

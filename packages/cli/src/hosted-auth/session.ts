@@ -17,7 +17,7 @@
 // device authorization, persists it, and returns AUTH_REQUIRED carrying one link to relay. Running
 // the same command again polls once and, when the person has confirmed, completes sign-in and
 // carries on.
-import { mkdir, realpath, stat, unlink } from "node:fs/promises";
+import { mkdir, readdir, realpath, stat, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 
@@ -28,10 +28,11 @@ import { bindingHostArgument } from "../hosted/marker.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { cliFilesystemRuntime, withCliFilesystemMutationLock } from "../filesystem-runtime.js";
-import { ensureUserStateRoot, readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../user-state.js";
+import { ensureUserStateRoot, readUserStateFile, userStateDir, userStateWriteRefusal, writeUserStateFileAtomic0600 } from "../user-state.js";
 import {
   REQUESTED_SCOPE,
   discoverHosted,
+  followWorkspaceOrigin,
   isSecureUrl,
   trimTrailingSlashes,
   resolveClientId,
@@ -55,6 +56,11 @@ import {
 export const ACCESS_TOKEN_ENV = "SUPERBEE_ACCESS_TOKEN";
 export const HOST_ENV = "SUPERBEE_HOST";
 export const CLIENT_ID_ENV = "SUPERBEE_OAUTH_CLIENT_ID";
+/**
+ * The public hosted Superbee, named in first-run guidance only. It is a suggestion the agent shows
+ * the person; no command ever selects it on its own.
+ */
+export const PUBLIC_HOSTED_ORIGIN = "https://mcp.getsuperbee.com";
 
 /** Refresh when less than this remains: covers one gateway request deadline with margin. */
 export const REFRESH_SKEW_MS = 120_000;
@@ -275,22 +281,262 @@ export async function hostedBundleHost(flag: string | undefined, home: string): 
   return flag || (await readDefaultHost(home));
 }
 
-/** {@link hostedBundleHost}, refusing when there is none. */
-export async function requireHostedBundleHost(flag: string | undefined, home: string): Promise<HostedTarget> {
-  const chosen = await hostedBundleHost(flag, home);
-  if (!chosen) throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
-  return resolveHostedTarget(chosen);
+/** The first sign-in on this machine, as the exact command to run (the public host as the example). */
+export function firstSignInCommand(): CommandText {
+  return commandFragment`${cliInvocation()} login --host ${commandToken(PUBLIC_HOSTED_ORIGIN)}`;
 }
 
-/** `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in. */
-export async function resolveHostSelection(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget> {
-  const chosen = flag ?? (deps.env[HOST_ENV] || undefined) ?? (await readDefaultHost(deps.home)) ?? undefined;
-  if (!chosen) {
-    throw new CliError("USAGE", "no hosted Superbee host selected", {
-      help: `pass --host <url> (for example ${cliInvocation()} login --host https://mcp.getsuperbee.com) or set ${HOST_ENV}`,
+/**
+ * A hosted command with no host to use: no --host, no sign-in remembered and no stored session.
+ * On a first run that is "not signed in yet", not a malformed command, so it is AUTH_REQUIRED
+ * (exit 4) with status `not_signed_in` and the exact sign-in command. With SUPERBEE_ACCESS_TOKEN
+ * or SUPERBEE_HOST set the caller has credentials or a host in mind, and neither ever selects the
+ * host for a bundle, so that is a USAGE refusal asking for --host. It never picks a host itself.
+ */
+export function notSignedInError(env: NodeJS.ProcessEnv = {}): CliError {
+  const command = String(firstSignInCommand());
+  if (env[ACCESS_TOKEN_ENV] || env[HOST_ENV]) {
+    const configured = env[ACCESS_TOKEN_ENV] ? ACCESS_TOKEN_ENV : HOST_ENV;
+    return new CliError("USAGE", `no hosted Superbee host chosen for this command: pass --host (${configured} alone never chooses the host for a bundle)`, {
+      details: { reason: "no_host" },
+      help: `re-run with --host <url>, or sign in once: ${command}`,
     });
   }
-  return resolveHostedTarget(chosen);
+  return new CliError(
+    "AUTH_REQUIRED",
+    "not signed in to hosted Superbee yet: run the sign-in command in help (for another hosted Superbee, pass its URL to --host instead)",
+    { details: { status: "not_signed_in", reason: "no_host", sign_in_command: command }, help: command },
+  );
+}
+
+/**
+ * {@link hostedBundleHost}, refusing with {@link notSignedInError} when there is none. A named
+ * `--host` is resolved through {@link resolveNamedHost}, so a workspace origin reaches its gateway;
+ * a caller that must make no request (a preview) passes a null fetch and gets the host as typed.
+ */
+export async function requireHostedBundleHost(
+  flag: string | undefined,
+  deps: Pick<HostedAuthDeps, "home" | "env"> & { readonly fetch: FetchLike | null },
+): Promise<NamedHost> {
+  if (flag && deps.fetch !== null) return resolveNamedHost(flag, { home: deps.home, fetch: deps.fetch });
+  const chosen = await hostedBundleHost(flag, deps.home);
+  if (!chosen) throw notSignedInError(deps.env);
+  return { target: resolveHostedTarget(chosen), workspaceSlug: null, requestedOrigin: null };
+}
+
+/**
+ * A host the person named (`--host`, SUPERBEE_HOST), resolved. A workspace origin serves no
+ * protected-resource metadata; its trusted pointer names the gateway and the workspace, and the
+ * gateway is then used exactly as if the person had typed it, so its session is the one stored and
+ * reused. `requestedOrigin` is set only when the host was reached that way.
+ */
+export interface NamedHost {
+  readonly target: HostedTarget;
+  /** The workspace the named origin belongs to, when it was a workspace origin. */
+  readonly workspaceSlug: string | null;
+  /** The workspace origin the person named, when the target is the gateway it points at. */
+  readonly requestedOrigin: string | null;
+}
+
+/**
+ * Resolve a named host. A host with a stored or pending sign-in is known to serve its own metadata,
+ * so it is used without a request; any other bare https origin is asked for its metadata first.
+ */
+export async function resolveNamedHost(host: string, deps: Pick<HostedAuthDeps, "home" | "fetch">): Promise<NamedHost> {
+  const target = resolveHostedTarget(host);
+  const plain: NamedHost = { target, workspaceSlug: null, requestedOrigin: null };
+  if ((await readSession(deps.home, target)) || (await readPending(deps.home, target))) return plain;
+  const followed = await followWorkspaceOrigin(deps.fetch, target);
+  if (!followed) return plain;
+  return { target: followed.target, workspaceSlug: followed.workspaceSlug, requestedOrigin: followed.requestedOrigin };
+}
+
+/** A receipt's fields for a host reached through a workspace origin; empty for any other host. */
+export function workspaceOriginView(named: Pick<NamedHost, "workspaceSlug" | "requestedOrigin">): Record<string, string> {
+  if (named.requestedOrigin === null || named.workspaceSlug === null) return {};
+  return { host_from: "workspace-origin", requested_host: named.requestedOrigin, workspace_slug: named.workspaceSlug };
+}
+
+/**
+ * The workspace a command uses when its host was a workspace origin: that origin's workspace, or
+ * `--workspace` when it names the same one. A different `--workspace` is a USAGE refusal naming both.
+ */
+export function workspaceForNamedHost(named: Pick<NamedHost, "workspaceSlug" | "requestedOrigin">, flag: string | undefined): string | undefined {
+  if (named.workspaceSlug === null) return flag;
+  if (flag === undefined || flag === named.workspaceSlug) return named.workspaceSlug;
+  throw new CliError("USAGE", `--host ${commandToken(named.requestedOrigin ?? "")} is the address of workspace '${named.workspaceSlug}', but --workspace names '${flag}'`, {
+    details: { reason: "workspace_conflict", host_workspace: named.workspaceSlug, workspace: flag },
+    help: `drop --workspace to use '${named.workspaceSlug}', or pass the other workspace's own address (or its slug) instead`,
+  });
+}
+
+/**
+ * The hosts this machine user holds a stored sign-in session for, each once, as `--host` values,
+ * sorted. Read from the session records alone (no network, no lock, no credential store); an
+ * unreadable or inconsistent record is skipped.
+ */
+export async function storedSessionHosts(home: string): Promise<string[]> {
+  const root = hostedAuthRoot(home);
+  let names: string[];
+  try {
+    names = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+  const hosts = new Set<string>();
+  for (const name of names) {
+    const record = await readRecord<Partial<SessionRecord>>(home, join(root, name, SESSION_FILE)).catch(() => null);
+    if (!record || record.schema !== 1 || typeof record.host !== "string" || typeof record.audience !== "string") continue;
+    const target = { origin: record.host, audience: record.audience };
+    // A record copied into another session's directory names a session that is not stored there.
+    if (sessionDirFor(home, sessionAccount(target)) !== join(root, name)) continue;
+    hosts.add(hostArgument(target));
+  }
+  return [...hosts].sort();
+}
+
+/**
+ * The unexpired device sign-ins waiting on the person, each with its host, read from the pending
+ * records alone (no network, no lock). A first `login` remembers its host only once the person
+ * confirms, so before then this is the only trace of which host the sign-in is for.
+ */
+export async function waitingSignIns(home: string, now: number): Promise<{ target: HostedTarget; pending: PendingRecord }[]> {
+  const root = hostedAuthRoot(home);
+  let names: string[];
+  try {
+    names = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+  const found: { target: HostedTarget; pending: PendingRecord }[] = [];
+  for (const name of names.sort()) {
+    const record = await readRecord<Partial<PendingRecord>>(home, join(root, name, PENDING_FILE)).catch(() => null);
+    if (!record || typeof record.host !== "string" || typeof record.audience !== "string") continue;
+    const stored = { origin: record.host, audience: record.audience };
+    if (sessionDirFor(home, sessionAccount(stored)) !== join(root, name)) continue;
+    let target: HostedTarget;
+    try {
+      target = resolveHostedTarget(hostArgument(stored));
+    } catch {
+      continue;
+    }
+    const pending = await readPending(home, target).catch(() => null);
+    if (pending && pending.expires_at_ms > now) found.push({ target, pending });
+  }
+  return found;
+}
+
+/**
+ * Where a hosted write's host came from: named on the command; the remembered last sign-in, the one
+ * host holding a session; the one host holding a session, with no sign-in remembered; or the
+ * remembered last sign-in, which holds no session now (the write starts a sign-in to it). A
+ * workspace origin named on the command is reported as `workspace-origin`: the target is the
+ * gateway its pointer names.
+ */
+export type HostSource = "flag" | "workspace-origin" | "last-sign-in" | "only-session" | "last-sign-in-signed-out";
+
+export interface HostedWriteHost extends NamedHost {
+  readonly source: HostSource;
+}
+
+/** A receipt's words for {@link HostSource}. */
+export function hostSourceText(source: HostSource): string {
+  switch (source) {
+    case "flag":
+      return "--host";
+    case "workspace-origin":
+      return "the gateway the workspace address in --host points to";
+    case "last-sign-in":
+      return "your last sign-in, the only host with a session";
+    case "only-session":
+      return "the only host with a session";
+    case "last-sign-in-signed-out":
+      return "your last sign-in; no session for it now";
+  }
+}
+
+/**
+ * The host a hosted command that is not bound to one yet (`publish --yes`, a new `checkout`) sends
+ * to: `--host`, else the one host this choice cannot confuse. The candidates are every host with a
+ * stored session plus the remembered last sign-in; with more than one, the last sign-in is not a
+ * choice the person made for this write, so the command refuses, naming the hosts and which of
+ * them has no session. SUPERBEE_HOST never selects it, as for {@link hostedBundleHost}. Null when
+ * there is no host at all. A named `--host` is resolved through {@link resolveNamedHost} when
+ * `fetchImpl` is given; a caller that must make no request (a preview) passes null and gets the
+ * host as typed.
+ */
+export async function hostedWriteHost(
+  flag: string | undefined,
+  home: string,
+  retry: (host: string) => string,
+  fetchImpl: FetchLike | null,
+): Promise<HostedWriteHost | null> {
+  if (flag !== undefined) {
+    if (flag.trim() === "") throw new CliError("USAGE", "--host is empty: name the hosted Superbee URL", { help: retry("<url>") });
+    if (fetchImpl === null) return { target: resolveHostedTarget(flag), source: "flag", workspaceSlug: null, requestedOrigin: null };
+    const named = await resolveNamedHost(flag, { home, fetch: fetchImpl });
+    return { ...named, source: named.requestedOrigin !== null ? "workspace-origin" : "flag" };
+  }
+  const unnamed = { workspaceSlug: null, requestedOrigin: null } as const;
+  const remembered = await readDefaultHost(home);
+  const stored = await storedSessionHosts(home);
+  const candidates = new Set(stored);
+  let rememberedHost: string | null = null;
+  if (remembered) {
+    rememberedHost = hostArgument(resolveHostedTarget(remembered));
+    candidates.add(rememberedHost);
+  }
+  if (candidates.size > 1) {
+    const hosts = [...candidates].sort();
+    const signedOut = hosts.filter((host) => !stored.includes(host));
+    throw new CliError("USAGE", `more than one hosted Superbee host could be meant (${hosts.join(", ")}); name the one this command is for with --host`, {
+      details: {
+        reason: "ambiguous_host",
+        hosts,
+        ...(rememberedHost ? { last_sign_in: rememberedHost } : {}),
+        with_session: stored,
+        ...(signedOut.length > 0 ? { no_session: signedOut } : {}),
+        commands: hosts.map(retry),
+      },
+      help: `re-run with --host set to the host you mean (one of: ${hosts.join(", ")}); the last sign-in is not used when sessions are held for more than one host or it has none`,
+    });
+  }
+  if (rememberedHost) return { target: resolveHostedTarget(rememberedHost), source: stored.length === 0 ? "last-sign-in-signed-out" : "last-sign-in", ...unnamed };
+  if (stored.length === 1) return { target: resolveHostedTarget(stored[0]!), source: "only-session", ...unnamed };
+  return null;
+}
+
+/**
+ * `--host`, then SUPERBEE_HOST, then the host of the last successful sign-in; null when none. A
+ * named host (flag or env) is resolved through {@link resolveNamedHost}; the remembered one is
+ * always a host that served its own metadata.
+ */
+export async function resolveHostChoiceOrNull(flag: string | undefined, deps: HostedAuthDeps): Promise<NamedHost | null> {
+  const named = flag ?? (deps.env[HOST_ENV] || undefined);
+  if (named !== undefined) return resolveNamedHost(named, deps);
+  const remembered = await readDefaultHost(deps.home);
+  return remembered ? { target: resolveHostedTarget(remembered), workspaceSlug: null, requestedOrigin: null } : null;
+}
+
+/** {@link resolveHostChoiceOrNull}, as the target alone. */
+export async function resolveHostSelectionOrNull(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget | null> {
+  return (await resolveHostChoiceOrNull(flag, deps))?.target ?? null;
+}
+
+/** {@link resolveHostChoiceOrNull}, refusing when there is no host: `login` needs one named. */
+export async function resolveHostChoice(flag: string | undefined, deps: HostedAuthDeps): Promise<NamedHost> {
+  const choice = await resolveHostChoiceOrNull(flag, deps);
+  if (!choice) {
+    throw new CliError("USAGE", "no hosted Superbee host selected", {
+      help: `pass --host <url> (for example ${String(firstSignInCommand())}) or set ${HOST_ENV}`,
+    });
+  }
+  return choice;
+}
+
+/** {@link resolveHostChoice}, as the target alone. */
+export async function resolveHostSelection(flag: string | undefined, deps: HostedAuthDeps): Promise<HostedTarget> {
+  return (await resolveHostChoice(flag, deps)).target;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -328,7 +574,9 @@ export function storeForSession(session: SessionRecord, deps: HostedAuthDeps): S
 export async function withSessionLock<T>(target: HostedTarget, deps: HostedAuthDeps, body: () => Promise<T>): Promise<T> {
   await ensureUserStateRoot(deps.home);
   const dir = sessionDirFor(deps.home, sessionAccount(target));
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await mkdir(dir, { recursive: true, mode: 0o700 }).catch((error: unknown) => {
+    throw userStateWriteRefusal(error, deps.home) ?? error;
+  });
   let entered = false;
   let bodyError: { readonly error: unknown } | undefined;
   try {
@@ -595,8 +843,9 @@ export function authRequired(
   const relay = pending.verification_uri_complete
     ? `open ${link} and confirm the code ${pending.user_code}`
     : `open ${link} and enter the code ${pending.user_code}`;
-  return new CliError("AUTH_REQUIRED", `sign-in to ${target.origin} is required: ask the person to ${relay}, then re-run the same command`, {
+  return new CliError("AUTH_REQUIRED", `waiting for the person to confirm sign-in to ${target.origin} (not an error): ask the person to ${relay}, then re-run the same command`, {
     details: {
+      status: "waiting_for_confirmation",
       host: target.origin,
       audience: target.audience,
       reason,

@@ -1,0 +1,24 @@
+{
+  "name": "root-200-version-conflict",
+  "description": "The same replace sent again at its old base: refused, naming the current root, which is the sha256 of the bytes the first one sent (it landed).",
+  "route": "/sync/v1/root",
+  "rows": [
+    "200 version_conflict"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"content\":\"---\\nokf_version: \\\"0.2\\\"\\n---\\n# notes.a\\n\\nOur front page.\\n\",\"expectedVersion\":\"sha256:7cc1f9e472341f8bdf54f668a9ab98655055e36a9ad41f8bfcc8d5977aaa59d0\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"bundles.root.replace.v1\",\"error\":{\"code\":\"version_conflict\",\"message\":\"The document changed; read it and reconcile your changes before trying again.\",\"retryable\":false,\"writeState\":\"not_applied\",\"currentVersion\":\"sha256:7c7393f1351cdbe907ab4a549632c3a8d5fe9a8a591311ba34f3d30155b07a40\"}}",
+    "truncated": false
+  }
+}

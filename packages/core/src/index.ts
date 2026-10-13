@@ -30,6 +30,7 @@ export type {
   Bundle,
   InitBundleOptions,
   QueryFilter,
+  SourceIdentity,
   Link,
   EdgeFilter,
   FreshnessVerdict,
@@ -133,6 +134,7 @@ export type {
   JournaledWriteOptions,
   MetaRecord,
   NewIntentRecord,
+  RetireAcknowledgedOptions,
 } from "./journaled-backend.js";
 
 // Internal-workspace filesystem arbitration authority. CLI create-only policy reuses this
@@ -216,7 +218,7 @@ export type { QueryOptions, SkippedDoc } from "./bundle.js";
 // (`readManyExisting`) is internal: its one-time export for the reference router was
 // withdrawn when the router switched to consuming `queryHeads` wholesale.
 export { queryHeads } from "./bundle.js";
-export { matchesFilter } from "./query-filter.js";
+export { matchesFilter, matchesSourceIdentity, hasSourceIdentity } from "./query-filter.js";
 export { applyQuerySelectionFilters } from "./query-selection.js";
 export type { QuerySelectionParams } from "./query-selection.js";
 export type { HeadResult } from "./types.js";
@@ -309,6 +311,7 @@ export {
   projectLogicalKindFields,
   projectKindForAuthoring,
   projectKindValidationWarnings,
+  isKindFieldValidationWarning,
   validateAgainstKind,
   isPresent,
   defaultTimestampAndValidateAgainstRegistry,
@@ -361,3 +364,7 @@ export type {
   BodyDeliveryTransport, BodyDeliveryResult, BodyDeliveryInput, BodyDeliveryPremise,
   BodyLocalSnapshot, BodyReconciliationProposal,
 } from "./governed-body-write.js";
+
+export { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
+
+export { kindCoverage } from "./kind-coverage.js";

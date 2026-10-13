@@ -62,11 +62,11 @@
 
 import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
 import { stringifyDoc } from "@superbee/core/document-codec";
-import { performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
+import { BODY_DELIVERY_LIMITS, performBodyDelivery, prepareBodyDelivery, reconcileBodyReceipt, assertSameBodyDelivery, type BodyDeliveryTransport } from "@superbee/core/governed-body-write";
 import { parseIsoInstant } from "@superbee/core/verification";
 import { versionOfBytes } from "@superbee/core/versioning";
 import { JournalGuardConflict, JournalSnapshotConflict, assertJournalGuard, type JournalGuard, type MetaExpectation } from "@superbee/core/journaled-backend";
-import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
+import { admitBodyMode, bodyBackend, bodyMode, selectBodyMode, retireAcknowledgedBody, bodyDatabaseName, bodySnapshot, bodyRecordKey, bodyDocument, projectBodyGuard, assertBodyEdition, isBoundedBody, retiredDescriptorKeys,
   validateBodyResolutionReceipt, validateBodyRecord, BODY_MODE_KEY, BODY_RUNTIME_LIMITS, jsonBytes, BodyRuntimeError,
   type BodyDeliveryOptions, type BodyRecord, type BodyMode, type BodyResolutionReceipt, type BodySnapshot } from "./body-journal.js";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
@@ -201,6 +201,17 @@ export interface SharedBase {
    * conflict review it is the deletion the authority named, which `keep-local` acknowledges.
    */
   tombstone?: Version;
+  /**
+   * The authority acknowledged `version` for bytes other than `content`, the bytes sent: it
+   * stamped fields of its own (an actor, a clock). The working copy is not that version, so the
+   * next pull fetches it as though the head had moved, which also clears this.
+   */
+  refetch?: true;
+}
+
+/** Whether the working copy already holds the authority's `version` as its shared base. */
+function holdsVersion(base: SharedBase | undefined, version: Version | null): boolean {
+  return base !== undefined && base.version === version && base.refetch !== true;
 }
 
 /**
@@ -311,7 +322,10 @@ export interface WireOptions {
 
 /** Options both fetching verbs share: how the remote document set is split and how many splits travel at once. */
 export interface FetchOptions {
-  /** Documents fetched per `readMany` round trip, and written per batch as a snapshot streams. */
+  /**
+   * Documents fetched per `readMany` round trip, and written per batch as a snapshot streams.
+   * A positive safe integer, default 25; invalid values are refused before store or remote access.
+   */
   batchSize?: number;
   /** Wire features to use or refuse; see {@link WireOptions}. */
   wire?: WireOptions;
@@ -323,10 +337,12 @@ export interface FetchOptions {
   concurrency?: number;
 }
 
-function concurrencyOf(options: FetchOptions): number {
-  const value = options.concurrency ?? DEFAULT_CONCURRENCY;
-  if (!Number.isInteger(value) || value < 1) throw new InvalidInputError(`concurrency must be an integer of at least 1, got ${String(value)}`);
-  return value;
+function admitFetchOptions(options: FetchOptions): { batchSize: number; concurrency: number } {
+  const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new InvalidInputError(`concurrency must be an integer of at least 1, got ${String(concurrency)}`);
+  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new InvalidInputError(`batchSize must be a safe integer of at least 1, got ${String(batchSize)}`);
+  return { batchSize, concurrency };
 }
 
 /**
@@ -585,7 +601,7 @@ export interface BootstrapOptions extends FetchOptions {
  * marker incomplete and its error propagates once the batches in flight have finished.
  */
 export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
-  const concurrency = concurrencyOf(options);
+  const { batchSize, concurrency } = admitFetchOptions(options);
   const backend = await runtimeBackend(local);
   const bodyMode = await admitBodyMode(backendOf(local));
   const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
@@ -606,7 +622,6 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
   }
 
-  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const findings: string[] = [];
   const held: ConceptId[] = [];
   /** The documents this run wrote, at the version the authority served; what a resumed snapshot keeps. */
@@ -983,6 +998,22 @@ export async function deleteLocal(local: LocalTarget, id: ConceptId, options: { 
   }
 }
 
+/**
+ * Retirement is cleanup: it applies whole or not at all, and a commit or settle never depends on
+ * it. A failure (another realm's write, a closing page, a storage error) leaves the history for
+ * the next commit or settle to retire.
+ */
+async function retireQuietly(backend: JournaledBackend, mode: BodyMode, target: ConceptId): Promise<void> {
+  try { await retireAcknowledgedBody(backend, mode, target); }
+  catch (error) {
+    // Only a moved target or an interrupted transaction is expected; anything else is a defect
+    // that would let history grow back to the capacity limit unnoticed.
+    const name = (error as { name?: unknown } | null)?.name;
+    if (!(error instanceof JournalGuardConflict) && !(typeof name === "string" && TRANSIENT_STORAGE_ERRORS.has(name))) throw error;
+  }
+}
+const TRANSIENT_STORAGE_ERRORS: ReadonlySet<string> = new Set(["AbortError", "InvalidStateError", "TransactionInactiveError", "UnknownError"]);
+
 export interface BodyLocalMutation { body: string; expectedVersion?: Version; actor?: string; now?: () => string }
 /** Explicit body intent, authored by the existing engine and journaled in its document CAS. */
 export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutation: BodyLocalMutation): Promise<CommitResult> {
@@ -993,6 +1024,9 @@ export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutatio
   if (!mode) throw new BodyRuntimeError("Body delivery mode was not selected.");
   await assertBodyEdition(backend, mode);
   if (!(await isComplete(local))) throw new BodyRuntimeError("Bootstrap must complete before local body commits.");
+  // History a settle could not retire (another realm moved the target, or it predates
+  // retirement) leaves before this commit reserves its own capacity.
+  await retireQuietly(backend, mode, id);
   const initial = await bodySnapshot(backend, id, mode);
   if (!initial.read.document) throw new BodyRuntimeError("Body delivery does not create documents.");
   let recorded: IntentRecord | null = null;
@@ -1016,6 +1050,10 @@ export async function commitBodyLocal(local: LocalTarget, id: ConceptId, mutatio
       const meta = [{ key, value: descriptor }], removeMeta = supersede ? retiredDescriptorKeys([supersede]) : [];
       const projected: IntentRecord = { ...intent, sequence: Number.MAX_SAFE_INTEGER, local: version, content: raw, updatedAt: createdAt, attempts: 0, state: "pending" };
       projectBodyGuard(snap.guard, { document: { version, raw }, intents: [...snap.read.intents.filter(row => row.requestId !== supersede?.requestId), projected], meta, removeMeta });
+      // Every later read validates this pair, preparing its delivery; one that cannot be prepared
+      // (an envelope over its bound once JSON escapes the body) is refused before it is journaled.
+      try { validateBodyRecord(mode, projected, descriptor); }
+      catch (error) { throw error instanceof BodyRuntimeError ? error : new BodyRuntimeError("The edit is too large to deliver once encoded."); }
       try {
         const result = await backend.writeJournaled(id, doc, { ...options, guard: snap.guard, intent, meta, removeMeta, ...(supersede ? { supersede: { requestId: supersede.requestId, expectedState: supersede.state, expectedAttempts: 0 } } : {}) });
         recorded = result.intent;
@@ -1075,6 +1113,19 @@ export class ConflictReviewStaleError extends Error {
  * row remains per resolution, so the store grows with resolutions.
  */
 export function conflictResolutionKey(id: string): string { return `conflict-resolution:${id}`; }
+
+/** Latest exact-document receipt's identity; an index written with the receipt, never a second receipt. */
+function documentResolutionKey(id: ConceptId): string { return `conflict-resolution-document:${id}`; }
+
+/** Read the latest exact-document resolution, including one that journaled no replacement. */
+export async function readConflictResolution(local: LocalTarget, id: ConceptId): Promise<ConflictResolutionReceipt | undefined> {
+  const backend = backendOf(local);
+  const identity = await backend.readMeta<string>(documentResolutionKey(id));
+  if (typeof identity !== "string") return undefined;
+  const receipt = await backend.readMeta<ConflictResolutionReceipt>(conflictResolutionKey(identity));
+  // The index cannot grant one document another document's resolution.
+  return receipt?.id === identity && receipt.reviewed?.id === id ? receipt : undefined;
+}
 
 async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promise<{ base: SharedBase; doc: OkfDocument | null }> {
   try {
@@ -1194,7 +1245,7 @@ export async function resolveConflict(
   if (reviewedShared.version !== review.remote.version || reviewedShared.content !== review.remote.content || reviewedShared.tombstone !== review.remote.tombstone) throw new ConflictReviewStaleError();
   if (current.deleting && selected.kind === "revise") throw new InvalidInputError("A deletion in conflict is resolved by keeping the deletion or taking the shared version.");
   const resolvedAt = options.now?.() ?? new Date().toISOString();
-  const requestId = selected.kind === "take-remote" ? null : mintRequestId();
+  const requestId = selected.kind === "take-remote" || (current.deleting && shared.base.version === null) ? null : mintRequestId();
   const receipt: ConflictResolutionReceipt = {
     // The original conflict identity lets a caller recover the receipt after a lost local reply.
     id: current.intents[0]!.requestId,
@@ -1204,6 +1255,7 @@ export async function resolveConflict(
   const resolveIntents = { expected: current.intents };
   const meta: MetaRecord[] = [
     { key: conflictResolutionKey(receipt.id), value: receipt },
+    { key: documentResolutionKey(review.id), value: receipt.id },
     // Someone else's deletion is never remembered as this working copy's own: a later create of
     // the id acknowledges nothing and meets the conflict again, until an explicit keep.
     { key: baseKey(review.id), value: { version: shared.base.version, content: shared.base.content } satisfies SharedBase },
@@ -1215,7 +1267,7 @@ export async function resolveConflict(
     // A head that is already gone has nothing to delete, so the chain simply retires.
     if (shared.base.version === null) {
       await backend.deleteJournaled(review.id, common);
-      return { receipt: { ...receipt, replacementRequestId: null }, version: null, intent: null };
+      return { receipt, version: null, intent: null };
     }
     const deleted = await backend.deleteJournaled(review.id, {
       ...common,
@@ -1503,7 +1555,7 @@ export async function settleIntent(
         requestId,
         "in_flight",
         { state: "acknowledged", attempts, acknowledgedVersion: outcome.version, ...(finding ? { finding } : {}) },
-        { meta: [baseRow(current.target, { version: outcome.version, content: current.content }), acknowledged] },
+        { meta: [baseRow(current.target, { version: outcome.version, content: current.content, ...(finding ? { refetch: true as const } : {}) }), acknowledged] },
       );
     }
     case "conflict": {
@@ -1578,7 +1630,7 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
       }
       case "conflict": {
         let remote = await remoteHead(options.remote, intent.target, result.outcome.actual);
-        if (jsonBytes(remote) > 2 * 1024 * 1024) { remote = { version: result.outcome.actual, content: null }; patch.finding = "Remote content exceeds the retained evidence limit."; }
+        if (jsonBytes(remote) > BODY_DELIVERY_LIMITS.envelopeBytes) { remote = { version: result.outcome.actual, content: null }; patch.finding = "Remote content exceeds the retained evidence limit."; }
         patch = { ...patch, state: "conflict", remote };
         break;
       }
@@ -1594,8 +1646,12 @@ async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, request
     }
     const raw = document ? stringifyDoc(document.frontmatter, document.body ?? "") : undefined;
     projectBodyGuard(fresh.guard, { intents: fresh.read.intents.map(row => row.requestId === requestId ? { ...row, ...patch } : row), meta, ...(raw === undefined ? {} : { document: { version: versionOfBytes(raw), raw } }) });
-    try { return await backend.updateIntent(requestId, "in_flight", patch, { guard: fresh.guard, meta, ...(document ? { document } : {}) }); }
-    catch (error) { if (!(error instanceof JournalGuardConflict) || retry === 2) throw error; }
+    let settled: IntentRecord;
+    try { settled = await backend.updateIntent(requestId, "in_flight", patch, { guard: fresh.guard, meta, ...(document ? { document } : {}) }); }
+    catch (error) { if (!(error instanceof JournalGuardConflict) || retry === 2) throw error; continue; }
+    // The acknowledgment is durable; older acknowledged history can leave the journal now.
+    if (settled.state === "acknowledged") await retireQuietly(backend, mode, intent.target);
+    return settled;
   }
   return null;
 }
@@ -1932,7 +1988,7 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<{ digest: str
  * unfenced, as before.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
-  const concurrency = concurrencyOf(options);
+  const { batchSize, concurrency } = admitFetchOptions(options);
   const backend = await runtimeBackend(local);
   const bodyMode = await admitBodyMode(backendOf(local));
   const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
@@ -2006,7 +2062,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       return;
     }
     const base = fenced ? fenced.base : await backend.readMeta<SharedBase>(baseKey(id));
-    if (base?.version === head.version) {
+    if (holdsVersion(base, head.version)) {
       report.unchanged.push(id);
       return;
     }
@@ -2047,7 +2103,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
    * listing's state, so its digest must not be recorded.
    */
   const fetchAndApply = (candidates: ConceptId[], listing?: { listed: Set<ConceptId>; versions: Map<ConceptId, Version> }): Promise<void> =>
-    forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
+    forEachBatch(chunked(candidates, batchSize), concurrency, async (batch) => {
       if (superseded) return;
       const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
       if (!listing) {
@@ -2094,7 +2150,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       continue;
     }
     const base = await backend.readMeta<SharedBase>(baseKey(head.id));
-    if (base?.version === head.version) report.unchanged.push(head.id);
+    if (holdsVersion(base, head.version)) report.unchanged.push(head.id);
     else {
       candidates.push(head.id);
       versions.set(head.id, head.version);

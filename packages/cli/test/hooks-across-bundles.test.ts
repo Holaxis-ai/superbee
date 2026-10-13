@@ -4,9 +4,10 @@
 // private state and local Git only. `turn-end --git-boards` gives a shared Git board the hosted
 // end-of-turn rules (quiet on success, report once, skip when unchanged); without the flag a Git
 // board is never synced by the hook.
+import { movedBoardRefusal } from "../src/hosted/moved-marker.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -175,6 +176,27 @@ test("a real same-document Git conflict at turn end comes back once, in Git's fo
   }
 });
 
+test("a raw edit that breaks a document's frontmatter comes back to the agent at turn end, named with the fix, and nothing is pushed", async () => {
+  const topo = await makeTwoCloneTopology();
+  const home = await tempDir("sb-hab-malformed-home-");
+  try {
+    await writeFile(path.join(topo.b.board, "notes", "broken.md"), "---\ntype: Note\ntitle: Import: archive upload\n---\nx\n");
+    const before = originBoardHead(topo);
+    const out: string[] = [];
+    await withIsolatedUserEnv(home, () =>
+      withCwd(topo.b.root, () => turnEnd(["--git-boards"], { stdout: (text) => void out.push(text), env: {}, readStdin: async () => null })),
+    );
+    const decision = JSON.parse(out.join("")) as { decision: string; reason: string };
+    assert.equal(decision.decision, "block");
+    assert.match(decision.reason, /invalid frontmatter \(notes\/broken\)/);
+    assert.match(decision.reason, /quote any value that contains ': '/);
+    assert.equal(originBoardHead(topo), before, "the malformed document never reached the board");
+  } finally {
+    await topo.cleanup();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("turn end never commits or pushes a Git board other than the session's own; a printed decision names it as unsent", async () => {
   const topo = await makeTwoCloneTopology();
   const home = await tempDir("sb-hab-unsent-home-");
@@ -281,8 +303,28 @@ test("turn-end --git-boards hands a conflict back once, stays quiet for offline,
     failure = conflict;
     assert.equal(JSON.parse(await run()).decision, "block", "after a clean sync the same condition is new again");
 
+    // A board moved to hosted: the refusal (FORBIDDEN, which is otherwise quiet) comes back once
+    // with the checkout command.
+    failure = movedBoardRefusal(board.root, { host: "https://hosted.example", bundle: "acme/team.board", moved_at: "2026-10-02T00:00:00.000Z" }, { commits: 1, uncommitted: 0 });
+    const moved = JSON.parse(await run()) as { decision: string; reason: string };
+    assert.equal(moved.decision, "block");
+    assert.match(moved.reason, /moved to hosted Superbee/);
+    assert.match(moved.reason, /checkout acme\/team\.board --host https:\/\/hosted\.example/);
+    assert.match(moved.reason, /your 1 unpushed commit\(s\) and 0 uncommitted file\(s\) stay in /, "the work left behind is named");
+    assert.equal(await run(), "");
+
     failure = new CliError("AUTH_REQUIRED", "git could not authenticate to origin");
     assert.match((JSON.parse(await run()) as { reason: string }).reason, /committed locally/);
+    assert.equal(await run(), "");
+
+    // A failed sync gate is the writer's to fix: handed back once, with the gate's own next step.
+    failure = new CliError("GATE_FAILED", "the sync gate exited 1; nothing was pushed", {
+      help: "run the gate yourself from /x (git config --get superbee.syncGate), fix what it reports, then superbee sync",
+    });
+    const gated = JSON.parse(await run()) as { decision: string; reason: string };
+    assert.equal(gated.decision, "block");
+    assert.match(gated.reason, /sync gate exited 1; nothing was pushed/);
+    assert.match(gated.reason, /Next: run the gate yourself/);
     assert.equal(await run(), "");
 
     assert.equal(await turnEndQuietWith({ SUPERBEE_NO_TURN_SYNC: "1" }, home, board), "");

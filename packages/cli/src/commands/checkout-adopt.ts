@@ -46,7 +46,7 @@ import {
   sameFolder,
   newCheckoutId,
   rebindCheckout,
-  withDefinitionWrites,
+  withHostStatement,
   writeBinding,
   type CheckoutBinding,
 } from "../hosted/binding.js";
@@ -416,7 +416,7 @@ export async function bindFolderInPlace(input: {
   readonly extras?: Readonly<Record<string, string>>;
 }): Promise<BindResult> {
   const { canonical, target, bundleId, deps, resume } = input;
-  const { identity, reader, listed: isListed, workspace, reference, definitionWrites } = input.connection;
+  const { identity, reader, listed: isListed, workspace, reference, definitionWrites, documentInputBytes } = input.connection;
   const home = deps.auth.home;
   const placedFiles = new Map<string, string>();
   return withCheckoutLock(canonical, async () => {
@@ -425,7 +425,7 @@ export async function bindFolderInPlace(input: {
     }
     const identityNow = await folderIdentity(canonical);
     if (!identityNow) throw new CliError("RUNTIME", `${canonical} disappeared while binding it`, { help: "retry the same command" });
-    const binding: CheckoutBinding = withDefinitionWrites({
+    const binding: CheckoutBinding = withHostStatement({
       schema: 1,
       checkout_id: newCheckoutId(),
       path: canonical,
@@ -440,7 +440,7 @@ export async function bindFolderInPlace(input: {
       created_at: new Date(deps.auth.now()).toISOString(),
       state: "hydrating",
       folder_identity: identityNow,
-    }, definitionWrites);
+    }, { definitionWrites, documentInputBytes });
     await writeBinding(home, binding);
     let store: FileJournaledBackend | undefined;
     try {
@@ -495,6 +495,9 @@ export async function bindFolderInPlace(input: {
       }
       // The root index: placed when absent; a differing one stays and is held, as in any checkout.
       let root: string | null = null;
+      // The host's version the folder's root matches; null when it differs (an edit made against no
+      // version the host had, which sync reports as a conflict rather than sending over the host's).
+      let rootBase: string | null = null;
       let rootIndex: string = "none on the host";
       const index = await store.readReserved("", "index.md");
       if (index) {
@@ -504,9 +507,15 @@ export async function bindFolderInPlace(input: {
         if (current === "unsafe") rootIndex = "kept (not a plain file; sync holds it)";
         else if (current === null) {
           const placedRoot = (await placeNew(path.join(canonical, ROOT_INDEX), hostRoot)).placed;
-          if (placedRoot) placedFiles.set(path.join(canonical, ROOT_INDEX), root);
+          if (placedRoot) {
+            placedFiles.set(path.join(canonical, ROOT_INDEX), root);
+            rootBase = index.version;
+          }
           rootIndex = placedRoot ? "placed" : "kept";
-        } else rootIndex = digestOf(current) === root ? "matches" : "kept (differs from the host's; sync holds it)";
+        } else if (digestOf(current) === root) {
+          rootBase = index.version;
+          rootIndex = "matches";
+        } else rootIndex = "kept (differs from the host's; sync reports it as a conflict, or holds it where the host takes no front-page changes from you)";
       }
       const localOnly: string[] = [];
       for (const { rel, symlink } of await walk(canonical)) {
@@ -514,7 +523,7 @@ export async function bindFolderInPlace(input: {
         const id = conceptIdFromPath(rel);
         if (!hostIds.has(id)) localOnly.push(id);
       }
-      await writeProjection(home, binding.checkout_id, { files, root, ...(input.extras && Object.keys(input.extras).length > 0 ? { extras: { ...input.extras } } : {}) });
+      await writeProjection(home, binding.checkout_id, { files, root, rootBase, ...(input.extras && Object.keys(input.extras).length > 0 ? { extras: { ...input.extras } } : {}) });
       const ready: CheckoutBinding = { ...binding, state: "ready" };
       await writeBinding(home, ready);
       await recordPulled(home, ready.checkout_id);

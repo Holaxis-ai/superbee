@@ -28,6 +28,7 @@ import {
   captureIntentUpdate,
   captureMetaWrite,
   captureJournalValue,
+  captureRetireAcknowledged,
   JournalGuardConflict,
   assertJournalResolutionOptions,
   assertJournalSnapshot,
@@ -46,6 +47,7 @@ import {
   type JournaledReadResult,
   type JournaledWriteOptions,
   type MetaRecord,
+  type RetireAcknowledgedOptions,
 } from "@superbee/core/journaled-backend";
 import { MemoryBackend } from "@superbee/core/memory-backend";
 import {
@@ -385,6 +387,14 @@ export class MemoryJournaledBackend implements JournaledBackend {
     this.#intents.set(requestId, captured);
     for (const row of meta) this.#meta.set(row.key, row.value);
     return next;
+  }
+
+  async retireAcknowledged(target: ConceptId, options: RetireAcknowledgedOptions): Promise<void> {
+    assertSafeConceptId(target);
+    const { guard, requestIds, removeMeta } = captureRetireAcknowledged(target, options);
+    this.#checkGuard(guard);
+    for (const requestId of requestIds) this.#intents.delete(requestId);
+    for (const key of removeMeta ?? []) this.#meta.delete(key);
   }
 
   async readMeta<T = unknown>(key: string): Promise<T | undefined> {

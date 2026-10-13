@@ -7,7 +7,7 @@
  */
 import { test, expect, request as playwrightRequest } from "@playwright/test";
 import { writeBlob } from "@superbee/core";
-import { bootUiOverDirBundle, bootUiOverPagesBundle, openRegisteredView } from "./harness.js";
+import { bootUiOverDirBundle, bootUiOverPagesBundle, openRegisteredView, viewContentFrame, viewFrame } from "./harness.js";
 
 test("a request with no token and no session cookie is rejected (403)", async () => {
   const instance = await bootUiOverDirBundle([]);
@@ -64,10 +64,8 @@ test("P1: the session token never reaches a framed page — address bar scrubbed
 
     // The session survives the scrub (cookie-auth'd from here on): open a page.
     await openRegisteredView(page, "views-registry/roadmap");
-    const handle = await page.waitForSelector("iframe.page-frame-iframe");
-    const frame = await handle.contentFrame();
-    if (!frame) throw new Error("iframe had no content frame");
-    await expect(page.frameLocator("iframe.page-frame-iframe").locator(".item .title", { hasText: "Spike work" })).toBeVisible();
+    const frame = await viewContentFrame(page);
+    await expect(viewFrame(page).locator(".item .title", { hasText: "Spike work" })).toBeVisible();
 
     // Inside the untrusted page: NO referrer at all — above all, not the tokenized shell URL.
     const referrer = await frame.evaluate(() => document.referrer);
@@ -91,7 +89,7 @@ test("active View consent is trusted shell chrome, remembered for exact bytes, a
     await expect(consent).toBeVisible();
     await expect(page.locator("iframe.page-frame-iframe")).toHaveCount(0);
     await consent.getByRole("button", { name: "Allow this View" }).click();
-    await expect(page.frameLocator("iframe.page-frame-iframe").locator(".item").first()).toBeVisible();
+    await expect(viewFrame(page).locator(".item").first()).toBeVisible();
 
     await page.locator(".page-back").click();
     await page.locator('[data-page-id="views-registry/roadmap"]').click();

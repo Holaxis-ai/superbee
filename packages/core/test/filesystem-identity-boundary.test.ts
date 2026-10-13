@@ -203,7 +203,7 @@ test("N2: FilesystemMutationLockOptions has only bounded lock options and truste
 
 // ── N4: import surface and environment isolation ──────────────────────────────
 
-test("N4: only the identity and lock modules import node:fs, and the backend reaches neither fs, crypto, nor the lock", async () => {
+test("N4: filesystem imports stay in named Node adapters, and the backend reaches neither fs, crypto, nor the lock", async () => {
   const files = await sourceModules();
   const fsImporters: string[] = [];
   for (const file of files) {
@@ -211,8 +211,9 @@ test("N4: only the identity and lock modules import node:fs, and the backend rea
     if (specifiers.some((specifier) => FS_SPECIFIERS.has(specifier))) fsImporters.push(file);
   }
   // The Node log store persists to its own private directory, never to a bundle path, so it is
-  // the one storage module beside the identity and lock modules that owns file I/O.
-  assert.deepEqual(fsImporters, ["file-journaled-backend.ts", "filesystem-identity.ts", "filesystem-lock.ts"]);
+  // a storage module beside the identity and lock modules that owns file I/O. Portable export
+  // materializes only fresh isolated input directories, never engine persistence.
+  assert.deepEqual(fsImporters, ["file-journaled-backend.ts", "filesystem-identity.ts", "filesystem-lock.ts", "portable-export.ts"]);
 
   const backend = importSpecifiers(await parse("backend.ts"));
   for (const banned of [...FS_SPECIFIERS, "node:crypto", "crypto", "./filesystem-lock.js"]) {
@@ -338,7 +339,7 @@ test("N4: backend.ts imports exactly the protocol entry points and the productio
     ts.forEachChild(node, visit);
   };
   visit(backend);
-  assert.deepEqual(values.sort(), ["createNodeFilesystemIdentityPort", "mutateExact", "observeExact", "probeExact"]);
+  assert.deepEqual(values.sort(), ["createNodeFilesystemIdentityPort", "mutateExact", "observeExact", "openObservationPass", "probeExact"]);
 });
 
 test("N4: production ports are constructed per backend rather than exported as mutable singleton state", async () => {

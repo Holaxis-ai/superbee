@@ -1,6 +1,6 @@
 // A person at a terminal, for the typed confirmation `sync --accept-deletes` asks for. The prompts
 // it was shown are kept, so a test can check what the person was asked.
-import type { HostedTerminal } from "../../src/hosted/sync.js";
+import type { HostedTerminal } from "../../src/hosted/terminal.js";
 
 export interface FakeTerminal extends HostedTerminal {
   readonly prompts: string[];

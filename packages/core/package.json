@@ -1,8 +1,8 @@
 {
   "name": "@superbee/core",
-  "version": "0.2.0-pre.6",
+  "version": "0.2.0-pre.11",
   "type": "module",
-  "description": "OKF store engine — bundle I/O, cross-links, derived backlinks, freshness, and versioned writes.",
+  "description": "OKF store engine \u2014 bundle I/O, cross-links, derived backlinks, freshness, and versioned writes.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -75,6 +75,10 @@
       "types": "./dist/publication-filesystem.d.ts",
       "default": "./dist/publication-filesystem.js"
     },
+    "./query-order": {
+      "types": "./dist/query-order.d.ts",
+      "default": "./dist/query-order.js"
+    },
     "./query-filter": {
       "types": "./dist/query-filter.d.ts",
       "default": "./dist/query-filter.js"
@@ -134,6 +138,18 @@
     "./filesystem-push-role": {
       "types": "./dist/filesystem-push-role.d.ts",
       "default": "./dist/filesystem-push-role.js"
+    },
+    "./artifact-contract": {
+      "types": "./dist/artifact-contract.d.ts",
+      "default": "./dist/artifact-contract.js"
+    },
+    "./site-capabilities": {
+      "types": "./dist/site-capabilities.d.ts",
+      "default": "./dist/site-capabilities.js"
+    },
+    "./portable-export": {
+      "types": "./dist/portable-export.d.ts",
+      "default": "./dist/portable-export.js"
     }
   },
   "files": [

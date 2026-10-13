@@ -58,7 +58,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
-import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "../meaningful-change-order.js";
+import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "@superbee/core/query-order";
 import { commandToken } from "../command-text.js";
 
 export const LIST_USAGE = `superbee list — query concepts over their frontmatter (alias: query)
@@ -313,7 +313,8 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
 
   // Core owns the storage-facing canonical-ID ordering. The CLI presents a different, orientation
   // facing order only after every CLI filter has settled: newest meaningful change first, then
-  // canonical ID. Invalid or missing clocks remain visible at the end rather than being dropped.
+  // canonical ID in code-unit order. Invalid or missing clocks remain visible at the end rather
+  // than being dropped. The View Bridge `order: "newest"` query shares this comparator.
   let orderVersion: string | undefined;
   try {
     orderVersion = await getOkfVersion();

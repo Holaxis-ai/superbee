@@ -103,7 +103,7 @@ export async function buildCliBundle(outfile, options) {
     bundle: true,
     platform: "node",
     format: "esm",
-    target: "node20",
+    target: "node22",
     // One compile-time authority read by build-identity.ts. The artifact hash is deliberately NOT
     // embedded (that would be recursive); runtime hashes the actual executing bytes lazily.
     define: {
@@ -136,13 +136,14 @@ export async function buildPublicationBundle(outfile, surface = "full") {
     bundle: true,
     platform: "node",
     format: "esm",
-    target: "node20",
+    target: "node22",
     alias: {
       "@superbee/core/page": r("../core/src/page.ts"),
       "@superbee/core/view-admission": r("../core/src/view-admission.ts"),
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
       "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
+      "@superbee/core/query-order": r("../core/src/query-order.ts"),
       "@superbee/core/publication-filesystem": r("../core/src/publication-filesystem.ts"),
       "@superbee/core": r("../core/src/index.ts"),
       "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
@@ -171,7 +172,21 @@ export async function buildBundleDescriptorBundle(outfile) {
     bundle: true,
     platform: "node",
     format: "esm",
-    target: "node20",
+    target: "node22",
+    logLevel: "info",
+  });
+}
+
+/** Bundle the Node-only portable export verifier with no CLI or runtime dependencies. */
+export async function buildPortableExportBundle(outfile) {
+  await build({
+    absWorkingDir: pkgRoot,
+    entryPoints: [r("../core/src/portable-export.ts")],
+    outfile,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node22",
     logLevel: "info",
   });
 }

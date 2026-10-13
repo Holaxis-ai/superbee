@@ -1,10 +1,11 @@
-// Shared by the qa-r2-crash-*.test.ts files, which each register a subset of these cases so the
+// Shared by the qa-r2-crash-*.test.ts files, which each register one case so the
 // suite's slowest sweeps run in parallel test processes (and CI shards) instead of one serial file.
 // Adversarial QA round 2 (18466ef1): the adopted sweep plus a window case. Adversarial QA for PR 297 (head 2163424d): SIGKILL just before every side effect of the delete
 // and re-create paths (a scan-journaled delete, keep and take on a deletion in conflict, the
 // checkout's own re-create after its delete, and keep on "deleted remotely"), then recover and
 // check the outcome matches the decision: one tombstone, no duplicate create, nothing lost.
 import test from "node:test";
+import { CrashSweepProgress } from "./crash-sweep-progress.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
@@ -127,11 +128,12 @@ async function sevenOf23(): Promise<S> {
 }
 
 function child(env: Record<string, unknown>): Promise<{ signal: NodeJS.Signals | null; code: number | null; stderr: string }> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const proc = spawn(process.execPath, ["--import", "./test/ts-loader.mjs", "./test/support/qa-pr297-child.ts"], { cwd: CLI_ROOT, env: { ...process.env, QA_CHILD: JSON.stringify(env) }, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     proc.stderr.on("data", (c: Buffer) => (stderr += c.toString()));
-    proc.on("exit", (code, signal) => resolve({ code, signal, stderr }));
+    proc.on("error", reject);
+    proc.on("close", (code, signal) => resolve({ code, signal, stderr }));
   });
 }
 
@@ -234,32 +236,23 @@ const CASES: Case[] = [
   },
 ];
 
-// Each group runs as its own test file (qa-r2-crash-<group>.test.ts); the groups are balanced by
-// measured duration. Every case belongs to exactly one group, checked when this module loads.
-export const CRASH_CASE_GROUPS = {
-  delete: ["bulk-window", "scan-delete"],
-  conflict: ["conflict-keep", "conflict-take"],
-  recreate: ["own-recreate", "remote-recreate"],
-} as const satisfies Record<string, readonly CrashCaseKey[]>;
+// One case per file preserves the module-global fake-host bridge's process isolation.
+export function selectedCrashCaseKeys(only: string | undefined = process.env.QA_ONLY): CrashCaseKey[] {
+  return CASES.filter(c => !only || c.name.startsWith(only)).map(c => c.key);
+}
 
-assert.deepEqual(
-  Object.values(CRASH_CASE_GROUPS).flat().sort(),
-  CASES.map((c) => c.key).sort(),
-  "every crash case must belong to exactly one group",
-);
-
-export function registerCrashCases(group: keyof typeof CRASH_CASE_GROUPS): void {
-  const keys: readonly CrashCaseKey[] = CRASH_CASE_GROUPS[group];
-  for (const c of CASES.filter((c) => keys.includes(c.key) && (!process.env.QA_ONLY || c.name.startsWith(process.env.QA_ONLY)))) {
-    registerCase(c);
-  }
+export function registerCrashCase(key: CrashCaseKey): void {
+  const cases = CASES.filter(c => c.key === key);
+  assert.equal(cases.length, 1, `unknown or duplicated crash case: ${key}`);
+  if (!selectedCrashCaseKeys().includes(key)) return;
+  registerCase(cases[0]!);
 }
 
 function registerCase(c: Case): void {
   test(`SIGKILL at every step: ${c.name}`, { timeout: 1_800_000 }, async () => {
     const { url, close } = await startFakeHostBridge(() => current, { origin: () => HOST });
     const failures: string[] = [];
-    let steps = 0;
+    const progress = new CrashSweepProgress();
     try {
       for (let killAt = 1; killAt < 400; killAt += 1) {
         const s = await c.setup();
@@ -268,7 +261,7 @@ function registerCase(c: Case): void {
         const r = await child({ home: s.home, cwd: s.cwd, folder: s.folder, bridge: url, token: TOKEN, killAt, argv: c.argv });
         const killed = r.signal === "SIGKILL";
         const label = /QA_KILL \d+ (.*)/.exec(r.stderr)?.[1] ?? "(completed)";
-        if (!killed) steps = Number(/QA_STEPS (\d+)/.exec(r.stderr)?.[1] ?? 0);
+        progress.observe(killAt, r);
         const problems: string[] = [];
         const settled = await settle(s, killed ? c.argv : []);
         if (settled) problems.push(settled);
@@ -279,7 +272,8 @@ function registerCase(c: Case): void {
     } finally {
       await close();
     }
-    console.log(`# ${c.name}: ${steps} side effects; ${failures.length} failing kill points`);
+    progress.assertComplete();
+    console.log(`# ${c.name}: ${progress.steps} side effects; ${failures.length} failing kill points`);
     for (const line of failures) console.log(`# FAIL ${line.slice(0, 600)}`);
     assert.deepEqual(failures, []);
   });

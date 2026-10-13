@@ -9,6 +9,7 @@ export const workspaceAliases = {
       "jsonc-parser": r("../../node_modules/jsonc-parser/lib/esm/main.js"),
       // List browser-safe core subpaths before the package root so esbuild does not append the
       // subpath to `index.ts` (which would resolve as the impossible `index.ts/page`).
+      "@superbee/core/artifact-contract": r("../core/src/artifact-contract.ts"),
       "@superbee/core/bundle-ops": r("../core/src/bundle-ops.ts"),
       "@superbee/core/filesystem": r("../core/src/filesystem.ts"),
       "@superbee/core/engine": r("../core/src/engine.ts"),
@@ -20,6 +21,7 @@ export const workspaceAliases = {
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
       "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
+      "@superbee/core/portable-export": r("../core/src/portable-export.ts"),
       "@superbee/core/publication-filesystem": r("../core/src/publication-filesystem.ts"),
       // The hosted checkout (`src/hosted/**`) runs the shared working-copy engine
       // (`@superbee/browser-local`) over core's Node log store, push role and hosted transport.
@@ -34,6 +36,7 @@ export const workspaceAliases = {
       "@superbee/core/kinds": r("../core/src/kinds.ts"),
       "@superbee/core/platform": r("../core/src/platform.ts"),
       "@superbee/core/query-filter": r("../core/src/query-filter.ts"),
+      "@superbee/core/query-order": r("../core/src/query-order.ts"),
       "@superbee/core/remote": r("../core/src/remote.ts"),
       "@superbee/core/uncertain-write": r("../core/src/uncertain-write.ts"),
       "@superbee/core/verification": r("../core/src/verification.ts"),
@@ -54,6 +57,7 @@ export const workspaceAliases = {
       // so a clean npm build never depends on sibling dist/ directories existing.
       "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
       "@superbee/markdown-renderer": r("../markdown-renderer/src/index.tsx"),
+      "@superbee/view-runtime/view-host": r("../view-runtime/src/view-host.ts"),
       "@superbee/view-runtime": r("../view-runtime/src/index.ts"),
       // The loopback UI runtime is a private workspace package; source-alias it so the npm CLI
       // remains one self-contained artifact with no workspace dependency at install time.

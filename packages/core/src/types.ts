@@ -152,7 +152,8 @@ export interface ReadBlobResult {
 export interface VersionInfo {
   /** Opaque content-addressed version token for this revision. */
   version: Version;
-  /** Who wrote this revision. Defaults to a local identity when the write was unattributed. */
+  /** Who wrote this revision. History-keeping backends default at write time to a local identity.
+   * FilesystemBackend reports `unattributed` when document bytes carry no mutation attribution. */
   actor: string;
   /** ISO-8601 instant this revision was recorded. */
   timestamp: string;
@@ -388,11 +389,14 @@ export interface StorageBackend {
    * a facet it chooses to honor. A backend that does not implement this method
    * (FilesystemBackend / MemoryBackend — both local to their data, where a head projection
    * saves nothing) is served by the engine's fallback (`list` +
-   * `readMany`, bodies read then dropped), which additionally honors the scan's
-   * malformed-doc resilience (`QueryOptions.onSkip`); the push-down path does not — a
-   * malformed doc fails the server-side scan, exactly as the wire `list` always has.
+   * `readMany`, bodies read then dropped). Both paths honor the scan's malformed-doc
+   * resilience: given `onSkip`, a backend reports each document it could not parse there and
+   * leaves it out; without it, a malformed document fails the scan.
    */
-  queryHeads?(filter?: QueryFilter): Promise<HeadResult[]>;
+  queryHeads?(
+    filter?: QueryFilter,
+    options?: { onSkip?: (skip: { id: ConceptId; reason: string }) => void },
+  ): Promise<HeadResult[]>;
 
   /**
    * OPTIONAL capabilities self-declaration. `StorageBackend` carries
@@ -437,6 +441,24 @@ export interface QueryFilter {
    * (e.g. `tags: [a,b]`) matches on membership. A field the doc lacks never matches (empty set).
    */
   fields?: Record<string, string>;
+  /**
+   * Restrict to concepts whose `sources` list holds at least one entry carrying this identity
+   * (see {@link SourceIdentity}). A selector naming neither key imposes no constraint, like an
+   * empty `tags` list.
+   */
+  sources?: SourceIdentity;
+}
+
+/**
+ * An OKF `sources[]` identity: `resource` names the provider namespace and `id` the record within
+ * it. Each supplied key must equal the entry's own property of the same name by exact,
+ * case-sensitive string comparison: no trimming, URL normalization, or `String()` coercion. An
+ * entry that is not a mapping, or whose property is absent or not a string, never matches, and
+ * neither does a `sources` value that is not a list.
+ */
+export interface SourceIdentity {
+  resource?: string;
+  id?: string;
 }
 
 /** A single resolved outbound cross-link (a standard markdown link, never a wikilink). */

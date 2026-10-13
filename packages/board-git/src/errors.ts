@@ -117,6 +117,22 @@ function hasRejectedReason(text: string, reasons: readonly string[]): boolean {
   return false;
 }
 
+/**
+ * The receive-side ref-update race: the remote's ref moved between its advertisement and the
+ * update (`[remote rejected] … (incorrect old value provided)`, with the remote's
+ * `cannot lock ref '<ref>': is at <sha> but expected <sha>`).
+ */
+function hasLostRefLock(text: string): boolean {
+  for (const line of text.split("\n")) {
+    const lower = line.toLowerCase();
+    const remote = lower.indexOf("[remote rejected]");
+    if (remote !== -1 && lower.indexOf("(incorrect old value provided)", remote) !== -1) return true;
+    const at = lower.indexOf("cannot lock ref");
+    if (at !== -1 && lower.indexOf("but expected", at) !== -1) return true;
+  }
+  return false;
+}
+
 function hasUnmergeableOriginRef(text: string): boolean {
   const suffix = " - not something we can merge";
   for (const line of text.split("\n")) {
@@ -151,6 +167,9 @@ function hasUnmergeableOriginRef(text: string): boolean {
  *  - per-op timeout -> `TRANSIENT`: the no-hang invariant fired; retryable.
  *  - `index.lock` / "Another git process" -> `GIT_BUSY` with `details.retryable: true`.
  *  - a non-fast-forward push -> `TRANSIENT`: another writer advanced the board; re-run sync.
+ *    This includes the receive-side race, where the branch moved after the remote advertised it:
+ *    git reports `[remote rejected] (incorrect old value provided)` or "cannot lock ref … but
+ *    expected", which is a lost race, not a policy refusal.
  *  - missing `origin` remote / unresolvable `origin/board` -> `NO_UPSTREAM`.
  *  - credential/permission signals -> `AUTH_REQUIRED`. BEST-EFFORT by design: GitHub answers
  *    "Repository not found." for unauthorized-private, so not-found-shaped transport failures
@@ -185,7 +204,8 @@ export function classifyGitError(f: GitFailure): BoardGitError {
   if (
     op === "push" &&
     (hasRejectedReason(text, ["fetch first", "non-fast-forward"]) ||
-      /Updates were rejected because (?:the remote contains work|the tip of your current branch is behind)/i.test(text))
+      /Updates were rejected because (?:the remote contains work|the tip of your current branch is behind)/i.test(text) ||
+      hasLostRefLock(text))
   ) {
     return new BoardGitError(
       "TRANSIENT",

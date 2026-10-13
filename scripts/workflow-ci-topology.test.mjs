@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import yaml from "js-yaml";
+import { actionIdentity, parseActionDocument, validateIdentities } from "./workflow-actions.mjs";
 import { fileURLToPath } from "node:url";
+
+import { extractJobs, requiredUnconditionalStep, stepsOf } from "./workflow-step-test-helper.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workflow = readFileSync(path.join(root, ".github", "workflows", "ci-tests.yml"), "utf8");
@@ -43,104 +47,19 @@ const BROWSER_PREFLIGHT = `      - name: Verify baked Playwright browser artifac
           const chromium = browser("chromium");
           const headless = browser("chromium-headless-shell");
           const ffmpeg = browser("ffmpeg");
+          const webkit = browser("webkit");
           assert.equal(chromium.revision, headless.revision, "Chromium revisions must stay aligned");
           const required = [
             [path.join(root, \`chromium-\${chromium.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`chromium-\${chromium.revision}\`, "chrome-linux64", "chrome"), constants.X_OK],
             [path.join(root, \`chromium_headless_shell-\${headless.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`chromium_headless_shell-\${headless.revision}\`, "chrome-headless-shell-linux64", "chrome-headless-shell"), constants.X_OK],
+            [path.join(root, \`webkit-\${webkit.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`ffmpeg-\${ffmpeg.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
             [path.join(root, \`ffmpeg-\${ffmpeg.revision}\`, "ffmpeg-linux"), constants.X_OK],
           ];
           for (const [artifact, mode] of required) await access(artifact, mode);
           NODE`;
-
-function extractJobs(text) {
-  const lines = text.split("\n");
-  const at = lines.indexOf("jobs:");
-  assert.notEqual(at, -1, "workflow must declare jobs");
-  const jobs = {};
-  let current = null;
-  for (let index = at + 1; index < lines.length; index += 1) {
-    const header = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(lines[index]);
-    if (header) {
-      current = header[1];
-      jobs[current] = [];
-      continue;
-    }
-    if (lines[index] && !/^ {3,}/.test(lines[index]) && !/^ {0,2}#/.test(lines[index])) break;
-    if (current) jobs[current].push(lines[index]);
-  }
-  return Object.fromEntries(Object.entries(jobs).map(([name, lines]) => [name, lines.join("\n")]));
-}
-
-function parseStepField(step, source) {
-  const field = /^([A-Za-z0-9_-]+):(?:\s(.*))?$/.exec(source);
-  assert.ok(field, `unsupported workflow step field: ${source}`);
-  assert.equal(
-    Object.hasOwn(step.fields, field[1]),
-    false,
-    `workflow step ${step.position + 1} must not repeat field ${field[1]}`,
-  );
-  step.fields[field[1]] = field[2] ?? "";
-}
-
-// This intentionally parses only the job-level step sequence used by these topology assertions.
-// Nested `with`, `env`, and block-scalar bodies are opaque; required gates use exact scalar fields.
-// Unknown sequence-item shapes fail closed instead of being guessed as YAML semantics.
-function stepsOf(job) {
-  const lines = job.split("\n");
-  const stepsAt = lines.indexOf("    steps:");
-  assert.notEqual(stepsAt, -1, "workflow job must declare steps");
-  const steps = [];
-  let current = null;
-  for (let index = stepsAt + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (/^ {4}[A-Za-z0-9_-]+:/.test(line)) break;
-    if (!line.trim() || /^\s*#/.test(line)) continue;
-    const item = /^ {6}- (.+)$/.exec(line);
-    if (item) {
-      current = { position: steps.length, fields: Object.create(null) };
-      parseStepField(current, item[1]);
-      steps.push(current);
-      continue;
-    }
-    assert.doesNotMatch(line, /^ {6}-/, "workflow step sequence items must declare one field inline");
-    const field = /^ {8}(\S.*)$/.exec(line);
-    if (field && current) {
-      parseStepField(current, field[1]);
-      continue;
-    }
-    if (/^ {10}/.test(line)) continue;
-    assert.fail(`unsupported workflow step line: ${line}`);
-  }
-  assert.ok(steps.length > 0, "workflow job must declare at least one step");
-  return steps;
-}
-
-function requiredUnconditionalStep(steps, expected) {
-  const named = steps.filter((step) => step.fields.name === expected.name);
-  assert.equal(named.length, 1, `${expected.label} must be declared exactly once by name`);
-  const step = named[0];
-  assert.equal(step.fields.run, expected.run, `${expected.label} command drifted`);
-  assert.equal(
-    step.fields["working-directory"],
-    expected.workingDirectory,
-    `${expected.label} must run directly from its reviewed working directory`,
-  );
-  assert.equal(step.fields.if, undefined, `${expected.label} must be unconditional`);
-  assert.equal(
-    step.fields["continue-on-error"],
-    undefined,
-    `${expected.label} must fail closed rather than continue on error`,
-  );
-  assert.equal(
-    steps.filter((candidate) => candidate.fields.run === expected.run).length,
-    1,
-    `${expected.label} command must execute exactly once`,
-  );
-  return step;
-}
 
 function needsOf(job) {
   const list = /^ {4}needs: \[([^\]]*)\]\s*$/m.exec(job);
@@ -158,8 +77,24 @@ function requiredLaneNames(candidate) {
 function assertAggregator(job, label) {
   assert.deepEqual(needsOf(job).sort(), [...manifest.required_jobs].sort(), `${label} needs every required lane`);
   assert.match(job, /^ {4}if: \$\{\{ always\(\) \}\}\s*$/m, `${label} must run after every conclusion`);
-  assert.match(job, /REQUIRED_RESULTS_JSON: \$\{\{ toJSON\(needs\) \}\}/);
-  assert.match(job, /run: npm run ci:aggregate/);
+  const parsed = yaml.safeLoad(job);
+  assert.equal(parsed["continue-on-error"], undefined);
+  assert.equal(parsed.steps.length, 3, `${label} has checkout, Node setup and gate only`);
+  assert.equal(actionIdentity(parsed.steps[0].uses), "actions/checkout");
+  assert.equal(parsed.steps[0].with?.ref, manifest.merge_queue.checkout_ref);
+  assert.equal(actionIdentity(parsed.steps[1].uses), "actions/setup-node");
+  assert.equal(parsed.steps[1].with["node-version"], manifest.singleton_node);
+  for (const step of parsed.steps) {
+    assert.equal(step.if, undefined, `${label} steps must be unconditional`);
+    assert.equal(step["continue-on-error"], undefined, `${label} steps cannot mask failures`);
+  }
+  const gate = parsed.steps[2];
+  assert.deepEqual(Object.keys(gate).sort(), ["name", "uses", "with"]);
+  assert.equal(gate.uses, "./.github/actions/ci-gate");
+  assert.deepEqual(Object.keys(gate.with).sort(), ["needs-json", "policy-json"]);
+  assert.equal(gate.with["needs-json"], "${{ toJSON(needs) }}");
+  assert.deepEqual(JSON.parse(gate.with["policy-json"]), manifest.required_jobs.map((job) => ({ job, required: true })),
+    `${label} policy must require every declared lane`);
 }
 
 function displayNameOf(job) {
@@ -167,21 +102,31 @@ function displayNameOf(job) {
 }
 
 function assertSmokeJob(job, lane) {
-  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2, "floor smoke needs build and floor runtimes");
+  const setups = yaml.safeLoad(job).steps.filter(step => step.uses && actionIdentity(step.uses) === "actions/setup-node");
+  assert.equal(setups.length, 2, "floor smoke needs build and floor runtimes");
+  assert.deepEqual(setups.map(step => String(step.with["node-version"])), [lane.build_runtime, lane.runtime_setup_node]);
   assert.deepEqual(
     [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => match[1]),
-    [String(manifest.singleton_node), String(lane.runtime_setup_node)],
+    [lane.build_runtime, lane.runtime_setup_node],
     "the second setup-node invocation must select the declared engine floor",
   );
   assert.ok(job.includes(lane.version_guard), "floor smoke must self-check the active Node major");
-  assert.match(job, new RegExp(`CLI=${lane.built_cli.replaceAll("/", "\\/")}`));
-  const commands = [...job.matchAll(/^ {10}node "\$CLI" (.+)$/gm)].map((match) => match[1]);
-  const surface = [...new Set(commands.map((argv) => {
-    return [...lane.built_cli_commands]
-      .sort((left, right) => right.length - left.length)
-      .find((command) => argv === command || argv.startsWith(`${command} `)) ?? `<unknown:${argv}>`;
-  }))].sort();
-  assert.deepEqual(surface, [...lane.built_cli_commands].sort(), "floor smoke built-CLI command surface drifted");
+  assert.match(job, /npm run --silent pack:npm-package -- --pack-destination out\/node-floor/);
+  assert.doesNotMatch(job, /npm run pack:npm-package -- --pack-destination out\/node-floor/);
+  assert.match(job, /npm run build:npm-package -w superbee/);
+  assert.match(job, /npm pack -w @superbee\/cli --ignore-scripts --json --pack-destination out\/node-floor/);
+  assert.ok(job.includes(lane.superbee_tarball));
+  assert.ok(job.includes(lane.cli_tarball));
+  assert.match(job, /npm run verify:npm-package:tarball -- out\/node-floor\/superbee\.tgz --json/);
+  assert.match(job, /npm run verify:cli-tarball -- out\/node-floor\/superbee-cli\.tgz/);
+  assert.match(job, /sha256sum --check out\/node-floor\/before\.sha256/);
+  const buildAt = job.indexOf("run: npm run build");
+  const packageBuildAt = job.indexOf("npm run build:npm-package -w superbee");
+  const packAt = job.indexOf("npm run --silent pack:npm-package");
+  const floorAt = job.indexOf(`node-version: ${lane.runtime_setup_node}`);
+  const proofAt = job.indexOf("npm run verify:npm-package:tarball");
+  assert.ok(buildAt >= 0 && buildAt < packageBuildAt && packageBuildAt < packAt && packAt < floorAt && floorAt < proofAt, "build and pack must finish before the exact-floor proof");
+  assert.doesNotMatch(job.slice(floorAt), /npm run build|npm pack|pack:npm-package/, "the floor runtime must consume retained artifacts without rebuilding or repacking");
 }
 
 // Every lane that declares a host-class expectation must run on the pinned runner, export the
@@ -205,7 +150,7 @@ function assertHostExpectations(jobs, candidate) {
     assert.equal(typeof lane.script, "string", `${name} must declare the script its job runs`);
     assert.match(job, new RegExp(`run: npm run ${lane.script}$`, "m"), `${name} must run its declared script`);
   }
-  assert.deepEqual(expectations, { runtime: "0", "aliasing-host": "1" }, "both host classes must be pinned");
+  assert.deepEqual(expectations, { runtime: "0", "runtime-common": "0", "aliasing-host": "1" }, "both host classes must be pinned");
 }
 
 // The runtime lane splits each Node version into shards. Every shard index must be a matrix leg and
@@ -238,7 +183,7 @@ function validateBrowserScripts(packages) {
   );
   assert.equal(
     uiCommand,
-    "playwright install chromium && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts --project=chromium",
+    "playwright install chromium webkit && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts e2e/view-delivery.spec.ts --project=chromium && playwright test e2e/view-delivery.spec.ts --project=webkit",
     "UI browser coverage must retain its complete reviewed command",
   );
   assert.equal(
@@ -368,28 +313,52 @@ function validateCiTopology(
   browserPackages = { root: rootPackage, mcpApp: mcpAppPackage, ui: uiPackage, browserLocal: browserLocalPackage },
 ) {
   const jobs = extractJobs(text);
+  const parsed = parseActionDocument(text, "CI workflow", { identities: validateIdentities(candidate.github_actions.identities) }).document;
+  assert.deepEqual(parsed.on, {
+    pull_request: null, push: { branches: ["main"] }, workflow_dispatch: null,
+    merge_group: { types: ["checks_requested"] },
+  }, "CI triggers must preserve queue candidates and main release-source evidence");
+  assert.deepEqual(parsed.concurrency, {
+    group: "ci-tests-${{ github.event_name }}-${{ github.ref }}",
+    "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+  }, "only PR runs may cancel another run");
   assert.deepEqual(
     [...candidate.required_jobs].sort(),
     requiredLaneNames(candidate).sort(),
     "required_jobs must equal the automatically run lane set",
   );
+  assert.deepEqual(Object.keys(jobs).sort(), [...candidate.required_jobs,
+    "required", "compatibility-gate-node-22", "compatibility-gate-node-26"].sort());
   assert.doesNotMatch(text, /^\s+continue-on-error:/m, "required CI jobs cannot mask a failing step");
   for (const required of candidate.required_jobs) {
     assert.ok(jobs[required], `missing required job ${required}`);
     assert.equal(displayNameOf(jobs[required]), candidate.lanes[required].display_name, `${required} display name drifted`);
+    assert.equal(parsed.jobs[required].if, undefined, `${required} must remain unconditional`);
     const steps = stepsOf(jobs[required]);
     const preflight = requiredUnconditionalStep(steps, {
       name: 'Check package version sources before installation',
       run: candidate.source_preflight,
       label: `${required} package source preflight`,
     });
+    for (const step of parsed.jobs[required].steps) {
+      assert.equal(step.if, undefined, `${required} proof steps must remain unconditional`);
+    }
     const install = steps.find(step => step.fields.run === 'npm ci');
     assert.ok(install && preflight.position < install.position, `${required} source preflight must precede installation`);
   }
-  assert.match(jobs.runtime, /node-version: \[22, 26\]/);
-  assert.match(jobs.runtime, /run: npm run ci:runtime/);
+  assert.match(jobs.runtime, new RegExp(`node-version: \\[${candidate.runtime_nodes.join(", ")}\\]`));
+  assert.match(jobs.runtime, /run: npm run ci:runtime-cli$/m);
+  assert.equal(parsed.jobs["runtime-common"].needs, undefined, "common tests must be independent of CLI shards");
+  assert.equal(parsed.jobs["runtime-common"].env.SUPERBEE_TEST_SHARD, undefined);
   assertRuntimeShards(jobs.runtime, candidate.lanes.runtime);
-  assert.match(jobs["aliasing-host"], /node-version: 26/);
+  assert.deepEqual(parsed.jobs.runtime.strategy, {
+    "fail-fast": false,
+    matrix: { "node-version": candidate.runtime_nodes, shard: Array.from({ length: candidate.lanes.runtime.shards }, (_, i) => i + 1) },
+  }, "runtime matrix must execute every Node and shard without exclusions");
+  assert.deepEqual(parsed.jobs["runtime-common"].strategy, {
+    "fail-fast": false, matrix: { "node-version": candidate.runtime_nodes },
+  }, "runtime-common must execute once per Node without exclusions");
+  assert.match(jobs["aliasing-host"], new RegExp(`node-version: ${candidate.singleton_node.replaceAll(".", "\\.")}`));
   assert.match(text, /^permissions:\n {2}contents: read$/m, "required CI must retain read-only contents permission");
   assertHostExpectations(jobs, candidate);
   for (const [job, script] of [
@@ -397,19 +366,33 @@ function validateCiTopology(
     ["browser", "ci:browser"],
     ["scripts", "ci:scripts"],
   ]) {
-    assert.match(jobs[job], /node-version: 26/);
+    assert.match(jobs[job], new RegExp(`node-version: ${candidate.singleton_node.replaceAll(".", "\\.")}`));
     assert.match(jobs[job], new RegExp(`run: npm run ${script.replace(":", "\\:")}`));
   }
+  assert.deepEqual(parsed.permissions, { contents: "read" });
+  assert.equal(parsed.env?.GITHUB_TOKEN, undefined);
+  for (const [name, job] of Object.entries(parsed.jobs)) {
+    assert.equal(job.permissions, undefined, `${name} must inherit read-only permissions`);
+    assert.equal(job.env?.GITHUB_TOKEN, undefined);
+    assert.equal(actionIdentity(job.steps[0].uses), "actions/checkout", `${name} first action must check out`);
+    assert.equal(actionIdentity(job.steps[1].uses), "actions/setup-node", `${name} second action must set up Node`);
+    for (const step of job.steps) {
+      if (name !== "scripts" || step.name !== "Verify GitHub Action upstream correspondence") assert.equal(step.env?.GITHUB_TOKEN, undefined);
+    }
+  }
+  const upstream = parsed.jobs.scripts.steps.filter(step => step.name === "Verify GitHub Action upstream correspondence");
+  assert.deepEqual(upstream, [{
+    name: "Verify GitHub Action upstream correspondence",
+    run: "npm run verify:action-upstreams",
+    env: { GITHUB_TOKEN: "${{ github.token }}" },
+  }], "upstream verification must be unconditional, unmasked and read-only");
+  assert.equal(rootPackage.scripts["verify:action-upstreams"], "node scripts/verify-action-upstreams.mjs");
   validateBrowserJob(jobs.browser, browserPackages);
-  assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
+  assertSmokeJob(jobs["smoke-node-22"], candidate.lanes["smoke-node-22"]);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
-  assert.equal(
-    /^ {2}merge_group:/m.test(text),
-    candidate.merge_queue.enabled,
-    "workflow trigger must match the recorded current merge-queue posture",
-  );
-  assert.equal(typeof candidate.merge_queue.evidence, "string");
-  assert.equal(typeof candidate.merge_queue.enablement_requirement, "string");
+  assert.equal(candidate.merge_queue.supported, true, "workflow capability must support merge groups");
+  assert.equal(Object.hasOwn(candidate.merge_queue, "enabled"), false, "live activation is not committed capability");
+  assert.equal(typeof candidate.merge_queue.activation_authority, "string");
   return jobs;
 }
 
@@ -523,7 +506,7 @@ test("renamed or removed aggregator dependencies are detected statically", () =>
 
 test("workflow mutation attacks cannot hide failures or weaken required job identity", () => {
   assert.throws(
-    () => validateCiTopology(workflow.replace("        run: npm run ci:runtime", "        run: npm run ci:runtime\n        continue-on-error: true")),
+    () => validateCiTopology(workflow.replace("        run: npm run ci:runtime-cli", "        run: npm run ci:runtime-cli\n        continue-on-error: true")),
     /cannot mask a failing step/,
   );
   assert.throws(
@@ -532,17 +515,17 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
   );
   for (const [from, to, error] of [
     ["    runs-on: macos-latest", "    runs-on: ubuntu-latest", /aliasing-host must run on macos-latest/],
-    ["        run: npm run ci:aliasing-host", "        run: npm run ci:runtime", /aliasing-host must run its declared script/],
+    ["        run: npm run ci:aliasing-host", "        run: npm run ci:runtime-cli", /aliasing-host must run its declared script/],
     ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', /aliasing-host must pin the host-class expectation/],
     ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', /runtime must pin the host-class expectation/],
     ['test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /aliasing-host must self-check its host class/],
     ['test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /runtime must self-check its host class/],
-    ["          node-version: 20", "          node-version: 22", /second setup-node|deep-equal/],
-    ["          node --version | grep -q '^v20\\.'", "          node --version", /self-check/],
-    ["          node \"$CLI\" status --dir \"$DIR\"", "          node --version", /command surface/],
-    ["        shard: [1, 2]", "        shard: [1]", /every declared shard/],
-    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2\n", "", /export its shard/],
-    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/2", "      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/3", /export its shard/],
+    ["          node-version: 22.14.0", "          node-version: 22.15.0", /second setup-node|deep-equal/],
+    ["          test \"$(node --version)\" = \"v22.14.0\"", "          node --version", /self-check/],
+    ["          npm run verify:cli-tarball -- out/node-floor/superbee-cli.tgz", "          node --version", /cli-tarball/],
+    ["        shard: [1, 2, 3, 4]", "        shard: [1]", /every declared shard/],
+    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/4\n", "", /export its shard/],
+    ["      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/4", "      SUPERBEE_TEST_SHARD: ${{ matrix.shard }}/3", /export its shard/],
   ]) {
     assert.throws(() => validateCiTopology(workflow.replace(from, to)), error);
   }
@@ -551,11 +534,100 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
   assert.throws(() => validateCiTopology(workflow, incomplete), /required_jobs must equal the automatically run lane set/);
 });
 
-test("merge-queue posture is current configuration, not a permanent prohibition", () => {
-  assert.equal(manifest.merge_queue.enabled, false);
-  const enabled = structuredClone(manifest);
-  enabled.merge_queue.enabled = true;
-  const withMergeGroup = workflow.replace("on:\n", "on:\n  merge_group:\n");
-  assert.doesNotThrow(() => validateCiTopology(withMergeGroup, enabled));
-  assert.throws(() => validateCiTopology(workflow, enabled), /merge-queue posture/);
+test("queue triggers, candidate checkout and main evidence cannot drift", () => {
+  for (const changed of [
+    workflow.replace("  merge_group:\n    types: [checks_requested]\n", ""),
+    workflow.replace("types: [checks_requested]", "types: [destroyed]"),
+    workflow.replace("branches: [main]", "branches: [other]"),
+    workflow.replace("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", "cancel-in-progress: true"),
+    workflow.replace("ref: ${{ github.sha }}", "ref: main"),
+    workflow.replace("          ref: ${{ github.sha }}\n", ""),
+    workflow.replace("    name: runtime compatibility", "    if: false\n    name: runtime compatibility"),
+  ]) assert.throws(() => validateQueueCheckout(changed));
+  for (const [name, job] of Object.entries(extractJobs(workflow))) {
+    const changedJob = job.replace("ref: ${{ github.sha }}", "ref: main");
+    assert.notEqual(changedJob, job, `${name} must check out the integration candidate`);
+    assert.throws(() => validateQueueCheckout(workflow.replace(job, changedJob)),
+      /checkout must use the event candidate SHA/, name);
+  }
+  validateQueueCheckout(workflow);
+});
+
+function validateQueueCheckout(text) {
+  validateCiTopology(text);
+  validateProofCheckouts(text);
+}
+
+function validateProofCheckouts(text) {
+  // Bind every proof checkout to the event candidate, including merge groups.
+  for (const [name, job] of Object.entries(yaml.safeLoad(text).jobs)) {
+    assert.equal(job.concurrency, undefined, `${name} must use workflow concurrency`);
+    const checkouts = job.steps.filter(step => step.uses?.startsWith("actions/checkout@"));
+    assert.equal(checkouts.length, 1, `${name} must check out the event commit once`);
+    assert.equal(checkouts[0].with?.ref, "${{ github.sha }}", "checkout must use the event candidate SHA");
+    assert.deepEqual(checkouts[0].with, { "fetch-depth": 1, ref: "${{ github.sha }}" },
+      `${name} must test the event commit in the current repository and root directory`);
+  }
+}
+
+test("aggregate policy cannot silently weaken", () => {
+  const job = extractJobs(workflow).required;
+  for (const changed of [
+    job.replace('"required":true', '"required":false'),
+    job.replace('"job":"runtime"', '"job":"unknown"'),
+    job.replace('uses: ./.github/actions/ci-gate', 'uses: unknown/action@main'),
+    job.replace('uses: ./.github/actions/ci-gate', 'if: false\n        uses: ./.github/actions/ci-gate'),
+    job.replace('uses: ./.github/actions/ci-gate', 'continue-on-error: true\n        uses: ./.github/actions/ci-gate'),
+  ]) assert.throws(() => assertAggregator(changed, "mutated"));
+  for (const file of [".github/actions/ci-gate/evaluate.test.mjs", "infrastructure/github-ci/preflight.test.mjs"]) {
+    assert.ok(rootPackage.scripts["test:scripts"].split(" ").includes(file), `${file} must run in CI`);
+  }
+});
+
+test("queue checkout scope and job concurrency mutations fail closed", () => {
+  for (const name of Object.keys(yaml.safeLoad(workflow).jobs)) {
+    for (const [label, mutate] of [
+      ["missing checkout", job => { job.steps = job.steps.filter(step => !step.uses?.startsWith("actions/checkout@")); }],
+      ["duplicate checkout", job => { job.steps.push(structuredClone(job.steps[0])); }],
+      ["other repository", job => { job.steps[0].with.repository = "other/repository"; }],
+      ["other checkout directory", job => { job.steps[0].with.path = "other"; }],
+      ["job concurrency", job => { job.concurrency = "all-ci"; }],
+    ]) {
+      const changed = yaml.safeLoad(workflow);
+      mutate(changed.jobs[name]);
+      assert.throws(() => validateProofCheckouts(yaml.safeDump(changed)),
+        /must use workflow concurrency|must check out the event commit once|must test the event commit/,
+        `${name}: ${label}`);
+    }
+  }
+});
+
+test("common runtime coverage and matrix exclusions cannot disappear", () => {
+  for (const changed of [
+    workflow.replace("  runtime-common:\n", "  runtime-common:\n    if: false\n"),
+    workflow.replace("        run: npm run ci:runtime-common", "        run: npm run ci:runtime-cli"),
+    workflow.replace("  runtime-common:\n", "  runtime-common:\n    needs: runtime\n"),
+    workflow.replace("        shard: [1, 2, 3, 4]", "        shard: [1, 2, 3, 4]\n        exclude: [{node-version: 22, shard: 4}]"),
+  ]) assert.throws(() => validateCiTopology(changed));
+  for (const name of ["required", "compatibility-gate-node-22", "compatibility-gate-node-26"]) {
+    const job = extractJobs(workflow)[name];
+    assert.throws(() => assertAggregator(job.replace("runtime-common, ", ""), name));
+    assert.throws(() => assertAggregator(job.replace('{"job":"runtime-common","required":true}', '{"job":"runtime-common","required":false}'), name));
+  }
+});
+
+test("upstream verification and expected action identities cannot disappear or be replaced", () => {
+  for (const changed of [
+    workflow.replace("        run: npm run verify:action-upstreams", "        run: true"),
+    workflow.replace("        run: npm run verify:action-upstreams", "        if: false\n        run: npm run verify:action-upstreams"),
+    workflow.replace("        run: npm run verify:action-upstreams", "        continue-on-error: true\n        run: npm run verify:action-upstreams"),
+    workflow.replace("GITHUB_TOKEN: ${{ github.token }}", "GITHUB_TOKEN: ${{ secrets.OTHER }}"),
+    workflow.replace(/      - name: Verify GitHub Action upstream correspondence\n        run: npm run verify:action-upstreams\n        env:\n          GITHUB_TOKEN: \$\{\{ github.token \}\}\n/, ""),
+    workflow.replace("uses: actions/checkout@", "uses: actions/setup-node@"),
+    workflow.replace(/      - uses: actions\/checkout@[^\n]+\n        with:\n          fetch-depth: 1\n          ref: \$\{\{ github.sha \}\}\n/, ""),
+  ]) { assert.notEqual(changed, workflow); assert.throws(() => validateCiTopology(changed)); }
+});
+
+test("CI topology accepts workflow-only version renewals", () => {
+  validateCiTopology(workflow.replace(/(uses: [^@\n]+)@[a-f0-9]{40} # v[0-9.]+/g, `$1@${"b".repeat(40)} # v99.0.0`));
 });

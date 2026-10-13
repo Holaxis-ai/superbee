@@ -72,7 +72,9 @@ async function mintLaunch(server: UiServerHandle, registryId: string): Promise<{
 }
 
 async function fetchPage(server: UiServerHandle, url: string): Promise<{ status: number; text: string }> {
-  const res = await fetch(`http://${server.host}:${server.port}${url}`);
+  const res = await fetch(`http://${server.host}:${server.port}${url}`, {
+    headers: { cookie: COOKIE, "x-requested-with": "superbee-ui" },
+  });
   return { status: res.status, text: await res.text() };
 }
 

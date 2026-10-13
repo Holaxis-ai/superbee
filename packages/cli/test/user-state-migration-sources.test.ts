@@ -106,6 +106,34 @@ const SOURCE_SHAPES: readonly SourceShapeRow[] = [
     exitNode: sourceExit("~/.agentstate", true),
   },
   {
+    // M8's record-level twin: the root is real, but the credential inside it is a dotfile link.
+    // Reading through the link would adopt bytes the product does not own; skipping it as absent
+    // would report "nothing to migrate" and leave the credential behind. Both are wrong.
+    label: "a real source root whose CREDENTIAL file is a symlink to a dotfile",
+    build: async (home) => {
+      const real = join(home, "dotfiles", "okf-config.json");
+      await privateDirectory(join(home, "dotfiles"));
+      await privateFile(real, CREDENTIALS);
+      await privateDirectory(legacyUserStateDir(home));
+      await symlink(real, join(legacyUserStateDir(home), "okf-config.json"));
+    },
+    expected: "blocked",
+    reason: /legacy operational state at ~\/\.agentstate holds operational state that is not safe to migrate automatically/,
+    exitNode: sourceExit("~/.agentstate", true),
+  },
+  {
+    label: "a real source root whose View-approval store is a symlinked folder",
+    build: async (home) => {
+      const real = join(home, "dotfiles", "view-authorizations");
+      await privateDirectory(real);
+      await privateDirectory(legacyUserStateDir(home));
+      await symlink(real, join(legacyUserStateDir(home), "view-authorizations"), "dir");
+    },
+    expected: "blocked",
+    reason: /legacy operational state at ~\/\.agentstate holds operational state that is not safe to migrate automatically/,
+    exitNode: sourceExit("~/.agentstate", true),
+  },
+  {
     label: "a real source root whose private mode drifted while holding records",
     build: async (home) => {
       await legacyStore(home, legacyUserStateDir(home));

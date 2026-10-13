@@ -177,9 +177,14 @@ test("a pinned upstream version cannot hold a launch current across a byte swap"
     try {
       const mint = await post(server, "/__page/mint", { registryId: "views-registry/board" });
       assert.equal(mint.status, 200, String(mint.body.error?.message ?? ""));
+      const delivered = await post(server, "/__page/mint", { registryId: "views-registry/board" });
+      assert.equal(delivered.status, 200);
       const url = mint.body.url as string;
+      const launchId = delivered.body.launchId as string;
 
-      const before = await fetch(`http://${server.host}:${server.port}${url}`);
+      const before = await fetch(`http://${server.host}:${server.port}${delivered.body.url as string}`, {
+        headers: { cookie: COOKIE, "x-requested-with": "superbee-ui" },
+      });
       assert.equal(before.status, 200);
       assert.equal(await before.text(), ORIGINAL, "the honest launch serves its own bytes");
 
@@ -189,13 +194,14 @@ test("a pinned upstream version cannot hold a launch current across a byte swap"
 
       // The serve path replays the bytes captured at mint, so the failure is not that the
       // substitution is served — it is that the launch survives a source change it should not
-      // have. The nonce stays live and the approval keeps covering a View the bundle no longer
-      // registers, until someone reads the new bytes through a launch minted for the old ones.
-      const after = await fetch(`http://${server.host}:${server.port}${url}`);
-      assert.equal(after.status, 403, "changed source bytes must revoke the launch, not keep serving it");
+      // have, and the approval keeps covering a View the bundle no longer registers.
+      const after = await fetch(`http://${server.host}:${server.port}${url}`, {
+        headers: { cookie: COOKIE, "x-requested-with": "superbee-ui" },
+      });
+      assert.equal(after.status, 403, "changed source bytes must revoke the launch, not deliver it");
 
-      const reused = await fetch(`http://${server.host}:${server.port}${url}`);
-      assert.equal(reused.status, 403, "the revoked nonce must stay dead on reuse");
+      const reused = await post(server, "/__ui/views/verify", { launchId });
+      assert.equal(reused.status, 403, "an already-delivered launch is revoked once its source changes");
     } finally {
       await server.close();
     }

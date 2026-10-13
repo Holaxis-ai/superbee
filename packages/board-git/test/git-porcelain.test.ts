@@ -75,6 +75,7 @@ import {
   detectStaleRebase,
   abortStaleRebase,
   stageAndCommit,
+  malformedOutgoingDocuments,
   fetchRebase,
   push,
   ffPull,
@@ -1485,6 +1486,12 @@ test("classifyGitError: non-fast-forward push signals → actionable retry", () 
     "To /tmp/origin.git\n ! [rejected]        board -> board (fetch first)\nerror: failed to push some refs to '/tmp/origin.git'",
     "To github.com:x/y.git\n ! [rejected]        board -> board (non-fast-forward)\nerror: failed to push some refs",
     "Updates were rejected because the tip of your current branch is behind its remote counterpart.",
+    // The receive-side race: the ref moved between the remote's advertisement and the update.
+    "remote: error: cannot lock ref 'refs/heads/board': is at 61c1967 but expected cc54dd8\n" +
+      "To /tmp/origin.git\n ! [remote rejected] board -> board (incorrect old value provided)\n" +
+      "error: failed to push some refs to '/tmp/origin.git'",
+    " ! [remote rejected] board-fairport -> board-fairport (incorrect old value provided)",
+    "remote: error: cannot lock ref 'refs/heads/board': is at 61c1967 but expected cc54dd8",
   ]) {
     const err = classifyGitError({ args: ["push"], status: 1, stdout: "", stderr });
     assert.equal(err.code, "TRANSIENT", stderr);
@@ -1885,6 +1892,49 @@ test("F-D1: clearGitDirMarkerVerified reports the POST-CLEAR truth (never claims
         execFileSync("chflags", ["nouchg", markerFile]);
       }
     }
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("malformedOutgoingDocuments names added and edited documents whose frontmatter does not parse, reading without touching the index", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    const board = topo.a.board;
+    await mkdir(path.join(board, "notes", "deep"), { recursive: true });
+    await writeFile(path.join(board, "notes", "deep", "new*.md"), "---\ntype: Note\ntitle: A: b\n---\nx\n");
+    await writeFile(path.join(board, "tasks", "seed-one.md"), "---\ntype: Task\ntitle: [unclosed\n---\nx\n");
+    await writeFile(path.join(board, "notes", "fine.md"), "---\ntype: Note\ntitle: 'A: b'\n---\nx\n");
+    await rm(path.join(board, "tasks", "seed-two.md"));
+    await symlink("/nonexistent/target.md", path.join(board, "notes", "link.md"));
+    const index = runGit(board, ["ls-files", "-s"]).stdout;
+
+    const held = malformedOutgoingDocuments(board);
+    assert.deepEqual(held.map((doc) => [doc.id, doc.relPath, doc.reason]), [
+      ["notes/deep/new*", "notes/deep/new*.md", "malformed_frontmatter"],
+      ["tasks/seed-one", "tasks/seed-one.md", "malformed_frontmatter"],
+    ]);
+    assert.ok(held.every((doc) => doc.detail.length > 0));
+    assert.equal(runGit(board, ["ls-files", "-s"]).stdout, index, "the index is untouched");
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("stageAndCommit commits nothing when a staged document's frontmatter does not parse, and leaves every file as it is", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    const board = topo.a.board;
+    const bad = "---\ntype: Note\ntitle: A: b\n---\nx\n";
+    await writeFile(path.join(board, "notes", "late.md"), bad);
+    await writeFile(path.join(board, "notes", "fine.md"), "---\ntype: Note\ntitle: Fine\n---\nx\n");
+    const head = runGit(board, ["rev-parse", "HEAD"]).stdout;
+    const result = stageAndCommit(board);
+    assert.equal(result.committed, false);
+    assert.deepEqual(result.held?.map((doc) => doc.id), ["notes/late"]);
+    assert.equal(runGit(board, ["rev-parse", "HEAD"]).stdout, head);
+    assert.equal(runGit(board, ["diff", "--cached", "--name-only"]).stdout, "", "nothing left staged");
+    assert.equal(readFileSync(path.join(board, "notes", "late.md"), "utf8"), bad);
   } finally {
     await topo.cleanup();
   }

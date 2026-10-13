@@ -1,0 +1,25 @@
+{
+  "name": "bundle-create-stage-200-validation-failed",
+  "description": "A part whose document is not the version the manifest lists.",
+  "route": "/sync/v1/bundle-create-stage",
+  "rows": [
+    "200 validation_failed"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-0000000000d1",
+      "content-length": "269"
+    },
+    "body": "{\"workspace\":\"tenant:a\",\"bundleId\":\"staged.notes\",\"planHash\":\"sha256:0d755da3fe1995970b83e99b74cd74d9cc484197ac00cb5017d932dbaec8f374\",\"documents\":[{\"id\":\"notes/alpha\",\"frontmatter\":{\"type\":\"Note\",\"title\":\"Alpha\"},\"body\":\"Alpha, edited.\\n\"}],\"reserved\":[],\"history\":[]}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"bundles.create.v1\",\"error\":{\"code\":\"validation_failed\",\"message\":\"A staged object's version or size is not the manifest's: \\\"notes/alpha\\\". Nothing was created.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

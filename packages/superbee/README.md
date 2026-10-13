@@ -47,7 +47,7 @@ Skill, an instruction file your agent loads, that teaches it how to use the tool
 
 ## Install
 
-Requires Node.js 20 or newer on macOS and Linux. Native Windows is not supported by this package.
+Requires a supported Node.js 22, 24, or 26 release (22.14.0 minimum) on macOS or Linux. Native Windows is not supported by this package.
 
 ```sh
 npm install -g superbee

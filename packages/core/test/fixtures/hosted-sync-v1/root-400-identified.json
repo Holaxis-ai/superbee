@@ -1,0 +1,25 @@
+{
+  "name": "root-400-identified",
+  "description": "A front page sent with a write identity, which this route does not take: the caller's 400.",
+  "route": "/sync/v1/root",
+  "rows": [
+    "400"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-000000000300",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"content\":\"# notes.a\\n\",\"expectedVersion\":\"sha256:7c7393f1351cdbe907ab4a549632c3a8d5fe9a8a591311ba34f3d30155b07a40\"}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

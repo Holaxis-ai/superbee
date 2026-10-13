@@ -21,7 +21,7 @@ describe("client", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { count: 0, docs: [], next_cursor: null }));
     await listHeadsPage({ type: "Task" });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("/v0/bundles/default/docs?fields=frontmatter&limit=50&type=Task");
+    expect(url).toBe("/v0/bundles/default/docs?fields=frontmatter&limit=50&malformed=skip&type=Task");
     expect(init.credentials).toBe("same-origin");
     expect((init.headers as Record<string, string>)["X-Requested-With"]).toBeUndefined(); // GET — no CSRF header required
   });
@@ -30,7 +30,7 @@ describe("client", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { count: 0, docs: [], next_cursor: null }));
     await listHeadsPage({ prefix: "conventions/", type: "Convention" });
     const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toBe("/v0/bundles/default/docs?fields=frontmatter&limit=50&type=Convention&prefix=conventions%2F");
+    expect(url).toBe("/v0/bundles/default/docs?fields=frontmatter&limit=50&malformed=skip&type=Convention&prefix=conventions%2F");
   });
 
   it("listHeadsPage forwards a cursor", async () => {

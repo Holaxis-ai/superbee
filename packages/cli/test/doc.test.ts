@@ -78,6 +78,7 @@ import {
   guardDroppedLinks,
 } from "../src/body-replace-guards.js";
 import { mutateDoc } from "../src/mutate.js";
+import { DOC_READ_USAGE } from "../src/commands/doc/common.js";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
 import { applyRecipe } from "../src/recipes.js";
@@ -2469,14 +2470,15 @@ test("doc history --remote: a revision recorded WITH agent renders both actor an
   }
 });
 
-test("doc history over --dir (FilesystemBackend): reports actor (the file's OS owner) and NO agent — the filesystem backend persists neither --actor nor any agent", async () => {
+test("doc history over --dir reports unattributed and current-version-only for a document without mutation attribution", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     await writeDoc({ root: dir }, { id: "concepts/a", frontmatter: { type: "Concept", timestamp: T }, body: "one" });
     const result = await runDoc(["history", "concepts/a", "--dir", dir]);
     const versions = result.versions as Array<{ actor: string; agent?: string }>;
     assert.equal(versions.length, 1);
-    assert.ok(versions[0]!.actor, "the filesystem backend reports SOME actor (its OS-owner default)");
+    assert.equal(versions[0]!.actor, "unattributed");
+    assert.match((result.help as string[]).join("\n"), /current version only/);
     assert.ok(!("agent" in versions[0]!), "a local --dir bundle never records an agent");
   } finally {
     await cleanup();
@@ -2630,7 +2632,7 @@ test("doc history --limit 0 is treated as the all-escape, not an error: exits 0 
   }
 });
 
-test("doc history byte-identity pin (DoD 4): a single-version filesystem-backed doc's default (no --limit) render carries EXACTLY the pre-cap field set {id,count,versions,help}, in that order — no new fields when total <= cap", async () => {
+test("local doc history preserves the structured field set and adds current-version scope to help in JSON and TOON", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     const written = await writeDocVersioned(
@@ -2650,6 +2652,7 @@ test("doc history byte-identity pin (DoD 4): a single-version filesystem-backed 
     assert.equal(result.shown, undefined, "no shown field when nothing was truncated");
     assert.deepEqual(result.versions, [{ version: written.version, actor: "pin-actor", timestamp: T }]);
     assert.deepEqual(result.help, [
+      "Local bundle: current version only; no prior versions are retained.",
       `${cliInvocation()} doc update concepts/pin --expected-version ${written.version}`,
     ]);
 
@@ -2663,7 +2666,8 @@ test("doc history byte-identity pin (DoD 4): a single-version filesystem-backed 
       id: "concepts/pin",
       count: 1,
       versions: [{ version: written.version, actor: "pin-actor", timestamp: T }],
-      help: [`${cliInvocation()} doc update concepts/pin --expected-version ${written.version}`],
+      help: ["Local bundle: current version only; no prior versions are retained.",
+        `${cliInvocation()} doc update concepts/pin --expected-version ${written.version}`],
     };
     assert.equal(raw, `${encode(expected)}\n`);
   } finally {
@@ -2736,6 +2740,7 @@ test("doc read: body truncation + --out byte-channel pointer is preserved when k
     assert.equal(result.body_truncated, true);
     assert.equal(result.body_chars, bigBody.length + 1); // stringifyDoc appends a trailing newline
     assert.deepEqual(result.help, [
+      `${cliInvocation()} doc read tasks/x --offset 0 --json`,
       `${cliInvocation()} doc read tasks/x --out <file>`,
       `${cliInvocation()} doc read tasks/x --body-out <path-outside-bundle>`,
     ]);
@@ -2825,9 +2830,44 @@ test("doc read: a truncated body is named body_preview, carries the truncation m
     // Agent-facing recovery: both runnable complete-body channels, `--body-out` being the one that
     // feeds the read -> edit -> `doc update --body-file --expected-version` cycle.
     assert.deepEqual(result.help, [
+      `${cliInvocation()} doc read docs/page --offset 0 --json`,
       `${cliInvocation()} doc read docs/page --out <file>`,
       `${cliInvocation()} doc read docs/page --body-out <path-outside-bundle>`,
     ]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc read --offset: pages chain to the exact body, a moved version is a conflict, and a page start must be one", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const body = `${"A line of a long meeting transcript, with é and 😀.\n".repeat(2_000)}The end.\n`;
+    await runDoc(["write", "docs/long", "--type", "Note", "--title", "Long", "--body", body, "--dir", dir]);
+    let joined = "";
+    let offset: number | undefined = 0;
+    let version: string | undefined;
+    while (offset !== undefined) {
+      const page = await runDoc(["read", "docs/long", "--offset", String(offset), ...(version ? ["--expected-version", version] : []), "--dir", dir]);
+      assert.ok(Buffer.byteLength(page.body as string) <= 32_768, "a page stays within the default bound");
+      joined += page.body as string;
+      version = page.head_version as string;
+      const range = page.range as { complete: boolean; next_offset?: number; end: number };
+      offset = range.next_offset;
+      // The last page has no next_offset and complete false: complete means one page held the
+      // whole body, so the help and the skill tell agents to page on next_offset (dogfood 2026-10-02).
+      if (offset === undefined) assert.deepEqual([range.complete, range.end], [false, body.length]);
+    }
+    assert.equal(joined, body);
+    assert.match(DOC_READ_USAGE.replace(/\s+/g, " "), /The page without next_offset is the last/);
+    await runDoc(["write", "docs/short", "--type", "Note", "--title", "Short", "--body", "One line.\n", "--dir", dir]);
+    const single = await runDoc(["read", "docs/short", "--offset", "0", "--dir", dir]);
+    assert.equal((single.range as { complete: boolean }).complete, true, "one page holding the whole body is complete");
+    assert.equal((single.range as { next_offset?: number }).next_offset, undefined);
+    await assert.rejects(runDoc(["read", "docs/long", "--offset", "0", "--expected-version", `sha256:${"0".repeat(64)}`, "--dir", dir]), (error: unknown) => (error as CliError).code === "CONFLICT");
+    await assert.rejects(runDoc(["read", "docs/long", "--offset", String(body.length), "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
+    await assert.rejects(runDoc(["read", "docs/long", "--max-bytes", "10", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
+    await assert.rejects(runDoc(["read", "docs/long", "--offset", "0", "--out", "-", "--dir", dir]), (error: unknown) => (error as CliError).code === "USAGE");
   } finally {
     await cleanup();
   }
@@ -4349,8 +4389,9 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
   const historyHelp = await capture(["history", "--help"]);
   assert.match(historyHelp, /resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy\s+AGENTSTATE_LITE_ACTOR/);
   assert.match(historyHelp, /authenticated principal \(server-set, unforgeable\)/);
-  assert.match(historyHelp, /compatible advisory attribution/);
-  assert.match(historyHelp, /falling back to\s+the local user identity/);
+  assert.match(historyHelp, /compatible\s+advisory attribution/);
+  assert.match(historyHelp, /"unattributed" when none is present/);
+  assert.match(historyHelp, /generated.by names the content\s+producer/);
 
   const updateHelp = await capture(["update", "--help"]);
   assert.match(updateHelp, /bundle's compatible advisory field/);

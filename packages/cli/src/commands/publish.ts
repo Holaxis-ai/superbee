@@ -4,25 +4,28 @@
 // reserved files, other files, and with --with-history the Git history of a board), what stays,
 // every bound the host enforces, and what will happen. No request is made.
 //
-// With --yes it signs in, creates the bundle in the person's own workspace in one
-// `bundles.create.v1` request (hosted `docs/person-bundle-create.md`; no create limit unless the
-// workspace sets one, D1), and converts the folder in place into a hosted checkout: the read-only
+// With --yes it signs in, creates the bundle in the person's own workspace (hosted
+// `docs/person-bundle-create.md`; no create limit unless the workspace sets one, D1) in one
+// `bundles.create.v1` request when it fits that request's bounds, or else as a staged creation
+// (`hosted/publish-staged.ts`: a manifest, parts, raw files, then commits, reporting progress on
+// stderr), and converts the folder in place into a hosted checkout: the read-only
 // marker, a private binding, and the files left exactly as they are. A Git board is unbound first:
 // the folder stops being a worktree of the `board` branch, and the branch itself, local and on
 // origin, is left where it was (the receipt names its commit). Git history travels only with
 // --with-history, as labeled, unverified rows (D2).
 //
 // A retry after an unknown outcome reuses the same request id, recorded in private state, so the
-// host finishes or confirms the one creation instead of starting another.
+// host finishes or confirms the one creation instead of starting another; a staged creation resumes,
+// sending only what the host is still missing.
 import { randomUUID } from "node:crypto";
 import { lstat, readFile, realpath, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { runGit } from "@superbee/board-git";
+import { fetchOrigin, runGit } from "@superbee/board-git";
 import { parseMarkdown, RemoteError, stripHostText } from "@superbee/core";
-import { HostedCarrierError } from "@superbee/core/hosted-transport";
+import { CURRENT_HOST_DOCUMENT_INPUT_BYTES, HostedCarrierError } from "@superbee/core/hosted-transport";
 
 import { parseLeafOrUsage } from "../args.js";
 import { findBundleRoot, openBundle, resolveLocalBundleTarget, resolveProjectBinding } from "../bundle.js";
@@ -32,20 +35,31 @@ import { loadCatalog } from "../catalog.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
-import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
-import { defaultHostedAuthDeps, hostedBundleHost } from "../hosted-auth/session.js";
+import type { HostedTarget } from "../hosted-auth/discovery.js";
+import {
+  defaultHostedAuthDeps,
+  firstSignInCommand,
+  hostedWriteHost,
+  hostSourceText,
+  notSignedInError,
+  workspaceForNamedHost,
+  type HostedWriteHost,
+} from "../hosted-auth/session.js";
 import { isHostedBundleId } from "../hosted/bundle-id.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
-import { hostedFailure } from "../hosted/client.js";
-import { connectHostedAccount, workspaceNames } from "../hosted/account.js";
+import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
+import { connectHostedAccount, hostedListCommand, workspaceNames } from "../hosted/account.js";
 import { bindingHostArgument, writeCheckoutMarker } from "../hosted/marker.js";
-import { createBody, planDigest, planPublish, type PublishPlan } from "../hosted/publish-plan.js";
-import { clearPendingCreate, clearPublishedExtras, readPendingCreate, writePendingCreate, writePublishedExtras } from "../hosted/publish-state.js";
+import { commitMovedMarker, MOVED_MARKER_FILE, movedMarkerPushFailed, pushMovedMarker, type MovedMarkerCommit } from "../hosted/moved-marker.js";
+import { createBody, manifestBody, planDigest, planPublish, stagedContent, type PublishPlan } from "../hosted/publish-plan.js";
+import { isFinalBeforeReservation, runStagedCreate, StagedRefusal, type StagedProgress } from "../hosted/publish-staged.js";
+import { clearPendingCreate, clearPublishedExtras, listPendingCreates, readPendingCreate, writePendingCreate, writePublishedExtras, type PendingCreate } from "../hosted/publish-state.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
+import { refuseTreePrivateState } from "../private-state-publication.js";
 import { bindFolderInPlace } from "./checkout-adopt.js";
-import { connectHostedBundle, registerInCatalog, type CheckoutDeps } from "./checkout.js";
+import { CHECKOUT_DOCUMENT_LIMIT, connectHostedBundle, registerInCatalog, type CheckoutDeps } from "./checkout.js";
 
 export const PUBLISH_USAGE = `superbee publish — move a local bundle or Git board to hosted Superbee
 
@@ -54,13 +68,27 @@ Usage:
                    [--bundle-id <id>] [--name <name>] [--with-history] [--yes] [--json]
 
 Without --yes, previews only, with no network: what travels (documents, reserved files, other
-files), what stays (dot-files, links), every bound the host enforces (at most 1,000 documents,
-100 other files, 1,500 objects in all, 3 MiB in one request; 64 KiB per document, 16 KiB of
-frontmatter), the history plan, and what will happen to the folder.
+files), what stays (dot-files, links), how it is sent, every bound the host enforces, the history
+plan, and what will happen to the folder.
+
+Each document's provenance (generated, timestamp, actor, okf_version) travels as its file states
+it, a claim rather than a verification; verified and superbee_updated_by never travel. The
+preview and the receipt count both, per field.
+
+A bundle within one request's bounds (at most 1,000 documents, 100 other files of 1 MB each,
+1,000 earlier versions, 1,500 objects in all, 3 MiB) is sent in one request. A larger one is sent
+staged: a list of everything, then parts of about 1 MiB, then each file, then commits until the
+host has created it, with progress on stderr (JSON lines with --json). Staged, a bundle holds at
+most 10,000 documents, 1,000 reserved files, 1,000 other files of 16 MiB each and 64 MiB of
+current files in all, and 5,000 earlier versions (64 MiB); the list of everything is at most
+3 MiB. Every way: each document within the host's bound (983,040 bytes as sent on current
+hosts, about 950 KiB of Markdown; 64 KiB on older ones), 64 KiB per reserved file, 16 KiB of
+frontmatter.
 
 With --yes, signs in if needed (AUTH_REQUIRED, exit 4, carries the one link to relay and the
 command to re-run), creates the bundle in your workspace (only you can reach it, at write, until
-you share it in the app), then converts this folder in place into a hosted checkout: nothing in it
+you share it: superbee access grant <bundle-id> <email> --level write, or in the app), then
+converts this folder in place into a hosted checkout: nothing in it
 is rewritten, a read-only .superbee/checkout.json marker is added, and 'superbee sync' then syncs
 it with the host. A Git board is unbound first: the folder stops being a worktree of the board
 branch, which stays as it is, locally and on origin (the receipt names its commit). Teammates who
@@ -71,12 +99,12 @@ branch, or any other folder that is its own Git working tree, is refused.
 --with-history imports each document's earlier Git versions as labeled, unverified history
 (imported:git/<commit>); without it, history starts at publish. A local bundle has only its current
 versions. A retry after an unknown outcome (TRANSIENT) re-sends the same request, so the host
-finishes or confirms the one creation.
+finishes or confirms the one creation; a staged one resumes, sending only what the host lacks.
 
 Options:
   --to hosted         Required: the only destination
   --dir <bundle>      The bundle to publish (default: the one found from here)
-  --host <url>        Hosted Superbee URL (default: your last sign-in)
+  --host <url>        Hosted Superbee URL (default: your last sign-in, when it is the only host signed in)
   --workspace <id>    Your workspace to create it in (default: your only one, or your default)
   --bundle-id <id>    The hosted bundle id (default: from the bundle's name)
   --name <name>       The display name (default: the bundle's name)
@@ -94,11 +122,18 @@ const LISTED = 20;
 const CREATE_ANSWER_BYTES = 64 * 1024;
 const CREATE_DEADLINE_MS = 120_000;
 
-export type PublishDeps = CheckoutDeps;
+export type PublishDeps = CheckoutDeps & {
+  /** Where a staged creation's progress goes, one line per event. */
+  stderr: (text: string) => void;
+  /** Waits before a retry (a test passes one that does not wait). */
+  sleep?: (ms: number) => Promise<void>;
+};
 
 function publishDeps(partial: Partial<PublishDeps>): PublishDeps {
   return {
     stdout: partial.stdout ?? ((text) => void process.stdout.write(text)),
+    stderr: partial.stderr ?? ((text) => void process.stderr.write(text)),
+    ...(partial.sleep ? { sleep: partial.sleep } : {}),
     auth: partial.auth ?? defaultHostedAuthDeps(homedir()),
     cwd: partial.cwd ?? process.cwd(),
     ...(partial.fetch ? { fetch: partial.fetch } : {}),
@@ -227,12 +262,27 @@ function summary(plan: PublishPlan): Record<string, unknown> {
     documents: plan.documents.length,
     reserved_files: plan.reserved.length,
     other_files: plan.blobs.length,
+    sent: plan.path.mode === "one-shot" ? "one request" : `staged: ${plan.path.why}; a list of everything, parts of about 1 MiB, each file, then commits until created (resumable)`,
     history: { mode: plan.historyPlan.mode, versions: plan.historyPlan.versions, ...(plan.historyPlan.skipped > 0 ? { skipped: plan.historyPlan.skipped } : {}), note: plan.historyPlan.note },
+    provenance: provenanceOf(plan),
+  };
+}
+
+/** Per managed field, how many documents carry it and how many hold one that stays behind. */
+function provenanceOf(plan: PublishPlan): Record<string, unknown> {
+  return {
+    carried: plan.provenance.carried,
+    dropped: plan.provenance.dropped,
+    note: "provenance travels as each file states it (a claim, not a verification); verification events and the last-editor attribution stay in the folder, and the host attributes the creation to you",
   };
 }
 
 /** One refusal answer of `bundles.create.v1`, as the CLI taxonomy names it. */
-function createRefusal(code: string, message: string, context: { bundleId: string; workspace: string; target: HostedTarget; resume: CommandText; folder: string }): CliError {
+function createRefusal(
+  code: string,
+  message: string,
+  context: { bundleId: string; workspace: string; target: HostedTarget; resume: CommandText; folder: string; openCreations?: readonly PendingCreate[] },
+): CliError {
   const details = { reason: code, bundle_id: context.bundleId, workspace: context.workspace, host: context.target.origin, host_message: message };
   switch (code) {
     case "bundle_exists":
@@ -240,11 +290,28 @@ function createRefusal(code: string, message: string, context: { bundleId: strin
     case "workspace_not_found":
       return new CliError("NOT_FOUND", `'${context.workspace}' is not one of your workspaces on ${context.target.origin}`, { details, help: `${cliInvocation()} whoami --host ${commandToken(bindingHostArgument(context.target))}` });
     case "bundle_create_unavailable":
-    case "bundle_create_limit":
-      return new CliError("FORBIDDEN", code === "bundle_create_limit" ? `your bundle creation limit in ${context.workspace} is used up` : `${context.workspace} does not offer bundle creation to this client`, {
-        details,
-        help: "ask a workspace admin in the Superbee app",
-      });
+    case "bundle_create_limit": {
+      // A staged creation's own limit shares the code: unfinished staged creations open at once.
+      const open = code === "bundle_create_limit" && /staged creations open/i.test(message);
+      return new CliError(
+        "FORBIDDEN",
+        open
+          ? `you have too many unfinished large publishes open in ${context.workspace}`
+          : code === "bundle_create_limit"
+            ? `your bundle creation limit in ${context.workspace} is used up`
+            : `${context.workspace} does not offer bundle creation to this client`,
+        {
+          details: open && context.openCreations ? { ...details, open: context.openCreations.map((record) => ({ bundle_id: record.bundle_id, ...(record.folder ? { folder: record.folder } : {}) })) } : details,
+          help: open
+            ? `finish one by re-running its publish${
+                context.openCreations && context.openCreations.length > 0
+                  ? ` (unfinished from here: ${context.openCreations.map((record) => `'${record.bundle_id}'${record.folder ? ` from ${record.folder}` : ""}`).join(", ")})`
+                  : ""
+              }, or wait for one to expire 7 days after it began`
+            : "ask a workspace admin in the Superbee app",
+        },
+      );
+    }
     case "request_conflict":
       return new CliError("CONFLICT", `an unfinished publish of '${context.bundleId}' from this folder carried other contents, and the host holds the id for it`, {
         details,
@@ -253,6 +320,137 @@ function createRefusal(code: string, message: string, context: { bundleId: strin
     default:
       return new CliError("USAGE", `${context.target.origin} refused the bundle (${code}): ${message}`, { details, help: "fix the files it names, then preview again" });
   }
+}
+
+interface SendContext {
+  readonly workspace: string;
+  readonly bundleId: string;
+  readonly name: string;
+  readonly home: string;
+  readonly canonical: string;
+  readonly target: HostedTarget;
+  readonly client: HostedSyncClient;
+  readonly yesCommand: CommandText;
+  readonly deps: PublishDeps;
+  readonly json: boolean;
+}
+
+function targetLine(chosen: HostedWriteHost, bundleId: string, json: boolean): string {
+  if (json) return `${JSON.stringify({ event: "publish.target", host: chosen.target.origin, host_from: chosen.source, bundle_id: bundleId })}\n`;
+  return `publish: creating '${bundleId}' on ${chosen.target.origin} (host from ${hostSourceText(chosen.source)})\n`;
+}
+
+/** One staged creation's progress line: words, or a JSON event with --json. */
+function progressLine(event: StagedProgress, json: boolean): string {
+  if (json) return `${JSON.stringify({ event: "publish.progress", ...event })}\n`;
+  const mib = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  switch (event.phase) {
+    case "begin":
+      return `publish: ${event.state}: ${event.staged}/${event.versions} objects and ${event.stagedBlobs}/${event.blobs} files on the host\n`;
+    case "stage":
+      return `publish: sent part ${event.part}/${event.parts} (${event.objects} objects)\n`;
+    case "blob":
+      return `publish: sent file ${event.blob}/${event.blobs} ${event.key} (${mib(event.bytes)})\n`;
+    case "commit":
+      return `publish: commit ${event.call}: ${event.state}${event.written ? ` (written: ${Object.entries(event.written).map(([kind, count]) => `${count} ${kind}`).join(", ")})` : ""}\n`;
+    case "wait":
+      return `publish: waiting ${event.seconds} s: ${event.reason}\n`;
+  }
+}
+
+/**
+ * Creates the bundle: one `bundle-create` request, or a staged creation, under the request id an
+ * unfinished creation of the same bundle id recorded (so the host finishes, resumes or confirms
+ * it), and answers the host's success answer's `data`. The pending record is cleared on success
+ * and on a refusal that holds nothing; it stays for an unknown outcome and a request conflict.
+ */
+async function sendCreation(plan: PublishPlan, context: SendContext): Promise<Record<string, unknown>> {
+  const { workspace, bundleId, name, home, canonical, target, client, yesCommand } = context;
+  const staged = plan.path.mode === "staged" ? stagedContent(plan) : null;
+  const body = staged ? manifestBody(staged, { workspace, bundleId, name }) : createBody(plan, { workspace, bundleId, name });
+  const digest = planDigest(body);
+  // An unfinished creation of the same bundle keeps its request id whatever changed since: the
+  // host then finishes, resumes or confirms it, or answers request_conflict, and never holds the id
+  // for a request nobody can finish.
+  const earlier = await readPendingCreate(home, canonical, bundleId);
+  const resumes = earlier !== null && earlier.host === target.origin && earlier.workspace === workspace;
+  const requestId = resumes ? earlier.request_id : randomUUID();
+  const record: PendingCreate = resumes
+    ? { ...earlier, ...(staged ? { staged: true, folder: canonical } : {}) }
+    : { request_id: requestId, host: target.origin, workspace, bundle_id: bundleId, digest, ...(staged ? { staged: true, folder: canonical } : {}) };
+  if (!resumes || (staged && earlier.staged !== true)) await writePendingCreate(home, canonical, record);
+  const refusalContext = { bundleId, workspace, target, resume: yesCommand, folder: canonical };
+
+  if (staged) {
+    let data;
+    try {
+      data = await runStagedCreate({
+        client,
+        requestId,
+        target: { workspace, bundleId, name },
+        content: staged,
+        resume: String(yesCommand),
+        progress: (event) => context.deps.stderr(progressLine(event, context.json)),
+        ...(context.deps.sleep ? { sleep: context.deps.sleep } : {}),
+        // Once the host holds the id for this request, only this request id can finish it.
+        onReserved: async () => {
+          if (record.reserved !== true) await writePendingCreate(home, canonical, { ...record, reserved: true });
+        },
+      });
+    } catch (error) {
+      if (error instanceof StagedRefusal) {
+        // Only a refusal that settles an unreserved creation forgets its request id; any other
+        // (a switch turned off, a workspace gone, the limit) is kept, so a re-run finishes it.
+        if (record.reserved !== true && isFinalBeforeReservation(error)) await clearPendingCreate(home, canonical, bundleId);
+        const openCreations =
+          error.code === "bundle_create_limit"
+            ? (await listPendingCreates(home)).filter((other) => other.staged === true && other.host === target.origin && other.workspace === workspace && other.request_id !== requestId)
+            : undefined;
+        throw createRefusal(error.code, error.hostMessage, { ...refusalContext, ...(openCreations ? { openCreations } : {}) });
+      }
+      throw error;
+    }
+    await clearPendingCreate(home, canonical, bundleId);
+    return data;
+  }
+
+  let answer;
+  try {
+    answer = await client.carrier.json(`${client.prefix}/bundle-create`, body, client.signal, { maximum: CREATE_ANSWER_BYTES, writeRequest: requestId });
+  } catch (error) {
+    if (error instanceof HostedCarrierError && error.code === "unavailable") {
+      throw new CliError("TRANSIENT", `the answer from ${target.origin} did not arrive; the bundle may be partly created`, {
+        details: { reason: "write_outcome_unknown", bundle_id: bundleId, workspace, host: target.origin, request_id: requestId, retryable: true },
+        help: `re-run the same command; it re-sends the same request, which finishes or confirms the creation: ${yesCommand}`,
+      });
+    }
+    throw hostedFailure(error, target, yesCommand);
+  }
+  const envelope = (answer.body ?? {}) as { ok?: unknown; data?: Record<string, unknown>; error?: { code?: unknown; message?: unknown } };
+  const code = typeof envelope.error?.code === "string" ? envelope.error.code : null;
+  const hostMessage = typeof envelope.error?.message === "string" ? envelope.error.message : "";
+  if (answer.status === 503 && code === "write_outcome_unknown") {
+    throw new CliError("TRANSIENT", `${target.origin} may have partly created '${bundleId}'`, {
+      details: { reason: "write_outcome_unknown", bundle_id: bundleId, workspace, host: target.origin, request_id: requestId, retryable: true },
+      help: `re-run the same command; it re-sends the same request, which finishes or confirms the creation: ${yesCommand}`,
+    });
+  }
+  // A record a staged run marked reserved is never forgotten here: only its request id can finish it.
+  const forgettable = record.reserved !== true;
+  if (answer.status === 429 && code === "bundle_create_limit") {
+    if (forgettable) await clearPendingCreate(home, canonical, bundleId);
+    throw createRefusal(code, hostMessage, refusalContext);
+  }
+  if (answer.status === 200 && envelope.ok === false && code !== null) {
+    if (code !== "request_conflict" && forgettable) await clearPendingCreate(home, canonical, bundleId);
+    throw createRefusal(code, hostMessage, refusalContext);
+  }
+  if (answer.status !== 200 || envelope.ok !== true || typeof envelope.data !== "object" || envelope.data === null) {
+    if (answer.status === 400 && forgettable) await clearPendingCreate(home, canonical, bundleId);
+    throw hostedFailure(new RemoteError(`hosted bundle-create answered ${answer.status}`, code ?? "RUNTIME", answer.status), target, yesCommand);
+  }
+  await clearPendingCreate(home, canonical, bundleId);
+  return envelope.data;
 }
 
 export async function publish(argv: string[], partial: Partial<PublishDeps> = {}): Promise<void> {
@@ -293,7 +491,19 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
   assertBundleOutsidePrivateState(canonical, home);
   const facts = await bundleHomeAt(canonical, { home });
   await assertPublishable(canonical, facts);
+  // F8: private state copied into the bundle refuses the whole publication, the preview included,
+  // before anything is planned, asked or sent.
+  refuseTreePrivateState(canonical, "publish --to hosted", String(commandFragment`${cliInvocation()} publish --to hosted${values.dir !== undefined ? commandFragment` --dir ${commandToken(canonical)}` : commandFragment``}`));
   const board = facts.home === "git" ? facts.board : null;
+  // Before --yes decides, the board's upstream as origin has it now (best effort: offline, the last
+  // fetch stands), so a teammate's recent push is a blocker rather than a commit the move misses.
+  if (values.yes && board?.channel === "branch") {
+    try {
+      fetchOrigin(board.top);
+    } catch {
+      // Offline or no origin: the last fetch stands.
+    }
+  }
   const boardState = board ? await boardCheck(board, canonical) : null;
 
   const bundle = await openBundle(canonical);
@@ -308,16 +518,43 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       help: `${cliInvocation()} publish --to hosted --bundle-id <id>`,
     });
   }
-  const hostChoice = await hostedBundleHost(values.host, home);
-  const target = hostChoice ? resolveHostedTarget(hostChoice) : null;
   const withHistory = values["with-history"] === true;
-  const plan = await planPublish(canonical, withHistory ? { history: true, ...(board ? { board } : {}), now: deps.auth.now() } : { history: false });
+  // `--workspace`, or the workspace of a workspace origin named by --host (resolved only at --yes).
+  let workspaceFlag = values.workspace;
+  const yesCommandFor = (host: string | null) =>
+    commandFragment`${cliInvocation()} publish --to hosted${values.dir !== undefined ? commandFragment` --dir ${commandToken(canonical)}` : commandFragment``}${
+      host !== null ? commandFragment` --host ${commandToken(host)}` : commandFragment``
+    }${workspaceFlag !== undefined ? commandFragment` --workspace ${commandToken(workspaceFlag)}` : commandFragment``} --bundle-id ${commandToken(bundleId)}${
+      values.name !== undefined ? commandFragment` --name ${commandToken(name)}` : commandFragment``
+    }${withHistory ? commandFragment` --with-history` : commandFragment``} --yes${values.json ? commandFragment` --json` : commandFragment``}`;
+  // An implicit host is used only when it is the one host signed in; the preview reports an
+  // ambiguous one as a blocker, and --yes refuses it. The preview makes no request, so a workspace
+  // origin is followed to its gateway only at --yes.
+  let chosen: HostedWriteHost | null = null;
+  let ambiguous: CliError | null = null;
+  try {
+    chosen = await hostedWriteHost(values.host, home, (host) => String(yesCommandFor(host)), values.yes ? deps.auth.fetch : null);
+  } catch (error) {
+    if (values.yes || !(error instanceof CliError) || error.details?.reason !== "ambiguous_host") throw error;
+    ambiguous = error;
+  }
+  if (chosen) workspaceFlag = workspaceForNamedHost(chosen, values.workspace);
+  const target = chosen?.target ?? null;
+  // The preview makes no request, so it plans against the bound current hosts state; `--yes` asks
+  // the host and plans again under what it states, before anything is sent.
+  const planFor = (documentInputBytes: number | null) =>
+    planPublish(canonical, withHistory ? { history: true, ...(board ? { board } : {}), now: deps.auth.now(), documentInputBytes } : { history: false, documentInputBytes });
+  let plan = await planFor(CURRENT_HOST_DOCUMENT_INPUT_BYTES);
 
-  const yesCommand = commandFragment`${cliInvocation()} publish --to hosted${values.dir !== undefined ? commandFragment` --dir ${commandToken(canonical)}` : commandFragment``}${
+  const yesCommand = yesCommandFor(target ? bindingHostArgument(target) : null);
+  const shareCommand = commandFragment`${cliInvocation()} access grant ${commandToken(bundleId)} <email> --level write${
     target ? commandFragment` --host ${commandToken(bindingHostArgument(target))}` : commandFragment``
-  }${values.workspace !== undefined ? commandFragment` --workspace ${commandToken(values.workspace)}` : commandFragment``} --bundle-id ${commandToken(bundleId)}${
-    values.name !== undefined ? commandFragment` --name ${commandToken(name)}` : commandFragment``
-  }${withHistory ? commandFragment` --with-history` : commandFragment``} --yes${values.json ? commandFragment` --json` : commandFragment``}`;
+  }`;
+  // A checkout holds at most CHECKOUT_DOCUMENT_LIMIT documents, read a page at a time, which is also
+  // staged creation's own document bound; a larger bundle (never one this command creates) would be
+  // created and the folder left as it is (a Git board stays bound), to use in the app.
+  const converts = plan.documents.length <= CHECKOUT_DOCUMENT_LIMIT;
+  const uncheckable = `leave this folder as it is${board ? " (still bound to the Git board)" : ""}: a hosted checkout holds at most ${CHECKOUT_DOCUMENT_LIMIT} documents, so use the bundle in the app; from then on, edits here do not reach the hosted bundle, nor its edits here`;
   const gitPlan = board
     ? {
         branch: board.branch,
@@ -325,15 +562,18 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         head: boardHead(board),
         sync: boardState?.block.state,
         ...(boardState && ((boardState.block.ahead as number | null) ?? 0) + ((boardState.block.uncommitted as number | null) ?? 0) > 0
-          ? { not_on_branch: { ahead: boardState.block.ahead, uncommitted: boardState.block.uncommitted, note: "these travel to hosted but not to the board branch teammates still sync" } }
+          ? { not_on_branch: { ahead: boardState.block.ahead, uncommitted: boardState.block.uncommitted, note: "unpushed commits reach the board branch with the moved-marker push (a board shared on origin); uncommitted changes travel to hosted only" } }
           : {}),
-        will: "unbind this folder from the board branch; the branch and its commits stay, locally and on origin",
+        will: converts
+          ? "unbind this folder from the board branch; the branch and its commits stay, locally and on origin"
+          : "keep this folder bound to the board branch: the board and the hosted bundle then diverge, and neither's edits reach the other",
       }
     : null;
 
   if (!values.yes) {
     const blockers = [...plan.blockers.map((b) => ({ path: b.path, reason: b.reason, message: b.message })), ...(boardState?.blocker ? [boardState.blocker] : [])];
-    if (!target) blockers.push({ path: "", reason: "no_host", message: "no hosted Superbee host: sign in first, or pass --host" });
+    if (ambiguous) blockers.push({ path: "", reason: "ambiguous_host", message: ambiguous.message });
+    else if (!target) blockers.push({ path: "", reason: "no_host", message: notSignedInError(deps.auth.env).message });
     deps.stdout(
       render(
         {
@@ -343,6 +583,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           home: facts.home,
           to: {
             host: target?.origin ?? null,
+            ...(chosen ? { host_from: chosen.source } : ambiguous ? { signed_in_hosts: ambiguous.details?.hosts } : {}),
             bundle_id: bundleId,
             name,
             workspace: values.workspace ?? "chosen at --yes: your only workspace, or your default one",
@@ -352,12 +593,25 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
           ...(blockers.length > 0 ? { blockers: { shown: Math.min(LISTED, blockers.length), total: blockers.length, rows: blockers.slice(0, LISTED) } } : {}),
           ...(gitPlan ? { git: gitPlan } : {}),
           then: [
-            "create the bundle in your workspace, reachable only by you (write) until you share it in the app",
-            "convert this folder in place into a hosted checkout: no file rewritten, a read-only .superbee/checkout.json added",
-            ...(board ? ["unbind the Git board first; teammates keep the board branch until you tell them"] : []),
+            `create the bundle in your workspace, reachable only by you (write) until you share it: ${shareCommand}, or in the app`,
+            ...(converts
+              ? [
+                  "convert this folder in place into a hosted checkout: no file rewritten, a read-only .superbee/checkout.json added",
+                  ...(board
+                    ? ["commit and push a moved-to-hosted marker on the board branch, then unbind the Git board: teammates' next sync refuses to push to it and prints the hosted checkout command"]
+                    : []),
+                ]
+              : [uncheckable]),
           ],
           network: "none (preview)",
-          help: blockers.length === 0 ? [String(yesCommand)] : !target ? [`${cliInvocation()} login --host <url>`] : ["fix the blocking files, then preview again"],
+          document_bound: `checked against ${CURRENT_HOST_DOCUMENT_INPUT_BYTES} bytes as sent per document (current hosts); --yes checks the host's own bound before anything is sent`,
+          help: blockers.length === 0
+            ? [String(yesCommand)]
+            : ambiguous
+              ? [...((ambiguous.details?.commands as string[] | undefined) ?? []), ...(blockers.length > 1 ? ["fix the blocking files, then preview again"] : [])]
+              : !target
+                ? [String(firstSignInCommand())]
+                : ["fix the blocking files, then preview again"],
         },
         mode,
       ),
@@ -365,9 +619,7 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     return;
   }
 
-  if (!target) {
-    throw new CliError("USAGE", "no hosted Superbee host: sign in first, or pass --host", { help: `${cliInvocation()} login --host <url>` });
-  }
+  if (!target) throw notSignedInError(deps.auth.env);
   if (boardState?.blocker) {
     throw new CliError("CONFLICT", boardState.blocker.message, {
       details: { reason: boardState.blocker.reason, sync: boardState.block },
@@ -381,10 +633,13 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
     });
   }
 
-  const otherWorkspace = `${cliInvocation()} publish --to hosted --workspace <id> --bundle-id ${commandToken(bundleId)} --yes`;
+  // Named before anything is asked or sent, on stderr so the receipt on stdout keeps its shape: the one
+  // line that says which host this write is about to change.
+  deps.stderr(targetLine(chosen!, bundleId, values.json === true));
+  const otherWorkspace = `${cliInvocation()} publish --to hosted --host ${commandToken(bindingHostArgument(target))} --workspace <id> --bundle-id ${commandToken(bundleId)} --yes`;
   const { client, identity, workspace } = await connectHostedAccount(
     target,
-    { workspace: values.workspace, resume: yesCommand, otherWorkspace, deadlineMs: CREATE_DEADLINE_MS },
+    { workspace: workspaceFlag, resume: yesCommand, otherWorkspace, deadlineMs: CREATE_DEADLINE_MS },
     { auth: deps.auth, ...(deps.fetch ? { fetch: deps.fetch } : {}) },
   );
   if (workspace === null) {
@@ -393,73 +648,69 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       help: otherWorkspace,
     });
   }
-
-  const body = createBody(plan, { workspace, bundleId, name });
-  const digest = planDigest(body);
-  // An unfinished creation of the same bundle keeps its request id whatever changed since: the
-  // host then finishes or confirms it, or answers request_conflict, and never holds the id for a
-  // request nobody can finish.
-  const earlier = await readPendingCreate(home, canonical, bundleId);
-  const resumes = earlier !== null && earlier.host === target.origin && earlier.workspace === workspace;
-  const requestId = resumes ? earlier.request_id : randomUUID();
-  if (!resumes) await writePendingCreate(home, canonical, { request_id: requestId, host: target.origin, workspace, bundle_id: bundleId, digest });
-
-  const context = { bundleId, workspace, target, resume: yesCommand, folder: canonical };
-  let answer;
-  try {
-    answer = await client.carrier.json(`${client.prefix}/bundle-create`, body, client.signal, { maximum: CREATE_ANSWER_BYTES, writeRequest: requestId });
-  } catch (error) {
-    if (error instanceof HostedCarrierError && error.code === "unavailable") {
-      throw new CliError("TRANSIENT", `the answer from ${target.origin} did not arrive; the bundle may be partly created`, {
-        details: { reason: "write_outcome_unknown", bundle_id: bundleId, workspace, host: target.origin, request_id: requestId, retryable: true },
-        help: `re-run the same command; it re-sends the same request, which finishes or confirms the creation: ${yesCommand}`,
+  if (identity.documentInputBytes !== CURRENT_HOST_DOCUMENT_INPUT_BYTES) {
+    plan = await planFor(identity.documentInputBytes);
+    if (plan.blockers.length > 0) {
+      throw new CliError("USAGE", `${plan.blockers.length} thing(s) in the bundle cannot be published to ${target.origin}: ${plan.blockers[0]!.message}`, {
+        details: { reason: "blocked", host: target.origin, blockers: plan.blockers.slice(0, LISTED), blockers_total: plan.blockers.length },
+        help: "make the documents smaller, or publish to a host that accepts larger documents",
       });
     }
-    throw hostedFailure(error, target, yesCommand);
   }
-  const envelope = (answer.body ?? {}) as { ok?: unknown; data?: Record<string, unknown>; error?: { code?: unknown; message?: unknown } };
-  const code = typeof envelope.error?.code === "string" ? envelope.error.code : null;
-  const hostMessage = typeof envelope.error?.message === "string" ? envelope.error.message : "";
-  if (answer.status === 503 && code === "write_outcome_unknown") {
-    throw new CliError("TRANSIENT", `${target.origin} may have partly created '${bundleId}'`, {
-      details: { reason: "write_outcome_unknown", bundle_id: bundleId, workspace, host: target.origin, request_id: requestId, retryable: true },
-      help: `re-run the same command; it re-sends the same request, which finishes or confirms the creation: ${yesCommand}`,
-    });
+
+  // The checkout names the bundle in the workspace it was created in, so another of the person's
+  // workspaces holding the same id never makes it ambiguous; sharing names it the same way.
+  const slug = identity.workspaces.find((w) => w.tenantId === workspace)?.slug ?? null;
+  const shareFor = (inSlug: string | null) =>
+    commandFragment`${cliInvocation()} access grant ${commandToken(inSlug !== null ? `${inSlug}/${bundleId}` : bundleId)} <email> --level write --host ${commandToken(bindingHostArgument(target))}`;
+  const created = await sendCreation(plan, { workspace, bundleId, name, home, canonical, target, client, yesCommand, deps, json: values.json === true });
+
+  if (!converts) {
+    deps.stdout(
+      render(
+        {
+          published: "created",
+          bundle_id: bundleId,
+          name,
+          host: target.origin,
+          host_from: chosen!.source,
+          workspace,
+          access: `write (only you, until you share it: ${shareFor(slug)}, or in the app)`,
+          sent: {
+            documents: created.documents ?? plan.documents.length,
+            reserved_files: created.reserved ?? plan.reserved.length,
+            other_files: created.blobs ?? plan.blobs.length,
+            history: created.history ?? { imported: plan.history.length, verified: false },
+            provenance: { carried: plan.provenance.carried, dropped: plan.provenance.dropped },
+          },
+          folder: canonical,
+          home: facts.home,
+          checkout: `not converted: ${uncheckable}`,
+          diverges: `this folder${board ? " and its Git board" : ""} and the hosted bundle '${bundleId}' are now separate copies: edits here do not reach the hosted bundle`,
+          help: [hostedListCommand(target)],
+        },
+        mode,
+      ),
+    );
+    return;
   }
-  if (answer.status === 429 && code === "bundle_create_limit") {
-    await clearPendingCreate(home, canonical, bundleId);
-    throw createRefusal(code, hostMessage, context);
-  }
-  if (answer.status === 200 && envelope.ok === false && code !== null) {
-    if (code !== "request_conflict") await clearPendingCreate(home, canonical, bundleId);
-    throw createRefusal(code, hostMessage, context);
-  }
-  if (answer.status !== 200 || envelope.ok !== true || typeof envelope.data !== "object" || envelope.data === null) {
-    if (answer.status === 400) await clearPendingCreate(home, canonical, bundleId);
-    throw hostedFailure(new RemoteError(`hosted bundle-create answered ${answer.status}`, code ?? "RUNTIME", answer.status), target, yesCommand);
-  }
-  await clearPendingCreate(home, canonical, bundleId);
-  const created = envelope.data;
+
   await writePublishedExtras(home, canonical, { host: target.origin, bundle_id: bundleId, extras: plan.extras }).catch(() => {});
 
   // The bundle exists on the host. From here, a failure leaves the folder adoptable: the marker
   // goes in first, so `checkout --adopt` can finish the conversion.
-  // The checkout names the bundle in the workspace it was created in, so another of the person's
-  // workspaces holding the same id never makes it ambiguous.
-  const slug = identity.workspaces.find((w) => w.tenantId === workspace)?.slug ?? null;
   const markerSource = { origin: target.origin, audience: target.audience, bundle_id: bundleId, workspace, ...(slug !== null ? { workspace_slug: slug } : {}) };
   const adoptHelp = `${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))}`;
   let unbound: Record<string, unknown> | null = null;
+  // The moved-board marker is committed while this folder is still the board's worktree, and pushed
+  // only once the folder is a hosted checkout, so a failed push never leaves it half converted.
+  const reference = slug !== null ? `${slug}/${bundleId}` : bundleId;
+  let markerCommit: MovedMarkerCommit | null = null;
   try {
     if (board && gitPlan) {
+      const movedBy = identity.email ?? identity.principalId;
+      markerCommit = await commitMovedMarker(board.top, { host: bindingHostArgument(target), bundle: reference, moved_at: new Date(deps.auth.now()).toISOString(), moved_by: movedBy });
       await unbindBoard(board, canonical);
-      unbound = {
-        unbound: true,
-        branch: board.branch,
-        upstream: board.upstream,
-        head: gitPlan.head,
-        note: `the board branch stays at ${gitPlan.head ?? "its commit"}, locally and on ${board.upstream ?? "no upstream"}; teammates keep syncing it with Git until you tell them to check out '${bundleId}' instead`,
-      };
     }
     await writeCheckoutMarker(canonical, markerSource);
   } catch (error) {
@@ -467,6 +718,38 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
       details: { reason: "convert_failed", created, folder: canonical },
       help: board ? `delete ${path.join(canonical, ".git")} and run git worktree prune, then: ${adoptHelp}` : adoptHelp,
     });
+  }
+  if (board && gitPlan && markerCommit) {
+    const checkoutCommand = String(commandFragment`${cliInvocation()} checkout ${commandToken(reference)} --host ${commandToken(bindingHostArgument(target))}`);
+    let movedMarker: string;
+    let recovery: string[] | null = null;
+    let pushed = false;
+    if (markerCommit.state === "no_shared_board") {
+      movedMarker = "no shared board branch (no origin/board): no teammates to stop, so no marker was written";
+    } else if (markerCommit.state === "failed") {
+      movedMarker = `could not write the moved marker (${markerCommit.error}): teammates keep syncing the board until you tell them to check out '${reference}'`;
+    } else {
+      const push = markerCommit.project !== null ? pushMovedMarker(markerCommit.project) : ({ pushed: false, cause: "git", error: "the board's repository could not be found" } as const);
+      if (push.pushed) {
+        pushed = true;
+        movedMarker = `committed and pushed ${MOVED_MARKER_FILE} on the board branch: teammates' next sync refuses to push and prints the checkout command`;
+      } else {
+        const failed = movedMarkerPushFailed(markerCommit.project, push);
+        movedMarker = failed.message;
+        recovery = failed.recovery;
+      }
+    }
+    unbound = {
+      unbound: true,
+      branch: board.branch,
+      upstream: board.upstream,
+      head: gitPlan.head,
+      moved_marker: movedMarker,
+      ...(recovery ? { recovery } : {}),
+      note: pushed
+        ? `the board branch keeps its history, locally and on ${board.upstream ?? "no upstream"}; teammates switch with: ${checkoutCommand}`
+        : `the board branch stays at ${gitPlan.head ?? "its commit"}, locally and on ${board.upstream ?? "no upstream"}; teammates keep syncing it with Git until you tell them to check out '${reference}' instead`,
+    };
   }
   const resume = commandFragment`${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))}`;
   let bound;
@@ -492,13 +775,15 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         bundle_id: bundleId,
         name,
         host: target.origin,
+        host_from: chosen!.source,
         workspace,
-        access: "write (only you, until you share it in the app)",
+        access: `write (only you, until you share it: ${shareFor(slug)}, or in the app)`,
         sent: {
           documents: created.documents ?? plan.documents.length,
           reserved_files: created.reserved ?? plan.reserved.length,
           other_files: created.blobs ?? plan.blobs.length,
           history: created.history ?? { imported: plan.history.length, verified: false },
+          provenance: { carried: plan.provenance.carried, dropped: plan.provenance.dropped },
         },
         folder: canonical,
         home: "hosted",
@@ -513,7 +798,12 @@ export async function publish(argv: string[], partial: Partial<PublishDeps> = {}
         marker: path.join(canonical, ".superbee", "checkout.json"),
         catalog,
         reverse: `${cliInvocation()} checkout --release ${commandToken(canonical)} leaves a plain local folder; the hosted bundle stays until deleted in the app`,
-        help: [`${cliInvocation()} status --dir ${commandToken(canonical)}`, `${cliInvocation()} sync --dir ${commandToken(canonical)}`],
+        help: [
+          // A moved board's teammates reach the bundle only once it is shared with them.
+          ...(board ? [String(shareFor(slug))] : []),
+          `${cliInvocation()} status --dir ${commandToken(canonical)}`,
+          `${cliInvocation()} sync --dir ${commandToken(canonical)}`,
+        ],
       },
       mode,
     ),

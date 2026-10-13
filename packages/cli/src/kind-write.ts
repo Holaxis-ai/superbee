@@ -3,6 +3,7 @@
 import {
   defaultTimestampAndValidateAgainstRegistry,
   KindConformanceError,
+  isKindFieldValidationWarning,
   projectKindForAuthoring,
   projectKindValidationWarnings,
   progressStatusStorageField,
@@ -21,11 +22,11 @@ import { commandLiteral, commandToken, joinCommandTokens, type CommandText } fro
  * (missing/out-of-enum/wrong-arity) in `violations` — one `--<field> <placeholder>` per distinct
  * DECLARED field (a member of `kind.fields.required`/`optional`), deduplicated in first-seen order.
  * An enum-restricted field's placeholder lists its allowed values (`<a|b|c>`) instead of the generic
- * `<value>` token, so the agent picks a real one rather than guessing. A violation naming something
- * other than a declared field — `KIND_SECTION_MISSING` names a missing BODY HEADING, not a
- * `doc update --<field>`-settable frontmatter key — has no flag that can complete it, so it is
- * filtered out by the declared-field membership check; the caller falls back to its generic help
- * when NOTHING is left. Returns `undefined` when `kind` is absent or no violation names a completable
+ * `<value>` token, so the agent picks a real one rather than guessing. A violation naming
+ * a body heading is excluded by the field-warning code classifier, even when its name equals a
+ * declared field. Field warnings must also pass declared-field membership before a patch flag is
+ * suggested; the caller falls back to generic help when NOTHING is left. Returns `undefined`
+ * when `kind` is absent or no violation names a completable
  * field, so the caller can fall back cleanly.
  */
 function buildCompletingUpdateCommand(
@@ -40,7 +41,7 @@ function buildCompletingUpdateCommand(
   const flags: CommandText[] = [];
   for (const violation of violations) {
     const field = violation.field;
-    if (!field || seen.has(field) || !declaredFields.has(field)) continue;
+    if (!isKindFieldValidationWarning(violation) || !field || seen.has(field) || !declaredFields.has(field)) continue;
     seen.add(field);
     const allowed = kind.fields.values[field];
     const placeholder = allowed && allowed.length > 0

@@ -43,8 +43,12 @@
 import { captureBoardHostPolicy, type BoardHostPolicy } from "./host-policy.js";
 import { spawnSync } from "node:child_process";
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -60,6 +64,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  MalformedDocumentError,
   conceptIdFromPath,
   isReservedFile,
   mutationActorFromFrontmatter,
@@ -67,6 +72,15 @@ import {
 } from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
 import { normalizeGitLexicalPath } from "./git-path.js";
+import {
+  PRIVATE_STATE_MAX_RECORD_BYTES,
+  privateStateFinding,
+  privateStatePathEvidence,
+  privateStateRefusalError,
+  readPrivateStateCandidate,
+  sortPrivateStateFindings,
+  type PrivateStateFinding,
+} from "./private-state.js";
 
 /** The dedicated branch that carries ONLY the bundle (its root IS the bundle root). */
 export const BOARD_BRANCH = "board";
@@ -74,6 +88,128 @@ export const BOARD_BRANCH = "board";
 export const BOARD_REMOTE = "origin";
 /** The EXPLICIT remote-tracking ref every pull/rebase/count uses — never `@{u}`. */
 export const BOARD_REF = `${BOARD_REMOTE}/${BOARD_BRANCH}`;
+/**
+ * A repository may carry more boards than the default one: a NAMED board lives on its own
+ * `board-<name>` branch and is used from a standalone checkout of that branch. The branch declares
+ * itself with this committed marker at its root, naming exactly that branch, so a clone of the
+ * branch is recognized with no local configuration and a renamed local branch is not.
+ */
+export const BOARD_MARKER_FILE = ".superbee-board.json";
+/** The one marker schema this client reads and writes. */
+export const BOARD_MARKER_SCHEMA = 1;
+const BOARD_MARKER_BYTES = 4 * 1024;
+/**
+ * Named board branches: `board-` then lowercase kebab segments. Lowercase only, because refs are
+ * files on case-insensitive filesystems; the prefix keeps a code branch from ever being declared.
+ */
+const NAMED_BOARD_BRANCH = /^board-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** `sync --establish`'s committed-folder case prepares its code-branch cleanup commit on this branch. */
+const RESERVED_BOARD_LIKE_BRANCHES: ReadonlySet<string> = new Set(["board-cleanup"]);
+
+/** True for `board` and for a well-formed named board branch (`board-<name>`). */
+export function isBoardBranchName(name: string): boolean {
+  return name === BOARD_BRANCH ||
+    (name.length <= 100 && NAMED_BOARD_BRANCH.test(name) && !RESERVED_BOARD_LIKE_BRANCHES.has(name));
+}
+
+/**
+ * The branch the marker committed at `ref` declares, or null when there is no regular marker
+ * file there or it does not parse as a schema-1 declaration of a named board branch.
+ */
+export function declaredBoardBranchAtRef(dir: string, ref: string): string | null {
+  const entry = runGit(dir, ["ls-tree", "-z", ref, "--", BOARD_MARKER_FILE]);
+  if (entry.status !== 0 || !/^100644 blob [0-9a-f]+\t\.superbee-board\.json\0$/.test(entry.stdout)) return null;
+  const size = runGit(dir, ["cat-file", "-s", `${ref}:${BOARD_MARKER_FILE}`]);
+  if (size.status !== 0 || Number(size.stdout.trim()) > BOARD_MARKER_BYTES) return null;
+  const shown = runGit(dir, ["show", `${ref}:${BOARD_MARKER_FILE}`]);
+  if (shown.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(shown.stdout) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const { schema, branch } = parsed as { schema?: unknown; branch?: unknown };
+    if (schema !== BOARD_MARKER_SCHEMA || typeof branch !== "string") return null;
+    return branch !== BOARD_BRANCH && isBoardBranchName(branch) ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `branch` is a board branch in the repository at `dir`: the default `board`, or a named
+ * `board-<name>` branch whose local tip carries the marker declaring exactly that name.
+ */
+export function isDeclaredBoardBranch(dir: string, branch: string): boolean {
+  // A `board` tip carrying a named board's marker is a named clone renamed to `board`: syncing it
+  // would publish the named board's tree as the default board.
+  if (branch === BOARD_BRANCH) return declaredBoardBranchAtRef(dir, `refs/heads/${BOARD_BRANCH}`) === null;
+  if (!isBoardBranchName(branch)) return false;
+  return declaredBoardBranchAtRef(dir, `refs/heads/${branch}`) === branch;
+}
+
+/**
+ * Recovery for a named board's clone whose tip lost its declaration: when the remote branch still
+ * (or again) declares it, pulling restores the marker; otherwise the marker is restored by hand.
+ */
+function namedBoardRecoveryHelp(dir: string, branch: string): string {
+  const restore = `restore ${BOARD_MARKER_FILE} with {"schema": ${BOARD_MARKER_SCHEMA}, "branch": "${branch}"} in a new commit ` +
+    `(git log -- ${BOARD_MARKER_FILE} shows who changed it)`;
+  if (declaredBoardBranchAtRef(dir, `refs/remotes/${BOARD_REMOTE}/${branch}`) === branch) {
+    return `${BOARD_REMOTE}/${branch} still declares the board: git pull --rebase ${BOARD_REMOTE} ${branch} ` +
+      `restores ${BOARD_MARKER_FILE} here, then re-run sync`;
+  }
+  return `git fetch ${BOARD_REMOTE} ${branch}; if ${BOARD_REMOTE}/${branch} declares the board again, ` +
+    `git pull --rebase ${BOARD_REMOTE} ${branch} restores the marker, otherwise ${restore}; then re-run sync`;
+}
+
+/** The branch a wedged rebase in `dir` started from (git's own `head-name`), or null. */
+function rebaseStartBranch(dir: string): string | null {
+  for (const state of ["rebase-merge", "rebase-apply"]) {
+    const headNamePath = path.join(worktreeGitPath(dir, state), "head-name");
+    if (!existsSync(headNamePath)) continue;
+    try {
+      const name = readFileSync(headNamePath, "utf8").trim();
+      if (name.startsWith("refs/heads/")) return name.slice("refs/heads/".length);
+    } catch {
+      /* an unreadable head-name proves nothing either way — keep checking the other backend */
+    }
+  }
+  return null;
+}
+
+/**
+ * The board branch the checkout at `boardPath` syncs: its attached branch (or the branch a wedged
+ * rebase started from) when that is a named board, otherwise the default `board`. Every fetch,
+ * rebase, push and count against a checkout reads its branch here, so a named board's checkout
+ * never touches `origin/board`.
+ *
+ * A checkout on a `board-<name>` branch whose tip no longer declares that name (its marker was
+ * removed or changed, locally or by a pulled commit) is REFUSED, never treated as the default
+ * board: falling back would aim the rest of a sync at `origin/board`.
+ */
+export function boardBranchOf(boardPath: string): string {
+  const attached = runGit(boardPath, ["symbolic-ref", "-q", "--short", "HEAD"]);
+  const name = attached.status === 0 ? attached.stdout.trim() : rebaseStartBranch(boardPath);
+  if (name === null || name === BOARD_BRANCH || !isBoardBranchName(name)) return BOARD_BRANCH;
+  if (isDeclaredBoardBranch(boardPath, name)) return name;
+  // A code checkout that merely sits on a board-shaped branch is not a board root: it keeps the
+  // default board, exactly as for any other code branch.
+  if (!hasTrackedBundleRootAtRef(boardPath, `refs/heads/${name}`)) return BOARD_BRANCH;
+  throw new BoardGitError(
+    "CONFLICT",
+    `this checkout is on the named board branch '${name}', but its tip no longer declares it: ` +
+      `${BOARD_MARKER_FILE} is missing or names another branch — sync will not guess which board to use`,
+    {
+      details: { path: boardPath, state: "named-board-undeclared", branch: name },
+      help: namedBoardRecoveryHelp(boardPath, name),
+    },
+  );
+}
+
+/** The explicit remote-tracking ref (`origin/<board branch>`) for the checkout at `boardPath`. */
+export function boardRefOf(boardPath: string): string {
+  return `${BOARD_REMOTE}/${boardBranchOf(boardPath)}`;
+}
 /** The canonical folder used for every newly-created project bundle and board worktree. */
 export const BUNDLE_DIR = ".superbee";
 /**
@@ -570,44 +706,49 @@ function hasTrackedBundleRootAtHead(top: string): boolean {
   return hasTrackedBundleRootAtRef(top, "HEAD");
 }
 
-/** Durable provenance for a root clone: the local board branch explicitly tracks origin/board. */
-function boardBranchTracksOrigin(top: string): boolean {
-  const remote = runGit(top, ["config", "--get", `branch.${BOARD_BRANCH}.remote`]);
-  const merge = runGit(top, ["config", "--get", `branch.${BOARD_BRANCH}.merge`]);
+/** Durable provenance for a root clone: the local board branch explicitly tracks its origin branch. */
+function boardBranchTracksOrigin(top: string, branch: string = BOARD_BRANCH): boolean {
+  const remote = runGit(top, ["config", "--get", `branch.${branch}.remote`]);
+  const merge = runGit(top, ["config", "--get", `branch.${branch}.merge`]);
   return remote.status === 0 && remote.stdout.trim() === BOARD_REMOTE &&
-    merge.status === 0 && merge.stdout.trim() === `refs/heads/${BOARD_BRANCH}`;
+    merge.status === 0 && merge.stdout.trim() === `refs/heads/${branch}`;
 }
 
 /** The shared-board histories have a real common ancestor; an unrelated root is never adopted. */
-function standaloneHistoryBase(top: string): string | null {
-  const r = runGit(top, ["merge-base", `refs/heads/${BOARD_BRANCH}`, `refs/remotes/${BOARD_REF}`]);
+function standaloneHistoryBase(top: string, branch: string = BOARD_BRANCH): string | null {
+  const r = runGit(top, ["merge-base", `refs/heads/${branch}`, `refs/remotes/${BOARD_REMOTE}/${branch}`]);
   return r.status === 0 && r.stdout.trim().length > 0 ? r.stdout.trim() : null;
 }
 
 /**
  * Resolve the one supported standalone topology without mutating or touching the network.  This
- * is deliberately stricter than "branch happens to be named board": the root index is a regular
- * tracked OKF document, the branch carries explicit upstream provenance, and cached remote
- * history (when required) is related.  Home, autopull, and provisioning consume this same seam.
+ * is deliberately stricter than "branch happens to be named board": the branch is `board` or a
+ * declared named board ({@link isDeclaredBoardBranch}), the root index is a regular tracked OKF
+ * document, the branch carries explicit upstream provenance, and cached remote history (when
+ * required) is related.  Home, autopull, and provisioning consume this same seam.
  */
 export function resolveStandaloneBoardCheckout(
   dir: string,
   opts: { requireRemoteRef?: boolean } = {},
 ): string | null {
   const top = repoTopLevel(dir);
-  if (!top || currentBranch(top) !== BOARD_BRANCH) return null;
-  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${BOARD_BRANCH}`) || !boardBranchTracksOrigin(top)) return null;
-  const remote = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]);
+  if (!top) return null;
+  const branch = currentBranch(top);
+  if (!isDeclaredBoardBranch(top, branch)) return null;
+  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${branch}`) || !boardBranchTracksOrigin(top, branch)) return null;
+  const remote = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REMOTE}/${branch}`]);
   if (remote.status !== 0) return opts.requireRemoteRef === false ? top : null;
-  return standaloneHistoryBase(top) ? top : null;
+  return standaloneHistoryBase(top, branch) ? top : null;
 }
 
 /** A crashed standalone rebase whose exact pre-rebase branch still proves shared-board authority. */
 export function isRecoverableStandaloneBoardCheckout(dir: string): boolean {
   const top = repoTopLevel(dir);
-  if (!top || !detectStaleRebase(top) || !rebaseWasFromBoardBranch(top)) return false;
-  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${BOARD_BRANCH}`) || !boardBranchTracksOrigin(top)) return false;
-  return standaloneHistoryBase(top) !== null;
+  if (!top || !detectStaleRebase(top)) return false;
+  const branch = rebaseStartBranch(top);
+  if (branch === null || !isDeclaredBoardBranch(top, branch)) return false;
+  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${branch}`) || !boardBranchTracksOrigin(top, branch)) return false;
+  return standaloneHistoryBase(top, branch) !== null;
 }
 
 /** The active board path for read-side consumers: standalone root first, then conventional worktree. */
@@ -621,16 +762,33 @@ export function resolveProvisionedBoardPath(dir: string, hostPolicy?: BoardHostP
 }
 
 function standaloneRootWrongBranch(top: string, branch: string): BoardGitError {
+  const stray = branch === BOARD_BRANCH ? declaredBoardBranchAtRef(top, `refs/heads/${BOARD_BRANCH}`) : null;
+  if (stray !== null) {
+    return new BoardGitError(
+      "CONFLICT",
+      `this '${BOARD_BRANCH}' checkout's tip carries ${BOARD_MARKER_FILE} declaring the named board '${stray}' — ` +
+        `a named board's marker does not belong on the default board, so sync will not publish this tree`,
+      {
+        details: { path: top, state: "default-board-carries-named-marker", branch, declares: stray },
+        help:
+          `if this clone is the named board, rename it back (git branch -m ${stray} and track ${BOARD_REMOTE}/${stray}); ` +
+          `otherwise remove the stray marker (git rm ${BOARD_MARKER_FILE} && git commit; git log -- ${BOARD_MARKER_FILE} ` +
+          `shows who added it), then re-run sync`,
+      },
+    );
+  }
   const shown = branch === "HEAD" ? "detached HEAD" : `'${branch}'`;
   return new BoardGitError(
     "CONFLICT",
     `this repository root is an OKF bundle, but it is checked out at ${shown}; a standalone root ` +
-      `checkout may sync only when it is attached to the dedicated '${BOARD_BRANCH}' branch`,
+      `checkout may sync only when it is attached to the dedicated '${BOARD_BRANCH}' branch or to a ` +
+      `named board branch (board-<name>) whose committed ${BOARD_MARKER_FILE} declares that name`,
     {
       details: { path: top, state: "standalone-board-wrong-branch", branch },
-      help:
-        `use a separate checkout attached to '${BOARD_BRANCH}', or run sync from the repository's ` +
-        `code checkout and let it provision the conventional bundle worktree`,
+      help: branch !== BOARD_BRANCH && isBoardBranchName(branch)
+        ? namedBoardRecoveryHelp(top, branch)
+        : `use a separate checkout attached to '${BOARD_BRANCH}' (or to the named board branch), or run sync ` +
+          `from the repository's code checkout and let it provision the conventional bundle worktree`,
     },
   );
 }
@@ -1126,13 +1284,17 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   if (!top) return { kind: "no_repo" };
   const rootIsBundle = hasTrackedBundleRootAtHead(top);
   const rootBranch = rootIsBundle ? currentBranch(top) : undefined;
-  if (rootBranch !== undefined && rootBranch !== BOARD_BRANCH) {
+  if (rootBranch !== undefined && !isDeclaredBoardBranch(top, rootBranch)) {
     throw standaloneRootWrongBranch(top, rootBranch);
   }
-  const rootOriginBefore = rootBranch === BOARD_BRANCH
-    ? runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`])
+  // The board branch this run probes: a standalone root's own (default or named) board branch, or
+  // the default `board` that a conventional worktree checks out.
+  const branch = rootBranch ?? BOARD_BRANCH;
+  const remoteRef = `refs/remotes/${BOARD_REMOTE}/${branch}`;
+  const rootOriginBefore = rootBranch !== undefined
+    ? runGit(top, ["rev-parse", "--verify", "--quiet", remoteRef])
     : null;
-  const rootCheckout = rootBranch === BOARD_BRANCH
+  const rootCheckout = rootBranch !== undefined
     ? resolveStandaloneBoardCheckout(top, { requireRemoteRef: false })
     : null;
   // Preserve a proven cached baseline before the exact live probe below. Standalone recognition
@@ -1177,14 +1339,14 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
       "ls-remote",
       "--exit-code",
       BOARD_REMOTE,
-      `refs/heads/${BOARD_BRANCH}`,
+      `refs/heads/${branch}`,
     ]);
     if (probe?.status === 0) {
       // Exact `board` cannot coexist remotely with `board/*`; any local children are stale.
       const children = runGit(top, [
         "for-each-ref",
         "--format=%(refname)",
-        `refs/remotes/${BOARD_REF}/`,
+        `${remoteRef}/`,
       ]);
       let namespaceReady = children.status === 0;
       for (const child of children.stdout.split("\n").filter(Boolean)) {
@@ -1196,7 +1358,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
           "--prune",
           "--no-tags",
           BOARD_REMOTE,
-          `+refs/heads/${BOARD_BRANCH}:refs/remotes/${BOARD_REF}`,
+          `+refs/heads/${branch}:${remoteRef}`,
         ]);
         remoteState = fetch?.status === 0 ? "absent" : "unknown";
         liveFetch = fetch?.status === 0;
@@ -1205,14 +1367,14 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
       }
     } else if (probe?.status === 2) {
       remoteBoardKnownAbsent = true;
-      runGit(top, ["update-ref", "-d", `refs/remotes/${BOARD_REF}`]);
+      runGit(top, ["update-ref", "-d", remoteRef]);
     } else {
       remoteState = "unknown";
     }
   }
 
-  const localBoard = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]);
-  const remoteBoard = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]);
+  const localBoard = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  const remoteBoard = runGit(top, ["rev-parse", "--verify", "--quiet", remoteRef]);
   const hasLocal = localBoard.status === 0;
   const hasRemote = remoteBoard.status === 0 && !remoteBoardKnownAbsent;
   // A root checkout is already the exact worktree the remaining sync phases need.  Require the
@@ -1220,7 +1382,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   // authority; a merely local or unrelated branch named `board` keeps the existing explicit-
   // establishment refusal. When this run created the first cached remote ref, carry the proven
   // merge-base forward so the receipt can still describe what arrived during this fetch.
-  if (rootIsBundle && rootBranch === BOARD_BRANCH) {
+  if (rootIsBundle && rootBranch !== undefined) {
     // Standalone publication authority is re-proven live for every sync. A cached ref remains
     // useful for read-side discovery, but it cannot authorize commit/push after an indeterminate
     // exact probe: the remote branch may have been deleted while an ambient fetch refspec excludes
@@ -1233,7 +1395,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
       const fetchedOrigin = remoteBoard.stdout.trim();
       const originBaseline = rootCachedBaseline !== null
         ? rootCachedBaseline === fetchedOrigin ? null : rootCachedBaseline
-        : standaloneHistoryBase(top);
+        : standaloneHistoryBase(top, branch);
       return originBaseline === null
         ? { kind: "already", boardPath: top }
         : { kind: "already", boardPath: top, originBaseline };
@@ -1483,8 +1645,7 @@ export function isConceptDocPath(relPath: string): boolean {
  * pairing instead of being silently skipped.
  */
 export function nameStatusRows(out: string): Array<{ letter: string; relPath: string }> {
-  const fields = out.split("\0");
-  if (fields.length > 0 && fields[fields.length - 1] === "") fields.pop();
+  const fields = nulFields(out);
   const rows: Array<{ letter: string; relPath: string }> = [];
   for (let i = 0; i + 1 < fields.length; i += 2) {
     const letter = (fields[i] ?? "").trim().charAt(0);
@@ -1547,6 +1708,8 @@ export interface CommitResult {
   subject?: string;
   /** The enriched per-doc changes that were committed (empty for a reserved-file-only commit). */
   docs: DocChange[];
+  /** Present when nothing was committed because a staged document's frontmatter does not parse. */
+  held?: HeldDocument[];
 }
 
 /**
@@ -1594,6 +1757,13 @@ export function stageAndCommit(boardPath: string): CommitResult {
   }
 
   const rows = nameStatusRows(mustGit(boardPath, ["diff", "--cached", "--name-status", "--no-renames", "-z"]));
+  // The exact bytes being committed: a file rewritten after sync's worktree check is caught here.
+  // Unstaging leaves every file as it is.
+  const held = malformedDocumentsIn(boardPath, rows, ":0");
+  if (held.length > 0) {
+    mustGit(boardPath, ["reset", "-q"]);
+    return { committed: false, docs: [], held };
+  }
   const docs: DocChange[] = [];
   for (const { letter, relPath } of rows) {
     if (!isConceptDocPath(relPath)) continue;
@@ -1617,6 +1787,121 @@ export function stageAndCommit(boardPath: string): CommitResult {
   );
   const sha = mustGit(boardPath, ["rev-parse", "HEAD"]).trim();
   return { committed: true, sha, subject, docs };
+}
+
+/** An outgoing document sync will not publish, and why. */
+export interface HeldDocument {
+  /** The document id. */
+  id: string;
+  /** Its path, relative to the board worktree. */
+  relPath: string;
+  /** Always `malformed_frontmatter` today: the YAML between the `---` lines does not parse. */
+  reason: "malformed_frontmatter";
+  /** The parser's first line, e.g. where the YAML broke. */
+  detail: string;
+}
+
+/**
+ * Added or edited documents in the board worktree whose frontmatter does not parse. Reads the
+ * worktree bytes `git add -A` would commit (`status -z`, every untracked file, no renames) without
+ * touching the index or any file: sync uses it to hold everything outgoing before it stages, so a
+ * malformed document never reaches the shared board, where it would break every reader. A symlink
+ * or a path that vanished is not a document to judge here (a symlinked `.md` is committed as a
+ * link, unchecked, as before).
+ */
+export function malformedOutgoingDocuments(boardPath: string): HeldDocument[] {
+  const held: HeldDocument[] = [];
+  for (const { status: code, path: relPath } of readStatusRows(boardPath, { allUntracked: true })) {
+    if (code.includes("D") || !isConceptDocPath(relPath)) continue;
+    const file = path.join(boardPath, relPath);
+    const content = readRegularFile(file);
+    if (content === null) continue;
+    try {
+      parseMarkdown(content, relPath);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      held.push({ id: conceptIdFromPath(relPath), relPath, reason: "malformed_frontmatter", detail: error.detail });
+    }
+  }
+  return held.sort((a, b) => a.relPath.localeCompare(b.relPath));
+}
+
+/**
+ * A regular file's text, or null for a symlink, a non-file or a path that vanished. One open
+ * (never following a final symlink where the platform supports it) and a stat of that same
+ * descriptor, so the bytes read are the bytes judged.
+ */
+function readRegularFile(file: string): string | null {
+  let fd: number;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch {
+    return null;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    return readFileSync(fd, "utf8");
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Read one raw Git entry while binding its type and bytes to the inspected leaf. */
+function readBundleEntry(file: string, symlink: boolean): Buffer {
+  const before = lstatSync(file);
+  const sameEntry = (after: typeof before): boolean =>
+    before.dev === after.dev && before.ino === after.ino &&
+    (symlink ? after.isSymbolicLink() : after.isFile() && !after.isSymbolicLink());
+  if (symlink ? !before.isSymbolicLink() : !before.isFile() || before.isSymbolicLink()) {
+    throw new Error("bundle entry type changed");
+  }
+  if (symlink) {
+    const bytes = readlinkSync(file, { encoding: "buffer" });
+    if (!sameEntry(lstatSync(file))) throw new Error("bundle symlink changed");
+    return bytes;
+  }
+  // Nonblocking open allows fstat to reject a substituted FIFO without waiting for a writer.
+  const fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    if (!sameEntry(fstatSync(fd))) throw new Error("bundle file changed before open");
+    const bytes = readFileSync(fd);
+    if (!sameEntry(lstatSync(file))) throw new Error("bundle file changed during read");
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Documents a push would publish whose frontmatter does not parse: those added or changed between
+ * `base` and `ref` (normally `origin/board` and `HEAD`), read at `ref`. Catches a malformed
+ * document already in an unpushed local commit (made by hand, or by an older client whose push
+ * failed), which the worktree check cannot see.
+ */
+export function malformedCommittedDocuments(boardPath: string, base: string, ref: string): HeldDocument[] {
+  const rows = nameStatusRows(mustGit(boardPath, ["diff", "--name-status", "--no-renames", "-z", base, ref]));
+  return malformedDocumentsIn(boardPath, rows, ref);
+}
+
+/** The added or edited concept documents among `rows` whose frontmatter at `rev` does not parse. */
+function malformedDocumentsIn(boardPath: string, rows: Array<{ letter: string; relPath: string }>, rev: string): HeldDocument[] {
+  const held: HeldDocument[] = [];
+  for (const { letter, relPath } of rows) {
+    if (!isConceptDocPath(relPath)) continue;
+    const verb = verbOf(letter);
+    if (verb === null || verb === "deleted") continue;
+    const shown = runGit(boardPath, ["show", `${rev}:${relPath}`]);
+    if (shown.status !== 0) continue;
+    try {
+      parseMarkdown(shown.stdout, relPath);
+    } catch (error) {
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      held.push({ id: conceptIdFromPath(relPath), relPath, reason: "malformed_frontmatter", detail: error.detail });
+    }
+  }
+  return held.sort((a, b) => a.relPath.localeCompare(b.relPath));
 }
 
 /** A root commit assembled from a plain bundle without touching the real index or worktree. */
@@ -1688,13 +1973,8 @@ export function assertBundleBytesMatchCommit(top: string, bundlePath: string, co
       });
     }
     try {
-      const stat = lstatSync(absolute);
-      const actual = mode === "120000" ? readlinkSync(absolute, { encoding: "buffer" }) : readFileSync(absolute);
-      if ((mode === "120000" && !stat.isSymbolicLink()) || (mode !== "120000" && !stat.isFile())) {
-        mismatches.push(relPath);
-      } else if (!Buffer.from(actual).equals(stored.stdout)) {
-        mismatches.push(relPath);
-      }
+      const actual = readBundleEntry(absolute, mode === "120000");
+      if (!actual.equals(stored.stdout)) mismatches.push(relPath);
     } catch {
       mismatches.push(relPath);
     }
@@ -1834,21 +2114,19 @@ export function fetchRebase(boardPath: string): FetchRebaseOutcome {
   // nothing): a replayed commit needs COMMITTER identity too, the same failure class as a plain
   // commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
-  const r = runGit(boardPath, [...idFlags, "rebase", BOARD_REF], {
+  const boardRef = boardRefOf(boardPath);
+  const r = runGit(boardPath, [...idFlags, "rebase", boardRef], {
     rebase: true,
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
   if (r.status === 0) return { status: "clean" };
   if (detectStaleRebase(boardPath)) {
-    const conflicted = mustGit(boardPath, ["diff", "--name-only", "--diff-filter=U"])
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0)
+    const conflicted = conflictedPaths(boardPath)
       .map((p) => (isConceptDocPath(p) ? conceptIdFromPath(p) : p));
     mustGit(boardPath, ["rebase", "--abort"], { rebase: true });
     return { status: "conflict", conflictedDocIds: conflicted };
   }
-  throw classifyGitError(failureOf(["rebase", BOARD_REF], r));
+  throw classifyGitError(failureOf(["rebase", boardRef], r));
 }
 
 // ── fetch + rebase, converging ────────────────────────────────────────────────
@@ -1939,29 +2217,25 @@ const MAX_REBASE_STOPS = 1000;
  */
 export function fetchRebaseResolving(boardPath: string, exportDir: string): FetchRebaseResolvingOutcome {
   mustGit(boardPath, ["fetch", "--prune", BOARD_REMOTE], { timeoutMs: NETWORK_TIMEOUT_MS });
+  const boardRef = boardRefOf(boardPath);
   // The fetch above is a LIVE view of origin, but there is no `origin/board` to rebase onto —
   // checked structurally (not by parsing rebase's failure prose) so this never collides with the
   // conflict-detection loop below.
-  if (runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status !== 0) {
+  if (runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRef}`]).status !== 0) {
     return { status: "no_upstream" };
   }
   // Computed ONCE and reused for every rebase invocation in this function (never `--abort`, which
   // commits nothing): a replayed commit needs COMMITTER identity too, the same failure class as a
   // plain commit — see porcelain.ts's module header site map.
   const idFlags = identityFlags(boardPath);
-  const r = runGit(boardPath, [...idFlags, "rebase", BOARD_REF], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
+  const r = runGit(boardPath, [...idFlags, "rebase", boardRef], { rebase: true, timeoutMs: NETWORK_TIMEOUT_MS });
   if (r.status === 0) return { status: "clean" };
-  if (!detectStaleRebase(boardPath)) throw classifyGitError(failureOf(["rebase", BOARD_REF], r));
+  if (!detectStaleRebase(boardPath)) throw classifyGitError(failureOf(["rebase", boardRef], r));
 
   // `-z` NUL framing: the conflict list is the one parse whose corruption
   // means a STUCK LOOP (a mis-parsed path fails `show :3:`/`checkout`/`rm` on every iteration),
   // so it must be robust even against names the tab/newline-split parsers can't express — NUL
   // output is raw and unquoted BY DEFINITION, independent of any quotepath setting.
-  const listConflicted = (): string[] =>
-    mustGit(boardPath, ["diff", "--name-only", "-z", "--diff-filter=U"])
-      .split("\0")
-      .filter((l) => l.length > 0);
-
   const byPath = new Map<string, ResolvedConflict>();
   try {
     let stops = 0;
@@ -1972,7 +2246,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
           `sync's converging rebase did not terminate after ${MAX_REBASE_STOPS} stops — aborting to leave the board unchanged`,
         );
       }
-      const conflicted = listConflicted();
+      const conflicted = conflictedPaths(boardPath);
       if (conflicted.length === 0) {
         // No unmerged files at this stop: the replayed commit became EMPTY (every change it
         // carried was a conflicted path kept at upstream) — drop it. `--skip` may itself stop on
@@ -2015,8 +2289,8 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
         }
         // 2+3. Keep the UPSTREAM (teammate's) version — explicit ref, never --ours/--theirs. An
         // upstream-side DELETION keeps upstream's state by removing the path instead.
-        if (runGit(boardPath, ["cat-file", "-e", `refs/remotes/${BOARD_REF}:${relPath}`]).status === 0) {
-          mustGit(boardPath, ["checkout", BOARD_REF, "--", relPath]);
+        if (runGit(boardPath, ["cat-file", "-e", `refs/remotes/${boardRef}:${relPath}`]).status === 0) {
+          mustGit(boardPath, ["checkout", boardRef, "--", relPath]);
           mustGit(boardPath, ["add", "--", relPath]);
         } else {
           mustGit(boardPath, ["rm", "-f", "--", relPath]);
@@ -2049,11 +2323,133 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
   return { status: "resolved", conflicts: [...byPath.values()] };
 }
 
+// ── private state: the publication backstop (specification F8) ───────────────
+
+/**
+ * Private state among the worktree files `git add -A` would stage in the board worktree (every
+ * changed or untracked file, no renames), read from the worktree before anything is staged: sync
+ * refuses on a finding, so a refusal never leaves the index staged or a commit made.
+ */
+export function privateStateInOutgoingWorktree(boardPath: string): PrivateStateFinding[] {
+  const found: PrivateStateFinding[] = [];
+  for (const { status: code, path: relPath } of readStatusRows(boardPath, { allUntracked: true })) {
+    if (code.includes("D")) continue;
+    const finding = privateStateFinding(relPath, readPrivateStateCandidate(path.join(boardPath, relPath)));
+    if (finding) found.push(finding);
+  }
+  return sortPrivateStateFindings(found);
+}
+
+/** Bytes git's `cat-file --batch` is asked for at once, well under the spawn wrapper's buffer. */
+const PRIVATE_STATE_BATCH_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Private state among the objects pushing `head` would send: every blob reachable from `head` and
+ * from no `origin` remote-tracking ref, so an unpushed commit made by hand, a blob added and then
+ * deleted in an unpushed commit, or a snapshot commit's whole tree are all judged on the bytes Git
+ * would transmit. Blobs are matched by path first, then (when small enough to be a record) by
+ * content, read in bounded `cat-file --batch` rounds.
+ */
+export function privateStateInOutgoingCommits(dir: string, head: string): PrivateStateFinding[] {
+  const listed = runGit(dir, ["rev-list", "--objects", head, "--not", `--remotes=${BOARD_REMOTE}`]);
+  if (listed.status !== 0) throw classifyGitError(failureOf(["rev-list", "--objects"], listed));
+  const named = new Map<string, string>();
+  for (const line of listed.stdout.split("\n")) {
+    const space = line.indexOf(" ");
+    if (space <= 0) continue;
+    const relPath = line.slice(space + 1);
+    if (relPath.length > 0 && !named.has(line.slice(0, space))) named.set(line.slice(0, space), relPath);
+  }
+  if (named.size === 0) return [];
+  const checked = runGit(dir, ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], {
+    input: `${[...named.keys()].join("\n")}\n`,
+  });
+  if (checked.status !== 0) throw classifyGitError(failureOf(["cat-file", "--batch-check"], checked));
+  const found = new Map<string, PrivateStateFinding>();
+  const toRead: { sha: string; size: number }[] = [];
+  for (const line of checked.stdout.split("\n")) {
+    const [sha, type, sizeText] = line.split(" ");
+    if (!sha) continue;
+    if (type === "tree") {
+      // A new tree named like a guarded root is refused by its path even when every blob under it
+      // is already on the remote (rev-list names a shared blob only at its first path).
+      const treePath = named.get(sha)!;
+      const folder = privateStatePathEvidence(`${treePath}/-`);
+      if (folder?.evidence === "state_folder") found.set(treePath, { path: treePath, evidence: "state_folder", remove: folder.remove });
+      continue;
+    }
+    if (type !== "blob") continue;
+    const relPath = named.get(sha)!;
+    const byName = privateStateFinding(relPath, null);
+    if (byName) {
+      found.set(relPath, byName);
+      continue;
+    }
+    const size = Number(sizeText);
+    if (size > 0 && size <= PRIVATE_STATE_MAX_RECORD_BYTES) toRead.push({ sha, size });
+  }
+  for (let start = 0; start < toRead.length;) {
+    const batch: { sha: string; size: number }[] = [];
+    let bytes = 0;
+    while (start < toRead.length && (batch.length === 0 || bytes + toRead[start]!.size <= PRIVATE_STATE_BATCH_BYTES)) {
+      bytes += toRead[start]!.size;
+      batch.push(toRead[start]!);
+      start += 1;
+    }
+    const read = runGitBytes(dir, ["cat-file", "--batch"], { input: `${batch.map((row) => row.sha).join("\n")}\n` });
+    if (read.status !== 0) throw classifyGitError({ args: ["cat-file", "--batch"], status: read.status, stdout: "", stderr: read.stderr });
+    let offset = 0;
+    for (const row of batch) {
+      const newline = read.stdout.indexOf(0x0a, offset);
+      if (newline === -1) break;
+      const header = read.stdout.subarray(offset, newline).toString("utf8").split(" ");
+      const size = Number(header[2]);
+      const content = read.stdout.subarray(newline + 1, newline + 1 + size);
+      offset = newline + 1 + size + 1;
+      if (header[0] !== row.sha || header[1] !== "blob") continue;
+      const relPath = named.get(row.sha)!;
+      const finding = privateStateFinding(relPath, content);
+      if (finding) found.set(relPath, finding);
+    }
+  }
+  return sortPrivateStateFindings(found.values());
+}
+
+/**
+ * The backstop every board push runs before it sends anything: refuse (CONFLICT) when the objects
+ * the push would transmit carry private state. `base` names the remote ref those commits sit on,
+ * for the remedy.
+ */
+export function assertNoPrivateStateOutgoing(
+  dir: string,
+  head: string,
+  context: { operation: string; rerun: string; base?: string | null },
+): void {
+  const found = privateStateInOutgoingCommits(dir, head);
+  if (found.length === 0) return;
+  throw privateStateRefusalError(found, { operation: context.operation, root: dir, stage: "commits", base: context.base ?? null, rerun: context.rerun });
+}
+
+const PUSH_BACKSTOP = { operation: "publishing the board", rerun: "re-run the command" } as const;
+
+function remoteRefIfPresent(dir: string, branch: string): string | null {
+  const ref = `refs/remotes/${BOARD_REMOTE}/${branch}`;
+  return runGit(dir, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).status === 0 ? `${BOARD_REMOTE}/${branch}` : null;
+}
+
 // ── push ──────────────────────────────────────────────────────────────────────
 
-/** `git push origin board`. Failures classify (AUTH exit 4 vs network exit 1, best-effort). */
-export function push(boardPath: string): void {
-  mustGit(boardPath, ["push", BOARD_REMOTE, BOARD_BRANCH], { timeoutMs: NETWORK_TIMEOUT_MS });
+/**
+ * `git push origin <board branch>`, or, given `commit`, exactly that commit as the board branch
+ * (`<commit>:refs/heads/<board branch>`) — what a caller judged is what is published, even if the
+ * branch moved since. A caller that resolved the board branch earlier passes it, so nothing that
+ * ran in between (a gate, a hook) can change where the push goes. Failures classify (AUTH exit 4 vs network exit 1, best-effort).
+ * Every push first runs the private-state backstop on exactly what it would send.
+ */
+export function push(boardPath: string, commit?: string, branch: string = boardBranchOf(boardPath)): void {
+  const refspec = commit === undefined ? branch : `${commit}:refs/heads/${branch}`;
+  assertNoPrivateStateOutgoing(boardPath, commit ?? `refs/heads/${branch}`, { ...PUSH_BACKSTOP, base: remoteRefIfPresent(boardPath, branch) });
+  mustGit(boardPath, ["push", BOARD_REMOTE, refspec], { timeoutMs: NETWORK_TIMEOUT_MS });
 }
 
 /**
@@ -2066,6 +2462,7 @@ export function push(boardPath: string): void {
  * config can be written for free.
  */
 export function pushBoardUpstream(top: string): void {
+  assertNoPrivateStateOutgoing(top, `refs/heads/${BOARD_BRANCH}`, { ...PUSH_BACKSTOP, base: remoteRefIfPresent(top, BOARD_BRANCH) });
   mustGit(top, ["push", "-u", BOARD_REMOTE, BOARD_BRANCH], { timeoutMs: NETWORK_TIMEOUT_MS });
 }
 
@@ -2075,6 +2472,7 @@ export function pushBoardUpstream(top: string): void {
  * folder, code worktree, code index, and branch namespace untouched.
  */
 export function pushBoardCommit(top: string, commit: string): void {
+  assertNoPrivateStateOutgoing(top, commit, PUSH_BACKSTOP);
   mustGit(top, ["push", BOARD_REMOTE, `${commit}:refs/heads/${BOARD_BRANCH}`], {
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
@@ -2257,7 +2655,7 @@ export function ffPull(boardPath: string, budget: NetworkBudgetOptions = {}): Ff
       fetchReason = swallowReason(classifyGitError(failureOf(["fetch", "--prune"], fetched)));
     }
 
-    const merged = runGit(boardPath, ["merge", "--ff-only", BOARD_REF]);
+    const merged = runGit(boardPath, ["merge", "--ff-only", boardRefOf(boardPath)]);
     if (merged.status !== 0) {
       const text = `${merged.stderr}\n${merged.stdout}`;
       if (/Not possible to fast-forward/i.test(text) || /have diverged/i.test(text)) {
@@ -2288,10 +2686,11 @@ export function ffPull(boardPath: string, budget: NetworkBudgetOptions = {}): Ff
  * against" (the awareness backstop needs both).
  */
 export function unpushedCount(boardPath: string): number | null {
-  if (runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status !== 0) {
+  const boardRef = boardRefOf(boardPath);
+  if (runGit(boardPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/${boardRef}`]).status !== 0) {
     return null;
   }
-  const out = mustGit(boardPath, ["rev-list", "--count", `${BOARD_REF}..HEAD`]).trim();
+  const out = mustGit(boardPath, ["rev-list", "--count", `${boardRef}..HEAD`]).trim();
   const n = Number.parseInt(out, 10);
   return Number.isFinite(n) ? n : 0;
 }
@@ -2317,17 +2716,56 @@ export function currentBranch(top: string): string {
 export interface StatusRow {
   status: string;
   path: string;
+  /** Exact source path for a detected rename/copy; `path` is its destination. */
+  originalPath?: string;
 }
 
-/** Parse `git status --porcelain[ -- <prefix>]` into {@link StatusRow}s (`[]` on a failed status). */
+/** NUL-framed fields preserve path whitespace and avoid Git's human-output C quoting. */
+function nulFields(out: string): string[] {
+  const fields = out.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  return fields;
+}
+
+/**
+ * One status reader. Outgoing checks disable renames (board identity is its path); awareness and
+ * dirty receipts retain configured rename detection and its one-row count. In porcelain -z,
+ * a rename/copy carries destination first and source as a second NUL field, with no arrow text.
+ */
+function readStatusRows(
+  dir: string,
+  opts: { prefix?: string; allUntracked?: boolean; tolerateFailure?: boolean; renamePolicy?: "configured" | "disabled" } = {},
+): StatusRow[] {
+  const args = ["status", "--porcelain=v1", "-z",
+    ...(opts.renamePolicy === "configured" ? [] : ["--no-renames"]),
+    ...(opts.allUntracked ? ["--untracked-files=all"] : []),
+    ...(opts.prefix ? ["--", opts.prefix] : [])];
+  const r = runGit(dir, args);
+  if (r.status !== 0) {
+    if (opts.tolerateFailure) return [];
+    throw classifyGitError(failureOf(args, r));
+  }
+  const fields = nulFields(r.stdout);
+  const rows: StatusRow[] = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const record = fields[i]!;
+    if (record.length < 4) continue;
+    const status = record.slice(0, 2).trim();
+    const row: StatusRow = { status, path: record.slice(3) };
+    if (status.includes("R") || status.includes("C")) row.originalPath = fields[++i]!;
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** Both rebase policies consume the same exact unmerged path identities. */
+function conflictedPaths(dir: string): string[] {
+  return nulFields(mustGit(dir, ["diff", "--name-only", "--no-renames", "-z", "--diff-filter=U"]));
+}
+
+/** NUL-framed status rows; nonzero Git exits remain tolerated as `[]`. Spawn failures still throw. */
 export function statusRows(dir: string, prefix?: string): StatusRow[] {
-  const r = runGit(dir, ["status", "--porcelain", ...(prefix ? ["--", prefix] : [])]);
-  if (r.status !== 0) return [];
-  return r.stdout
-    .split("\n")
-    .map((l) => l.trimEnd())
-    .filter((l) => l.length > 0)
-    .map((l) => ({ status: l.slice(0, 2).trim(), path: l.slice(3) }));
+  return readStatusRows(dir, { prefix, tolerateFailure: true, renamePolicy: "configured" });
 }
 
 /**

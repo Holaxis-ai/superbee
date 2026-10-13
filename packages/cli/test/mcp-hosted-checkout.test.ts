@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { deleteDoc, queryHeads, readDoc, writeBlob, writeDoc, type Bundle } from "@superbee/core";
-import { WHOLE_DOCUMENT_BOUNDS } from "@superbee/core/hosted-transport";
+import { CURRENT_HOST_DOCUMENT_INPUT_BYTES } from "@superbee/core/hosted-transport";
 import { createMcpAppServer, type McpWorkspaceResolver } from "@superbee/mcp-app";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -114,7 +114,7 @@ test("local MCP over a cataloged hosted checkout: reads served, a sendable docum
   await assert.rejects(deleteDoc(context.bundle, "conventions/probe"), refusedAs("convention_folder", true));
   // A document sync would hold: a retype, and one over the bound a sync write carries.
   await assert.rejects(writeDoc(context.bundle, { id: "notes/alpha", frontmatter: { ...alpha.frontmatter, type: "Project" }, body: alpha.body }), refusedAs("type_change", false));
-  await assert.rejects(writeDoc(context.bundle, { id: "notes/alpha", frontmatter: alpha.frontmatter, body: "x".repeat(WHOLE_DOCUMENT_BOUNDS.payloadBytes + 1) }), refusedAs("too_large", false));
+  await assert.rejects(writeDoc(context.bundle, { id: "notes/alpha", frontmatter: alpha.frontmatter, body: "x".repeat(CURRENT_HOST_DOCUMENT_INPUT_BYTES + 1) }), refusedAs("too_large", false));
   assert.equal(await readFile(alphaFile, "utf8"), before, "a refused write leaves the file as it was");
   assert.equal(await exists(path.join(c.folder, "views", "probe", "index.html")), false);
   assert.equal(await exists(path.join(c.folder, "conventions", "probe.md")), false);

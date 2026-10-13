@@ -203,7 +203,7 @@ function checkoutGuard(binding: CheckoutBinding, home: string, folder: StorageBa
           const rel = documentPath(id);
           const bytes = Buffer.from(stringifyDoc(doc.frontmatter, doc.body ?? ""), "utf8");
           const stored = await storedDocument(binding, home, folder, id);
-          const held = unsendable(id, rel, bytes, stored.frontmatter ? { frontmatter: stored.frontmatter } : null, { bundleId: binding.bundle_id, okfVersion: stored.okfVersion }, { definitionWrites: null, sender: "app" });
+          const held = unsendable(id, rel, bytes, stored.frontmatter ? { frontmatter: stored.frontmatter } : null, { bundleId: binding.bundle_id, okfVersion: stored.okfVersion, documentInputBytes: binding.document_input_bytes ?? null }, { definitionWrites: null, sender: "app" });
           if (held) refuse(held);
           // Against the folder's current document, which every write carries `verified` forward
           // from, so only a write that sets it differently is refused. A write made against an

@@ -24,6 +24,7 @@ const REGISTRY = path.join(FIXTURE_DIR, "views-registry/conformance.md");
 const REQUEST_ORDER = [
   "hello",
   "query",
+  "query-newest",
   "read",
   "read-versioned",
   "edges",
@@ -37,7 +38,10 @@ const REQUEST_ORDER = [
 ];
 const BURST_READS = 12;
 /** The wire order: the burst row is BURST_READS `read` requests fired at once. */
-const SENT_ORDER = REQUEST_ORDER.flatMap((request) => (request === "burst" ? Array(BURST_READS).fill("read") : [request]));
+const SENT_ORDER = REQUEST_ORDER.flatMap((request) => {
+  if (request === "burst") return Array(BURST_READS).fill("read");
+  return [request === "query-newest" ? "query" : request];
+});
 
 function clientFromMarkdown(file) {
   const text = readFileSync(file, "utf8");
@@ -79,7 +83,7 @@ test("the conformance registry document and entry are a valid View under the adm
   assert.equal(admitted.bytes.byteLength, bytes.byteLength);
   const html = bytes.toString("utf8");
   assert.doesNotMatch(html, /<script[^>]+src=|<link[^>]+href=|https?:\/\//, "the entry inlines everything");
-  assert.match(html, /<meta name="superbee-conformance-revision" content="3">/);
+  assert.match(html, /<meta name="superbee-conformance-revision" content="4">/);
 });
 
 /** The smallest DOM the fixture touches: elements with attributes, text and children. */
@@ -112,7 +116,7 @@ async function fixtureBundle() {
   });
   await writeDoc(bundle, {
     id: "docs/beta",
-    frontmatter: { type: "Doc", title: "Beta", timestamp: "2026-09-15T00:00:00.000Z" },
+    frontmatter: { type: "Doc", title: "Beta", timestamp: "2026-09-16T00:00:00.000Z" },
     body: "# Beta\n",
   });
   const registry = parseMarkdown(readFileSync(REGISTRY, "utf8"));
@@ -188,15 +192,19 @@ test("the conformance View exercises every request type against the OSS service 
   });
 
   const { rows, document, sent, revision } = await runFixture(service, "launch");
-  assert.equal(revision, "3");
+  assert.equal(revision, "4");
   assert.deepEqual(rows.map((row) => row.request), REQUEST_ORDER, "one row per request type, in protocol order");
   assert.deepEqual(sent.map((message) => message.type), SENT_ORDER, "one request per row, in the same order, and a burst of reads");
 
   const byRequest = Object.fromEntries(rows.map((row) => [row.request, row]));
   assert.equal(byRequest.hello.status, "answered");
-  assert.match(byRequest.hello.summary, /^kind=oss grant=read limits\.query=500 capabilities=edges,graph,open-page,query\.count,query\.field-or,query\.kind-projection,query\.open,render-document,subscribe-deltas$/);
+  assert.match(byRequest.hello.summary, /^kind=oss grant=read limits\.query=500 capabilities=edges,graph,open-page,query\.count,query\.field-or,query\.kind-projection,query\.newest,query\.open,render-document,subscribe-deltas$/);
   assert.equal(byRequest.query.status, "answered");
   assert.equal(byRequest.query.summary, "rows=3 count=3");
+  assert.equal(byRequest["query-newest"].status, "answered");
+  assert.equal(byRequest["query-newest"].summary, "rows=3 count=3 first=docs/beta", "the newer document leads");
+  assert.deepEqual(sent.filter((message) => message.type === "query").map((message) => message.params),
+    [{ limit: 5 }, { order: "newest", limit: 5 }]);
   const firstDoc = sent.find((message) => message.type === "read").docId;
   assert.equal(byRequest.read.status, "answered");
   assert.match(byRequest.read.summary, new RegExp(`^id=${firstDoc.replace(/[/.]/g, "\\$&")} body=\\d+ chars$`));
@@ -232,7 +240,7 @@ test("the conformance View exercises every request type against the OSS service 
     assert.deepEqual([...tr.children.map((td) => td.textContent)], [rows[index].request, rows[index].status, rows[index].summary]);
   });
   assert.equal(document.getElementById("host").textContent, "host: oss (test)");
-  assert.match(document.getElementById("status").textContent, /^complete: 12 rows, 0 change events/);
+  assert.match(document.getElementById("status").textContent, /^complete: 13 rows, 0 change events/);
   assert.equal(
     sent.find((message) => message.type === "action.propose").action.expectedVersion,
     byRequest["read-versioned"].summary.split("version=")[1],
@@ -261,9 +269,34 @@ test("the conformance View reports refresh-only subscriptions and refused reads 
     assert.equal(row.status, "refused", request);
     assert.match(row.summary, /^FORBIDDEN: /, request);
   }
-  for (const request of ["read", "read-versioned", "render-document", "burst"]) {
+  for (const request of ["query-newest", "read", "read-versioned", "render-document", "burst"]) {
     assert.equal(rows.find((candidate) => candidate.request === request).status, "skipped", request);
   }
   assert.equal(rows.find((row) => row.request === "action.propose").status, "refused");
   assert.equal(rows.find((row) => row.request === "open-page").status, "refused");
+});
+
+test("the conformance View skips query-newest on a host that does not declare query.newest", async () => {
+  const bundle = await fixtureBundle();
+  const service = new BridgeService({
+    bundle,
+    launches: {
+      async resolve(launchId) {
+        return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
+      },
+      revoke() {},
+    },
+    config: async () => ({ root: null, name: "Conformance fixture", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    host: {
+      kind: "oss",
+      capabilities: BRIDGE_SERVICE_CAPABILITIES.filter((name) => name !== BRIDGE_HOST_CAPABILITIES.queryNewest),
+      limits: BRIDGE_SERVICE_LIMITS,
+    },
+  });
+  const { rows, sent } = await runFixture(service, "launch");
+  assert.deepEqual(rows.map((row) => row.request), REQUEST_ORDER);
+  const row = rows.find((candidate) => candidate.request === "query-newest");
+  assert.deepEqual(row, { request: "query-newest", status: "skipped", summary: "query.newest not declared" });
+  assert.equal(sent.filter((message) => message.type === "query").length, 1, "no ordered query is sent");
 });

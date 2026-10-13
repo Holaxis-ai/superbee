@@ -30,8 +30,7 @@ interface Harness {
   host: FakeHost;
 }
 
-async function harness(): Promise<Harness> {
-  const host = new FakeHost();
+async function harness(host = new FakeHost()): Promise<Harness> {
   const home = await mkdtemp(path.join(tmpdir(), "sb-status-home-"));
   const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "sb-status-cwd-")));
   const auth = defaultHostedAuthDeps(home, {
@@ -140,6 +139,17 @@ test("a non-document file is held, not unsent", async () => {
   assert.equal(block.held_files, 1);
   assert.deepEqual(block.held_rows, [{ id: "scratch.txt", reason: "not_a_document" }]);
   assert.deepEqual(help, [`${cliInvocation()} sync --dir ${h.folder}`]);
+});
+
+test("offline, a large edit is unsent under the bound the host stated at checkout, and held where it stated none", async () => {
+  const body = `${"a line of a long meeting transcript\n".repeat(5_700)}`;
+  const current = await harness();
+  await edit(current, "notes/alpha", (doc) => void (doc.body = body));
+  const { sync: block } = await runStatus(current);
+  assert.deepEqual([block.unsent_ids, block.held_files], [["notes/alpha"], 0]);
+  const old = await harness(new FakeHost({ documentInputBytes: null }));
+  await edit(old, "notes/alpha", (doc) => void (doc.body = body));
+  assert.deepEqual((await runStatus(old)).sync.held_rows, [{ id: "notes/alpha", reason: "too_large" }]);
 });
 
 test("a document changed on both sides is a conflict; help names sync --inspect --doc <id>", async () => {

@@ -65,20 +65,62 @@ Only run it when the person asks for the move.
    link, as below), creates the bundle, and converts the folder in place into a hosted checkout.
    No file is rewritten.
 3. A Git board is unbound from its `board` branch, but the branch stays, locally and on origin.
-   Tell the person their teammates keep using the Git board until they check out the hosted bundle
-   instead. A board that is behind its upstream is refused until `superbee sync` brings it current.
+   For a board shared on origin, publish commits and pushes a moved marker on the branch:
+   teammates' next `superbee sync` refuses to push and names the checkout command. Teammates on an
+   older CLI are not stopped, so suggest protecting the `board` branch until everyone updates. If
+   the receipt says the marker push was rejected or failed, show the person its `recovery`
+   commands. After the board is moved back (the marker commit reverted on origin), teammates'
+   next `superbee sync` works again. A board that is behind its upstream is refused
+   until `superbee sync` brings it current.
 4. `--with-history` imports a Git board's earlier versions as labeled, unverified history. Use it
    only when the person asks for history.
 5. `TRANSIENT` with `write_outcome_unknown` means the creation may be partial: re-run the same
    command, which finishes or confirms the same creation.
+6. Only the person can reach the new bundle until it is shared (next section).
+
+## Sharing a hosted bundle, and retiring one
+
+`superbee access list <bundle>` shows the person's own access and, for a workspace admin, everyone
+with access. When the person asks you to share a bundle with someone, run
+`superbee access grant <bundle> <email> --level read|write` without `--yes` first, show the
+preview, then run the `--yes` command it names. `access revoke <bundle> <email>` works the same
+way. Only a workspace admin may change access. `person_not_member` means the person must invite
+them from the Members page in the Superbee app first. Repeating a grant or revoke is safe.
+
+`superbee bundle retire <bundle>` is the person's step, never yours: it needs them to type the
+bundle id in their own terminal. If it refuses with `needs_person_at_terminal`, show the person
+the host's statement and give them the command; do not try to work around it.
 
 ## Sign-in: relay the link, then retry
 
-Hosted commands start sign-in by themselves. When a command returns `AUTH_REQUIRED` (exit 4):
+First run on a machine, in order:
 
-1. Give the person `details.sign_in_url` and `details.user_code` exactly as returned.
-2. Wait until they say they have confirmed.
-3. Run the same command again (`details.resume`). It finishes sign-in and continues.
+1. `superbee whoami`. It exits 0 either way. `signed_in: false` with `status: not_signed_in` names
+   the command to run; `status: waiting_for_confirmation` lists a sign-in already started, with its
+   link. The CLI never picks a host on its own; if the person may use a host other than the one
+   named, ask them which.
+2. `superbee login --host <url>`. It returns exit 4 while it waits for the person (below).
+3. Once they confirm, re-run the same `login`. It reports `signed_in`, and later hosted reads use
+   that host until another is named with `--host`. Writes such as `checkout` and `publish` need
+   `--host` once you are signed in to more than one host.
+
+Exit 4 (`AUTH_REQUIRED`) means sign-in is needed. It is not a failure, so do not report it as one.
+Read `details.status`:
+
+- `waiting_for_confirmation`: a sign-in has started and is waiting for the person.
+  1. Give the person `details.sign_in_url` and `details.user_code` exactly as returned.
+  2. Wait until they say they have confirmed.
+  3. Run the same command again (`details.resume`). It finishes sign-in and continues.
+- `not_signed_in`: no host is known on this machine yet. Run `details.sign_in_command` (or the same
+  `login` with the person's host), then re-run the original command.
+- No `status` (for example a session that ended during a sync): run the `login` command in `help`,
+  relay the link it returns as above, then re-run the original command.
+
+A `RUNTIME` error with `details.reason: state_dir_not_writable` means this process may not write
+Superbee's private state directory, `~/.superbee-state`. The usual cause is an agent sandbox that
+allows writes only inside the workspace. Ask the person to allow writes to that directory (or to
+approve running the command outside the sandbox), then re-run it. There is no override for the
+directory's location.
 
 Never ask for a password, token or code the person did not see in their browser.
 `superbee setup hosted` signs in and records the default hosted workspace in one step. If the
@@ -140,6 +182,21 @@ the write named. `count` is the host's total; `--limit 0` lists up to 10,000 of 
 doc history <id> --seq <n>` shows version `n` (add `--json` for its whole content). A document
 created in the folder has history once `superbee sync` sends it. To compare-and-swap, use the
 folder's own version from `doc read`, not the host's newest version.
+
+## Large documents
+
+A host accepts documents up to the size it states (on current hosts 983,040 bytes as sent, about
+950 KiB of Markdown, since each newline, quote or backslash counts twice; 64 KiB on older ones).
+Sync holds a larger one with reason `too_large` and sends nothing: split it, or keep the edit until
+the host accepts it. Never shorten someone else's document just to make it sync.
+
+Read a large document a page at a time instead of pulling it whole into context: `superbee doc read
+<id> --offset 0 --json` answers `body` as one page of about 32 KiB with `range` (`complete`,
+`next_offset`); continue with `--offset <next_offset> --expected-version <head_version>` while
+`next_offset` is present. The page without `next_offset` is the last one; `complete` is true only
+when the whole body fit in one page, so never loop on it. A page is not the document: never write
+it back as the body. To edit, use `doc read <id> --body-out <path-outside-bundle>`, edit that file,
+then `doc update <id> --body-file <path> --expected-version <version>`.
 
 ## Host reads with no verb yet: `op list` and `op run`
 
@@ -206,6 +263,32 @@ A host document whose id cannot be a file in the folder (a path-like id such as 
 with a `held` row, reason `unsafe_id`, and the rest of the bundle syncs. A host document whose id
 differs only in letter case from another is held as `case_collision`. Both are renamed in the
 Superbee app, by the person.
+
+## The bundle's front page (the root `index.md`)
+
+The root `index.md` syncs as one file of its own when the host lets you change the bundle's front
+page (anyone who may write the bundle may). An edit to it is sent with the next `superbee sync`
+against the host's version the folder last had, and a front page changed on the host replaces an
+unedited file. If both changed, the receipt has a `conflict` row for `index.md`, and nothing is
+sent:
+
+```sh
+superbee sync --inspect --doc index.md          # base, your front page, the host's
+superbee sync --resolve take --doc index.md     # use the host's
+superbee sync --resolve keep --doc index.md     # the next sync sends yours over the inspected host version
+```
+
+- `keep` needs an `--inspect` first, as for a document. It sends the file as it is at that next
+  sync, so edit it to the combined result first if you want both. `revise` does the same.
+- A front page over 64 KiB as a request is held (`too_large`), and one that is not plain UTF-8
+  text (or starts with a byte-order mark) is held (`not_sendable`). The host refuses one that
+  changes the bundle's `okf_version` (`refused`, `validation_failed`).
+- A lost answer is settled by the host's front page itself: the next sync never sends it twice.
+- Where the host does not take front-page changes from you (an older host, or no write access), an
+  edited root `index.md` is held (`reserved_file`): change it in the Superbee app.
+- A root `index.md` that is a symbolic link (`symlink`) or a folder (`unsafe_path`) is held: sync
+  never reads, sends or replaces through it.
+- A subdirectory `index.md` and every `log.md` are always held (`reserved_file`).
 
 ## Refusals that belong to the person
 

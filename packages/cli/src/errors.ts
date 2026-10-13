@@ -64,6 +64,12 @@ export type CliErrorCode =
    */
   | "CONFLICT"
   /**
+   * A Git board's declared sync gate (`superbee.syncGate`) rejected the converged tree, so sync
+   * pushed nothing; the work stays committed locally. Exit 5 like the other "hand it back to the
+   * writer" outcomes (conflicts, held documents), with a distinct code.
+   */
+  | "GATE_FAILED"
+  /**
    * Hosted sign-in cannot reach the OS credential store (tool missing, no Secret Service, keychain
    * locked or prompting). Exit 1 with a distinct code: the fix is the environment (or the explicit
    * SUPERBEE_CREDENTIAL_STORE=file opt-in), never re-authenticating, and never a silent plaintext
@@ -106,6 +112,7 @@ const CODE_EXIT: Record<CliErrorCode, number> = {
   NO_UPSTREAM: EXIT.RUNTIME,
   GIT_BUSY: EXIT.RUNTIME,
   CONFLICT: EXIT.CONFLICT,
+  GATE_FAILED: EXIT.CONFLICT,
   CREDENTIAL_STORE_UNAVAILABLE: EXIT.RUNTIME,
 };
 

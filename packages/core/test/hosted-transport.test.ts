@@ -40,12 +40,22 @@ import {
   READ_ANSWER_ROWS,
   UPDATE_ANSWER_ROWS,
   wholeDocumentRequest,
+  HOSTED_MANAGED_FIELDS,
+  IMPORT_CARRIED_FIELDS,
+  IMPORT_DROPPED_FIELDS,
   WHOLE_DOCUMENT_SETTLEMENT,
   WholeDocumentInputError,
   type HostedAnswer,
   type HostedCarrier,
   type HostedRequestOptions,
   type HostedStream,
+  classifyRootAnswer,
+  rootLanding,
+  rootVersionOf,
+  rootWriteRequest,
+  RootWriteInputError,
+  ROOT_OPERATION_ID,
+  sendRootWrite,
 } from "../src/hosted-transport/index.js";
 import { RemoteError } from "../src/remote-error.js";
 import { SNAPSHOT_TRUNCATED } from "../src/remote-parsers.js";
@@ -632,6 +642,35 @@ test("whole-document request: the kernel's structural bounds refuse a document b
   assert.equal(wholeDocumentRequest("team.knowledge", intentOf(BASE, { type: "Note", ...managed, timestamp: "2026-09-22T00:00:00.000Z", actor: "a" })).kind, "replace");
 });
 
+test("whole-document request: an import create carries provenance as authored and never verified or superbee_updated_by", () => {
+  const generated = { by: "agent:writer", at: "2026-09-01T00:00:00.000Z" };
+  const verified = [{ by: "person:ada", at: "2026-09-02T00:00:00.000Z" }];
+  const authored = { type: "Note", title: "Alpha", generated, verified, superbee_updated_by: "person:ada", timestamp: "2026-09-01T00:00:00.000Z", actor: "someone", okf_version: "0.2" };
+  assert.deepEqual([...IMPORT_CARRIED_FIELDS, ...IMPORT_DROPPED_FIELDS].sort(), [...HOSTED_MANAGED_FIELDS].sort(), "every managed field is either carried or dropped");
+  assert.deepEqual([...IMPORT_DROPPED_FIELDS].sort(), ["superbee_updated_by", "verified"]);
+  const create = wholeDocumentRequest("team.knowledge", intentOf(null, authored), "0.2", { mode: "import" });
+  assert.equal(create.kind, "create");
+  assert.deepEqual(create.payload.frontmatter, { type: "Note", title: "Alpha", generated, timestamp: "2026-09-01T00:00:00.000Z", actor: "someone", okf_version: "0.2" });
+  assert.deepEqual(create.kind === "create" && create.provenance, { carried: ["generated", "timestamp", "actor", "okf_version"], dropped: ["verified", "superbee_updated_by"] });
+  // The same document as an ordinary write: no managed field leaves, and no provenance is reported.
+  const write = wholeDocumentRequest("team.knowledge", intentOf(null, authored), "0.2");
+  assert.deepEqual(write.payload, { bundleId: "team.knowledge", documentId: "notes/alpha", expectAbsent: true, frontmatter: { type: "Note", title: "Alpha" }, body: "Alpha body changed é\r\n" });
+  assert.equal("provenance" in write, false);
+  const replace = wholeDocumentRequest("team.knowledge", intentOf(BASE, authored), "0.2");
+  assert.deepEqual(replace.kind === "replace" && replace.payload.frontmatter, { type: "Note", title: "Alpha" });
+  // Only a create imports: a replace or a delete asking to is refused before anything is read.
+  for (const intent of [intentOf(BASE, authored), { ...intentOf(BASE), kind: "document.delete" }]) {
+    assert.throws(() => wholeDocumentRequest("team.knowledge", intent, "0.2", { mode: "import" }), (error: unknown) => error instanceof WholeDocumentInputError && error.code === "unsupported_operation");
+  }
+  // Carried fields are the host's to hold and do not count toward the authored-field bound.
+  const many = Object.fromEntries(Array.from({ length: 31 }, (_, index) => [`f${index}`, index]));
+  const full = wholeDocumentRequest("team.knowledge", intentOf(null, { type: "Note", ...many, generated, timestamp: "2026-09-01T00:00:00.000Z", actor: "a", okf_version: "0.1" }), "0.1", { mode: "import" });
+  assert.equal(Object.keys(full.kind === "create" ? full.payload.frontmatter : {}).length, 36);
+  // A v0.1 document keeps its unquoted YAML timestamp as the normalized ISO string a local engine reads.
+  const v01 = wholeDocumentRequest("team.knowledge", { ...intentOf(null), content: "---\ntype: Note\ntimestamp: 2026-07-01T12:05:00Z\nactor: person:ada\n---\nx\n" }, "0.1", { mode: "import" });
+  assert.deepEqual(v01.kind === "create" && v01.payload.frontmatter, { type: "Note", timestamp: "2026-07-01T12:05:00.000Z", actor: "person:ada" });
+});
+
 test("whole-document transport: a create whose conflict read finds the document deleted is unknown, and the next delivery creates it", async () => {
   const intent = intentOf(null);
   const exists = (): HostedAnswer => ({
@@ -801,6 +840,11 @@ test("fetch carrier: credential, identity and binding headers ride every request
   const before = seen.length;
   await assert.rejects(signedOut.json("/sync/v1/heads", {}, new AbortController().signal, { maximum: 1024 }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
   await assert.rejects(carrier.json("/sync/v1/replace", {}, new AbortController().signal, { maximum: 1024, writeRequest: "not-a-uuid" }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
+  // An unbounded answer is never read: a missing or nonsensical maximum refuses before sending.
+  for (const maximum of [Number.NaN, 0, Number.POSITIVE_INFINITY, undefined as unknown as number]) {
+    await assert.rejects(carrier.json("/sync/v1/replace", {}, new AbortController().signal, { maximum }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
+    await assert.rejects(carrier.bytes!("/sync/v1/bundle-create-blob", new Uint8Array([1]), new AbortController().signal, { maximum }), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
+  }
   assert.equal(seen.length, before);
 });
 
@@ -939,4 +983,70 @@ test("history pages: absence on the first page is the answer, and any other refu
   const refusal = { code: "insufficient_scope", message: "no", retryable: false };
   assert.deepEqual(await listing(async () => ({ ok: false, refusal }), 20), { status: "refused", refusal });
   await assert.rejects(listing(lineage(1).read, 20, { pageSize: 101 }), RangeError);
+});
+
+// ── the front page: bundles.root.replace.v1 (lane front-page wire contract) ─────────────────────
+
+const ROOT_BUNDLE = "team.knowledge";
+const ROOT_BASE = `sha256:${"a".repeat(64)}`;
+const rootPage = "---\nokf_version: \"0.2\"\ntitle: Front\n---\n# Front\n";
+const rootFailure = (code: string, writeState = "not_applied", extra: Record<string, unknown> = {}) => ({ ok: false, operationId: ROOT_OPERATION_ID, error: { code, message: `refused: ${code}`, retryable: false, writeState, ...extra } });
+
+test("a root write is a CAS replace or create, measured as encoded, refused before sending when the host could only refuse it", () => {
+  assert.deepEqual(rootWriteRequest(ROOT_BUNDLE, rootPage, ROOT_BASE).payload, { bundleId: ROOT_BUNDLE, content: rootPage, expectedVersion: ROOT_BASE });
+  assert.deepEqual(rootWriteRequest(ROOT_BUNDLE, rootPage, null).payload, { bundleId: ROOT_BUNDLE, content: rootPage, expectAbsent: true });
+  assert.equal(rootVersionOf(rootPage), versionOfBytes(rootPage), "the host's version is the digest of the UTF-8 bytes");
+  // The bound is the encoded request, not the content: escapes count.
+  const quotes = '"'.repeat(40 * 1024);
+  assert.ok(new TextEncoder().encode(quotes).byteLength < 65536);
+  assert.throws(() => rootWriteRequest(ROOT_BUNDLE, quotes, ROOT_BASE), (error: unknown) => error instanceof RootWriteInputError && error.code === "too_large");
+  assert.throws(() => rootWriteRequest(ROOT_BUNDLE, `﻿${rootPage}`, ROOT_BASE), (error: unknown) => error instanceof RootWriteInputError && error.code === "invalid_input");
+  assert.throws(() => rootWriteRequest(ROOT_BUNDLE, `${rootPage}\uD800`, ROOT_BASE), (error: unknown) => error instanceof RootWriteInputError && error.code === "invalid_input");
+});
+
+test("a root write's answers: success only for the bytes sent, refusals final, anything the host may have applied unknown", () => {
+  const sent = rootVersionOf(rootPage);
+  const expected = { bundleId: ROOT_BUNDLE, sent };
+  const classify = (status: number, body: unknown) => classifyRootAnswer({ status, body }, expected);
+  assert.deepEqual(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, data: { bundleId: ROOT_BUNDLE, version: sent, changed: true } }), { kind: "committed", version: sent, changed: true });
+  // A success for other bytes, another bundle or another operation is not evidence about this write.
+  assert.equal(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, data: { bundleId: ROOT_BUNDLE, version: ROOT_BASE, changed: true } }).kind, "unknown");
+  assert.equal(classify(200, { ok: true, operationId: ROOT_OPERATION_ID, data: { bundleId: "other", version: sent, changed: true } }).kind, "unknown");
+  assert.equal(classify(200, { ok: true, operationId: "documents.replace.v1", data: { bundleId: ROOT_BUNDLE, version: sent, changed: true } }).kind, "unknown");
+  assert.deepEqual(classify(200, rootFailure("version_conflict", "not_applied", { currentVersion: ROOT_BASE })), { kind: "conflict", current: ROOT_BASE });
+  assert.deepEqual(classify(200, rootFailure("document_exists", "not_applied", { currentVersion: ROOT_BASE })), { kind: "conflict", current: ROOT_BASE });
+  assert.deepEqual(classify(200, rootFailure("validation_failed")), { kind: "refused", code: "validation_failed", message: "refused: validation_failed" });
+  assert.equal((classify(200, rootFailure("insufficient_scope")) as { authorization?: string }).authorization, "PERMISSION_DENIED");
+  assert.equal(classify(200, rootFailure("write_outcome_unknown", "unknown")).kind, "unknown");
+  assert.deepEqual(classify(400, { error: { code: "invalid_input" } }), { kind: "refused", code: "invalid_input", message: "The host refused the request as malformed; nothing was written.", malformed: true });
+  // As the identified writes' 403 row: access withdrawn, under AUTH_REQUIRED, never a read-only refusal.
+  assert.deepEqual(classify(403, { error: "access_denied" }), { kind: "refused", code: "access_withdrawn", message: "The host denied access to this bundle.", authorization: "AUTH_REQUIRED" });
+  assert.equal((classify(401, { error: { code: "unauthenticated", writeState: "not_applied" } }) as { authorization?: string }).authorization, "AUTH_REQUIRED");
+  assert.equal(classify(401, { error: { code: "write_outcome_unknown", writeState: "unknown" } }).kind, "unknown");
+  assert.equal(classify(503, { error: { code: "write_outcome_unknown", writeState: "unknown" } }).kind, "unknown");
+  assert.equal(classify(503, { error: { code: "backend_unavailable", writeState: "not_applied" } }).kind, "refused");
+  assert.equal(classify(502, undefined).kind, "unknown");
+});
+
+test("a root write never carries a request identity, and a lost answer is settled by the root version alone", async () => {
+  const seen: HostedRequestOptions[] = [];
+  const carrier: HostedCarrier = {
+    async json(_route, _input, _signal, options) {
+      seen.push(options);
+      throw new HostedCarrierError("unavailable");
+    },
+    stream: async () => {
+      throw new Error("unused");
+    },
+  };
+  const binding = `sha256:${"b".repeat(64)}`;
+  assert.deepEqual(await sendRootWrite({ carrier, route: "/sync/v1/root", bundleId: ROOT_BUNDLE, binding, via: "claude-code", content: rootPage, base: ROOT_BASE }), { kind: "unknown" });
+  assert.equal(seen[0]!.writeRequest, undefined);
+  assert.equal(seen[0]!.binding, binding);
+  assert.equal(seen[0]!.via, "claude-code");
+  const sent = rootVersionOf(rootPage);
+  assert.equal(rootLanding(sent, sent, ROOT_BASE), "landed");
+  assert.equal(rootLanding(ROOT_BASE, sent, ROOT_BASE), "not_landed");
+  assert.equal(rootLanding(null, sent, null), "not_landed");
+  assert.equal(rootLanding(`sha256:${"c".repeat(64)}`, sent, ROOT_BASE), "conflict");
 });

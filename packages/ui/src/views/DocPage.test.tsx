@@ -9,14 +9,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DocPage } from "./DocPage.js";
-import { ApiError, getDoc, listAllHeads } from "../api/client.js";
+import { ApiError, getDoc, listAllHeadsReport } from "../api/client.js";
 import { fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock("../api/client.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../api/client.js")>();
-  return { ...original, getDoc: vi.fn(), listAllHeads: vi.fn(async () => []) };
+  return { ...original, getDoc: vi.fn(), listAllHeadsReport: vi.fn(async () => ({ heads: [], skipped: [] })) };
 });
 
 vi.mock("../api/pages.js", () => ({
@@ -62,8 +62,8 @@ describe("DocPage", () => {
     vi.mocked(fetchKinds).mockResolvedValue([]);
     vi.mocked(fetchDocumentOpenCommand).mockReset();
     vi.mocked(fetchDocumentOpenCommand).mockImplementation(async (id) => `superbee doc open ${id}`);
-    vi.mocked(listAllHeads).mockReset();
-    vi.mocked(listAllHeads).mockResolvedValue([]);
+    vi.mocked(listAllHeadsReport).mockReset();
+    vi.mocked(listAllHeadsReport).mockResolvedValue({ heads: [], skipped: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -259,10 +259,13 @@ describe("DocPage", () => {
       version: "v1",
     });
     // Heads supply the target titles shown in the rows.
-    vi.mocked(listAllHeads).mockResolvedValue([
-      { id: "tasks/a", version: "v1", frontmatter: { type: "Task", title: "Inventory the resources" } },
-      { id: "tasks/b", version: "v1", frontmatter: { type: "Task", title: "Verify the npm package" } },
-    ] as never);
+    vi.mocked(listAllHeadsReport).mockResolvedValue({
+      heads: [
+        { id: "tasks/a", version: "v1", frontmatter: { type: "Task", title: "Inventory the resources" } },
+        { id: "tasks/b", version: "v1", frontmatter: { type: "Task", title: "Verify the npm package" } },
+      ],
+      skipped: [],
+    } as never);
     vi.mocked(fetchEdges).mockResolvedValue([]); // no backlinks
 
     await render("roadmap-items/x");
@@ -286,7 +289,7 @@ describe("DocPage", () => {
       }
       throw new ApiError(404, "NOT_FOUND", "no such doc");
     });
-    vi.mocked(listAllHeads).mockResolvedValue([]); // ghost has no head → no title
+    vi.mocked(listAllHeadsReport).mockResolvedValue({ heads: [], skipped: [] }); // ghost has no head → no title
 
     await render("tasks/src");
     const row = container.querySelector(".doc-body .doc-edge-row") as HTMLAnchorElement;

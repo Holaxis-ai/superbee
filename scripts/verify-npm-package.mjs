@@ -42,6 +42,7 @@ const publicationExpectedFiles = [
   "dist/publication/schema.d.ts",
   "dist/publication/schema/publication-snapshot-v1.schema.json",
   "dist/publication/snapshot-backend.d.ts",
+  "dist/publication/source-exclusions.d.ts",
   "dist/publication/types.d.ts",
 ];
 const bundleDescriptorExpectedFiles = [
@@ -60,6 +61,8 @@ const baseExpectedFiles = [
   "package.json",
   ...publicationExpectedFiles,
   ...bundleDescriptorExpectedFiles,
+  "dist/portable-export.mjs",
+  "dist/portable-export.d.ts",
 ];
 
 function assertSupportedPlatform(platform) {
@@ -311,7 +314,7 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
     expectedArtifact === SUCCESSOR_ARTIFACT
-      ? ["dist/bundle-descriptor.mjs", "dist/publication-bridge.mjs", "dist/publication.mjs", expectedArtifact].sort()
+      ? ["dist/portable-export.mjs", "dist/bundle-descriptor.mjs", "dist/publication-bridge.mjs", "dist/publication.mjs", expectedArtifact].sort()
       : [expectedArtifact],
     "the tarball must carry the declared executable and declared public subpath bundles",
   );
@@ -329,6 +332,10 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
     assert.deepEqual(manifest.exports?.["./publication/bridge"], {
       types: "./dist/publication/bridge-entry.d.ts",
       default: "./dist/publication-bridge.mjs",
+    });
+    assert.deepEqual(manifest.exports?.["./portable-export"], {
+      types: "./dist/portable-export.d.ts",
+      default: "./dist/portable-export.mjs",
     });
     assert.deepEqual(manifest.exports?.["./bundle-descriptor"], {
       types: "./dist/bundle-descriptor/index.d.ts",
@@ -532,6 +539,15 @@ async function runInstalledProof(spec) {
     assertPackageContract(contractReceipt, manifest, referenceFiles, target);
 
     if (target.id === "superbee") {
+      const portable = await import(pathToFileURL(path.join(installedRoot, "dist", "portable-export.mjs")).href);
+      const fixture = parseJson(await readFile(path.join(repoRoot, "packages/core/test/fixtures/hosted-sync-v1/export-200.json"), "utf8"), "portable export fixture");
+      const accepted = portable.verifyExport(Buffer.from(fixture.response.bodyBase64, "base64"), "notes.a");
+      const evidence = portable.exportProvenance(accepted);
+      assert.equal(evidence.source.revision, 2);
+      assert.match(evidence.inventorySha256, /^[0-9a-f]{64}$/);
+      const exportDirectory = await portable.materializeExport(accepted, scratch);
+      assert.deepEqual(await readFile(path.join(exportDirectory, "notes/one.md")), Buffer.from(accepted.entries.find((entry) => entry.path === "notes/one.md").bytes));
+      await rm(exportDirectory, { recursive: true });
       const publicationBundle = path.join(scratch, "publication-bundle");
       await mkdir(publicationBundle);
       await writeFile(path.join(publicationBundle, "index.md"), "---\nokf_version: '0.2'\n---\n# Published\n");
@@ -544,6 +560,7 @@ async function runInstalledProof(spec) {
       });
       assert.deepEqual(snapshot.manifest.documents.map((row) => row.id), ["note"]);
       assert.match(snapshot.manifest.snapshotDigest, /^sha256:[0-9a-f]{64}$/);
+      publication.assertPublicationSourceExclusions(snapshot.manifest, { directories: ["agent-notes"], types: ["Agent Note"] });
       await snapshot.close();
 
       const bundleDescriptor = await import(
@@ -770,7 +787,7 @@ async function runInstalledProof(spec) {
       "create-only refusal must not change the quickstart project: ",
     );
 
-    // Node's ESM --import preload is common to the supported Node 20/22/26 lines. Instrument the
+    // Node's ESM --import preload is common to the supported Node 22/24/26 lines. Instrument the
     // installed process externally (never through a product test hook) at its actual atomic
     // production-lock mkdir: the holder owns the real lock directory while the contender proves
     // EEXIST on the exact same path, and neither command may publish before the verifier releases it.
@@ -1118,7 +1135,7 @@ async function runInstalledProof(spec) {
     assert.match(normalizedInstalledReadme, /You rarely type Superbee commands yourself/);
     assert.match(normalizedInstalledReadme, /translates the\s+request into CLI calls/i);
     assert.match(normalizedInstalledReadme, /^## Install$/m);
-    assert.match(normalizedInstalledReadme, /Node\.js 20 or newer on macOS and Linux/);
+    assert.match(normalizedInstalledReadme, /supported Node\.js 22, 24, or 26 release \(22\.14\.0 minimum\) on macOS or Linux/);
     assert.match(normalizedInstalledReadme, /Native Windows is not supported by this package/);
     assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
     assertPackageReadmeReleaseChannel(manifest.version, normalizedInstalledReadme);

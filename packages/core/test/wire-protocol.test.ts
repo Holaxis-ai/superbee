@@ -31,6 +31,8 @@ import { InvalidInputError } from "../src/errors.js";
 import { headsDigest, sortHeads } from "../src/heads-digest.js";
 import { stringifyDoc } from "../src/frontmatter.js";
 import { RemoteBackend, RemoteError } from "../src/remote-backend.js";
+import { MalformedDocumentError } from "../src/frontmatter-contract.js";
+import { query as engineQuery, queryHeads as engineQueryHeads } from "../src/engine.js";
 import { createRemoteOperationTransport, openRemoteOperationTransport, OperationsUnsupportedError } from "../src/remote-operations.js";
 import { performUncertainWrite, type OperationIntent } from "../src/uncertain-write.js";
 import { MemoryBackend } from "../src/memory-backend.js";
@@ -1667,7 +1669,7 @@ test("wire: GET /heads lists every id and version under the documented digest; I
   assert.equal(deleted.digest, documentedDigest(deleted.heads));
 });
 
-test("wire: GET /heads over a malformed document fails exactly as GET /docs fails (same status and code, no skip envelope)", async () => {
+test("wire: GET /docs with malformed=skip leaves a malformed document out and names it in skipped; without it, and on heads and snapshot, it fails naming the document", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "wire-heads-malformed-"));
   try {
     await mkdir(path.join(root, "notes"), { recursive: true });
@@ -1675,18 +1677,54 @@ test("wire: GET /heads over a malformed document fails exactly as GET /docs fail
     await writeFile(path.join(root, "notes", "bad.md"), "---\ntype: [unclosed\ntitle: bad\n---\nbody\n");
     const router = createRouter({ root, backend: new ServerFilesystemBackend(root) });
 
-    const list = await router(new Request("http://wire.local/v0/bundles/test/docs"));
+    // A client that cannot read `skipped` (no malformed=skip) still gets a failure, never a
+    // listing that silently lost a document; the failure names it.
+    const strict = await router(new Request("http://wire.local/v0/bundles/test/docs?fields=frontmatter"));
+    assert.equal(strict.status, 500);
+    assert.equal(((await strict.json()) as { error: { details: { malformed: { id: string } } } }).error.details.malformed.id, "notes/bad");
+
+    const list = await router(new Request("http://wire.local/v0/bundles/test/docs?fields=frontmatter&malformed=skip"));
+    assert.equal(list.status, 200, "one malformed document never fails the listing");
+    const listBody = (await list.json()) as { count: number; docs: { id: string }[]; skipped: { id: string; reason: string }[] };
+    assert.deepEqual(listBody.docs.map((row) => row.id), ["notes/good"]);
+    assert.equal(listBody.count, 1);
+    assert.deepEqual(listBody.skipped.map((row) => row.id), ["notes/bad"]);
+    assert.match(listBody.skipped[0]!.reason, /flow collection|unexpected end/);
+
+    // A missing id in heads means a deletion to a working copy, so heads cannot skip: it fails,
+    // and now names the document instead of an opaque internal error.
     const heads = await router(new Request(HEADS_URL));
     const snapshot = await router(new Request(SNAPSHOT_URL));
-    const listBody = (await list.json()) as { error: { code: string } };
-    const headsBody = (await heads.json()) as { error: { code: string } };
-    const snapshotBody = (await snapshot.json()) as { error: { code: string } };
-    assert.equal(list.status, 500);
-    assert.equal(heads.status, list.status);
-    assert.equal(snapshot.status, list.status, "the listing fails before any snapshot byte exists");
-    assert.equal(headsBody.error.code, listBody.error.code);
-    assert.equal(snapshotBody.error.code, listBody.error.code);
-    assert.equal(listBody.error.code, "RUNTIME");
+    for (const response of [heads, snapshot]) {
+      assert.equal(response.status, 500);
+      const body = (await response.json()) as { error: { code: string; message: string; details: { malformed: { id: string } } } };
+      assert.equal(body.error.code, "RUNTIME");
+      assert.equal(body.error.details.malformed.id, "notes/bad");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("wire: RemoteBackend reports a server-skipped document through onSkip, keeps fail-loud without it, and reads it as MalformedDocumentError", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "wire-remote-malformed-"));
+  try {
+    await mkdir(path.join(root, "notes"), { recursive: true });
+    await writeFile(path.join(root, "notes", "good.md"), "---\ntype: Concept\ntitle: Good\n---\nfine\n");
+    await writeFile(path.join(root, "notes", "bad.md"), "---\ntype: Concept\ntitle: Bad: unquoted\n---\nbody\n");
+    const router = createRouter({ root, backend: new ServerFilesystemBackend(root) });
+    const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router });
+
+    const skipped: string[] = [];
+    const heads = await engineQueryHeads(remote, {}, { onSkip: ({ id }) => skipped.push(id) });
+    assert.deepEqual(heads.map((row) => row.id), ["notes/good"]);
+    assert.deepEqual(skipped, ["notes/bad"]);
+    await assert.rejects(engineQueryHeads(remote, {}), MalformedDocumentError, "no onSkip keeps the scan's fail-loud contract");
+
+    assert.deepEqual(await remote.list(), ["notes/bad", "notes/good"], "the document still exists");
+    await assert.rejects(remote.read("notes/bad"), (error: unknown) => error instanceof MalformedDocumentError && /notes\/bad/.test(error.message));
+    const docs = await engineQuery(remote, {}, { onSkip: ({ id }) => skipped.push(id) });
+    assert.deepEqual(docs.map((doc) => doc.id), ["notes/good"], "a whole-document scan over the wire skips it too");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -46,11 +46,13 @@ import {
   createNodeFilesystemIdentityPort,
   type FilesystemIdentityPort,
   observeExact,
+  openObservationPass,
   probeExact,
+  type ObservationPass,
   type PortHandle,
 } from "./filesystem-identity.js";
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
-import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
+import { blobVersion, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
   BlobKey,
   ConceptId,
@@ -170,10 +172,12 @@ export class FilesystemBackend implements StorageBackend {
   async #readWithEdition(
     id: ConceptId,
     edition: () => Promise<string | undefined>,
+    pass?: ObservationPass,
   ): Promise<ReadResult> {
     assertSafeConceptId(id);
     const rel = pathFromConceptId(id);
-    const observed = await observeExact(this.#port, this.#root, rel, (handle) => readBytes(this.#port, handle));
+    const read = (handle: PortHandle) => readBytes(this.#port, handle);
+    const observed = pass ? await pass.observe(rel, read) : await observeExact(this.#port, this.#root, rel, read);
     if (observed.state === "absent") throw notFound(this.#root, rel);
     const raw = observed.value.toString("utf8");
     const { frontmatter, body } = parseMarkdown(raw, rel, { okfVersion: await edition() });
@@ -193,7 +197,14 @@ export class FilesystemBackend implements StorageBackend {
     // lookup preserves document-before-root error ordering and avoids I/O for an empty batch.
     let editionPromise: Promise<string | undefined> | undefined;
     const edition = () => editionPromise ??= this.#readEdition();
-    for (const id of ids) out.push(await this.#readWithEdition(id, edition));
+    // One observation pass per batch, so each directory is listed once rather than twice per
+    // document; a path the pass's end check reports is read again on its own.
+    const pass = openObservationPass(this.#port, this.#root);
+    for (const id of ids) out.push(await this.#readWithEdition(id, edition, pass));
+    const retry = new Set(await pass.finish());
+    for (let index = 0; index < ids.length; index++) {
+      if (retry.has(pathFromConceptId(ids[index]!))) out[index] = await this.#readWithEdition(ids[index]!, edition);
+    }
     return out;
   }
 
@@ -263,7 +274,7 @@ export class FilesystemBackend implements StorageBackend {
     if (observed.state === "absent") return [];
     const { raw, mtime } = observed.value;
     const { frontmatter } = parseMarkdown(raw, rel);
-    const actor = mutationActorFromFrontmatter(frontmatter) ?? defaultActor();
+    const actor = mutationActorFromFrontmatter(frontmatter) ?? "unattributed";
     const timestamp = firstString(frontmatter.timestamp) ?? mtime.toISOString();
     // Single current revision: a plain filesystem retains no prior versions.
     return [{ version: versionOfBytes(raw), actor, timestamp }];
@@ -428,13 +439,51 @@ export async function readRawFilesystemDocument(
   backend: FilesystemBackend,
   id: ConceptId,
 ): Promise<{ bytes: Uint8Array; version: Version }> {
+  return readRawDocumentIn(backend, id);
+}
+
+async function readRawDocumentIn(
+  backend: FilesystemBackend,
+  id: ConceptId,
+  pass?: ObservationPass,
+): Promise<{ bytes: Uint8Array; version: Version }> {
   assertSafeConceptId(id);
   const { root, port } = publicationContext(backend);
   const rel = pathFromConceptId(id);
-  const observed = await observeExact(port, root, rel, (handle) => readBytes(port, handle));
+  const read = (handle: PortHandle) => readBytes(port, handle);
+  const observed = pass ? await pass.observe(rel, read) : await observeExact(port, root, rel, read);
   if (observed.state === "absent") throw notFound(root, rel);
   const raw = new TextDecoder("utf-8", { fatal: true }).decode(observed.value);
   return { bytes: observed.value.slice(), version: versionOfBytes(raw) };
+}
+
+/**
+ * {@link readRawFilesystemDocument} for many documents in one observation pass, so a capture
+ * lists each directory once instead of twice per document. `read` answers exactly what
+ * `readRawFilesystemDocument` would, in the caller's order; `finish` ends the pass and returns
+ * the ids whose answers the end-of-pass check could not confirm, for the caller to read again
+ * with `readRawFilesystemDocument`.
+ */
+export function openRawFilesystemDocumentPass(backend: FilesystemBackend): {
+  read(id: ConceptId): Promise<{ bytes: Uint8Array; version: Version }>;
+  finish(): Promise<ConceptId[]>;
+} {
+  const { root, port } = publicationContext(backend);
+  const pass = openObservationPass(port, root);
+  const ids = new Map<string, ConceptId>();
+  return {
+    read(id) {
+      assertSafeConceptId(id);
+      ids.set(pathFromConceptId(id), id);
+      return readRawDocumentIn(backend, id, pass);
+    },
+    async finish() {
+      return (await pass.finish()).flatMap((rel) => {
+        const id = ids.get(rel);
+        return id === undefined ? [] : [id];
+      });
+    },
+  };
 }
 
 /** Internal exact-byte authority for reserved publication objects. */

@@ -7,6 +7,51 @@ writes, cross-links and storage backends. It is a library; installing it does no
 Core and `@superbee/server` are released together, independently of the `superbee` CLI. A CLI
 release bundles the engine source selected at build time; it does not load `@superbee/core@latest`.
 
+## Document presentation values
+
+The additive `@superbee/core/artifact-contract` subpath provides pure v1 document target,
+observation, request, receipt and capability decoders. See the [contract reference](https://github.com/Holaxis-ai/superbee/blob/main/packages/core/ARTIFACT-CONTRACT.md)
+for identity, provenance, lifecycle and host responsibilities.
+
+## Site capabilities
+
+The additive `@superbee/core/site-capabilities` subpath is the contract for read-only tools a
+site or a recipe pack provides (`SiteCapability`), and the one owner of their composition rules:
+`composeSiteCapabilities` refuses duplicate names, `superbee_` names outside the generic tier and
+names outside a pack's or site's namespace, orders generic, pack and site tools deterministically,
+applies a surface's exclusions after those checks, enforces size limits and, with
+`requireReadOnly`, refuses any capability not declared read-only. It returns frozen snapshots and
+an identity digest for the surface's list. `toProviderTool`, `toPortalAdditionalTool`,
+`toToolDescriptor` and `siteCapabilityFromPortalTool` are the explicit mappings to the existing
+tool shapes. `checkSiteCapability` and `siteCapabilityConformanceCases` test a capability against
+recorded fixtures (read-only declaration, dated results, closed error codes that never echo input,
+bounded and deterministic output, same-origin URLs, citations of records the result contains, and
+refusal of unknown arguments). `siteRecordSource` mints a `site-record` citation only for a path
+the host admits, bound to the publication's digests.
+
+Annotations such as `readOnlyHint` and `untrustedContentHint` are self-declared and enforce
+nothing at runtime; the checks above test recorded fixtures, not the code. Treat them as a control
+only for in-process code from the same reviewed deploy. The module has no Node built-in import, so
+it runs unchanged in a Worker or a browser.
+
+## Mutation attribution and local history
+
+`mutateDocument` and `prepareDocumentMutationCandidate` persist a supplied `actor` by default:
+`actor` in OKF v0.1, `superbee_updated_by` in v0.2 (plus `actor` when the Kind requires it).
+Use `persistActor: false` to keep candidate attribution unchanged, or `persistActor: true` to apply
+the attribution policy even without a supplied actor. Supplying the actor option alone leaves an
+otherwise unchanged candidate a no-op, preserving its original attribution and bytes. In v0.1,
+deliberate edits to the candidate's legacy `actor` field still count as authored changes in `patch`
+and `replace-document` modes; overwrite retains its automatic attribution comparison. The pure preview
+prepares patches. This default changes library writes that previously
+required `persistActor: true`; callers needing the old opt-in behavior can explicitly pass false.
+
+`producer` controls `generated.by` independently of the version mutator. Local filesystem history
+returns only the current revision, including for Git-tracked bundles. It reads mutation attribution
+from `superbee_updated_by`, legacy `updated_by`, or `actor`; when absent it returns the stable string
+`unattributed`. It does not infer an identity from the reader's environment or the content producer.
+History-keeping backends retain their existing per-write attribution.
+
 ## Filesystem platform migration
 
 The Windows extraction changes the default Node.js filesystem backend. Its built-in host policy
@@ -87,3 +132,17 @@ consumer. CLI and engine version numbers are independent; do not infer matching 
 package names or version labels.
 
 [Source and contribution guide](https://github.com/Holaxis-ai/superbee)
+
+### Node portable export boundary
+
+`@superbee/core/portable-export` (also bundled as `superbee/portable-export`) exposes the same
+store-only archive verifier used by the CLI: `verifyExport`, `ExportPageChain` and
+`joinExportPages`. The page chain charges the sum of complete ZIP sizes, including manifests
+and headers, against `MAX_EXPORT_BYTES` before retaining a page; returned `bytes` counts only
+stored bundle content. It performs no acquisition, sign-in or network access. A complete accepted
+handle can be passed to `materializeExport(handle, existingPrivateParent)` to create a fresh
+private directory; callers own its cleanup and isolation while publishing. No target is replaced.
+`exportProvenance(handle)` returns exact ordered raw-manifest SHA-256/size evidence plus a combined
+inventory SHA-256. Keep that evidence outside the directory and private when it identifies a
+private source. Handles cannot be reconstructed from JSON or moved between independently bundled
+module instances; modified handles are refused. This surface requires Node, not a browser or Worker.

@@ -38,15 +38,18 @@ export async function classifyCheckout(binding: CheckoutBinding, home: string, s
   for (const [id, state] of firstIntent) (state === "conflict" ? result.conflicts : result.unsent).add(id);
 
   // Files that differ from what the last sync or pull placed: what the next scan would find.
+  const projection = await readProjection(home, binding.checkout_id, store);
   const report = await scanCheckout({
     folder: binding.path,
     bundleId: binding.bundle_id,
     okfVersion: await storeOkfVersion(store),
     local: openLocalBundle(binding.checkout_id, { backend: store }),
-    projection: await readProjection(home, binding.checkout_id, store),
+    projection,
     preview: true,
     // What the host said at the last sync: a preview makes no request.
     definitionWrites: binding.definition_writes ?? null,
+    rootWrites: projection.rootWrites ?? "refused",
+    documentInputBytes: binding.document_input_bytes ?? null,
   });
   for (const id of report.pending) result.unsent.add(id);
   for (const id of report.conflicted) result.conflicts.add(id);

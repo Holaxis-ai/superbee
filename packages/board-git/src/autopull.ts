@@ -75,6 +75,8 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 
 import {
   BOARD_BRANCH,
+  BOARD_MARKER_FILE,
+  isBoardBranchName,
   BUNDLE_DIRS,
   countUncommitted,
   currentHead,
@@ -120,12 +122,19 @@ function hasGitFileSignature(p: string): boolean {
   }
 }
 
-/** Zero-spawn signature for a standalone root currently attached to the board branch. */
+/**
+ * Zero-spawn signature for a standalone root currently attached to a board branch: `board`, or a
+ * well-formed named board branch whose marker is present in the worktree (the stale path re-verifies
+ * the committed declaration before anything observable happens).
+ */
 function hasStandaloneBoardSignature(p: string): boolean {
   try {
     if (!statSync(path.join(p, ".git")).isDirectory()) return false;
     if (!statSync(path.join(p, "index.md")).isFile()) return false;
-    return readFileSync(path.join(p, ".git", "HEAD"), "utf8").trim() === `ref: refs/heads/${BOARD_BRANCH}`;
+    const head = readFileSync(path.join(p, ".git", "HEAD"), "utf8").trim();
+    if (head === `ref: refs/heads/${BOARD_BRANCH}`) return true;
+    const branch = head.startsWith("ref: refs/heads/") ? head.slice("ref: refs/heads/".length) : "";
+    return isBoardBranchName(branch) && statSync(path.join(p, BOARD_MARKER_FILE)).isFile();
   } catch {
     return false;
   }
@@ -133,7 +142,7 @@ function hasStandaloneBoardSignature(p: string): boolean {
 
 /**
  * The FS-ONLY pre-gate (module header, "detection is cheap"): walk up from `start` looking for a
- * provisioned-LOOKING board checkout — either a standalone root whose `.git/HEAD` names `board`,
+ * provisioned-LOOKING board checkout — either a standalone root whose `.git/HEAD` names a board branch,
  * an ancestor with a recognized bundle name carrying the `.git`-FILE signature (the caller may
  * stand inside the board worktree, so this retarget is resolved without a spawn), or an ancestor
  * directory whose recognized child has a `.git` file (the conventional project-top shape). ZERO

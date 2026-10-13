@@ -17,10 +17,14 @@ import {
   SessionViewAuthorizationStore,
 } from "../dist/index.js";
 import {
+  FilesystemBackend,
   MemoryBackend,
   queryEdges,
   writeDoc,
 } from "@superbee/core";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const TEST_HOST = {
   kind: "oss",
@@ -194,6 +198,50 @@ test("edge selectors preserve exact nonblank UTF-8 bytes and retain transport bo
       null,
       JSON.stringify(params),
     );
+  }
+});
+
+test("BridgeService query, edges, graph and subscribe skip one malformed document and name it instead of failing the View", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "bridge-malformed-"));
+  try {
+    const bundle = { root, backend: new FilesystemBackend(root) };
+    await writeDoc(bundle, {
+      id: "tasks/good",
+      frontmatter: { type: "Task", title: "Good", timestamp: "2026-08-08T00:00:00.000Z" },
+      body: "[other](/tasks/other.md)",
+    });
+    // An agent's raw edit: an unquoted ': ' makes the YAML invalid.
+    await writeFile(path.join(root, "tasks", "bad.md"), "---\ntype: Task\ntitle: Import: archive upload\n---\nbody\n");
+    const bridge = new BridgeService({
+      bundle,
+      launches: {
+        async resolve(launchId) {
+          return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
+        },
+        revoke() {},
+      },
+      config: async () => ({ root: null, name: "Test", mode: "test" }),
+      renderDocument: ({ body }) => ({ html: body, bounded: false }),
+      host: TEST_HOST,
+      enablePolling: true,
+    });
+    const requests = [
+      { bridge: "v0", type: "query", id: "q", params: { type: "Task" } },
+      { bridge: "v0", type: "edges", id: "e", params: {} },
+      { bridge: "v0", type: "graph", id: "g", includeBodies: false },
+    ];
+    for (const request of requests) {
+      const outcome = await bridge.handle("launch", request);
+      assert.equal(outcome.reply?.type, `${request.type}:result`, `${request.type}: ${JSON.stringify(outcome.reply?.error)}`);
+      assert.deepEqual(outcome.reply.result.skipped.map((row) => row.id), ["tasks/bad"], request.type);
+      assert.match(outcome.reply.result.skipped[0].reason, /mapping/, request.type);
+    }
+    const query = await bridge.handle("launch", requests[0]);
+    assert.deepEqual(query.reply.result.rows.map((row) => row.id), ["tasks/good"]);
+    const subscribed = await bridge.handle("launch", { bridge: "v0", type: "subscribe", id: "s" });
+    assert.equal(subscribed.reply?.type, "subscribe:result", JSON.stringify(subscribed.reply?.error));
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -480,7 +528,7 @@ test("hello declares the host descriptor and the reserved host request is refuse
   assert.equal(writableHello.reply.result.actionProtocol, "v1");
   assert.deepEqual(writableHello.reply.result.actions, ["document.set-field", "document.set-body", "document.update"]);
 
-  for (const name of ["query.kind-projection", "query.field-or", "query.open", "query.count", "edges", "graph", "render-document"]) {
+  for (const name of ["query.kind-projection", "query.field-or", "query.open", "query.count", "query.newest", "edges", "graph", "render-document"]) {
     assert.ok(hello.reply.result.host.capabilities.includes(name), name);
   }
   assert.equal(hello.reply.result.host.capabilities.includes("subscribe-deltas"), false);
@@ -1130,3 +1178,99 @@ test("frame.resize is a registered host capability, and a host that embeds the V
   assert.equal("frame" in bare.reply.result.host, false, "the OSS shell declares no frame");
   assert.equal("theme" in bare.reply.result.host, false, "the OSS shell declares no theme");
 });
+
+const NEWEST_FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/query-newest-order.json", import.meta.url), "utf8"));
+
+function newestBridge(bundle, capabilities = TEST_HOST.capabilities) {
+  return new BridgeService({
+    bundle,
+    launches: { async resolve(launchId) { return { launchId, capability: "bundle-read" }; }, revoke() {} },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    host: { ...TEST_HOST, capabilities },
+  });
+}
+
+test("query parser admits order id and newest and refuses every other order value and cursor", () => {
+  for (const order of ["id", "newest"]) {
+    assert.deepEqual(
+      parseBridgeRequest({ bridge: "v0", type: "query", id: "q", params: { type: "Task", order, limit: 5 } }),
+      { bridge: "v0", type: "query", id: "q", params: { type: "Task", order, limit: 5 } },
+    );
+  }
+  for (const order of ["oldest", "NEWEST", "Newest", " newest", "", null, 1, true, ["newest"], { by: "newest" }]) {
+    assert.equal(parseBridgeRequest({ bridge: "v0", type: "query", id: "q", params: { order } }), null, JSON.stringify(order));
+  }
+  assert.equal(
+    parseBridgeRequest({ bridge: "v0", type: "query", id: "q", params: { order: "newest", cursor: "abc" } }),
+    null,
+    "the cursor is a separate, unshipped capability; it stays an unknown key",
+  );
+});
+
+test("query.newest is a service capability declared in hello", async () => {
+  assert.equal(BRIDGE_HOST_CAPABILITIES.queryNewest, "query.newest");
+  assert.ok(BRIDGE_SERVICE_CAPABILITIES.includes("query.newest"));
+  const bundle = { root: "mem://bridge-newest-hello", backend: new MemoryBackend() };
+  const hello = await newestBridge(bundle).handle("launch", { bridge: "v0", type: "hello", id: "h" });
+  assert.ok(hello.reply.result.host.capabilities.includes("query.newest"));
+});
+
+test("unknown order values, cursor, and order on a host without query.newest answer USAGE", async () => {
+  const bundle = { root: "mem://bridge-newest-usage", backend: new MemoryBackend() };
+  await writeDoc(bundle, { id: "docs/one", frontmatter: { type: "Note", title: "One" }, body: "" });
+  const usage = (id) => ({
+    bridge: "v0",
+    id,
+    type: "error",
+    error: { code: "USAGE", message: "invalid or unsupported bridge request" },
+  });
+  const bridge = newestBridge(bundle);
+  for (const [id, params] of [
+    ["oldest", { order: "oldest" }],
+    ["empty", { order: "" }],
+    ["number", { order: 1 }],
+    ["cursor", { order: "newest", cursor: "eyJ2IjoxfQ" }],
+  ]) {
+    assert.deepEqual((await bridge.handle("launch", { bridge: "v0", type: "query", id, params })).reply, usage(id));
+  }
+
+  const without = newestBridge(bundle, TEST_HOST.capabilities.filter((name) => name !== "query.newest"));
+  const hello = await without.handle("launch", { bridge: "v0", type: "hello", id: "h" });
+  assert.equal(hello.reply.result.host.capabilities.includes("query.newest"), false);
+  for (const order of ["newest", "id"]) {
+    assert.deepEqual(
+      (await without.handle("launch", { bridge: "v0", type: "query", id: `no-${order}`, params: { order } })).reply,
+      usage(`no-${order}`),
+      `a host that does not declare query.newest refuses order: ${order}`,
+    );
+  }
+  const plain = await without.handle("launch", { bridge: "v0", type: "query", id: "plain", params: {} });
+  assert.deepEqual(plain.reply.result.rows.map((row) => row.id), ["docs/one"], "order-less queries are unchanged");
+});
+
+for (const row of NEWEST_FIXTURE.cases) {
+  test(`order: "newest" answers the shared fixture over a ${row.okfVersion} bundle: ${row.name}`, async () => {
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", `---\nokf_version: '${row.okfVersion}'\n---\n# Bundle\n`);
+    const bundle = { root: `mem://bridge-newest-${row.okfVersion}`, backend };
+    // Raw backend writes keep the invalid and non-string clocks a governed write would refuse.
+    for (const doc of row.rows) await backend.write(doc.id, { id: doc.id, frontmatter: doc.frontmatter, body: "" });
+    const bridge = newestBridge(bundle);
+    const query = async (params) => (await bridge.handle("launch", { bridge: "v0", type: "query", id: "q", params })).reply.result;
+
+    const all = await query({ order: "newest" });
+    assert.deepEqual(all.rows.map((r) => r.id), row.expected);
+    assert.equal(all.count, row.expected.length);
+    for (const limit of [1, 3, row.expected.length - 1]) {
+      const page = await query({ order: "newest", limit });
+      assert.deepEqual(page.rows.map((r) => r.id), row.expected.slice(0, limit), `limit ${limit} is the newest prefix`);
+      assert.equal(page.count, row.expected.length, "count stays the total matched");
+    }
+    const byId = await query({ order: "id" });
+    const implicit = await query({});
+    assert.deepEqual(byId, implicit, "order: \"id\" is exactly the default");
+    assert.deepEqual(implicit.rows.map((r) => r.id), [...row.expected].sort((a, b) => a.localeCompare(b)),
+      "the default order keeps localeCompare ID order");
+  });
+}

@@ -17,7 +17,7 @@
     "headers": {
       "content-type": "application/json; charset=utf-8"
     },
-    "body": "{\"principalId\":\"person:both\",\"credentialId\":\"credential:cli\",\"tenantIds\":[\"tenant:a\"],\"workspaces\":[{\"tenantId\":\"tenant:a\",\"slug\":\"tenant-a\"}],\"surface\":\"sync\"}",
+    "body": "{\"principalId\":\"person:both\",\"credentialId\":\"credential:cli\",\"tenantIds\":[\"tenant:a\"],\"workspaces\":[{\"tenantId\":\"tenant:a\",\"slug\":\"tenant-a\"}],\"surface\":\"sync\",\"limits\":{\"documentInputBytes\":983040}}",
     "truncated": false
   }
 }

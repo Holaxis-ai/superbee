@@ -591,7 +591,7 @@ test("status: fixture bundle exercises every finding class with the correct coun
       lint.rows.some((r) => r.id === "widgets/missing-title" && r.field === "title" && r.code === "KIND_FIELD_MISSING"),
     );
     assert.ok(
-      lint.rows.some((r) => r.id === "widgets/bad-enum" && r.field === "status" && r.code === "KIND_FIELD_VALUE"),
+      lint.rows.some((r) => r.id === "widgets/bad-enum" && r.field === "progress_status" && r.code === "KIND_FIELD_VALUE"),
     );
 
     // Conformance debt (tasks/status-conformance-debt): the Widget kind declares no `sections`, so

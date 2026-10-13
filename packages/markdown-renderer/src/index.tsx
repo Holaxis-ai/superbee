@@ -17,10 +17,12 @@
  * THE INVARIANT (pinned red by markdown.test.tsx + static.test.mjs + external-links.test.mjs): a
  * raw markdown href/src NEVER reaches a DOM attribute. An interactive resolved link gets a route
  * built from `resolveConceptId`; the inert profile gets only that normalized id in
- * `data-aslite-doc-id`. An allowlisted external link's href is the CANONICAL SERIALIZATION of a
- * URL the host's `externalLinkHosts` allowlist admitted ({@link admitExternalLink}), never the raw
- * string. Everything else the resolver rejects (external URLs off the allowlist or with no
- * allowlist, `javascript:`/`data:`/any scheme, non-`.md`, reserved files) renders as inert text.
+ * `data-aslite-doc-id`. A same-page fragment of the strict anchor shape is named only by
+ * `data-aslite-fragment` ({@link admitFragment}) on an otherwise inert span. An allowlisted
+ * external link's href is the CANONICAL SERIALIZATION of a URL the host's `externalLinkHosts`
+ * allowlist admitted ({@link admitExternalLink}), never the raw string. Everything else the
+ * resolver rejects (external URLs off the allowlist or with no allowlist, `javascript:`/`data:`/any
+ * scheme, non-`.md`, reserved files) renders as inert text.
  * Images are inert in v1.
  *
  * RESOURCE BOUNDS: body bytes capped ({@link MAX_BODY_CHARS}, with an honest truncation notice —
@@ -171,6 +173,34 @@ function normalizeAllowedHost(entry: string): string | null {
   }
   if (url.href !== `https://${url.hostname}/` || isIpLiteralHost(url.hostname)) return null;
   return url.hostname;
+}
+
+/**
+ * The anchor-id shapes documentation adapters give body headings: generated slugs (which may start
+ * with a digit, `_` or `-`) and authored ids. Nothing outside this character set is ever admitted.
+ */
+const SAFE_FRAGMENT = /^[A-Za-z0-9_-][A-Za-z0-9_.:-]*$/;
+const MAX_FRAGMENT_LENGTH = 200;
+/** Every admitted character percent-encodes to at most three, so a longer raw target is refused undecoded. */
+const MAX_RAW_FRAGMENT_LENGTH = 1 + 3 * MAX_FRAGMENT_LENGTH;
+
+/**
+ * THE ONLY PATH from a markdown link target to a same-page fragment. A fragment-only target
+ * (`#some-heading`) has no concept to resolve, so it renders inert; when the decoded fragment has
+ * the strict anchor-id shape, it is returned so the inert span can name it in
+ * `data-aslite-fragment`, and an adapter that knows the page's heading anchors can link it. Any
+ * other target, or a fragment outside that shape, returns null. The returned value is checked
+ * against an allowlisted character set, so no markup, scheme, quote or whitespace can pass.
+ */
+export function admitFragment(raw: string): string | null {
+  if (typeof raw !== "string" || !raw.startsWith("#") || raw.length > MAX_RAW_FRAGMENT_LENGTH) return null;
+  let fragment: string;
+  try {
+    fragment = decodeURIComponent(raw.slice(1));
+  } catch {
+    return null;
+  }
+  return fragment.length <= MAX_FRAGMENT_LENGTH && SAFE_FRAGMENT.test(fragment) ? fragment : null;
 }
 
 /**
@@ -329,10 +359,12 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
             </a>
           );
         }
+        const fragment = admitFragment(raw);
         return (
           <span
             key={index}
             className="doc-link-inert"
+            data-aslite-fragment={fragment ?? undefined}
             title={state.options.profile === "inert" ? undefined : "external or unresolved target"}
           >
             {children}

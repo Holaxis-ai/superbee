@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@superbee/core": "*",
     "@superbee/markdown-renderer": "*",
     "@superbee/view-runtime": "*",

@@ -241,21 +241,10 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     readAbsent: "absent",
     write: "ok",
   },
-  {
-    label: "every GUARDED root carries an ownership marker",
-    build: async () => {},
-    record: false,
-    directory: true,
-    inspect: "ready",
-    hardening: "hardened",
-    inspectSync: "ready",
-    readAbsent: "absent",
-    write: "ok",
-    skip: "VIOLATED (specification P11, unfixed here): only the CANONICAL root carries a marker. The legacy "
-      + "root is markerless by design (P10: readiness there is directory existence), which is exactly why a "
-      + "marker-based publication backstop (F8) cannot cover it. This row states the requirement F8 would "
-      + "need; delete the skip when every guarded root is marked.",
-  },
+  // The specification's P11 ("every guarded root carries a marker, if F8 is to cover it") is
+  // resolved by F8 itself: the publication backstop recognizes a copied root by its folder name and
+  // its records' schemas, never by a marker, so the markerless legacy root (P10) is covered without
+  // one. Its rows live in `private-state-publication.test.ts` (the markerless-legacy layout).
   {
     label: "foreign uid on the root or the marker",
     build: async () => {},

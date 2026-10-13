@@ -13,6 +13,8 @@
 //     folder / empty / no index.md, a folder already committed at HEAD, a `board/…` namespace
 //     branch, a nested `.git`) and the USAGE flag-combination guards.
 import test from "node:test";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, writeFile, mkdir, rename, symlink } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -219,6 +221,30 @@ test("combo 1: --establish — full receipt, origin gets the board, working-tree
     assert.equal(rerun.sync, "already up to date");
     const boardCommitsAfter = git(topo.a.board, ["rev-list", "--count", "HEAD"]).trim();
     assert.equal(boardCommitsAfter, boardCommitsBefore, "re-running --establish never adds a second lineage");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("--establish refuses a bundle holding a document with invalid frontmatter: names it, publishes and moves nothing", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    await initPlainBundleDir(topo.a);
+    await writeBoardDoc(topo.a, "notes/hello", { frontmatter: { type: "Note", title: "Hello" }, body: "# Hello\n" });
+    await mkdir(path.join(topo.a.board, "notes"), { recursive: true });
+    await writeFile(path.join(topo.a.board, "notes", "bad.md"), "---\ntype: Note\ntitle: Bad: unquoted\n---\nbody\n");
+
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(err?.code, "USAGE");
+    assert.match(err!.message, /invalid YAML frontmatter \(notes\/bad\); nothing was published or moved/);
+    assert.notEqual(
+      gitTry(topo.origin, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]).status,
+      0,
+      "origin never gets a board",
+    );
+    assert.equal(existsSync(path.join(topo.a.board, "notes", "bad.md")), true, "the local bundle is untouched");
   } finally {
     await cleanup();
     await topo.cleanup();
@@ -1033,6 +1059,25 @@ test("establish refusals: no folder / empty folder / no index.md all point at in
   }
 });
 
+test("establish over a bundle made at the work tree's top names the move into .superbee/, and works after it", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    await initBundle(topo.a.root);
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(err?.code, "RUNTIME");
+    assert.match(err?.message ?? "", /top folder is itself a bundle.*move the bundle at the work tree's top into \.superbee\//);
+    assert.match(err?.help ?? "", /mv index\.md \.superbee\//);
+    await mkdir(topo.a.board);
+    await rename(path.join(topo.a.root, "index.md"), path.join(topo.a.board, "index.md"));
+    const receipt = await runSyncJson(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(receipt.established, ESTABLISH_DONE);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("establish on a folder already committed at HEAD routes to the committed-case preview, never the greenfield conversion", async () => {
   const topo = await makeGreenfieldTopology();
   const { home, cleanup } = await tempHome();
@@ -1193,5 +1238,44 @@ test("sync flag combinations: --establish is mutually exclusive with --pull-only
     }
   } finally {
     await cleanup();
+  }
+});
+
+
+test("entry replacement during backup verification preserves establishment recovery bytes", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  const originalLstat = fs.lstatSync;
+  let injected = false;
+  try {
+    await initPlainBundleDir(topo.a);
+    await writeBoardDoc(topo.a, "notes/original", {
+      frontmatter: { type: "Note", title: "Original" }, body: "snapshot content\n",
+    });
+    const backup = `${topo.a.board}.establish-backup`;
+    const file = path.join(backup, "notes", "original.md");
+    const retained = path.join(topo.a.root, "retained-original.md");
+    const outside = path.join(topo.a.root, "same-bytes.md");
+    const bytes = readFileSync(path.join(topo.a.board, "notes", "original.md"));
+    writeFileSync(outside, bytes);
+    Object.assign(fs, { lstatSync: ((name: fs.PathLike, ...args: any[]) => {
+      const stat = (originalLstat as any)(name, ...args);
+      if (name === file && !injected) {
+        injected = true;
+        fs.renameSync(file, retained);
+        fs.symlinkSync(outside, file);
+      }
+      return stat;
+    }) as typeof fs.lstatSync });
+    syncBuiltinESMExports();
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(injected, true, "replacement must occur at the backup reader");
+    assert.ok(err, "verification must refuse the replaced entry");
+    assert.equal(existsSync(backup), true, "recovery backup must remain");
+    assert.deepEqual(readFileSync(retained), bytes);
+    assert.deepEqual(readFileSync(outside), bytes);
+  } finally {
+    Object.assign(fs, { lstatSync: originalLstat }); syncBuiltinESMExports();
+    await cleanup(); await topo.cleanup();
   }
 });

@@ -42,6 +42,7 @@ import path, { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import { } from "@superbee/core";
 import { staticBuildIdentity } from "./build-identity.js";
+import { CliError } from "./errors.js";
 
 /**
  * The released POSIX private-root spelling. The platform policy below is the location authority;
@@ -399,16 +400,67 @@ async function initializeCanonicalRoot(
     throw new Error("canonical Superbee user-state root is not owned by this product");
   }
   // Ownership is proven, so drifted permissions are repaired rather than refused — the directory
-  // first, so the marker is re-tightened inside an already-private root.
+  // first, so the marker is re-tightened inside an already-private root. A root already at 0700
+  // is left alone: the mode is set when it is created, and a needless chmod is a write that a
+  // sandbox allowing reads of home but not writes would refuse before any real work.
   if (currentPrivateStateHost().enforcePrivateMode) {
-    await chmod(root, DIR_MODE);
+    if (((await lstat(root)).mode & 0o7777) !== DIR_MODE) await chmod(root, DIR_MODE);
     if (!marker.hardened) await chmod(join(root, USER_STATE_MARKER_FILE_NAME), FILE_MODE);
   }
   await ensureStateRootGitignore(root, input);
 }
 
+const WRITE_REFUSED_ERRNOS: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EROFS"]);
+
+/**
+ * A refused write to the private state root (or the home directory it is created in) as a CliError
+ * naming the cause and the fix, else null. The usual cause is an agent sandbox that permits writes
+ * only inside the workspace; Superbee has no state-directory override, so the fix is to allow the
+ * write.
+ */
+export function userStateWriteRefusal(error: unknown, input?: UserStateInput): CliError | null {
+  const code = errno(error);
+  const target = (error as NodeJS.ErrnoException | undefined)?.path;
+  if (code === undefined || !WRITE_REFUSED_ERRNOS.has(code) || typeof target !== "string") return null;
+  let root: string;
+  let home: string;
+  try {
+    root = userStateDir(input);
+    home = userStateEnvironment(input).home;
+  } catch {
+    return null;
+  }
+  const inside = (base: string): boolean => {
+    const child = relative(base, target);
+    return child === "" || (!child.startsWith("..") && !isAbsolute(child));
+  };
+  if (!inside(root) && target !== home) return null;
+  const display = userStatePathDisplay(input ?? homedir(), root);
+  const syscall = (error as NodeJS.ErrnoException).syscall;
+  return new CliError(
+    "RUNTIME",
+    `cannot write Superbee's private state directory ${display} (${code}${syscall ? ` on ${syscall}` : ""}): this process is not allowed to write there, usually because an agent sandbox permits writes only inside the workspace`,
+    {
+      details: { reason: "state_dir_not_writable", path: display, errno: code, ...(syscall ? { syscall } : {}) },
+      help: `allow this agent to write ${display} (add it as a writable directory in the sandbox settings, or approve running this command outside the sandbox), then re-run the same command`,
+    },
+  );
+}
+
+async function withUserStateWriteRefusal<T>(input: UserStateInput | undefined, body: () => Promise<T>): Promise<T> {
+  try {
+    return await body();
+  } catch (error) {
+    throw userStateWriteRefusal(error, input) ?? error;
+  }
+}
+
 /** Ensure the running package's one writable state root exists and is safe. */
 export async function ensureUserStateRoot(input: UserStateInput = homedir()): Promise<string> {
+  return withUserStateWriteRefusal(input, () => ensureUserStateRootUnwrapped(input));
+}
+
+async function ensureUserStateRootUnwrapped(input: UserStateInput): Promise<string> {
   const packageName = staticBuildIdentity().package.name;
   const policy = resolveUserStatePolicy(input);
   const root = userStateDirForPackage(input, packageName);
@@ -543,7 +595,7 @@ export async function writeUserStateFileAtomic0600(
   options: { beforeCommit?: () => boolean | Promise<boolean> } = {},
 ): Promise<void> {
   await ensureUserStateRoot(input);
-  await writeFileAtomic0600(dir, fileName, content, options, input);
+  await withUserStateWriteRefusal(input, () => writeFileAtomic0600(dir, fileName, content, options, input));
 }
 
 export type UserStateRootState = "absent" | "ready" | "conflict";

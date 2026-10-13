@@ -56,6 +56,18 @@ export interface HostedCapabilities {
    * what it says. Any value other than `"allowed"` reads as `"refused"`.
    */
   readonly definitionWrites: HostedDefinitionWrites | null;
+  /**
+   * Whether the caller may replace the bundle's root `index.md` (`bundles.root.replace.v1`): only
+   * an answer that says `"allowed"` does; a host from before the root write says nothing, which
+   * reads as `"refused"`, as does any other value.
+   */
+  readonly rootWrites: "allowed" | "refused";
+  /**
+   * The host's whole-document write bound (`limits.documentInputBytes`): the largest create,
+   * replace or outcome request body it accepts, in bytes of JSON. `null` when the host does not
+   * state one; a client then assumes 65,536, the bound of every host before it was stated.
+   */
+  readonly documentInputBytes: number | null;
 }
 
 /** The retention window assumed for a host that states none: thirty days. */
@@ -192,6 +204,17 @@ function positiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+/**
+ * The whole-document write bound a host states in its `limits`, or `null` when it states none.
+ * A malformed statement reads as none (the 65,536 every older host accepts), never as a refusal:
+ * the bound only narrows what a client sends.
+ */
+export function statedDocumentInputBytes(limits: unknown): number | null {
+  if (typeof limits !== "object" || limits === null || Array.isArray(limits)) return null;
+  const stated = (limits as { documentInputBytes?: unknown }).documentInputBytes;
+  return positiveInteger(stated) ? stated : null;
+}
+
 /** The capabilities route's answer, admitted or refused as one; fields the route may gain are ignored. */
 export function decodeHostedCapabilities(value: unknown): HostedCapabilities {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw malformed("capabilities answer is not a JSON object");
@@ -230,6 +253,8 @@ export function decodeHostedCapabilities(value: unknown): HostedCapabilities {
     root,
     operationsRetentionMs: retention ?? DEFAULT_OPERATIONS_RETENTION_MS,
     definitionWrites: body.definitionWrites === undefined ? null : body.definitionWrites === "allowed" ? "allowed" : "refused",
+    rootWrites: body.rootWrites === "allowed" ? "allowed" : "refused",
+    documentInputBytes: statedDocumentInputBytes(body.limits),
   });
 }
 

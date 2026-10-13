@@ -27,6 +27,20 @@ export interface ListDocsResponse {
   count: number;
   docs: DocHead[];
   next_cursor: string | null;
+  /** Documents left out because their frontmatter does not parse (absent when every one parsed). */
+  skipped?: SkippedDoc[];
+}
+
+/** A document the server could not list, and why. */
+export interface SkippedDoc {
+  id: string;
+  reason: string;
+}
+
+/** Every listed head, plus the documents the listing had to leave out. */
+export interface HeadsListing {
+  heads: DocHead[];
+  skipped: SkippedDoc[];
 }
 
 /** `GET .../docs/{id}` response body (the version itself travels on the `X-Version`/`ETag` headers, not the body). */

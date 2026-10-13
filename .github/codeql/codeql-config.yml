@@ -11,6 +11,8 @@ threat-models: local
 paths:
   - packages
   - scripts
+  - .github/actions/ci-gate
+  - infrastructure/github-ci
 paths-ignore:
   - '**/node_modules/**'
   - '**/dist/**'

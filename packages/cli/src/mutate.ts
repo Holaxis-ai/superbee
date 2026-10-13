@@ -15,6 +15,7 @@ import {
   KindConformanceError,
   KindFieldMutationConflict,
   mutateDocument,
+  projectKindValidationWarnings,
   readDoc,
   VersionConflict,
   type Bundle,
@@ -146,6 +147,7 @@ async function translateMutationError(error: unknown, opts: MutateDocOptions): P
 
 export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
   try {
+    let okfVersion: "0.1" | "0.2" | undefined;
     const result = await mutateDocument({
       ...(opts.seedGenerationClock === undefined ? {} : { seedGenerationClock: opts.seedGenerationClock }),
       bundle: opts.bundle,
@@ -155,7 +157,8 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
       strict: opts.strict,
       buildCandidate: opts.buildCandidate,
       input: opts.input,
-      assertCandidate: (existing, candidate) => {
+      assertCandidate: (existing, candidate, context) => {
+        okfVersion = context.okfVersion;
         if (existing) guardBodyReplace(opts.bundle, existing, candidate.body, opts.bodyReplace);
       },
       onAbsent: opts.onAbsent,
@@ -168,7 +171,10 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
 
     if (result.changed) await firePostPersist(opts.onPersisted);
 
-    return result;
+    const kind = opts.registry.kinds.get(String(result.doc.frontmatter.type));
+    return kind && result.warnings.length > 0
+      ? { ...result, warnings: projectKindValidationWarnings(okfVersion, kind, result.warnings) }
+      : result;
   } catch (error) {
     return await translateMutationError(error, opts);
   }

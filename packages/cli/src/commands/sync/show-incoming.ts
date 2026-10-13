@@ -14,8 +14,8 @@ import {
   versionOfBytes,
 } from "@superbee/core";
 import {
-  BOARD_BRANCH,
-  BOARD_REF,
+  BOARD_REMOTE,
+  boardBranchOf,
   bundleDirNameForProject,
   committedBundleAtHead,
   inTreeUpstreamSha,
@@ -120,11 +120,12 @@ export async function showIncoming(
     // under. Branch mode: the board ref, no prefix. In-tree (tracked conventional folder, no
     // board refs anywhere): the branch's OWN tracking upstream, docs under the selected bundle directory —
     // still "as of last fetch", still no implicit fetch (the resolution is local config/refs).
-    let readRef = `refs/remotes/${BOARD_REF}`;
+    const boardBranch = boardBranchOf(top);
+    let readRef = `refs/remotes/${BOARD_REMOTE}/${boardBranch}`;
     let pathPrefix = "";
     let inTreeBundleDir = bundleDirNameForProject(top);
-    if (runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status !== 0) {
-      if (runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]).status === 0) {
+    if (runGit(top, ["rev-parse", "--verify", "--quiet", readRef]).status !== 0) {
+      if (runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${boardBranch}`]).status === 0) {
         throw ffSwallowToError("no-upstream", inv, top);
       }
       const committed = committedBundleAtHead(top);

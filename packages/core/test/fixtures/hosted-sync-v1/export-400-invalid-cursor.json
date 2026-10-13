@@ -1,0 +1,23 @@
+{
+  "name": "export-400-invalid-cursor",
+  "description": "A page whose cursor names no page of the pinned inventory (here, past its end).",
+  "route": "/sync/v1/export",
+  "rows": [
+    "refusal 400 invalid_input"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"paged\":true,\"cursor\":\"2.2\"}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

@@ -38,6 +38,8 @@ import {
   parseLinksFromDoc,
   query,
   validateAgainstKind,
+  projectKindValidationWarnings,
+  isKindFieldValidationWarning,
 } from "@superbee/core";
 import { trustCountsRow } from "../trust.js";
 import {
@@ -253,13 +255,6 @@ function cap(rows: Record<string, unknown>[], limit: number): Capped {
   return { shown: bounded.length, total: rows.length, rows: bounded };
 }
 
-/**
- * `validateAgainstKind`'s codes that represent a FRONTMATTER-shaped violation (a missing required
- * field, an out-of-enum value, or wrong arity) — every code EXCEPT `KIND_SECTION_MISSING` (a missing
- * BODY heading, out of scope for `conformance_debt` below).
- */
-const FRONTMATTER_VIOLATION_CODES = new Set(["KIND_FIELD_MISSING", "KIND_FIELD_VALUE", "KIND_FIELD_ARITY"]);
-
 /** A doc's `type` field, or "" when absent/non-string — the ONE place this coercion happens. */
 function docType(doc: OkfDocument): string {
   return typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
@@ -418,9 +413,9 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   for (const doc of docs) {
     const kind = registry.kinds.get(docType(doc));
     if (!kind) continue;
-    for (const w of validateAgainstKind(doc, kind)) {
+    for (const w of projectKindValidationWarnings(okfVersion, kind, validateAgainstKind(doc, kind))) {
       lintRows.push({ id: doc.id, field: w.field ?? "", code: w.code });
-      if (FRONTMATTER_VIOLATION_CODES.has(w.code) && !conformanceDebtDocs.has(doc.id)) {
+      if (isKindFieldValidationWarning(w) && !conformanceDebtDocs.has(doc.id)) {
         conformanceDebtDocs.set(doc.id, docType(doc));
       }
     }

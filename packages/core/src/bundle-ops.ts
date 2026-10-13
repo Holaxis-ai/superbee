@@ -126,8 +126,12 @@ export function parseLinks(_bundle: Bundle, doc: OkfDocument): Link[] {
   return engine.parseLinks(doc);
 }
 
-export async function queryEdges(bundle: Bundle, filter: EdgeFilter = {}): Promise<Link[]> {
-  return engine.queryEdges(backendFor(bundle), filter);
+export async function queryEdges(
+  bundle: Bundle,
+  filter: EdgeFilter = {},
+  options: engine.QueryOptions = {},
+): Promise<Link[]> {
+  return engine.queryEdges(backendFor(bundle), filter, options);
 }
 
 export async function backlinks(bundle: Bundle, target: ConceptId): Promise<Link[]> {

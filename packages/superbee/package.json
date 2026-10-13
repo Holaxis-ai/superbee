@@ -1,6 +1,6 @@
 {
   "name": "superbee",
-  "version": "0.3.0-pre.6",
+  "version": "0.4.3-pre.2",
   "type": "module",
   "description": "Agent-facing Superbee CLI for reading and writing local OKF knowledge bundles: context notes, docs, cross-links, and live bundle Views.",
   "keywords": [
@@ -37,6 +37,10 @@
     "./bundle-descriptor": {
       "types": "./dist/bundle-descriptor/index.d.ts",
       "default": "./dist/bundle-descriptor.mjs"
+    },
+    "./portable-export": {
+      "types": "./dist/portable-export.d.ts",
+      "default": "./dist/portable-export.mjs"
     }
   },
   "files": [
@@ -49,7 +53,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^22.14.0 || ^24.0.0 || ^26.0.0"
   },
   "scripts": {
     "build": "node build.mjs local-dev",
@@ -62,7 +66,7 @@
     "prepublishOnly": "node -e \"console.error('superbee is released by .github/workflows/release.yml (npm stage publish); do not run npm publish here'); process.exit(1)\""
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@superbee/board-git": "*",
     "@superbee/bundle-descriptor": "*",
     "@superbee/core": "*",

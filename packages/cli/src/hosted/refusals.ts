@@ -212,7 +212,7 @@ export async function assertKindOnlyRecipe(
 /** What to do instead of a write sync would hold, by the reason the scan records. */
 const HELD_INSTEAD: Partial<Record<HeldReason, string>> = {
   type_change: "keep the document's type; a checkout cannot change it (create a new document instead)",
-  too_large: "keep the document within the size a sync write carries",
+  too_large: "split the document, or keep this edit local until the host accepts it; do not shorten someone else's document to make it sync",
   not_sendable: "change the document so sync can send it",
   unsafe_path: "use a document id sync can send",
 };

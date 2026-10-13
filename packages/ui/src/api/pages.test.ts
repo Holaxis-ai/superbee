@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { getDoc } from "./client.js";
-import { fetchDocumentOpenCommand, listPages, pageFromFrontmatter, resolvePageTarget } from "./pages.js";
+import { fetchDocumentOpenCommand, fetchViewBytes, listPages, pageFromFrontmatter, resolvePageTarget, ViewBytesMismatchError } from "./pages.js";
+import { createHash } from "node:crypto";
 import type { Frontmatter } from "./types.js";
 
 vi.mock("./client.js", async (importOriginal) => {
@@ -105,5 +106,51 @@ describe("resolvePageTarget", () => {
   it("turns missing documents into a false target result", async () => {
     vi.mocked(getDoc).mockRejectedValue(new Error("not found"));
     expect(await resolvePageTarget("pages-registry/missing")).toBe(false);
+  });
+});
+
+describe("fetchViewBytes", () => {
+  const html = "<!doctype html><p>exact</p>";
+  const version = `sha256:${createHash("sha256").update(html).digest("hex")}`;
+
+  function stubFetch(response: Response) {
+    const fetchMock = vi.fn(async () => response);
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("fetches once as the shell (same-origin credentials + X-Requested-With, no cache) and returns the exact bytes", async () => {
+    const fetchMock = stubFetch(new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }));
+    try {
+      const view = await fetchViewBytes("/__page/n1", version);
+      expect(new TextDecoder().decode(view.bytes)).toBe(html);
+      expect(view.contentType).toBe("text/html; charset=utf-8");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith("/__page/n1", {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "X-Requested-With": "superbee-ui" },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("refuses bytes whose sha256 is not the approved content version", async () => {
+    stubFetch(new Response(`${html} `, { status: 200, headers: { "content-type": "text/html" } }));
+    try {
+      await expect(fetchViewBytes("/__page/n2", version)).rejects.toBeInstanceOf(ViewBytesMismatchError);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("surfaces the server's refusal (spent, expired, or changed launch) as its error message", async () => {
+    stubFetch(new Response(JSON.stringify({ error: { code: "FORBIDDEN", message: "this View launch is unknown, already delivered, or expired" } }), { status: 403 }));
+    try {
+      await expect(fetchViewBytes("/__page/n3", version)).rejects.toThrow("already delivered");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

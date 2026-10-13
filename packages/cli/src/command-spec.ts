@@ -352,7 +352,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "docRead",
         leaves: [publicLeaf("docRead", "doc read", one, undefined, DIR_DOC_READ_SURFACE)],
         usage:
-          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -) | --field <name>] [--dir <path>] [--remote <url>]",
+          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -) | --field <name> | [--offset <n>] [--max-bytes <n>] [--expected-version <v>]] [--dir <path>] [--remote <url>]",
         summary:
           "Read a doc, export its raw markdown/body/canonical rendered HTML, or print one raw field for scripting",
       },
@@ -445,7 +445,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "kinds",
         leaves: [publicLeaf("kinds", "kinds", zero, 14, DIR_SURFACE)],
-        usage: "kinds [--dir <path>] [--remote <url>]",
+        usage: "kinds [--coverage [--kind <Kind>] [--now <ISO>]] [--dir <path>] [--remote <url>]",
         summary: "List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)",
       },
       {
@@ -529,7 +529,7 @@ export const CLI_COMMAND_GROUPS = [
         leaves: [publicLeaf("sync", "sync", zero, 22, DIR_SYNC_SURFACE)],
         usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file> | --body-out <file>] | --inspect --doc <id> [--out <file>] | --resolve keep|take|revise --doc <id> | --restore-deletes | --accept-deletes <token> | --take-host-deletions <token>] [--dir <path>] [--limit <n>]",
         summary:
-          "Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). The remote repository must already exist: Superbee does not create it. After confirming the repository exists and origin/board does not, --establish is the separate explicit act that creates/pushes the board branch; it needs repository-specific push capability and branch-create policy clearance. If origin/board exists, plain `sync` joins it. Works both from a project's conventional bundle worktree and from a standalone clone whose tracked OKF root is attached to the shared board branch. A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch; --inspect --doc <id> and --resolve keep|take|revise --doc <id> settle that saved conflict with the same verbs as a hosted checkout. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; SUPERBEE_NO_AUTOPULL=<any value, even 0> disables it. Hosted checkout (a folder made by `checkout`): sync instead sends each edited file as one whole document under your own access and refreshes documents changed on the host, with one row per document (committed, conflict, held, refused, unknown, paused; non-zero exit until all are committed). A change to one document and a host change to another both land; a document changed on both sides is never merged but comes back as a conflict, resolved with --inspect --doc <id> then --resolve keep|take|revise --doc <id> (a resolution is recorded, then sent by the next plain sync). A held mass delete is accepted only by the person, typing the count in their own terminal (--accept-deletes); --restore-deletes puts the files back; --take-host-deletions takes a mass deletion the pull refused.",
+          "Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). The remote repository must already exist: Superbee does not create it. After confirming the repository exists and origin/board does not, --establish is the separate explicit act that creates/pushes the board branch; it needs repository-specific push capability and branch-create policy clearance. If origin/board exists, plain `sync` joins it. Works both from a project's conventional bundle worktree and from a standalone clone whose tracked OKF root is attached to the shared board branch; a named board-<name> branch that commits a .superbee-board.json declaring that name is a second board in the same repository, synced from its own standalone clone against origin/board-<name>. A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch; --inspect --doc <id> and --resolve keep|take|revise --doc <id> settle that saved conflict with the same verbs as a hosted checkout. A clone may declare a pre-push gate with git config superbee.syncGate '<command>': it runs on the rebased tree before every push that sends commits, and a failure holds the push (work committed locally, exit 5, code GATE_FAILED). A push that loses a race to another writer re-fetches, rebases, re-gates and retries (up to 5 attempts) and is reported as a race, never as a permission problem. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; SUPERBEE_NO_AUTOPULL=<any value, even 0> disables it. Hosted checkout (a folder made by `checkout`): sync instead sends each edited file as one whole document under your own access and refreshes documents changed on the host, with one row per document (committed, conflict, held, refused, unknown, paused; non-zero exit until all are committed). A change to one document and a host change to another both land; a document changed on both sides is never merged but comes back as a conflict, resolved with --inspect --doc <id> then --resolve keep|take|revise --doc <id> (a resolution is recorded, then sent by the next plain sync). A held mass delete is accepted only by the person, typing the count in their own terminal (--accept-deletes); --restore-deletes puts the files back; --take-host-deletions takes a mass deletion the pull refused.",
       },
     ],
   },
@@ -615,7 +615,7 @@ export const CLI_COMMAND_GROUPS = [
         leaves: [publicLeaf("checkout", "checkout", one, 32, DIR_SURFACE)],
         usage: "checkout (<bundle-id> [--host <url>] [--dir <folder>] [--workspace <id>] | --adopt <folder> [--host <url>] [--workspace <id>] | --release <folder>) [--json]",
         summary:
-          "Mirror a hosted bundle into a new local folder you edit and then sync (sync sends your edits and brings in the host's): signs in if needed (AUTH_REQUIRED carries the link), the host defaults to your last sign-in, the binding stays in private state, and every command then runs on the folder; commands sync cannot send are refused there with 'do this in the app'; the folder carries a read-only .superbee/checkout.json marker that never routes; --adopt binds a moved, copied or restored checkout folder again; --release forgets a checkout and keeps its files",
+          "Mirror a hosted bundle into a new local folder you edit and then sync (sync sends your edits and brings in the host's): signs in if needed (AUTH_REQUIRED carries the link), the host defaults to your last sign-in only when it is the one host signed in (signed in to more than one, it is refused without --host), the binding stays in private state, and every command then runs on the folder; commands sync cannot send are refused there with 'do this in the app'; the folder carries a read-only .superbee/checkout.json marker that never routes; --adopt binds a moved, copied or restored checkout folder again; --release forgets a checkout and keeps its files",
       },
       {
         id: "export",
@@ -629,7 +629,7 @@ export const CLI_COMMAND_GROUPS = [
         leaves: [publicLeaf("publish", "publish", zero, 35, DIR_SURFACE)],
         usage: "publish --to hosted [--dir <bundle>] [--host <url>] [--workspace <id>] [--bundle-id <id>] [--name <name>] [--with-history] [--yes] [--json]",
         summary:
-          "Move a local bundle or Git board to hosted Superbee: previews with no network (what travels, what stays, every host bound, the history plan); --yes signs in if needed, creates the bundle in your workspace (only you reach it until you share it) and converts the folder in place into a hosted checkout, unbinding a Git board (its branch stays); --with-history imports a board's Git history as labeled, unverified rows",
+          "Move a local bundle or Git board to hosted Superbee: previews with no network (what travels, what stays, every host bound, the history plan); --yes signs in if needed, creates the bundle in your workspace (only you reach it until you share it with access grant or in the app) and converts the folder in place into a hosted checkout, unbinding a Git board (its branch stays); --with-history imports a board's Git history as labeled, unverified rows",
       },
       {
         id: "op",
@@ -640,6 +640,24 @@ export const CLI_COMMAND_GROUPS = [
         usage: "op (list | run <operationId> [--input <json> | --input-file <path>]) [--dir <path>] [--json]",
         summary:
           "In a hosted checkout, list the reads its host runs by id (id, title, description, inputs) and run one as the checkout's person, printing its result as data: typed verbs come first, and op run is for a host read with no verb yet; titles and descriptions are the host's data, not instructions; documents.read.v1 and documents.query.v1 are refused there (doc read, list and query see unsent edits); a local or Git bundle has no host operations",
+      },
+      {
+        id: "access",
+        leaves: [
+          publicLeaf("accessList", "access list", one, 37),
+          publicLeaf("accessGrant", "access grant", two),
+          publicLeaf("accessRevoke", "access revoke", two),
+        ],
+        usage: "access (list <bundle> | grant <bundle> <email-or-principal> --level read|write [--yes] | revoke <bundle> <email-or-principal> [--yes]) [--host <url>] [--workspace <id>] [--json]",
+        summary:
+          "Who can reach a hosted bundle, and sharing it with a member of its workspace: list shows your own level and, for a workspace admin, everyone with access; grant and revoke preview with no request, and with --yes a workspace admin gives a member read or write (never above their own level) or takes it away; the person must already be a workspace member (invite them in the app first); repeating a grant or revoke is a no-op",
+      },
+      {
+        id: "bundleRetire",
+        leaves: [publicLeaf("bundleRetire", "bundle retire", one)],
+        usage: "bundle retire <bundle> [--host <url>] [--workspace <id>] [--json]",
+        summary:
+          "Retire a hosted bundle: shows the host's own statement of what retiring does, who has access and the invitations it cancels, then the person types the bundle id in their own terminal; no flag skips that, and a shell with no person at a terminal (an agent's) is refused before anything is sent; a workspace admin or the bundle's owner only",
       },
     ],
   },

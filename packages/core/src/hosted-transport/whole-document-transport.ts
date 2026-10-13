@@ -7,7 +7,8 @@
  * compare-and-swap decides every concurrent change to one document and never merges it. Any other
  * kind (a body update) or a kind its base contradicts is refused before anything is sent, and
  * never mapped to another operation. The managed fields the host owns are stripped before
- * sending; the host carries them from the stored document.
+ * sending; the host carries them from the stored document. The one exception is a bundle's
+ * creation ({@link WholeDocumentRequestOptions.mode} `import`), where nothing is stored yet.
  *
  * A deleted document leaves a tombstone on the host. A create of that id is refused as a
  * `version_conflict` naming the tombstone unless it acknowledges exactly the id's latest one
@@ -53,6 +54,20 @@ import { OPERATIONS_RETENTION_SKEW_MS, type HostedReadAdapter } from "./read-ada
 /** Frontmatter the host owns; no caller may set it, and the host carries it from the stored document. */
 export const HOSTED_MANAGED_FIELDS: ReadonlySet<string> = new Set(["actor", "superbee_updated_by", "generated", "verified", "timestamp", "okf_version"]);
 
+/**
+ * The managed fields a bundle's creation carries as the folder states them: provenance a local
+ * engine stored, which nothing on the host could restore later. `generated` is a claim about who
+ * produced the content, not authority. Every other managed field ({@link IMPORT_DROPPED_FIELDS})
+ * never leaves.
+ */
+export const IMPORT_CARRIED_FIELDS: readonly string[] = Object.freeze(["generated", "timestamp", "actor", "okf_version"]);
+/**
+ * The managed fields a creation still drops: `superbee_updated_by` is the host's own attribution,
+ * and a `verified` event names a verifier and drives the trust tier, which an importer must not
+ * be able to assert.
+ */
+export const IMPORT_DROPPED_FIELDS: readonly string[] = Object.freeze([...HOSTED_MANAGED_FIELDS].filter((field) => !IMPORT_CARRIED_FIELDS.includes(field)));
+
 /** The most frontmatter fields the kernel accepts on a create or replace. */
 export const FRONTMATTER_KEY_LIMIT = 32;
 const UNSAFE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
@@ -61,13 +76,23 @@ const UNSAFE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "p
 export const WHOLE_DOCUMENT_SETTLEMENT: NonNullable<UncertainWriteOptions["settlement"]> = "recorded-only";
 
 export const WHOLE_DOCUMENT_BOUNDS = Object.freeze({
-  /** The write routes' request ceiling; a larger payload is refused here before it leaves. */
+  /**
+   * The write routes' request ceiling on a host that states none (`limits.documentInputBytes`); a
+   * larger payload is refused here before it leaves. A host that states its bound is held to that.
+   */
   payloadBytes: 65536,
   /** A write answer is a bounded result envelope. */
   answerBytes: 65536,
   /** An outcome answer carries the committed document as base64 under this envelope ceiling. */
   outcomeAnswerBytes: 2 * 1024 * 1024,
 });
+
+/**
+ * The whole-document write bound current hosts state (`limits.documentInputBytes`, 983,040 bytes:
+ * 1 MiB less a 64 KiB margin). A client plans against it only before it has asked the host, and
+ * holds a request to what the host actually states.
+ */
+export const CURRENT_HOST_DOCUMENT_INPUT_BYTES = 983_040;
 
 export interface WholeDocumentRoutes {
   create: string;
@@ -91,7 +116,14 @@ const OPERATION_IDS = { create: "documents.create.v1", replace: "documents.repla
  * rides the `X-Superbee-Recreate` header, never the body.
  */
 export type WholeDocumentRequest =
-  | { kind: "create"; operationId: "documents.create.v1"; payload: { bundleId: string; documentId: string; expectAbsent: true; frontmatter: Frontmatter; body: string }; recreates?: Version }
+  | {
+      kind: "create";
+      operationId: "documents.create.v1";
+      payload: { bundleId: string; documentId: string; expectAbsent: true; frontmatter: Frontmatter; body: string };
+      recreates?: Version;
+      /** An `import` request only: the managed fields the document held, carried and dropped. */
+      provenance?: { carried: string[]; dropped: string[] };
+    }
   | { kind: "replace"; operationId: "documents.replace.v1"; payload: { bundleId: string; documentId: string; expectedVersion: Version; frontmatter: Frontmatter; body: string } }
   | { kind: "delete"; operationId: typeof DELETE_OPERATION_ID; payload: { bundleId: string; documentId: string; expectedVersion: Version } };
 
@@ -148,15 +180,33 @@ function jsonPure(value: unknown): boolean {
   return false;
 }
 
+export interface WholeDocumentRequestOptions {
+  /**
+   * `write` (the default): every managed field is removed, as every write to an existing bundle
+   * needs. `import`: the document is part of a bundle's creation, where the host stores what it
+   * is sent and holds nothing to carry managed fields from, so {@link IMPORT_CARRIED_FIELDS}
+   * travel as the folder states them and {@link IMPORT_DROPPED_FIELDS} are removed. Only a create
+   * may be an import; any other operation is refused.
+   */
+  mode?: "write" | "import";
+}
+
 /**
  * The request an intent becomes: the serialized document parsed under the bundle's edition,
- * managed fields removed, a create or a replace against `base` as its kind names. The kind is
- * checked first, so an unsupported kind is refused before its content is read. A document
- * whose frontmatter is not plain JSON (a date object, say) is refused here, because sending it
- * would change what it says.
+ * managed fields removed (for an `import`, the dropped ones), a create or a replace against
+ * `base` as its kind names. The kind is checked first, so an unsupported kind is refused before
+ * its content is read. A document whose frontmatter is not plain JSON (a date object, say) is
+ * refused here, because sending it would change what it says.
  */
-export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationIntent, "kind" | "target" | "base" | "content" | "recreates">, okfVersion?: string): WholeDocumentRequest {
+export function wholeDocumentRequest(
+  bundleId: string,
+  intent: Pick<OperationIntent, "kind" | "target" | "base" | "content" | "recreates">,
+  okfVersion?: string,
+  options: WholeDocumentRequestOptions = {},
+): WholeDocumentRequest {
   const operation = operationOf(intent);
+  const importing = options.mode === "import";
+  if (importing && operation !== "create") throw new WholeDocumentInputError(`'${intent.target}' is a ${operation}, and only a create may carry imported provenance`, "unsupported_operation");
   // A delete names the version that leaves and nothing else: its content is never read or sent.
   if (operation === "delete") return { kind: "delete", operationId: OPERATION_IDS.delete, payload: { bundleId, documentId: intent.target, expectedVersion: intent.base! } };
   let parsed: { frontmatter: Frontmatter; body: string };
@@ -166,13 +216,20 @@ export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationInt
     throw new WholeDocumentInputError(`'${intent.target}' does not parse: ${(error as Error).message}`);
   }
   const frontmatter: Frontmatter = {} as Frontmatter;
+  const carried: string[] = [];
+  const dropped: string[] = [];
   for (const [key, value] of Object.entries(parsed.frontmatter)) {
     if (!HOSTED_MANAGED_FIELDS.has(key)) (frontmatter as Record<string, unknown>)[key] = value;
+    else if (importing && IMPORT_CARRIED_FIELDS.includes(key)) {
+      (frontmatter as Record<string, unknown>)[key] = value;
+      carried.push(key);
+    } else if (importing) dropped.push(key);
   }
   if (!jsonPure(frontmatter)) throw new WholeDocumentInputError(`'${intent.target}' has frontmatter that is not plain JSON`);
   // The kernel's input schema bounds, checked here so a document it would refuse is refused
-  // before it leaves rather than answered and looked up.
-  const keys = Object.keys(frontmatter);
+  // before it leaves rather than answered and looked up. The field count is of authored fields: a
+  // carried managed field is the host's to hold, as on every later write.
+  const keys = Object.keys(frontmatter).filter((key) => !HOSTED_MANAGED_FIELDS.has(key));
   if (keys.length > FRONTMATTER_KEY_LIMIT) throw new WholeDocumentInputError(`'${intent.target}' has ${keys.length} frontmatter fields; at most ${FRONTMATTER_KEY_LIMIT} are accepted`);
   if (typeof frontmatter.type !== "string" || frontmatter.type.trim() === "") throw new WholeDocumentInputError(`'${intent.target}' has no type`);
   if (keys.some((key) => UNSAFE_KEYS.has(key))) throw new WholeDocumentInputError(`'${intent.target}' names a reserved object key in its frontmatter`);
@@ -184,6 +241,7 @@ export function wholeDocumentRequest(bundleId: string, intent: Pick<OperationInt
         operationId: OPERATION_IDS.create,
         payload: { bundleId, documentId: intent.target, expectAbsent: true, frontmatter, body: parsed.body },
         ...(intent.recreates !== undefined ? { recreates: intent.recreates } : {}),
+        ...(importing ? { provenance: { carried, dropped } } : {}),
       }
     : { kind: "replace", operationId: OPERATION_IDS.replace, payload: { ...common, expectedVersion: intent.base } };
 }
@@ -215,6 +273,12 @@ export interface WholeDocumentTransportOptions {
    */
   acceptDeletes?: number;
   /**
+   * The host's whole-document write bound as its capabilities answer states it
+   * (`documentInputBytes`), in bytes of the request's JSON. Absent or null: the host states none,
+   * and {@link WHOLE_DOCUMENT_BOUNDS}`.payloadBytes` applies.
+   */
+  documentInputBytes?: number | null;
+  /**
    * Told of each delete the host's mass-delete hold refused (`428 deletions_held`), with the
    * bundle's counts. The intent is settled `refused` with {@link DELETIONS_HELD_REFUSAL_CODE},
    * which never pauses the store: it stays until a person accepts or restores it.
@@ -237,6 +301,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   if (options.via !== undefined && !isAgentLabelVia(options.via)) throw new TypeError("the via token is not one the host admits");
   if (options.acceptDeletes !== undefined && !isAcceptedDeletionCount(options.acceptDeletes)) throw new TypeError("acceptDeletes is not a count the host admits");
   const via = options.via;
+  const payloadBytes = options.documentInputBytes ?? WHOLE_DOCUMENT_BOUNDS.payloadBytes;
 
   /**
    * The served head as the conflict a refusal stands for. Absent, it is a conflict against no
@@ -287,8 +352,8 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   function prepare(intent: OperationIntent): { request: WholeDocumentRequest; body: string } {
     const request = wholeDocumentRequest(bundleId, intent, options.okfVersion);
     const body = JSON.stringify(request.payload);
-    if (encoder.encode(body).byteLength > WHOLE_DOCUMENT_BOUNDS.payloadBytes)
-      throw new WholeDocumentInputError(`the document exceeds ${WHOLE_DOCUMENT_BOUNDS.payloadBytes} bytes as a request`);
+    if (encoder.encode(body).byteLength > payloadBytes)
+      throw new WholeDocumentInputError(`the document exceeds ${payloadBytes} bytes as a request`);
     return { request, body };
   }
 

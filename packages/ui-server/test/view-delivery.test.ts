@@ -19,6 +19,7 @@ const JSON_HEADERS = {
   "content-type": "application/json",
   "x-requested-with": "superbee-ui",
 };
+const SHELL_FETCH = { headers: { cookie: COOKIE, "x-requested-with": "superbee-ui" } };
 const renderDocument = ({ body }: { body: string }) => ({ html: body, bounded: false });
 
 type Capability = "none" | "bundle-read" | "bundle-propose";
@@ -114,7 +115,7 @@ async function mint(server: UiServerHandle, capability: Capability) {
 }
 
 for (const capability of ["none", "bundle-read", "bundle-propose"] as const) {
-  test(`delivery receipts are capability-neutral and repeatable for ${capability} without granting authority`, async () => {
+  test(`delivery receipts for the shell fetch are capability-neutral and repeatable for ${capability} without granting authority`, async () => {
     const f = await fixture();
     try {
       const launch = await mint(f.server, capability);
@@ -124,11 +125,13 @@ for (const capability of ["none", "bundle-read", "bundle-propose"] as const) {
       assert.equal(before.status, 200);
       assert.equal(before.body.delivered, false);
 
-      const served = await fetch(`http://${f.server.host}:${f.server.port}${launch.url}`);
+      const served = await fetch(`http://${f.server.host}:${f.server.port}${launch.url}`, SHELL_FETCH);
       const servedText = await served.text();
       assert.equal(served.status, 200);
       assert.equal(servedText, f.html[capability], "delivery tracking must preserve exact authored bytes");
       assert.doesNotMatch(servedText, new RegExp(launch.launchId), "the launch ID must not enter the View");
+      const again = await fetch(`http://${f.server.host}:${f.server.port}${launch.url}`, SHELL_FETCH);
+      assert.equal(again.status, 403, "the shell's one delivery spends the nonce");
 
       for (let attempt = 0; attempt < 2; attempt++) {
         const receipt = await post(f.server, "/__ui/views/delivered", {
@@ -187,7 +190,7 @@ test("delivery verification refuses unknown and stale launches, revoking only fa
     assert.equal(unknown.status, 403);
 
     const launch = await mint(f.server, "none");
-    const served = await fetch(`http://${f.server.host}:${f.server.port}${launch.url}`);
+    const served = await fetch(`http://${f.server.host}:${f.server.port}${launch.url}`, SHELL_FETCH);
     assert.equal(await served.text(), f.html.none);
 
     const malformed = await post(f.server, "/__ui/views/delivered", {
@@ -234,7 +237,7 @@ test("delivery verification refuses an expired launch", async () => {
   const f = await fixture();
   try {
     const launch = await mint(f.server, "none");
-    const served = await fetch(`http://${f.server.host}:${f.server.port}${launch.url}`);
+    const served = await fetch(`http://${f.server.host}:${f.server.port}${launch.url}`, SHELL_FETCH);
     assert.equal(await served.text(), f.html.none);
     now += 60 * 60 * 1_000 + 1;
     const expired = await post(f.server, "/__ui/views/delivered", {

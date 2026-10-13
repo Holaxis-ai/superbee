@@ -41,6 +41,7 @@ const devinSourceReceipt = `${JSON.stringify(
 const targets = [
   {
     label: "npm package skill",
+    render: "npm",
     root: packageSkillRoot,
     skillPath: resolve(packageSkillRoot, "SKILL.md"),
     referencesDir: resolve(packageSkillRoot, "references"),
@@ -49,6 +50,7 @@ const targets = [
   },
   {
     label: "Devin repository skill",
+    render: "devin",
     root: devinSkillRoot,
     skillPath: resolve(devinSkillRoot, "SKILL.md"),
     referencesDir: resolve(devinSkillRoot, "references"),
@@ -195,14 +197,14 @@ function parseArgs(argv) {
 
 export async function main(argv = process.argv.slice(2)) {
   const { checkOnly } = parseArgs(argv);
-  const { renderNpm, NPM_RESOURCES } = await loadSkillRender();
-  const content = renderNpm();
+  const { renderNpm, renderDevin, NPM_RESOURCES } = await loadSkillRender();
+  const contents = { npm: renderNpm(), devin: renderDevin() };
   const resources = NPM_RESOURCES;
 
   if (checkOnly) {
     const problems = [];
     for (const target of targets) {
-      for (const problem of await checkTarget(target, content, resources)) {
+      for (const problem of await checkTarget(target, contents[target.render], resources)) {
         problems.push(`${target.label}: ${problem}`);
       }
     }
@@ -214,7 +216,7 @@ export async function main(argv = process.argv.slice(2)) {
     for (const target of targets) console.log(`${target.skillPath} is up to date.`);
   } else {
     for (const target of targets) {
-      await syncTarget(target, content, resources);
+      await syncTarget(target, contents[target.render], resources);
       console.log(`wrote ${target.skillPath}`);
       console.log(`synced ${target.referencesDir}`);
       if (target.receipt) console.log(`wrote ${target.receipt.path}`);

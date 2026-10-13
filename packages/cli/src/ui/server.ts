@@ -3,8 +3,6 @@ import { captureRuntimeCallback } from "../runtime-context.js";
 // policy stay in this package; the listener/session/proxy/View/SSE mechanics live below it.
 import {
   bootUiServer as bootUiServerRuntime,
-  escapeHtml,
-  pageError,
   type UiServerHandle,
   type UiServerOptions as RuntimeUiServerOptions,
 } from "@superbee/ui-server";
@@ -15,7 +13,6 @@ import { serveEmbeddedUiAsset } from "./assets.js";
 import { createSharingLoader, createWorkspacesLoader } from "./sharing.js";
 import { LocalViewAuthorizationStore } from "./view-authorizations.js";
 
-export { escapeHtml, pageError };
 export type { UiServerHandle };
 
 type InjectedUiServerOption =

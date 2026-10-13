@@ -19,6 +19,7 @@ import { parseArgs } from "node:util";
 import {
   BOARD_BRANCH,
   BOARD_REMOTE,
+  boardBranchOf,
   BUNDLE_DIR,
   bundleDirNameForProject,
   committedBundleAtHead,
@@ -30,17 +31,22 @@ import {
   hasLocalOnlyBundle,
   healStaleRebaseBeforeProvisioning,
   inTreeFetchAndRecord,
+  fetchOrigin,
   isBoardGitError,
   originDocsBetween,
   push,
   repoTopLevel,
   resolveBundleKey,
+  boardRefOf,
   resolveOriginRef,
   retargetBoardInterior,
   runGit,
+  malformedCommittedDocuments,
+  malformedOutgoingDocuments,
   stageAndCommit,
   unpushedCount,
   type CommitResult,
+  type HeldDocument,
   type DocChange,
   type FetchRebaseResolvingOutcome,
   type ProvisionOutcome,
@@ -63,6 +69,7 @@ import {
   writeAwarenessCache,
 } from "./converge.js";
 import { showIncoming } from "./show-incoming.js";
+import { SYNC_GATE_CONFIG, declaredSyncGate, runSyncGate } from "./gate.js";
 import { ffSwallowToError, syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
 import { CliError, asHandled, cliErrorFromBoardGit, toExit } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
@@ -73,6 +80,7 @@ import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
+import { refuseOutgoingCommitsPrivateState, refuseOutgoingWorktreePrivateState } from "../../private-state-publication.js";
 import {
   boundBoardWorktreeError,
   emptyDirectory,
@@ -85,6 +93,7 @@ import type { BoundBoardOwner } from "../../bound-board-owner.js";
 import { recoverBoundBoardOwner } from "../../bound-board-recovery.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
 import { syncEnvelope, withSyncEnvelope } from "../../sync-outcomes.js";
+import { MOVED_MARKER_FILE, movedBoardRefusal, readMovedMarker } from "../../hosted/moved-marker.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -121,6 +130,11 @@ board changes.
 The same verb also works when an automation or chat agent clones the shared \`board\` branch as
 the repository root: a tracked OKF root index plus the exact attached \`board\` branch identifies
 that standalone checkout, so sync operates there directly and never creates a nested bundle.
+A repository can carry more than one board: a NAMED board lives on its own \`board-<name>\` branch
+(lowercase letters, digits and hyphens) whose root commits \`.superbee-board.json\` containing
+\`{"schema": 1, "branch": "board-<name>"}\`. A standalone clone of that branch, tracking
+\`origin/board-<name>\`, syncs exactly as above against \`origin/board-<name>\` and never touches
+\`origin/board\`; the conventional \`.superbee\` worktree always uses \`board\`.
 \`--establish\` on an already-established project is a safe no-op that notes \`already established\`
 and proceeds as an ordinary sync.
 
@@ -164,7 +178,25 @@ any error envelope) on stderr. A doc absent upstream renders as an expected stat
 
 If the push fails after a local commit already landed (offline, revoked/expired credentials, or a
 locked repository), the receipt still reports what committed/pulled successfully — your work is
-saved locally either way, and re-running sync retries the push.
+saved locally either way, and re-running sync retries the push. A push that loses a race to
+another writer (non-fast-forward, including the remote's "incorrect old value" refusal) is not a
+permission problem: sync re-fetches, rebases with the same converging mechanic, re-runs the gate,
+and pushes again, up to 5 attempts in all, then exits 1 with \`details.reason: non-fast-forward\`.
+
+A clone can declare a SYNC GATE: a command sync runs on the converged tree after rebasing onto
+the remote board and before every push that sends commits (\`git config superbee.syncGate
+'<command>'\`, any Git config scope; an empty value declares none; \`superbee.syncGateTimeoutSeconds\`
+overrides the 600s timeout). It runs through the shell from the board root with
+SUPERBEE_BOARD_BRANCH, SUPERBEE_BOARD_UPSTREAM_REF, SUPERBEE_BOARD_UPSTREAM_SHA (the remote tip
+rebased onto), SUPERBEE_BOARD_HEAD_SHA (what would be pushed) and SUPERBEE_SYNC_ATTEMPT set. A
+non-zero exit, a timeout, or any edit to the board holds the push: the work stays committed
+locally and sync exits 5 with code GATE_FAILED and the gate's last output lines. Exactly the
+judged commit is pushed. The command comes from Git configuration, never from board files, so
+board content cannot choose the command; keep the gate's code outside the board too (a script
+inside the board runs whatever a teammate last pushed). A gate must leave the board as it found
+it: an untracked, non-ignored file it writes counts as an edit. The opt-in turn-end sync runs
+the gate as well, inside the agent host's hook time limit, so keep a gate fast there.
+\`--pull-only\` never runs it, and neither does \`--establish\`'s first publication of a board.
 
 A board can also ride IN-TREE: \`.superbee/\` or legacy \`.agentstate-lite/\` committed WITH the code on the current
 branch, with no dedicated \`board\` branch anywhere. That is a supported, read-side mode — sync
@@ -300,6 +332,37 @@ type SyncDispatch =
 
 /** The provision phase's result: the board checkout this run operates on. */
 interface SyncBoard { boardPath: string; key: string; outcome: ProvisionOutcome }
+
+/**
+ * Refuse a board that carries the moved-to-hosted marker (`publish --to hosted` wrote it). With
+ * `fetch` (the entry check, before anything is committed), origin is fetched first, and a board
+ * moved back passes: origin holds the commit that added the marker but no longer the marker (it
+ * was reverted), so this run's pull brings that in. Offline, the marker here stands. A marker whose
+ * commit origin never received is refused with the push that finishes the move.
+ */
+function refuseMovedBoard(boardPath: string, fetch = false): void {
+  const marker = readMovedMarker(boardPath);
+  if (marker === null) return;
+  const fetched = fetch ? fetchOrigin(boardPath) : true;
+  const where = markerOnOrigin(boardPath);
+  if (fetch && fetched && where === "moved_back") return;
+  throw movedBoardRefusal(boardPath, marker, { commits: unpushedCount(boardPath) ?? 0, uncommitted: countUncommitted(boardPath) }, where === "unpushed" ? { markerUnpushed: boardPath } : {});
+}
+
+/**
+ * Where origin's board (as last fetched) stands on this folder's marker: `moved_back` when origin
+ * holds the commit that added it but not the marker, `unpushed` when origin lacks that commit, and
+ * `on_origin` or `unknown` otherwise (no origin, or a marker no commit here added).
+ */
+function markerOnOrigin(boardPath: string): "on_origin" | "moved_back" | "unpushed" | "unknown" {
+  const origin = resolveOriginRef(boardPath);
+  if (origin === null) return "unknown";
+  const added = runGit(boardPath, ["log", "-1", "--format=%H", "--diff-filter=A", "HEAD", "--", MOVED_MARKER_FILE]);
+  const commit = added.status === 0 ? added.stdout.trim() : "";
+  if (commit === "") return "unknown";
+  if (runGit(boardPath, ["merge-base", "--is-ancestor", commit, origin]).status !== 0) return "unpushed";
+  return runGit(boardPath, ["cat-file", "-e", `${origin}:${MOVED_MARKER_FILE}`]).status === 0 ? "on_origin" : "moved_back";
+}
 
 /** Pre-pull baselines: the stored cursor and the refs captured BEFORE this run's commit/fetch. */
 interface SyncBaseline { storedCursor: SyncCursor | null; startHead: string; preFetchOriginRef: string | null }
@@ -648,13 +711,15 @@ function provisionPhase(run: SyncRun): SyncBoard | null {
  * of this run. Then the diff baselines: origin/board's OWN ref as this run understood it BEFORE
  * its own fetch — captured before the commit and pull phases, so it can never include anything local.
  */
-async function baselinePhase(board: SyncBoard): Promise<SyncBaseline> {
+async function baselinePhase(board: SyncBoard, entryOriginRef?: string | null): Promise<SyncBaseline> {
   await defaultSyncStore.refreshMarker(board.key);
   const storedCursor = await defaultSyncStore.readCursor(board.key);
   const startHead = currentHead(board.boardPath);
   const preFetchOriginRef = board.outcome.kind === "already" && board.outcome.originBaseline
     ? board.outcome.originBaseline
-    : resolveOriginRef(board.boardPath);
+    : entryOriginRef !== undefined
+      ? entryOriginRef
+      : resolveOriginRef(board.boardPath);
   return { storedCursor, startHead, preFetchOriginRef };
 }
 
@@ -682,7 +747,7 @@ async function commitPhase(board: SyncBoard, pullOnly: boolean): Promise<CommitR
  * {@link throwPostCommitFailure}.
  */
 async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult): Promise<void> {
-  const { boardPath, key, outcome } = board;
+  const { boardPath, outcome } = board;
   if (run.pullOnly) {
     const ff = ffPull(boardPath);
     if (ff.swallowed) {
@@ -690,9 +755,19 @@ async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
     }
     return;
   }
+  await convergingRebase(run, board, commitResult.committed);
+}
+
+/**
+ * Fetch and rebase onto the remote board with the converging conflict mechanic — the full sync's
+ * pull, and the re-pull after a lost push race. A conflict is the CONFLICT(5) terminal; nothing
+ * is pushed after it.
+ */
+async function convergingRebase(run: SyncRun, board: SyncBoard, committedThisRun: boolean): Promise<void> {
+  const { boardPath, key, outcome } = board;
   // Every failure composes in one order: withProvisionAnnouncement, then throwPostCommitFailure.
   const fail = (err: CliError): Promise<never> =>
-    throwPostCommitFailure(withProvisionAnnouncement(err, outcome), commitResult.committed, key, boardPath);
+    throwPostCommitFailure(withProvisionAnnouncement(err, outcome), committedThisRun, key, boardPath);
   let rebaseOutcome: FetchRebaseResolvingOutcome;
   try {
     rebaseOutcome = fetchRebaseResolving(boardPath, defaultSyncStore.exportsDir(key));
@@ -744,30 +819,131 @@ async function deltaPhase(board: SyncBoard, baseline: SyncBaseline): Promise<Syn
   return { originDelta, changes: [], reanchorNote: REANCHOR_NOTE };
 }
 
+/** Push attempts per sync: the first, plus re-fetch/rebase/re-gate retries after lost races. */
+export const SYNC_PUSH_ATTEMPTS = 5;
+
+/** A short randomized pause before a retry, so two writers that lost to each other desynchronize. */
+function raceBackoffMs(attempt: number): number {
+  return Math.floor(250 * attempt + Math.random() * 750 * attempt);
+}
+
 /**
- * The push phase (skipped for `--pull-only`). A push failure AFTER a successful commit+pull gets
- * a PARTIAL envelope LEADING with the safety message, then throws `asHandled` so the bin wrapper
- * sets the exit code without a second (conflicting) error envelope.
+ * The push phase (skipped for `--pull-only`). Before each push that sends commits, the clone's
+ * declared sync gate (Git config `superbee.syncGate`) judges the converged tree; a failing gate
+ * holds the push with the work committed locally (GATE_FAILED, exit 5). A push that loses a race
+ * to another writer (non-fast-forward) re-fetches, rebases with the converging mechanic, re-runs
+ * the gate, and pushes again, up to {@link SYNC_PUSH_ATTEMPTS} attempts. A push failure AFTER a
+ * successful commit+pull gets a PARTIAL envelope LEADING with the safety message, then throws
+ * `asHandled` so the bin wrapper sets the exit code without a second (conflicting) error envelope.
  */
-async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta): Promise<{ commits: number; documents: number }> {
-  if (run.pullOnly) return { commits: 0, documents: 0 };
-  const ahead = unpushedCount(board.boardPath) ?? 0;
-  // The documents the push sends: every one the unpushed commits change, this run's or earlier.
-  const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), currentHead(board.boardPath)).map((change) => change.docId)).size : 0;
-  try {
-    push(board.boardPath);
-    return { commits: ahead, documents: outgoing };
-  } catch (err) {
-    const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
-    const warning = pushFailureMessage(classified);
-    const partial = buildPushFailurePartial(
-      board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote,
-      classified.details,
-    );
-    run.stdout(render(withSyncEnvelope(partial, syncEnvelope("git", { received: delta.originDelta.length })), run.mode));
-    await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
-    throw asHandled(new CliError(classified.code, warning, { details: classified.details }));
+async function pushPhase(
+  run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta, baseline: SyncBaseline,
+): Promise<{ commits: number; documents: number; delta: SyncDelta; gate?: Record<string, unknown> }> {
+  if (run.pullOnly) return { commits: 0, documents: 0, delta };
+  const gate = declaredSyncGate(board.boardPath);
+  // Resolved once: the gate judges for this branch, every attempt pushes to it, and a retry
+  // refuses if anything moved the checkout off it.
+  const branch = boardBranchOf(board.boardPath);
+  let gateDetails: Record<string, unknown> | undefined;
+  for (let attempt = 1; ; attempt += 1) {
+    // One head per attempt: the gate judges it, the counts describe it, and exactly it is pushed.
+    const head = currentHead(board.boardPath);
+    const counted = unpushedCount(board.boardPath);
+    const ahead = counted ?? 0;
+    // The documents the push sends: every one the unpushed commits change, this run's or earlier.
+    const outgoing = ahead > 0 ? new Set(originDocsBetween(board.boardPath, resolveOriginRef(board.boardPath), head).map((change) => change.docId)).size : 0;
+    // F8's backstop on exactly what this push sends, including commits made by hand: refused
+    // before the gate runs or anything leaves the machine.
+    if (counted === null || ahead > 0) {
+      refuseOutgoingCommitsPrivateState(board.boardPath, head, {
+        operation: "sync",
+        rerun: `${run.inv} sync`,
+        base: resolveOriginRef(board.boardPath) === null ? null : boardRefOf(board.boardPath),
+      });
+    }
+    // An unknown count is gated too: the gate is skipped only when nothing is known to be sent.
+    if (gate && (counted === null || ahead > 0)) {
+      const judged = await runSyncGate(board.boardPath, branch, gate, attempt);
+      if (!judged.passed) await failGate(run, board, commitResult, delta, judged.reason ?? "failed", judged.details);
+      gateDetails = judged.details;
+    }
+    try {
+      push(board.boardPath, head, branch);
+      return { commits: ahead, documents: outgoing, delta, ...(gateDetails ? { gate: gateDetails } : {}) };
+    } catch (err) {
+      const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
+      const raced = classified.code === "TRANSIENT" && classified.details?.reason === "non-fast-forward";
+      if (raced && attempt < SYNC_PUSH_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, raceBackoffMs(attempt)));
+        if (boardBranchOf(board.boardPath) !== branch) {
+          throw new CliError("CONFLICT", `the board checkout left '${branch}' during sync; nothing more was pushed`, {
+            details: { state: "board-branch-moved", branch },
+            help: `check out '${branch}' in ${board.boardPath}, then ${run.inv} sync`,
+          });
+        }
+        await convergingRebase(run, board, commitResult.committed);
+        refuseMovedBoard(board.boardPath);
+        delta = await deltaPhase(board, baseline);
+        // The re-pull merged new upstream work into this clone's commits; hold a document that
+        // merge made malformed exactly as the first pull would have.
+        holdMalformedCommitted(run, board, delta);
+        continue;
+      }
+      const details = raced ? { ...classified.details, attempts: attempt } : classified.details;
+      const exhausted = raced
+        ? new CliError(
+          classified.code,
+          `another writer pushed to the board each time sync tried (${attempt} attempts, each re-fetched ` +
+            `and rebased${gate ? " and re-gated" : ""}) — re-run sync to try again`,
+          { details },
+        )
+        : classified;
+      const warning = pushFailureMessage(exhausted);
+      const partial = buildPushFailurePartial(
+        board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote,
+        details,
+      );
+      run.stdout(render(withSyncEnvelope(partial, syncEnvelope("git", { received: delta.originDelta.length })), run.mode));
+      await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
+      throw asHandled(new CliError(exhausted.code, warning, { details }));
+    }
   }
+}
+
+/**
+ * A malformed document in an unpushed commit (made by hand, by an older client whose push failed,
+ * or by a rebase merging two edits of one frontmatter) is held: nothing is pushed.
+ */
+function holdMalformedCommitted(run: SyncRun, board: SyncBoard, delta: SyncDelta): void {
+  const originRef = resolveOriginRef(board.boardPath);
+  if (originRef === null) return;
+  const held = malformedCommittedDocuments(board.boardPath, originRef, "HEAD");
+  if (held.length > 0) reportHeld(run, board, delta, held, "committed locally");
+}
+
+/** A failing gate: print the partial receipt (nothing pushed) and exit GATE_FAILED (5). */
+async function failGate(
+  run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta,
+  reason: string, details: Record<string, unknown>,
+): Promise<never> {
+  const warning =
+    `committed to the board locally — your work is saved. The sync gate ${reason} on the rebased ` +
+    "board, so nothing was pushed; fix what it reports, then re-run sync";
+  const help = `run the gate yourself from ${board.boardPath} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${run.inv} sync`;
+  const partial = buildPushFailurePartial(
+    board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote, { gate: details },
+  );
+  // The error is reported through this receipt (exit 5), so it carries the code and next step too.
+  partial.code = "GATE_FAILED";
+  partial.help = help;
+  const envelope = syncEnvelope("git", { received: delta.originDelta.length, next: [`${run.inv} sync`] });
+  run.stdout(render(withSyncEnvelope(partial, envelope), run.mode));
+  await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
+  throw new CliError("GATE_FAILED", `the sync gate ${reason}; nothing was pushed`, {
+    help,
+    details: { gate: details },
+    handled: true,
+  });
 }
 
 /**
@@ -778,7 +954,7 @@ async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
  */
 async function receiptPhase(
   run: SyncRun, board: SyncBoard, commitResult: CommitResult, delta: SyncDelta,
-  pushed: { commits: number; documents: number }, establishAlreadyNote: string | undefined,
+  pushed: { commits: number; documents: number; gate?: Record<string, unknown> }, establishAlreadyNote: string | undefined,
 ): Promise<void> {
   await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
   const hookHint = await hookInstallHintOnce(board.key, run.inv, run.deps.hookInstalled);
@@ -787,7 +963,51 @@ async function receiptPhase(
     originDelta: delta.originDelta, limit: run.limit,
     establishAlreadyNote, reanchorNote: delta.reanchorNote, hookHint,
   });
+  if (pushed.gate) receipt.gate = `passed: ${String(pushed.gate.command)} (attempt ${String(pushed.gate.attempt)})`;
   run.stdout(render(withSyncEnvelope(receipt, syncEnvelope("git", { sent: pushed.documents, received: delta.originDelta.length })), run.mode));
+}
+
+/**
+ * A sync with an outgoing document whose frontmatter does not parse. Publishing it would break
+ * every reader of the shared board, so nothing outgoing moves: no commit, no push, no file set
+ * aside. Incoming changes still arrive when the board fast-forwards (Git itself refuses a
+ * fast-forward that would overwrite a local edit). The receipt names each held document with the
+ * fix, and the run exits 5 so the turn-end hook hands it back to the writer.
+ */
+async function heldRun(run: SyncRun, board: SyncBoard, baseline: SyncBaseline, held: readonly HeldDocument[]): Promise<void> {
+  const pulled = ffPull(board.boardPath);
+  const delta = await deltaPhase(board, baseline);
+  await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);
+  reportHeld(run, board, delta, held, "in the worktree", pulled.swallowed);
+}
+
+/** Print the held receipt (nothing pushed) and exit 5 so the turn-end hook hands it back. */
+function reportHeld(
+  run: SyncRun, board: SyncBoard, delta: SyncDelta, held: readonly HeldDocument[],
+  where: "in the worktree" | "committed locally", notPulled?: string,
+): never {
+  const receipt = buildSyncReceipt({
+    outcome: board.outcome, commitDocs: [], pushedCount: 0,
+    originDelta: delta.originDelta, limit: run.limit, reanchorNote: delta.reanchorNote,
+  });
+  receipt.sync = where === "in the worktree"
+    ? "held: nothing was committed or pushed"
+    : "held: local commits carry these documents, so nothing was pushed";
+  if (notPulled) receipt.pull = `not pulled (${notPulled}); the next sync after the fix pulls`;
+  receipt.held_documents = held.map((doc) => ({ id: doc.id, path: doc.relPath, reason: doc.reason, detail: doc.detail }));
+  const fix = `fix the lines between the --- markers of ${held.map((doc) => doc.relPath).join(", ")} ` +
+    `(quote any value that contains ': '), check with ${run.inv} status, then run ${run.inv} sync`;
+  receipt.held_help =
+    `not published: the YAML frontmatter of these documents does not parse, and publishing it would ` +
+    `break every reader of the board, so this sync sent nothing. Your files are untouched; ${fix}` +
+    (where === "committed locally" ? " (the fix is committed on top and both go out together)" : "");
+  const envelope = syncEnvelope("git", { received: delta.originDelta.length, held: held.length, next: [`${run.inv} sync`] });
+  run.stdout(render(withSyncEnvelope(receipt, envelope), run.mode));
+  throw new CliError(
+    "CONFLICT",
+    `${held.length} document(s) have invalid frontmatter (${held.map((doc) => doc.id).join(", ")}); nothing was published`,
+    { help: fix, details: { held: held.map((doc) => doc.id) }, handled: true },
+  );
 }
 
 async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {
@@ -857,11 +1077,33 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   const board = provisionPhase(run);
   if (board === null) return;
   assertBundleOutsidePrivateState(board.boardPath);
+  // A board moved to hosted (its marker already here) takes nothing from this run. A pull-only run
+  // never pushes, so it still pulls: that is how a board moved back (its marker reverted) returns.
+  // Origin as it stood before the entry check's fetch, so the receipt's incoming counts what that
+  // fetch brought (a moved-back board's revert, say).
+  const entryOriginRef = resolveOriginRef(board.boardPath);
+  if (!run.pullOnly) refuseMovedBoard(board.boardPath, true);
 
-  const baseline = await baselinePhase(board);
+  const baseline = await baselinePhase(board, entryOriginRef);
+  if (!run.pullOnly) {
+    const held = malformedOutgoingDocuments(board.boardPath);
+    if (held.length > 0) {
+      await heldRun(run, board, baseline, held);
+      return;
+    }
+    // F8: private state copied into the bundle is refused before anything is staged or committed.
+    refuseOutgoingWorktreePrivateState(board.boardPath, "sync", `${run.inv} sync`);
+  }
   const commitResult = await commitPhase(board, run.pullOnly);
+  if (commitResult.held) {
+    await heldRun(run, board, baseline, commitResult.held);
+    return;
+  }
   await pullPhase(run, board, commitResult);
+  // The marker can arrive with this pull: then nothing is pushed, and this run's commit stays local.
+  if (!run.pullOnly) refuseMovedBoard(board.boardPath);
   const delta = await deltaPhase(board, baseline);
-  const pushed = await pushPhase(run, board, commitResult, delta);
-  await receiptPhase(run, board, commitResult, delta, pushed, establishAlreadyNote);
+  if (!run.pullOnly) holdMalformedCommitted(run, board, delta);
+  const pushed = await pushPhase(run, board, commitResult, delta, baseline);
+  await receiptPhase(run, board, commitResult, pushed.delta, pushed, establishAlreadyNote);
 }

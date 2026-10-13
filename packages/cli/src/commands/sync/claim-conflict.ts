@@ -8,8 +8,7 @@ import { configuredBundle } from "../../filesystem-runtime.js";
 // diagnostics name the recorded actor string verbatim and a git REF — never a hostname, a person,
 // a "teammate", or a machine.
 import {
-  BOARD_BRANCH,
-  BOARD_REMOTE,
+  boardRefOf,
   resolveOriginRef,
   runGit,
 } from "@superbee/board-git";
@@ -30,9 +29,6 @@ export const CLAIM_NOT_ARBITRATED = "your claim was not arbitrated";
 
 /** Rendered when the arbitrated version records no owner at all (a release, not a rival claim). */
 export const CLAIM_NO_OWNER_RECORDED = "no owner is recorded";
-
-/** The upstream ref the converging mechanic keeps content from — the claim's actual arbiter. */
-export const BOARD_UPSTREAM_REF = `${BOARD_REMOTE}/${BOARD_BRANCH}`;
 
 /**
  * Frontmatter keys the ENGINE rewrites on EVERY write (attribution + clocks). Two concurrent
@@ -91,9 +87,11 @@ export async function loadClaimPolicy(boardPath: string): Promise<ClaimPolicy> {
     const [registry, okfVersion] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
     if (registry.kinds.size === 0) return INACTIVE_POLICY;
 
+    // The upstream ref the converging mechanic keeps content from — the claim's actual arbiter.
+    const upstreamRef = boardRefOf(boardPath);
     const resolved = new Map<string, KindClaimCoordinates | undefined>();
     return {
-      provenance: `${BOARD_UPSTREAM_REF}@${originSha}`,
+      provenance: `${upstreamRef}@${originSha}`,
       forType(type: unknown): KindClaimCoordinates | undefined {
         const name = typeof type === "string" ? type.trim() : "";
         if (name === "") return undefined;
@@ -104,7 +102,7 @@ export async function loadClaimPolicy(boardPath: string): Promise<ClaimPolicy> {
         return resolved.get(name);
       },
       upstreamFrontmatter(relPath: string): Record<string, unknown> | undefined {
-        const shown = runGit(boardPath, ["show", `${BOARD_UPSTREAM_REF}:${relPath}`]);
+        const shown = runGit(boardPath, ["show", `${upstreamRef}:${relPath}`]);
         if (shown.status !== 0) return undefined;
         try {
           return parseMarkdown(shown.stdout, relPath).frontmatter as Record<string, unknown>;

@@ -1,0 +1,25 @@
+{
+  "name": "bundle-create-begin-200-staging",
+  "description": "A staged creation's manifest: kept, and answered with its plan hash and everything still to stage.",
+  "route": "/sync/v1/bundle-create-begin",
+  "rows": [
+    "200 staging"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-0000000000d1",
+      "content-length": "957"
+    },
+    "body": "{\"workspace\":\"tenant:a\",\"bundleId\":\"staged.notes\",\"root\":\"---\\nokf_version: \\\"0.2\\\"\\ntitle: Mine\\n---\\n# Mine\\n\",\"conventions\":[],\"documents\":[{\"id\":\"notes/alpha\",\"version\":\"sha256:ee2e7d60325f8e5b9a58133e48a79757315664c68f8c9c3fe3f9927604bc6ea7\",\"bytes\":47},{\"id\":\"projects/plan\",\"version\":\"sha256:cf2d85f4930fc3ade9c13fac8ae1e316c4f9e781d2919d659dd4ed17157255c2\",\"bytes\":41}],\"reserved\":[{\"dir\":\"\",\"name\":\"index.md\",\"version\":\"sha256:91545e046f0714015d0fea74e6e70de531f64658f9e4233f345fd3037ce3a282\",\"bytes\":46}],\"blobs\":[{\"key\":\"assets/logo.txt\",\"contentType\":\"text/plain\",\"version\":\"sha256:3598ce6f965b2481fe26316c06b30950c46ac7f8e7229f104aa78f579997668d\",\"bytes\":4}],\"history\":[{\"documentId\":\"notes/alpha\",\"ordinal\":1,\"label\":\"imported:git/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"author\":\"Ada <ada@example.com>\",\"authoredAt\":\"2026-01-02T03:04:05.000Z\",\"version\":\"sha256:781a332d65dfcfb280604318ed5cf58f7558c8cba4b9e2f2ac3f87ef5ee1336e\",\"bytes\":42}]}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": "{\"ok\":true,\"operationId\":\"bundles.create.v1\",\"data\":{\"state\":\"staging\",\"planHash\":\"sha256:0d755da3fe1995970b83e99b74cd74d9cc484197ac00cb5017d932dbaec8f374\",\"expected\":{\"documents\":2,\"reserved\":1,\"blobs\":1,\"history\":1,\"versions\":4,\"blobVersions\":1,\"bytes\":180},\"staged\":{\"versions\":0,\"blobVersions\":0},\"missing\":{\"versions\":[\"sha256:781a332d65dfcfb280604318ed5cf58f7558c8cba4b9e2f2ac3f87ef5ee1336e\",\"sha256:91545e046f0714015d0fea74e6e70de531f64658f9e4233f345fd3037ce3a282\",\"sha256:cf2d85f4930fc3ade9c13fac8ae1e316c4f9e781d2919d659dd4ed17157255c2\",\"sha256:ee2e7d60325f8e5b9a58133e48a79757315664c68f8c9c3fe3f9927604bc6ea7\"],\"blobs\":[\"sha256:3598ce6f965b2481fe26316c06b30950c46ac7f8e7229f104aa78f579997668d\"]}}}",
+    "truncated": false
+  }
+}

@@ -258,6 +258,7 @@ test("the web host declares itself in hello, forwards the v1 read, and refuses w
         "query.count",
         "query.field-or",
         "query.kind-projection",
+        "query.newest",
         "query.open",
         "render-document",
         "subscribe-deltas",

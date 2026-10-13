@@ -1,4 +1,5 @@
 import { isProvisioned } from "../../board-runtime.js";
+import path from "node:path";
 // The committed-folder establishment/recovery: the bundle is a plain folder committed on the
 // current branch. Same verb as greenfield, different safety model (preview-first, `--yes`-gated —
 // heavier because it stages a change to the CODE branch's future):
@@ -54,6 +55,7 @@ import { render, type OutputMode } from "../../output.js";
 import { syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
 import type { EstablishOutcome } from "./establish.js";
 import type { CommandPrefix } from "../../command-text.js";
+import { asPrivateStateRefusal, refuseOutgoingCommitsPrivateState } from "../../private-state-publication.js";
 import { syncEnvelope, withSyncEnvelope } from "../../sync-outcomes.js";
 
 /** The local branch the folder-removal commit is prepared on — the human pushes it and opens the PR. */
@@ -262,6 +264,9 @@ function executeCommittedEstablishment(
   try {
     pushBoardUpstream(top);
   } catch (err) {
+    // The push backstop's private-state refusal is not a sharing failure: report it as itself.
+    const refused = asPrivateStateRefusal(err);
+    if (refused) throw refused;
     const fetched = fetchOrigin(top);
     const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
     throw withSharingDetails(
@@ -320,6 +325,14 @@ export async function establishCommitted(
   }
 
   const plan = guardCommittedPreconditions(top, inv, treeSha, bundleDir);
+  // F8: the committed bundle's tree is exactly what the new board branch publishes; refuse private
+  // state in it before any board ref, marker or push exists (the preview refuses too).
+  refuseOutgoingCommitsPrivateState(top, treeSha, {
+    operation: "sync --establish",
+    root: path.join(top, bundleDir),
+    stage: "files",
+    rerun: `commit that removal on your branch, then ${inv} sync --establish`,
+  });
 
   if (!yes) {
     const preview = committedPreviewRecord(inv, plan.branch, plan.bundleDir);

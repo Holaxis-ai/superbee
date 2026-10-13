@@ -1,6 +1,7 @@
 // Adversarial QA (PR 295): SIGKILL a hosted `sync` just before each of its side effects, in turn,
 // then re-run sync until it settles. Nothing may be lost or duplicated at any kill point.
 import test from "node:test";
+import { CrashSweepProgress } from "./support/crash-sweep-progress.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -61,7 +62,7 @@ async function scenario() {
 }
 
 function child(env: Record<string, unknown>): Promise<{ signal: NodeJS.Signals | null; code: number | null; stderr: string }> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const proc = spawn(process.execPath, ["--import", "./test/ts-loader.mjs", "./test/support/qa-sync-child.ts"], {
       cwd: CLI_ROOT,
       env: { ...process.env, QA_CHILD: JSON.stringify(env) },
@@ -69,7 +70,8 @@ function child(env: Record<string, unknown>): Promise<{ signal: NodeJS.Signals |
     });
     let stderr = "";
     proc.stderr.on("data", (c: Buffer) => (stderr += c.toString()));
-    proc.on("exit", (code, signal) => resolve({ code, signal, stderr }));
+    proc.on("error", reject);
+    proc.on("close", (code, signal) => resolve({ code, signal, stderr }));
   });
 }
 
@@ -112,21 +114,19 @@ async function dotFiles(folder: string, prefix = ""): Promise<string[]> {
 }
 
 test("SIGKILL at every step of pull, export and push, then re-run: nothing lost or duplicated", { timeout: 1_800_000 }, async () => {
+  const only = process.env.QA_ONLY ? Number(process.env.QA_ONLY) : undefined;
+  if (only !== undefined) assert.ok(Number.isSafeInteger(only) && only > 0 && only < 400, "QA_ONLY must name a kill point from 1 through 399");
   const { server, url } = await bridge();
   const failures: string[] = [];
   const litter: string[] = [];
-  let steps = 0;
+  const progress = new CrashSweepProgress({ singlePoint: only !== undefined });
   try {
-    const only = process.env.QA_ONLY ? Number(process.env.QA_ONLY) : undefined;
     for (let killAt = only ?? 1; killAt < (only ? only + 1 : 400); killAt += 1) {
       const s = await scenario();
       const run = await child({ home: s.home, cwd: s.cwd, folder: s.folder, bridge: url, token: TOKEN, killAt });
       const killed = run.signal === "SIGKILL";
       const label = /QA_KILL \d+ (.*)/.exec(run.stderr)?.[1] ?? "(completed)";
-      if (!killed) {
-        steps = Number(/QA_STEPS (\d+)/.exec(run.stderr)?.[1] ?? 0);
-        if (run.code !== 0) failures.push(`uninterrupted child failed: ${run.stderr.trim()}`);
-      }
+      progress.observe(killAt, run);
       // Recover: re-run until settled (a pause or lost answer may take one more run).
       let last;
       for (let i = 0; i < 5; i += 1) {
@@ -158,7 +158,8 @@ test("SIGKILL at every step of pull, export and push, then re-run: nothing lost 
   } finally {
     server.close();
   }
-  console.log(`# crash sweep: ${steps} side effects in an uninterrupted run; ${failures.length} failing kill points`);
+  if (only === undefined) progress.assertComplete();
+  console.log(`# crash sweep: ${progress.steps} side effects in an uninterrupted run; ${failures.length} failing kill points`);
   for (const line of litter) console.log(`# litter ${line}`);
   for (const line of failures) console.log(`# FAIL ${line}`);
   assert.deepEqual(failures, []);

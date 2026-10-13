@@ -1,0 +1,55 @@
+{
+  "description": "Rows and the order every query.newest host and the CLI list/home order must produce. Newest parsed meaningful-change time (generated.at, else timestamp) first; rows with a missing or invalid time last; every tie by canonical ID in UTF-16 code-unit order. Hosts copy this file byte for byte.",
+  "version": 1,
+  "cases": [
+    {
+      "name": "okf 0.2: offsets, same-millisecond ties, shadowed and invalid clocks",
+      "okfVersion": "0.2",
+      "rows": [
+        { "id": "older", "frontmatter": { "generated": { "at": "2026-09-01T00:00:00Z" } } },
+        { "id": "alpha", "frontmatter": { "generated": { "at": "2026-09-08T10:00:00Z" } } },
+        { "id": "Zeta", "frontmatter": { "generated": { "at": "2026-09-08T10:00:00.000Z" } } },
+        { "id": "a_b", "frontmatter": { "timestamp": "2026-09-08T12:00:00+02:00" } },
+        { "id": "a-b", "frontmatter": { "generated": { "at": "2026-09-08T10:00:00Z" } } },
+        { "id": "éclair", "frontmatter": { "generated": { "at": "2026-09-08T10:00:00Z" } } },
+        { "id": "newest", "frontmatter": { "generated": { "at": "2026-09-09T00:00:00Z" } } },
+        { "id": "missing", "frontmatter": {} },
+        { "id": "Invalid", "frontmatter": { "timestamp": "not-a-clock" } },
+        { "id": "shadowed", "frontmatter": { "timestamp": "2099-01-01T00:00:00Z", "generated": { "at": "not-a-clock" } } },
+        { "id": "generated-null", "frontmatter": { "timestamp": "2099-01-01T00:00:00Z", "generated": { "at": null } } },
+        { "id": "numeric", "frontmatter": { "timestamp": 1788861600000 } },
+        { "id": "zoneless", "frontmatter": { "timestamp": "2026-09-08T12:00:00" } }
+      ],
+      "expected": [
+        "newest",
+        "Zeta", "a-b", "a_b", "alpha", "éclair",
+        "older",
+        "Invalid", "generated-null", "missing", "numeric", "shadowed", "zoneless"
+      ]
+    },
+    {
+      "name": "okf 0.1: permissive legacy clocks, numeric milliseconds join the tie",
+      "okfVersion": "0.1",
+      "rows": [
+        { "id": "older", "frontmatter": { "timestamp": "2026-09-01T00:00:00Z" } },
+        { "id": "alpha", "frontmatter": { "timestamp": "2026-09-08T10:00:00Z" } },
+        { "id": "Zeta", "frontmatter": { "generated": { "at": "2026-09-08T10:00:00.000Z" } } },
+        { "id": "a_b", "frontmatter": { "timestamp": "2026-09-08T12:00:00+02:00" } },
+        { "id": "a-b", "frontmatter": { "timestamp": "Tue, 08 Sep 2026 10:00:00 GMT" } },
+        { "id": "éclair", "frontmatter": { "timestamp": "2026-09-08T10:00:00Z" } },
+        { "id": "numeric", "frontmatter": { "timestamp": 1788861600000 } },
+        { "id": "newest", "frontmatter": { "timestamp": "2026-09-09T00:00:00Z" } },
+        { "id": "missing", "frontmatter": {} },
+        { "id": "Invalid", "frontmatter": { "timestamp": "not-a-clock" } },
+        { "id": "shadowed", "frontmatter": { "timestamp": "2099-01-01T00:00:00Z", "generated": { "at": "not-a-clock" } } },
+        { "id": "generated-null", "frontmatter": { "timestamp": "2099-01-01T00:00:00Z", "generated": { "at": null } } }
+      ],
+      "expected": [
+        "newest",
+        "Zeta", "a-b", "a_b", "alpha", "numeric", "éclair",
+        "older",
+        "Invalid", "generated-null", "missing", "shadowed"
+      ]
+    }
+  ]
+}

@@ -43,7 +43,7 @@ All recovery outputs are detached. A storage write failure poisons the session a
 call reject: reopen under the writer role to read durable state before continuing. This also
 protects a write whose completion became uncertain.
 
-Schema version 1 is one strict metadata envelope, bounded to 32 documents, 2 MiB of UTF-8 JSON,
-and 64 KiB of UTF-8 for each body (including base and pending bodies). Capacity and quota failures
+Schema version 1 is one strict metadata envelope, bounded to 32 documents, 8 MiB of UTF-8 JSON,
+and 983,040 bytes of UTF-8 for each body (including base and pending bodies). Capacity and quota failures
 never evict another draft. Foreign, corrupt, and unsupported envelopes fail closed without reset;
 there is no migration, expiry, purge, or force-discard API.

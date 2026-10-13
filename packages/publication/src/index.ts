@@ -17,3 +17,5 @@ export {
 } from "./types.js";
 
 export type { CapturePublicationRuntimeOptions } from "./capture.js";
+export { assertPublicationSourceExclusions } from "./source-exclusions.js";
+export type { PublicationSourceInventory, PublicationSourceExclusions } from "./source-exclusions.js";

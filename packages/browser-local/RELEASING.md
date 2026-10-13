@@ -8,25 +8,28 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.6 | public / next |
-| @superbee/server | 0.2.0-pre.6 | public / next |
-| @superbee/browser-local | 0.1.0-pre.4 | public / next |
-| @superbee/markdown-renderer | 0.1.5 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.11 | public / next |
+| @superbee/server | 0.2.0-pre.11 | public / next |
+| @superbee/browser-local | 0.1.0-pre.7 | public / next |
+| @superbee/markdown-renderer | 0.1.8 | existing restricted access / latest |
 
-This candidate carries core's serialized-body read contract (every backend read and
-every constructed or stored document returns the body in its storage-normalized
-shape), one shared SHA-256 implementation for byte versions in Node and browser
-runtimes, and the filesystem lock release fenced behind an atomic rename with a
-bounded retry budget and one in-flight release per claim. Server source is unchanged
-apart from tests.
+This candidate adds the `@superbee/core/site-capabilities` subpath export: the platform-neutral
+`SiteCapability` contract for read-only tools a site or recipe pack provides,
+`composeSiteCapabilities` (conflict refusal, reserved `superbee_` prefix, deterministic tier
+order, per-surface exclusions, limits and an identity digest), `checkSiteCapability` with
+runner-neutral conformance cases, `mergeAnnotations` and `siteRecordSource`. It also carries the
+hosted transport `import` mode for a bundle's creation (superbee#442). Everything else in
+0.2.0-pre.10 is carried unchanged. The registry's newest browser-local is 0.1.0-pre.4; pre.5 and
+pre.6 were prepared but never published. 0.1.0-pre.7 moves its exact pin to pre.11 with no
+browser-local source change.
 
-Browser-local depends exactly on core pre.6 and moves with it under the paired
+Browser-local depends exactly on core pre.11 and moves with it under the paired
 exact-pin policy; do not patch around a mismatch or publish with a wildcard
 dependency. Server moves with core under the existing paired release policy.
-Renderer 0.1.5 only extends its core peer allowance to pre.6; it is included so
-consumers can align their root core without overriding peer checks, and a published
-renderer version is never reused for different bytes. Its access remains restricted:
-do not make other private packages public.
+Renderer 0.1.8 extends its core peer allowance through pre.11 with no source change (a new
+version because a published renderer version is never reused for different bytes); it is
+included so consumers can align their root core without overriding peer checks. Its access
+remains restricted: do not make other private packages public.
 
 ## Before release
 

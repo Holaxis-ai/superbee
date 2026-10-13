@@ -9,8 +9,9 @@ import { isProvisioned } from "../../board-runtime.js";
 // The committed-folder case (preview-first, `--yes`-gated) is ./establish-committed.ts.
 import { existsSync, lstatSync, readdirSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
+import { query } from "@superbee/core";
 
-import { resolveProjectBinding } from "../../bundle.js";
+import { looksLikeBundle, resolveProjectBinding, TOP_LEVEL_BUNDLE_MOVE } from "../../bundle.js";
 import { CliError, classifyBundleError } from "../../errors.js";
 import {
   BOARD_BRANCH,
@@ -30,12 +31,14 @@ import {
   fetchOriginRequired,
   folderPresentInCodeIndex,
   committedBundleAtHead,
+  currentBranch,
   isAncestor,
   pushBoardCommit,
   pushBoardUpstream,
   readGitDirMarker,
   refCommit,
   repoTopLevel,
+  resolveStandaloneBoardCheckout,
   resolveBundleKey,
   runGit,
   setBoardUpstream,
@@ -52,6 +55,7 @@ import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";
 import { syncOutcomeError, withSharingDetails } from "../../sync-outcomes.js";
 import { clearStaleCommittedMarker, establishCommitted } from "./establish-committed.js";
 import { assertBundleOutsidePrivateState } from "../../private-state-bundle-boundary.js";
+import { asPrivateStateRefusal, refuseOutgoingCommitsPrivateState } from "../../private-state-publication.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
 import { syncEnvelope, withSyncEnvelope } from "../../sync-outcomes.js";
 
@@ -72,6 +76,16 @@ export function establishNextSteps(inv: CommandPrefix): string[] {
 function assertPlainBundleShape(bundlePath: string, inv: CommandPrefix): void {
   const bundleDir = path.basename(bundlePath);
   const runInitHelp = `${inv} init --create-only --dir ${commandToken(BUNDLE_DIR)}`;
+  // A bundle made at the work tree's top (plain init before it chose .superbee/) is not lost, only
+  // in the wrong place: name the move, since init there refuses to nest a second bundle.
+  if (bundleDir === BUNDLE_DIR && !existsSync(path.join(bundlePath, "index.md")) && looksLikeBundle(path.dirname(bundlePath))) {
+    throw new CliError(
+      "RUNTIME",
+      `this repository's top folder is itself a bundle, and establish shares only a '${bundleDir}/' folder — ` +
+        `${TOP_LEVEL_BUNDLE_MOVE}, then re-run establish`,
+      { help: `mkdir -p ${bundleDir} && git mv index.md ${bundleDir}/ (plain mv if never committed), then the same for conventions/ if present and each document folder, then ${inv} sync --establish` },
+    );
+  }
   if (!existsSync(bundlePath)) {
     throw new CliError(
       "RUNTIME",
@@ -285,6 +299,9 @@ function pushAndConfirmRemote(top: string, sha: string, inv: CommandPrefix): str
   try {
     pushBoardCommit(top, sha);
   } catch (err) {
+    // The push backstop's private-state refusal is not a sharing failure: report it as itself.
+    const refused = asPrivateStateRefusal(err);
+    if (refused) throw refused;
     // The required preflight already proved repository existence in this run. This recheck owns
     // only the create outcome: if it fails, board state becomes unknown without erasing that fact.
     const fetched = fetchOrigin(top);
@@ -369,9 +386,16 @@ async function publishLocalBoardBranch(
   if (!existsSync(indexPath) || lstatSync(indexPath).isSymbolicLink() || !lstatSync(indexPath).isFile()) {
     throw new CliError("RUNTIME", `the local '${BOARD_BRANCH}' worktree is not a valid bundle (root index.md missing)`);
   }
+  refuseOutgoingCommitsPrivateState(boardPath, `refs/heads/${BOARD_BRANCH}`, {
+    operation: "sync --establish",
+    rerun: `${inv} sync --establish`,
+  });
   try {
     pushBoardUpstream(boardPath);
   } catch (err) {
+    // The push backstop's private-state refusal is not a sharing failure: report it as itself.
+    const refused = asPrivateStateRefusal(err);
+    if (refused) throw refused;
     const fetched = fetchOrigin(top);
     const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
     throw withSharingDetails(
@@ -439,8 +463,17 @@ async function publishGreenfieldBoard(
   }
   assertFreshSource(top, boardPath, inv);
   await assertNotBoundElsewhere(top, boardPath);
+  await assertNoMalformedDocuments(boardPath, inv);
 
   const snapshot = snapshotBundleCommit(top, boardPath);
+  // F8: the snapshot is exactly what establishment publishes. It is unreachable until pushed, so a
+  // refusal here leaves no marker, ref or index behind: moving the files out is the whole remedy.
+  refuseOutgoingCommitsPrivateState(top, snapshot.sha, {
+    operation: "sync --establish",
+    root: boardPath,
+    stage: "files",
+    rerun: `${inv} sync --establish`,
+  });
   writeGitDirMarker(top, ESTABLISH_MARKER_KEY, snapshot.sha);
   const remoteCommit = pushAndConfirmRemote(top, snapshot.sha, inv);
   if (!remoteCommit || !isAncestor(top, snapshot.sha, remoteCommit)) {
@@ -453,6 +486,28 @@ async function publishGreenfieldBoard(
 
   const conversion = finishLocalConversion(top, boardPath, snapshot.sha, snapshot.tree, inv);
   return renderEstablished(top, conversion, snapshot, inv, mode, stdout, deps);
+}
+
+/**
+ * Refuse a first publication that would carry a document whose frontmatter does not parse: once
+ * on the shared board it breaks every teammate's reader. Ordinary sync holds such a document and
+ * publishes the rest; a first publication is one snapshot of the whole bundle, so it stops before
+ * anything is published or moved.
+ */
+async function assertNoMalformedDocuments(boardPath: string, inv: CommandPrefix): Promise<void> {
+  const malformed: { id: string; reason: string }[] = [];
+  await query({ root: boardPath }, {}, { onSkip: ({ id, reason }) => malformed.push({ id, reason }) });
+  if (malformed.length === 0) return;
+  malformed.sort((a, b) => a.id.localeCompare(b.id));
+  throw new CliError(
+    "USAGE",
+    `${malformed.length} document(s) have invalid YAML frontmatter (${malformed.map((row) => row.id).join(", ")}); ` +
+      `nothing was published or moved`,
+    {
+      help: `fix the lines between the --- markers (quote any value that contains ': '), check with ${inv} status, then run ${inv} sync --establish again`,
+      details: { malformed },
+    },
+  );
 }
 
 /** The establish entry: route structurally (committed vs greenfield), then dispatch by state. */
@@ -468,6 +523,12 @@ export async function establishBoard(
     throw syncOutcomeError("establish.origin-unconfigured", { inv });
   }
   assertNotLinkedWorktree(top, inv);
+
+  // A standalone checkout of a named board branch is already shared (its upstream is the named
+  // board); establishment only ever creates the default board, so this is the ordinary sync.
+  if (currentBranch(top) !== BOARD_BRANCH && resolveStandaloneBoardCheckout(top, { requireRemoteRef: false }) !== null) {
+    return { already: true };
+  }
 
   // The COMMITTED-FOLDER case routes structurally, before any network op: a selected conventional
   // tree committed at HEAD means the greenfield safety model (rename + convert the folder) must

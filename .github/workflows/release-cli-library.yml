@@ -31,10 +31,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22.14.0
+          node-version: 24.21.0
           cache: npm
+      - name: Check Node runtime policy before installation
+        run: node scripts/node-runtime-policy.mjs
       - run: npm ci --ignore-scripts
       - name: Resolve the CLI version from the tag
         id: meta
@@ -135,7 +137,7 @@ jobs:
             echo "tgz=superbee-cli.tgz"
             echo "sha256=$(sha256sum out/superbee-cli.tgz | cut -d' ' -f1)"
           } >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cli-library-${{ steps.meta.outputs.version }}
           path: out/superbee-cli.tgz
@@ -200,9 +202,9 @@ jobs:
       - name: Re-hash the CLI bytes about to be staged
         run: |
           test "$(sha256sum "out/${{ needs.build.outputs.tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.sha256 }}"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22.14.0
+          node-version: 24.21.0
           registry-url: "https://registry.npmjs.org"
       - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund --registry https://registry.npmjs.org/
       - name: Stage the exact CLI tarball

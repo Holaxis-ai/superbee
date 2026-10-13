@@ -59,7 +59,9 @@ export function isEmptyChange(e: ChangeEvent): boolean {
 
 /** Snapshot a local bundle: doc heads via `queryHeads` (no bodies), page-blob versions via `listBlobs` over each accepted page prefix (`views/` + the legacy `pages/` location) + `readBlob` (pages are small; only the hot-reloadable prefixes are scanned). Routes through core's engine wrappers, so the pluggable storage seam is honored. */
 export async function snapshotBundle(bundle: Bundle): Promise<Snapshot> {
-  const heads = await queryHeads(bundle, {});
+  // A malformed document is absent from the snapshot (it has no head to watch) rather than failing
+  // every poll; it reappears as a change once it parses again.
+  const heads = await queryHeads(bundle, {}, { onSkip: () => {} });
   const docs = new Map<string, string>(heads.map((h) => [h.id, h.version]));
   const blobs = new Map<string, string>();
   const keys: string[] = [];

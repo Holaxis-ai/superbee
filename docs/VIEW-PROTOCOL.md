@@ -40,7 +40,7 @@ messages from the exact current frame and validates every request before touchin
 | type | bridge | payload | reply `result` |
 | --- | --- | --- | --- |
 | `hello` | v0 | none | `{ bundle: { root, name }, mode, protocol: "v0", grant, host }` |
-| `query` | v0 | `{ params: { type?, prefix?, field?, open?, limit? } }` | `{ rows: DocHead[], count }` |
+| `query` | v0 | `{ params: { type?, prefix?, field?, open?, limit?, order? } }` | `{ rows: DocHead[], count }` |
 | `read` | v0 | `{ docId }` | `{ id, frontmatter, body }` |
 | `read-versioned` | v1 | `{ docId }` | `{ doc: { id, frontmatter, body }, version }` |
 | `render-document` | v0 | `{ docId }` | `{ document: { id, version }, html, bounded }` |
@@ -65,7 +65,7 @@ that performs no writes answers `"read"` regardless of the declaration.
 ```json
 {
   "kind": "oss",
-  "capabilities": ["edges", "graph", "open-page", "query.count", "query.field-or", "query.kind-projection", "query.open", "render-document", "subscribe-deltas"],
+  "capabilities": ["edges", "graph", "open-page", "query.count", "query.field-or", "query.kind-projection", "query.newest", "query.open", "render-document", "subscribe-deltas"],
   "limits": { "query": 500, "edges": 1000, "graphDocuments": 1000, "graphRelationships": 10000, "replyBytes": 2097152 }
 }
 ```
@@ -97,7 +97,9 @@ name the shell shows, never an internal identifier. `mode` is host-specific (`di
 
 ### `query`
 
-`params` accepts only `type`, `prefix`, `field`, `open` and `limit`.
+`params` accepts only `type`, `prefix`, `field`, `open`, `limit` and, on a host that declares
+`query.newest`, `order`. Any other key, or `order` on a host without `query.newest`, answers
+`USAGE`.
 
 - `type` (string, at most 256 bytes, trimmed, nonempty) and `prefix` (string, at most 1024 bytes,
   trimmed, nonempty) are storage-side facets: an exact frontmatter `type` and a bundle-relative id
@@ -123,6 +125,21 @@ name the shell shows, never an internal identifier. `mode` is host-specific (`di
   convention governing its `type` declares `fields.terminal` and the row's own value for such a
   field is in the terminal set. A row with no governing Kind is kept; a bundle whose Kinds declare
   no terminal set drops nothing. `open: false` is accepted and means absent.
+- `order` is `"id"` or `"newest"`; any other value answers `USAGE`. It decides the row order and
+  therefore which rows a capped reply keeps:
+  - `"id"`, or absence, orders rows by canonical id with JavaScript `localeCompare`. This is the
+    order every host has always returned; it is now written down, not changed.
+  - `"newest"` is CLI `list` and `home` order. Rows sort by their meaningful-change time, newest
+    first: `generated.at` when the frontmatter has it (even when it is invalid), else `timestamp`,
+    parsed under the bundle's OKF edition (0.2 requires an ISO instant with an explicit offset; 0.1
+    is permissive). Rows with a missing or unparseable time follow every timed row. Every tie,
+    including that untimed tail, breaks by canonical id in UTF-16 code-unit order, which is
+    platform-independent. The host orders every matching row after `field` and `open` filtering
+    and then applies `limit`, so `limit: 20` is the 20 most recently changed rows, and `count`
+    keeps its meaning. `compareByMeaningfulChange` in `@superbee/core/query-order` is the one
+    comparator; `packages/view-runtime/test/fixtures/query-newest-order.json` is the shared row
+    table every host checks its order against. There is no cursor: a View that needs more than
+    `limits.query` rows narrows the query instead.
 
 Rows carry full frontmatter. A host with `query.kind-projection` also projects logical Kind fields
 (such as `progress_status`) beside the raw coordinate, so a View never needs to know the physical
@@ -255,6 +272,10 @@ with it behaves correctly on both kinds of host.
 The OSS web shell fans the server's watcher deltas into subscribed Views; the OSS MCP app polls the
 service and delivers each delta once, acknowledged by generation. A delta above 100 rows or 256 KiB,
 or a bundle above 10000 heads, ends the subscription with a reload-required signal from the host.
+A host without `subscribe-deltas` may nudge only on coarse events; the hosted web app, for example,
+nudges when its page becomes visible again, not when a document is edited. A recent-changes View
+built on `order: "newest"` should therefore re-query on every `change` and not assume an edit made
+elsewhere will arrive while it stays open.
 
 ### `host` (reserved extension request)
 
@@ -326,6 +347,7 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `query.field-or` | `field` honors comma-separated OR values | none |
 | `query.open` | `open: true` drops Kind-declared terminal rows | none |
 | `query.count` | `count` is the total matched before the cap | none |
+| `query.newest` | `query` accepts `order: "id" \| "newest"` (newest meaningful change first, then id in code-unit order) | none; a host without it refuses `order` with `USAGE` like any unknown key |
 | `edges` | the `edges` request is answered | none |
 | `render-document` | the `render-document` request is answered | none |
 | `open-page` | `open-page` navigates the shell | none |
@@ -335,13 +357,14 @@ Names a host may list in `hello.host.capabilities`. `BRIDGE_HOST_CAPABILITIES` i
 | `record.open` | the host opens its own reader for one document | `host` input `{ documentId }`; output `{ opened: true }`; `NOT_FOUND` for a missing document |
 | `frame.resize` | the host sizes the View's frame to the reported document height, bounded by `host.frame.maxHeight` | `host` input exactly `{ height }` (a finite CSS pixel count, at least 0; no other keys); output `{ height }` as applied after the host's floor, `maxHeight` and damping (see `host.frame`); `USAGE` for any other input. Answered at once; touches no bundle data, so a host may answer it for any launch it admits. Declared only with `host.frame` |
 
-A host without a query capability still answers `query`; it just honors less. A host without
-`edges`, `graph` or `render-document` answers those requests with `FORBIDDEN`.
+A host without a query capability still answers `query`; it just honors less. The exception is
+`order`, which a host without `query.newest` refuses with `USAGE`. A host without `edges`,
+`graph` or `render-document` answers those requests with `FORBIDDEN`.
 
 ## Conformance levels
 
-A host states which query features it honors by listing the four `query.*` capabilities, and its
-default and maximum limit through `limits.query`. OSS declares all four with a maximum of 500 rows
+A host states which query features it honors by listing the five `query.*` capabilities, and its
+default and maximum limit through `limits.query`. OSS declares all five with a maximum of 500 rows
 and `0` or absence meaning 500. A host may declare a subset; the conformance fixture View reports
 what it observed so the declaration can be checked against behavior.
 
@@ -351,6 +374,7 @@ what it observed so the declaration can be checked against behavior.
 | `query.field-or` | yes | yes | yes | its `hello` says |
 | `query.open` | yes | yes | yes | its `hello` says |
 | `query.count` | yes | yes | yes | its `hello` says |
+| `query.newest` | yes | yes | yes | its `hello` says |
 | `limits.query` | 500 | 500 | 500 | its `hello` says |
 | `edges` | yes | yes | yes | its `hello` says |
 | `graph` | yes, without `model` | yes, without `model` | yes, through the shared service | its `hello` says |
@@ -381,12 +405,30 @@ View treats any unlisted code like `RUNTIME`.
 ## Trust model
 
 Approving a View means approving its exact bytes and declared `access`; changed bytes or expanded
-access ask again. The View never receives a credential, session token or data endpoint. The OSS
-web shell serves entry bytes at `/__page/<nonce>` for a short-lived nonce and forwards every bridge
-request to `POST /__ui/views/bridge` with an opaque launch id; the launch is re-resolved before and
-after each request, and a change between the two answers `REVOKED`. Hosts with their own approval
-model (slot pins, artifact digests) enforce the same rule at their seam. A transport receipt the
-shell may collect after frame load proves delivery, not authorization.
+access ask again. The View never receives a credential, session token or data endpoint. In the OSS
+web shell the View frame makes no network request of its own: the shell fetches the entry bytes
+once from `/__page/<nonce>` (short-lived, single-use, session-gated), checks their SHA-256 against
+the approved content version, and posts them to a static View host (`/__ui/view-host`), which
+mounts them as a `blob:` URL in a `sandbox="allow-scripts"` child and revokes the URL after load.
+The host is opaque by its own response policy (`sandbox allow-scripts` plus the View CSP, which the
+blob child inherits; the View CSP includes `worker-src 'none'`) and relays enveloped messages only
+between the shell and that child, so `window.parent` for the View is the host. The host guards its
+own framing with `X-Frame-Options: SAMEORIGIN` rather than `frame-ancestors`, which the child would
+inherit and which its opaque ancestor could never satisfy. The shell refuses to deliver bytes to a
+host whose messages do not come from an opaque origin. This keeps Views working in browsers that
+refuse every request from an opaque-origin frame.
+
+Two consequences for View authors: the View's own HTML has no network URL and its blob URL is
+revoked once it loads, so a View that reloads or re-navigates its own frame ends up blank — re-query
+through the bridge instead. And the child's `load` event, which the host reports to the shell, also
+fires when a browser refuses the blob navigation; the host reports a refusal it can observe (a
+violation of its own policy) as a failure, but a quiet View rendered blank by a refusal the host
+cannot see is not distinguishable from one that loaded. The shell forwards every bridge request to
+`POST /__ui/views/bridge` with an opaque launch id; the launch is re-resolved before and after each
+request, and a change between the two answers `REVOKED`. Hosts with their own approval model (slot
+pins, artifact digests) enforce the same rule at their seam. The delivery receipt the shell checks
+after the child loads proves the server handed the launch's bytes to the shell — not that the View
+rendered, and not authorization.
 
 Startup messages are optional: a View may stay quiet until human input and never has to send
 `hello` to prove it loaded.
@@ -504,7 +546,8 @@ first refresh, so handle it to surface startup failures.
 
 `examples/views/conformance/` holds a registry document (`views-registry/conformance`) and one
 self-contained entry (`views/conformance.html`) that embeds the client above and sends, in order,
-`hello`, `query`, `read`, `read-versioned`, `edges`, `graph`, `render-document`, `subscribe`,
+`hello`, `query`, `query-newest` (a `query` with `order: "newest"`, skipped unless the host declares
+`query.newest`), `read`, `read-versioned`, `edges`, `graph`, `render-document`, `subscribe`,
 `host` (an undeclared capability, expecting `FORBIDDEN`), `action.propose`, `burst` (12 `read`
 requests in flight at once) and `open-page` (a registry id that must not exist). A host may cap
 in-flight requests, but it must queue or refuse the excess with an error reply, never drop it, so
@@ -519,8 +562,9 @@ service over a fixture bundle and asserts every row.
 
 `bridge: "v0"` and `"v1"` name wire envelopes, not a semantic version. Additions in this document
 are compatible with every existing v0 View: new reply fields (`host`), new request types (`graph`,
-`host`) and new error semantics for requests that were never valid before. A change that alters an
-existing reply or request shape needs a new envelope value and a change here first.
+`host`), new optional request params behind a capability (`order`) and new error semantics for
+requests that were never valid before. A change that alters an existing reply or request shape
+needs a new envelope value and a change here first.
 
 ### Body proposals
 

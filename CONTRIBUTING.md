@@ -15,7 +15,8 @@ answer.
    decision, make it explicit and order it first.
 4. Build from the repository root. Use the root `./superbee` shim when exercising the freshly built
    CLI.
-5. Develop with Node.js 20 or newer on macOS or Linux. Windows-specific adapters, installation,
+5. Develop with Node.js 24.21.0 by default on macOS or Linux. Published packages run on supported
+   Node.js 22, 24, or 26 releases, with 22.14.0 as the minimum. Windows-specific adapters, installation,
    and native runtime checks belong to the separate Windows distribution repository. Shared
    engine and CLI protocols remain here; changing them does not promise Windows compatibility.
 
@@ -100,8 +101,21 @@ so its run starts the pre-merge verdict; dispatch `CI tests` on a branch only wh
 promptly, and never
 treat a branch dispatch as a serial prerequisite for opening or progressing the PR — a dispatch and
 a PR run on the same SHA are the same coverage paid twice. One run can satisfy both validations
-only when the merged SHA equals the validated SHA (fast-forward or a merge queue; the current
-merge-queue posture is recorded in `scripts/ci-lanes.json`).
+only when the merged SHA equals the validated SHA. Merge-group CI evaluates GitHub's candidate
+integration SHA; do not substitute its verdict for a different final merge/tag SHA. CI and CodeQL
+support `merge_group: checks_requested`, with the same unconditional lanes and required status
+names as PR runs. Every proof checkout binds `github.sha` explicitly. Queue runs do not cancel each
+other through PR cancellation rules.
+`scripts/ci-lanes.json` records queue capability only. Live activation is verified by the read-only
+`infrastructure/github-ci` preflight and recorded in the project bundle. The private
+[holaxis-infrastructure runbook](https://github.com/Holaxis-ai/holaxis-infrastructure/tree/main/github/superbee)
+owns the settings rollout after these workflows and current-main status evidence exist.
+
+The canonical and both legacy engine gates call `.github/actions/ci-gate` from the candidate
+checkout. Its complete explicit policy must agree with every required lane. Consumer repositories
+pin the same action to a reviewed full SHA and retain their own lane/scope wiring tests. The scripts
+lane runs the shared evaluator suite and engine readiness tests. Terraform validation and
+mocked-provider tests run in the private infrastructure repository.
 
 The finite product-validation lane projection below is checked against `scripts/ci-lanes.json`, root
 package scripts, and `.github/workflows/ci-tests.yml`. Change the executable topology first, then
@@ -111,22 +125,30 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 <!-- contributing-ci-lanes:start -->
 | Lane | Local command | CI job | Node |
 | --- | --- | --- | --- |
-| runtime | `npm run ci:runtime` | `runtime` | 22, 26 (2 shards each) |
-| aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 26 |
-| distribution | `npm run ci:distribution` | `distribution` | 26 |
-| browser | `npm run ci:browser` | `browser` | 26 |
-| scripts | `npm run ci:scripts` | `scripts` | 26 |
-| smoke-node-20 | workflow only | `smoke-node-20` | 20 |
+| runtime | `npm run ci:runtime-cli` | `runtime` | 22, 26 (4 shards each) |
+| runtime-common | `npm run ci:runtime-common` | `runtime-common` | 22, 26 |
+| aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 24.21.0 |
+| distribution | `npm run ci:distribution` | `distribution` | 24.21.0 |
+| browser | `npm run ci:browser` | `browser` | 24.21.0 |
+| scripts | `npm run ci:scripts` | `scripts` | 24.21.0 |
+| smoke-node-22 | workflow only | `smoke-node-22` | 22.14.0 |
 <!-- contributing-ci-lanes:end -->
 
-The `runtime` job runs two shards per Node version so it stays well inside its 20-minute timeout.
-Each shard builds and typechecks; the CLI suite, the dominant cost, is divided by file through
-Node's `--test-shard`, and the smaller workspace suites run in both shards. Reproduce one shard
-locally with `SUPERBEE_TEST_SHARD=1/2 npm run ci:runtime`; without the variable, `ci:runtime` runs
-everything.
+The `runtime` job runs four CLI shards per Node version. Each shard builds, then assigns the
+caller's discovered test files by descending estimated duration to the least-loaded shard, with
+stable filename/index tie breaks. `packages/cli/scripts/test-durations.json` records timing
+provenance and a positive fallback for new files; weights affect scheduling only. Refresh estimates
+from exact-SHA CI timings after large suite changes. Each crash scenario has its own test file and
+process. Reproduce a CLI shard with `SUPERBEE_TEST_SHARD=1/4 npm run ci:runtime-cli`.
 
-CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, a weekly
-schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
+The independent required `runtime-common` job builds, runs remaining post-build typechecks, and
+discovers every non-CLI workspace test script once per Node version. It excludes the CLI by package
+identity and fails if workspace patterns change without an updated discovery rule. Without a shard
+variable, `npm run ci:runtime` remains the complete local runtime command, including every workspace.
+An explicitly empty `SUPERBEE_TEST_SHARD` is invalid; unset it to run the complete suite.
+
+CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, merge-group
+candidates, a weekly schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
 `.github/codeql/codeql-config.yml`; both surfaces are pinned by `scripts/ci-lanes.json` and
 `scripts/workflow-codeql-topology.test.mjs`. Every action in the CodeQL workflow is pinned to a
 full commit SHA because the analysis jobs upload security results and also run unattended.
@@ -134,7 +156,7 @@ full commit SHA because the analysis jobs upload security results and also run u
 <!-- contributing-codeql-analysis:start -->
 | Analysis | Source scope | Build mode | Query coverage | Threat model |
 | --- | --- | --- | --- | --- |
-| JavaScript/TypeScript | `packages`, `scripts`; excludes dependencies, `dist`, tests, e2e, fixtures | `none` | default + `security-extended` | remote + local (beta) |
+| JavaScript/TypeScript | `packages`, `scripts`, `.github/actions/ci-gate`, `infrastructure/github-ci`; excludes dependencies, `dist`, tests, e2e, fixtures | `none` | default + `security-extended` | remote + local (beta) |
 | GitHub Actions | `.github/workflows` | `none` | default + `security-extended` | CodeQL Actions defaults |
 <!-- contributing-codeql-analysis:end -->
 
@@ -159,6 +181,36 @@ The `TLA+ specs` workflow in `.github/workflows/tla-specs.yml` model-checks the 
 manual dispatch. It is not a required lane and is outside the lane projection above.
 [`specs/tla/README.md`](specs/tla/README.md) owns how to run the models, what each config checks,
 and which fixed configs model changes that have not merged.
+
+### GitHub Action pin renewal
+
+Every remote action reference uses a full lowercase commit SHA plus its exact `vX.Y.Z` release
+in a same-line comment. Workflow files own the version and SHA inventory.
+`scripts/ci-lanes.json` owns the reviewed allowlist of exact `owner/repo[/subpath]` identities.
+New identities require an explicit policy edit and review. Referenced local actions must be
+repository-contained composites; their nested action references follow the same policy. Reusable
+workflows and local JavaScript or Docker actions require a separately reviewed policy extension.
+
+Dependabot checks root workflows weekly and groups `github/codeql-action*` updates into one PR.
+CodeQL `init` and `analyze` exchange versioned configuration, so all CodeQL steps must use the same
+commit SHA and release label. The CodeQL topology test checks this agreement without fixing a
+particular release.
+
+A renewal of an approved identity can pass with only its
+workflow SHA and version-comment edits, including removal of the last use of an old major.
+`npm run ci:scripts` runs offline syntax, identity, source-agreement, and topology tests.
+The required hosted scripts job separately runs `npm run verify:action-upstreams` on every CI
+trigger, with only the existing read-only GitHub token passed to that step. It checks every observed
+pin against the exact upstream release tag, resolves annotated tags to a commit, and checks action
+metadata at that immutable commit and approved subpath. Missing, mismatched, or unverifiable evidence
+fails the job; bounded retries handle transient API failures. Locally, run the verifier with a
+read-only `GITHUB_TOKEN` when API limits require authentication.
+
+Commit and annotated-tag signature metadata is reported as diagnostic evidence. Upstream tag
+correspondence does not establish code safety, enforce signatures, inspect transitive upstream
+dependencies, or isolate Actions before other workflow jobs execute them. Human PR review and the
+existing merge queue remain required; major renewals also need compatibility review. Refresh
+Dependabot branches after this policy lands so their checks evaluate the current validators.
 
 Minimum iteration lanes by reach:
 
@@ -202,7 +254,7 @@ Run `npm run check:package-versions` before installing or building after a runti
 version edit. This dependency-free source check validates the synchronized core/server pair,
 their exact dependency, and core/server/markdown-renderer/cli workspace lock metadata and links.
 It also checks their existing publish access and registry policy without publishing anything.
-The cli version is independent: no rule ties it to the core/server version.
+The cli version is independent of the core/server version.
 Manifests own versions and dependency declarations; the lockfile is their checked projection.
 The renderer's core peer policy permits `||` alternatives of exact versions and stable
 `^major.minor.patch` ranges; prereleases require an exact alternative. Other range syntax or

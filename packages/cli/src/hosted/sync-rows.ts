@@ -99,6 +99,8 @@ export interface RowInputs {
   /** The host answered 403 during the push: a sign-in refusal is a withdrawn grant. */
   readonly accessWithdrawn?: boolean;
   readonly notSent: NotSentReason;
+  /** The bundle's front page (the root `index.md`), synced by its own step: its row, if any. */
+  readonly root?: SyncRow;
 }
 
 /** One row per document, in a stable order: not-committed rows first, then by id. */
@@ -169,6 +171,7 @@ export function buildRows(inputs: RowInputs): SyncRow[] {
     const links = inbound.length === 0 ? "" : ` ${inbound.length} document(s) still link here: ${shown}${inbound.length > 10 ? ", …" : ""}.`;
     out.set(id, { id, state: "committed", reason: "deleted", version: version === "" ? null : version, message: `Removed from the bundle; its history is kept on the host.${links}` });
   }
+  if (inputs.root) out.set(inputs.root.id, inputs.root);
   for (const file of inputs.held) {
     const existing = out.get(file.id);
     if (existing && existing.state !== "committed") continue;

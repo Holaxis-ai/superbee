@@ -65,3 +65,32 @@ test("plain list preserves malformed-root legacy fallback for ordering", async (
     assert.deepEqual(JSON.parse(output).docs.map((row: { id: string }) => row.id), ["note"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("list and home break same-millisecond ties by canonical ID in code-unit order", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-clock-tie-"));
+  const dir = path.join(scratch, "bundle");
+  const userDir = path.join(scratch, "user");
+  try {
+    await initBundle(dir, { okfVersion: "0.2" });
+    await mkdir(userDir);
+    // `localeCompare` would order these alpha, a_b, a-b, Beta; code units put uppercase and '-' first.
+    for (const id of ["alpha", "Beta", "a_b", "a-b"]) {
+      await writeFile(path.join(dir, `${id}.md`), `---\ntype: Note\ngenerated: {at: "2026-09-08T08:00:00Z"}\n---\n`);
+    }
+    const expected = ["Beta", "a-b", "a_b", "alpha"];
+    for (const command of ["list", "home"] as const) {
+      const result = spawnSync(process.execPath, [BUILT_CLI, command, "--dir", dir, "--json"], {
+        cwd: scratch,
+        env: { ...process.env, HOME: userDir, USERPROFILE: userDir,
+          LOCALAPPDATA: path.join(userDir, "AppData", "Local"), APPDATA: path.join(userDir, "AppData", "Roaming"),
+          SUPERBEE_NO_UPDATE_CHECK: "1", AGENTSTATE_LITE_NO_AUTOPULL: "1" },
+        encoding: "utf8", timeout: 15_000, windowsHide: true,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr);
+      const output = JSON.parse(result.stdout);
+      const rows: Array<{ id: string }> = command === "list" ? output.docs : output.bundle.recent.rows;
+      assert.deepEqual(rows.map((row) => row.id), expected, command);
+    }
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+});
