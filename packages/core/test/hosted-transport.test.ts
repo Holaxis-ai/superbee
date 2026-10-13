@@ -40,6 +40,9 @@ import {
   READ_ANSWER_ROWS,
   UPDATE_ANSWER_ROWS,
   wholeDocumentRequest,
+  HOSTED_MANAGED_FIELDS,
+  IMPORT_CARRIED_FIELDS,
+  IMPORT_DROPPED_FIELDS,
   WHOLE_DOCUMENT_SETTLEMENT,
   WholeDocumentInputError,
   type HostedAnswer,
@@ -637,6 +640,35 @@ test("whole-document request: the kernel's structural bounds refuse a document b
   // Managed fields do not count toward the bound: they never leave.
   const managed = Object.fromEntries(Array.from({ length: 31 }, (_, index) => [`f${index}`, index]));
   assert.equal(wholeDocumentRequest("team.knowledge", intentOf(BASE, { type: "Note", ...managed, timestamp: "2026-09-22T00:00:00.000Z", actor: "a" })).kind, "replace");
+});
+
+test("whole-document request: an import create carries provenance as authored and never verified or superbee_updated_by", () => {
+  const generated = { by: "agent:writer", at: "2026-09-01T00:00:00.000Z" };
+  const verified = [{ by: "person:ada", at: "2026-09-02T00:00:00.000Z" }];
+  const authored = { type: "Note", title: "Alpha", generated, verified, superbee_updated_by: "person:ada", timestamp: "2026-09-01T00:00:00.000Z", actor: "someone", okf_version: "0.2" };
+  assert.deepEqual([...IMPORT_CARRIED_FIELDS, ...IMPORT_DROPPED_FIELDS].sort(), [...HOSTED_MANAGED_FIELDS].sort(), "every managed field is either carried or dropped");
+  assert.deepEqual([...IMPORT_DROPPED_FIELDS].sort(), ["superbee_updated_by", "verified"]);
+  const create = wholeDocumentRequest("team.knowledge", intentOf(null, authored), "0.2", { mode: "import" });
+  assert.equal(create.kind, "create");
+  assert.deepEqual(create.payload.frontmatter, { type: "Note", title: "Alpha", generated, timestamp: "2026-09-01T00:00:00.000Z", actor: "someone", okf_version: "0.2" });
+  assert.deepEqual(create.kind === "create" && create.provenance, { carried: ["generated", "timestamp", "actor", "okf_version"], dropped: ["verified", "superbee_updated_by"] });
+  // The same document as an ordinary write: no managed field leaves, and no provenance is reported.
+  const write = wholeDocumentRequest("team.knowledge", intentOf(null, authored), "0.2");
+  assert.deepEqual(write.payload, { bundleId: "team.knowledge", documentId: "notes/alpha", expectAbsent: true, frontmatter: { type: "Note", title: "Alpha" }, body: "Alpha body changed é\r\n" });
+  assert.equal("provenance" in write, false);
+  const replace = wholeDocumentRequest("team.knowledge", intentOf(BASE, authored), "0.2");
+  assert.deepEqual(replace.kind === "replace" && replace.payload.frontmatter, { type: "Note", title: "Alpha" });
+  // Only a create imports: a replace or a delete asking to is refused before anything is read.
+  for (const intent of [intentOf(BASE, authored), { ...intentOf(BASE), kind: "document.delete" }]) {
+    assert.throws(() => wholeDocumentRequest("team.knowledge", intent, "0.2", { mode: "import" }), (error: unknown) => error instanceof WholeDocumentInputError && error.code === "unsupported_operation");
+  }
+  // Carried fields are the host's to hold and do not count toward the authored-field bound.
+  const many = Object.fromEntries(Array.from({ length: 31 }, (_, index) => [`f${index}`, index]));
+  const full = wholeDocumentRequest("team.knowledge", intentOf(null, { type: "Note", ...many, generated, timestamp: "2026-09-01T00:00:00.000Z", actor: "a", okf_version: "0.1" }), "0.1", { mode: "import" });
+  assert.equal(Object.keys(full.kind === "create" ? full.payload.frontmatter : {}).length, 36);
+  // A v0.1 document keeps its unquoted YAML timestamp as the normalized ISO string a local engine reads.
+  const v01 = wholeDocumentRequest("team.knowledge", { ...intentOf(null), content: "---\ntype: Note\ntimestamp: 2026-07-01T12:05:00Z\nactor: person:ada\n---\nx\n" }, "0.1", { mode: "import" });
+  assert.deepEqual(v01.kind === "create" && v01.payload.frontmatter, { type: "Note", timestamp: "2026-07-01T12:05:00.000Z", actor: "person:ada" });
 });
 
 test("whole-document transport: a create whose conflict read finds the document deleted is unknown, and the next delivery creates it", async () => {

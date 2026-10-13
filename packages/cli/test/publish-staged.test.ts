@@ -147,6 +147,36 @@ test("the preview names the staged path past one request's bounds; a small bundl
   assert.match(JSON.stringify(blocked.blockers), /over the 16 MiB a file may hold/);
 });
 
+test("a staged creation carries provenance as authored, never verified or superbee_updated_by, and the checkout matches", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "staged-provenance");
+  await mkdir(folder, { recursive: true });
+  await writeFile(path.join(folder, "index.md"), ROOT);
+  await writeFile(
+    path.join(folder, "a.md"),
+    "---\ntype: Note\ngenerated:\n  by: agent:writer\n  at: 2026-09-01T00:00:00.000Z\nverified:\n  - by: person:ada\n    at: 2026-09-02T00:00:00.000Z\nsuperbee_updated_by: person:ada\ntimestamp: 2026-09-03T00:00:00Z\nactor: person:ada\n---\nA\n",
+  );
+  await writeFile(path.join(folder, "big.bin"), Buffer.alloc(BIG_FILE, 1));
+  const fake = new FakeCreateHost();
+  const counts = { carried: { generated: 1, timestamp: 1, actor: 1, okf_version: 0 }, dropped: { verified: 1, superbee_updated_by: 1 } };
+  const preview = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
+  assert.match(String((preview.travels as Record<string, unknown>).sent), /^staged:/);
+  assert.deepEqual(((preview.travels as Record<string, unknown>).provenance as Record<string, unknown>).dropped, counts.dropped);
+  const receipt = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], fake);
+  assert.deepEqual((receipt.sent as Record<string, unknown>).provenance, counts);
+  const staged = stageBodies(fake).flatMap((body) => body.documents as { id: string; frontmatter: Record<string, unknown> }[]);
+  assert.deepEqual(staged.find((doc) => doc.id === "a")?.frontmatter, {
+    type: "Note",
+    generated: { by: "agent:writer", at: "2026-09-01T00:00:00.000Z" },
+    // An OKF 0.2 legacy timestamp is kept as the file spells it, as a local engine reads it.
+    timestamp: "2026-09-03T00:00:00Z",
+    actor: "person:ada",
+  });
+  for (const request of fake.requests) assert.doesNotMatch(JSON.stringify(request.body ?? null), /"verified"|"superbee_updated_by"/, request.path);
+  assert.deepEqual(receipt.checkout, { matched: 1, placed: 0, conflicts: 0, local_only: 0 });
+  await assertCheckout(h, folder);
+});
+
 test("--yes stages the bundle: begin, files, disjoint bounded parts, commits, then the one-shot's conversion", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "big");
@@ -156,7 +186,7 @@ test("--yes stages the bundle: begin, files, disjoint bounded parts, commits, th
   fake.commitSteps = 2;
   const receipt = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "big.notes", "--yes"], fake);
   assert.equal(receipt.published, "created");
-  assert.deepEqual(receipt.sent, { documents: 1_200, reserved_files: 2, other_files: 4, history: { imported: 0, verified: false } });
+  assert.deepEqual(receipt.sent, { documents: 1_200, reserved_files: 2, other_files: 4, history: { imported: 0, verified: false }, provenance: { carried: { generated: 0, timestamp: 0, actor: 0, okf_version: 0 }, dropped: { verified: 0, superbee_updated_by: 0 } } });
   // No one-shot request; one request id names the whole creation.
   assert.equal(fake.creates.length, 0);
   assert.equal(requestIds(fake).size, 1);
