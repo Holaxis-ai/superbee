@@ -20,7 +20,9 @@ import {
   type DirectoryWitness,
   type FilesystemIdentityPort,
   type Observation,
+  type PortHandle,
 } from "../src/filesystem-identity.js";
+import { detectHostAliasing } from "./host-class.js";
 import { ScriptedPort } from "./scripted-identity-port.js";
 
 type Outcome = { state: "exact"; text: string } | { state: "absent" } | { error: string };
@@ -163,11 +165,44 @@ test("ADV-5: readMany through the backend with a mid-batch alias created in-tick
     await sleep(3_300);
     const backend = new FilesystemBackend(root);
     const ids = Array.from({ length: 20 }, (_, i) => `m/item-${String(i).padStart(2, "0")}`);
-    // Alias before the batch, inside the same tick as nothing else: must refuse.
+    // The backend's typed absence: the ENOENT-shaped rejection `notFound` builds, naming the exact
+    // requested path. `readManyExisting` keys its per-document fallback on this code.
+    const isNotFound = (rel: string) => (e: NodeJS.ErrnoException): boolean =>
+      e.code === "ENOENT" && e.syscall === "open" && e.path === path.join(root, rel);
+    // Respell before the batch. A case-insensitive host still reaches the file through the other
+    // spelling, which is an alias; a case-sensitive host (ext4) has no `item-09.md` at all, which is
+    // absence. Either way the batch rejects exactly as a per-document read of the same state does.
     await rename(path.join(root, "m/item-09.md"), path.join(root, "m/ITEM-09.md"));
-    await assert.rejects(backend.readMany(ids), (e: Error) => e.name === "FilesystemIdentityAliasError");
+    const caseAliasing = (await detectHostAliasing()).case;
+    const respelled = caseAliasing
+      ? (e: Error): boolean => e.name === "FilesystemIdentityAliasError"
+      : isNotFound("m/item-09.md");
+    await assert.rejects(backend.readMany(ids), respelled);
+    await assert.rejects(backend.read("m/item-09"), respelled);
     await unlink(path.join(root, "m/ITEM-09.md"));
-    await assert.rejects(backend.readMany(ids), (e: NodeJS.ErrnoException) => e.code === "ENOENT");
+    // Gone under every spelling: typed absence on every host.
+    await assert.rejects(backend.readMany(ids), isNotFound("m/item-09.md"));
+    await assert.rejects(backend.read("m/item-09"), isNotFound("m/item-09.md"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("ADV-5b (every host): a document deleted mid-pass after the listing was reused is a typed absence, never a thrown fs error", async () => {
+  const root = await fixture();
+  try {
+    await sleep(3_300);
+    const port = createNodeFilesystemIdentityPort();
+    const pass = openObservationPass(port, root);
+    const read = (h: PortHandle) => port.readAll(h);
+    for (let i = 0; i < 5; i++) {
+      assert.deepEqual(await outcome(pass.observe(`m/item-${String(i).padStart(2, "0")}.md`, read)), { state: "exact", text: `body ${i}` });
+    }
+    await unlink(path.join(root, "m/item-12.md"));
+    await unlink(path.join(root, "m/item-03.md")); // already read: handed back by finish()
+    assert.deepEqual(await outcome(pass.observe("m/item-12.md", read)), { state: "absent" });
+    assert.deepEqual(await pass.finish(), ["m/item-03.md"]);
+    assert.deepEqual(await outcome(observeExact(port, root, "m/item-03.md", read)), { state: "absent" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
