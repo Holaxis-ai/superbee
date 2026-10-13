@@ -143,6 +143,10 @@
       "types": "./dist/artifact-contract.d.ts",
       "default": "./dist/artifact-contract.js"
     },
+    "./site-capabilities": {
+      "types": "./dist/site-capabilities.d.ts",
+      "default": "./dist/site-capabilities.js"
+    },
     "./portable-export": {
       "types": "./dist/portable-export.d.ts",
       "default": "./dist/portable-export.js"
