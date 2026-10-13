@@ -628,7 +628,7 @@ test("check finds off-site URLs inside prose and Markdown links, not only whole-
   }
   const fine = await checkSiteCapability(
     openNow({
-      execute: async () => ({ ok: true, as_of: "2026-10-12", note: `Visit ${ORIGIN}. Or ${ORIGIN}/fairport/x, and /fairport//y; raw data: 3` }),
+      execute: async () => ({ ok: true, as_of: "2026-10-12", note: `Visit ${ORIGIN}. Or ${ORIGIN}/fairport/x, and /fairport//y; raw data: 3, Reviews:4, News:today, tags=news:local` }),
       mintSources: undefined,
     }),
     [{ name: "all", input: {}, expect: "ok", now: NOW }],

@@ -770,7 +770,7 @@ const SCRIPT_URL_IN_TEXT = /(?:^\s*|\]\(\s*|["'<=]\s*)(?:javascript|data|vbscrip
  * backslashes (URL parsing reads `https:evil.example` as `https://evil.example`), or a
  * protocol-relative URL at the start of a word or attribute value. */
 const URL_IN_TEXT =
-  /(?:[a-z][a-z0-9+.-]*:\/\/|(?:https?|wss?|ftp):[\\/]{0,2}(?=[^\s\\/])|(?<![^\s("'<[=>])\/\/)[^\s<>"'`)\]]+/giu;
+  /(?:[a-z][a-z0-9+.-]*:\/\/|(?<![a-z0-9+.-])(?:https?|wss?|ftp):[\\/]{0,2}(?=[^\s\\/])|(?<![^\s("'<[=>])\/\/)[^\s<>"'`)\]]+/giu;
 /** Sentence punctuation that ends prose, not the URL before it. */
 const TRAILING_PUNCTUATION = /[.,;:!?]+$/u;
 
