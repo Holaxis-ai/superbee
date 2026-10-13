@@ -36,12 +36,34 @@ test("package roots come from the innermost node_modules segment, scoped or not"
   assert.equal(packageRootOf("/r/node_modules/@s"), null);
 });
 
-test("metafile inputs resolve against the working directory and skip virtual modules", () => {
+test("metafile modules come from output byte maps, resolve against the working directory, and skip virtual modules", () => {
   const paths = metafileModulePaths(
-    { inputs: { "../../node_modules/a/x.js": {}, "src/index.ts": {}, "<define:__X__>": {}, "(disabled):fs": {} } },
+    {
+      inputs: { "../../node_modules/shaken/x.js": {} },
+      outputs: {
+        "dist/a.mjs": { inputs: { "../../node_modules/a/x.js": { bytesInOutput: 10 }, "src/index.ts": { bytesInOutput: 5 }, "../../node_modules/shaken/x.js": { bytesInOutput: 0 } } },
+        "dist/b.mjs": { inputs: { "../../node_modules/a/x.js": { bytesInOutput: 3 }, "<define:__X__>": { bytesInOutput: 1 }, "(disabled):fs": { bytesInOutput: 1 } } },
+      },
+    },
     "/r/packages/superbee",
   );
   assert.deepEqual(paths, ["/r/node_modules/a/x.js", "/r/packages/superbee/src/index.ts"]);
+});
+
+test("a tree-shaken disallowed dependency stays out of the notices, a used one fails the build", async (t) => {
+  const { build } = await import("esbuild");
+  const { root, pkg } = fixture(t);
+  pkg("node_modules/fine", { name: "fine", version: "1.0.0", license: "MIT", main: "index.js" }, { LICENSE: "ok", "index.js": "export const fine = 1;" });
+  pkg("node_modules/viral", { name: "viral", version: "3.0.0", license: "GPL-3.0", main: "index.js", sideEffects: false }, { COPYING: "gpl", "index.js": "export const viral = 2;" });
+  const bundledPackages = async (source) => {
+    writeFileSync(join(root, "entry.js"), source);
+    const { metafile } = await build({ absWorkingDir: root, entryPoints: ["entry.js"], bundle: true, write: false, metafile: true, format: "esm", outfile: "out.mjs", logLevel: "silent" });
+    return metafileModulePaths(metafile, root);
+  };
+  const shaken = await bundledPackages('import { fine } from "fine";\nimport { viral } from "viral";\nconsole.log(fine);\n');
+  assert.deepEqual(collectThirdPartyNotices(shaken).map((entry) => entry.name), ["fine"]);
+  const used = await bundledPackages('import { fine } from "fine";\nimport { viral } from "viral";\nconsole.log(fine, viral);\n');
+  assert.throws(() => collectThirdPartyNotices(used), /viral@3\.0\.0: license "GPL-3\.0" is not in/);
 });
 
 test("SPDX expressions pass when an OR alternative, or every AND term, is allowed", () => {

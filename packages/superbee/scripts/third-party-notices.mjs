@@ -24,9 +24,20 @@ export function packageRootOf(modulePath) {
   return modulePath.slice(0, at + NODE_MODULES.length) + rest.slice(0, depth).join(sep);
 }
 
-/** Absolute module paths from an esbuild metafile whose keys are relative to `absWorkingDir`. */
+/**
+ * Absolute paths of the modules that contribute bytes to an esbuild output. Top-level
+ * `metafile.inputs` also lists modules tree shaking removed, which are not distributed; only the
+ * per-output input maps with positive `bytesInOutput` describe what ships. Keys are relative to
+ * `absWorkingDir`.
+ */
 export function metafileModulePaths(metafile, absWorkingDir) {
-  return Object.keys(metafile?.inputs ?? {})
+  const shipped = new Set();
+  for (const output of Object.values(metafile?.outputs ?? {})) {
+    for (const [input, { bytesInOutput }] of Object.entries(output.inputs ?? {})) {
+      if (bytesInOutput > 0) shipped.add(input);
+    }
+  }
+  return [...shipped]
     .filter((input) => !/^(?:<[^>]*>|\([a-z]+\):)/.test(input))
     .map((input) => resolve(absWorkingDir, input.replace(/^[a-z-]+:(?!\/\/)/, "")));
 }
