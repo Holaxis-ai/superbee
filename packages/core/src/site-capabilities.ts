@@ -201,7 +201,7 @@ export function isSafeSitePath(path: unknown): path is string {
   }
 }
 
-/** An ISO 8601 calendar date, or a date and time with a `Z` or numeric offset. */
+/** An ISO 8601 calendar date, or a date and time with a `Z` or numeric offset (a date-time without an offset is refused, since it names no instant). */
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
 const isDate = (value: unknown): value is string =>
   typeof value === "string" && ISO_DATE_PATTERN.test(value) && !Number.isNaN(Date.parse(value));
@@ -766,8 +766,13 @@ function* strings(value: unknown, depth = 0): Generator<string> {
 
 /** A script or data URL as a whole string, or as a Markdown link, quoted or attribute value. */
 const SCRIPT_URL_IN_TEXT = /(?:^\s*|\]\(\s*|["'<=]\s*)(?:javascript|data|vbscript):/iu;
-/** An absolute URL with a scheme, or a protocol-relative one at the start of a word, in text. */
-const URL_IN_TEXT = /(?:\b[a-z][a-z0-9+.-]*:\/\/|(?<![^\s("'<[])\/\/)[^\s<>"'`)\]]+/giu;
+/** An absolute URL in text: any scheme with `//`, a web scheme with up to two slashes or
+ * backslashes (URL parsing reads `https:evil.example` as `https://evil.example`), or a
+ * protocol-relative URL at the start of a word or attribute value. */
+const URL_IN_TEXT =
+  /(?:[a-z][a-z0-9+.-]*:\/\/|(?:https?|wss?|ftp):[\\/]{0,2}(?=[^\s\\/])|(?<![^\s("'<[=>])\/\/)[^\s<>"'`)\]]+/giu;
+/** Sentence punctuation that ends prose, not the URL before it. */
+const TRAILING_PUNCTUATION = /[.,;:!?]+$/u;
 
 /**
  * Tests one capability against recorded fixtures and the site capability requirements:
@@ -841,7 +846,8 @@ export async function checkSiteCapability(
       return;
     }
     for (const text of strings(result)) {
-      if (SCRIPT_URL_IN_TEXT.test(text)) {
+      // URL parsing removes tabs and newlines, so `java\tscript:` is a script URL too.
+      if (SCRIPT_URL_IN_TEXT.test(text.replace(/[\t\r\n]/gu, ""))) {
         add("public_urls", "a result carries a script or data URL", label);
         continue;
       }
@@ -850,7 +856,8 @@ export async function checkSiteCapability(
       for (const [match] of text.matchAll(URL_IN_TEXT)) {
         let url: URL;
         try {
-          url = new URL(match.startsWith("//") ? `${new URL(origin).protocol}${match}` : match);
+          const candidate = match.replace(TRAILING_PUNCTUATION, "");
+          url = new URL(candidate.startsWith("//") ? `${new URL(origin).protocol}${candidate}` : candidate);
         } catch {
           continue;
         }

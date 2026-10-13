@@ -612,6 +612,12 @@ test("check finds off-site URLs inside prose and Markdown links, not only whole-
     "[the record](https://evil.example/y)",
     "//evil.example/z",
     "open [this](javascript:alert(1))",
+    "1https://evil.example/a",
+    "x_https://evil.example/b",
+    "https:evil.example",
+    "https:\\\\evil.example",
+    "<a href=//evil.example>",
+    "[x](java\tscript:alert(1))",
   ]) {
     const check = await checkSiteCapability(
       openNow({ execute: async () => ({ ok: true, as_of: "2026-10-12", note: text }), mintSources: undefined }),
@@ -622,7 +628,7 @@ test("check finds off-site URLs inside prose and Markdown links, not only whole-
   }
   const fine = await checkSiteCapability(
     openNow({
-      execute: async () => ({ ok: true, as_of: "2026-10-12", note: `see ${ORIGIN}/fairport/x and /fairport//y, raw data: 3` }),
+      execute: async () => ({ ok: true, as_of: "2026-10-12", note: `Visit ${ORIGIN}. Or ${ORIGIN}/fairport/x, and /fairport//y; raw data: 3` }),
       mintSources: undefined,
     }),
     [{ name: "all", input: {}, expect: "ok", now: NOW }],
