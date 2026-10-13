@@ -307,8 +307,8 @@ export function mayBeWorkspaceOrigin(target: HostedTarget): boolean {
 
 /**
  * The gateway a pointer's `resource` names, when this origin may send the person there: https, no
- * credentials, query, fragment or explicit port, and a different host under the same parent domain
- * as the origin. Null for anything else.
+ * credentials, query, fragment or explicit port, and exactly `mcp.<parent>` for the origin's
+ * parent domain. Null for anything else.
  */
 export function trustedPointerTarget(origin: string, resource: unknown): HostedTarget | null {
   if (typeof resource !== "string" || resource.length > MAX_POINTER_RESOURCE_LENGTH || resource.includes("@")) return null;
@@ -324,7 +324,8 @@ export function trustedPointerTarget(origin: string, resource: unknown): HostedT
   if (to.username || to.password || to.port !== "" || from.port !== "" || to.search || to.hash) return null;
   if (to.hostname === from.hostname) return null;
   const parent = parentDomain(from.hostname);
-  if (parent === null || parentDomain(to.hostname) !== parent) return null;
+  // Only the parent's gateway label, so one workspace origin cannot send the person to another.
+  if (parent === null || to.hostname !== `mcp.${parent}`) return null;
   try {
     return resolveHostedTarget(resource);
   } catch {

@@ -204,6 +204,7 @@ const ADVERSARIAL: readonly { readonly name: string; readonly route: Route; read
   { name: "an explicit port", route: pointer("https://mcp.getsuperbee.com:8443/mcp"), foreign: "https://mcp.getsuperbee.com:8443" },
   { name: "the parent domain itself", route: pointer("https://getsuperbee.com/mcp"), foreign: "https://getsuperbee.com" },
   { name: "the origin itself", route: pointer(`${ORIGIN}/mcp`) },
+  { name: "another workspace origin", route: pointer("https://other-org.getsuperbee.com/mcp"), foreign: "https://other-org.getsuperbee.com" },
   { name: "schema_version 2", route: pointer(`${GATEWAY}/mcp`, { schema_version: 2 }), foreign: GATEWAY },
   { name: "a bad slug", route: pointer(`${GATEWAY}/mcp`, { workspace_slug: "Holaxis_Sites" }), foreign: GATEWAY },
   { name: "a missing slug", route: { status: 200, body: { schema_version: 1, resource: `${GATEWAY}/mcp` } }, foreign: GATEWAY },

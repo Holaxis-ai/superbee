@@ -87,10 +87,12 @@ export const WHOAMI_USAGE = `superbee whoami — show the hosted Superbee sessio
 Usage:
   superbee whoami [--host <url>] [--json]
 
-Local and read-only: reports the host, issuer, client, the signed-in subject from the token's
+Read-only: reports the host, issuer, client, the signed-in subject from the token's
 claims (not yet confirmed by the gateway), scopes, token expiry, where the refresh token is kept,
 and any sign-in waiting on the person. Never prints a token. Not signed in is a successful result,
 including on a first run with no host selected yet (it names the sign-in command).
+It reads local state only, except that a host with no stored session that turns out to be a
+workspace's browser address is resolved to its gateway first (one metadata request).
 
 Options:
   --host <url>   Hosted Superbee URL (default: ${HOST_ENV}, then the last sign-in)
