@@ -63,6 +63,7 @@ const baseExpectedFiles = [
   ...bundleDescriptorExpectedFiles,
   "dist/portable-export.mjs",
   "dist/portable-export.d.ts",
+  "dist/THIRD-PARTY-NOTICES.txt",
 ];
 
 function assertSupportedPlatform(platform) {

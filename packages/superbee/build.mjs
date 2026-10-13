@@ -22,7 +22,8 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { isMainModule } from "../../scripts/is-main-module.mjs";
-import { buildBundleDescriptorBundle, buildCliBundle, buildPublicationBundle, buildPortableExportBundle } from "./scripts/build-bundle.mjs";
+import { BUNDLE_WORKING_DIR, buildBundleDescriptorBundle, buildCliBundle, buildPublicationBundle, buildPortableExportBundle } from "./scripts/build-bundle.mjs";
+import { metafileModulePaths, writeThirdPartyNotices } from "./scripts/third-party-notices.mjs";
 import { prepareCliBundleInputs } from "../cli/scripts/prepare-bundle-inputs.mjs";
 import { FUNCTIONAL_VERSION_FLOOR } from "./scripts/functional-version-floor.mjs";
 
@@ -32,6 +33,7 @@ const outfile = r("dist/superbee.mjs");
 const publicationOutfile = r("dist/publication.mjs");
 const publicationBridgeOutfile = r("dist/publication-bridge.mjs");
 const bundleDescriptorOutfile = r("dist/bundle-descriptor.mjs");
+const thirdPartyNoticesOutfile = r("dist/THIRD-PARTY-NOTICES.txt");
 const execFileAsync = promisify(execFile);
 
 async function copyDeclarationTree(source, destination) {
@@ -79,6 +81,14 @@ async function buildBundleDescriptorTypes() {
   );
 }
 
+/** The embedded-input modules a prepared-inputs record carries; absent means a stale producer. */
+export function requireBundledModules(prepared) {
+  if (!Array.isArray(prepared?.bundledModules)) {
+    throw new Error("prepared CLI bundle inputs must carry bundledModules for the third-party notices");
+  }
+  return prepared.bundledModules;
+}
+
 /**
  * The ONE dev/npm build entrypoint used by `npm run build`, `verify-npm-package.mjs`, and the
  * release workflow. It cleans dist, regenerates the
@@ -97,24 +107,33 @@ export async function buildCli(artifactChannel, { source, packageIdentity, updat
   // FIRST: generate every embedded input (the local UI assets and fixed MCP App shell) through the
   // same preparation helper used by release verification. The esbuild
   // bundle below imports those generated modules transitively, so none may be missing or stale.
-  if (preparedInputs === undefined) await prepareCliBundleInputs({ compiledWorkspaces });
-  await buildCliBundle(outfile, {
+  const prepared = preparedInputs ?? await prepareCliBundleInputs({ compiledWorkspaces });
+  const metafile = { metafile: true };
+  const cliBuild = await buildCliBundle(outfile, {
     artifactChannel,
     functionalVersionFloor: FUNCTIONAL_VERSION_FLOOR,
     updatePolicy: updatePolicy ?? { enabled: false },
+    ...metafile,
     ...(source === undefined ? {} : { source }),
     ...(packageIdentity === undefined ? {} : { packageIdentity }),
   });
   await prepareDistributionTypes(compiledWorkspaces);
-  await Promise.all([
-    buildPublicationBundle(publicationOutfile),
-    buildPublicationBundle(publicationBridgeOutfile, "bridge"),
-    buildBundleDescriptorBundle(bundleDescriptorOutfile),
+  const [publicationBuild, bridgeBuild, descriptorBuild, , portableBuild] = await Promise.all([
+    buildPublicationBundle(publicationOutfile, "full", metafile),
+    buildPublicationBundle(publicationBridgeOutfile, "bridge", metafile),
+    buildBundleDescriptorBundle(bundleDescriptorOutfile, metafile),
     buildPublicationTypes(),
-    buildPortableExportBundle(r("dist/portable-export.mjs")),
+    buildPortableExportBundle(r("dist/portable-export.mjs"), metafile),
     cp(r("../core/dist/portable-export.d.ts"), r("dist/portable-export.d.ts")),
     buildBundleDescriptorTypes(),
   ]);
+  // Every third-party module inlined into a shipped file: the five esbuild bundles plus the UI and
+  // MCP App code embedded into the CLI bundle as prepared bytes.
+  writeThirdPartyNotices([
+    ...[cliBuild, publicationBuild, bridgeBuild, descriptorBuild, portableBuild]
+      .flatMap((result) => metafileModulePaths(result.metafile, BUNDLE_WORKING_DIR)),
+    ...requireBundledModules(prepared),
+  ], thirdPartyNoticesOutfile);
   // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
   // in the tarball and for direct `./dist/superbee.mjs` runs).
   await chmod(outfile, 0o755);

@@ -16,7 +16,7 @@
 // byte (byte 9) are still normalized. Decompression is format-standard, so the RUNTIME keeps
 // using `node:zlib`'s gunzip (packages/ui-server/src/assets.ts) — pako is build-time only, never bundled.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzip as pakoGzip } from "pako";
@@ -27,6 +27,8 @@ const cliRoot = resolve(here, "..");
 // packages/cli -> repo root
 const repoRoot = resolve(cliRoot, "../..");
 const uiDist = resolve(cliRoot, "../ui/dist");
+// Written by the ui build's record-bundled-modules plugin (packages/ui/vite.config.ts).
+const uiBundledModulesFile = resolve(cliRoot, "../ui/build-meta/bundled-modules.json");
 const generatedDir = resolve(cliRoot, "src/generated");
 const generatedFile = join(generatedDir, "ui-assets.generated.ts");
 
@@ -114,9 +116,12 @@ function buildUiDist(compiledWorkspaces) {
   }
 }
 
-/** Build the ui SPA fresh, embed its dist/ as deterministic gzip, write the generated module, and enforce the size budget. Returns `{ count, totalGzipBytes, inputs }`, where `inputs` are the embedded files' absolute paths. */
+/** Build the ui SPA fresh, embed its dist/ as deterministic gzip, write the generated module, and enforce the size budget. Returns `{ count, totalGzipBytes, inputs, bundledModules }`, where `inputs` are the embedded files' absolute paths and `bundledModules` the source modules the ui build rendered into them. */
 export function embedUiAssets({ compiledWorkspaces = [] } = {}) {
+  // Remove the previous record first so a build that fails to write one cannot pass off stale data.
+  rmSync(uiBundledModulesFile, { force: true });
   buildUiDist(compiledWorkspaces);
+  const bundledModules = JSON.parse(readFileSync(uiBundledModulesFile, "utf8"));
 
   const files = walk(uiDist);
   let totalGzipBytes = 0;
@@ -161,5 +166,5 @@ export const UI_ASSETS_GZIP_BYTES = ${totalGzipBytes};
 `;
   writeFileSync(generatedFile, source);
   console.log(`embedded ${entries.length} ui asset(s), ${totalGzipBytes} bytes gzipped (budget ${UI_ASSET_BUDGET_BYTES})`);
-  return { count: entries.length, totalGzipBytes, inputs: files };
+  return { count: entries.length, totalGzipBytes, inputs: files, bundledModules };
 }
