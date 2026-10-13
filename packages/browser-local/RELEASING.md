@@ -8,25 +8,25 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.10 | public / next |
-| @superbee/server | 0.2.0-pre.10 | public / next |
-| @superbee/browser-local | 0.1.0-pre.6 | public / next |
-| @superbee/markdown-renderer | 0.1.7 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.11 | public / next |
+| @superbee/server | 0.2.0-pre.11 | public / next |
+| @superbee/browser-local | 0.1.0-pre.7 | public / next |
+| @superbee/markdown-renderer | 0.1.8 | existing restricted access / latest |
 
-This candidate makes bulk filesystem reads list each directory once per pass instead of
-twice per document (superbee#437): `FilesystemBackend.readMany` (query, list, status, Kind
-loading) and publication capture share one observation pass, with an end-of-pass check that
-re-verifies every answer that relied on a reused listing. It also carries the core changes
-merged since 0.2.0-pre.9: refusal to publish private-state files (superbee#423), verified
-portable exports for offline publication (superbee#427), sync fetch option validation
-(superbee#428), atomic conflict receipts (superbee#430) and NUL-framed Git status and
-conflict paths (superbee#429). Browser-local 0.1.0-pre.5 (pinned to core pre.9) is unchanged
-on the registry; 0.1.0-pre.6 moves its exact pin to pre.10 with no browser-local source change.
+This candidate adds the `@superbee/core/site-capabilities` subpath export: the platform-neutral
+`SiteCapability` contract for read-only tools a site or recipe pack provides,
+`composeSiteCapabilities` (conflict refusal, reserved `superbee_` prefix, deterministic tier
+order, per-surface exclusions, limits and an identity digest), `checkSiteCapability` with
+runner-neutral conformance cases, `mergeAnnotations` and `siteRecordSource`. It also carries the
+hosted transport `import` mode for a bundle's creation (superbee#442). Everything else in
+0.2.0-pre.10 is carried unchanged. The registry's newest browser-local is 0.1.0-pre.4; pre.5 and
+pre.6 were prepared but never published. 0.1.0-pre.7 moves its exact pin to pre.11 with no
+browser-local source change.
 
-Browser-local depends exactly on core pre.10 and moves with it under the paired
+Browser-local depends exactly on core pre.11 and moves with it under the paired
 exact-pin policy; do not patch around a mismatch or publish with a wildcard
 dependency. Server moves with core under the existing paired release policy.
-Renderer 0.1.7 extends its core peer allowance through pre.10 with no source change (a new
+Renderer 0.1.8 extends its core peer allowance through pre.11 with no source change (a new
 version because a published renderer version is never reused for different bytes); it is
 included so consumers can align their root core without overriding peer checks. Its access
 remains restricted: do not make other private packages public.
