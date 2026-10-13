@@ -176,3 +176,17 @@ export async function buildBundleDescriptorBundle(outfile) {
     logLevel: "info",
   });
 }
+
+/** Bundle the Node-only portable export verifier with no CLI or runtime dependencies. */
+export async function buildPortableExportBundle(outfile) {
+  await build({
+    absWorkingDir: pkgRoot,
+    entryPoints: [r("../core/src/portable-export.ts")],
+    outfile,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node22",
+    logLevel: "info",
+  });
+}

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
 import type { StorageBackend } from "@superbee/core";
-import { bootstrap, commitLocal, inspectConflict, resolveConflict, conflictResolutionKey, openLocalBundle, push, syncStatus, type ConflictChoice } from "../src/local-bundle.ts";
+import { bootstrap, commitLocal, inspectConflict, resolveConflict, conflictResolutionKey, readConflictResolution, deleteLocal, openLocalBundle, push, syncStatus, type ConflictChoice } from "../src/local-bundle.ts";
 import { createBrowserLocalRuntime } from "../src/platform/index.ts";
 import { MemoryJournaledBackend } from "./fixtures/memory-journaled-backend.ts";
 import { createRemoteFixture } from "./fixtures/remote-fixture.ts";
@@ -34,7 +34,9 @@ for (const adapter of ["indexeddb", "memory"]) {
         assert.match(review.local.content, /my later edit/);
         assert.match(review.remote.content!, /their edit/);
         const result = await resolveConflict(local, remote.remote, review, choice);
-        assert.deepEqual((await local.backend.readMeta<any>(conflictResolutionKey(result.receipt.id))).reviewed, review);
+        assert.deepEqual(await local.backend.readMeta(conflictResolutionKey(result.receipt.id)), result.receipt);
+        assert.deepEqual(await readConflictResolution(local, id), result.receipt);
+        assert.equal(await readConflictResolution(local, "notes/other"), undefined);
         assert.equal((await syncStatus(local)).counts.conflict, 0);
         for (const old of review.intents) assert.equal(await local.backend.readIntent(old.requestId), undefined);
         assert.equal((await remote.authority.read(id)).doc.body, "their edit\n", "resolution sends no write");
@@ -49,6 +51,23 @@ for (const adapter of ["indexeddb", "memory"]) {
         assert.equal((await runtime.read(id)).provenance.state, "shared-confirmed");
         await commitLocal(local, id, edit("next edit\n"));
         assert.equal((await syncStatus(local)).counts.pending, 1);
+      } finally { local.close(); }
+    });
+  }
+  for (const choice of ["keep-local", "take-remote"] as const) {
+    test(`${adapter}: ${choice} over an already-absent deletion retains the returned receipt with no cancel target`, async () => {
+      const { remote, local } = await fixture();
+      try {
+        await resolveConflict(local, remote.remote, await inspectConflict(local, remote.remote, id), { kind: "take-remote" });
+        const deleted = await deleteLocal(local, id);
+        await remote.authority.delete(id);
+        await local.backend.updateIntent(deleted.intent!.requestId, "pending", { state: "conflict", remote: { version: null, content: null } });
+        const result = await resolveConflict(local, remote.remote, await inspectConflict(local, remote.remote, id), { kind: choice });
+        assert.equal(result.intent, null);
+        assert.equal(result.receipt.replacementRequestId, null);
+        assert.deepEqual(await local.backend.readMeta(conflictResolutionKey(result.receipt.id)), result.receipt);
+        assert.deepEqual(await readConflictResolution(local, id), result.receipt);
+        assert.deepEqual(await local.backend.listIntents(["pending", "conflict"]), []);
       } finally { local.close(); }
     });
   }

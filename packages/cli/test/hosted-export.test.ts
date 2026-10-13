@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { decode } from "@toon-format/toon";
+import * as portableExport from "@superbee/core/portable-export";
 
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
@@ -84,6 +85,12 @@ const LOGO = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x10, 0x0d, 0x0a])
 
 const captured = JSON.parse(readFileSync(path.join(SYNC_FIXTURES, "export-200.json"), "utf8")) as { response: { bodyBase64: string } };
 const capturedArchive = Buffer.from(captured.response.bodyBase64, "base64");
+
+test("CLI archive verification is the supported core owner", () => {
+  assert.equal(verifyExport, portableExport.verifyExport);
+  assert.equal(joinExportPages, portableExport.joinExportPages);
+  assert.equal(ExportArchiveError, portableExport.ExportArchiveError);
+});
 
 test("the captured /sync/v1/export archive verifies to the host's values", () => {
   const exported = verifyExport(capturedArchive, "notes.a");

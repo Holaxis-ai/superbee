@@ -111,3 +111,17 @@ consumer. CLI and engine version numbers are independent; do not infer matching 
 package names or version labels.
 
 [Source and contribution guide](https://github.com/Holaxis-ai/superbee)
+
+### Node portable export boundary
+
+`@superbee/core/portable-export` (also bundled as `superbee/portable-export`) exposes the same
+store-only archive verifier used by the CLI: `verifyExport`, `ExportPageChain` and
+`joinExportPages`. The page chain charges the sum of complete ZIP sizes, including manifests
+and headers, against `MAX_EXPORT_BYTES` before retaining a page; returned `bytes` counts only
+stored bundle content. It performs no acquisition, sign-in or network access. A complete accepted
+handle can be passed to `materializeExport(handle, existingPrivateParent)` to create a fresh
+private directory; callers own its cleanup and isolation while publishing. No target is replaced.
+`exportProvenance(handle)` returns exact ordered raw-manifest SHA-256/size evidence plus a combined
+inventory SHA-256. Keep that evidence outside the directory and private when it identifies a
+private source. Handles cannot be reconstructed from JSON or moved between independently bundled
+module instances; modified handles are refused. This surface requires Node, not a browser or Worker.

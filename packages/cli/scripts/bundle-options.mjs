@@ -21,6 +21,7 @@ export const workspaceAliases = {
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
       "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
+      "@superbee/core/portable-export": r("../core/src/portable-export.ts"),
       "@superbee/core/publication-filesystem": r("../core/src/publication-filesystem.ts"),
       // The hosted checkout (`src/hosted/**`) runs the shared working-copy engine
       // (`@superbee/browser-local`) over core's Node log store, push role and hosted transport.

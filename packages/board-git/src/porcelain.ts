@@ -1645,8 +1645,7 @@ export function isConceptDocPath(relPath: string): boolean {
  * pairing instead of being silently skipped.
  */
 export function nameStatusRows(out: string): Array<{ letter: string; relPath: string }> {
-  const fields = out.split("\0");
-  if (fields.length > 0 && fields[fields.length - 1] === "") fields.pop();
+  const fields = nulFields(out);
   const rows: Array<{ letter: string; relPath: string }> = [];
   for (let i = 0; i + 1 < fields.length; i += 2) {
     const letter = (fields[i] ?? "").trim().charAt(0);
@@ -1811,13 +1810,8 @@ export interface HeldDocument {
  * link, unchecked, as before).
  */
 export function malformedOutgoingDocuments(boardPath: string): HeldDocument[] {
-  const listed = runGit(boardPath, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
-  if (listed.status !== 0) throw classifyGitError(failureOf(["status"], listed));
   const held: HeldDocument[] = [];
-  for (const record of listed.stdout.split("\0")) {
-    if (record.length < 4) continue;
-    const code = record.slice(0, 2);
-    const relPath = record.slice(3);
+  for (const { status: code, path: relPath } of readStatusRows(boardPath, { allUntracked: true })) {
     if (code.includes("D") || !isConceptDocPath(relPath)) continue;
     const file = path.join(boardPath, relPath);
     const content = readRegularFile(file);
@@ -2127,10 +2121,7 @@ export function fetchRebase(boardPath: string): FetchRebaseOutcome {
   });
   if (r.status === 0) return { status: "clean" };
   if (detectStaleRebase(boardPath)) {
-    const conflicted = mustGit(boardPath, ["diff", "--name-only", "--diff-filter=U"])
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0)
+    const conflicted = conflictedPaths(boardPath)
       .map((p) => (isConceptDocPath(p) ? conceptIdFromPath(p) : p));
     mustGit(boardPath, ["rebase", "--abort"], { rebase: true });
     return { status: "conflict", conflictedDocIds: conflicted };
@@ -2245,11 +2236,6 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
   // means a STUCK LOOP (a mis-parsed path fails `show :3:`/`checkout`/`rm` on every iteration),
   // so it must be robust even against names the tab/newline-split parsers can't express — NUL
   // output is raw and unquoted BY DEFINITION, independent of any quotepath setting.
-  const listConflicted = (): string[] =>
-    mustGit(boardPath, ["diff", "--name-only", "-z", "--diff-filter=U"])
-      .split("\0")
-      .filter((l) => l.length > 0);
-
   const byPath = new Map<string, ResolvedConflict>();
   try {
     let stops = 0;
@@ -2260,7 +2246,7 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
           `sync's converging rebase did not terminate after ${MAX_REBASE_STOPS} stops — aborting to leave the board unchanged`,
         );
       }
-      const conflicted = listConflicted();
+      const conflicted = conflictedPaths(boardPath);
       if (conflicted.length === 0) {
         // No unmerged files at this stop: the replayed commit became EMPTY (every change it
         // carried was a conflicted path kept at upstream) — drop it. `--skip` may itself stop on
@@ -2345,13 +2331,8 @@ export function fetchRebaseResolving(boardPath: string, exportDir: string): Fetc
  * refuses on a finding, so a refusal never leaves the index staged or a commit made.
  */
 export function privateStateInOutgoingWorktree(boardPath: string): PrivateStateFinding[] {
-  const listed = runGit(boardPath, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
-  if (listed.status !== 0) throw classifyGitError(failureOf(["status"], listed));
   const found: PrivateStateFinding[] = [];
-  for (const record of listed.stdout.split("\0")) {
-    if (record.length < 4) continue;
-    const code = record.slice(0, 2);
-    const relPath = record.slice(3);
+  for (const { status: code, path: relPath } of readStatusRows(boardPath, { allUntracked: true })) {
     if (code.includes("D")) continue;
     const finding = privateStateFinding(relPath, readPrivateStateCandidate(path.join(boardPath, relPath)));
     if (finding) found.push(finding);
@@ -2735,17 +2716,56 @@ export function currentBranch(top: string): string {
 export interface StatusRow {
   status: string;
   path: string;
+  /** Exact source path for a detected rename/copy; `path` is its destination. */
+  originalPath?: string;
 }
 
-/** Parse `git status --porcelain[ -- <prefix>]` into {@link StatusRow}s (`[]` on a failed status). */
+/** NUL-framed fields preserve path whitespace and avoid Git's human-output C quoting. */
+function nulFields(out: string): string[] {
+  const fields = out.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  return fields;
+}
+
+/**
+ * One status reader. Outgoing checks disable renames (board identity is its path); awareness and
+ * dirty receipts retain configured rename detection and its one-row count. In porcelain -z,
+ * a rename/copy carries destination first and source as a second NUL field, with no arrow text.
+ */
+function readStatusRows(
+  dir: string,
+  opts: { prefix?: string; allUntracked?: boolean; tolerateFailure?: boolean; renamePolicy?: "configured" | "disabled" } = {},
+): StatusRow[] {
+  const args = ["status", "--porcelain=v1", "-z",
+    ...(opts.renamePolicy === "configured" ? [] : ["--no-renames"]),
+    ...(opts.allUntracked ? ["--untracked-files=all"] : []),
+    ...(opts.prefix ? ["--", opts.prefix] : [])];
+  const r = runGit(dir, args);
+  if (r.status !== 0) {
+    if (opts.tolerateFailure) return [];
+    throw classifyGitError(failureOf(args, r));
+  }
+  const fields = nulFields(r.stdout);
+  const rows: StatusRow[] = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const record = fields[i]!;
+    if (record.length < 4) continue;
+    const status = record.slice(0, 2).trim();
+    const row: StatusRow = { status, path: record.slice(3) };
+    if (status.includes("R") || status.includes("C")) row.originalPath = fields[++i]!;
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** Both rebase policies consume the same exact unmerged path identities. */
+function conflictedPaths(dir: string): string[] {
+  return nulFields(mustGit(dir, ["diff", "--name-only", "--no-renames", "-z", "--diff-filter=U"]));
+}
+
+/** NUL-framed status rows; nonzero Git exits remain tolerated as `[]`. Spawn failures still throw. */
 export function statusRows(dir: string, prefix?: string): StatusRow[] {
-  const r = runGit(dir, ["status", "--porcelain", ...(prefix ? ["--", prefix] : [])]);
-  if (r.status !== 0) return [];
-  return r.stdout
-    .split("\n")
-    .map((l) => l.trimEnd())
-    .filter((l) => l.length > 0)
-    .map((l) => ({ status: l.slice(0, 2).trim(), path: l.slice(3) }));
+  return readStatusRows(dir, { prefix, tolerateFailure: true, renamePolicy: "configured" });
 }
 
 /**

@@ -14,6 +14,9 @@ import path from "node:path";
 
 import { decode } from "@toon-format/toon";
 
+import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
+import { readConflictResolution, commitLocal } from "@superbee/browser-local";
+import { bindingForPath, checkoutStoreDir } from "../src/hosted/binding.js";
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { sync } from "../src/commands/sync.js";
@@ -682,4 +685,155 @@ test("a document the checkout holds that a stricter id rule refuses is held as i
   assert.equal(await readFile(fileOf(h, "notes/beta"), "utf8"), before, "neither removed nor refreshed");
   assert.equal((r.receipt!.pulled as { removed: number }).removed, 0);
   assert.equal(deletes(h).length, 0);
+});
+
+
+async function withStore<T>(h: H, body: (store: FileJournaledBackend) => Promise<T>): Promise<T> {
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { return await body(store); } finally { await store.close(); }
+}
+
+for (const point of ["before-resolution", "after-resolution", "after-cancellation"] as const) {
+  test(`resolution recovery: interruption ${point} preserves the choice and repeat take sends nothing`, async (t) => {
+    const h = await harness();
+    await conflicted(h);
+    await ok(h, ["--inspect", "--doc", "notes/alpha"]);
+    const original = FileJournaledBackend.prototype.writeJournaled;
+    let interrupted = false;
+    const interrupt = () => {
+      if (!interrupted) { interrupted = true; throw new CliError("RUNTIME", "injected resolution interruption"); }
+    };
+    if (point === "after-cancellation") await ok(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+    t.mock.method(FileJournaledBackend.prototype, "writeJournaled", async function (this: FileJournaledBackend, ...args: Parameters<typeof original>) {
+      const options = args[2];
+      const resolution = options?.resolveIntents !== undefined;
+      const cancellation = options?.supersede !== undefined && options.intent === undefined;
+      if (point === "before-resolution" && resolution) interrupt();
+      const answer = await original.apply(this, args);
+      if ((point === "after-resolution" && resolution) || (point === "after-cancellation" && cancellation)) interrupt();
+      return answer;
+    });
+    const failed = await fails(h, ["--resolve", point === "after-cancellation" ? "take" : "keep", "--doc", "notes/alpha"]);
+    assert.match(failed.error.message, /injected resolution interruption/);
+    t.mock.restoreAll();
+    if (point === "before-resolution") {
+      await withStore(h, async store => assert.equal(await readConflictResolution(store, "notes/alpha"), undefined));
+      await ok(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+    } else if (point === "after-resolution") {
+      await withStore(h, async store => {
+        const receipt = (await readConflictResolution(store, "notes/alpha"))!;
+        assert.equal(receipt.replacementRequestId, (await store.listIntents("pending"))[0]!.requestId);
+        assert.equal(await store.readMeta("cli-resolved:notes/alpha"), undefined);
+      });
+      assert.equal((await ok(h, ["--resolve", "keep", "--doc", "notes/alpha"])).already_resolved, true);
+    }
+    if (point !== "after-cancellation") await ok(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+    h.host.writes.length = 0;
+    await ok(h);
+    assert.match(await readFile(fileOf(h, "notes/alpha"), "utf8"), /host line/);
+    assert.equal(h.host.writes.filter(call => call.route !== "outcome").length, 0);
+    assert.equal((await fails(h, ["--resolve", "take", "--doc", "notes/alpha"])).error.code, "NOT_FOUND");
+  });
+}
+
+for (const legacy of ["completed"] as const) {
+  test(`resolution upgrade: ${legacy} legacy lineage still allows cancellation before send`, async (t) => {
+    const h = await harness();
+    await conflicted(h);
+    await ok(h, ["--inspect", "--doc", "notes/alpha"]);
+    await ok(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+    await withStore(h, async store => {
+      const row = (await store.listIntents("pending"))[0]!;
+      await store.writeMeta("conflict-resolution-document:notes/alpha", null);
+      await store.writeMeta("cli-resolved:notes/alpha", legacy === "completed" ? { choice: "keep", requestIds: [row.requestId] } : { choice: "keep", after: row.sequence - 1 });
+    });
+    const earlier = await withStore(h, store => store.readMeta("cli-resolved:notes/alpha"));
+    const original = FileJournaledBackend.prototype.writeJournaled;
+    t.mock.method(FileJournaledBackend.prototype, "writeJournaled", async function (this: FileJournaledBackend, ...args: Parameters<typeof original>) {
+      if (args[2]?.supersede && args[2].intent === undefined) throw new CliError("RUNTIME", "injected cancellation before mutation");
+      return original.apply(this, args);
+    });
+    await fails(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+    t.mock.restoreAll();
+    await withStore(h, async store => {
+      assert.deepEqual(await store.readMeta("cli-resolved:notes/alpha"), earlier);
+      assert.equal((await store.listIntents("pending")).length, 1);
+    });
+    t.mock.method(FileJournaledBackend.prototype, "writeJournaled", async function (this: FileJournaledBackend, ...args: Parameters<typeof original>) {
+      const answer = await original.apply(this, args);
+      if (args[2]?.supersede && args[2].intent === undefined) {
+        assert.equal(await this.readMeta("cli-resolved:notes/alpha"), null);
+        assert.equal(await this.readMeta("cli-folder-resolved:notes/alpha"), null);
+      }
+      return answer;
+    });
+    await ok(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+    t.mock.restoreAll();
+    h.host.writes.length = 0;
+    await ok(h);
+    assert.equal(h.host.writes.filter(call => call.route !== "outcome").length, 0);
+  });
+}
+
+test("resolution index cannot label another document or a later unrelated edit as the pending resolution", async () => {
+  const h = await harness();
+  await conflicted(h);
+  await ok(h, ["--inspect", "--doc", "notes/alpha"]);
+  await ok(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  await withStore(h, async store => {
+    const identity = await store.readMeta("conflict-resolution-document:notes/alpha");
+    await store.writeMeta("conflict-resolution-document:notes/beta", identity);
+    assert.equal(await readConflictResolution(store, "notes/beta"), undefined);
+    await commitLocal(store, "notes/alpha", { buildCandidate: doc => ({ frontmatter: doc!.frontmatter, body: "later unrelated edit\n" }) });
+  });
+  const refused = await fails(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+  assert.equal(refused.error.details?.reason, "unsent_change");
+  await withStore(h, async store => assert.match((await store.read("notes/alpha")).doc.body, /later unrelated edit/));
+});
+
+for (const evidence of ["legacy-completed", "legacy-watermark", "folder-completed", "folder-watermark"] as const) {
+  for (const composed of [false, true]) {
+    test(`resolution identity: ${evidence}, composed=${composed}, preserves work unless the exact original replacement is known`, async () => {
+      const h = await harness();
+      await conflicted(h);
+      await ok(h, ["--inspect", "--doc", "notes/alpha"]);
+      await ok(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+      const key = evidence.startsWith("folder") ? "cli-folder-resolved:notes/alpha" : "cli-resolved:notes/alpha";
+      const exact = evidence.endsWith("completed");
+      await withStore(h, async store => {
+        const original = (await store.listIntents("pending"))[0]!;
+        await store.writeMeta("conflict-resolution-document:notes/alpha", null);
+        await store.writeMeta(key, exact ? { choice: "keep", requestIds: [original.requestId] } : { choice: "keep", after: original.sequence - 1 });
+        if (composed) await commitLocal(store, "notes/alpha", { buildCandidate: doc => ({ frontmatter: doc!.frontmatter, body: "later ordinary edit\n" }) });
+      });
+      const before = await withStore(h, async store => ({ current: await store.readWithJournal("notes/alpha"), evidence: await store.readMeta(key) }));
+      if (exact && !composed) {
+        await ok(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+        await withStore(h, async store => assert.deepEqual(await store.listIntents("pending"), []));
+      } else {
+        const refused = await fails(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+        assert.equal(refused.error.details?.reason, exact ? "unsent_change" : "resolution_identity_unknown");
+        assert.match(String(refused.error.help), /sync/);
+        await withStore(h, async store => {
+          assert.deepEqual(await store.readWithJournal("notes/alpha"), before.current);
+          assert.deepEqual(await store.readMeta(key), before.evidence);
+        });
+        if (composed) assert.match(before.current.document!.doc.body, /later ordinary edit/);
+      }
+    });
+  }
+}
+
+test("an engine receipt identifies the genuine replacement despite interrupted folder evidence", async () => {
+  const h = await harness();
+  await conflicted(h);
+  await ok(h, ["--inspect", "--doc", "notes/alpha"]);
+  await ok(h, ["--resolve", "keep", "--doc", "notes/alpha"]);
+  await withStore(h, async store => {
+    const row = (await store.listIntents("pending"))[0]!;
+    await store.writeMeta("cli-folder-resolved:notes/alpha", { choice: "keep", after: row.sequence - 1 });
+  });
+  await ok(h, ["--resolve", "take", "--doc", "notes/alpha"]);
+  await withStore(h, async store => assert.deepEqual(await store.listIntents("pending"), []));
 });

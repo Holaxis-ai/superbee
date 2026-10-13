@@ -10,6 +10,7 @@ export {
   inspectConflict,
   resolveConflict,
   conflictResolutionKey,
+  readConflictResolution,
   ConflictReviewStaleError,
   type ConflictReview,
   type ConflictChoice,

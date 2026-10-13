@@ -322,7 +322,10 @@ export interface WireOptions {
 
 /** Options both fetching verbs share: how the remote document set is split and how many splits travel at once. */
 export interface FetchOptions {
-  /** Documents fetched per `readMany` round trip, and written per batch as a snapshot streams. */
+  /**
+   * Documents fetched per `readMany` round trip, and written per batch as a snapshot streams.
+   * A positive safe integer, default 25; invalid values are refused before store or remote access.
+   */
   batchSize?: number;
   /** Wire features to use or refuse; see {@link WireOptions}. */
   wire?: WireOptions;
@@ -334,10 +337,12 @@ export interface FetchOptions {
   concurrency?: number;
 }
 
-function concurrencyOf(options: FetchOptions): number {
-  const value = options.concurrency ?? DEFAULT_CONCURRENCY;
-  if (!Number.isInteger(value) || value < 1) throw new InvalidInputError(`concurrency must be an integer of at least 1, got ${String(value)}`);
-  return value;
+function admitFetchOptions(options: FetchOptions): { batchSize: number; concurrency: number } {
+  const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new InvalidInputError(`concurrency must be an integer of at least 1, got ${String(concurrency)}`);
+  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new InvalidInputError(`batchSize must be a safe integer of at least 1, got ${String(batchSize)}`);
+  return { batchSize, concurrency };
 }
 
 /**
@@ -596,7 +601,7 @@ export interface BootstrapOptions extends FetchOptions {
  * marker incomplete and its error propagates once the batches in flight have finished.
  */
 export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
-  const concurrency = concurrencyOf(options);
+  const { batchSize, concurrency } = admitFetchOptions(options);
   const backend = await runtimeBackend(local);
   const bodyMode = await admitBodyMode(backendOf(local));
   const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
@@ -617,7 +622,6 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
   }
 
-  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const findings: string[] = [];
   const held: ConceptId[] = [];
   /** The documents this run wrote, at the version the authority served; what a resumed snapshot keeps. */
@@ -1110,6 +1114,19 @@ export class ConflictReviewStaleError extends Error {
  */
 export function conflictResolutionKey(id: string): string { return `conflict-resolution:${id}`; }
 
+/** Latest exact-document receipt's identity; an index written with the receipt, never a second receipt. */
+function documentResolutionKey(id: ConceptId): string { return `conflict-resolution-document:${id}`; }
+
+/** Read the latest exact-document resolution, including one that journaled no replacement. */
+export async function readConflictResolution(local: LocalTarget, id: ConceptId): Promise<ConflictResolutionReceipt | undefined> {
+  const backend = backendOf(local);
+  const identity = await backend.readMeta<string>(documentResolutionKey(id));
+  if (typeof identity !== "string") return undefined;
+  const receipt = await backend.readMeta<ConflictResolutionReceipt>(conflictResolutionKey(identity));
+  // The index cannot grant one document another document's resolution.
+  return receipt?.id === identity && receipt.reviewed?.id === id ? receipt : undefined;
+}
+
 async function readConflictRemote(remote: StorageBackend, id: ConceptId): Promise<{ base: SharedBase; doc: OkfDocument | null }> {
   try {
     const read = await remote.read(id);
@@ -1228,7 +1245,7 @@ export async function resolveConflict(
   if (reviewedShared.version !== review.remote.version || reviewedShared.content !== review.remote.content || reviewedShared.tombstone !== review.remote.tombstone) throw new ConflictReviewStaleError();
   if (current.deleting && selected.kind === "revise") throw new InvalidInputError("A deletion in conflict is resolved by keeping the deletion or taking the shared version.");
   const resolvedAt = options.now?.() ?? new Date().toISOString();
-  const requestId = selected.kind === "take-remote" ? null : mintRequestId();
+  const requestId = selected.kind === "take-remote" || (current.deleting && shared.base.version === null) ? null : mintRequestId();
   const receipt: ConflictResolutionReceipt = {
     // The original conflict identity lets a caller recover the receipt after a lost local reply.
     id: current.intents[0]!.requestId,
@@ -1238,6 +1255,7 @@ export async function resolveConflict(
   const resolveIntents = { expected: current.intents };
   const meta: MetaRecord[] = [
     { key: conflictResolutionKey(receipt.id), value: receipt },
+    { key: documentResolutionKey(review.id), value: receipt.id },
     // Someone else's deletion is never remembered as this working copy's own: a later create of
     // the id acknowledges nothing and meets the conflict again, until an explicit keep.
     { key: baseKey(review.id), value: { version: shared.base.version, content: shared.base.content } satisfies SharedBase },
@@ -1249,7 +1267,7 @@ export async function resolveConflict(
     // A head that is already gone has nothing to delete, so the chain simply retires.
     if (shared.base.version === null) {
       await backend.deleteJournaled(review.id, common);
-      return { receipt: { ...receipt, replacementRequestId: null }, version: null, intent: null };
+      return { receipt, version: null, intent: null };
     }
     const deleted = await backend.deleteJournaled(review.id, {
       ...common,
@@ -1970,7 +1988,7 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<{ digest: str
  * unfenced, as before.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
-  const concurrency = concurrencyOf(options);
+  const { batchSize, concurrency } = admitFetchOptions(options);
   const backend = await runtimeBackend(local);
   const bodyMode = await admitBodyMode(backendOf(local));
   const validateReadSide = bodyMode ? () => assertBodyRemoteEdition(remote, bodyMode) : undefined;
@@ -2085,7 +2103,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
    * listing's state, so its digest must not be recorded.
    */
   const fetchAndApply = (candidates: ConceptId[], listing?: { listed: Set<ConceptId>; versions: Map<ConceptId, Version> }): Promise<void> =>
-    forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
+    forEachBatch(chunked(candidates, batchSize), concurrency, async (batch) => {
       if (superseded) return;
       const premises = bodyMode ? await captureBodyRefresh(backendOf(local), bodyMode, batch) : undefined;
       if (!listing) {

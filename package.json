@@ -21,7 +21,7 @@
     "ci:distribution": "npm run verify:npm-package && npm run check:skill -w superbee",
     "ci:browser": "npm run build && npm run test:browser -w @superbee/mcp-app && npm run e2e:gate -w @superbee/ui && npm run test:browser -w @superbee/browser-local",
     "ci:scripts": "npm run build && npm run test:scripts",
-    "ci:aliasing-host": "npm run build && npm test -w @superbee/core --ignore-scripts && npm run test:host-class -w @superbee/cli",
+    "ci:aliasing-host": "npm run build && npm test -w @superbee/core --ignore-scripts && npm run test:host-class -w @superbee/cli && npm run test:host-class -w @superbee/publication",
     "ci:aggregate": "node scripts/ci-aggregate.mjs",
     "verify:npm-package": "node scripts/verify-npm-package.mjs --local",
     "verify:npm-package:release": "node scripts/verify-npm-package.mjs --release",

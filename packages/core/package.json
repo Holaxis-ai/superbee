@@ -142,6 +142,10 @@
     "./artifact-contract": {
       "types": "./dist/artifact-contract.d.ts",
       "default": "./dist/artifact-contract.js"
+    },
+    "./portable-export": {
+      "types": "./dist/portable-export.d.ts",
+      "default": "./dist/portable-export.js"
     }
   },
   "files": [
