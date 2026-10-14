@@ -255,7 +255,7 @@ test("--with-deps outside any git repository is a USAGE error pointing at --with
 // ── Path or label ────────────────────────────────────────────────────────────────────────────
 
 test("a --with value is a path when it has a separator, a leading . or ~, or a drive; otherwise a label", () => {
-  for (const value of ["./x", "x/y", "x\\y", ".", "..", "~", "~/beer", ".beer", "C:", "C:\\beer", "c:/beer"]) {
+  for (const value of ["./x", "x/y", "x\\y", ".", "..", "~", "~/beer", ".beer", "C:", "C:\\beer", "d:/beer"]) {
     assert.equal(isWithPathValue(value), true, value);
   }
   for (const value of ["beers", "beer-catalog", "catalogs", "b.c"]) {
@@ -263,7 +263,7 @@ test("a --with value is a path when it has a separator, a leading . or ~, or a d
   }
   assert.deepEqual([...parseWithFlags(["beers=./x"])], [["beers", "./x"]]);
   assert.throws(() => parseWithFlags(["beers"]), CliError);
-  assert.throws(() => parseWithFlags(["Beers=./x"]), CliError);
+  assert.throws(() => parseWithFlags(["Ales=./z"]), CliError);
   assert.throws(() => parseWithFlags(["beers=./x", "beers=./y"]), CliError);
 });
 
