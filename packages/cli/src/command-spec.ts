@@ -281,6 +281,25 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Resolve the exact canonical local bundle path and report why it won selection",
       },
       {
+        id: "bundleIdSet",
+        leaves: [publicLeaf("bundleIdSet", "bundle id set", one, undefined, DIR_SURFACE)],
+        usage: "bundle id set <id> [--force] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+        summary:
+          "Declare this bundle's portable id (bundle_id in docs/bundle, which it creates when missing, keeping every other field); refuses to change a different existing id without --force",
+      },
+      {
+        id: "deps",
+        leaves: [
+          publicLeaf("depsAdd", "deps add", one, 38, DIR_SURFACE),
+          publicLeaf("depsRemove", "deps remove", one, undefined, DIR_SURFACE),
+          publicLeaf("depsList", "deps list", zero, undefined, DIR_SURFACE),
+        ],
+        usage:
+          "deps (add <alias> --bundle-id <id> [--source <s>] [--pin <commit>] [--path <rel>] [--replace] | remove <alias> | list [--limit <n>]) [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+        summary:
+          "Declare, remove or list the bundles this bundle links into (docs/dependencies, created when missing): every entry is checked by the same rules status applies, unknown keys are kept, and a declared alias is replaced only with --replace",
+      },
+      {
         id: "catalog",
         leaves: [
           publicLeaf("catalogAdd", "catalog add", one, 2, DIR_SURFACE),

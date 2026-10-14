@@ -590,6 +590,10 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "linkAdd", surface: "--dir", argv: (t) => ["link", "add", "notes/a", "notes/b", "--dir", t, "--json"] },
   { leaf: "linkShow", surface: "--dir", argv: (t) => ["link", "show", "notes/a", "--dir", t, "--json"] },
   { leaf: "linkList", surface: "--dir", argv: (t) => ["link", "list", "--dir", t, "--json"] },
+  { leaf: "bundleIdSet", surface: "--dir", argv: (t) => ["bundle", "id", "set", "probe-bundle", "--dir", t, "--json"] },
+  { leaf: "depsAdd", surface: "--dir", argv: (t) => ["deps", "add", "probe", "--bundle-id", "probe-dep", "--dir", t, "--json"] },
+  { leaf: "depsRemove", surface: "--dir", argv: (t) => ["deps", "remove", "probe", "--dir", t, "--json"] },
+  { leaf: "depsList", surface: "--dir", argv: (t) => ["deps", "list", "--dir", t, "--json"] },
   {
     leaf: "artifactCreate",
     surface: "--dir",

@@ -60,6 +60,10 @@ const NOT_A_PATH_ON_LEAF: Readonly<Record<string, Readonly<Record<string, string
   linkList: { to: "a link-target concept id or prefix filter; export's --to is the folder" },
   publish: { to: "the destination kind (only 'hosted'); publish moves the --dir bundle in place" },
   opRun: { input: "the operation's input as inline JSON; --input-file is the path" },
+  depsAdd: {
+    path: "a relative path stored in docs/dependencies, never opened by deps add; status --with-deps resolves it",
+    source: "a git URL or hosted:<host>/<bundle_id> stored in docs/dependencies as information; never read",
+  },
 };
 
 /** Positionals a leaf needs before its own parser is reached. Default: `arity.count` placeholders. */
