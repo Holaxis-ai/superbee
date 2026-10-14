@@ -29,6 +29,7 @@ import {
   declarationErrorHooks,
   declarationPersistHook,
   expectedVersionFlag,
+  givenFlags,
   openDeclarationTarget,
 } from "../declaration-writes.js";
 import { CliError, classifyBundleError } from "../errors.js";
@@ -207,6 +208,34 @@ async function selfBundleId(bundle: Bundle, remoteUrl: string | undefined): Prom
   }
 }
 
+export interface DepsAddFlags {
+  "bundle-id"?: string;
+  source?: string;
+  pin?: string;
+  path?: string;
+  replace?: boolean;
+  actor?: string;
+  dir?: string;
+  remote?: string;
+}
+
+/**
+ * The re-run command for one `deps add`: every flag the caller gave, values shell-quoted, so the
+ * printed command declares the identical entry against the identical bundle. `base` is the entry
+ * alone, `scope` the actor and bundle selection, `retry` the whole invocation.
+ */
+export function depsAddRerun(alias: string, values: DepsAddFlags): { base: string; scope: string; retry: string } {
+  const entry = givenFlags([
+    ["bundle-id", values["bundle-id"]],
+    ["source", values.source],
+    ["pin", values.pin],
+    ["path", values.path],
+  ]);
+  const scope = givenFlags([["actor", values.actor], ["dir", values.dir], ["remote", values.remote]]);
+  const base = `${cliInvocation()} deps add ${commandToken(alias)}${entry}`;
+  return { base, scope, retry: `${base}${givenFlags([["replace", values.replace]])}${scope}` };
+}
+
 async function depsAdd(argv: string[], stdout: (s: string) => void): Promise<void> {
   const { values, positionals } = parseLeafOrUsage(
     () =>
@@ -254,9 +283,9 @@ async function depsAdd(argv: string[], stdout: (s: string) => void): Promise<voi
     });
   }
 
-  const retry = `${cliInvocation()} deps add ${commandToken(alias)} --bundle-id ${commandToken(String(given.bundle_id))}`;
-  const expectedVersion = expectedVersionFlag(values["expected-version"], `${retry} --expected-version <v>`);
-  const actor = resolveActor(values.actor, { help: `${retry} --actor <name>` });
+  const { base, scope, retry } = depsAddRerun(alias, values);
+  const expectedVersion = expectedVersionFlag(values["expected-version"], `${base} --expected-version <v>`);
+  const actor = resolveActor(values.actor, { help: `${base} --actor <name>` });
   const target = await openDeclarationTarget(values.dir, values.remote);
   const self = await selfBundleId(target.bundle, target.remoteUrl);
 
@@ -298,7 +327,7 @@ async function depsAdd(argv: string[], stdout: (s: string) => void): Promise<voi
         throw new CliError(
           "CONFLICT",
           `'${alias}' is already declared with a different entry; pass --replace to replace it`,
-          { help: `${retry} --replace`, details: { reason: "DEP_ALIAS_EXISTS", alias, current: previous } },
+          { help: `${base} --replace${scope}`, details: { reason: "DEP_ALIAS_EXISTS", alias, current: previous } },
         );
       }
       replaced = previous !== undefined;
@@ -326,7 +355,7 @@ async function depsAdd(argv: string[], stdout: (s: string) => void): Promise<voi
         .map((p) => ({ code: p.code, message: p.detail, field: "dependencies", severity: "warning" as const }));
       return { frontmatter, body: existing?.body ?? "" };
     },
-    errors: declarationErrorHooks(DEPENDENCIES_DOC_ID, { expectedVersion, retry: values.replace ? `${retry} --replace` : retry }),
+    errors: declarationErrorHooks(DEPENDENCIES_DOC_ID, { expectedVersion, retry }),
   });
 
   const stored = parseDependencies(result.doc).dependencies.get(alias);
@@ -373,9 +402,10 @@ async function depsRemove(argv: string[], stdout: (s: string) => void): Promise<
   if (alias === "") {
     throw new CliError("USAGE", "deps remove requires a non-empty <alias>", { help: `${cliInvocation()} deps list` });
   }
-  const retry = `${cliInvocation()} deps remove ${commandToken(alias)}`;
-  const expectedVersion = expectedVersionFlag(values["expected-version"], `${retry} --expected-version <v>`);
-  const actor = resolveActor(values.actor, { help: `${retry} --actor <name>` });
+  const bare = `${cliInvocation()} deps remove ${commandToken(alias)}`;
+  const retry = `${bare}${givenFlags([["actor", values.actor], ["dir", values.dir], ["remote", values.remote]])}`;
+  const expectedVersion = expectedVersionFlag(values["expected-version"], `${bare} --expected-version <v>`);
+  const actor = resolveActor(values.actor, { help: `${bare} --actor <name>` });
   const target = await openDeclarationTarget(values.dir, values.remote);
   const mode = resolveMode(values);
 

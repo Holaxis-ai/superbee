@@ -17,6 +17,7 @@ import {
   declarationErrorHooks,
   declarationPersistHook,
   expectedVersionFlag,
+  givenFlags,
   openDeclarationTarget,
 } from "../declaration-writes.js";
 import { CliError } from "../errors.js";
@@ -90,6 +91,7 @@ export async function bundleId(argv: string[], stdout: (s: string) => void): Pro
     );
   }
   const retry = `${cliInvocation()} bundle id set ${commandToken(id)}`;
+  const rerun = `${retry}${givenFlags([["force", values.force], ["actor", values.actor], ["dir", values.dir], ["remote", values.remote]])}`;
   const expectedVersion = expectedVersionFlag(values["expected-version"], `${retry} --expected-version <v>`);
   const actor = resolveActor(values.actor, { help: `${retry} --actor <name>` });
   const target = await openDeclarationTarget(values.dir, values.remote);
@@ -131,7 +133,7 @@ export async function bundleId(argv: string[], stdout: (s: string) => void): Pro
       }
       return { frontmatter: { ...existing.frontmatter, bundle_id: id }, body: existing.body };
     },
-    errors: declarationErrorHooks(BUNDLE_NAME_DOC_ID, { expectedVersion, retry: values.force ? `${retry} --force` : retry }),
+    errors: declarationErrorHooks(BUNDLE_NAME_DOC_ID, { expectedVersion, retry: rerun }),
   });
 
   const receipt: Record<string, unknown> = {

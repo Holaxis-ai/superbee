@@ -70,6 +70,16 @@ export function declarationErrorHooks(id: string, cas: { expectedVersion: string
   };
 }
 
+/**
+ * ` --flag <value>` for every flag the caller gave, each value shell-quoted by the quoting
+ * authority, so a printed re-run command writes exactly what the original invocation asked for.
+ */
+export function givenFlags(flags: ReadonlyArray<readonly [flag: string, value: string | boolean | undefined]>): string {
+  return flags
+    .map(([flag, value]) => (value === undefined || value === false ? "" : value === true ? ` --${flag}` : ` --${flag} ${commandToken(value)}`))
+    .join("");
+}
+
 export const DECLARATION_COMMON_OPTIONS = `  --expected-version <v>  Compare-and-swap: write only if the document is still at this version
                           (from a prior receipt or 'doc read'); a missing document has no version
   --actor <name>       Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR

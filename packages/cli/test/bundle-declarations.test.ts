@@ -20,7 +20,7 @@ import {
 } from "@superbee/core";
 
 import { bundleCommand } from "../src/commands/bundle.js";
-import { deps } from "../src/commands/deps.js";
+import { deps, depsAddRerun } from "../src/commands/deps.js";
 import { link } from "../src/commands/link.js";
 import { status } from "../src/commands/status.js";
 import { declarationErrorHooks } from "../src/declaration-writes.js";
@@ -449,6 +449,40 @@ test("deps add and deps remove trim the alias the same way", async () => {
     const removed = await depsRemove(fx, " beers ");
     assert.equal(removed.removed, true);
     await rejectsWith(() => depsAdd(fx, "  ", "--bundle-id", "hm-beer"), "USAGE", "DEP_ALIAS");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("the exhausted-retry re-run command for deps add carries every flag the caller gave, shell-quoted", () => {
+  const { retry } = depsAddRerun("p2", {
+    "bundle-id": "par.n2",
+    source: "git@example.test:town/parks.git",
+    pin: "abcdef1",
+    path: "../parks dir/.superbee",
+    replace: true,
+    actor: "human:mike",
+    dir: "/tmp/town bundle",
+  });
+  assert.ok(
+    retry.endsWith(
+      " deps add p2 --bundle-id par.n2 --source git@example.test:town/parks.git --pin abcdef1" +
+        " --path '../parks dir/.superbee' --replace --actor human:mike --dir '/tmp/town bundle'",
+    ),
+    retry,
+  );
+  const hook = declarationErrorHooks("docs/dependencies", { expectedVersion: undefined, retry }).staleHead!(
+    new VersionConflict("docs/dependencies", "sha256:aaaa", "sha256:bbbb"),
+  );
+  assert.equal(hook.help, retry);
+});
+
+test("DEP_ALIAS_EXISTS help keeps --pin and --path in its --replace command", async () => {
+  const fx = await fixture();
+  try {
+    await depsAdd(fx, "beers", "--bundle-id", "hm-beer");
+    const err = await rejectsWith(() => depsAdd(fx, "beers", "--bundle-id", "hm-ale", "--pin", "abcdef1", "--path", "../ale"), "CONFLICT", "DEP_ALIAS_EXISTS");
+    assert.match(String(err.help), / deps add beers --bundle-id hm-ale --pin abcdef1 --path \.\.\/ale --replace --dir /);
   } finally {
     await fx.cleanup();
   }
