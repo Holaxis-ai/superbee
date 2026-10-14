@@ -24,7 +24,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { fetchOrigin, runGit } from "@superbee/board-git";
-import { parseMarkdown, RemoteError, stripHostText } from "@superbee/core";
+import { isHostedBundleId, parseMarkdown, RemoteError, stripHostText } from "@superbee/core";
 import { CURRENT_HOST_DOCUMENT_INPUT_BYTES, HostedCarrierError } from "@superbee/core/hosted-transport";
 
 import { parseLeafOrUsage } from "../args.js";
@@ -45,7 +45,6 @@ import {
   workspaceForNamedHost,
   type HostedWriteHost,
 } from "../hosted-auth/session.js";
-import { isHostedBundleId } from "../hosted/bundle-id.js";
 import { unboundCopyRefusal } from "../hosted/refusals.js";
 import { hostedFailure, type HostedSyncClient } from "../hosted/client.js";
 import { connectHostedAccount, hostedListCommand, workspaceNames } from "../hosted/account.js";

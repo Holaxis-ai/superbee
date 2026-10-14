@@ -5,10 +5,10 @@
 // by the host among the person's own workspaces. The CLI keeps the bare id everywhere a bundle id
 // is stored or compared (folder names, catalog labels, the host's answers) and sends the reference
 // only in the body of a bundle-scoped sync request (`hosted/client.ts`). The bundle id part is held
-// to the one rule `hosted/bundle-id.ts` states, so a reference never carries an id a bare one could
+// to the one rule core's `isHostedBundleId` states, so a reference never carries an id a bare one could
 // not.
 
-import { isHostedBundleId } from "./bundle-id.js";
+import { isHostedBundleId } from "@superbee/core";
 
 /** One lowercase DNS label: the host's workspace slug grammar. */
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
