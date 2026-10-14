@@ -215,8 +215,7 @@ export type { QueryOptions, SkippedDoc } from "./bundle.js";
 
 // Head-projection scan + its canonical filter predicate — contracts documented at the
 // definition sites (bundle.ts/types.ts). The delete-tolerant batch read they share
-// (`readManyExisting`) is internal: its one-time export for the reference router was
-// withdrawn when the router switched to consuming `queryHeads` wholesale.
+// (`readManyExisting`) is exported from the `engine` subpath, for the cross-bundle resolver.
 export { queryHeads } from "./bundle.js";
 export { matchesFilter, matchesSourceIdentity, hasSourceIdentity } from "./query-filter.js";
 export { applyQuerySelectionFilters } from "./query-selection.js";
@@ -265,6 +264,59 @@ export {
   isExternalHref,
 } from "./links.js";
 export type { RawLink } from "./links.js";
+
+// Cross-bundle links (`okf://<alias>/<path>.md`): the qualified-href grammar, the
+// `docs/dependencies` declaration with bundle identity, and the resolver interface.
+export {
+  QUALIFIED_HREF_PREFIX,
+  isQualifiedHref,
+  parseQualifiedHref,
+  qualifiedHref,
+  parseQualifiedLinks,
+  qualifiedLinkEdge,
+  parseQualifiedKindTarget,
+} from "./qualified-links.js";
+export type { QualifiedRef, QualifiedLink, ParsedQualifiedHref } from "./qualified-links.js";
+export {
+  isHostedBundleId,
+  BUNDLE_NAME_DOC_ID,
+  BUNDLE_NAME_DOC_TYPE,
+  declaredBundleId,
+  DEPENDENCIES_DOC_ID,
+  DEPENDENCIES_DOC_TYPE,
+  BUNDLE_ALIAS,
+  isBundleAlias,
+  isNonPortableDependencyPath,
+  parseDependencies,
+} from "./dependencies.js";
+export type {
+  DependencyPin,
+  DependencyEntry,
+  DependencyMap,
+  DependencyProblemCode,
+  DependencyProblem,
+  ParsedDependencies,
+  ParseDependenciesOptions,
+} from "./dependencies.js";
+export {
+  UNRESOLVED_REASONS,
+  RECORD_REASONS,
+  isRecordReason,
+  NOT_AUTHORIZED_DETAIL,
+  createLocalResolver,
+  resolveQualifiedLinks,
+} from "./cross-bundle.js";
+export type {
+  UnresolvedReason,
+  Resolution,
+  CrossBacklink,
+  BundleResolver,
+  CommitPin,
+  PinCheck,
+  BundleBinding,
+  LocalResolverOptions,
+  QualifiedLinkResolution,
+} from "./cross-bundle.js";
 
 export { parseTimestamp, invalidLegacyTimestamp } from "./freshness.js";
 

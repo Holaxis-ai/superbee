@@ -11,7 +11,7 @@
 // checkout on this machine.
 import { homedir } from "node:os";
 
-import { stripHostText } from "@superbee/core";
+import { isHostedBundleId, stripHostText } from "@superbee/core";
 
 import { commandFragment, commandToken } from "../command-text.js";
 import { CliError } from "../errors.js";
@@ -19,7 +19,6 @@ import { cliInvocation } from "../invocation.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import { defaultHostedAuthDeps, hostArgument, hostedBundleHost, SignedOutError, storedSessionMayNeedSignIn, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { checkoutTarget, connectHostedAccount } from "./account.js";
-import { isHostedBundleId } from "./bundle-id.js";
 import { listReadyBindings, liveCheckoutFolders } from "./binding.js";
 import { readBundleListing, type HostedSyncClient } from "./client.js";
 import { fetchWithDeadline } from "./freshness.js";

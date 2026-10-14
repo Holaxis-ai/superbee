@@ -55,6 +55,18 @@
       "types": "./dist/links.d.ts",
       "default": "./dist/links.js"
     },
+    "./qualified-links": {
+      "types": "./dist/qualified-links.d.ts",
+      "default": "./dist/qualified-links.js"
+    },
+    "./dependencies": {
+      "types": "./dist/dependencies.d.ts",
+      "default": "./dist/dependencies.js"
+    },
+    "./cross-bundle": {
+      "types": "./dist/cross-bundle.d.ts",
+      "default": "./dist/cross-bundle.js"
+    },
     "./meaningful-change-time": {
       "types": "./dist/meaningful-change-time.d.ts",
       "default": "./dist/meaningful-change-time.js"

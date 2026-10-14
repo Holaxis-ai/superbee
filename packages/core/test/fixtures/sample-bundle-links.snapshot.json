@@ -1,0 +1,133 @@
+{
+  "parseLinksFromDoc": [
+    {
+      "id": "concepts/link-graph",
+      "links": [
+        {
+          "from": "concepts/link-graph",
+          "to": "concepts/okf-alignment",
+          "text": "OKF Alignment",
+          "href": "./okf-alignment.md"
+        },
+        {
+          "from": "concepts/link-graph",
+          "to": "references/okf-spec",
+          "text": "Open Knowledge Format v0.1 (Draft)",
+          "href": "../references/okf-spec.md"
+        },
+        {
+          "from": "concepts/link-graph",
+          "to": "references/okf-spec",
+          "text": "Open Knowledge Format v0.1 (Draft)",
+          "href": "../references/okf-spec.md"
+        }
+      ]
+    },
+    {
+      "id": "concepts/okf-alignment",
+      "links": [
+        {
+          "from": "concepts/okf-alignment",
+          "to": "context-notes/cycle-okf-lite-vision",
+          "text": "cycle-okf-lite-vision",
+          "href": "../context-notes/cycle-okf-lite-vision.md"
+        },
+        {
+          "from": "concepts/okf-alignment",
+          "to": "concepts/link-graph",
+          "text": "The Link Graph",
+          "href": "./link-graph.md"
+        },
+        {
+          "from": "concepts/okf-alignment",
+          "to": "references/okf-spec",
+          "text": "Open Knowledge Format v0.1 (Draft)",
+          "href": "../references/okf-spec.md"
+        },
+        {
+          "from": "concepts/okf-alignment",
+          "to": "references/okf-spec",
+          "text": "Open Knowledge Format v0.1 (Draft)",
+          "href": "../references/okf-spec.md"
+        }
+      ]
+    },
+    {
+      "id": "context-notes/cycle-okf-lite-vision",
+      "links": [
+        {
+          "from": "context-notes/cycle-okf-lite-vision",
+          "to": "concepts/okf-alignment",
+          "text": "OKF Alignment",
+          "href": "../concepts/okf-alignment.md"
+        },
+        {
+          "from": "context-notes/cycle-okf-lite-vision",
+          "to": "references/okf-spec",
+          "text": "Open Knowledge Format v0.1 (Draft)",
+          "href": "../references/okf-spec.md"
+        }
+      ]
+    },
+    {
+      "id": "references/okf-spec",
+      "links": []
+    }
+  ],
+  "queryEdges": [
+    {
+      "from": "concepts/link-graph",
+      "to": "concepts/okf-alignment",
+      "text": "OKF Alignment",
+      "href": "./okf-alignment.md"
+    },
+    {
+      "from": "concepts/link-graph",
+      "to": "references/okf-spec",
+      "text": "Open Knowledge Format v0.1 (Draft)",
+      "href": "../references/okf-spec.md"
+    },
+    {
+      "from": "concepts/link-graph",
+      "to": "references/okf-spec",
+      "text": "Open Knowledge Format v0.1 (Draft)",
+      "href": "../references/okf-spec.md"
+    },
+    {
+      "from": "concepts/okf-alignment",
+      "to": "concepts/link-graph",
+      "text": "The Link Graph",
+      "href": "./link-graph.md"
+    },
+    {
+      "from": "concepts/okf-alignment",
+      "to": "context-notes/cycle-okf-lite-vision",
+      "text": "cycle-okf-lite-vision",
+      "href": "../context-notes/cycle-okf-lite-vision.md"
+    },
+    {
+      "from": "concepts/okf-alignment",
+      "to": "references/okf-spec",
+      "text": "Open Knowledge Format v0.1 (Draft)",
+      "href": "../references/okf-spec.md"
+    },
+    {
+      "from": "concepts/okf-alignment",
+      "to": "references/okf-spec",
+      "text": "Open Knowledge Format v0.1 (Draft)",
+      "href": "../references/okf-spec.md"
+    },
+    {
+      "from": "context-notes/cycle-okf-lite-vision",
+      "to": "concepts/okf-alignment",
+      "text": "OKF Alignment",
+      "href": "../concepts/okf-alignment.md"
+    },
+    {
+      "from": "context-notes/cycle-okf-lite-vision",
+      "to": "references/okf-spec",
+      "text": "Open Knowledge Format v0.1 (Draft)",
+      "href": "../references/okf-spec.md"
+    }
+  ]
+}

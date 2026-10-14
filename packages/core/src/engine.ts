@@ -173,7 +173,13 @@ function isEnoent(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ENOENT";
 }
 
-async function readManyExisting(
+/**
+ * Delete-tolerant batch read: one `readMany`, falling back to per-id reads only when the batch
+ * fails because an id vanished (or, with `onMalformed`, because one document is malformed).
+ * Absent ids are simply missing from the result. Shared by the scan path and the cross-bundle
+ * resolver, which issues one call per bound alias.
+ */
+export async function readManyExisting(
   backend: StorageBackend,
   ids: ConceptId[],
   onMalformed?: (skip: SkippedDoc) => void,

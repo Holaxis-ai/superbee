@@ -26,29 +26,15 @@
 // is expected to consume THIS function too (the pairing note on
 // tasks/workspace-catalog-dogfood-checkpoint); do not fork a second derivation.
 import path from "node:path";
-import { readDoc, type Bundle } from "@superbee/core";
+import { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE, readDoc, type Bundle } from "@superbee/core";
 import {
   CONVENTIONAL_BUNDLE_DIR_NAME,
   LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME,
 } from "./bundle.js";
 
-/**
- * The well-known concept id carrying a bundle's explicit display name. NOT the bundle-root
- * `index.md` — OKF §3.1 reserves that file's frontmatter solely for `okf_version`, so the name
- * needs its own small doc.
- */
-export const BUNDLE_NAME_DOC_ID = "docs/bundle";
-
-/**
- * The ownership marker: `docs/bundle` names the bundle ONLY when it carries exactly this `type`.
- * Chosen over a bare `Bundle`: the two-word form is self-describing ("this doc carries the
- * bundle's name"), follows the built-in `Context Note` multi-word-type precedent, and a generic
- * noun like `Bundle` is far likelier to collide with an ordinary doc's type or a future kind
- * convention's `governs`. Plain type matching suffices — no kind convention is required (a
- * future recipe MAY declare one for field linting, but the derivation must keep working
- * conventions-free).
- */
-export const BUNDLE_NAME_DOC_TYPE = "Bundle Name";
+// The well-known id (`docs/bundle`) and its ownership marker type (`Bundle Name`) are core's, so the
+// display name here and the portable `bundle_id` core reads from the same doc share one gate.
+export { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE };
 
 /**
  * Which rung of the chain produced the name — lets a consumer hint at the explicit override only

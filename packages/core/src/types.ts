@@ -471,6 +471,11 @@ export interface Link {
   text: string;
   /** The raw target as written in the markdown, before resolution (e.g. `/a/b.md`, `./x.md`). */
   href: string;
+  /**
+   * Set only on a cross-bundle edge (`okf://<alias>/<path>.md`): the declared alias of the bundle
+   * `to` lives in. Absent on every local link, so local edge output is unchanged.
+   */
+  bundle?: string;
 }
 
 /**
