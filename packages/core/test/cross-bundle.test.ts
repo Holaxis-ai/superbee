@@ -174,6 +174,23 @@ test("local resolver: a batch with a missing target still issues one readMany fo
   assert.equal(a!.state, "resolved");
   assert.equal(unresolved(gone!).reason, "target_missing");
   assert.equal(beers.readManyCalls.length, 1);
+  // The documented fallback cost: MemoryBackend.readMany reads both ids (2) and fails on the
+  // absent one, then readManyExisting reads each id once more (2).
+  assert.equal(beers.readCalls, 4);
+});
+
+test("local resolver: a declared alias whose entry was rejected says so, still as unknown_alias", async () => {
+  const parsed = parseDependencies({
+    id: "docs/dependencies",
+    frontmatter: { type: "Bundle Dependencies", dependencies: { beers: { bundle_id: "hm-beer-catalog", pin: "main" }, wines: { pin: COMMIT } } },
+    body: "",
+  });
+  const resolver = createLocalResolver({ dependencies: parsed.dependencies, rejected: parsed.rejected, bindings: new Map() });
+  const [beer, wine, other] = await resolver.resolve([ref("beers", "beers/a"), ref("wines", "w/1"), ref("ciders", "c/1")]);
+  assert.equal(unresolved(beer!).reason, "unknown_alias");
+  assert.equal(unresolved(beer!).detail, "alias 'beers' is declared but rejected (DEP_PIN)");
+  assert.equal(unresolved(wine!).detail, "alias 'wines' is declared but rejected (DEP_BUNDLE_ID)");
+  assert.equal(unresolved(other!).detail, "alias 'ciders' is not declared in docs/dependencies");
 });
 
 test("local resolver: backlinks() is always empty", async () => {

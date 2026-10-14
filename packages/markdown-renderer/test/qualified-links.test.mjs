@@ -27,18 +27,20 @@ const BODIES = [
   "[pours](okf://beers/beers/little-whale-boat.md#notes)",
   "[bad](okf://Beers/../y.md)",
   "[upper](OKF://beers/y.md)",
+  "[n](okf:beers/y.md)",
+  "[n](OKF:beers/y.md)",
 ];
 
 for (const [profile, render] of [["interactive", interactive], ["inert", inert]]) {
   for (const hosts of [undefined, ["beers", "example.com"]]) {
-    for (const body of BODIES) {
+    for (const body of [...BODIES, ...BODIES.map((b) => `see ${b} here`)]) {
       test(`${profile}${hosts ? " with an allowlist" : ""}: ${body} renders inert with no okf: attribute`, () => {
         const html = render(body, hosts);
         const document = new JSDOM(html).window.document;
         assert.equal(document.querySelectorAll("a").length, 0, html);
         const spans = document.querySelectorAll("span.doc-link-inert");
         assert.equal(spans.length, 1, html);
-        assert.equal(spans[0].textContent, body.slice(1, body.indexOf("]")));
+        assert.equal(spans[0].textContent, body.slice(body.indexOf("[") + 1, body.indexOf("]")));
         for (const element of document.querySelectorAll("*")) {
           for (const attribute of element.attributes) {
             assert.equal(/okf:/i.test(attribute.value), false, `${attribute.name}="${attribute.value}" in ${html}`);

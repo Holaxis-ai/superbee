@@ -67,7 +67,8 @@ export function isBundleAlias(alias: string): boolean {
 }
 
 /**
- * A dependency pin. A `commit` pin (7-40 hex) is checked by an injected `PinCheck` against the
+ * A dependency pin. Hex is lower-case only; an upper-case pin is rejected (`DEP_PIN`) rather than
+ * folded, so the declaration is the exact string git and a host compare. A `commit` pin (7-40 hex) is checked by an injected `PinCheck` against the
  * bound copy's subtree. A `digest` pin (`sha256:<64 hex>`) parses, but only a hosted resolver can
  * verify it; a local resolver fails it closed.
  */
@@ -109,6 +110,11 @@ export interface DependencyProblem {
 export interface ParsedDependencies {
   dependencies: DependencyMap;
   problems: DependencyProblem[];
+  /**
+   * Aliases that are declared but whose entry was dropped, with the code that dropped it, so a
+   * link under one can say "declared but rejected" instead of "not declared".
+   */
+  rejected: ReadonlyMap<string, DependencyProblemCode>;
 }
 
 export interface ParseDependenciesOptions {
@@ -155,7 +161,12 @@ export function parseDependencies(
 ): ParsedDependencies {
   const dependencies = new Map<string, DependencyEntry>();
   const problems: DependencyProblem[] = [];
-  const result = (): ParsedDependencies => ({ dependencies, problems });
+  const rejected = new Map<string, DependencyProblemCode>();
+  const result = (): ParsedDependencies => ({ dependencies, problems, rejected });
+  const reject = (alias: string, code: DependencyProblemCode, detail: string): void => {
+    problems.push({ code, alias, detail });
+    rejected.set(alias, code);
+  };
   if (!doc) return result();
 
   const type = doc.frontmatter.type;
@@ -177,13 +188,13 @@ export function parseDependencies(
       continue;
     }
     if (!isRecord(raw)) {
-      problems.push({ code: "DEP_SHAPE", alias, detail: "entry must be a mapping" });
+      reject(alias, "DEP_SHAPE", "entry must be a mapping");
       continue;
     }
 
     const bundleId = raw.bundle_id;
     if (typeof bundleId !== "string" || !isHostedBundleId(bundleId)) {
-      problems.push({ code: "DEP_BUNDLE_ID", alias, detail: "bundle_id is required and must be a portable bundle id" });
+      reject(alias, "DEP_BUNDLE_ID", "bundle_id is required and must be a portable bundle id");
       continue;
     }
 
@@ -192,19 +203,19 @@ export function parseDependencies(
       const parsed = parsePin(raw.pin);
       if (parsed === null) {
         // A YAML scalar such as 1234567 or 3e45678 arrives as a number, so the hint says to quote.
-        problems.push({ code: "DEP_PIN", alias, detail: "pin must be a quoted commit (7-40 lower-case hex) or sha256:<64 hex>" });
+        reject(alias, "DEP_PIN", "pin must be a quoted commit (7-40 lower-case hex) or sha256:<64 lower-case hex>");
         continue;
       }
       pin = parsed;
     }
 
     if (options.selfBundleId !== undefined && bundleId === options.selfBundleId) {
-      problems.push({ code: "DEP_SELF", alias, detail: `bundle_id '${bundleId}' is this bundle` });
+      reject(alias, "DEP_SELF", `bundle_id '${bundleId}' is this bundle`);
       continue;
     }
     const earlier = aliasByBundle.get(bundleId);
     if (earlier !== undefined) {
-      problems.push({ code: "DEP_DUPLICATE_BUNDLE", alias, detail: `bundle_id '${bundleId}' is already declared as '${earlier}'` });
+      reject(alias, "DEP_DUPLICATE_BUNDLE", `bundle_id '${bundleId}' is already declared as '${earlier}'`);
       continue;
     }
 

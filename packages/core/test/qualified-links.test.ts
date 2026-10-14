@@ -42,6 +42,10 @@ const INVALID: Array<[string, string]> = [
   ["percent", "okf://beers/x%20y.md"],
   ["index.md", "okf://beers/index.md"],
   ["nested log.md", "okf://beers/beers/log.md"],
+  ["upper-case INDEX.md", "okf://beers/INDEX.md"],
+  ["mixed-case nested Log.md", "okf://beers/a/Log.md"],
+  ["dot-prefixed directory", "okf://beers/.hidden/x.md"],
+  ["dot-prefixed file", "okf://beers/a/.x.md"],
   ["no path", "okf://beers"],
   ["empty path", "okf://beers/"],
   ["alias starting with a digit", "okf://1beers/x.md"],
@@ -118,6 +122,8 @@ test("parseQualifiedKindTarget: qualified only when the text before the first ':
   assert.equal(parseQualifiedKindTarget("Beers:Beer"), null);
   assert.equal(parseQualifiedKindTarget("Some Kind: Thing"), null);
   assert.equal(parseQualifiedKindTarget(":Beer"), null);
+  assert.equal(parseQualifiedKindTarget("beers:"), null);
+  assert.equal(parseQualifiedKindTarget("beers:   "), null);
 });
 
 test("examples/sample-bundle: parseLinksFromDoc and queryEdges match the snapshot taken before cross-bundle links", async () => {

@@ -40,8 +40,8 @@ export function isQualifiedHref(href: string): boolean {
 /**
  * Parse an `okf://` href. Refused (`ok: false`, read as `invalid_ref`): another scheme or a
  * non-lower-case `okf://`, an alias outside `^[a-z][a-z0-9-]{0,62}$`, a leading `/` in the path,
- * an empty, `.` or `..` segment, a query, a `%`, a non-`.md` target, `index.md` or `log.md`, and
- * any id the storage seam would refuse. The fragment is returned but plays no part in resolution.
+ * an empty, `.`, `..` or dot-prefixed segment, a query, a `%`, a non-`.md` target, `index.md` or
+ * `log.md` in any letter case, and any id the storage seam would refuse. The fragment is returned but plays no part in resolution.
  */
 export function parseQualifiedHref(href: string): ParsedQualifiedHref {
   const raw = href.trim();
@@ -60,11 +60,12 @@ export function parseQualifiedHref(href: string): ParsedQualifiedHref {
   const path = target.slice(slash + 1);
   if (!isBundleAlias(alias)) return { ok: false, detail: "alias must match ^[a-z][a-z0-9-]{0,62}$" };
   if (path.startsWith("/")) return { ok: false, detail: "the path is relative to the target bundle's root and must not start with /" };
-  if (path.split("/").some((segment) => segment === "." || segment === "..")) {
-    return { ok: false, detail: "'.' and '..' segments are not allowed" };
+  if (path.split("/").some((segment) => segment.startsWith("."))) {
+    return { ok: false, detail: "'.', '..' and dot-prefixed segments are not allowed" };
   }
   if (!path.endsWith(".md")) return { ok: false, detail: "the target must be a .md document" };
-  if (isReservedFile(path)) return { ok: false, detail: "index.md and log.md are not documents" };
+  // Case-insensitive: `INDEX.md` names the reserved file on a case-insensitive filesystem.
+  if (isReservedFile(path.toLowerCase())) return { ok: false, detail: "index.md and log.md are not documents" };
   const id = path.slice(0, -".md".length);
   try {
     assertSafeConceptId(id);
@@ -121,12 +122,13 @@ export function qualifiedLinkEdge(link: QualifiedLink): Link | null {
 /**
  * Read a Kind link target (`links: {pours: "beers:Beer"}`). The target is qualified when the text
  * before the first `:` matches the alias grammar; anything else (`Beer`, `Some: Thing`) is a local
- * Kind name and returns null.
+ * Kind name and returns null, as does a qualified target with no Kind (`beers:`).
  */
 export function parseQualifiedKindTarget(target: string): { alias: string; kind: string } | null {
   const colon = target.indexOf(":");
   if (colon < 0) return null;
   const alias = target.slice(0, colon);
   if (!isBundleAlias(alias)) return null;
-  return { alias, kind: target.slice(colon + 1).trim() };
+  const kind = target.slice(colon + 1).trim();
+  return kind === "" ? null : { alias, kind };
 }

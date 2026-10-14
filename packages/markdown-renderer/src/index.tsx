@@ -36,6 +36,16 @@ import { gfmFromMarkdown } from "mdast-util-gfm";
 import type { AlignType, Node, Parent, RootContent } from "mdast";
 import { resolveConceptId } from "@superbee/core/links";
 
+/**
+ * The renderer's one concept-link resolver. Any `okf:` href is a cross-bundle reference with no
+ * renderer route yet, so it is never a local concept: `okf:beers/y.md` (no `//`) would otherwise
+ * resolve as the relative path `okf:beers/y.md` and carry the raw scheme into an attribute.
+ */
+function renderableConceptId(fromId: string, raw: string): string | null {
+  if (/^okf:/i.test(raw.trim())) return null;
+  return resolveConceptId(fromId, raw);
+}
+
 /** Body cap before parsing (chars ≈ bytes for the ASCII-dominant common case; honest notice on cut). */
 export const MAX_BODY_CHARS = 262_144;
 /** Maximum mdast nodes rendered before the walk stops with a notice. */
@@ -136,7 +146,7 @@ export function isBareLinkBlock(node: Node, fromId: string): boolean {
   let sawLink = false;
   for (const child of (node as Parent).children) {
     if (isBlankInline(child)) continue;
-    if (child.type === "link" && resolveConceptId(fromId, (child as { url?: string }).url ?? "") !== null) {
+    if (child.type === "link" && renderableConceptId(fromId, (child as { url?: string }).url ?? "") !== null) {
       sawLink = true;
       continue;
     }
@@ -348,7 +358,7 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
       // never reaches an attribute. The resolver is asked first; the allowlist sees only targets
       // it rejects, so a concept link can never be rerouted off the bundle.
       const raw = (node as { url?: string }).url ?? "";
-      const resolved = resolveConceptId(state.options.fromId, raw);
+      const resolved = renderableConceptId(state.options.fromId, raw);
       const children = renderChildren(node as Parent, state, depth);
       if (resolved === null) {
         const external = admitExternalLink(raw, state.options.externalLinkHosts);
@@ -445,7 +455,7 @@ function renderEdgeList(links: Node[], state: WalkState, index: number): ReactNo
       break;
     }
     state.count++;
-    const to = resolveConceptId(fromId, (links[i] as { url?: string }).url ?? "");
+    const to = renderableConceptId(fromId, (links[i] as { url?: string }).url ?? "");
     if (to === null) continue; // isBareLinkBlock guarantees resolvability; defensive
     const verb = textOf(links[i]!).trim();
     const target = titleFor?.(to) ?? to;

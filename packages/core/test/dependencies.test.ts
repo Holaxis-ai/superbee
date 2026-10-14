@@ -41,7 +41,7 @@ test("parseDependencies: a full entry parses with every optional field", () => {
 });
 
 test("parseDependencies never throws and fails closed on the document itself", () => {
-  assert.deepEqual(parseDependencies(undefined), { dependencies: new Map(), problems: [] });
+  assert.deepEqual(parseDependencies(undefined), { dependencies: new Map(), problems: [], rejected: new Map() });
   const wrongType = parseDependencies(depsDoc({ beers: { bundle_id: "hm-beer-catalog" } }, "Doc"));
   assert.deepEqual(wrongType.problems.map((p) => p.code), ["DEP_TYPE"]);
   assert.equal(wrongType.dependencies.size, 0);
@@ -61,6 +61,9 @@ const CODE_ROWS: Array<{ code: DependencyProblemCode; deps: Record<string, unkno
   { code: "DEP_PIN", deps: { beers: { bundle_id: "hm-beer-catalog", pin: "main" } }, kept: false },
   { code: "DEP_PIN", deps: { beers: { bundle_id: "hm-beer-catalog", pin: 1234567 } }, kept: false },
   { code: "DEP_PIN", deps: { beers: { bundle_id: "hm-beer-catalog", pin: "sha256:abc" } }, kept: false },
+  // Upper-case hex is rejected, not folded: the pin is the exact string git and a host compare.
+  { code: "DEP_PIN", deps: { beers: { bundle_id: "hm-beer-catalog", pin: "3F94940" } }, kept: false },
+  { code: "DEP_PIN", deps: { beers: { bundle_id: "hm-beer-catalog", pin: `sha256:${"A".repeat(64)}` } }, kept: false },
   { code: "DEP_SELF", deps: { beers: { bundle_id: "hm-fairport" } }, kept: false, self: "hm-fairport" },
   { code: "DEP_PATH_ABSOLUTE", deps: { beers: { bundle_id: "hm-beer-catalog", path: "/srv/beer" } }, kept: true },
   { code: "DEP_UNKNOWN_KEY", deps: { beers: { bundle_id: "hm-beer-catalog", color: "amber" } }, kept: true },
@@ -75,6 +78,9 @@ for (const row of CODE_ROWS) {
     assert.deepEqual(parsed.problems.map((p) => p.code), [row.code]);
     assert.ok(parsed.problems[0]!.detail.length > 0);
     assert.equal(parsed.dependencies.size, row.kept ? 1 : 0);
+    const alias = Object.keys(row.deps)[0]!;
+    const rejectsEntry = !row.kept && row.code !== "DEP_ALIAS";
+    assert.deepEqual([...parsed.rejected], rejectsEntry ? [[alias, row.code]] : []);
   });
 }
 
@@ -85,6 +91,7 @@ test("parseDependencies: DEP_DUPLICATE_BUNDLE keeps the first alias and drops th
   }));
   assert.deepEqual(parsed.problems, [{ code: "DEP_DUPLICATE_BUNDLE", alias: "brews", detail: "bundle_id 'hm-beer-catalog' is already declared as 'beers'" }]);
   assert.deepEqual([...parsed.dependencies.keys()], ["beers"]);
+  assert.deepEqual([...parsed.rejected], [["brews", "DEP_DUPLICATE_BUNDLE"]]);
 });
 
 test("parseDependencies: a path absolute under POSIX or Windows rules is DEP_PATH_ABSOLUTE and is not kept", () => {

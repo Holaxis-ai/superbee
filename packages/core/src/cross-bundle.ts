@@ -7,7 +7,7 @@
  * checks are injected (the CLI probes git; core never spawns a process).
  */
 
-import type { DependencyEntry, DependencyMap } from "./dependencies.js";
+import type { DependencyEntry, DependencyMap, DependencyProblemCode } from "./dependencies.js";
 import { readManyExisting } from "./engine.js";
 import { InvalidInputError } from "./errors.js";
 import { qualifiedHref, type QualifiedLink, type QualifiedRef } from "./qualified-links.js";
@@ -132,6 +132,8 @@ export interface BundleBinding {
 
 export interface LocalResolverOptions {
   dependencies: DependencyMap;
+  /** `ParsedDependencies.rejected`: declared aliases whose entry was dropped, for the detail. */
+  rejected?: ReadonlyMap<string, DependencyProblemCode>;
   bindings: ReadonlyMap<string, BundleBinding>;
 }
 
@@ -176,13 +178,15 @@ async function bindingVerdict(
 
 /**
  * The local resolver: each alias reads through the backend the caller bound to it. One
- * delete-tolerant batch read per alias per `resolve` call.
+ * delete-tolerant batch read per alias per `resolve` call. When a batch names a missing target,
+ * a backend whose `readMany` fails on the absent id (as the shipped backends do) costs one extra
+ * `read()` per id in that alias's batch, through `readManyExisting`'s per-id fallback.
  *
  * `backlinks()` always returns `[]`: a local reader has no index of who links into a bundle, and
  * scanning other bound copies for inbound links is deferred until something needs it.
  */
 export function createLocalResolver(options: LocalResolverOptions): BundleResolver {
-  const { dependencies, bindings } = options;
+  const { dependencies, bindings, rejected } = options;
   return {
     kind: "local",
     dependencies,
@@ -208,7 +212,10 @@ export function createLocalResolver(options: LocalResolverOptions): BundleResolv
         }
         const entry = dependencies.get(ref.alias);
         if (!entry) {
-          unresolved(i, ref, href, "unknown_alias", `alias '${ref.alias}' is not declared in docs/dependencies`);
+          const code = rejected?.get(ref.alias);
+          unresolved(i, ref, href, "unknown_alias", code === undefined
+            ? `alias '${ref.alias}' is not declared in docs/dependencies`
+            : `alias '${ref.alias}' is declared but rejected (${code})`);
           continue;
         }
         if (!verdicts.has(ref.alias)) verdicts.set(ref.alias, bindingVerdict(entry, bindings.get(ref.alias)));
