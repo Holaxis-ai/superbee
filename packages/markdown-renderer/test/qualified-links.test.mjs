@@ -12,6 +12,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { renderMarkdown } from "../dist/index.js";
 import { renderMarkdownToStaticHtml } from "../dist/static.js";
 import { parseQualifiedLinks } from "@superbee/core/qualified-links";
+import { fromMarkdown } from "mdast-util-from-markdown";
 
 function interactive(body, externalLinkHosts) {
   return renderToStaticMarkup(
@@ -78,4 +79,31 @@ for (const [profile, render] of [["interactive", interactive], ["inert", inert]]
       });
     }
   }
+}
+
+/** Core's code masking agrees with micromark on which okf: links exist, container edge cases included. */
+const AGREEMENT_BODIES = [
+  ...CODE_BODIES,
+  "- a stray ` tick\n- see [x](okf://beers/beers/item-two.md) then `code`",
+  "-\tx\n\n\t[x](okf://beers/beers/tab-item.md)",
+  "-      [x](okf://beers/beers/wide-code.md)",
+  "-      x\n\n  [y](okf://beers/beers/wide-para.md)",
+  "> ```\n[x](okf://beers/beers/after-quote.md)",
+  "> ```\n> [x](okf://beers/beers/quoted.md)\n> ```\n[y](okf://beers/beers/unquoted.md)",
+  "```\n> ```\n[x](okf://beers/beers/fenced-gt.md)\n```\n[y](okf://beers/beers/past-fence.md)",
+  "- item\n\n    [x](okf://beers/beers/list-para.md)",
+  "para\n    [x](okf://beers/beers/lazy.md)",
+  "a `\n\n[x](okf://beers/beers/split-span.md) `",
+  "[see `x` there](okf://beers/beers/code-in-text.md)",
+];
+
+function mdastLinks(node) {
+  return node.type === "link" ? [node.url] : (node.children ?? []).flatMap(mdastLinks);
+}
+
+for (const body of AGREEMENT_BODIES) {
+  test(`core and micromark agree on the okf: links in ${JSON.stringify(body)}`, () => {
+    const core = parseQualifiedLinks({ id: "menus/tap-1", frontmatter: {}, body }).map((l) => l.href);
+    assert.deepEqual(core, mdastLinks(fromMarkdown(body)).filter((url) => /^okf:/i.test(url)));
+  });
 }

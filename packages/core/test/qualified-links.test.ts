@@ -163,6 +163,24 @@ test("parseQualifiedLinks: an indented continuation in a list item, a lazy parag
   ]);
 });
 
+/** Review regressions: each body's surviving okf: ids, as micromark parses them (the renderer test pins the agreement). */
+const CONTAINER_CASES: Array<[string, string, string[]]> = [
+  ["a stray backtick does not pair across list items", "- a stray ` tick\n- see [x](okf://beers/beers/item-two.md) then `code`", ["beers/item-two"]],
+  ["a tab after a list marker counts from the marker's column", "-\tx\n\n\t[x](okf://beers/beers/tab-item.md)", ["beers/tab-item"]],
+  ["five spaces after a marker open indented code in the item", "-      [x](okf://beers/beers/wide-code.md)", []],
+  ["after a wide marker the content column is marker + 1", "-      x\n\n  [y](okf://beers/beers/wide-para.md)", ["beers/wide-para"]],
+  ["a fence in a block quote ends with the quote", "> ```\n[x](okf://beers/beers/after-quote.md)", ["beers/after-quote"]],
+  ["a quoted fence closes inside its quote", "> ```\n> [x](okf://beers/beers/quoted.md)\n> ```\n[y](okf://beers/beers/unquoted.md)", ["beers/unquoted"]],
+  ["a > line inside a top-level fence is fence content", "```\n> ```\n[x](okf://beers/beers/fenced-gt.md)\n```\n[y](okf://beers/beers/past-fence.md)", ["beers/past-fence"]],
+];
+
+for (const [name, body, ids] of CONTAINER_CASES) {
+  test(`parseQualifiedLinks: ${name}`, () => {
+    const doc: OkfDocument = { id: "menus/tap-1", frontmatter: { type: "Menu Item" }, body };
+    assert.deepEqual(parseQualifiedLinks(doc).map((l) => l.ref?.id), ids);
+  });
+}
+
 test("maskMarkdownCode keeps length and newlines, and stays linear on hostile backtick runs", () => {
   for (const [, body] of CODE_FORMS) {
     const masked = maskMarkdownCode(body);

@@ -135,14 +135,17 @@ export function extractMarkdownLinks(source: string, options: { skipCode?: boole
   return out;
 }
 
-/** Column width of leading whitespace (tabs advance to the next multiple of 4) and its length in characters. */
-function leadingIndent(line: string, from: number): { columns: number; chars: number } {
+/**
+ * Column width of leading whitespace at `from` and its length in characters. `startColumn` is the
+ * line column of `from`: a tab advances to the next multiple of 4 of the LINE's columns.
+ */
+function leadingIndent(line: string, from: number, startColumn: number): { columns: number; chars: number } {
   let columns = 0;
   let index = from;
   while (index < line.length) {
     const char = line[index];
     if (char === " ") columns += 1;
-    else if (char === "\t") columns += 4 - (columns % 4);
+    else if (char === "\t") columns += 4 - ((startColumn + columns) % 4);
     else break;
     index++;
   }
@@ -150,7 +153,7 @@ function leadingIndent(line: string, from: number): { columns: number; chars: nu
 }
 
 const FENCE_OPEN = /^(`{3,}|~{3,})(.*)$/;
-const LIST_MARKER = /^([-+*]|\d{1,9}[.)])( {1,4}(?! )|\t|$)/;
+const LIST_MARKER = /^([-+*]|\d{1,9}[.)])([ \t]+|$)/;
 const THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const ATX_HEADING = /^#{1,6}(?:[ \t]|$)/;
 
@@ -160,17 +163,18 @@ const ATX_HEADING = /^#{1,6}(?:[ \t]|$)/;
  * inline code spans with their backticks. Offsets into the result are offsets into `body`.
  *
  * Linear time and line-based. Block quote markers and list-item content indentation are honored
- * so an indented continuation paragraph in a list stays prose; HTML blocks and lazy continuation
- * inside a fence are not modelled. An unclosed fence runs to the end of the body, and an unmatched
+ * so an indented continuation paragraph in a list stays prose, and a fence ends with the block
+ * quote or list item that holds it. HTML blocks (`<pre>`) are not modelled. An unclosed fence runs to the end of the body, and an unmatched
  * backtick run is literal text, as in CommonMark.
  */
+/** @internal Exported for the qualified-link parser and its tests; not a stable API. */
 export function maskMarkdownCode(body: string): string {
   const out = body.split("");
   const blank = (from: number, to: number): void => {
     for (let index = from; index < to; index++) if (out[index] !== "\n" && out[index] !== "\r") out[index] = " ";
   };
   const lists: number[] = [];
-  let fence: { char: string; length: number; container: number } | null = null;
+  let fence: { char: string; length: number; container: number; quotes: number } | null = null;
   let inParagraph = false;
   let segmentStart = -1;
   const closeSegment = (end: number): void => {
@@ -185,12 +189,19 @@ export function maskMarkdownCode(body: string): string {
     const line = body.slice(lineStart, lineEnd);
     // Block quote markers are container syntax; what follows them is the line's content.
     let contentAt = 0;
-    for (let match = /^ {0,3}> ?/.exec(line); match; match = /^ {0,3}> ?/.exec(line.slice(contentAt))) contentAt += match[0].length;
-    const { columns: indent, chars } = leadingIndent(line, contentAt);
+    let quotes = 0;
+    for (let match = /^ {0,3}> ?/.exec(line); match; match = /^ {0,3}> ?/.exec(line.slice(contentAt))) {
+      // Inside a fence, `>` beyond the fence's own quote depth is fence content, not a marker.
+      if (fence && quotes >= fence.quotes) break;
+      contentAt += match[0].length;
+      quotes++;
+    }
+    const { columns: indent, chars } = leadingIndent(line, contentAt, contentAt);
     const rest = line.slice(contentAt + chars).replace(/\r$/, "");
     const isBlank = rest.trim() === "";
 
-    if (fence && !isBlank && indent < fence.container) fence = null; // the list item holding it ended
+    // The block quote or list item holding the fence ended (a lazy line cannot continue a fence).
+    if (fence && (quotes < fence.quotes || (!isBlank && indent < fence.container))) fence = null;
     if (fence) {
       const close = indent - fence.container <= 3 ? FENCE_OPEN.exec(rest) : null;
       if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length && close[2]!.trim() === "") fence = null;
@@ -206,25 +217,29 @@ export function maskMarkdownCode(body: string): string {
       let textAt = lineStart + contentAt + chars;
       const marker = relative <= 3 && !THEMATIC_BREAK.test(text) ? LIST_MARKER.exec(text) : null;
       if (marker) {
-        // A list item: its content column is the marker plus its spacing (one column if the item
-        // starts blank or with indented code).
-        const spacing = marker[2] === "" ? 1 : leadingIndent(marker[2]!, 0).columns;
-        lists.push(indent + marker[1]!.length + spacing);
+        // A list item ends any paragraph (and so any code span) before it. Its content column is
+        // the marker plus its spacing, or the marker plus one when the item starts blank or the
+        // spacing is 5+ columns (the item then opens with indented code).
+        closeSegment(lineStart);
+        const markerEnd = indent + marker[1]!.length;
+        const spacing = leadingIndent(marker[2]!, 0, contentAt + markerEnd).columns;
+        const wide = marker[2] === "" || spacing >= 5;
+        lists.push(markerEnd + (wide ? 1 : spacing));
         container = lists[lists.length - 1]!;
-        text = text.slice(marker[0].length);
-        textAt += marker[0].length;
-        relative = 0;
+        text = text.slice(marker[1]!.length + (wide ? 0 : marker[2]!.length));
+        textAt += marker[1]!.length + (wide ? 0 : marker[2]!.length);
+        relative = wide ? Math.max(spacing - 1, 0) : 0;
         inParagraph = false;
       }
       const open = relative <= 3 ? FENCE_OPEN.exec(text) : null;
       if (open && !(open[1]![0] === "`" && open[2]!.includes("`"))) {
         closeSegment(lineStart);
-        fence = { char: open[1]![0]!, length: open[1]!.length, container };
+        fence = { char: open[1]![0]!, length: open[1]!.length, container, quotes };
         blank(textAt, lineEnd);
         inParagraph = false;
       } else if (!inParagraph && relative >= 4) {
         closeSegment(lineStart);
-        blank(lineStart + contentAt + chars, lineEnd);
+        blank(textAt, lineEnd);
       } else if (ATX_HEADING.test(text) || THEMATIC_BREAK.test(text)) {
         closeSegment(lineStart);
         maskCodeSpans(body, textAt, lineEnd, blank);
