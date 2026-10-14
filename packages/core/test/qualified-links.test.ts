@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { query, queryEdges } from "../src/bundle.js";
 import { InvalidInputError } from "../src/errors.js";
-import { isExternalHref, parseLinksFromDoc } from "../src/links.js";
+import { isExternalHref, maskMarkdownCode, parseLinksFromDoc } from "../src/links.js";
 import {
   isQualifiedHref,
   parseQualifiedHref,
@@ -113,6 +113,85 @@ test("parseQualifiedLinks returns okf: links in order, malformed ones with a det
   // The local resolver is unchanged: okf: is external to it, so no local edge is minted.
   assert.equal(isExternalHref("okf://beers/beers/x.md"), true);
   assert.deepEqual(parseLinksFromDoc(doc), [{ from: "menus/tap-1", to: "y", text: "local", href: "../y.md" }]);
+});
+
+/** One okf: link written as example code in each form a reader sees as code, and once in prose. */
+const CODE_FORMS: Array<[string, string]> = [
+  ["inline code span", "Write `[pours](okf://beers/beers/code-span.md)` to link.\n"],
+  ["double-backtick code span", "Write `` [pours](okf://beers/beers/double-tick.md) `` to link.\n"],
+  ["backtick fence", "Example:\n\n```md\n[pours](okf://beers/beers/tick-fence.md)\n```\n"],
+  ["tilde fence", "Example:\n\n~~~\n[pours](okf://beers/beers/tilde-fence.md)\n~~~\n"],
+  ["unclosed fence", "```\n[pours](okf://beers/beers/open-fence.md)\n"],
+  ["indented block", "Example:\n\n    [pours](okf://beers/beers/indented.md)\n"],
+  ["fence in a list item", "- example\n  ```\n  [pours](okf://beers/beers/list-fence.md)\n  ```\n"],
+  ["fence in a block quote", "> ```\n> [pours](okf://beers/beers/quote-fence.md)\n> ```\n"],
+];
+
+for (const [form, body] of CODE_FORMS) {
+  test(`parseQualifiedLinks: an okf: link in a ${form} is not a link; the same link in prose is`, () => {
+    const inCode: OkfDocument = { id: "menus/tap-1", frontmatter: { type: "Menu Item" }, body };
+    assert.deepEqual(parseQualifiedLinks(inCode), []);
+    const href = /\((okf:[^)]+)\)/.exec(body)![1]!;
+    const prose: OkfDocument = { id: "menus/tap-1", frontmatter: { type: "Menu Item" }, body: `On tap: [pours](${href})\n\n${body}` };
+    const links = parseQualifiedLinks(prose);
+    assert.equal(links.length, 1);
+    assert.equal(qualifiedLinkEdge(links[0]!)?.href, href);
+  });
+}
+
+test("parseQualifiedLinks: code inside a link's text keeps the link, sliced from the original body", () => {
+  const doc: OkfDocument = { id: "menus/tap-1", frontmatter: { type: "Menu Item" }, body: "[pours `cask`](okf://beers/beers/cask.md)" };
+  assert.deepEqual(parseQualifiedLinks(doc).map((l) => [l.text, l.href]), [["pours `cask`", "okf://beers/beers/cask.md"]]);
+});
+
+test("parseQualifiedLinks: an indented continuation in a list item, a lazy paragraph line and an unmatched backtick stay prose", () => {
+  const body = [
+    "- item",
+    "",
+    "    [pours](okf://beers/beers/list-para.md)",
+    "",
+    "para",
+    "    [pours](okf://beers/beers/lazy.md)",
+    "",
+    "a ` b [pours](okf://beers/beers/lone-tick.md)",
+    "",
+    "a `\n\n[pours](okf://beers/beers/split-span.md) `",
+  ].join("\n");
+  const doc: OkfDocument = { id: "menus/tap-1", frontmatter: { type: "Menu Item" }, body };
+  assert.deepEqual(parseQualifiedLinks(doc).map((l) => l.ref?.id), [
+    "beers/list-para", "beers/lazy", "beers/lone-tick", "beers/split-span",
+  ]);
+});
+
+/** Review regressions: each body's surviving okf: ids, as micromark parses them (the renderer test pins the agreement). */
+const CONTAINER_CASES: Array<[string, string, string[]]> = [
+  ["a stray backtick does not pair across list items", "- a stray ` tick\n- see [x](okf://beers/beers/item-two.md) then `code`", ["beers/item-two"]],
+  ["a tab after a list marker counts from the marker's column", "-\tx\n\n\t[x](okf://beers/beers/tab-item.md)", ["beers/tab-item"]],
+  ["five spaces after a marker open indented code in the item", "-      [x](okf://beers/beers/wide-code.md)", []],
+  ["after a wide marker the content column is marker + 1", "-      x\n\n  [y](okf://beers/beers/wide-para.md)", ["beers/wide-para"]],
+  ["a fence in a block quote ends with the quote", "> ```\n[x](okf://beers/beers/after-quote.md)", ["beers/after-quote"]],
+  ["a quoted fence closes inside its quote", "> ```\n> [x](okf://beers/beers/quoted.md)\n> ```\n[y](okf://beers/beers/unquoted.md)", ["beers/unquoted"]],
+  ["a > line inside a top-level fence is fence content", "```\n> ```\n[x](okf://beers/beers/fenced-gt.md)\n```\n[y](okf://beers/beers/past-fence.md)", ["beers/past-fence"]],
+];
+
+for (const [name, body, ids] of CONTAINER_CASES) {
+  test(`parseQualifiedLinks: ${name}`, () => {
+    const doc: OkfDocument = { id: "menus/tap-1", frontmatter: { type: "Menu Item" }, body };
+    assert.deepEqual(parseQualifiedLinks(doc).map((l) => l.ref?.id), ids);
+  });
+}
+
+test("maskMarkdownCode keeps length and newlines, and stays linear on hostile backtick runs", () => {
+  for (const [, body] of CODE_FORMS) {
+    const masked = maskMarkdownCode(body);
+    assert.equal(masked.length, body.length);
+    assert.deepEqual([...masked].map((c, i) => (c === "\n" ? i : -1)).filter((i) => i >= 0), [...body].map((c, i) => (c === "\n" ? i : -1)).filter((i) => i >= 0));
+  }
+  let hostile = "";
+  for (let run = 1; run < 2000; run++) hostile += "`".repeat(run) + "x";
+  const started = performance.now();
+  maskMarkdownCode(hostile.repeat(4));
+  assert.ok(performance.now() - started < 2000, "masking hostile backtick runs should be linear");
 });
 
 test("parseQualifiedKindTarget: qualified only when the text before the first ':' is an alias", () => {

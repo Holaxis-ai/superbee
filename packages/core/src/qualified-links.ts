@@ -98,10 +98,13 @@ export interface QualifiedLink {
   detail?: string;
 }
 
-/** Every `okf:` link in a document body, in document order, malformed ones included. */
+/**
+ * Every `okf:` link in a document body, in document order, malformed ones included. A link inside
+ * an inline code span or a fenced or indented code block is example text, not a link.
+ */
 export function parseQualifiedLinks(doc: OkfDocument): QualifiedLink[] {
   const out: QualifiedLink[] = [];
-  for (const raw of extractMarkdownLinks(doc.body)) {
+  for (const raw of extractMarkdownLinks(doc.body, { skipCode: true })) {
     if (!isQualifiedHref(raw.href)) continue;
     const parsed = parseQualifiedHref(raw.href);
     out.push(
