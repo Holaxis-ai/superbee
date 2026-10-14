@@ -68,6 +68,20 @@ only `tags` and `sources`; source selectors refuse ambiguous matches. Receipts r
 field/action scope, and errors identify the corrective action. See `test/doc-field.test.ts`
 and `test/kind-arity.test.ts` for membership, stale-version, selector, and arity evidence.
 
+## Cross-bundle links are additive
+
+Cross-bundle (`okf://<alias>/<path>.md`) output never changes the report of a bundle that has no
+`docs/dependencies` and no `okf:` href. `status` adds `cross_bundle_links`,
+`cross_bundle_unresolved` and `cross_bundle_unchecked` only for a bundle that has one or the
+other, and its `dependencies`, `dependency_problems`, `cross_bundle_unresolved_rows` and
+`cross_bundle_link_type_violations_rows` tables are each omitted when empty and capped like every
+other row list (rule 9). `unresolved_links` and `link_type_violations` stay local-only.
+`link show` lists qualified links in a separate `qualified_outbound` table with its own
+`qualified_outbound_count`; `outbound_count` keeps counting local links. No command reads another
+bundle unless `--with` or `--with-deps` names it (rule 5: an unbound alias is reported as
+`unchecked`, not as resolved or broken). Exit codes are unchanged. Evidence:
+`packages/cli/test/cross-bundle-cli.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test

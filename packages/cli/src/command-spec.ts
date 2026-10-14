@@ -307,7 +307,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "status",
         leaves: [publicLeaf("status", "status", zero, 18, DIR_SURFACE)],
-        usage: "status [--limit <n>] [--dir <path>] [--remote <url>]",
+        usage: "status [--limit <n>] [--with <alias>=<path|label>]... [--with-deps] [--dir <path>] [--remote <url>]",
         summary: "Read-only bundle health report (kind lint, unresolved links, orphans, staleness, graph lints)",
       },
     ],
@@ -390,7 +390,7 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("linkList", "link list", zero, undefined, DIR_SURFACE),
         ],
         usage:
-          "link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--dir <path>] [--remote <url>]",
+          "link (add <from> <to> [--text <t>] [--bundle <alias>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] [--with <alias>=<value>]... [--with-deps] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--dir <path>] [--remote <url>]",
         summary:
           "Add a cross-link, show a concept's links + backlinks, or query the whole bundle's derived edge list filtered by from/to (id or prefix/, repeatable/union) and exact-match text",
       },
