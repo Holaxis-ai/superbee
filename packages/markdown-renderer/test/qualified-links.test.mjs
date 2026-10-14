@@ -28,7 +28,7 @@ const BODIES = [
   "[bad](okf://Beers/../y.md)",
   "[upper](OKF://beers/y.md)",
   "[n](okf:beers/y.md)",
-  "[n](OKF:beers/y.md)",
+  "[n](OKF:beers/z.md)",
 ];
 
 for (const [profile, render] of [["interactive", interactive], ["inert", inert]]) {
