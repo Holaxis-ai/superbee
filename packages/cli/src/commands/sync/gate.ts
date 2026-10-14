@@ -1,11 +1,15 @@
-// The sync gate: a command a Git board's clone declares, which sync runs on the converged tree
-// after rebasing onto the remote board and before every push. A non-zero exit holds the push
-// with the work committed locally. The command comes from Git configuration, never from the
-// board's own files: a teammate's pushed content must not be able to choose the command every
+// The sync gate: a command a Git board's clone or a hosted checkout declares, which sync runs on
+// the converged tree (after rebasing onto the remote board, or after pulling the host's changes)
+// and before anything is sent. A non-zero exit holds the send with the work kept locally. The
+// command comes from Git configuration, never from the board's own files or from the host: a
+// teammate's pushed content or a host's answer must not be able to choose the command every
 // syncing machine executes, just as it cannot install a Git hook. (A command that runs a script
 // stored in the board still runs that script's current, pulled content; the docs say so.)
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { countUncommitted, currentHead, resolveOriginRef, runGit } from "@superbee/board-git";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { countUncommitted, isBoardGitError, currentHead, resolveOriginRef, runGit } from "@superbee/board-git";
 
 /** The Git configuration key that declares the gate command (any scope; `""` declares none). */
 export const SYNC_GATE_CONFIG = "superbee.syncGate";
@@ -20,7 +24,13 @@ export interface SyncGate {
   timeoutSeconds: number;
 }
 
-/** The declared gate for the checkout at `boardPath`, or null when none is declared. */
+/**
+ * The declared gate for the checkout at `boardPath`, or null when none is declared. A hosted
+ * checkout reads the same key from Git configuration as seen from its folder (the system and
+ * global scopes, and the repository that contains the folder, if any). Sync writes only `.md`
+ * documents and dot-prefixed temporary files into a hosted checkout, never a `.git/config` file,
+ * so a host cannot declare a gate there.
+ */
 export function declaredSyncGate(boardPath: string): SyncGate | null {
   const configured = runGit(boardPath, ["config", "--get", SYNC_GATE_CONFIG]);
   const command = configured.status === 0 ? configured.stdout.trim() : "";
@@ -65,8 +75,7 @@ export async function runSyncGate(boardPath: string, branch: string, gate: SyncG
     upstream: `origin/${branch}`,
     ...(upstreamSha ? { upstream_sha: upstreamSha } : {}),
   };
-  const result = await runInOwnGroup(gate.command, boardPath, gate.timeoutSeconds * 1000, {
-    ...gateBaseEnv(),
+  const { ran, failed } = await runGateCommand(gate, boardPath, base, {
     SUPERBEE_SYNC_GATE: "1",
     SUPERBEE_BOARD_PATH: boardPath,
     SUPERBEE_BOARD_BRANCH: branch,
@@ -75,19 +84,7 @@ export async function runSyncGate(boardPath: string, branch: string, gate: SyncG
     SUPERBEE_BOARD_HEAD_SHA: head,
     SUPERBEE_SYNC_ATTEMPT: String(attempt),
   });
-  const tail = outputTail(result.output);
-  const failed = (reason: string, extra: Record<string, unknown>): SyncGateRun => ({
-    passed: false,
-    reason,
-    details: { ...base, ...extra, ...(tail ? { output_tail: tail } : {}) },
-  });
-
-  if (result.timedOut) {
-    return failed(`timed out after ${gate.timeoutSeconds}s`, { timed_out: true, timeout_seconds: gate.timeoutSeconds });
-  }
-  if (result.spawnError) return failed(`could not run (${result.spawnError})`, { spawn_error: result.spawnError });
-  if (result.signal) return failed(`was killed by ${result.signal}`, { signal: result.signal });
-  if (result.status !== 0) return failed(`exited ${result.status}`, { exit_status: result.status });
+  if (!ran.passed) return ran;
 
   const attached = runGit(boardPath, ["symbolic-ref", "-q", "--short", "HEAD"]);
   if (
@@ -97,7 +94,108 @@ export async function runSyncGate(boardPath: string, branch: string, gate: SyncG
   ) {
     return failed("changed the board (a gate must only inspect it)", { modified_board: true });
   }
-  return { passed: true, details: { ...base, exit_status: 0 } };
+  return ran;
+}
+
+/** The facts a hosted checkout's sync hands its gate. */
+export interface HostedGateContext {
+  folder: string;
+  origin: string;
+  bundleId: string;
+}
+
+/**
+ * Run the gate once on a hosted checkout's folder, after the pull placed the host's changes and
+ * before anything is sent. Its working directory is the checkout folder, and it is told what it
+ * judges through the environment:
+ *
+ *   SUPERBEE_SYNC_GATE=1, SUPERBEE_SYNC_HOME=hosted, SUPERBEE_BOARD_PATH (the checkout folder),
+ *   SUPERBEE_HOSTED_ORIGIN, SUPERBEE_HOSTED_BUNDLE_ID, SUPERBEE_SYNC_ATTEMPT (always 1).
+ *
+ * A gate that creates, edits, or removes anything in the folder fails: the files judged must be
+ * the files sent.
+ */
+export async function runHostedSyncGate(context: HostedGateContext, gate: SyncGate): Promise<SyncGateRun> {
+  const base: Record<string, unknown> = { command: gate.command, attempt: 1, folder: context.folder };
+  const before = await folderFingerprint(context.folder);
+  const { ran, failed } = await runGateCommand(gate, context.folder, base, {
+    SUPERBEE_SYNC_GATE: "1",
+    SUPERBEE_SYNC_HOME: "hosted",
+    SUPERBEE_BOARD_PATH: context.folder,
+    SUPERBEE_HOSTED_ORIGIN: context.origin,
+    SUPERBEE_HOSTED_BUNDLE_ID: context.bundleId,
+    SUPERBEE_SYNC_ATTEMPT: "1",
+  });
+  if (!ran.passed) return ran;
+  if ((await folderFingerprint(context.folder)) !== before) {
+    return failed("changed the checkout (a gate must only inspect it)", { modified_board: true });
+  }
+  return ran;
+}
+
+/**
+ * The declared gate for a hosted checkout's folder. Git itself is optional for a hosted
+ * checkout: with no git installed, nothing can declare a gate.
+ */
+export function declaredHostedSyncGate(folder: string): SyncGate | null {
+  try {
+    return declaredSyncGate(folder);
+  } catch (error) {
+    if (isBoardGitError(error) && error.code === "GIT_MISSING") return null;
+    throw error;
+  }
+}
+
+interface GateCommandRun {
+  /** The classified exit; `passed` means it exited 0 within its time. */
+  ran: SyncGateRun;
+  /** A failure carrying the run's facts and output tail, for a check made after it exited. */
+  failed: (reason: string, extra: Record<string, unknown>) => SyncGateRun;
+}
+
+async function runGateCommand(gate: SyncGate, cwd: string, base: Record<string, unknown>, env: NodeJS.ProcessEnv): Promise<GateCommandRun> {
+  const result = await runInOwnGroup(gate.command, cwd, gate.timeoutSeconds * 1000, { ...gateBaseEnv(), ...env });
+  const tail = outputTail(result.output);
+  const failed = (reason: string, extra: Record<string, unknown>): SyncGateRun => ({
+    passed: false,
+    reason,
+    details: { ...base, ...extra, ...(tail ? { output_tail: tail } : {}) },
+  });
+  const classified = (): SyncGateRun => {
+    if (result.timedOut) {
+      return failed(`timed out after ${gate.timeoutSeconds}s`, { timed_out: true, timeout_seconds: gate.timeoutSeconds });
+    }
+    if (result.spawnError) return failed(`could not run (${result.spawnError})`, { spawn_error: result.spawnError });
+    if (result.signal) return failed(`was killed by ${result.signal}`, { signal: result.signal });
+    if (result.status !== 0) return failed(`exited ${result.status}`, { exit_status: result.status });
+    return { passed: true, details: { ...base, exit_status: 0 } };
+  };
+  return { ran: classified(), failed };
+}
+
+/** One digest of every entry under `folder`: its relative path, kind, and bytes or link target. */
+async function folderFingerprint(folder: string): Promise<string> {
+  const hash = createHash("sha256");
+  const walk = async (rel: string): Promise<void> => {
+    const entries = await fs.readdir(path.join(folder, rel), { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      const child = rel === "" ? entry.name : `${rel}/${entry.name}`;
+      const full = path.join(folder, child);
+      if (entry.isDirectory()) {
+        hash.update(`d\0${child}\0`);
+        await walk(child);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(`l\0${child}\0${await fs.readlink(full)}\0`);
+      } else if (entry.isFile()) {
+        hash.update(`f\0${child}\0${createHash("sha256").update(await fs.readFile(full)).digest("hex")}\0`);
+      } else {
+        hash.update(`o\0${child}\0`);
+      }
+    }
+  };
+  await walk("");
+  return hash.digest("hex");
 }
 
 interface GroupRun {

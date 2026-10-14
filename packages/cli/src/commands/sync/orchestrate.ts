@@ -197,6 +197,8 @@ inside the board runs whatever a teammate last pushed). A gate must leave the bo
 it: an untracked, non-ignored file it writes counts as an edit. The opt-in turn-end sync runs
 the gate as well, inside the agent host's hook time limit, so keep a gate fast there.
 \`--pull-only\` never runs it, and neither does \`--establish\`'s first publication of a board.
+A hosted checkout runs the same declared gate after its pull and before anything is sent (see
+below).
 
 A board can also ride IN-TREE: \`.superbee/\` or legacy \`.agentstate-lite/\` committed WITH the code on the current
 branch, with no dedicated \`board\` branch anywhere. That is a supported, read-side mode — sync

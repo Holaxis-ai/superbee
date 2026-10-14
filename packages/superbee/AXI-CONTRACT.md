@@ -82,6 +82,18 @@ bundle unless `--with` or `--with-deps` names it (rule 5: an unbound alias is re
 `unchecked`, not as resolved or broken). Exit codes are unchanged. Evidence:
 `packages/cli/test/cross-bundle-cli.test.ts`.
 
+## The sync gate covers both homes
+
+A sync gate declared with `git config superbee.syncGate '<command>'` judges what `sync` would
+send in a Git board clone and in a hosted checkout alike. A hosted checkout reads the key from Git
+configuration as seen from its folder, never from the bundle's documents or the host. It runs
+after the pull and before anything is sent, only when the run has something to send. A failure
+sends nothing: no document and no front page. The edits stay in the checkout, and sync exits 5
+with code `GATE_FAILED` and the gate's facts in `details.gate`. A receipt names a gate that passed
+(`gate: passed: ...`). With no gate declared, the receipt has no `gate` key and is otherwise
+unchanged. Evidence: `packages/cli/test/hosted-sync-gate.test.ts` and
+`packages/cli/test/sync-gate-retry.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test
