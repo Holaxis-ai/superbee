@@ -475,3 +475,95 @@ test("link show lists qualified links in their own table; outbound_count stays l
     await fx.cleanup();
   }
 });
+
+// ── Review fixes: pin dirty check independent of git config, GIT_MISSING, link list, link show home ──
+
+async function pinnedRepo(): Promise<Fixture> {
+  const fx = await makeRepo();
+  const pin = git(fx.root, "rev-parse", "HEAD");
+  await dependencies(fx.town, { beers: { bundle_id: "hm-beer", path: BEER_PATH, pin } });
+  git(fx.root, "add", "-A");
+  git(fx.root, "commit", "-q", "-m", "pin");
+  return fx;
+}
+
+test("commit pin: an untracked file in the pinned subtree is pin_mismatch even with status.showUntrackedFiles=no", async () => {
+  const fx = await pinnedRepo();
+  try {
+    assert.equal(rows(await statusJson(fx, ["--with-deps"]), "dependencies")[0]!.state, "ok");
+    git(fx.root, "config", "status.showUntrackedFiles", "no");
+    await writeFile(path.join(fx.beer.root, "beers", "new.md"), "---\ntype: Beer\ntitle: New\n---\n");
+    assert.equal(git(fx.root, "status", "--porcelain"), "", "the user's config hides the untracked file");
+    const report = await statusJson(fx, ["--with-deps"]);
+    assert.equal(rows(report, "dependencies")[0]!.state, "pin_mismatch");
+    assert.deepEqual(rows(report, "cross_bundle_unresolved_rows").map((r) => r.reason), ["pin_mismatch"]);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("commit pin: a gitignored .md file in the pinned subtree is pin_mismatch", async () => {
+  const fx = await pinnedRepo();
+  try {
+    await writeFile(path.join(fx.root, ".gitignore"), "secret.md\n");
+    git(fx.root, "add", ".gitignore");
+    git(fx.root, "commit", "-q", "-m", "ignore");
+    assert.equal(rows(await statusJson(fx, ["--with-deps"]), "dependencies")[0]!.state, "ok");
+    await writeFile(path.join(fx.beer.root, "beers", "secret.md"), "---\ntype: Beer\ntitle: Hidden\n---\n");
+    assert.equal(git(fx.root, "status", "--porcelain"), "", "the file is ignored");
+    const report = await statusJson(fx, ["--with-deps"]);
+    assert.equal(rows(report, "dependencies")[0]!.state, "pin_mismatch");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("without git, the pin check and --with-deps fail closed with GIT_MISSING", async () => {
+  const fx = await pinnedRepo();
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = path.join(fx.root, "no-such-bin");
+    const deps = await statusJson(fx, ["--with-deps"]);
+    assert.deepEqual(rows(deps, "dependency_problems").map((r) => [r.code, r.alias]), [["GIT_MISSING", "beers"]]);
+    assert.match(String(rows(deps, "dependency_problems")[0]!.detail), /GIT_MISSING/);
+    assert.equal(rows(deps, "dependencies")[0]!.state, "unbound");
+
+    const pinned = await statusJson(fx, ["--with", `beers=${fx.beer.root}`]);
+    assert.equal(rows(pinned, "dependencies")[0]!.state, "pin_mismatch");
+    assert.match(String(rows(pinned, "cross_bundle_unresolved_rows")[0]!.detail), /^GIT_MISSING/);
+  } finally {
+    process.env.PATH = savedPath;
+    await fx.cleanup();
+  }
+});
+
+test("link list and link show never show a malformed okf: href as a local edge", async () => {
+  const fx = await makeRepo({ menuBody: "[pours](okf:beers/whale.md)\n[local](../menus/whale.md)\n" });
+  try {
+    const listed = await runLink(["list", "--dir", fx.town.root]);
+    assert.deepEqual(listed.edges, [{ from: "menus/whale", to: "menus/whale", text: "local" }]);
+    assert.equal(listed.count, 1);
+    const shown = await runLink(["show", "menus/whale", "--dir", fx.town.root]);
+    assert.equal(shown.outbound_count, 1);
+    assert.deepEqual(shown.qualified_outbound, [{ text: "pours", bundle: null, href: "okf:beers/whale.md" }]);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("link show --with resolves a catalog label from the home it is given", async () => {
+  const fx = await makeRepo();
+  try {
+    await addCatalogEntry("beer-catalog", fx.beer.root, { home: fx.home });
+    let out = "";
+    await link(["show", "menus/whale", "--with", "beers=beer-catalog", "--dir", fx.town.root, "--json"], {
+      stdout: (s) => (out += s),
+      autoPull: noPull,
+      home: fx.home,
+    });
+    const shown = JSON.parse(out) as Record<string, unknown>;
+    assert.deepEqual((shown.qualified_outbound as Record<string, unknown>[]).map((r) => r.state), ["resolved"]);
+  } finally {
+    await fx.cleanup();
+  }
+});

@@ -33,7 +33,7 @@ import { commandToken } from "./command-text.js";
 
 /** A binding problem, reported beside the parser's `DEP_*` rows in `dependency_problems`. */
 export interface BindingProblem {
-  code: "BIND_OUTSIDE_REPO" | "BIND_PATH_MISSING" | "BIND_NOT_A_BUNDLE" | "BIND_IDENTITY_CONFLICT";
+  code: "BIND_OUTSIDE_REPO" | "BIND_PATH_MISSING" | "BIND_NOT_A_BUNDLE" | "BIND_IDENTITY_CONFLICT" | "GIT_MISSING";
   alias: string;
   detail: string;
 }
@@ -92,14 +92,29 @@ export function parseWithFlags(values: readonly string[]): Map<string, string> {
   return out;
 }
 
-function gitLine(dir: string, args: string[]): string | null {
+/** Thrown inside this module when the git binary is absent, so callers can fail closed with GIT_MISSING. */
+class GitMissing extends Error {}
+
+const GIT_MISSING_DETAIL = "GIT_MISSING: git is not installed on this machine";
+
+function isGitMissing(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "GIT_MISSING";
+}
+
+/** Run git; a missing binary throws {@link GitMissing}, any other spawn failure reads as a failed run. */
+function git(dir: string, args: string[]): { status: number; stdout: string } {
   try {
-    const result = runGit(dir, args);
-    const text = result.stdout.trim();
-    return result.status === 0 && text.length > 0 ? text : null;
-  } catch {
-    return null;
+    return runGit(dir, args);
+  } catch (error) {
+    if (isGitMissing(error)) throw new GitMissing(GIT_MISSING_DETAIL);
+    return { status: -1, stdout: "" };
   }
+}
+
+function gitLine(dir: string, args: string[]): string | null {
+  const result = git(dir, args);
+  const text = result.stdout.trim();
+  return result.status === 0 && text.length > 0 ? text : null;
 }
 
 async function canonicalOrNull(p: string): Promise<string | null> {
@@ -110,7 +125,7 @@ async function canonicalOrNull(p: string): Promise<string | null> {
   }
 }
 
-/** The canonical git toplevel holding `dir`, or null outside any repository. */
+/** The canonical git toplevel holding `dir`, or null outside any repository. Throws {@link GitMissing}. */
 async function gitTop(dir: string): Promise<string | null> {
   const top = gitLine(dir, ["rev-parse", "--show-toplevel"]);
   return top === null ? null : canonicalOrNull(top);
@@ -124,31 +139,38 @@ function isInside(parent: string, child: string): boolean {
 /**
  * A commit pin names the bundle's subtree, not the repository HEAD: it holds when the tree at
  * `<pin>:<rel>` equals `HEAD:<rel>` and `git status --porcelain -- <rel>` is empty, so commits
- * elsewhere in a shared repository never break it.
+ * elsewhere in a shared repository never break it. The dirty check ignores the user's git config:
+ * untracked and gitignored files under the subtree both count, since either changes what a reader
+ * of the copy sees. Without git the pin fails closed with GIT_MISSING.
  */
 export function gitSubtreePinCheck(canonicalRoot: string): PinCheck {
   return async (pin: CommitPin) => {
-    const top = await gitTop(canonicalRoot);
-    if (top === null) return { ok: false, detail: `${canonicalRoot} is not in a git repository, so a commit pin cannot hold` };
-    const rel = path.relative(top, canonicalRoot).split(path.sep).join("/");
-    if (gitLine(top, ["rev-parse", "--verify", "--quiet", `${pin.value}^{commit}`]) === null) {
-      return { ok: false, detail: `pin ${pin.value} is not a commit in this clone (a shallow clone lacks it)` };
-    }
-    const pinned = gitLine(top, ["rev-parse", "--verify", "--quiet", `${pin.value}:${rel}`]);
-    const head = gitLine(top, ["rev-parse", "--verify", "--quiet", `HEAD:${rel}`]);
-    if (pinned === null) return { ok: false, detail: `${rel || "."} does not exist at pin ${pin.value}` };
-    if (pinned !== head) return { ok: false, detail: `${rel || "."} at HEAD differs from pin ${pin.value}` };
-    let dirty: string;
     try {
-      const result = runGit(top, ["status", "--porcelain", "--", rel === "" ? "." : rel]);
-      if (result.status !== 0) return { ok: false, detail: `git status failed for ${rel || "."}` };
-      dirty = result.stdout.trim();
+      return await checkSubtreePin(canonicalRoot, pin);
     } catch (error) {
-      return { ok: false, detail: `git status failed: ${error instanceof Error ? error.message : String(error)}` };
+      if (error instanceof GitMissing) return { ok: false, detail: `${GIT_MISSING_DETAIL}, so pin ${pin.value} cannot be checked` };
+      throw error;
     }
-    if (dirty !== "") return { ok: false, detail: `${rel || "."} has uncommitted changes since pin ${pin.value}` };
-    return { ok: true };
   };
+}
+
+async function checkSubtreePin(canonicalRoot: string, pin: CommitPin): Promise<{ ok: true } | { ok: false; detail: string }> {
+  const top = await gitTop(canonicalRoot);
+  if (top === null) return { ok: false, detail: `${canonicalRoot} is not in a git repository, so a commit pin cannot hold` };
+  const rel = path.relative(top, canonicalRoot).split(path.sep).join("/");
+  if (gitLine(top, ["rev-parse", "--verify", "--quiet", `${pin.value}^{commit}`]) === null) {
+    return { ok: false, detail: `pin ${pin.value} is not a commit in this clone (a shallow clone lacks it)` };
+  }
+  const pinned = gitLine(top, ["rev-parse", "--verify", "--quiet", `${pin.value}:${rel}`]);
+  const head = gitLine(top, ["rev-parse", "--verify", "--quiet", `HEAD:${rel}`]);
+  if (pinned === null) return { ok: false, detail: `${rel || "."} does not exist at pin ${pin.value}` };
+  if (pinned !== head) return { ok: false, detail: `${rel || "."} at HEAD differs from pin ${pin.value}` };
+  const result = git(top, ["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--", rel === "" ? "." : rel]);
+  if (result.status !== 0) return { ok: false, detail: `git status failed for ${rel || "."}` };
+  if (result.stdout.trim() !== "") {
+    return { ok: false, detail: `${rel || "."} has uncommitted, untracked or ignored files since pin ${pin.value}` };
+  }
+  return { ok: true };
 }
 
 /** Identity: `docs/bundle` `bundle_id`, else the hosted private binding. Never the checkout marker. */
@@ -229,8 +251,19 @@ export async function resolveBundleBindings(request: BindingRequest): Promise<Re
   let referringRoot: string | null = null;
   if (request.withDeps) {
     referringRoot = request.referringRoot === null ? null : await canonicalOrNull(request.referringRoot);
-    top = referringRoot === null ? null : await gitTop(referringRoot);
-    if (top === null) {
+    try {
+      top = referringRoot === null ? null : await gitTop(referringRoot);
+    } catch (error) {
+      if (!(error instanceof GitMissing)) throw error;
+      // Fail closed: without git nothing confirms a declared path stays inside the repository.
+      for (const entry of request.dependencies.values()) {
+        if (explicit.has(entry.alias) || entry.path === undefined) continue;
+        out.problems.push({ code: "GIT_MISSING", alias: entry.alias, detail: `${GIT_MISSING_DETAIL}, so --with-deps cannot confirm the path is inside the repository` });
+      }
+      request = { ...request, withDeps: false };
+      referringRoot = null;
+    }
+    if (request.withDeps && top === null) {
       throw new CliError("USAGE", "--with-deps binds declared paths only inside the bundle's git repository, and this bundle is not in one", {
         help: `${cliInvocation()} status --with <alias>=<path>`,
       });

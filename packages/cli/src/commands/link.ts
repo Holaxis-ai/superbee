@@ -208,6 +208,8 @@ export interface LinkCliDeps {
    * runs before serving a LOCAL read (default: autopull.ts's `maybeAutoPull`).
    */
   autoPull?: (dir?: string) => Promise<unknown>;
+  /** The home whose private state holds the catalog and hosted bindings `--with` reads (default: the OS home). */
+  home?: string;
 }
 
 /** A doc's `type` field, or "" when absent/non-string (mirrors `status.ts`'s own `docType`). */
@@ -355,7 +357,7 @@ export async function link(argv: string[], deps: Partial<LinkCliDeps> = {}): Pro
   const rest = argv.slice(1);
 
   if (sub === "add") return linkAdd(rest, stdout);
-  if (sub === "show") return linkShow(rest, stdout, deps.autoPull);
+  if (sub === "show") return linkShow(rest, stdout, deps.autoPull, deps.home);
   if (sub === "list") return linkList(rest, stdout);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
     stdout(renderUsage(LINK_USAGE));
@@ -733,7 +735,7 @@ export async function addQualifiedLink(
 async function qualifiedOutboundRows(
   bundle: Bundle,
   links: readonly QualifiedLink[],
-  opts: { withValues: readonly string[]; withDeps: boolean; remote: boolean; remoteUrl?: string },
+  opts: { withValues: readonly string[]; withDeps: boolean; remote: boolean; remoteUrl?: string; home?: string },
 ): Promise<Record<string, unknown>[]> {
   const plain = (l: QualifiedLink): Record<string, unknown> => ({ text: l.text, bundle: l.ref?.alias ?? null, href: l.href });
   if (links.length === 0) return [];
@@ -744,6 +746,7 @@ async function qualifiedOutboundRows(
     dependencies: declared.dependencies,
     withValues: opts.withValues,
     withDeps: opts.withDeps,
+    ...(opts.home === undefined ? {} : { home: opts.home }),
   });
   const isUnchecked = (l: QualifiedLink): boolean =>
     l.ref !== null && declared.dependencies.has(l.ref.alias) && !bound.bindings.has(l.ref.alias);
@@ -852,6 +855,7 @@ async function linkShow(
   argv: string[],
   stdout: (s: string) => void,
   autoPull?: (dir?: string) => Promise<unknown>,
+  home?: string,
 ): Promise<void> {
   const { values, positionals } = parseLeafOrUsage(
     () =>
@@ -949,7 +953,7 @@ async function linkShow(
     }
   }
 
-  const inbound = await backlinks(bundle, id);
+  const inbound = (await backlinks(bundle, id)).filter((l) => !isQualifiedHref(l.href));
   // Distinct link texts across BOTH directions, captured BEFORE filtering — fuel for the
   // zero-match near-miss hint below. Exact match means a typo ('contain' for 'contains') would
   // otherwise read as an empty graph; naming what IS there mirrors `doc read --field`'s
@@ -967,6 +971,7 @@ async function linkShow(
     withDeps: values["with-deps"] === true,
     remote: remote !== undefined,
     remoteUrl: values.remote,
+    ...(home === undefined ? {} : { home }),
   });
   const qualifiedShown = limit > 0 ? qualifiedRows.slice(0, limit) : qualifiedRows;
   // `inboundMatched` is the FILTERED set whenever `--text` is set — the honest post-filter total
@@ -1116,7 +1121,9 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
 
   let scopedEdges: Link[];
   try {
-    scopedEdges = await queryEdges(bundle, scopeFilter);
+    // A malformed `okf:` href without `//` also parses as a local relative edge; it is a
+    // cross-bundle link (invalid_ref in status), never a local one.
+    scopedEdges = (await queryEdges(bundle, scopeFilter)).filter((e) => !isQualifiedHref(e.href));
   } catch (err) {
     throw classifyBundleError(err, values.remote);
   }
