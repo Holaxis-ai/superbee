@@ -84,6 +84,8 @@ import {
   unpushedCount,
   classifyGitError,
   isBoardGitError,
+  ensureBoardGitignoreWorkingTree,
+  provisionAnnouncement,
 } from "../src/index.js";
 
 // ── hermetic ambient env (the porcelain inherits process.env; pin identity + neutralize host
@@ -884,6 +886,56 @@ test("provision: an existing legacy board worktree remains selected and is never
   }
 });
 
+test("board ignore receipts agree with the actual additions for every supported spelling", async () => {
+  const entries = [`${CANONICAL_BUNDLE_DIR}/`, `${LEGACY_BUNDLE_DIR}/`];
+  const rows: { content: string; added: string[] }[] = [
+    { content: "", added: entries },
+    { content: "node_modules/\n", added: entries },
+  ];
+  for (const leading of ["", "/"]) {
+    for (const trailing of ["", "/"]) {
+      const canonical = `${leading}${CANONICAL_BUNDLE_DIR}${trailing}\n`;
+      const legacy = `${leading}${LEGACY_BUNDLE_DIR}${trailing}\n`;
+      rows.push(
+        { content: canonical, added: [entries[1]!] },
+        { content: legacy, added: [entries[0]!] },
+        { content: canonical + legacy, added: [] },
+      );
+    }
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "board-ignore-receipts-"));
+  try {
+    const file = path.join(root, ".gitignore");
+    for (const row of rows) {
+      await writeFile(file, row.content);
+      const update = ensureBoardGitignoreWorkingTree(root);
+      assert.deepEqual(update.entries, row.added, row.content);
+      assert.equal(update.changed, row.added.length > 0);
+      const expected = row.added.length === 0 ? row.content :
+        row.content + (row.content.length > 0 ? "\n" : "") +
+        "# shared boards — managed on the 'board' branch by superbee sync\n" + row.added.join("\n") + "\n";
+      assert.equal(await readFile(file, "utf8"), expected);
+      const announcement = provisionAnnouncement({
+        kind: "already", boardPath: path.join(root, CANONICAL_BUNDLE_DIR),
+        ...(update.changed ? { gitignore: update } : {}),
+      });
+      if (row.added.length > 0) {
+        assert.equal(announcement?.gitignore,
+          `${file} — appended ${row.added.map((entry) => `'${entry}'`).join(" and ")} ` +
+          "(uncommitted; commit it so teammates' clones stay clean)");
+      } else {
+        assert.equal(announcement, undefined);
+      }
+      const again = ensureBoardGitignoreWorkingTree(root);
+      assert.deepEqual(again.entries, []);
+      assert.equal(again.changed, false);
+      assert.equal(await readFile(file, "utf8"), expected);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("provision: a post-cleanup legacy clone may use the canonical checkout only after both ignore names are covered", async () => {
   const topo = await makeTwoCloneTopology();
   try {
@@ -895,6 +947,7 @@ test("provision: a post-cleanup legacy clone may use the canonical checkout only
     assert.equal(outcome.kind, "provisioned");
     assert.equal("boardPath" in outcome && outcome.boardPath, path.join(topo.b.root, CANONICAL_BUNDLE_DIR));
     assert.equal("gitignore" in outcome && outcome.gitignore?.changed, true);
+    assert.deepEqual("gitignore" in outcome && outcome.gitignore?.entries, [`${CANONICAL_BUNDLE_DIR}/`]);
     const ignored = await readFile(gitignore, "utf8");
     assert.match(ignored, /^\.agentstate-lite\/$/m);
     assert.match(ignored, /^\.superbee\/$/m);

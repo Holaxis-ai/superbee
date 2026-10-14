@@ -444,6 +444,8 @@ test("hook hint: fires on the FIRST successful sync receipt only, and never when
     const first = await run(false);
     assert.match(first, /sync: already up to date/);
     assert.match(first, /hint: no SessionStart hook is installed — run `.* hook install` once/);
+    assert.match(first, /once on this machine for best-effort board pull and orientation/);
+    assert.match(first, /fresh cloud containers need the CLI provisioned first and hook paths valid inside the container/);
 
     const second = await run(false);
     assert.match(second, /sync: already up to date/);

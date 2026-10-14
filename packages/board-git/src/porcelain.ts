@@ -2552,24 +2552,29 @@ export function boardNamespaceConflicts(top: string): string[] {
 export const GITIGNORE_ENTRIES = BUNDLE_DIRS.map((name) => `${name}/`);
 
 /**
- * Return `content` with every recognized conventional bundle directory ignored. Existing exact
- * spellings (with or without leading/trailing slash) are respected independently; only missing
+ * Plan the content and actual additions needed to ignore every conventional bundle directory.
+ * Existing exact spellings (with or without leading/trailing slash) are respected; only missing
  * names are appended. Establish and ordinary provisioning share this idempotent transform.
  */
-export function withIgnoreEntries(content: string): string {
+function boardIgnoreUpdate(content: string): { content: string; entries: string[] } {
   const lines = content.split("\n").map((line) => line.trim());
   const missing = BUNDLE_DIRS.filter((bundleDir) =>
     !lines.some((line) =>
       line === bundleDir || line === `${bundleDir}/` || line === `/${bundleDir}` || line === `/${bundleDir}/`
     ),
   );
-  if (missing.length === 0) return content;
+  if (missing.length === 0) return { content, entries: [] };
   let out = content;
   if (out.length > 0 && !out.endsWith("\n")) out += "\n";
   if (out.length > 0) out += "\n";
   out += `# shared boards — managed on the '${BOARD_BRANCH}' branch by superbee sync\n`;
   out += `${missing.map((bundleDir) => `${bundleDir}/`).join("\n")}\n`;
-  return out;
+  return { content: out, entries: missing.map((bundleDir) => `${bundleDir}/`) };
+}
+
+/** Apply the shared ignore plan without needing its mutation receipt. */
+export function withIgnoreEntries(content: string): string {
+  return boardIgnoreUpdate(content).content;
 }
 
 /**
@@ -2580,7 +2585,12 @@ export function withIgnoreEntries(content: string): string {
  * `changed: false`. Read/write failures are NOT swallowed — a caller that cannot write
  * `.gitignore` needs to know, since the receipt promises to announce it.
  */
-export interface GitignoreUpdate { changed: boolean; path: string; entries: string[] }
+export interface GitignoreUpdate {
+  changed: boolean;
+  path: string;
+  /** Entries appended by this edit; empty when the file already covers both names. */
+  entries: string[];
+}
 
 export function ensureBoardGitignoreWorkingTree(top: string): GitignoreUpdate {
   const gitignorePath = path.join(top, ".gitignore");
@@ -2590,10 +2600,10 @@ export function ensureBoardGitignoreWorkingTree(top: string): GitignoreUpdate {
   } catch {
     /* absent .gitignore reads as empty */
   }
-  const updated = withIgnoreEntries(content);
-  if (updated === content) return { changed: false, path: gitignorePath, entries: [...GITIGNORE_ENTRIES] };
+  const { content: updated, entries } = boardIgnoreUpdate(content);
+  if (updated === content) return { changed: false, path: gitignorePath, entries };
   writeFileSync(gitignorePath, updated);
-  return { changed: true, path: gitignorePath, entries: [...GITIGNORE_ENTRIES] };
+  return { changed: true, path: gitignorePath, entries };
 }
 
 // ── ff-only pull (the fail-soft SessionStart path) ────────────────────────────
