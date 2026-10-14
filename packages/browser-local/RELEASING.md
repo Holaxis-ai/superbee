@@ -8,28 +8,31 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.11 | public / next |
-| @superbee/server | 0.2.0-pre.11 | public / next |
-| @superbee/browser-local | 0.1.0-pre.7 | public / next |
-| @superbee/markdown-renderer | 0.1.8 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.12 | public / next |
+| @superbee/server | 0.2.0-pre.12 | public / next |
+| @superbee/browser-local | 0.1.0-pre.8 | public / next |
+| @superbee/markdown-renderer | 0.1.9 | existing restricted access / latest |
 
-This candidate adds the `@superbee/core/site-capabilities` subpath export: the platform-neutral
-`SiteCapability` contract for read-only tools a site or recipe pack provides,
-`composeSiteCapabilities` (conflict refusal, reserved `superbee_` prefix, deterministic tier
-order, per-surface exclusions, limits and an identity digest), `checkSiteCapability` with
-runner-neutral conformance cases, `mergeAnnotations` and `siteRecordSource`. It also carries the
-hosted transport `import` mode for a bundle's creation (superbee#442). Everything else in
-0.2.0-pre.10 is carried unchanged. The registry's newest browser-local is 0.1.0-pre.4; pre.5 and
-pre.6 were prepared but never published. 0.1.0-pre.7 moves its exact pin to pre.11 with no
-browser-local source change.
+This candidate adds cross-bundle typed links to core (superbee#449) as three browser-safe subpath
+exports: `@superbee/core/qualified-links` (the `okf://<alias>/<path>.md` grammar:
+`parseQualifiedHref`, `isQualifiedHref`, `qualifiedHref`, `parseQualifiedLinks`,
+`qualifiedLinkEdge`, `parseQualifiedKindTarget`), `@superbee/core/dependencies`
+(`parseDependencies` over `docs/dependencies`, never throwing and reporting `DEP_*` problems, and
+`declaredBundleId`) and `@superbee/core/cross-bundle` (`BundleResolver`, `Resolution`,
+`UnresolvedReason`, `RECORD_REASONS`, `createLocalResolver` with an injected pin check, and
+`resolveQualifiedLinks`; digest pins fail closed locally). `Link` gains an optional `bundle`, and
+`readManyExisting` is exported from the engine. Everything else in 0.2.0-pre.11 is carried
+unchanged. The registry's newest browser-local is 0.1.0-pre.4; pre.5 to pre.7 were prepared but
+never published. 0.1.0-pre.8 moves its exact pin to pre.12 with no browser-local source change.
 
-Browser-local depends exactly on core pre.11 and moves with it under the paired
+Browser-local depends exactly on core pre.12 and moves with it under the paired
 exact-pin policy; do not patch around a mismatch or publish with a wildcard
-dependency. Server moves with core under the existing paired release policy.
-Renderer 0.1.8 extends its core peer allowance through pre.11 with no source change (a new
-version because a published renderer version is never reused for different bytes); it is
-included so consumers can align their root core without overriding peer checks. Its access
-remains restricted: do not make other private packages public.
+dependency. Server moves with core under the existing paired release policy, with no server
+source change. Renderer 0.1.9 extends its core peer allowance through pre.12 and carries one
+source change from superbee#449: any `okf:` href renders as an inert span and never reaches an
+attribute (a new version because a published renderer version is never reused for different
+bytes). It is included so consumers can align their root core without overriding peer checks.
+Its access remains restricted: do not make other private packages public.
 
 ## Before release
 
