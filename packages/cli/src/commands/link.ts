@@ -40,6 +40,17 @@ import {
   pathFromConceptId,
   loadKinds,
   FilesystemIdentityAliasError,
+  DEPENDENCIES_DOC_ID,
+  InvalidInputError,
+  createLocalResolver,
+  isQualifiedHref,
+  parseDependencies,
+  parseQualifiedHref,
+  parseQualifiedKindTarget,
+  parseQualifiedLinks,
+  qualifiedHref,
+  resolveQualifiedLinks,
+  type QualifiedLink,
   type Bundle,
   type EdgeFilter,
   type KindRegistry,
@@ -55,7 +66,8 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
-import { collectLinkDeclarations } from "../link-types.js";
+import { collectLinkDeclarations, qualifiedEdgeViolation } from "../link-types.js";
+import { resolveBundleBindings } from "../bundle-bindings.js";
 import { resolveActor } from "../actor.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../concept-id.js";
 import { mutateDoc } from "../mutate.js";
@@ -73,7 +85,7 @@ const LINK_COMMON_OPTIONS = `Common options:
 export const LINK_USAGE = `superbee link — add a cross-link, show a concept's links + backlinks, or query the bundle's whole edge graph
 
 Usage:
-  superbee link add  <from> <to> [options]   Add a cross-link (idempotent)
+  superbee link add  <from> <to> [options]   Add a cross-link (idempotent); --bundle <alias> links into another bundle
   superbee link show <id> [options]          Show a concept's outbound links + derived backlinks
   superbee link list [options]               Query the whole bundle's derived edge list, filtered
 
@@ -85,7 +97,7 @@ ${LINK_COMMON_OPTIONS}
 export const LINK_ADD_USAGE = `superbee link add — append a cross-link from one concept to another (idempotent)
 
 Usage:
-  superbee link add <from> <to> [--text <t>] [--actor <name>] [options]
+  superbee link add <from> <to> [--text <t>] [--bundle <alias>] [--actor <name>] [options]
 
 Idempotent: re-adding the same target with the same exact display text is a no-op — exit 0,
 changed:false, no duplicate link, no timestamp refresh. Different text to the same target is a
@@ -104,8 +116,15 @@ tells the truth; a link to an existing target's receipt is unchanged. Checked on
 --dir bundle (confirming existence costs a read that would be an extra network round trip over
 --remote), so a --remote link-add receipt never carries this signal.
 
+Cross-bundle links: with --bundle <alias> (or a <to> written as okf://<alias>/<id>.md), <to> is a
+concept id in the bundle declared as <alias> in this bundle's 'docs/dependencies', and the link is
+written as [text](okf://<alias>/<to>.md) — the path is relative to THAT bundle's root. A malformed
+target is refused (USAGE). An alias this bundle does not declare is still written, with a
+LINK_ALIAS_UNDECLARED warning. The other bundle is never read, so no LINK_TARGET_ABSENT check runs.
+
 Options:
   --text <t>           Link display text (default: the target id)
+  --bundle <alias>     Link to <to> in the bundle declared as <alias> (okf://<alias>/<to>.md)
   --keep-timestamp     Preserve the source's existing timestamp (default: refresh to now,
                        since adding a cross-link is a meaningful change)
   --actor <name>       Attribute a newly-added link in the source doc and backend history.
@@ -122,11 +141,16 @@ Examples:
 export const LINK_SHOW_USAGE = `superbee link show — show a concept's outbound links and derived backlinks
 
 Usage:
-  superbee link show <id> [--limit <n>] [--text <t>] [options]
+  superbee link show <id> [--limit <n>] [--text <t>] [--with <alias>=<value>]... [--with-deps] [options]
 
 Reports the concept's outbound links (core 'parseLinks') and its "cited by" backlinks (derived by
 reversing the resolved link graph, never stored — core 'backlinks'), each row carrying the citing/
 cited link's 'text' — the only relationship-type signal OKF's untyped edges carry.
+
+Cross-bundle (okf://) links are listed separately in 'qualified_outbound' {text, bundle, href}
+with 'qualified_outbound_count', both omitted when there are none; 'outbound_count' counts local
+links only. With --with or --with-deps (see 'status --help') each row also carries state
+(resolved | unresolved | unchecked) and reason; without them nothing outside this bundle is read.
 
 Options:
   --text <t>           Filter outbound links AND backlinks to those whose text is EXACTLY <t>
@@ -137,6 +161,8 @@ Options:
                        (typo/case) is visible.
   --limit <n>          Cap each of the outbound/backlink lists (default: 50; 0 = unlimited);
                        outbound_count/backlink_count always report the true (post-filter) totals
+  --with <alias>=<value>  Bind a copy of a declared dependency (a path or a catalog label; repeatable)
+  --with-deps          Bind each declared dependency 'path' inside this bundle's git repository
 ${LINK_COMMON_OPTIONS}
 
 Examples:
@@ -182,6 +208,8 @@ export interface LinkCliDeps {
    * runs before serving a LOCAL read (default: autopull.ts's `maybeAutoPull`).
    */
   autoPull?: (dir?: string) => Promise<unknown>;
+  /** The home whose private state holds the catalog and hosted bindings `--with` reads (default: the OS home). */
+  home?: string;
 }
 
 /** A doc's `type` field, or "" when absent/non-string (mirrors `status.ts`'s own `docType`). */
@@ -223,6 +251,19 @@ async function lintLinkType(
       }
     }
     const matched = exact.find((d) => d.governs === args.sourceType) ?? exact[0]!;
+    const qualified = parseQualifiedKindTarget(matched.target);
+    if (qualified) {
+      return [
+        {
+          code: "LINK_TYPE_VIOLATION",
+          message:
+            `'${args.text}' is declared by '${matched.governs}' -> ${matched.target}, a link into the bundle ` +
+            `aliased '${qualified.alias}'; write it with --bundle ${commandToken(qualified.alias)}.`,
+          field: "text",
+          severity: "warning",
+        },
+      ];
+    }
     const sourceOk = exact.some((d) => d.governs === args.sourceType);
     const targetOk = !targetResolved || targetType === matched.target;
     if (!sourceOk || !targetOk) {
@@ -316,7 +357,7 @@ export async function link(argv: string[], deps: Partial<LinkCliDeps> = {}): Pro
   const rest = argv.slice(1);
 
   if (sub === "add") return linkAdd(rest, stdout);
-  if (sub === "show") return linkShow(rest, stdout, deps.autoPull);
+  if (sub === "show") return linkShow(rest, stdout, deps.autoPull, deps.home);
   if (sub === "list") return linkList(rest, stdout);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
     stdout(renderUsage(LINK_USAGE));
@@ -529,6 +570,198 @@ export async function addLink(
     };
 }
 
+/** The bundle's `docs/dependencies` declaration, or an empty one when the doc is absent. */
+async function readDeclaredDependencies(bundle: Bundle, remoteUrl: string | undefined) {
+  try {
+    return parseDependencies(await readDoc(bundle, DEPENDENCIES_DOC_ID));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw classifyBundleError(err, remoteUrl);
+    return parseDependencies(null);
+  }
+}
+
+export interface AddQualifiedLinkOptions {
+  /** The declared alias of the target bundle (`--bundle`). Optional when `to` is an okf:// href. */
+  bundle?: string;
+  text?: string;
+  keepTimestamp?: boolean;
+  remoteUrl?: string;
+  actor?: string;
+}
+
+export interface AddQualifiedLinkResult {
+  from: string;
+  /** The concept id inside the target bundle. */
+  to: string;
+  alias: string;
+  href: string;
+  text: string;
+  changed: boolean;
+  version: Version;
+  warnings?: ValidationWarning[];
+}
+
+/**
+ * `link add --bundle <alias>`: append `[text](okf://<alias>/<to>.md)` to `from`. Idempotent on
+ * alias + id + exact text, like a local link. The other bundle is never read; the alias is checked
+ * against this bundle's own `docs/dependencies` (warn-only, after the write).
+ */
+export async function addQualifiedLink(
+  bundle: Bundle,
+  from: string,
+  to: string,
+  opts: AddQualifiedLinkOptions = {},
+): Promise<AddQualifiedLinkResult> {
+  let alias = opts.bundle?.trim();
+  let id = to.replace(/\.md$/, "");
+  let fragment: string | undefined;
+  if (isQualifiedHref(to)) {
+    const parsed = parseQualifiedHref(to);
+    if (!parsed.ok) {
+      throw new CliError("USAGE", `'${to}' is not a valid cross-bundle target: ${parsed.detail}`, {
+        help: `${cliInvocation()} link add <from> <id> --bundle <alias>`,
+      });
+    }
+    if (alias !== undefined && alias !== parsed.ref.alias) {
+      throw new CliError("USAGE", `the --bundle alias '${alias}' disagrees with the alias '${parsed.ref.alias}' in '${to}'`);
+    }
+    alias = parsed.ref.alias;
+    id = parsed.ref.id;
+    fragment = parsed.fragment;
+  }
+  if (!alias) {
+    throw new CliError("USAGE", "--bundle requires a non-empty alias", {
+      help: `${cliInvocation()} link add <from> <id> --bundle <alias>`,
+    });
+  }
+  let href: string;
+  try {
+    href = qualifiedHref({ alias, id }, fragment);
+  } catch (err) {
+    if (!(err instanceof InvalidInputError)) throw err;
+    throw new CliError("USAGE", `'${to}' in bundle '${alias}' is not a valid cross-bundle target: ${err.message}`, {
+      help: `${cliInvocation()} link add <from> <id> --bundle <alias>`,
+    });
+  }
+  from = await resolveConceptIdCliArgument(bundle, from);
+  const text = opts.text?.trim() || id;
+  if (/[[\]\\\r\n]/.test(text)) {
+    throw new CliError("USAGE", `link text ${commandQuoted(text)} must not contain '[', ']', '\\' or a line break`);
+  }
+  const finalAlias = alias;
+
+  const registry = await loadKinds(bundle);
+  let sourceTypeAtWrite = "";
+  const mutation = await mutateDoc({
+    bundle,
+    id: from,
+    mode: "patch",
+    onAbsent: "fail",
+    registry,
+    strict: false,
+    helpOnKindReject: `${cliInvocation()} kinds`,
+    remoteUrl: opts.remoteUrl,
+    actor: opts.actor,
+    persistActor: true,
+    maxAttempts: LINK_ADD_MAX_ATTEMPTS,
+    buildCandidate: (source, context) => {
+      const existing = source!;
+      sourceTypeAtWrite = docType(existing);
+      const already = parseQualifiedLinks(existing).some(
+        (l) => l.ref?.alias === finalAlias && l.ref.id === id && l.text === text,
+      );
+      if (already) return { frontmatter: { ...existing.frontmatter }, body: existing.body };
+      const trimmed = existing.body.replace(/\s*$/, "");
+      const nextBody = `${trimmed}${trimmed ? "\n\n" : ""}[${text}](${href})\n`;
+      const nextFrontmatter = { ...existing.frontmatter };
+      if (context.okfVersion !== "0.2" && !opts.keepTimestamp) {
+        nextFrontmatter.timestamp = new Date().toISOString();
+      }
+      return { frontmatter: nextFrontmatter, body: nextBody };
+    },
+    errors: {
+      notFound: () => new CliError("NOT_FOUND", `no source concept at id '${from}'`, {
+        help: `${cliInvocation()} list`,
+      }),
+      staleHead: (error) => new CliError("STALE_HEAD", error.message, {
+        help: `${cliInvocation()} link add ${commandToken(from)} ${commandToken(id)} --bundle ${commandToken(finalAlias)}`,
+      }),
+    },
+  });
+
+  const base = { from: mutation.doc.id, to: id, alias: finalAlias, href, text, version: mutation.version };
+  if (!mutation.changed) return { ...base, changed: false };
+
+  const warnings: ValidationWarning[] = [];
+  try {
+    const declared = await readDeclaredDependencies(bundle, opts.remoteUrl);
+    if (!declared.dependencies.has(finalAlias)) {
+      warnings.push({
+        code: "LINK_ALIAS_UNDECLARED",
+        message:
+          `alias '${finalAlias}' is not declared in docs/dependencies, so this link reads as unknown_alias; ` +
+          `declare it with a bundle_id there.`,
+        field: "bundle",
+        severity: "warning",
+      });
+    }
+    const declarations = collectLinkDeclarations(await loadKinds(bundle));
+    const violation = qualifiedEdgeViolation(declarations.get(text), sourceTypeAtWrite, finalAlias);
+    if (violation) {
+      warnings.push({
+        code: "LINK_TYPE_VIOLATION",
+        message:
+          `'${text}' is declared by '${violation.governs}' -> ${violation.target}; this link is ` +
+          `${sourceTypeAtWrite || "(untyped)"} -> ${finalAlias}:(not checked).`,
+        field: "text",
+        severity: "warning",
+      });
+    }
+  } catch (err) {
+    warnings.push({
+      code: "LINK_LINT_UNAVAILABLE",
+      message: `link was written, but link-metadata guidance was unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      field: "text",
+      severity: "warning",
+    });
+  }
+  return { ...base, changed: true, ...(warnings.length > 0 ? { warnings } : {}) };
+}
+
+/**
+ * `link show`'s qualified rows. Without --with/--with-deps nothing outside this bundle is read and
+ * rows are {text, bundle, href}; with them, every row also carries state and reason.
+ */
+async function qualifiedOutboundRows(
+  bundle: Bundle,
+  links: readonly QualifiedLink[],
+  opts: { withValues: readonly string[]; withDeps: boolean; remote: boolean; remoteUrl?: string; home?: string },
+): Promise<Record<string, unknown>[]> {
+  const plain = (l: QualifiedLink): Record<string, unknown> => ({ text: l.text, bundle: l.ref?.alias ?? null, href: l.href });
+  if (links.length === 0) return [];
+  if (opts.withValues.length === 0 && !opts.withDeps) return links.map(plain);
+  const declared = await readDeclaredDependencies(bundle, opts.remoteUrl);
+  const bound = await resolveBundleBindings({
+    referringRoot: opts.remote ? null : bundle.root,
+    dependencies: declared.dependencies,
+    withValues: opts.withValues,
+    withDeps: opts.withDeps,
+    ...(opts.home === undefined ? {} : { home: opts.home }),
+  });
+  const isUnchecked = (l: QualifiedLink): boolean =>
+    l.ref !== null && declared.dependencies.has(l.ref.alias) && !bound.bindings.has(l.ref.alias);
+  const resolver = createLocalResolver({ dependencies: declared.dependencies, rejected: declared.rejected, bindings: bound.bindings });
+  const results = await resolveQualifiedLinks(resolver, links.filter((l) => !isUnchecked(l)));
+  let next = 0;
+  return links.map((l) => {
+    if (isUnchecked(l)) return { ...plain(l), state: "unchecked", reason: null };
+    const { resolution } = results[next++]!;
+    return resolution.state === "resolved"
+      ? { ...plain(l), state: "resolved", reason: null }
+      : { ...plain(l), state: "unresolved", reason: resolution.reason };
+  });
+}
+
 async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<void> {
   const { values, positionals } = parseLeafOrUsage(
     () =>
@@ -536,6 +769,7 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
         args: argv,
         options: {
           text: { type: "string" },
+          bundle: { type: "string" },
           "keep-timestamp": { type: "boolean" },
           actor: { type: "string" },
           dir: { type: "string" },
@@ -563,6 +797,23 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
 
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
   const mode = resolveMode(values);
+
+  if (values.bundle !== undefined || isQualifiedHref(to)) {
+    const result = await addQualifiedLink(bundle, from, to, {
+      bundle: values.bundle,
+      text: values.text,
+      keepTimestamp: values["keep-timestamp"],
+      remoteUrl: values.remote,
+      actor,
+    });
+    const receipt: Record<string, unknown> = result.changed
+      ? { link: "added", from: result.from, to: result.to, bundle: result.alias, href: result.href, text: result.text, changed: true }
+      : { link: "exists", from: result.from, to: result.to, bundle: result.alias, changed: false };
+    receipt.help = [`${cliInvocation()} link show ${commandToken(result.from)}`];
+    if (result.warnings && result.warnings.length > 0) receipt.warnings = result.warnings;
+    stdout(render(receipt, mode));
+    return;
+  }
 
   const result = await addLink(bundle, from, to, {
     text: values.text,
@@ -604,6 +855,7 @@ async function linkShow(
   argv: string[],
   stdout: (s: string) => void,
   autoPull?: (dir?: string) => Promise<unknown>,
+  home?: string,
 ): Promise<void> {
   const { values, positionals } = parseLeafOrUsage(
     () =>
@@ -612,6 +864,8 @@ async function linkShow(
         options: {
           limit: { type: "string" },
           text: { type: "string" },
+          with: { type: "string", multiple: true },
+          "with-deps": { type: "boolean" },
           dir: { type: "string" },
           remote: { type: "string" },
           json: { type: "boolean" },
@@ -675,11 +929,17 @@ async function linkShow(
   // Outbound links come from the source doc (missing doc → NOT_FOUND). Backlinks are derived over the
   // whole bundle and are valid even for a not-yet-written target, so they are computed regardless.
   let outbound: { to: string; text: string; href: string }[] = [];
+  let qualified: QualifiedLink[] = [];
   let exists = !impossibleExactId;
   if (!impossibleExactId) {
     try {
       const source = await readDoc(bundle, id);
-      outbound = parseLinks(bundle, source).map((l) => ({ to: l.to, text: l.text, href: l.href }));
+      // A malformed `okf:` href without `//` would also parse as a local link; it belongs only to
+      // the qualified table.
+      outbound = parseLinks(bundle, source)
+        .filter((l) => !isQualifiedHref(l.href))
+        .map((l) => ({ to: l.to, text: l.text, href: l.href }));
+      qualified = parseQualifiedLinks(source);
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
         throw classifyBundleError(err, values.remote);
@@ -693,7 +953,7 @@ async function linkShow(
     }
   }
 
-  const inbound = await backlinks(bundle, id);
+  const inbound = (await backlinks(bundle, id)).filter((l) => !isQualifiedHref(l.href));
   // Distinct link texts across BOTH directions, captured BEFORE filtering — fuel for the
   // zero-match near-miss hint below. Exact match means a typo ('contain' for 'contains') would
   // otherwise read as an empty graph; naming what IS there mirrors `doc read --field`'s
@@ -701,10 +961,19 @@ async function linkShow(
   const textsPresent =
     textFilter === undefined
       ? []
-      : [...new Set([...outbound, ...inbound].map((l) => l.text))].sort((a, b) => a.localeCompare(b));
+      : [...new Set([...outbound, ...inbound, ...qualified].map((l) => l.text))].sort((a, b) => a.localeCompare(b));
   if (textFilter !== undefined) {
     outbound = outbound.filter((l) => l.text === textFilter);
+    qualified = qualified.filter((l) => l.text === textFilter);
   }
+  const qualifiedRows = await qualifiedOutboundRows(bundle, qualified, {
+    withValues: values.with ?? [],
+    withDeps: values["with-deps"] === true,
+    remote: remote !== undefined,
+    remoteUrl: values.remote,
+    ...(home === undefined ? {} : { home }),
+  });
+  const qualifiedShown = limit > 0 ? qualifiedRows.slice(0, limit) : qualifiedRows;
   // `inboundMatched` is the FILTERED set whenever `--text` is set — the honest post-filter total
   // every downstream count/help message below reads from, never the unfiltered `inbound` length
   // dressed up as if it were the filtered count.
@@ -719,6 +988,10 @@ async function linkShow(
     backlink_count: inboundMatched.length,
     backlinks: inboundShown.map((l) => ({ from: l.from, text: l.text })),
   };
+  if (qualifiedRows.length > 0) {
+    payload.qualified_outbound_count = qualifiedRows.length;
+    payload.qualified_outbound = qualifiedShown;
+  }
   if (textFilter !== undefined) payload.text_filter = textFilter;
 
   const help: string[] = [];
@@ -727,7 +1000,12 @@ async function linkShow(
       `showing ${outboundShown.length}/${outbound.length} outbound + ${inboundShown.length}/${inboundMatched.length} backlinks — run \`${cliInvocation()} link show ${commandToken(id)} --limit 0\` for all`,
     );
   }
-  if (textFilter !== undefined && outbound.length === 0 && inboundMatched.length === 0) {
+  if (qualifiedShown.length < qualifiedRows.length) {
+    help.push(
+      `showing ${qualifiedShown.length}/${qualifiedRows.length} qualified outbound — run \`${cliInvocation()} link show ${commandToken(id)} --limit 0\` for all`,
+    );
+  }
+  if (textFilter !== undefined && outbound.length === 0 && inboundMatched.length === 0 && qualifiedRows.length === 0) {
     // `exists:false` + zero texts present would otherwise render the plain "definitive empty
     // result" branch of the hint below for a doc that has no document AT ALL — that case gets
     // its own, more specific message from the `!exists` block further down instead.
@@ -843,7 +1121,9 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
 
   let scopedEdges: Link[];
   try {
-    scopedEdges = await queryEdges(bundle, scopeFilter);
+    // A malformed `okf:` href without `//` also parses as a local relative edge; it is a
+    // cross-bundle link (invalid_ref in status), never a local one.
+    scopedEdges = (await queryEdges(bundle, scopeFilter)).filter((e) => !isQualifiedHref(e.href));
   } catch (err) {
     throw classifyBundleError(err, values.remote);
   }

@@ -40,7 +40,19 @@ import {
   validateAgainstKind,
   projectKindValidationWarnings,
   isKindFieldValidationWarning,
+  BUNDLE_NAME_DOC_ID as BUNDLE_DOC_ID,
+  DEPENDENCIES_DOC_ID,
+  DEPENDENCIES_DOC_TYPE,
+  createLocalResolver,
+  declaredBundleId,
+  isQualifiedHref,
+  parseDependencies,
+  parseQualifiedLinks,
+  resolveQualifiedLinks,
+  type QualifiedLink,
+  type QualifiedRef,
 } from "@superbee/core";
+import { resolveBundleBindings } from "../bundle-bindings.js";
 import { trustCountsRow } from "../trust.js";
 import {
   isAnyEntryKey,
@@ -56,7 +68,7 @@ import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
-import { collectLinkDeclarations } from "../link-types.js";
+import { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "../link-types.js";
 import {
   hasLegacyBridgeField,
   isLegacyPageConvention,
@@ -74,7 +86,7 @@ import { commandFragment, commandToken } from "../command-text.js";
 export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
 
 Usage:
-  superbee status [--limit <n>] [--dir <path> | --remote <url>]
+  superbee status [--limit <n>] [--with <alias>=<path|label>]... [--with-deps] [--dir <path> | --remote <url>]
 
 Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared conventions/,
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
@@ -91,6 +103,14 @@ registers — see 'legacy_naming'): registered View docs whose entry blob is mis
 ('dangling_view_entries') and View-typed docs failing the registration grammar
 ('invalid_view_registrations'). Duplicate-id detection is not offered: an id IS its storage path,
 so ids are structurally unique.
+
+Cross-bundle links ('[text](okf://<alias>/<path>.md)', the path relative to the TARGET bundle's
+root) are checked against the aliases this bundle declares in 'docs/dependencies'. Nothing outside
+this bundle is read unless you name it: '--with alias=<value>' binds one copy (a path when the value
+contains '/' or '\\', starts with '.' or '~', or is drive-qualified; otherwise a catalog label; a
+bare value that is both a label and a directory here is refused), and '--with-deps' binds each
+declared 'path', only inside this bundle's git repository. A relative '../' link to another bundle
+is not followed; write it as okf:// instead.
 
 Category semantics (one line each):
   malformed          A document whose YAML frontmatter cannot be parsed at all — it is skipped by
@@ -174,6 +194,22 @@ Category semantics (one line each):
                       'entry', or 'id+entry'. Fix by moving the doc under a registry prefix /
                       pointing 'entry' at a real 'views/…' key. Same presence rule as
                       'dangling_view_entries'.
+  cross_bundle_links  Qualified (okf:) links in this bundle, malformed ones included. This and the
+                      two counts below are present only when the bundle has 'docs/dependencies' or
+                      any okf: link.
+  cross_bundle_unresolved  Qualified links that did not resolve; 'cross_bundle_unresolved_rows' names
+                      from, href, reason (bundle_unavailable | pin_mismatch | target_missing |
+                      unknown_alias | invalid_ref) and detail.
+  cross_bundle_unchecked  Qualified links whose declared alias has no copy bound (no --with for it).
+  dependencies       One row per declared alias: bundle_id, state (unbound | ok | bundle_unavailable |
+                      pin_mismatch), bound (the copy's root, or null) and pin. A commit pin holds
+                      when the bound copy's subtree at HEAD equals it and has no uncommitted change.
+  dependency_problems  Defects in 'docs/dependencies' (DEP_* codes) and in binding (BIND_* codes,
+                      e.g. a --with-deps path outside the repository).
+  cross_bundle_link_type_violations_rows  A qualified link whose text is a declared type that does
+                      not conform (wrong source kind, or the declaration names another or no alias),
+                      or a local link under a qualified declaration ('links: {pours: "beers:Beer"}').
+                      The target's kind in the other bundle is not checked.
   okf_upgrade        Present only when a legacy bundle declares workflow 'status' values that
                       collide with the current standard lifecycle vocabulary. The bundle remains supported;
                       this is migration-readiness guidance, never an automatic rewrite.
@@ -223,6 +259,8 @@ flag is a recorded future item, not built here.)
 
 Options:
   --limit <n>             Cap each finding category's row list to <n> rows (default: 20; 0 = unlimited)
+  --with <alias>=<value>  Bind a copy of a declared dependency: a path or a catalog label (repeatable)
+  --with-deps             Bind each declared dependency 'path' inside this bundle's git repository
   --dir <path>            Bundle directory (default: discovered from the cwd)
   --remote <url>          Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
@@ -282,7 +320,8 @@ function isGraphDefinition(doc: OkfDocument): boolean {
     isPageTypeName(type) ||
     isLegacyPageDoc(doc.frontmatter) ||
     (type === "Reference" && doc.id.startsWith("references/")) ||
-    (type === BUNDLE_NAME_DOC_TYPE && doc.id === BUNDLE_NAME_DOC_ID);
+    (type === BUNDLE_NAME_DOC_TYPE && doc.id === BUNDLE_NAME_DOC_ID) ||
+    (type === DEPENDENCIES_DOC_TYPE && doc.id === DEPENDENCIES_DOC_ID);
 }
 
 function okfV02WorkflowStatusCollisions(
@@ -336,6 +375,8 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
           limit: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          with: { type: "string", multiple: true },
+          "with-deps": { type: "boolean" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -437,8 +478,23 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   // missing-expected-link finding either). Feeds `missing_expected_links` below.
   const inboundEdges = new Map<string, { text: string; sourceType: string }[]>();
   const linkTypeViolationRows: Record<string, unknown>[] = [];
+  const crossLinkTypeViolationRows: Record<string, unknown>[] = [];
   for (const doc of docs) {
     for (const l of parseLinksFromDoc(doc)) {
+      // A malformed `okf:` href without `//` also parses as a local relative link; it is counted
+      // once, as a cross-bundle invalid_ref below, never as a local edge.
+      if (isQualifiedHref(l.href)) continue;
+      // A local link under a qualified declaration (`links: {pours: "beers:Beer"}`) is a
+      // cross-bundle type violation whether or not its local target exists.
+      const qualifiedDeclaration = localEdgeQualifiedDeclaration(linkTypeDeclarations.get(l.text), docType(doc));
+      if (qualifiedDeclaration) {
+        crossLinkTypeViolationRows.push({
+          from: doc.id,
+          href: l.href,
+          text: l.text,
+          expected: `${qualifiedDeclaration.governs} -> ${qualifiedDeclaration.target}`,
+        });
+      }
       // Any non-self link is an intentional outgoing graph edge. An unresolved one already has
       // its own actionable finding below, so it must not also duplicate the doc as an orphan.
       if (l.to !== doc.id) outbound.add(doc.id);
@@ -459,7 +515,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
       // kind's 'links' map) but the actual source and/or target kind doesn't conform — the SAME rule
       // `link add` warns on at write time, applied bundle-wide over every resolved edge.
       const declared = linkTypeDeclarations.get(l.text);
-      if (declared && declared.length > 0) {
+      if (declared && declared.length > 0 && !qualifiedDeclaration) {
         const sourceType = docType(doc);
         const targetType = docType(docsById.get(l.to)!);
         const matched = declared.find((d) => d.governs === sourceType) ?? declared[0]!;
@@ -476,6 +532,78 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
       }
     }
   }
+
+  // Cross-bundle links (okf://): parsed from the docs already in hand. Foreign copies are read only
+  // when bound explicitly (--with / --with-deps), in ONE batched resolve call.
+  const qualifiedLinks: QualifiedLink[] = [];
+  for (const doc of docs) {
+    for (const q of parseQualifiedLinks(doc)) {
+      qualifiedLinks.push(q);
+      if (!q.ref) continue;
+      const violation = qualifiedEdgeViolation(linkTypeDeclarations.get(q.text), docType(doc), q.ref.alias);
+      if (violation) {
+        crossLinkTypeViolationRows.push({
+          from: doc.id,
+          href: q.href,
+          text: q.text,
+          expected: `${violation.governs} -> ${violation.target}`,
+        });
+      }
+    }
+  }
+  const dependenciesDoc = docsById.get(DEPENDENCIES_DOC_ID);
+  const crossBundle = dependenciesDoc !== undefined || qualifiedLinks.length > 0;
+  const selfBundleId = declaredBundleId(docsById.get(BUNDLE_DOC_ID)) ?? hosted?.bundle_id;
+  const declaredDeps = parseDependencies(dependenciesDoc, selfBundleId === undefined ? {} : { selfBundleId });
+  const bindings = await resolveBundleBindings({
+    referringRoot: remote ? null : bundle.root,
+    dependencies: declaredDeps.dependencies,
+    withValues: values.with ?? [],
+    withDeps: values["with-deps"] === true,
+    home,
+  });
+  const crossUnresolvedRows: Record<string, unknown>[] = [];
+  const dependencyRows: Record<string, unknown>[] = [];
+  let crossUnchecked = 0;
+  if (crossBundle) {
+    const checked = qualifiedLinks.filter((q) => {
+      const unbound = q.ref !== null && declaredDeps.dependencies.has(q.ref.alias) && !bindings.bindings.has(q.ref.alias);
+      if (unbound) crossUnchecked++;
+      return !unbound;
+    });
+    const resolver = createLocalResolver({ dependencies: declaredDeps.dependencies, rejected: declaredDeps.rejected, bindings: bindings.bindings });
+    // One probe per bound alias rides the same resolve call, so each alias's binding verdict
+    // (identity, pin) comes from core's resolver and its copy is still read in one batch.
+    const probeAliases = [...bindings.bindings.keys()];
+    const probes: QualifiedLink[] = probeAliases.map((alias) => {
+      const ref: QualifiedRef = { alias, id: BUNDLE_DOC_ID };
+      return { from: BUNDLE_DOC_ID, text: "", href: "", ref };
+    });
+    const results = await resolveQualifiedLinks(resolver, [...checked, ...probes]);
+    const verdictByAlias = new Map<string, string>();
+    results.slice(checked.length).forEach((r, i) => {
+      const resolution = r.resolution;
+      const state = resolution.state === "resolved" || resolution.reason === "target_missing" ? "ok" : resolution.reason;
+      verdictByAlias.set(probeAliases[i]!, state);
+    });
+    for (const { link, resolution } of results.slice(0, checked.length)) {
+      if (resolution.state === "resolved") continue;
+      crossUnresolvedRows.push({ from: link.from, href: link.href, reason: resolution.reason, detail: resolution.detail });
+    }
+    for (const entry of declaredDeps.dependencies.values()) {
+      dependencyRows.push({
+        alias: entry.alias,
+        bundle_id: entry.bundle_id,
+        state: verdictByAlias.get(entry.alias) ?? "unbound",
+        bound: bindings.bound.get(entry.alias)?.root ?? null,
+        pin: entry.pin?.value ?? null,
+      });
+    }
+  }
+  const dependencyProblemRows: Record<string, unknown>[] = [
+    ...declaredDeps.problems.map((p) => ({ code: p.code, alias: p.alias ?? null, detail: p.detail })),
+    ...bindings.problems.map((p) => ({ code: p.code, alias: p.alias, detail: p.detail })),
+  ];
 
   // Orphans are ISOLATED content docs inside an ESTABLISHED graph. A bundle with no resolved
   // cross-doc edge has not adopted graph structure yet, so zero-inbound is not evidence of a
@@ -693,6 +821,13 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     link_type_violations: linkTypeViolations.total,
     missing_expected_links: missingExpectedLinks.total,
   };
+  // Present only for a bundle that declares dependencies or holds any okf: href, so every other
+  // bundle's report stays byte-identical.
+  if (crossBundle) {
+    out.cross_bundle_links = qualifiedLinks.length;
+    out.cross_bundle_unresolved = crossUnresolvedRows.length;
+    out.cross_bundle_unchecked = crossUnchecked;
+  }
   if (trust) out.trust = trust;
   // Beside the count, unconditionally at the top level (never nested inside the row block below,
   // which is itself omitted when `missing_expected_links` is 0 — a bundle where EVERY matching
@@ -788,6 +923,10 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   if (noTimestamp.total > 0) out.no_timestamp_docs = noTimestamp;
   if (linkTypeViolations.total > 0) out.link_type_violations_rows = linkTypeViolations;
   if (missingExpectedLinks.total > 0) out.missing_expected_links_rows = missingExpectedLinks;
+  if (dependencyRows.length > 0) out.dependencies = cap(dependencyRows, limit);
+  if (dependencyProblemRows.length > 0) out.dependency_problems = cap(dependencyProblemRows, limit);
+  if (crossUnresolvedRows.length > 0) out.cross_bundle_unresolved_rows = cap(crossUnresolvedRows, limit);
+  if (crossLinkTypeViolationRows.length > 0) out.cross_bundle_link_type_violations_rows = cap(crossLinkTypeViolationRows, limit);
   if (danglingViewEntries.total > 0) out.dangling_view_entries_rows = danglingViewEntries;
   if (invalidViewRegistrations.total > 0) out.invalid_view_registrations_rows = invalidViewRegistrations;
   if (registryLint.total > 0) out.registry_lint = registryLint;
