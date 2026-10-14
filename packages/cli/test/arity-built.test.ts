@@ -54,6 +54,10 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
   const dir = ["--dir", ctx.bundle] as const;
   return {
     bundleLocate: simple(CLI_LEAVES.bundleLocate, ["bundle", "locate"], [], dir),
+    bundleIdSet: simple(CLI_LEAVES.bundleIdSet, ["bundle", "id", "set"], ["arity-bundle"], dir),
+    depsAdd: simple(CLI_LEAVES.depsAdd, ["deps", "add"], ["arity"], ["--bundle-id", "arity-dep", ...dir]),
+    depsRemove: simple(CLI_LEAVES.depsRemove, ["deps", "remove"], ["arity"], dir),
+    depsList: simple(CLI_LEAVES.depsList, ["deps", "list"], [], dir),
     catalogAdd: simple(CLI_LEAVES.catalogAdd, ["catalog", "add"], ["arity-second"], dir),
     catalogList: simple(CLI_LEAVES.catalogList, ["catalog", "list"], []),
     catalogResolve: simple(CLI_LEAVES.catalogResolve, ["catalog", "resolve"], ["arity-bundle"], ["--field", "path"], "stderr"),

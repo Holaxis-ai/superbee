@@ -14,10 +14,13 @@ export const BUNDLE_USAGE = `superbee bundle — inspect local bundle targeting,
 
 Usage:
   superbee bundle locate [--dir <path>]
+  superbee bundle id set <id> [--force] [--expected-version <v>] [--actor <name>] [--dir <path> | --remote <url>]
   superbee bundle retire <bundle> [--host <url>] [--workspace <id>] [--json]
 
 Commands:
   locate                  Resolve the exact local bundle this invocation would use
+  id set                  Declare this bundle's portable id (bundle_id in docs/bundle)
+                          (see: superbee bundle id set --help)
   retire                  Retire a hosted bundle: shows the host's preview, then the person types its id
                           in their own terminal (see: superbee bundle retire --help)
 
@@ -51,6 +54,7 @@ export async function bundleCommand(argv: string[], deps: Partial<BundleCliDeps>
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   // Loaded only for retire, so `bundle locate` never loads the hosted sign-in modules.
   if (argv[0] === "retire") return (await import("./bundle-retire.js")).bundleRetire(argv.slice(1), { stdout, ...(deps.retire ?? {}) });
+  if (argv[0] === "id") return (await import("./bundle-id.js")).bundleId(argv.slice(1), stdout);
   const cwd = deps.cwd ?? (() => process.cwd());
   const parsed = parseSelectorOrUsage(
     () =>

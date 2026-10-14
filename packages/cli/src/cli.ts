@@ -52,6 +52,7 @@ import { exportCommand } from "./commands/export.js";
 import { op } from "./commands/op.js";
 import { publish } from "./commands/publish.js";
 import { access } from "./commands/access.js";
+import { deps } from "./commands/deps.js";
 import { assertAllowedInHostedCheckout } from "./hosted/refusals.js";
 import { cliVersion, isBareVersionFlag } from "./build-identity.js";
 import { CliError, toEnvelope, toExit } from "./errors.js";
@@ -142,6 +143,7 @@ export const PUBLIC_HANDLERS = Object.freeze({
   publish,
   op,
   access,
+  deps,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;

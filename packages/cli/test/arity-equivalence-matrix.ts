@@ -169,6 +169,10 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("accessGrant", 2),
   ordinary("accessRevoke", 2),
   ordinary("bundleRetire", 1),
+  ordinary("bundleIdSet", 1),
+  ordinary("depsAdd", 1),
+  ordinary("depsRemove", 1),
+  ordinary("depsList", 0),
 ] as const satisfies readonly BehaviorAssignment[];
 
 /** Exactly one built subprocess owner for every real key above. */
