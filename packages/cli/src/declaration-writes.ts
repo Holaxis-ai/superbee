@@ -13,7 +13,7 @@ import {
   type ResolvedLocalRoute,
 } from "./bundle.js";
 import { boardPostPersistHook } from "./board-attribution.js";
-import { commandToken } from "./command-text.js";
+import { commandLiteral, commandToken, joinCommandTokens, type CommandText } from "./command-text.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import type { MutateErrorHooks } from "./mutate.js";
@@ -74,10 +74,14 @@ export function declarationErrorHooks(id: string, cas: { expectedVersion: string
  * ` --flag <value>` for every flag the caller gave, each value shell-quoted by the quoting
  * authority, so a printed re-run command writes exactly what the original invocation asked for.
  */
-export function givenFlags(flags: ReadonlyArray<readonly [flag: string, value: string | boolean | undefined]>): string {
-  return flags
-    .map(([flag, value]) => (value === undefined || value === false ? "" : value === true ? ` --${flag}` : ` --${flag} ${commandToken(value)}`))
-    .join("");
+export function givenFlags(flags: ReadonlyArray<readonly [flag: string, value: string | boolean | undefined]>): CommandText {
+  const tokens: CommandText[] = [];
+  for (const [flag, value] of flags) {
+    if (value === undefined || value === false) continue;
+    tokens.push(commandToken(`--${flag}`));
+    if (value !== true) tokens.push(commandToken(value));
+  }
+  return tokens.length === 0 ? commandLiteral("") : joinCommandTokens([commandLiteral(""), ...tokens]);
 }
 
 export const DECLARATION_COMMON_OPTIONS = `  --expected-version <v>  Compare-and-swap: write only if the document is still at this version
