@@ -75,8 +75,13 @@ export function isExternalHref(href: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(h) || h.startsWith("mailto:") || h.startsWith("#");
 }
 
-/** Extract every non-image markdown link from a body, in document order. */
-export function extractMarkdownLinks(body: string): RawLink[] {
+/**
+ * Extract every non-image markdown link from a body, in document order. With `skipCode`, a link
+ * written inside an inline code span or a fenced or indented code block ({@link maskMarkdownCode})
+ * is not a link; the returned text and href are still sliced from the original body.
+ */
+export function extractMarkdownLinks(source: string, options: { skipCode?: boolean } = {}): RawLink[] {
+  const body = options.skipCode ? maskMarkdownCode(source) : source;
   const out: RawLink[] = [];
   let textOpen = -1;
   let afterClose: { open: number; close: number } | undefined;
@@ -94,8 +99,8 @@ export function extractMarkdownLinks(body: string): RawLink[] {
       if (char === ")") {
         if (hrefRest.open === 0 || body[hrefRest.open - 1] !== "!") {
           out.push({
-            text: body.slice(hrefRest.open + 1, hrefRest.close),
-            href: body.slice(hrefRest.hrefStart, cursor),
+            text: source.slice(hrefRest.open + 1, hrefRest.close),
+            href: source.slice(hrefRest.hrefStart, cursor),
           });
         }
         textOpen = -1;
@@ -128,6 +133,169 @@ export function extractMarkdownLinks(body: string): RawLink[] {
     if (char === "[" && textOpen < 0) textOpen = cursor;
   }
   return out;
+}
+
+/** Column width of leading whitespace (tabs advance to the next multiple of 4) and its length in characters. */
+function leadingIndent(line: string, from: number): { columns: number; chars: number } {
+  let columns = 0;
+  let index = from;
+  while (index < line.length) {
+    const char = line[index];
+    if (char === " ") columns += 1;
+    else if (char === "\t") columns += 4 - (columns % 4);
+    else break;
+    index++;
+  }
+  return { columns, chars: index - from };
+}
+
+const FENCE_OPEN = /^(`{3,}|~{3,})(.*)$/;
+const LIST_MARKER = /^([-+*]|\d{1,9}[.)])( {1,4}(?! )|\t|$)/;
+const THEMATIC_BREAK = /^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+const ATX_HEADING = /^#{1,6}(?:[ \t]|$)/;
+
+/**
+ * Blank out (with spaces, keeping every newline and the string's length) the CommonMark code a
+ * reader sees as code: fenced blocks (``` and ~~~, fence lines included), indented blocks, and
+ * inline code spans with their backticks. Offsets into the result are offsets into `body`.
+ *
+ * Linear time and line-based. Block quote markers and list-item content indentation are honored
+ * so an indented continuation paragraph in a list stays prose; HTML blocks and lazy continuation
+ * inside a fence are not modelled. An unclosed fence runs to the end of the body, and an unmatched
+ * backtick run is literal text, as in CommonMark.
+ */
+export function maskMarkdownCode(body: string): string {
+  const out = body.split("");
+  const blank = (from: number, to: number): void => {
+    for (let index = from; index < to; index++) if (out[index] !== "\n" && out[index] !== "\r") out[index] = " ";
+  };
+  const lists: number[] = [];
+  let fence: { char: string; length: number; container: number } | null = null;
+  let inParagraph = false;
+  let segmentStart = -1;
+  const closeSegment = (end: number): void => {
+    if (segmentStart >= 0) maskCodeSpans(body, segmentStart, end, blank);
+    segmentStart = -1;
+  };
+
+  let lineStart = 0;
+  while (lineStart <= body.length) {
+    const newline = body.indexOf("\n", lineStart);
+    const lineEnd = newline < 0 ? body.length : newline;
+    const line = body.slice(lineStart, lineEnd);
+    // Block quote markers are container syntax; what follows them is the line's content.
+    let contentAt = 0;
+    for (let match = /^ {0,3}> ?/.exec(line); match; match = /^ {0,3}> ?/.exec(line.slice(contentAt))) contentAt += match[0].length;
+    const { columns: indent, chars } = leadingIndent(line, contentAt);
+    const rest = line.slice(contentAt + chars).replace(/\r$/, "");
+    const isBlank = rest.trim() === "";
+
+    if (fence && !isBlank && indent < fence.container) fence = null; // the list item holding it ended
+    if (fence) {
+      const close = indent - fence.container <= 3 ? FENCE_OPEN.exec(rest) : null;
+      if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length && close[2]!.trim() === "") fence = null;
+      blank(lineStart, lineEnd);
+    } else if (isBlank) {
+      closeSegment(lineStart);
+      inParagraph = false;
+    } else {
+      if (!inParagraph) while (lists.length > 0 && lists[lists.length - 1]! > indent) lists.pop();
+      let container = lists.length > 0 ? lists[lists.length - 1]! : 0;
+      let relative = indent - container;
+      let text = rest;
+      let textAt = lineStart + contentAt + chars;
+      const marker = relative <= 3 && !THEMATIC_BREAK.test(text) ? LIST_MARKER.exec(text) : null;
+      if (marker) {
+        // A list item: its content column is the marker plus its spacing (one column if the item
+        // starts blank or with indented code).
+        const spacing = marker[2] === "" ? 1 : leadingIndent(marker[2]!, 0).columns;
+        lists.push(indent + marker[1]!.length + spacing);
+        container = lists[lists.length - 1]!;
+        text = text.slice(marker[0].length);
+        textAt += marker[0].length;
+        relative = 0;
+        inParagraph = false;
+      }
+      const open = relative <= 3 ? FENCE_OPEN.exec(text) : null;
+      if (open && !(open[1]![0] === "`" && open[2]!.includes("`"))) {
+        closeSegment(lineStart);
+        fence = { char: open[1]![0]!, length: open[1]!.length, container };
+        blank(textAt, lineEnd);
+        inParagraph = false;
+      } else if (!inParagraph && relative >= 4) {
+        closeSegment(lineStart);
+        blank(lineStart + contentAt + chars, lineEnd);
+      } else if (ATX_HEADING.test(text) || THEMATIC_BREAK.test(text)) {
+        closeSegment(lineStart);
+        maskCodeSpans(body, textAt, lineEnd, blank);
+        inParagraph = false;
+      } else {
+        if (segmentStart < 0) segmentStart = textAt;
+        inParagraph = text.trim() !== "";
+      }
+    }
+    if (newline < 0) break;
+    lineStart = newline + 1;
+  }
+  closeSegment(body.length);
+  return out.join("");
+}
+
+/**
+ * Blank inline code spans in `body[from, to)`: a backtick run opens a span closed by the next run
+ * of exactly the same length; with none, the run is literal. A backslash escapes one backtick
+ * outside a span. Runs are indexed by length so matching stays linear on hostile input.
+ */
+function maskCodeSpans(body: string, from: number, to: number, blank: (from: number, to: number) => void): void {
+  const runs: Array<{ at: number; length: number }> = [];
+  for (let index = from; index < to; ) {
+    if (body[index] !== "`") {
+      index++;
+      continue;
+    }
+    let end = index;
+    while (end < to && body[end] === "`") end++;
+    runs.push({ at: index, length: end - index });
+    index = end;
+  }
+  const byLength = new Map<number, number[]>();
+  runs.forEach((run, position) => {
+    const list = byLength.get(run.length);
+    if (list) list.push(position);
+    else byLength.set(run.length, [position]);
+  });
+  const next = new Map<number, number>();
+  const nextRun = (length: number, after: number): number => {
+    const list = byLength.get(length);
+    if (!list) return -1;
+    let cursor = next.get(length) ?? 0;
+    while (cursor < list.length && list[cursor]! <= after) cursor++;
+    next.set(length, cursor);
+    return cursor < list.length ? list[cursor]! : -1;
+  };
+  let escapeScan = from;
+  let escaped = false;
+  for (let position = 0; position < runs.length; position++) {
+    let { at, length } = runs[position]!;
+    // Odd count of backslashes immediately before the run (outside any span) escapes its first backtick.
+    for (; escapeScan < at; escapeScan++) escaped = body[escapeScan] === "\\" ? !escaped : false;
+    if (escaped) {
+      at += 1;
+      length -= 1;
+      escaped = false;
+      if (length === 0) continue;
+      const list = byLength.get(length);
+      // The shortened run is an opener of a different length; only later runs can close it.
+      if (!list) continue;
+    }
+    const closer = nextRun(length, position);
+    if (closer < 0) continue;
+    const close = runs[closer]!;
+    blank(at, close.at + close.length);
+    position = closer;
+    escapeScan = close.at + close.length;
+    escaped = false;
+  }
 }
 
 /**

@@ -210,6 +210,44 @@ test("each local reason appears in cross_bundle_unresolved_rows; a malformed okf
   }
 });
 
+test("status --with: an okf: link written as code (span, fences, indented block) has no row; the same link in prose does", async () => {
+  const example = "okf://beers/beers/not-poured.md";
+  const fx = await makeRepo({
+    menuBody: [
+      "[pours](okf://beers/beers/little-whale.md)",
+      "",
+      `Write \`[pours](${example})\` to link.`,
+      "",
+      "```md",
+      `[pours](${example})`,
+      "```",
+      "",
+      "~~~",
+      `[pours](${example})`,
+      "~~~",
+      "",
+      `    [pours](${example})`,
+      "",
+    ].join("\n"),
+  });
+  try {
+    const inCode = await statusJson(fx, ["--with", `beers=${fx.beer.root}`]);
+    assert.equal(inCode.cross_bundle_links, 1);
+    assert.equal(inCode.cross_bundle_unresolved, 0);
+    assert.equal(inCode.cross_bundle_unresolved_rows, undefined);
+    await writeDoc(fx.town, {
+      id: "menus/whale",
+      frontmatter: { type: "Menu Item", title: "Whale on tap" },
+      body: `[pours](okf://beers/beers/little-whale.md)\n\nAlso [pours](${example}).\n`,
+    });
+    const inProse = await statusJson(fx, ["--with", `beers=${fx.beer.root}`]);
+    assert.equal(inProse.cross_bundle_links, 2);
+    assert.deepEqual(rows(inProse, "cross_bundle_unresolved_rows").map((r) => [r.href, r.reason]), [[example, "target_missing"]]);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 // ── --with-deps reach and declaration defects ─────────────────────────────────────────────────
 
 test("--with-deps never binds a declared path outside the repository; absolute POSIX and Windows paths are rejected", async () => {
