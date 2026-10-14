@@ -97,7 +97,7 @@ When the tone fits, a single 🐝 may mark a successful Superbee outcome.
 
 ## Host setup
 
-Persistent integrations require `npm install -g superbee` followed by `superbee setup`.
+Persistent integrations require `npm install -g superbee` followed by `superbee setup`. Fresh cloud containers need the CLI provisioned before agent tool use and container-valid hook paths; copied laptop hooks do not provision them. Startup pulls are best-effort; inspect sync receipts to verify publication.
 Setup is an agent-driven read-only conductor: the calling agent selects its exact host, executes
 the returned argv action, reports what it is doing, requests approval only when the action says
 `approval.required: true`, restarts after Skill, Hook, or MCP changes, and reruns setup to verify.

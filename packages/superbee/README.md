@@ -92,6 +92,12 @@ Setup itself changes nothing. It inspects your configuration and returns one saf
 a time, and the agent runs each with your approval. Setup knows Claude Code, Codex, and OpenCode,
 plus Claude Desktop for the MCP registration only.
 
+For a fresh cloud container, provision Superbee in the environment setup step before agent tool
+use. Generated hooks bind absolute Node and CLI paths from their installation, so a project hook
+copied from a laptop does not install Superbee or provide a working container launcher. Configure
+hooks inside the environment and verify startup in a fresh session. Startup pulls are best-effort;
+inspect an explicit `superbee sync` receipt to verify publication of edits.
+
 ## Everyday use
 
 You rarely type Superbee commands yourself. You ask your agent, and the Agent Skill translates the

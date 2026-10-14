@@ -96,6 +96,12 @@ For npm distribution, install must run from a verified global install (\`npm ins
 superbee\`). One-off npx execution remains supported for read-only/trial commands but cannot
 authorize persistent host configuration.
 
+Generated hooks bind absolute Node and CLI paths from this installation. They do not install
+the CLI, and copying a project's hook from another machine does not provision a fresh cloud
+container. Provision Superbee in the environment's setup step before agent tool use, then
+configure hook paths valid inside that environment. Verify startup in a fresh session.
+The startup pull is best-effort; use an explicit sync receipt to verify publication of edits.
+
 In a hosted checkout (made by \`checkout\`), session-start pulls from the host instead of a board.
 
 End-of-turn sync is a separate opt-in: \`hook install --turn-end-sync\` also installs a Stop hook

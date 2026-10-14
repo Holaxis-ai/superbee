@@ -41,8 +41,9 @@ export async function hookInstallHintOnce(
     if ((await defaultSyncStore.readHookHintedAt(key)) !== null) return undefined;
     await defaultSyncStore.recordHookHinted(key);
     return (
-      `no SessionStart hook is installed — run \`${inv} hook install\` once and every new agent ` +
-      `session will start with the board pulled and rendered`
+      `no SessionStart hook is installed — run \`${inv} hook install\` once on this machine ` +
+      `for best-effort board pull and orientation; fresh cloud containers need the CLI ` +
+      `provisioned first and hook paths valid inside the container`
     );
   } catch {
     return undefined;

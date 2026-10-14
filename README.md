@@ -48,6 +48,12 @@ The hook is recommended rather than required: it gives Claude Code, Codex, and O
 Superbee orientation at session start. To try read-only and bootstrap commands without installing
 anything, run `npx -y superbee`; persistent integrations still require the global npm install.
 
+In a fresh cloud container, provision Superbee in the environment setup step before agent tool
+use. Generated hooks bind absolute Node and CLI paths from their installation, so a project hook
+copied from a laptop does not install Superbee or provide a working container launcher. Configure
+the hook inside the environment and verify startup in a fresh session. Startup pulls are
+best-effort; inspect an explicit `superbee sync` receipt to verify publication of edits.
+
 The npm package is the sole executable distribution channel. The optional Agent Skill contains
 guidance and references only; it invokes the npm-installed CLI rather than carrying another copy.
 The new package installs only `superbee`, so it can coexist with a global `@holaxis/aslite` long
