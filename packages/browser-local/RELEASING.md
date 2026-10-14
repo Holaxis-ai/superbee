@@ -8,30 +8,29 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.12 | public / next |
-| @superbee/server | 0.2.0-pre.12 | public / next |
-| @superbee/browser-local | 0.1.0-pre.8 | public / next |
-| @superbee/markdown-renderer | 0.1.9 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.13 | public / next |
+| @superbee/server | 0.2.0-pre.13 | public / next |
+| @superbee/browser-local | 0.1.0-pre.9 | public / next |
+| @superbee/markdown-renderer | 0.1.10 | existing restricted access / latest |
 
-This candidate adds cross-bundle typed links to core (superbee#449) as three browser-safe subpath
-exports: `@superbee/core/qualified-links` (the `okf://<alias>/<path>.md` grammar:
-`parseQualifiedHref`, `isQualifiedHref`, `qualifiedHref`, `parseQualifiedLinks`,
-`qualifiedLinkEdge`, `parseQualifiedKindTarget`), `@superbee/core/dependencies`
-(`parseDependencies` over `docs/dependencies`, never throwing and reporting `DEP_*` problems, and
-`declaredBundleId`) and `@superbee/core/cross-bundle` (`BundleResolver`, `Resolution`,
-`UnresolvedReason`, `RECORD_REASONS`, `createLocalResolver` with an injected pin check, and
-`resolveQualifiedLinks`; digest pins fail closed locally). `Link` gains an optional `bundle`, and
-`readManyExisting` is exported from the engine. Everything else in 0.2.0-pre.11 is carried
-unchanged. The registry's newest browser-local is 0.1.0-pre.4; pre.5 to pre.7 were prepared but
-never published. 0.1.0-pre.8 moves its exact pin to pre.12 with no browser-local source change.
+This candidate makes cross-bundle links ignore `okf:` links written as code (superbee#453):
+`parseQualifiedLinks` (`@superbee/core/qualified-links`) skips links inside inline code spans and
+fenced or indented code blocks, so an example `okf://` link no longer produces a cross-bundle edge.
+The masking lives in the one link extractor: `extractMarkdownLinks` gains an opt-in `skipCode`
+option, and `maskMarkdownCode` is exported as `@internal`. `parseLinksFromDoc` is unchanged and
+still counts local links inside code. Everything else in 0.2.0-pre.12 is carried unchanged. The
+registry's newest browser-local is 0.1.0-pre.4; pre.5 to pre.8 were prepared but never published.
+0.1.0-pre.9 moves its exact pin to pre.13 with no browser-local source change.
 
-Browser-local depends exactly on core pre.12 and moves with it under the paired
+Browser-local depends exactly on core pre.13 and moves with it under the paired
 exact-pin policy; do not patch around a mismatch or publish with a wildcard
 dependency. Server moves with core under the existing paired release policy, with no server
-source change. Renderer 0.1.9 extends its core peer allowance through pre.12 and carries one
-source change from superbee#449: any `okf:` href renders as an inert span and never reaches an
-attribute (a new version because a published renderer version is never reused for different
-bytes). It is included so consumers can align their root core without overriding peer checks.
+source change. Renderer 0.1.10 extends its core peer allowance through pre.13 with no source
+change since 0.1.9, which was prepared but never published and carried the superbee#449 change
+(any `okf:` href renders as an inert span and never reaches an attribute); superbee#453 adds only
+a renderer test that pins core's `okf:` links against micromark. It is a new version because a
+renderer version is never reused for different bytes, and it is included so consumers can align
+their root core without overriding peer checks.
 Its access remains restricted: do not make other private packages public.
 
 ## Before release
