@@ -48,16 +48,25 @@ export function expectedVersionFlag(value: string | undefined, help: string): st
   return trimmed;
 }
 
-/** STALE_HEAD for a moved document, pointing at the read that yields the current version. */
-export function declarationErrorHooks(id: string): MutateErrorHooks {
+/**
+ * STALE_HEAD for a moved document. Under --expected-version it names that premise; without one the
+ * bounded retry lost every race to concurrent writers, so it says so and hands back the command.
+ */
+export function declarationErrorHooks(id: string, cas: { expectedVersion: string | undefined; retry: string }): MutateErrorHooks {
   return {
     notFound: () => new CliError("NOT_FOUND", `no document at id '${id}'`, { help: `${cliInvocation()} doc read ${commandToken(id)}` }),
     staleHead: (err) =>
-      new CliError(
-        "STALE_HEAD",
-        `'${id}' has moved since --expected-version ${commandToken(String(err.expected))} was read (current: ${err.actual ?? "absent"}) — re-read and retry with the current version.`,
-        { help: `${cliInvocation()} doc read ${commandToken(id)}`, details: { expected: err.expected, actual: err.actual } },
-      ),
+      cas.expectedVersion === undefined
+        ? new CliError(
+            "STALE_HEAD",
+            `'${id}' changed concurrently on every attempt (moved since ${err.expected ?? "absent"}; now ${err.actual ?? "absent"}) — retries exhausted; re-run the command.`,
+            { help: cas.retry, details: { expected: err.expected, actual: err.actual } },
+          )
+        : new CliError(
+            "STALE_HEAD",
+            `'${id}' has moved since --expected-version ${commandToken(cas.expectedVersion)} was read (current: ${err.actual ?? "absent"}) — re-read and retry with the current version.`,
+            { help: `${cliInvocation()} doc read ${commandToken(id)}`, details: { expected: err.expected, actual: err.actual } },
+          ),
   };
 }
 
@@ -68,5 +77,6 @@ export const DECLARATION_COMMON_OPTIONS = `  --expected-version <v>  Compare-and
                        process:<id>, or <producer>/<version> (e.g. openai/codex)
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
+                       (mutually exclusive with --dir)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help`;

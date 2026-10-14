@@ -44,7 +44,7 @@ const READ_OPTIONS = `  --dir <path>         Bundle directory (default: discover
 export const DEPS_USAGE = `superbee deps — declare the bundles this bundle links into (docs/dependencies)
 
 Usage:
-  superbee deps add <alias> --bundle-id <id> [--source <s>] [--pin <commit>] [--path <rel>] [--replace]
+  superbee deps add <alias> --bundle-id <id> [--source <s>] [--pin <commit|sha256:digest>] [--path <rel>] [--replace]
   superbee deps remove <alias>
   superbee deps list [--limit <n>]
 
@@ -57,7 +57,7 @@ Run 'superbee deps <verb> --help' for a verb's full options.
 export const DEPS_ADD_USAGE = `superbee deps add — declare one bundle this bundle links into
 
 Usage:
-  superbee deps add <alias> --bundle-id <id> [--source <s>] [--pin <commit>] [--path <rel>] [--replace] [options]
+  superbee deps add <alias> --bundle-id <id> [--source <s>] [--pin <commit|sha256:digest>] [--path <rel>] [--replace] [options]
 
 Writes the entry <alias>: {bundle_id, source, pin, path} into docs/dependencies, creating the
 document (type '${DEPENDENCIES_DOC_TYPE}') when it is missing. Every other entry, every other
@@ -80,10 +80,14 @@ and refused (CONFLICT) when the bundle's own state forbids it:
 Adding an identical entry again is a no-op (changed:false). --replace sets the entry's bundle_id,
 source, pin and path to exactly the flags given and keeps any other key it carries.
 
+The document is re-serialized on write: YAML comments and formatting in its frontmatter are not
+preserved (the entries, keys and values are).
+
 Options:
   --bundle-id <id>     The target bundle's portable id (its docs/bundle bundle_id) [required]
   --source <s>         Where to get the bundle (a git URL or hosted:<host>/<bundle_id>); informational
-  --pin <commit>       Commit (or sha256 digest) the bound copy must match
+  --pin <pin>          A commit (7-40 lower-case hex) the bound copy's subtree must match, or a
+                       sha256:<64 lower-case hex> digest (only a hosted resolver can check one)
   --path <rel>         The target bundle's root relative to this bundle's root, for --with-deps
   --replace            Replace an alias that is already declared differently
 ${DECLARATION_COMMON_OPTIONS}
@@ -96,7 +100,8 @@ Usage:
 
 Removes the entry and keeps everything else in the document. Removing an alias that is not
 declared, or from a bundle with no docs/dependencies, is a no-op (removed:false, exit 0).
-Links under the alias then read as unknown_alias in 'status'.
+Links under the alias then read as unknown_alias in 'status'. The document is re-serialized on
+write: YAML comments and formatting in its frontmatter are not preserved.
 
 Options:
 ${DECLARATION_COMMON_OPTIONS}
@@ -228,7 +233,7 @@ async function depsAdd(argv: string[], stdout: (s: string) => void): Promise<voi
     stdout(renderUsage(DEPS_ADD_USAGE));
     return;
   }
-  const alias = positionals[0]!;
+  const alias = positionals[0]!.trim();
   const help = `${cliInvocation()} deps add --help`;
   if (values["bundle-id"] === undefined) {
     throw new CliError("USAGE", "deps add requires --bundle-id <id>", { help: `${cliInvocation()} deps add ${commandToken(alias)} --bundle-id <id>` });
@@ -317,11 +322,11 @@ async function depsAdd(argv: string[], stdout: (s: string) => void): Promise<voi
         });
       }
       warnings = introduced
-        .filter((p) => p.alias === alias)
+        .filter((p) => p.alias === alias && !before.has(problemKey(p)))
         .map((p) => ({ code: p.code, message: p.detail, field: "dependencies", severity: "warning" as const }));
       return { frontmatter, body: existing?.body ?? "" };
     },
-    errors: declarationErrorHooks(DEPENDENCIES_DOC_ID),
+    errors: declarationErrorHooks(DEPENDENCIES_DOC_ID, { expectedVersion, retry: values.replace ? `${retry} --replace` : retry }),
   });
 
   const stored = parseDependencies(result.doc).dependencies.get(alias);
@@ -412,7 +417,7 @@ async function depsRemove(argv: string[], stdout: (s: string) => void): Promise<
       return { frontmatter: { ...doc.frontmatter, dependencies: remaining }, body: doc.body };
     },
     errors: {
-      ...declarationErrorHooks(DEPENDENCIES_DOC_ID),
+      ...declarationErrorHooks(DEPENDENCIES_DOC_ID, { expectedVersion, retry }),
       // Absent under --expected-version: there is no version to match. Otherwise it was deleted
       // between the probe and the write, and a re-run reports the no-op.
       notFound: () =>

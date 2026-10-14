@@ -27,7 +27,7 @@ import { render, renderUsage, resolveMode } from "../output.js";
 export const BUNDLE_ID_SET_USAGE = `superbee bundle id set — declare this bundle's portable id
 
 Usage:
-  superbee bundle id set <id> [--force] [--expected-version <v>] [--actor <name>] [--dir <path>]
+  superbee bundle id set <id> [--force] [--expected-version <v>] [--actor <name>] [--dir <path> | --remote <url>]
 
 Writes bundle_id into docs/bundle, the document a bundle names itself in. Another bundle's
 docs/dependencies names this bundle by that id, and 'status --with' checks the two agree.
@@ -40,6 +40,9 @@ its title, name, body and every other field; only bundle_id changes. A docs/bund
 is not this bundle's name document and is refused (CONFLICT). Setting the id it already has is a
 no-op (changed:false). Changing a different existing id is refused (CONFLICT) unless --force is
 given: links other bundles resolve against the old id stop resolving.
+
+The document is re-serialized on write: YAML comments and formatting in its frontmatter are not
+preserved.
 
 Options:
   --force                 Replace a different existing bundle_id
@@ -128,7 +131,7 @@ export async function bundleId(argv: string[], stdout: (s: string) => void): Pro
       }
       return { frontmatter: { ...existing.frontmatter, bundle_id: id }, body: existing.body };
     },
-    errors: declarationErrorHooks(BUNDLE_NAME_DOC_ID),
+    errors: declarationErrorHooks(BUNDLE_NAME_DOC_ID, { expectedVersion, retry: values.force ? `${retry} --force` : retry }),
   });
 
   const receipt: Record<string, unknown> = {

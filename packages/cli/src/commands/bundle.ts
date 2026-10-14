@@ -14,7 +14,7 @@ export const BUNDLE_USAGE = `superbee bundle — inspect local bundle targeting,
 
 Usage:
   superbee bundle locate [--dir <path>]
-  superbee bundle id set <id> [--force] [--expected-version <v>] [--actor <name>] [--dir <path>]
+  superbee bundle id set <id> [--force] [--expected-version <v>] [--actor <name>] [--dir <path> | --remote <url>]
   superbee bundle retire <bundle> [--host <url>] [--workspace <id>] [--json]
 
 Commands:

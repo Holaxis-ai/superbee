@@ -295,7 +295,7 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("depsList", "deps list", zero, undefined, DIR_SURFACE),
         ],
         usage:
-          "deps (add <alias> --bundle-id <id> [--source <s>] [--pin <commit>] [--path <rel>] [--replace] | remove <alias> | list [--limit <n>]) [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "deps (add <alias> --bundle-id <id> [--source <s>] [--pin <commit|sha256:digest>] [--path <rel>] [--replace] | remove <alias> | list [--limit <n>]) [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
         summary:
           "Declare, remove or list the bundles this bundle links into (docs/dependencies, created when missing): every entry is checked by the same rules status applies, unknown keys are kept, and a declared alias is replaced only with --replace",
       },

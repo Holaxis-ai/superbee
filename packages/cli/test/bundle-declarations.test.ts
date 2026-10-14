@@ -14,6 +14,7 @@ import {
   mutationActorFromFrontmatter,
   parseDependencies,
   readDoc,
+  VersionConflict,
   writeDoc,
   type Bundle,
 } from "@superbee/core";
@@ -22,6 +23,7 @@ import { bundleCommand } from "../src/commands/bundle.js";
 import { deps } from "../src/commands/deps.js";
 import { link } from "../src/commands/link.js";
 import { status } from "../src/commands/status.js";
+import { declarationErrorHooks } from "../src/declaration-writes.js";
 import { CliError } from "../src/errors.js";
 
 const noPull = async (): Promise<void> => {};
@@ -223,8 +225,8 @@ test("deps add updates an existing document and round-trips every key it does no
       parks: { bundle_id: "hm-parks-2", note: "kept", tags_like: ["x", "y"] },
       beers: { bundle_id: "hm-beer" },
     });
-    // Its unknown keys come back as warnings, not refusals.
-    assert.deepEqual((replaced.warnings as { code: string }[]).map((w) => w.code), ["DEP_UNKNOWN_KEY", "DEP_UNKNOWN_KEY"]);
+    // Its unknown keys were already reported before this write, so --replace does not warn again.
+    assert.equal(replaced.warnings, undefined);
 
     const same = await depsAdd(fx, "beers", "--bundle-id", "hm-beer");
     assert.equal(same.dependency, "unchanged");
@@ -398,6 +400,55 @@ test("flow: bundle id set on the target, deps add on the referrer, link add --bu
     assert.equal(parsed.dependency_problems, undefined);
     const rows = (parsed.dependencies as { rows: Record<string, unknown>[] }).rows;
     assert.deepEqual(rows.map((r) => [r.alias, r.bundle_id, r.state]), [["beers", "hm-beer", "ok"]]);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+// ── Review fixes ──────────────────────────────────────────────────────────────────────────────
+
+test("STALE_HEAD without --expected-version says retries were exhausted and never names a version the caller did not pass", () => {
+  const conflict = new VersionConflict("docs/dependencies", "sha256:aaaa", "sha256:bbbb");
+  const retry = "superbee deps add beers --bundle-id hm-beer";
+  const exhausted = declarationErrorHooks("docs/dependencies", { expectedVersion: undefined, retry }).staleHead!(conflict);
+  assert.equal(exhausted.code, "STALE_HEAD");
+  assert.match(exhausted.message, /retries exhausted; re-run the command/);
+  assert.doesNotMatch(exhausted.message, /--expected-version/);
+  assert.equal(exhausted.help, retry);
+
+  const premise = declarationErrorHooks("docs/dependencies", { expectedVersion: "sha256:aaaa", retry }).staleHead!(conflict);
+  assert.match(premise.message, /has moved since --expected-version sha256:aaaa was read \(current: sha256:bbbb\)/);
+});
+
+test("concurrent deps add runs without --expected-version converge, and no failure blames an unpassed version", async () => {
+  const fx = await fixture();
+  try {
+    const aliases = Array.from({ length: 12 }, (_, i) => `dep-${i}`);
+    const outcomes = await Promise.allSettled(aliases.map((alias, i) => depsAdd(fx, alias, "--bundle-id", `hm-dep-${i}`)));
+    for (const outcome of outcomes) {
+      if (outcome.status === "fulfilled") continue;
+      const err = outcome.reason as CliError;
+      assert.equal(err.code, "STALE_HEAD", String(err));
+      assert.doesNotMatch(err.message, /--expected-version/);
+    }
+    const stored = parseDependencies(await depsDoc(fx)).dependencies;
+    const landed = outcomes.flatMap((o, i) => (o.status === "fulfilled" ? [aliases[i]!] : []));
+    assert.ok(landed.length > 0);
+    for (const alias of landed) assert.ok(stored.has(alias), `${alias} reported added but is missing`);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("deps add and deps remove trim the alias the same way", async () => {
+  const fx = await fixture();
+  try {
+    const added = await depsAdd(fx, " beers ", "--bundle-id", "hm-beer");
+    assert.equal(added.alias, "beers");
+    assert.deepEqual([...parseDependencies(await depsDoc(fx)).dependencies.keys()], ["beers"]);
+    const removed = await depsRemove(fx, " beers ");
+    assert.equal(removed.removed, true);
+    await rejectsWith(() => depsAdd(fx, "  ", "--bundle-id", "hm-beer"), "USAGE", "DEP_ALIAS");
   } finally {
     await fx.cleanup();
   }
