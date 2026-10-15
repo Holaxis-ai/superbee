@@ -326,6 +326,36 @@ test("a host that still refuses attribution and verification on create is named 
   assert.equal(await readFile(path.join(folder, "notes", "gamma.md"), "utf8"), "---\ntype: Note\nsuperbee_updated_by: person:ada\n---\nGamma.\n");
 });
 
+test("--with-history leaves behind, by name, an earlier version whose carried verification pushes its frontmatter past 16 KiB", async () => {
+  const h = await harness();
+  const project = path.join(h.cwd, "project");
+  await mkdir(project);
+  git(project, ["init", "-q", "-b", "main"]);
+  await writeFile(path.join(project, ".gitignore"), ".superbee/\n");
+  git(project, ["add", ".gitignore"]);
+  git(project, ["commit", "-q", "-m", "project"]);
+  const board = path.join(project, ".superbee");
+  git(project, ["worktree", "add", "-q", "--detach", board]);
+  git(board, ["checkout", "-q", "--orphan", "board"]);
+  git(board, ["rm", "-q", "-rf", "--ignore-unmatch", "."]);
+  await writeBundle(board);
+  const events = Array.from({ length: 400 }, (_, i) => `  - by: person:p${i}\n    at: '2026-09-02T00:00:00.000Z'`).join("\n");
+  await writeFile(path.join(board, "notes", "alpha.md"), `---\ntype: Note\ntitle: Alpha\nverified:\n${events}\n---\nAlpha v0.\n`);
+  git(board, ["add", "."]);
+  git(board, ["commit", "-q", "-m", "v0"]);
+  await writeFile(path.join(board, "notes", "alpha.md"), "---\ntype: Note\ntitle: Alpha\n---\nAlpha now.\n");
+  git(board, ["commit", "-q", "-am", "v1"]);
+  const canonical = await realpath(board);
+  const fake = new FakeCreateHost();
+  const preview = await run(h, ["--to", "hosted", "--dir", canonical, "--host", HOST, "--with-history"], fake);
+  assert.equal(preview.ready, true, JSON.stringify(preview.blockers));
+  assert.match(JSON.stringify(preview), /notes\/alpha\.md@[0-9a-f]{12}.*16 KiB of frontmatter/);
+  const receipt = await run(h, ["--to", "hosted", "--dir", canonical, "--host", HOST, "--bundle-id", "team.board", "--with-history", "--yes"], fake);
+  assert.equal(receipt.published, "created");
+  const body = fake.creates[0]!.body as { history?: unknown[] };
+  assert.equal((body.history ?? []).length, 0);
+});
+
 test("an OKF 0.1 bundle carries a Kind's required timestamp and actor as authored", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "b");

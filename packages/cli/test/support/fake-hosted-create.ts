@@ -305,6 +305,11 @@ export class FakeCreateHost {
     if (reservedDigest !== undefined && reservedDigest !== digest) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
     if (!tenants.includes(body.workspace)) return refusal("workspace_not_found", "That workspace is not one of yours. Nothing was created.");
     if (this.options.unavailable) return refusal("bundle_create_unavailable", "This workspace does not offer bundle creation for this client. Nothing was created.");
+    // The host bounds each document's and imported version's frontmatter at 16 KiB as JSON, and
+    // refuses the whole creation without naming the file.
+    if ([...documents, ...history].some((entry) => Buffer.byteLength(JSON.stringify(entry.frontmatter ?? {})) > 16 * 1024)) {
+      return refusal("result_too_large", "A document's frontmatter exceeds 16 KiB.");
+    }
     if (this.options.refusesProvenance) {
       const named = ["superbee_updated_by", "verified"].filter((field) => documents.some((doc) => field in doc.frontmatter));
       if (named.length > 0) return refusal("validation_failed", `A document's frontmatter sets ${named.join(" and ")}, which only the host writes. Remove ${named.length === 1 ? "it" : "them"} and publish again.`);
