@@ -132,6 +132,8 @@ const REJECT: Record<KindFieldType, unknown[]> = {
   "https-url": [
     "http://example.org/", "https://", "https://user:pw@example.org/", "https://user@example.org/",
     "https://exa mple.org", " https://example.org", `${LONG_HTTPS}a`, 42, null,
+    "https:example.com", "https:/x", "https:\\x", "https:\\\\x", "\u0001https://example.org", "https://example.org\u007F",
+    "https://example.org/\u0000", "\u001Fhttps://example.org/",
   ],
   "https-url-list": ["https://a.example", ["https://a.example", "https://a.example"], ["http://a.example"], null],
   integer: [1.5, -0, yaml("-0.0"), 2 ** 53, "12", yaml("0o17"), null],

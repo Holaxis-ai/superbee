@@ -1192,6 +1192,8 @@ const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SLUG_MAX_LENGTH = 200;
 const HTTPS_URL_MAX_LENGTH = 2048;
+const HTTPS_PREFIX_RE = /^https:\/\//i;
+const CONTROL_CHARACTER_RE = /[\u0000-\u001F\u007F]/;
 
 function describeValue(value: unknown): string {
   if (typeof value === "string") return `got the string ${JSON.stringify(value.length > 60 ? `${value.slice(0, 57)}...` : value)}`;
@@ -1202,7 +1204,10 @@ function describeValue(value: unknown): string {
 
 function httpsUrlProblem(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > HTTPS_URL_MAX_LENGTH || /\s/.test(value)) return describeValue(value);
-  // The WHATWG parser is the authority, so scheme case is irrelevant (`HTTPS://` is https).
+  // WHATWG strips control characters and repairs `https:x`, `https:/x` and `https:\\x` into a host,
+  // so the authored text must already be an absolute `https://` URL with no control characters.
+  if (!HTTPS_PREFIX_RE.test(value) || CONTROL_CHARACTER_RE.test(value)) return describeValue(value);
+  // The WHATWG parser is the authority for the rest, so scheme case is irrelevant (`HTTPS://` is https).
   let parsed: URL;
   try {
     parsed = new URL(value);
