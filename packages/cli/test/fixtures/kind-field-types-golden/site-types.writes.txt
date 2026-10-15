@@ -1,0 +1,91 @@
+## doc update venues/riverside-hall --title Riverside Hall East --latitude 44.2 --topics history
+{"doc":"updated","id":"venues/riverside-hall","type":"Venue","timestamp":"2026-10-02T09:00:00Z","changed":true,"version":"sha256:8db4ceb36204c8a95058600b358135bff05f7eb4b80175fc1fe95a1203287939","help":["npx --no-install superbee doc read venues/riverside-hall"]}
+--- venues/riverside-hall.md
+---
+type: Venue
+title: Riverside Hall East
+timestamp: '2026-10-02T09:00:00Z'
+latitude: '44.2'
+website: 'https://example.org/riverside'
+topics: history
+opened: '2019-05-01'
+generated:
+  by: 'human:golden'
+  at: '2026-10-14T12:00:00.000Z'
+superbee_updated_by: 'human:golden'
+---
+
+# Riverside Hall
+
+A hall by the river.
+
+## doc field set set venues/riverside-hall website https://example.org/east
+{"doc":"field","id":"venues/riverside-hall","field":"website","operation":"set","changed":true,"version":"sha256:857ccaaee001026061aad190db2ffbaff964f0bd624ab2c2bb32fc3378631666","scope":{"field":"website","action":"set","outcome":"edited"},"help":["npx --no-install superbee doc read venues/riverside-hall --dir=<dir>"]}
+--- venues/riverside-hall.md
+---
+type: Venue
+title: Riverside Hall East
+timestamp: '2026-10-02T09:00:00Z'
+latitude: '44.2'
+website: 'https://example.org/east'
+topics: history
+opened: '2019-05-01'
+generated:
+  by: 'human:golden'
+  at: '2026-10-14T12:00:00.000Z'
+superbee_updated_by: 'human:golden'
+---
+
+# Riverside Hall
+
+A hall by the river.
+
+## doc field set set venues/riverside-hall opened 2020
+{"doc":"field","id":"venues/riverside-hall","field":"opened","operation":"set","changed":true,"version":"sha256:72fd9b2afc63af93aaf6acdb9b6f7a5c8d7da3195d5e322f3716fc8c0d8e5d29","scope":{"field":"opened","action":"set","outcome":"edited"},"help":["npx --no-install superbee doc read venues/riverside-hall --dir=<dir>"]}
+--- venues/riverside-hall.md
+---
+type: Venue
+title: Riverside Hall East
+timestamp: '2026-10-02T09:00:00Z'
+latitude: '44.2'
+website: 'https://example.org/east'
+topics: history
+opened: '2020'
+generated:
+  by: 'human:golden'
+  at: '2026-10-14T12:00:00.000Z'
+superbee_updated_by: 'human:golden'
+---
+
+# Riverside Hall
+
+A hall by the river.
+
+## doc write venues/new-hall --type Venue --title New Hall --body # New Hall
+
+{"doc":"written","changed":true,"id":"venues/new-hall","type":"Venue","timestamp":null,"version":"sha256:47f7a457ca18a92f832ce6018814b1f34a46382246916ccbd2d24e3945971be4","warnings":[{"code":"KIND_FIELD_MISSING","message":"'Venue' requires a non-empty 'latitude' field (declared by conventions/venue).","field":"latitude","severity":"warning"}],"help":["npx --no-install superbee doc read venues/new-hall"]}
+--- venues/new-hall.md
+---
+type: Venue
+title: New Hall
+generated:
+  by: 'human:golden'
+  at: '2026-10-14T12:00:00.000Z'
+superbee_updated_by: 'human:golden'
+---
+# New Hall
+
+## doc write venues/old-mill --type Venue --title Old Mill --body Rewritten.
+
+{"doc":"written","changed":true,"id":"venues/old-mill","type":"Venue","timestamp":null,"version":"sha256:b8839466ed428be315f50996aec58cf907a7f81e65194af0092b0d95fb7e2d47","dropped_fields":["latitude","website","topics"],"note":"'doc write' is a FULL replace and dropped 3 frontmatter field(s) not re-supplied: latitude, website, topics. To change fields while preserving the rest (e.g. a status set by 'doc update' or 'new'), use 'npx --no-install superbee doc update venues/old-mill' instead.","warnings":[{"code":"KIND_FIELD_MISSING","message":"'Venue' requires a non-empty 'latitude' field (declared by conventions/venue).","field":"latitude","severity":"warning"}],"help":["npx --no-install superbee doc read venues/old-mill"]}
+--- venues/old-mill.md
+---
+type: Venue
+title: Old Mill
+generated:
+  by: 'human:golden'
+  at: '2026-10-14T12:00:00.000Z'
+superbee_updated_by: 'human:golden'
+---
+Rewritten.
+
