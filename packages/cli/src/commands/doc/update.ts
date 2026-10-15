@@ -3,7 +3,9 @@ import { renderUsage } from "../../output.js";
 // rationale (Fork 1/Fork 2 of `plans/kind-aware-doc-surface.md`). Dynamic fields also accept the
 // version-aware logical aliases declared by core's Kind field-coordinate policy.
 import { parseArgs } from "node:util";
+import { refuseTypedListPatch } from "../../kind-write.js";
 import {
+  kindFieldInputValue,
   loadKinds,
   progressStatusCoordinate,
   projectKindForAuthoring,
@@ -432,7 +434,8 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             );
           }
           suppliedByStorageField.set(coordinate.storageField, field);
-          nextFrontmatter[coordinate.storageField] = value;
+          refuseTypedListPatch(kind, coordinate.storageField, field, "doc update");
+          nextFrontmatter[coordinate.storageField] = kindFieldInputValue(kind, coordinate.storageField, [value]);
         }
       }
 

@@ -129,3 +129,22 @@ export function defaultTimestampAndValidateKind(
   }
   return warnings;
 }
+
+/**
+ * Refuse a patch of a Kind field typed as a list. `doc update` takes one value per flag and
+ * `doc field set` never replaces a list, so a typed list is authored whole: at creation with
+ * `new` (repeat the flag) or by replacing the complete document.
+ */
+export function refuseTypedListPatch(kind: KindConvention, storageField: string, authoringField: string, command: string): void {
+  const type = kind.fields.types && Object.prototype.hasOwnProperty.call(kind.fields.types, storageField)
+    ? kind.fields.types[storageField]
+    : undefined;
+  if (type !== "string-list" && type !== "https-url-list") return;
+  throw new CliError(
+    "USAGE",
+    `'${authoringField}' is a ${type} field, and '${command}' does not replace lists. Set it when creating the ` +
+      `document with 'new' (repeat the flag once per item), or replace the complete document: pull ` +
+      `--doc-key <id>.md --out <file>, edit that file, then promote it ('doc write' cannot carry Kind fields).`,
+    { help: `${cliInvocation()} new ${commandToken(kind.governs)} --help` },
+  );
+}

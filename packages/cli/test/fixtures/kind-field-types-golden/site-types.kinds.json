@@ -1,0 +1,1 @@
+{"count":1,"kinds":[{"governs":"Venue","required":["title","latitude"],"optional":["website","topics","opened"],"descriptions":{"latitude":"Decimal degrees north."},"values":{"topics":["live-music","history"]},"path":"venues/"}]}

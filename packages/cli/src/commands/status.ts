@@ -119,7 +119,8 @@ Category semantics (one line each):
   kind_warnings      Frontmatter/section violations against a doc's OWN declared kind (a per-doc
                       lint; see 'kinds').
   conformance_debt   Count of GOVERNED DOCS carrying at least one FRONTMATTER-level kind violation
-                      (a missing required field, an out-of-enum value, or wrong arity) — a per-DOC,
+                      (a missing required field, an out-of-enum value, wrong arity, or a value not
+                      matching its declared fields.types type) — a per-DOC,
                       frontmatter-only signal, deliberately narrower than 'kind_warnings' (a
                       per-VIOLATION total that also counts body-section violations). Present (even
                       at 0) whenever the bundle declares any kind at all; absent on a

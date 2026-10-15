@@ -14,6 +14,8 @@ import { renderUsage } from "../output.js";
 // already-declared field, or removing an absent one, is a no-op that exits 0.
 import { parseArgs } from "node:util";
 import {
+  isKindFieldType,
+  KIND_FIELD_TYPES,
   loadKinds,
   parseConventionDoc,
   PROGRESS_STATUS_FIELD,
@@ -38,7 +40,7 @@ const RESERVED_FIELD_NAMES = new Set<string>(RESERVED_KIND_FIELD_NAMES);
 export const KIND_USAGE = `superbee kind — edit, draft, or dismiss a bundle's kind conventions
 
 Usage:
-  superbee kind field "<Kind>" add <name> [--required] [--values <a,b,c>] [options]
+  superbee kind field "<Kind>" add <name> [--required] [--values <a,b,c>] [--type <type>] [options]
   superbee kind field "<Kind>" remove <name> [options]
   superbee kind draft "<Type>" [--apply <plan-token>] [options]
   superbee kind dismiss "<Type>" [--reason <text>] [options]
@@ -46,7 +48,8 @@ Usage:
 'kind field' adds or removes a DECLARED field on the '<Kind>' kind's governing convention doc.
 The plural 'kinds' command LISTS what a bundle declares; this singular 'kind' command MUTATES one
 (mirroring 'recipes'/'recipe'). A field added without --required is OPTIONAL; --values restricts
-it to an enumerated set. Idempotent: adding an already-declared field (or removing an absent one)
+it to an enumerated set, and --type declares its value type in fields.types. Both change the
+declaration only; existing instances are not rewritten or checked. Idempotent: adding an already-declared field (or removing an absent one)
 is a no-op that exits 0. Preserves everything else on the convention (governs/path/sections/body,
 and any fields.* sibling key this command does not own — e.g. a declared 'terminal' set).
 
@@ -65,6 +68,8 @@ machine, once the bundle syncs. Reopen later with 'kind draft' (a dismissal is r
 Options:
   --required            Add the field as REQUIRED (default: optional; 'field add' only)
   --values <a,b,c>      Restrict the field to this comma-separated enum ('field add' only)
+  --type <type>         Declare the field's value type ('field add' only), one of:
+                        ${KIND_FIELD_TYPES.join(", ")}
   --apply <plan-token>  Apply the exact previously inspected draft plan ('draft' only)
   --reason <text>       Record why the Kind was declined ('dismiss' only)
   --dir <path>          Bundle directory (default: discovered from the cwd)
@@ -97,6 +102,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
         options: {
           required: { type: "boolean" },
           values: { type: "string" },
+          type: { type: "string" },
           apply: { type: "string" },
           reason: { type: "string" },
           dir: { type: "string" },
@@ -157,8 +163,8 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
         help: `${cliInvocation()} kind ${payload.mode} "<Type>"`,
       });
     }
-    if (values.required || values.values !== undefined) {
-      throw new CliError("USAGE", "--required/--values apply to 'kind field add', not 'kind draft'/'kind dismiss'", {
+    if (values.required || values.values !== undefined || values.type !== undefined) {
+      throw new CliError("USAGE", "--required/--values/--type apply to 'kind field add', not 'kind draft'/'kind dismiss'", {
         help: helpHint,
       });
     }
@@ -204,8 +210,17 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
       { help: helpHint },
     );
   }
-  if (action === "remove" && (values.required || values.values !== undefined)) {
-    throw new CliError("USAGE", "--required/--values apply to 'add', not 'remove'", { help: helpHint });
+  if (action === "remove" && (values.required || values.values !== undefined || values.type !== undefined)) {
+    throw new CliError("USAGE", "--required/--values/--type apply to 'add', not 'remove'", { help: helpHint });
+  }
+  const fieldType = values.type?.trim();
+  if (fieldType !== undefined && !isKindFieldType(fieldType)) {
+    throw new CliError("USAGE", `${JSON.stringify(fieldType)} is not a field type; --type takes one of: ${KIND_FIELD_TYPES.join(", ")}`, {
+      help: helpHint,
+    });
+  }
+  if (fieldType === "https-url-list" && values.values !== undefined) {
+    throw new CliError("USAGE", "--values cannot restrict an https-url-list field", { help: helpHint });
   }
   if (values.actor !== undefined && values.actor.trim() === "") {
     throw new CliError("USAGE", "--actor was given an empty value — pass an actor identity or omit the flag.", {
@@ -256,7 +271,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
     strict: false, // this command EDITS the schema itself — it never validates against one
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor: values.actor?.trim(),
-    input: { kind: "kind-field", mutation: { governs: kindName, field: fieldName, action, required: values.required, values: enumVals, okfVersion: preparedEdition as "0.1" | "0.2" } },
+    input: { kind: "kind-field", mutation: { governs: kindName, field: fieldName, action, required: values.required, values: enumVals, ...(fieldType !== undefined ? { type: fieldType } : {}), okfVersion: preparedEdition as "0.1" | "0.2" } },
     errors: {
       notFound: () =>
         new CliError(

@@ -97,6 +97,19 @@ next sync's gate. A receipt names a gate that passed
 unchanged. Evidence: `packages/cli/test/hosted-sync-gate.test.ts` and
 `packages/cli/test/sync-gate-retry.test.ts`.
 
+## Kind field types are additive
+
+A Kind that declares no `fields.types` renders byte-identical output: `status`, `kinds`,
+`new "<Kind>" --help`, `doc update`, `doc write` and `doc field set` are unchanged for it,
+including when the Kind carries `x_*` keys such as `x_field_types`, which core ignores. A Kind
+that declares types adds a `types` map to its `kinds` row and `; type: <t>` to each typed field
+line of `new "<Kind>" --help`. A wrong value, or `null`, on a typed field is `KIND_FIELD_TYPE`,
+counted in the existing `kind_warnings` and `conformance_debt`; `status` gains no key. The write
+policy is the enum policy: `new` and strict writes refuse, `doc write` warns, and the overwrite
+ratchet refuses a new violation. Exit codes are unchanged. `recipe evolve` is excluded from this
+guarantee. Evidence: `packages/cli/test/kind-field-types-golden.test.ts` and
+`packages/cli/test/kind-field-types.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test

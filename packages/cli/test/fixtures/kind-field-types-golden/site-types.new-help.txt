@@ -1,0 +1,34 @@
+npx --no-install superbee new Venue <id> — create a Venue instance
+
+Fields (declared by the 'Venue' kind convention):
+  --title <v>  required
+  --latitude <v>  required — Decimal degrees north.
+  --website <v>  optional
+  --topics <v>  optional; allowed: live-music | history
+  --opened <v>  optional
+Required body headings (level 1; exact Markdown):
+  (none)
+Id:  auto-prefixed with 'venues/' unless <id> already carries it
+
+Repeat a flag to set an array value (e.g. --tag a --tag b). Validation is STRICT; violations reject without creating a document.
+To ADD a field: npx --no-install superbee kind field Venue add <name> [--required] [--values <a,b,c>].
+
+Options:
+  --stale-after <iso>  Expiration instant (OKF v0.2 only); valid date, time, and zone required
+  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported).
+                   OKF v0.2 bundles accept only human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
+  --body <markdown>
+                   Use inline Markdown as the complete initial body; mutually exclusive with
+                   --body-file
+  --body-file <path>
+                   Read the complete initial Markdown body from a local file; when omitted,
+                   scaffold the declared body sections
+  --link "<type>=<target-id>"
+                   Repeatable: after creating this instance, add an outbound link of type
+                   <type> to <target-id> (same idempotent path as 'link add'; a dangling
+                   target is allowed)
+  --no-prefix      Use <id> verbatim (skip the auto path prefix above)
+  --dir <path>     Bundle directory (default: discovered from the cwd)
+  --remote <url>   Talk to a wire-protocol server instead of a local bundle
+  --json           Emit compact JSON instead of TOON
+  -h, --help       Show this help

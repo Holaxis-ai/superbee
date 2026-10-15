@@ -1,0 +1,29 @@
+home: local
+sync: none (local only)
+docs: 3
+kinds: 1
+malformed: 0
+kind_warnings: 1
+unresolved_links: 0
+orphans: 0
+stale: 0
+no_timestamp: 0
+registry_warnings: 0
+link_type_violations: 0
+missing_expected_links: 0
+trust:
+  human_reviewed: 0
+  machine_confirmed: 0
+  unverified: 3
+conformance_debt: 1
+kind_lint:
+  shown: 1
+  total: 1
+  rows[1]{id,field,code}:
+    venues/old-mill,topics,KIND_FIELD_ARITY
+conformance_debt_docs:
+  shown: 1
+  total: 1
+  rows[1]{id,type}:
+    venues/old-mill,Venue
+  help: npx --no-install superbee doc update <id> --<field> <value>  — fix a listed doc's missing/invalid field(s); see 'npx --no-install superbee kinds' for each governing kind's declared fields

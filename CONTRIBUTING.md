@@ -427,6 +427,18 @@ engine reads and writes never load it implicitly. Validation reuses core's headi
 primitives rather than defining parallel parsers or clocks. Convention seeding belongs to generic
 CLI recipes, never to `initBundle` or another engine special case.
 
+A convention may declare value types in `fields.types` (`field: type`) from one closed vocabulary
+owned by `KIND_FIELD_TYPES` in `packages/core/src/kinds.ts`: `date`, `datetime`, `https-url`,
+`https-url-list`, `integer`, `number`, `boolean`, `slug`, `string-list`, `latitude` and
+`longitude`. `kindFieldTypeProblem` is the one predicate; `datetime` is exactly `parseIsoInstant`
+and `https-url` is read by the WHATWG `URL` parser. An unknown type, or a type on a field the Kind
+does not declare, is a convention warning and the entry is skipped. A wrong value, or `null`, on a
+typed field is a `KIND_FIELD_TYPE` validation warning with the enum's write posture; an absent
+field is not checked. `fields.values` may restrict any scalar type and checks each item of a
+`string-list` without the arity rule; on an `https-url-list` it is a convention warning. Flag and
+form text converts through `kindFieldInputValue` in browser-safe `@superbee/core/kinds`. Domain
+composites such as opening hours, phone numbers or money stay in recipe or site tooling.
+
 ## Findings and commitments
 
 A discovery must land in the shared row table for its defect class. The project bundle document
