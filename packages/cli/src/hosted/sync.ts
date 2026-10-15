@@ -89,7 +89,7 @@ import {
 import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
 import { refuseTreePrivateState } from "../private-state-publication.js";
 import { adoptHostRoot, moveRootBase, readRootFile, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
-import { declaredHostedSyncGate, runHostedSyncGate, SYNC_GATE_CONFIG, type SyncGate } from "../commands/sync/gate.js";
+import { declaredHostedSyncGate, runHostedSyncGate, SYNC_GATE_CONFIG, type HostedGateDeclaration } from "../commands/sync/gate.js";
 import { recordPulled, recordSynced } from "./freshness.js";
 import { needsPersonAtTerminal, processTerminal, type HostedTerminal } from "./terminal.js";
 export type { HostedTerminal } from "./terminal.js";
@@ -156,7 +156,10 @@ SUPERBEE_SYNC_GATE=1, SUPERBEE_SYNC_HOME=hosted, SUPERBEE_BOARD_PATH, SUPERBEE_H
 SUPERBEE_HOSTED_BUNDLE_ID set (superbee.syncGateTimeoutSeconds overrides the 600s timeout). A
 non-zero exit, a timeout, or any change it makes to the folder sends nothing at all: your edits
 stay recorded in the checkout, and sync exits 5 with code GATE_FAILED and the gate's last output
-lines. --inspect, --resolve and --restore-deletes send nothing and never run it.
+lines. A Git configuration that cannot be read fails the same way (reason gate_config_unreadable)
+rather than send ungated. A front page edited after the gate judged it is not sent (paused,
+changed_since_gate) until the next sync's gate judges it. --inspect, --resolve and
+--restore-deletes send nothing and never run it.
 Each write names the agent the sync runs under, recorded with it on the host as unverified
 attribution (never authority): claude-code under Claude Code (CLAUDECODE=1), or SUPERBEE_VIA=<token>
 (1 to 32 of a-z 0-9 . _ -, not starting with superbee); SUPERBEE_NO_VIA=<any value> names none.
@@ -820,7 +823,7 @@ async function hostRoot(reader: Pick<HostedReadAdapter, "hostedCapabilities">): 
 }
 
 /** The run's front-page step (`root-sync.ts`); `send` false only reads (a pull). */
-function rootStep(session: Session, deps: HostedSyncDeps, send: boolean): Promise<RootStepReport> {
+function rootStep(session: Session, deps: HostedSyncDeps, send: boolean, judged?: string | null): Promise<RootStepReport> {
   const { binding } = session;
   const via = resolveHostedVia(deps.auth.env).token;
   return syncRoot({
@@ -839,6 +842,7 @@ function rootStep(session: Session, deps: HostedSyncDeps, send: boolean): Promis
         }
       : {}),
     persist: session.persist,
+    ...(judged !== undefined ? { judged } : {}),
   });
 }
 
@@ -943,7 +947,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
   refuseTreePrivateState(binding.path, "sync", String(resumeCommand));
   const takeHostDeletions = values["take-host-deletions"];
   // From the person's own Git configuration, never from the folder's documents or the host.
-  const gate: SyncGate | null = declaredHostedSyncGate(binding.path);
+  const declared: HostedGateDeclaration = declaredHostedSyncGate(binding.path);
   let failure: CliError | null = null;
   const receipt = await withSession(binding, deps, resumeCommand, async (session) => {
     const { store, local, reader, projection } = session;
@@ -994,8 +998,23 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // The declared sync gate judges the folder after the pull placed the host's changes and before
     // anything is sent: a failure sends nothing, no document and no front page.
     let gateDetails: Record<string, unknown> | undefined;
-    if (gate && (await wouldSend(session))) {
-      const judged = await runHostedSyncGate({ folder: binding.path, origin: binding.origin, bundleId: binding.bundle_id }, gate);
+    // The front page's bytes as the gate judged them: the root step sends only those.
+    let judgedRoot: string | null | undefined;
+    if (declared.kind !== "none" && (await wouldSend(session))) {
+      if (declared.kind === "unreadable") {
+        throw new CliError("GATE_FAILED", `Git could not read ${declared.key} (git config exited ${declared.status}), so a declared sync gate cannot be ruled out; nothing was sent`, {
+          details: {
+            reason: "gate_config_unreadable",
+            folder: binding.path,
+            unsent: await unsent(),
+            gate: { key: declared.key, exit_status: declared.status, ...(declared.stderr ? { output_tail: declared.stderr } : {}) },
+          },
+          help: `fix what git config --get ${commandToken(declared.key)} reports when run from ${binding.path}, then ${resumeCommand}`,
+        });
+      }
+      const root = await readRootFile(binding.path);
+      judgedRoot = root.kind === "file" ? digestOf(root.bytes) : null;
+      const judged = await runHostedSyncGate({ folder: binding.path, origin: binding.origin, bundleId: binding.bundle_id }, declared.gate);
       if (!judged.passed) {
         throw new CliError("GATE_FAILED", `the sync gate ${judged.reason ?? "failed"}; nothing was sent`, {
           details: {
@@ -1033,7 +1052,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // The front page, after the documents: settled, pulled, or sent against its base.
     let root: RootStepReport;
     try {
-      root = await rootStep(session, deps, true);
+      root = await rootStep(session, deps, true, judgedRoot);
     } catch (error) {
       throw await readFailure(error, session, resumeCommand, await unsent());
     }

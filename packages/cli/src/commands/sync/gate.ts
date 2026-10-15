@@ -18,6 +18,8 @@ export const SYNC_GATE_TIMEOUT_CONFIG = "superbee.syncGateTimeoutSeconds";
 export const DEFAULT_SYNC_GATE_TIMEOUT_SECONDS = 600;
 const OUTPUT_TAIL_LINES = 40;
 const OUTPUT_MAX_CHARS = 256 * 1024;
+/** The signals that end sync while a gate runs; each takes the gate's whole process group down first. */
+const GATE_FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 export interface SyncGate {
   command: string;
@@ -133,17 +135,43 @@ export async function runHostedSyncGate(context: HostedGateContext, gate: SyncGa
   return ran;
 }
 
+/** What a hosted checkout's Git configuration declares: no gate, a gate, or nothing readable. */
+export type HostedGateDeclaration =
+  | { readonly kind: "none" }
+  | { readonly kind: "gate"; readonly gate: SyncGate }
+  | { readonly kind: "unreadable"; readonly key: string; readonly status: number; readonly stderr: string };
+
 /**
- * The declared gate for a hosted checkout's folder. Git itself is optional for a hosted
- * checkout: with no git installed, nothing can declare a gate.
+ * The declared gate for a hosted checkout's folder. Only `git config --get` exiting 1 (the key is
+ * absent) or an empty value declares none; any other failure (a malformed config file, a
+ * containing repository Git refuses to read) is `unreadable`, and sync fails closed rather than
+ * send without the gate a person may have declared. Git itself is optional for a hosted checkout:
+ * with no git installed, nothing can declare a gate.
  */
-export function declaredHostedSyncGate(folder: string): SyncGate | null {
+export function declaredHostedSyncGate(folder: string): HostedGateDeclaration {
+  let configured: ReturnType<typeof runGit>;
+  let timeout: ReturnType<typeof runGit> | undefined;
   try {
-    return declaredSyncGate(folder);
+    configured = runGit(folder, ["config", "--get", SYNC_GATE_CONFIG]);
+    if (configured.status === 0 && configured.stdout.trim() !== "") timeout = runGit(folder, ["config", "--get", SYNC_GATE_TIMEOUT_CONFIG]);
   } catch (error) {
-    if (isBoardGitError(error) && error.code === "GIT_MISSING") return null;
+    if (isBoardGitError(error) && error.code === "GIT_MISSING") return { kind: "none" };
     throw error;
   }
+  const unreadable = (key: string, run: ReturnType<typeof runGit>): HostedGateDeclaration => ({
+    kind: "unreadable",
+    key,
+    status: run.status,
+    stderr: outputTail(run.stderr),
+  });
+  if (configured.status === 1) return { kind: "none" };
+  if (configured.status !== 0) return unreadable(SYNC_GATE_CONFIG, configured);
+  const command = configured.stdout.trim();
+  if (command === "" || timeout === undefined) return { kind: "none" };
+  if (timeout.status !== 0 && timeout.status !== 1) return unreadable(SYNC_GATE_TIMEOUT_CONFIG, timeout);
+  const raw = timeout.status === 0 ? timeout.stdout.trim() : "";
+  const seconds = /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : DEFAULT_SYNC_GATE_TIMEOUT_SECONDS;
+  return { kind: "gate", gate: { command, timeoutSeconds: seconds } };
 }
 
 interface GateCommandRun {
@@ -180,6 +208,8 @@ async function folderFingerprint(folder: string): Promise<string> {
     const entries = await fs.readdir(path.join(folder, rel), { withFileTypes: true });
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
+      // A repository's own bookkeeping (its index, refreshed by a `git status`) is not the checkout.
+      if (entry.name === ".git") continue;
       const child = rel === "" ? entry.name : `${rel}/${entry.name}`;
       const full = path.join(folder, child);
       if (entry.isDirectory()) {
@@ -234,10 +264,22 @@ function runInOwnGroup(command: string, cwd: string, timeoutMs: number, env: Nod
       timedOut = true;
       killGroup();
     }, timeoutMs);
+    // The gate leads its own group, so a Ctrl-C at the terminal reaches only this process: take
+    // the group down with it, then let the signal do what it would have done.
+    const onSignal = (signal: NodeJS.Signals): void => {
+      killGroup();
+      stopListening();
+      process.kill(process.pid, signal);
+    };
+    const stopListening = (): void => {
+      for (const signal of GATE_FORWARDED_SIGNALS) process.removeListener(signal, onSignal);
+    };
+    for (const signal of GATE_FORWARDED_SIGNALS) process.on(signal, onSignal);
     const finish = (run: Omit<GroupRun, "output" | "timedOut">): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      stopListening();
       killGroup();
       resolve({ ...run, output, timedOut });
     };

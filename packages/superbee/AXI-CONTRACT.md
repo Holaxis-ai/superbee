@@ -89,7 +89,10 @@ send in a Git board clone and in a hosted checkout alike. A hosted checkout read
 configuration as seen from its folder, never from the bundle's documents or the host. It runs
 after the pull and before anything is sent, only when the run has something to send. A failure
 sends nothing: no document and no front page. The edits stay in the checkout, and sync exits 5
-with code `GATE_FAILED` and the gate's facts in `details.gate`. A receipt names a gate that passed
+with code `GATE_FAILED` and the gate's facts in `details.gate`. A Git configuration that cannot be
+read fails closed the same way (`reason: gate_config_unreadable`). Only the bytes the gate judged
+are sent: a front page edited after it ran waits as a `paused` row (`changed_since_gate`) for the
+next sync's gate. A receipt names a gate that passed
 (`gate: passed: ...`). With no gate declared, the receipt has no `gate` key and is otherwise
 unchanged. Evidence: `packages/cli/test/hosted-sync-gate.test.ts` and
 `packages/cli/test/sync-gate-retry.test.ts`.

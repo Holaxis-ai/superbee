@@ -3,11 +3,12 @@
 // The gate comes from Git configuration as seen from the checkout folder, never from the host.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { decode } from "@toon-format/toon";
 
@@ -195,4 +196,90 @@ test("the gate is never sourced from the host: documents that spell a Git config
   assert.ok(!("gate" in receipt), "no gate ran");
   assert.equal(existsSync(pwned), false);
   assert.throws(() => execFileSync("git", ["-C", h.folder, "config", "--get", "superbee.syncGate"], { stdio: "pipe" }));
+});
+
+test("a front page edited after the gate judged it is not sent: it waits for the next sync's gate", async () => {
+  const h = await harness(new FakeHost({ rootWrites: "allowed" }));
+  repositoryWith(h, { "superbee.syncGate": "! grep -rq BAD --include=*.md ." });
+  const root = path.join(h.folder, "index.md");
+  await writeFile(root, `${await readFile(root, "utf8")}\nA judged front page.\n`);
+  await editAlpha(h, "Alpha body, sent first.\n");
+  // While the documents are being sent, after the gate passed, the front page gains what it rejects.
+  h.host.hook = () => {
+    writeFileSync(root, "# BAD front page\n");
+    h.host.hook = undefined;
+    return undefined;
+  };
+  const { text, error } = await failingSync(h);
+  assert.equal(error.exitCode, EXIT.RUNTIME, "a paused row: run sync again");
+  const receipt = decode(text.trim()) as { gate: string; rows: { id: string; state: string; reason: string }[] };
+  assert.match(receipt.gate, /^passed:/);
+  assert.deepEqual(receipt.rows.find((row) => row.id === "index.md"), { ...receipt.rows.find((row) => row.id === "index.md"), state: "paused", reason: "changed_since_gate" });
+  assert.equal(h.host.rootCalls.length, 0, "the front page the gate never judged was not sent");
+  assert.equal(h.host.docs.get("notes/alpha")!.body, "Alpha body, sent first.\n");
+
+  // The next sync judges it: the gate rejects it, and it is still not sent.
+  const next = await failingSync(h);
+  assert.equal(next.error.code, "GATE_FAILED");
+  assert.equal(h.host.rootCalls.length, 0);
+});
+
+test("a Git configuration that cannot be read fails closed: GATE_FAILED, gate_config_unreadable, nothing is sent", async () => {
+  const h = await harness();
+  repositoryWith(h, { "superbee.syncGate": "exit 1" });
+  await writeFile(path.join(h.cwd, ".git", "config"), "[superbee\n\tsyncGate = exit 1\n");
+  await editAlpha(h, "Alpha body, unreadable config.\n");
+  const { error } = await failingSync(h);
+  assert.equal(error.code, "GATE_FAILED");
+  assert.equal(error.exitCode, 5);
+  const details = error.details as { reason: string; gate: { key: string; exit_status: number } };
+  assert.equal(details.reason, "gate_config_unreadable");
+  assert.equal(details.gate.key, "superbee.syncGate");
+  assert.notEqual(details.gate.exit_status, 1);
+  assert.equal(sent(h), 0);
+});
+
+test("a gate's writes inside a repository's own .git are not changes to the checkout", async () => {
+  const h = await harness();
+  // The checkout folder is its own repository root, and the gate refreshes its index.
+  execFileSync("git", ["init", "-q", h.folder]);
+  execFileSync("git", ["-C", h.folder, "config", "superbee.syncGate", "git add -A && touch .git/gate-ran"]);
+  await editAlpha(h, "Alpha body, from a repository root.\n");
+  const receipt = await runSync(h);
+  assert.equal(receipt.status, "synced");
+  assert.ok(existsSync(path.join(h.folder, ".git", "gate-ran")));
+});
+
+test("an interrupted sync takes the gate's whole process group down with it", async () => {
+  const work = await stateDir();
+  const pidFile = path.join(work, "gate.pid");
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const script = path.join(work, "interrupted.mjs");
+  const gateModule = pathToFileURL(path.join(here, "..", "src", "commands", "sync", "gate.ts")).href;
+  await writeFile(
+    script,
+    `import { runHostedSyncGate } from ${JSON.stringify(gateModule)};\n` +
+      `await runHostedSyncGate({ folder: ${JSON.stringify(work)}, origin: "https://hosted.example", bundleId: "b" }, { command: ${JSON.stringify(`echo $$ > '${pidFile}'; exec sleep 30`)}, timeoutSeconds: 60 });\n`,
+  );
+  const child = spawn(process.execPath, ["--import", pathToFileURL(path.join(here, "ts-loader.mjs")).href, script], { stdio: "ignore" });
+  const exited = new Promise<NodeJS.Signals | null>((resolve) => child.on("exit", (_code, signal) => resolve(signal)));
+  const deadline = Date.now() + 20_000;
+  while (!existsSync(pidFile) || (await readFile(pidFile, "utf8")).trim() === "") {
+    assert.ok(Date.now() < deadline, "the gate started");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const gatePid = Number((await readFile(pidFile, "utf8")).trim());
+  child.kill("SIGINT");
+  assert.equal(await exited, "SIGINT", "the signal still ends the process");
+  const alive = () => {
+    try {
+      process.kill(gatePid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const gone = Date.now() + 5_000;
+  while (alive() && Date.now() < gone) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(alive(), false, "the gate did not outlive the sync");
 });
