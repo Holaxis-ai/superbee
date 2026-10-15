@@ -1542,7 +1542,7 @@ test("recipe evolve: a new field's enum blocks when an instance already carries 
   assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.optional, []);
 });
 
-test("recipe evolve: enum, retype and in-use removal changes still block with their own codes", async () => {
+test("recipe evolve: enum, retype and in-use removal changes block with their own codes", async () => {
   const withFieldTypes = (recipe: LoadedRecipe, types: Record<string, string>): LoadedRecipe => {
     recipe.docs[0] = { ...recipe.docs[0]!, frontmatter: { ...recipe.docs[0]!.frontmatter, x_field_types: types } };
     return recipe;
@@ -1558,9 +1558,9 @@ test("recipe evolve: enum, retype and in-use removal changes still block with th
         widgetRecipe("2", widgetFields(["title"], ["setting", "size"], { setting: ["indoor", "outdoor"], size: ["s", "m"] })),
         { size: "string" },
       ),
-      code: "RECIPE_EVOLUTION_NON_MONOTONIC",
-      field: "size",
-      message: /cannot add an enum restriction to 'size'/,
+      code: "RECIPE_EVOLUTION_RESTRICTION_VIOLATED",
+      field: "fields.values.size",
+      message: /^adding allowed values \[s, m\] to 'size' for 'Widget' would make 1 existing document\(s\) invalid: widgets\/one;/,
     },
     {
       name: "enum on a field no plan declares",
@@ -1570,7 +1570,7 @@ test("recipe evolve: enum, retype and in-use removal changes still block with th
       ),
       code: "RECIPE_EVOLUTION_NON_MONOTONIC",
       field: "colour",
-      message: /cannot add an enum restriction to 'colour'/,
+      message: /cannot add an enum restriction to 'colour' for 'Widget'; declare 'colour' in fields.required or fields.optional first/,
     },
     {
       name: "narrowed enum",
@@ -1625,6 +1625,142 @@ test("recipe evolve: enum, retype and in-use removal changes still block with th
     );
     assert.deepEqual(await readDoc(bundle, "conventions/widget"), before, row.name);
   }
+});
+
+const typedWidgetFields = (
+  types: Record<string, string> | undefined,
+  values: Record<string, string[]> = {},
+): KindConvention["fields"] => ({
+  ...widgetFields(["title"], ["opened", "size", "tags"], values),
+  ...(types ? { types: types as NonNullable<KindConvention["fields"]["types"]> } : {}),
+});
+
+test("recipe evolve: adds fields.types and fields.values entries to installed fields when instances conform", async () => {
+  const bundle: Bundle = { root: "mem://recipe-evolution-add-types", backend: new MemoryBackend() };
+  await applyRecipe(bundle, widgetRecipe("1", typedWidgetFields(undefined)), T);
+  await writeDoc(bundle, {
+    id: "widgets/one",
+    frontmatter: { type: "Widget", title: "One", opened: "2024-02-29", size: "s", tags: ["red", "blue"] },
+    body: "Conforms.",
+  });
+  await writeDoc(bundle, { id: "widgets/two", frontmatter: { type: "Widget", title: "Two" }, body: "No typed keys." });
+
+  const first = widgetRecipe("2", typedWidgetFields({ opened: "date" }, { size: ["s", "m"] }));
+  const plan = await planRecipeEvolution(bundle, first);
+  assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+  assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/types", "/frontmatter/fields/values"]);
+  assert.equal(plan.counts.instances_checked, 2);
+  await applyRecipeEvolution(bundle, first, plan.plan_token, "test-agent");
+  let widget = (await loadKinds(bundle)).kinds.get("Widget")!;
+  assert.deepEqual(widget.fields.types, { opened: "date" });
+  assert.deepEqual(widget.fields.values, { size: ["s", "m"] });
+  assert.equal((await planRecipeEvolution(bundle, first)).changed, false);
+
+  // A second entry joins the installed types map; a list enum checks each item.
+  const second = widgetRecipe("3", typedWidgetFields({ opened: "date", tags: "string-list" }, { size: ["s", "m"], tags: ["red", "blue"] }));
+  const next = await planRecipeEvolution(bundle, second);
+  assert.equal(next.ready, true, JSON.stringify(next.blockers));
+  assert.deepEqual(next.definitions[0]!.added_paths, ["/frontmatter/fields/types/tags", "/frontmatter/fields/values/tags"]);
+  await applyRecipeEvolution(bundle, second, next.plan_token, "test-agent");
+  widget = (await loadKinds(bundle)).kinds.get("Widget")!;
+  assert.deepEqual(widget.fields.types, { opened: "date", tags: "string-list" });
+  assert.deepEqual(widget.fields.values.tags, ["red", "blue"]);
+});
+
+test("recipe evolve: a type existing documents violate is refused with one capped blocker naming them", async () => {
+  const bundle: Bundle = { root: "mem://recipe-evolution-type-violated", backend: new MemoryBackend() };
+  await applyRecipe(bundle, widgetRecipe("1", typedWidgetFields(undefined)), T);
+  for (let n = 1; n <= 12; n += 1) {
+    const id = `widgets/w${String(n).padStart(2, "0")}`;
+    await writeDoc(bundle, { id, frontmatter: { type: "Widget", title: id, opened: n === 12 ? null : "last spring" }, body: "Bad." });
+  }
+  await writeDoc(bundle, { id: "widgets/ok", frontmatter: { type: "Widget", title: "OK", opened: "2026-01-01" }, body: "Good." });
+  const before = await readDoc(bundle, "conventions/widget");
+  const desired = widgetRecipe("2", typedWidgetFields({ opened: "date" }));
+
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, false);
+  assert.equal(plan.counts.instances_checked, 13);
+  assert.deepEqual(plan.blockers.map((blocker) => [blocker.code, blocker.id, blocker.field]), [
+    ["RECIPE_EVOLUTION_RESTRICTION_VIOLATED", "conventions/widget", "fields.types.opened"],
+  ]);
+  const message = plan.blockers[0]!.message;
+  assert.match(message, /^adding type 'date' to 'opened' for 'Widget' would make 12 existing document\(s\) invalid: widgets\/w01, widgets\/w02, .*widgets\/w10, and 2 more; fix them first \(e\.g\. widgets\/w01: /);
+  assert.doesNotMatch(message, /widgets\/w11|widgets\/ok/);
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent"),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+  );
+  assert.deepEqual(await readDoc(bundle, "conventions/widget"), before);
+});
+
+test("recipe evolve: a changed or removed field type or enum stays refused by the additive merge", async () => {
+  const installed = () => widgetRecipe("1", typedWidgetFields({ opened: "date", size: "string-list" }, { size: ["s"] }));
+  const rows: Array<{ name: string; desired: LoadedRecipe; code: string; field: string }> = [
+    {
+      name: "changed type",
+      desired: widgetRecipe("2", typedWidgetFields({ opened: "datetime", size: "string-list" }, { size: ["s"] })),
+      code: "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED",
+      field: "/frontmatter/fields/types/opened",
+    },
+    {
+      name: "removed type",
+      desired: widgetRecipe("2", typedWidgetFields({ size: "string-list" }, { size: ["s"] })),
+      code: "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
+      field: "/frontmatter/fields/types/opened",
+    },
+    {
+      name: "removed types map",
+      desired: widgetRecipe("2", typedWidgetFields(undefined, { size: ["s"] })),
+      code: "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
+      field: "/frontmatter/fields/types",
+    },
+    {
+      name: "removed enum",
+      desired: widgetRecipe("2", typedWidgetFields({ opened: "date", size: "string-list" })),
+      code: "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
+      field: "/frontmatter/fields/values",
+    },
+  ];
+  for (const row of rows) {
+    const bundle: Bundle = { root: `mem://recipe-evolution-type-${row.name.replaceAll(" ", "-")}`, backend: new MemoryBackend() };
+    await applyRecipe(bundle, installed(), T);
+    await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One", opened: "2026-01-01", size: ["s"] }, body: "In use." });
+    const before = await readDoc(bundle, "conventions/widget");
+    const plan = await planRecipeEvolution(bundle, row.desired);
+    assert.equal(plan.ready, false, row.name);
+    assert.ok(
+      plan.blockers.some((blocker) => blocker.code === row.code && blocker.field === row.field),
+      `${row.name}: ${JSON.stringify(plan.blockers)}`,
+    );
+    await assert.rejects(
+      applyRecipeEvolution(bundle, row.desired, plan.plan_token),
+      (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+      row.name,
+    );
+    assert.deepEqual(await readDoc(bundle, "conventions/widget"), before, row.name);
+    assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.types, { opened: "date", size: "string-list" }, row.name);
+  }
+});
+
+test("recipe evolve: a type-adding plan token goes stale when an instance changes after the plan", async () => {
+  const bundle: Bundle = { root: "mem://recipe-evolution-type-stale", backend: new MemoryBackend() };
+  await applyRecipe(bundle, widgetRecipe("1", typedWidgetFields(undefined)), T);
+  await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One", opened: "2026-01-01" }, body: "Good." });
+  const before = await readDoc(bundle, "conventions/widget");
+  const desired = widgetRecipe("2", typedWidgetFields({ opened: "date" }));
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+
+  await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One", opened: "soon" }, body: "Changed." });
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent"),
+    (error: unknown) => error instanceof CliError && error.code === "STALE_HEAD",
+  );
+  assert.deepEqual(await readDoc(bundle, "conventions/widget"), before);
+  const fresh = await planRecipeEvolution(bundle, desired);
+  assert.notEqual(fresh.plan_token, plan.plan_token);
+  assert.deepEqual(fresh.blockers.map((blocker) => blocker.code), ["RECIPE_EVOLUTION_RESTRICTION_VIOLATED"]);
 });
 
 test("recipe evolve: a race after exact-plan recomputation fails with completed/pending recovery and preserves the winner", async () => {

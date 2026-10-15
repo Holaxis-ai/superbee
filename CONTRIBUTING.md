@@ -438,6 +438,8 @@ field is not checked. `fields.values` may restrict any scalar type and checks ea
 `string-list` without the arity rule; on an `https-url-list` it is a convention warning. Flag and
 form text converts through `kindFieldInputValue` in browser-safe `@superbee/core/kinds`. Domain
 composites such as opening hours, phone numbers or money stay in recipe or site tooling.
+`recipe evolve` may add a `fields.types` or `fields.values` entry when the instance scan is clean;
+its additive merge refuses changing or removing one.
 
 ## Findings and commitments
 
