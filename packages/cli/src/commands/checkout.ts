@@ -30,6 +30,7 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
+import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 import {
   defaultHostedAuthDeps,
   hostArgument,
@@ -679,11 +680,9 @@ export async function adoptedExtras(folder: string, request: ExportRequest): Pro
     if (entry.kind === "document" || entry.path === ROOT_INDEX) continue;
     const file = path.join(folder, ...entry.path.split("/"));
     if (await parentUnsafe(folder, file)) continue;
-    const found = await lstat(file).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    });
-    if (found === null) {
+    // One no-follow read decides: a link or a non-file is never read or recorded.
+    const found = readRegularFileNoFollowSync(file);
+    if (found.state === "missing") {
       try {
         await ensureParentInside(folder, file);
       } catch (error) {
@@ -696,7 +695,7 @@ export async function adoptedExtras(folder: string, request: ExportRequest): Pro
       }
       continue;
     }
-    if (found.isFile() && Buffer.from(entry.bytes).equals(await readFile(file))) extras[entry.path] = digestOf(entry.bytes);
+    if (found.state === "present" && Buffer.from(entry.bytes).equals(found.bytes)) extras[entry.path] = digestOf(entry.bytes);
   }
   return { extras, placed, unplaced: null };
 }
