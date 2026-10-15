@@ -8,32 +8,29 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.14 | public / next |
-| @superbee/server | 0.2.0-pre.14 | public / next |
-| @superbee/browser-local | 0.1.0-pre.10 | public / next |
-| @superbee/markdown-renderer | 0.1.11 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.14 (already on npm `next`, unchanged) | public / next |
+| @superbee/browser-local | 0.1.0-pre.11 | public / next |
 
-This candidate adds typed Kind fields to core (superbee#457), a new public API. A convention may
-declare per-field value types in `fields.types` from a closed vocabulary of eleven (date,
-datetime, https-url, https-url-list, integer, number, boolean, slug, string-list, latitude,
-longitude). `KindFields` gains optional `types`, and core exports `KIND_FIELD_TYPES`,
-`KIND_FIELD_TYPE_DESCRIPTIONS`, `isKindFieldType`, `kindFieldTypeProblem`, `kindFieldInputValue`
-and the `KindFieldType` type (also from the browser-safe `@superbee/core/kinds`).
-`validateAgainstKind` reports a wrong-typed or null value as the new `KIND_FIELD_TYPE` warning
-code, which `isKindFieldValidationWarning` includes; an absent field is not checked, and a bundle
-that declares no `fields.types` validates as before. Everything else in 0.2.0-pre.13 is carried
-unchanged. The registry's newest browser-local is 0.1.0-pre.4; pre.5 to pre.9 were prepared but
-never published. 0.1.0-pre.10 moves its exact pin to pre.14 with no browser-local source change.
+This candidate makes retiring acknowledged body history strictly best effort (superbee#461).
+`retireQuietly` used to rethrow any retirement failure other than a guard conflict or a
+transient storage error (for example a plain `Error`, `QuotaExceededError` or `NotFoundError`;
+core's IndexedDB adapter reports an error-less host abort as a plain `Error`) into the settle
+and every later commit of that document. Now no
+retirement failure reaches a commit or settle; the next commit or settle of the target
+retries it, and a target that fails `RETIREMENT_DIAGNOSTIC_FAILURES` (3) times in a row
+through one opened working copy is listed in `syncStatus().retirementFailures`. New exports:
+`RETIREMENT_DIAGNOSTIC_FAILURES` and `type RetirementDiagnostic`; `SyncStatus` gains the
+optional `retirementFailures` field.
 
-Browser-local depends exactly on core pre.14 and moves with it under the paired
-exact-pin policy; do not patch around a mismatch or publish with a wildcard
-dependency. Server moves with core under the existing paired release policy, with no server
-source change. Renderer 0.1.11 extends its core peer allowance through pre.14 with no source
-change since 0.1.10 (0.1.9 carried the superbee#449 change: any `okf:` href renders as an
-inert span and never reaches an attribute; the restricted package's registry state is not
-visible without maintainer access). It is a new version because a renderer version is never reused for different bytes, and it is
-included so consumers can align their root core without overriding peer checks.
-Its access remains restricted: do not make other private packages public.
+The registry's newest browser-local is 0.1.0-pre.4 (exact core pre.8); pre.5 to pre.10 were
+prepared but never published, so this is the first publication since pre.4 and also carries
+everything those candidates prepared. Browser-local depends exactly on core pre.14, which is
+already published on `next`, so consumers need no core override. Core's body bounds
+(`BODY_DELIVERY_LIMITS`, `BODY_RECONCILIATION_BYTES`) are byte-identical between pre.8 and
+pre.14, so the runtime's capacity admission is unchanged. Core and server are not part of this
+candidate and there is no `libraries/v*` tag: there is no core or server change to stage. The
+renderer is not part of this candidate. For this candidate, skip "Before release" steps 2 and 3
+(core pre.14 is already published and finalized) and pack only browser-local.
 
 ## Before release
 
