@@ -1000,19 +1000,62 @@ export async function deleteLocal(local: LocalTarget, id: ConceptId, options: { 
 
 /**
  * Retirement is cleanup: it applies whole or not at all, and a commit or settle never depends on
- * it. A failure (another realm's write, a closing page, a storage error) leaves the history for
- * the next commit or settle to retire.
+ * it. Any failure (another realm's write, a closing page, a storage error, an adapter defect, or
+ * a host abort the adapter reports as a plain `Error`) is swallowed and leaves the history for the
+ * next commit or settle of that target to retire. A target whose retirement keeps failing is
+ * reported by {@link syncStatus} rather than thrown, so the history cannot grow toward the
+ * capacity limit unnoticed.
  */
 async function retireQuietly(backend: JournaledBackend, mode: BodyMode, target: ConceptId): Promise<void> {
+  let failure: unknown;
   try { await retireAcknowledgedBody(backend, mode, target); }
-  catch (error) {
-    // Only a moved target or an interrupted transaction is expected; anything else is a defect
-    // that would let history grow back to the capacity limit unnoticed.
-    const name = (error as { name?: unknown } | null)?.name;
-    if (!(error instanceof JournalGuardConflict) && !(typeof name === "string" && TRANSIENT_STORAGE_ERRORS.has(name))) throw error;
-  }
+  catch (error) { failure = error; }
+  try {
+    // A moved target is another realm's progress, not a failure of this one.
+    if (failure === undefined || failure instanceof JournalGuardConflict) retirementFailures.get(backend)?.delete(target);
+    else recordRetirementFailure(backend, target, failure);
+  } catch { /* Diagnostics never reach the caller either. */ }
 }
-const TRANSIENT_STORAGE_ERRORS: ReadonlySet<string> = new Set(["AbortError", "InvalidStateError", "TransactionInactiveError", "UnknownError"]);
+
+/** Consecutive failed retirements of one target after which {@link syncStatus} reports it. */
+export const RETIREMENT_DIAGNOSTIC_FAILURES = 3;
+const RETIREMENT_MESSAGE_CHARS = 512;
+/** A target whose acknowledged history failed to retire on consecutive attempts in this realm. */
+export interface RetirementDiagnostic {
+  target: ConceptId;
+  /** Consecutive failed attempts; a success or a moved target resets it. */
+  failures: number;
+  /** The latest failure's name and message (truncated). */
+  error: { name: string; message: string };
+  /** When the first of these consecutive failures happened. */
+  since: string;
+}
+// Per realm and per backend: the diagnostic describes this realm's attempts, which a reload retries.
+const retirementFailures = new WeakMap<JournaledBackend, Map<ConceptId, RetirementDiagnostic>>();
+function recordRetirementFailure(backend: JournaledBackend, target: ConceptId, error: unknown): void {
+  let failures = retirementFailures.get(backend);
+  if (!failures) retirementFailures.set(backend, failures = new Map());
+  const previous = failures.get(target);
+  const described = describeRetirementError(error);
+  failures.set(target, { target, failures: (previous?.failures ?? 0) + 1, error: described, since: previous?.since ?? new Date().toISOString() });
+}
+function describeRetirementError(error: unknown): { name: string; message: string } {
+  let name = "Error", message = "";
+  try {
+    const candidate = error as { name?: unknown; message?: unknown } | null;
+    if (candidate !== null && typeof candidate === "object") {
+      if (typeof candidate.name === "string" && candidate.name) name = candidate.name;
+      if (typeof candidate.message === "string") message = candidate.message;
+    } else message = String(error);
+  } catch { /* A hostile getter leaves the generic description. */ }
+  return { name: name.slice(0, 64), message: message.slice(0, RETIREMENT_MESSAGE_CHARS) };
+}
+function retirementDiagnostics(backend: JournaledBackend): RetirementDiagnostic[] {
+  return [...(retirementFailures.get(backend)?.values() ?? [])]
+    .filter(row => row.failures >= RETIREMENT_DIAGNOSTIC_FAILURES)
+    .map(row => ({ ...row, error: { ...row.error } }))
+    .sort((a, b) => (a.target < b.target ? -1 : a.target > b.target ? 1 : 0));
+}
 
 export interface BodyLocalMutation { body: string; expectedVersion?: Version; actor?: string; now?: () => string }
 /** Explicit body intent, authored by the existing engine and journaled in its document CAS. */
@@ -2180,6 +2223,12 @@ export interface SyncStatus {
   bootstrapComplete: boolean;
   generation: number | null;
   lastPull: PullMarker | null;
+  /**
+   * Present only when some document's acknowledged history failed to retire on
+   * {@link RETIREMENT_DIAGNOSTIC_FAILURES} consecutive attempts in this realm. Commits and settles
+   * still succeed; the history stays until a later commit or settle of that document retires it.
+   */
+  retirementFailures?: RetirementDiagnostic[];
 }
 
 /** Counts of intents by state plus the pause and bootstrap markers. */
@@ -2192,6 +2241,7 @@ export async function syncStatus(local: LocalTarget): Promise<SyncStatus> {
   const control = await backend.readMeta<SyncControl>(SYNC_KEY);
   const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
   const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
+  const retirement = retirementDiagnostics(backendOf(local));
   return {
     counts,
     paused: control?.paused === true,
@@ -2199,6 +2249,7 @@ export async function syncStatus(local: LocalTarget): Promise<SyncStatus> {
     bootstrapComplete: marker?.complete === true,
     generation: marker?.generation ?? null,
     lastPull: lastPull ?? null,
+    ...(retirement.length ? { retirementFailures: retirement } : {}),
   };
 }
 
