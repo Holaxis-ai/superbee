@@ -375,6 +375,22 @@ test("an adopted copy of a checkout records the host's other files it holds unch
   assert.equal((await hostedStatus((await bindingForPath(h.home, copy))!, h.home)).sync.state, "clean");
 });
 
+test("an adopt that fails after placing the host's other files removes them again", async () => {
+  const h = await harness();
+  h.host.exportExtras.set("data/d.json", Buffer.from("{}\n"));
+  await checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  spawnSync("cp", ["-R", path.join(h.cwd, "team"), path.join(h.cwd, "copy")]);
+  const copy = await realpath(path.join(h.cwd, "copy"));
+  await rm(path.join(copy, "data", "d.json"));
+  const refusingSnapshot = (async (input: string | URL | Request, init?: RequestInit) =>
+    new URL(String(input)).pathname.endsWith("/snapshot")
+      ? Response.json({ error: { code: "insufficient_scope", message: "No.", retryable: false } }, { status: 403 })
+      : h.host.fetch(input, init)) as typeof fetch;
+  await assert.rejects(checkout(["--adopt", copy, "--host", HOST], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: refusingSnapshot }));
+  assert.equal(await exists(path.join(copy, "data", "d.json")), false);
+  assert.equal(await bindingForPath(h.home, copy), null);
+});
+
 test("export --to --git commits the export on the board branch, so the folder is a Git board", async () => {
   const h = await harness();
   h.host.exportExtras.set("assets/logo.png", LOGO);

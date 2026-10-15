@@ -61,6 +61,7 @@ import { sameAsStored, walk, writeProjection, type ProjectionEntry } from "../ho
 import { storeOkfVersion } from "../hosted/checkout-store.js";
 import {
   adoptedExtras,
+  type AdoptedExtras,
   assertProjectable,
   assertStandaloneFolder,
   bindingView,
@@ -262,11 +263,12 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   // A conversion `publish` started and could not finish: the files it sent that a checkout does
   // not hold as documents are recorded too, so sync leaves them be.
   const published = await readPublishedExtras(home, canonical);
+  const host = await adoptedExtras(canonical, exportRequestFor(connection, target, bundleId, resume));
   const extras = {
-    ...(await adoptedExtras(canonical, exportRequestFor(connection, target, bundleId, resume))),
+    ...host.extras,
     ...(published && published.host === target.origin && published.bundle_id === bundleId ? published.extras : {}),
   };
-  const result = await bindFolderInPlace({ canonical, target, bundleId, connection, deps, resume, extras });
+  const result = await bindWithExtras({ canonical, target, bundleId, connection, deps, resume, extras }, host);
   if (published) await clearPublishedExtras(home, canonical);
   const cataloged = await registerInCatalog(home, result.binding);
   const syncHelp = `${cliInvocation()} sync --dir ${commandToken(canonical)}`;
@@ -280,6 +282,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
         ...(result.conflicts.length > 0 ? { conflicts: listed(result.conflicts) } : {}),
         ...(result.localOnly.length > 0 ? { local_only: listed(result.localOnly), local_only_note: "the next sync sends these as new documents, which re-creates any the host deleted since the copy was made; delete any you do not want first" } : {}),
         root_index: result.rootIndex,
+        ...(result.otherFiles ? { other_files: result.otherFiles, warning: "files other than documents were not checked against the host" } : {}),
         ...(result.markerWritten ? { marker: "written" } : {}),
         help:
           result.conflicts.length > 0
@@ -370,8 +373,8 @@ async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, opti
     await releaseCheckout(home, bound);
     return pending;
   });
-  const extras = await adoptedExtras(canonical, exportRequestFor(connection, target, bound.bundle_id, resume));
-  const result = await bindFolderInPlace({ canonical, target, bundleId: bound.bundle_id, connection, deps, resume, extras });
+  const host = await adoptedExtras(canonical, exportRequestFor(connection, target, bound.bundle_id, resume));
+  const result = await bindWithExtras({ canonical, target, bundleId: bound.bundle_id, connection, deps, resume, extras: host.extras }, host);
   deps.stdout(
     render(
       {
@@ -559,4 +562,15 @@ function exportRequestFor(connection: HostedBundleConnection, target: HostedTarg
     source: { target, bundleId, slug: reference.slug, workspace: null, binding: null },
     resume,
   };
+}
+
+/** {@link bindFolderInPlace}, removing the host files {@link adoptedExtras} placed when it fails, and naming in its result why none were placed. */
+async function bindWithExtras(input: Parameters<typeof bindFolderInPlace>[0], host: AdoptedExtras): Promise<Awaited<ReturnType<typeof bindFolderInPlace>> & { otherFiles?: string }> {
+  try {
+    const result = await bindFolderInPlace(input);
+    return host.unplaced === null ? result : { ...result, otherFiles: `not recorded: ${host.unplaced}; files other than documents here that differ from nothing on record read as edits until the next checkout` };
+  } catch (error) {
+    await removePlaced(input.canonical, host.placed, false).catch(() => {});
+    throw error;
+  }
 }

@@ -623,7 +623,10 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         root_index: result.root,
         ...(result.unplaced === null
           ? { reserved_files: result.reserved, other_files: result.other }
-          : { other_files: `not placed: ${result.unplaced}, so reserved files below the root and files other than documents stay on the host; superbee export copies them` }),
+          : {
+              other_files: `not placed: ${result.unplaced}, so reserved files below the root and files other than documents stay on the host; superbee export copies them`,
+              warning: "this checkout lacks the host's files other than documents, and sync never brings them: check out again into a new folder to get them",
+            }),
         heads_digest: result.digest,
         ...(replacedBinding ? { replaced_stale_checkout: { bundle_id: replacedBinding.bundle_id, host: replacedBinding.origin } } : {}),
         mode: "sync",
@@ -667,10 +670,11 @@ interface PlacedExtras {
  * One the folder holds with other bytes is left out, so sync holds it as the edit it is. An export
  * that cannot be read records nothing; adopt never fails over these files.
  */
-export async function adoptedExtras(folder: string, request: ExportRequest): Promise<Record<string, string>> {
+export async function adoptedExtras(folder: string, request: ExportRequest): Promise<AdoptedExtras> {
   const portable = await exportOrReason(request);
-  if (typeof portable === "string") return {};
+  if (typeof portable === "string") return { extras: {}, placed: new Map(), unplaced: portable };
   const extras: Record<string, string> = {};
+  const placed = new Map<string, string>();
   for (const entry of portable.entries) {
     if (entry.kind === "document" || entry.path === ROOT_INDEX) continue;
     const file = path.join(folder, ...entry.path.split("/"));
@@ -686,12 +690,22 @@ export async function adoptedExtras(folder: string, request: ExportRequest): Pro
         if (error instanceof UnsafePlacementError) continue;
         throw error;
       }
-      if ((await placeNew(file, entry.bytes)).placed) extras[entry.path] = digestOf(entry.bytes);
+      if ((await placeNew(file, entry.bytes)).placed) {
+        extras[entry.path] = digestOf(entry.bytes);
+        placed.set(file, digestOf(entry.bytes));
+      }
       continue;
     }
     if (found.isFile() && Buffer.from(entry.bytes).equals(await readFile(file))) extras[entry.path] = digestOf(entry.bytes);
   }
-  return extras;
+  return { extras, placed, unplaced: null };
+}
+
+/** What {@link adoptedExtras} recorded, the files it placed (removed again if the adopt fails), and why none were, when the export could not be read. */
+export interface AdoptedExtras {
+  readonly extras: Record<string, string>;
+  readonly placed: Map<string, string>;
+  readonly unplaced: string | null;
 }
 
 /** Nothing placed: the export could not be read (`exportOrReason`). */
