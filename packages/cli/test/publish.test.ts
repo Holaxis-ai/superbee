@@ -356,6 +356,23 @@ test("--with-history leaves behind, by name, an earlier version whose carried ve
   assert.equal((body.history ?? []).length, 0);
 });
 
+test("a document whose verified leaves no room for the host's later stamps blocks the publish, named", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "b");
+  await writeBundle(folder);
+  const events = (count: number) => Array.from({ length: count }, (_, i) => `  - by: person:p${i}\n    at: '2026-09-02T00:00:00.000Z'`).join("\n");
+  let count = 1;
+  const bytes = (n: number) => Buffer.byteLength(JSON.stringify({ type: "Note", verified: Array.from({ length: n }, (_, i) => ({ by: `person:p${i}`, at: "2026-09-02T00:00:00.000Z" })) }));
+  while (bytes(count + 1) <= 16 * 1024 - 40) count += 1;
+  await writeFile(path.join(folder, "notes", "full.md"), `---\ntype: Note\nverified:\n${events(count)}\n---\nx\n`);
+  const fake = new FakeCreateHost();
+  const preview = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
+  assert.equal(preview.ready, false);
+  const rows = (preview.blockers as { rows: { path: string; reason: string; message: string }[] }).rows;
+  assert.deepEqual(rows.map((row) => [row.path, row.reason]), [["notes/full.md", "too_large"]]);
+  assert.match(rows[0]!.message, /carries verified and leaves less than 512 bytes/);
+});
+
 test("an OKF 0.1 bundle carries a Kind's required timestamp and actor as authored", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "b");

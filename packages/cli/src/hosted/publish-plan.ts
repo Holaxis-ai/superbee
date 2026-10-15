@@ -205,6 +205,9 @@ interface HistoryOptions {
   readonly now: number;
 }
 
+/** The frontmatter the host leaves free under a carried `verified` for the stamps of later writes (superbee-hosted `STAMP_ROOM_BYTES`). */
+const VERIFIED_STAMP_ROOM_BYTES = 512;
+
 /** Earlier Git versions of one document, oldest first, as import rows (the current version excluded). */
 function gitVersions(board: GitBoardFacts, id: string, rel: string, current: string, okfVersion: "0.1" | "0.2" | undefined, now: number, documentInputBytes: number | null): { rows: CreateHistory[]; skipped: number; oversized: string[] } {
   const repoPath = board.prefix === "" ? rel : `${board.prefix}/${rel}`;
@@ -452,7 +455,14 @@ export async function planPublish(
     if (request.kind !== "create") throw new Error(`'${id}' became a ${request.kind} request`);
     // The host bounds the whole stored frontmatter, carried provenance included; `unsendable`
     // measured only what a later write sends.
-    if (Buffer.byteLength(JSON.stringify(request.payload.frontmatter)) > FRONTMATTER_JSON_BYTES) {
+    // No write can remove `verified`, and every later host write adds its stamps under the same
+    // bound: the host refuses a creation that would leave such a document uneditable.
+    const frontmatterBytes = Buffer.byteLength(JSON.stringify(request.payload.frontmatter));
+    if ("verified" in request.payload.frontmatter && frontmatterBytes <= FRONTMATTER_JSON_BYTES && frontmatterBytes > FRONTMATTER_JSON_BYTES - VERIFIED_STAMP_ROOM_BYTES) {
+      blockers.push({ path: entry.rel, reason: "too_large", message: `'${id}' carries verified and leaves less than ${VERIFIED_STAMP_ROOM_BYTES} bytes of the ${FRONTMATTER_JSON_BYTES / 1024} KiB of frontmatter the host stores for its stamps on later edits; shorten its frontmatter` });
+      continue;
+    }
+    if (frontmatterBytes > FRONTMATTER_JSON_BYTES) {
       blockers.push({ path: entry.rel, reason: "too_large", message: `'${id}' has more than the ${FRONTMATTER_JSON_BYTES / 1024} KiB of frontmatter the host stores, counting ${request.provenance!.carried.join(", ")}` });
       continue;
     }
