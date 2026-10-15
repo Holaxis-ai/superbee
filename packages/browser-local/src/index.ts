@@ -48,6 +48,8 @@ export {
   type PullReport,
   type ResumeReport,
   type SyncStatus,
+  RETIREMENT_DIAGNOSTIC_FAILURES,
+  type RetirementDiagnostic,
 } from "./local-bundle.js";
 export { BODY_RUNTIME_LIMITS, BODY_RESOLUTION_RECEIPT_BYTES, BodyRuntimeError, BodyCapacityError, validateBodyResolutionReceipt, type BodyDeliveryOptions, type BodyResolutionReceipt, type BodyResolutionChainRow } from "./body-journal.js";
 export { withPushRole, pushRoleName, hostLocks, type PushRoleResult, type PushRoleOptions, type LockManagerLike } from "./push-role.js";

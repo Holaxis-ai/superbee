@@ -90,9 +90,14 @@ transaction (`retireAcknowledged` on the journaled seam). The shared base alread
 acknowledged content, a successor's proof reads only its immediate predecessor (the newest
 acknowledged row, which stays), and receipt reconciliation reads only the settling row and
 newer ones. Unsettled rows are never retired. Retirement is cleanup: a commit or settle never
-depends on it, and one that fails is retried by the next. An adapter without
-`retireAcknowledged` keeps its history, as before. `syncStatus` therefore counts at most one
-acknowledged row per target.
+depends on it, whatever retirement throws (a storage error, a quota error, a host abort the
+IndexedDB adapter reports as a plain `Error`), and one that fails is retried by the next
+commit or settle of that target. A target whose retirement fails
+`RETIREMENT_DIAGNOSTIC_FAILURES` times in a row through one opened working copy is listed in
+`syncStatus().retirementFailures` (target, consecutive failures, latest error name and
+message, first failure time) until a retirement succeeds; the field is absent otherwise. An
+adapter without `retireAcknowledged` keeps its history, as before. `syncStatus` therefore
+counts at most one acknowledged row per target while retirement succeeds.
 
 A working copy written by this version cannot be read by an older one. An older library
 refuses (fails closed on) a target whose newest acknowledged row names a retired predecessor,
