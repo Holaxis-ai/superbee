@@ -325,25 +325,54 @@ test("checkout places the files export writes: reserved files below the root and
   assert.equal((await hostedStatus((await bindingForPath(h.home, folder))!, h.home)).sync.state, "clean");
 });
 
-test("checkout still checks out a bundle whose export is too large, and says what it left on the host; any other export failure leaves nothing behind", async () => {
+test("checkout never fails over the export: whatever stops it, the documents are checked out and the receipt says what stayed on the host", async () => {
   const h = await harness();
   h.host.exportExtras.set("data/census/acs5-2024.json", Buffer.from('{"places":[1,2]}\n'));
-  h.host.exportHook = () => Response.json({ error: { code: "result_too_large", message: "The bundle is larger than an export carries.", retryable: false } }, { status: 413 });
-  const out: string[] = [];
-  await checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: (text) => void out.push(text), auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
-  const receipt = decode(out.at(-1)!.trim()) as Record<string, unknown>;
-  assert.equal(receipt.checkout, "created");
-  assert.match(String(receipt.other_files), /^not placed: .*larger than an export carries \(bundle_too_large\)/);
-  assert.equal(await exists(path.join(h.cwd, "team", "data")), false);
+  const answers: [string, Response, RegExp][] = [
+    ["too-large", Response.json({ error: { code: "result_too_large", message: "Too large.", retryable: false } }, { status: 413 }), /larger than an export carries \(bundle_too_large\)/],
+    ["unexportable", Response.json({ error: { code: "validation_failed", message: "The bundle holds a stored path an export cannot carry.", retryable: false } }, { status: 422 }), /could not be read/],
+    ["refused", Response.json({ error: { code: "insufficient_scope", message: "No.", retryable: false } }, { status: 403 }), /could not be read/],
+  ];
+  for (const [dir, answer, said] of answers) {
+    h.host.exportHook = () => answer.clone();
+    const out: string[] = [];
+    await checkout([BUNDLE, "--host", HOST, "--dir", dir], { stdout: (text) => void out.push(text), auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+    const receipt = decode(out.at(-1)!.trim()) as Record<string, unknown>;
+    assert.equal(receipt.checkout, "created", dir);
+    assert.match(String(receipt.other_files), /^not placed: /, dir);
+    assert.match(String(receipt.other_files), said, dir);
+    assert.equal(await exists(path.join(h.cwd, dir, "data")), false, dir);
+  }
+});
 
-  // A refusal that is not about the export's size or churn fails the checkout, and every file it placed goes.
-  h.host.exportHook = () => Response.json({ error: { code: "insufficient_scope", message: "No.", retryable: false } }, { status: 403 });
+test("a link put in the folder while checkout places the other files is a folder change: nothing is placed through it, and the checkout is undone", async () => {
+  const h = await harness();
+  const outside = await realpath(await mkdtemp(path.join(tmpdir(), "sb-outside-")));
+  h.host.exportExtras.set("data/x.json", Buffer.from("{}\n"));
+  h.host.exportHook = (archive) => {
+    spawnSync("ln", ["-s", outside, path.join(h.cwd, "team", "data")]);
+    return archive;
+  };
   await assert.rejects(
-    checkout([BUNDLE, "--host", HOST, "--dir", "again"], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch }),
-    (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN",
+    checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch }),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT" && error.details?.reason === "folder_changed",
   );
-  assert.equal(await exists(path.join(h.cwd, "again")), false);
-  assert.equal(await bindingForPath(h.home, path.join(h.cwd, "again")), null);
+  assert.deepEqual(await readdir(outside), []);
+  assert.equal(await bindingForPath(h.home, await realpath(path.join(h.cwd, "team")).catch(() => path.join(h.cwd, "team"))), null);
+});
+
+test("an adopted copy of a checkout records the host's other files it holds unchanged, so sync leaves them be", async () => {
+  const h = await harness();
+  h.host.exportExtras.set("notes/index.md", Buffer.from("# Notes\n"));
+  h.host.exportExtras.set("data/d.json", Buffer.from("{}\n"));
+  await checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  spawnSync("cp", ["-R", path.join(h.cwd, "team"), path.join(h.cwd, "copy")]);
+  const copy = await realpath(path.join(h.cwd, "copy"));
+  await rm(path.join(copy, "data", "d.json"));
+  await checkout(["--adopt", copy, "--host", HOST], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  // One it lacked is placed back.
+  assert.equal(await readFile(path.join(copy, "data", "d.json"), "utf8"), "{}\n");
+  assert.equal((await hostedStatus((await bindingForPath(h.home, copy))!, h.home)).sync.state, "clean");
 });
 
 test("export --to --git commits the export on the board branch, so the folder is a Git board", async () => {

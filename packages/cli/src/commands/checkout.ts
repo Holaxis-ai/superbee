@@ -62,7 +62,7 @@ import {
 } from "../hosted/binding.js";
 import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, type HostedIdentity, type HostedSyncClient } from "../hosted/client.js";
 import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from "../hosted/refusals.js";
-import { digestOf, ensureParentInside, exportFresh, findPathCollision, placeNew, ROOT_INDEX } from "../hosted/projection.js";
+import { digestOf, ensureParentInside, exportFresh, findPathCollision, parentUnsafe, placeNew, ROOT_INDEX, UnsafePlacementError } from "../hosted/projection.js";
 import { writeProjection } from "../hosted/sync-scan.js";
 import { addCatalogEntry, assertCatalogLabel, loadCatalog } from "../catalog.js";
 import { checkoutMarkerBytes, readCheckoutMarker, removeCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
@@ -636,23 +636,20 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
 }
 
 /**
- * Why the files other than documents were not placed, when the export could not be read for a
- * reason that leaves the documents' checkout sound: a gateway from before the export route (it
- * answers the route `404 not_found`), a bundle larger than an export carries, or one that kept
- * changing while it was exported. The receipt names it; any other failure is the checkout's.
+ * The bundle's verified portable export, or why the files other than documents stay on the host:
+ * any refusal or failure of the export itself. A non-CLI error (a defect) is the checkout's.
  */
-const UNPLACED_REASONS: ReadonlySet<string> = new Set(["export_too_large", "bundle_too_large", "export_source_changed"]);
-
-/** The bundle's verified portable export, or why the files other than documents stay on the host. */
 async function exportOrReason(request: ExportRequest): Promise<VerifiedExport | string> {
   try {
     return await fetchExportThrough(request);
   } catch (error) {
+    // The documents' checkout never depends on the export: whatever stopped it (a gateway from
+    // before the route, a bundle too large or too busy to export, a path the export refuses), the
+    // documents are checked out and the receipt says why the other files stayed on the host.
     if (!(error instanceof CliError)) throw error;
     if (error.details?.code === "not_found" && error.details?.status === 404) return `${request.source.target.origin} serves no bundle export`;
-    const reason = error.details?.reason;
-    if (typeof reason === "string" && UNPLACED_REASONS.has(reason)) return `${error.message} (${reason})`;
-    throw error;
+    const reason = error.details?.reason ?? error.details?.code;
+    return `the bundle export could not be read: ${error.message.replace(/; nothing was written$/, "")}${typeof reason === "string" ? ` (${reason})` : ""}`;
   }
 }
 
@@ -662,6 +659,39 @@ interface PlacedExtras {
   readonly reserved: number;
   readonly other: number;
   readonly kept: string[];
+}
+
+/**
+ * The host's files other than documents in a folder being adopted, as projection extras: each one
+ * the folder holds with the host's exact bytes, and each one it lacks, placed (never over a file).
+ * One the folder holds with other bytes is left out, so sync holds it as the edit it is. An export
+ * that cannot be read records nothing; adopt never fails over these files.
+ */
+export async function adoptedExtras(folder: string, request: ExportRequest): Promise<Record<string, string>> {
+  const portable = await exportOrReason(request);
+  if (typeof portable === "string") return {};
+  const extras: Record<string, string> = {};
+  for (const entry of portable.entries) {
+    if (entry.kind === "document" || entry.path === ROOT_INDEX) continue;
+    const file = path.join(folder, ...entry.path.split("/"));
+    if (await parentUnsafe(folder, file)) continue;
+    const found = await lstat(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (found === null) {
+      try {
+        await ensureParentInside(folder, file);
+      } catch (error) {
+        if (error instanceof UnsafePlacementError) continue;
+        throw error;
+      }
+      if ((await placeNew(file, entry.bytes)).placed) extras[entry.path] = digestOf(entry.bytes);
+      continue;
+    }
+    if (found.isFile() && Buffer.from(entry.bytes).equals(await readFile(file))) extras[entry.path] = digestOf(entry.bytes);
+  }
+  return extras;
 }
 
 /** Nothing placed: the export could not be read (`exportOrReason`). */
@@ -682,7 +712,14 @@ async function placeExtras(exported: VerifiedExport, folder: string, onPlaced: (
   for (const entry of exported.entries) {
     if (entry.kind === "document" || entry.path === ROOT_INDEX) continue;
     const file = path.join(folder, ...entry.path.split("/"));
-    await ensureParentInside(folder, file);
+    try {
+      await ensureParentInside(folder, file);
+    } catch (error) {
+      // A link or a file put on the way meanwhile: the folder changed under the checkout.
+      if (!(error instanceof UnsafePlacementError)) throw error;
+      kept.push(entry.path);
+      continue;
+    }
     const outcome = await placeNew(file, entry.bytes);
     if (!outcome.placed) {
       kept.push(entry.path);

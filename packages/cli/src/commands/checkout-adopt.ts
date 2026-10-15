@@ -60,6 +60,7 @@ import { digestOf, ensureParentInside, parentUnsafe, placeNew, ROOT_INDEX } from
 import { sameAsStored, walk, writeProjection, type ProjectionEntry } from "../hosted/sync-scan.js";
 import { storeOkfVersion } from "../hosted/checkout-store.js";
 import {
+  adoptedExtras,
   assertProjectable,
   assertStandaloneFolder,
   bindingView,
@@ -73,6 +74,7 @@ import {
   type HostedBundleConnection,
 } from "./checkout.js";
 import type { HostedTarget } from "../hosted-auth/discovery.js";
+import { EXPORT_DEADLINE_MS, type ExportRequest } from "./export.js";
 import type { HostedBundleReference } from "../hosted/reference.js";
 
 /** How many ids a receipt lists per group before it only counts. */
@@ -243,7 +245,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   }${options.json ? commandFragment` --json` : commandFragment``}`;
   // The marker's workspace slug is part of the reference it names; its recorded tenant id (folder
   // content, and possibly a stale default) never narrows anything. --workspace does.
-  const connection = await connectHostedBundle(typed, target, options.workspace, deps, resume);
+  const connection = await connectHostedBundle(typed, target, options.workspace, deps, resume, { deadlineMs: EXPORT_DEADLINE_MS });
   // A copy whose marker names no workspace cannot show which one it came from: --workspace may not
   // pick one among several holders of the id (the next sync would send its documents there).
   if (typed.slug === null && connection.reference.slug !== null) {
@@ -260,8 +262,11 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
   // A conversion `publish` started and could not finish: the files it sent that a checkout does
   // not hold as documents are recorded too, so sync leaves them be.
   const published = await readPublishedExtras(home, canonical);
-  const extras = published && published.host === target.origin && published.bundle_id === bundleId ? published.extras : undefined;
-  const result = await bindFolderInPlace({ canonical, target, bundleId, connection, deps, resume, ...(extras ? { extras } : {}) });
+  const extras = {
+    ...(await adoptedExtras(canonical, exportRequestFor(connection, target, bundleId, resume))),
+    ...(published && published.host === target.origin && published.bundle_id === bundleId ? published.extras : {}),
+  };
+  const result = await bindFolderInPlace({ canonical, target, bundleId, connection, deps, resume, extras });
   if (published) await clearPublishedExtras(home, canonical);
   const cataloged = await registerInCatalog(home, result.binding);
   const syncHelp = `${cliInvocation()} sync --dir ${commandToken(canonical)}`;
@@ -304,7 +309,7 @@ async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, opti
   const resume: CommandText = commandFragment`${cliInvocation()} checkout --adopt ${commandToken(canonical)} --host ${commandToken(bindingHostArgument(target))} --workspace ${commandToken(options.workspace!)}${
     options.json ? commandFragment` --json` : commandFragment``
   }`;
-  const connection = await connectHostedBundle({ slug: null, bundleId: bound.bundle_id }, target, options.workspace, deps, resume);
+  const connection = await connectHostedBundle({ slug: null, bundleId: bound.bundle_id }, target, options.workspace, deps, resume, { deadlineMs: EXPORT_DEADLINE_MS });
   const slug = connection.reference.slug;
   // A host that names no workspaces, or the workspace this checkout already names: nothing to do.
   if (slug === null || slug === (bound.workspace_slug ?? null)) return false;
@@ -365,7 +370,8 @@ async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, opti
     await releaseCheckout(home, bound);
     return pending;
   });
-  const result = await bindFolderInPlace({ canonical, target, bundleId: bound.bundle_id, connection, deps, resume });
+  const extras = await adoptedExtras(canonical, exportRequestFor(connection, target, bound.bundle_id, resume));
+  const result = await bindFolderInPlace({ canonical, target, bundleId: bound.bundle_id, connection, deps, resume, extras });
   deps.stdout(
     render(
       {
@@ -542,4 +548,15 @@ export async function bindFolderInPlace(input: {
     }
   });
 
+}
+
+/** The export request for a bundle through an adopt's own connection, in the workspace its reference names. */
+function exportRequestFor(connection: HostedBundleConnection, target: HostedTarget, bundleId: string, resume: CommandText): ExportRequest {
+  const { client, reference } = connection;
+  return {
+    client: reference.slug === null ? client : client.within(reference.slug),
+    slug: reference.slug,
+    source: { target, bundleId, slug: reference.slug, workspace: null, binding: null },
+    resume,
+  };
 }
