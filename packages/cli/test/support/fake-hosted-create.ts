@@ -149,6 +149,8 @@ export interface FakeCreateHostOptions {
   documentInputBytes?: number | null;
   /** The person's email whoami names (absent: none, as the captured exchanges have it). */
   email?: string;
+  /** A host from before creations carried attribution and verification: it refuses them by name. */
+  refusesProvenance?: boolean;
 }
 
 function fold(segment: string): string {
@@ -303,6 +305,10 @@ export class FakeCreateHost {
     if (reservedDigest !== undefined && reservedDigest !== digest) return refusal("request_conflict", "This request id was already used for a different bundle or different contents.");
     if (!tenants.includes(body.workspace)) return refusal("workspace_not_found", "That workspace is not one of yours. Nothing was created.");
     if (this.options.unavailable) return refusal("bundle_create_unavailable", "This workspace does not offer bundle creation for this client. Nothing was created.");
+    if (this.options.refusesProvenance) {
+      const named = ["superbee_updated_by", "verified"].filter((field) => documents.some((doc) => field in doc.frontmatter));
+      if (named.length > 0) return refusal("validation_failed", `A document's frontmatter sets ${named.join(" and ")}, which only the host writes. Remove ${named.length === 1 ? "it" : "them"} and publish again.`);
+    }
     const bundleId = body.bundleId;
     const holder = this.reservedIds.get(bundleId);
     if ((this.options.taken ?? []).includes(bundleId) || this.bundles.has(bundleId) || (holder !== undefined && holder !== requestId)) {

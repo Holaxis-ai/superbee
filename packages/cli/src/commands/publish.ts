@@ -317,6 +317,16 @@ function createRefusal(
         details,
         help: `put the files back as they were and re-run the same command to finish it; if the creation already finished, bind this folder to it (your edits become sync conflicts): ${cliInvocation()} checkout --adopt ${commandToken(context.folder)} --host ${commandToken(bindingHostArgument(context.target))}`,
       });
+    case "validation_failed":
+      // A host from before creations carried attribution and verification refuses them by name.
+      // The files are right: removing the fields would lose exactly what publish now carries.
+      if (/sets (superbee_updated_by|verified)\b.*which only the host writes/.test(message)) {
+        return new CliError("FORBIDDEN", `${context.target.origin} does not yet keep each document's superbee_updated_by and verified on a new bundle, which this CLI carries`, {
+          details: { ...details, reason: "host_predates_provenance" },
+          help: "leave the files as they are: publish again once the host is updated, or publish with an earlier superbee CLI, which leaves those fields behind",
+        });
+      }
+      return new CliError("USAGE", `${context.target.origin} refused the bundle (${code}): ${message}`, { details, help: "fix the files it names, then preview again" });
     default:
       return new CliError("USAGE", `${context.target.origin} refused the bundle (${code}): ${message}`, { details, help: "fix the files it names, then preview again" });
   }

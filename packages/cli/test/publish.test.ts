@@ -313,6 +313,19 @@ test("a publish then a fresh checkout reads every document as the folder did, at
   for (const rel of documents) assert.equal(await readFile(path.join(copy, rel), "utf8"), before.get(rel), rel);
 });
 
+test("a host that still refuses attribution and verification on create is named as out of date, and the files are never blamed", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "b");
+  await writeBundle(folder);
+  await writeFile(path.join(folder, "notes", "gamma.md"), "---\ntype: Note\nsuperbee_updated_by: person:ada\n---\nGamma.\n");
+  const fake = new FakeCreateHost({ refusesProvenance: true });
+  const error = await rejects(run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], fake));
+  assert.equal(error.code, "FORBIDDEN");
+  assert.equal(error.details?.reason, "host_predates_provenance");
+  assert.doesNotMatch(error.help ?? "", /fix the files/);
+  assert.equal(await readFile(path.join(folder, "notes", "gamma.md"), "utf8"), "---\ntype: Note\nsuperbee_updated_by: person:ada\n---\nGamma.\n");
+});
+
 test("an OKF 0.1 bundle carries a Kind's required timestamp and actor as authored", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "b");
