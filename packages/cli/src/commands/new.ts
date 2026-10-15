@@ -98,7 +98,8 @@ STRICT: a missing required field, a disallowed enum value, or a value that does 
 field's declared type (fields.types) rejects the write (exit 2) rather than writing-with-a-warning.
 A typed number, integer, latitude, longitude, or boolean field is stored as that YAML type
 (--latitude 43.1 stores the number 43.1; pass a negative number as --longitude=-77.4); a
-string-list or https-url-list field is always stored as a list, even from one flag. A typed field
+string-list or https-url-list field is always stored as a list, even from one flag. An integer
+flag takes plain decimal digits only, so 1.0, 1e3 and 0x1F are refused. A typed field
 set to null is a type violation; leave an optional field out instead.
 
 'new' is CREATE-ONLY: if the (prefixed) <id> already carries a document, the write is rejected

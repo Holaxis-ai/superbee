@@ -16,6 +16,8 @@ import { CONVENTION_TYPE, initBundle, readDoc, writeDoc, type Bundle } from "@su
 import { newCommand } from "../src/commands/new.js";
 import { kinds } from "../src/commands/kinds.js";
 import { kind } from "../src/commands/kind.js";
+import { materializeRecipeForEdition } from "../src/recipes.js";
+import type { LoadedRecipe } from "../src/recipe-source.js";
 import { doc } from "../src/commands/doc.js";
 import { status } from "../src/commands/status.js";
 import { CliError } from "../src/errors.js";
@@ -377,4 +379,21 @@ test("doc update and doc field set refuse a typed list field up front and point 
   } finally {
     await cleanup();
   }
+});
+
+test("recipe materialization renames a progress_status type to its storage field in each edition", () => {
+  const recipe = {
+    id: "typed", title: "Typed", version: "1", summary: "", offer: "", source: "test", pages: [], references: [],
+    docs: [{
+      id: "conventions/job",
+      frontmatter: {
+        type: CONVENTION_TYPE, governs: "Job",
+        fields: { required: ["title", "progress_status"], optional: ["start"], types: { progress_status: "slug", start: "datetime" } },
+      },
+      body: "",
+    }],
+  } as unknown as LoadedRecipe;
+  const fieldsOf = (edition: string) => materializeRecipeForEdition(recipe, edition).docs[0]!.frontmatter.fields as Record<string, unknown>;
+  assert.deepEqual(fieldsOf("0.2").types, { superbee_progress_status: "slug", start: "datetime" });
+  assert.deepEqual(fieldsOf("0.1").types, { status: "slug", start: "datetime" });
 });
