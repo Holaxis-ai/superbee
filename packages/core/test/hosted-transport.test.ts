@@ -642,16 +642,16 @@ test("whole-document request: the kernel's structural bounds refuse a document b
   assert.equal(wholeDocumentRequest("team.knowledge", intentOf(BASE, { type: "Note", ...managed, timestamp: "2026-09-22T00:00:00.000Z", actor: "a" })).kind, "replace");
 });
 
-test("whole-document request: an import create carries provenance as authored and never verified or superbee_updated_by", () => {
+test("whole-document request: an import create carries every managed field as authored, attribution and verification included", () => {
   const generated = { by: "agent:writer", at: "2026-09-01T00:00:00.000Z" };
   const verified = [{ by: "person:ada", at: "2026-09-02T00:00:00.000Z" }];
   const authored = { type: "Note", title: "Alpha", generated, verified, superbee_updated_by: "person:ada", timestamp: "2026-09-01T00:00:00.000Z", actor: "someone", okf_version: "0.2" };
   assert.deepEqual([...IMPORT_CARRIED_FIELDS, ...IMPORT_DROPPED_FIELDS].sort(), [...HOSTED_MANAGED_FIELDS].sort(), "every managed field is either carried or dropped");
-  assert.deepEqual([...IMPORT_DROPPED_FIELDS].sort(), ["superbee_updated_by", "verified"]);
+  assert.deepEqual([...IMPORT_DROPPED_FIELDS], []);
   const create = wholeDocumentRequest("team.knowledge", intentOf(null, authored), "0.2", { mode: "import" });
   assert.equal(create.kind, "create");
-  assert.deepEqual(create.payload.frontmatter, { type: "Note", title: "Alpha", generated, timestamp: "2026-09-01T00:00:00.000Z", actor: "someone", okf_version: "0.2" });
-  assert.deepEqual(create.kind === "create" && create.provenance, { carried: ["generated", "timestamp", "actor", "okf_version"], dropped: ["verified", "superbee_updated_by"] });
+  assert.deepEqual(create.payload.frontmatter, authored);
+  assert.deepEqual(create.kind === "create" && create.provenance, { carried: ["generated", "verified", "superbee_updated_by", "timestamp", "actor", "okf_version"], dropped: [] });
   // The same document as an ordinary write: no managed field leaves, and no provenance is reported.
   const write = wholeDocumentRequest("team.knowledge", intentOf(null, authored), "0.2");
   assert.deepEqual(write.payload, { bundleId: "team.knowledge", documentId: "notes/alpha", expectAbsent: true, frontmatter: { type: "Note", title: "Alpha" }, body: "Alpha body changed é\r\n" });

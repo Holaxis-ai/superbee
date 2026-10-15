@@ -70,9 +70,10 @@ Without --yes, previews only, with no network: what travels (documents, reserved
 files), what stays (dot-files, links), how it is sent, every bound the host enforces, the history
 plan, and what will happen to the folder.
 
-Each document's provenance (generated, timestamp, actor, okf_version) travels as its file states
-it, a claim rather than a verification; verified and superbee_updated_by never travel. The
-preview and the receipt count both, per field.
+Each document's provenance (generated, timestamp, actor, okf_version, superbee_updated_by,
+verified) travels as its file states it, a claim rather than a verification, so the bundle reads
+on the host as it does here. The host still records the creation as yours, and stamps the writer
+itself on every later edit. The preview and the receipt count each field.
 
 A bundle within one request's bounds (at most 1,000 documents, 100 other files of 1 MB each,
 1,000 earlier versions, 1,500 objects in all, 3 MiB) is sent in one request. A larger one is sent
@@ -272,7 +273,7 @@ function provenanceOf(plan: PublishPlan): Record<string, unknown> {
   return {
     carried: plan.provenance.carried,
     dropped: plan.provenance.dropped,
-    note: "provenance travels as each file states it (a claim, not a verification); verification events and the last-editor attribution stay in the folder, and the host attributes the creation to you",
+    note: "provenance travels as each file states it (a claim, not a verification), so documents read on the host as they do here; the host records the creation as yours and stamps the writer itself on every later edit",
   };
 }
 
@@ -316,6 +317,16 @@ function createRefusal(
         details,
         help: `put the files back as they were and re-run the same command to finish it; if the creation already finished, bind this folder to it (your edits become sync conflicts): ${cliInvocation()} checkout --adopt ${commandToken(context.folder)} --host ${commandToken(bindingHostArgument(context.target))}`,
       });
+    case "validation_failed":
+      // A host from before creations carried attribution and verification refuses them by name.
+      // The files are right: removing the fields would lose exactly what publish now carries.
+      if (/sets (superbee_updated_by|verified)\b.*which only the host writes/.test(message)) {
+        return new CliError("FORBIDDEN", `${context.target.origin} does not yet keep each document's superbee_updated_by and verified on a new bundle, which this CLI carries`, {
+          details: { ...details, reason: "host_predates_provenance" },
+          help: "leave the files as they are: publish again once the host is updated, or publish with an earlier superbee CLI, which leaves those fields behind",
+        });
+      }
+      return new CliError("USAGE", `${context.target.origin} refused the bundle (${code}): ${message}`, { details, help: "fix the files it names, then preview again" });
     default:
       return new CliError("USAGE", `${context.target.origin} refused the bundle (${code}): ${message}`, { details, help: "fix the files it names, then preview again" });
   }

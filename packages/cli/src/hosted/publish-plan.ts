@@ -6,8 +6,9 @@
 //
 // What travels:
 //   documents       every `.md` file that is not a reserved file, as `{id, frontmatter, body}`;
-//                   provenance (`generated`, `timestamp`, `actor`, `okf_version`) as the file
-//                   states it, never `verified` or `superbee_updated_by` (`provenance` counts both)
+//                   provenance (`generated`, `timestamp`, `actor`, `okf_version`,
+//                   `superbee_updated_by`, `verified`) as the file states it (`provenance` counts
+//                   each)
 //   reserved        `index.md` and `log.md` at any level, as their exact text
 //   blobs           every other plain file, with a content type from its extension (base64 in
 //                   the one-shot request, raw bytes in a staged creation)
@@ -204,12 +205,16 @@ interface HistoryOptions {
   readonly now: number;
 }
 
+/** The frontmatter the host leaves free under a carried `verified` for the stamps of later writes (superbee-hosted `STAMP_ROOM_BYTES`). */
+const VERIFIED_STAMP_ROOM_BYTES = 512;
+
 /** Earlier Git versions of one document, oldest first, as import rows (the current version excluded). */
-function gitVersions(board: GitBoardFacts, id: string, rel: string, current: string, okfVersion: "0.1" | "0.2" | undefined, now: number, documentInputBytes: number | null): { rows: CreateHistory[]; skipped: number } {
+function gitVersions(board: GitBoardFacts, id: string, rel: string, current: string, okfVersion: "0.1" | "0.2" | undefined, now: number, documentInputBytes: number | null): { rows: CreateHistory[]; skipped: number; oversized: string[] } {
   const repoPath = board.prefix === "" ? rel : `${board.prefix}/${rel}`;
   const log = runGit(board.top, ["log", "--no-renames", "--format=%H%x1f%an <%ae>%x1f%aI", "HEAD", "--", repoPath]);
-  if (log.status !== 0) return { rows: [], skipped: 0 };
+  if (log.status !== 0) return { rows: [], skipped: 0, oversized: [] };
   const rows: CreateHistory[] = [];
+  const oversized: string[] = [];
   let skipped = 0;
   let previous = current;
   for (const line of log.stdout.split("\n").filter(Boolean)) {
@@ -236,20 +241,27 @@ function gitVersions(board: GitBoardFacts, id: string, rel: string, current: str
       skipped += 1;
       continue;
     }
+    // An imported version carries the same provenance a current document does, and is measured
+    // with it: the host bounds the whole stored frontmatter. A version past it stays behind, named.
+    const frontmatter = Object.fromEntries(
+      Object.entries(parsed.frontmatter as Record<string, unknown>).filter(([key]) => !IMPORT_DROPPED_FIELDS.includes(key)),
+    );
+    if (Buffer.byteLength(JSON.stringify(frontmatter)) > FRONTMATTER_JSON_BYTES) {
+      skipped += 1;
+      oversized.push(`${rel}@${sha.slice(0, 12)}`);
+      continue;
+    }
     rows.push({
       documentId: id,
       label: `imported:git/${sha}`,
       author: cleanAuthor(author ?? ""),
       authoredAt: new Date(when).toISOString(),
-      // An imported version never asserts verification or host attribution, as a current document does not.
-      frontmatter: Object.fromEntries(
-        Object.entries(parsed.frontmatter as Record<string, unknown>).filter(([key]) => !IMPORT_DROPPED_FIELDS.includes(key)),
-      ),
+      frontmatter,
       body: parsed.body ?? "",
     });
   }
   // The host numbers imported versions oldest first, in the order sent.
-  return { rows: rows.reverse(), skipped };
+  return { rows: rows.reverse(), skipped, oversized };
 }
 
 /**
@@ -443,7 +455,14 @@ export async function planPublish(
     if (request.kind !== "create") throw new Error(`'${id}' became a ${request.kind} request`);
     // The host bounds the whole stored frontmatter, carried provenance included; `unsendable`
     // measured only what a later write sends.
-    if (Buffer.byteLength(JSON.stringify(request.payload.frontmatter)) > FRONTMATTER_JSON_BYTES) {
+    // No write can remove `verified`, and every later host write adds its stamps under the same
+    // bound: the host refuses a creation that would leave such a document uneditable.
+    const frontmatterBytes = Buffer.byteLength(JSON.stringify(request.payload.frontmatter));
+    if ("verified" in request.payload.frontmatter && frontmatterBytes <= FRONTMATTER_JSON_BYTES && frontmatterBytes > FRONTMATTER_JSON_BYTES - VERIFIED_STAMP_ROOM_BYTES) {
+      blockers.push({ path: entry.rel, reason: "too_large", message: `'${id}' carries verified and leaves less than ${VERIFIED_STAMP_ROOM_BYTES} bytes of the ${FRONTMATTER_JSON_BYTES / 1024} KiB of frontmatter the host stores for its stamps on later edits; shorten its frontmatter` });
+      continue;
+    }
+    if (frontmatterBytes > FRONTMATTER_JSON_BYTES) {
       blockers.push({ path: entry.rel, reason: "too_large", message: `'${id}' has more than the ${FRONTMATTER_JSON_BYTES / 1024} KiB of frontmatter the host stores, counting ${request.provenance!.carried.join(", ")}` });
       continue;
     }
@@ -486,6 +505,7 @@ export async function planPublish(
         const versions = gitVersions(options.board, file.id, file.rel, file.text, okfVersion, options.now ?? Date.now(), documentInputBytes);
         history.push(...versions.rows);
         skippedVersions += versions.skipped;
+        for (const version of versions.oversized) skipped.push({ path: version, reason: `an earlier version with more than the ${FRONTMATTER_JSON_BYTES / 1024} KiB of frontmatter the host stores; its history is imported without it` });
       }
       historyPlan = {
         mode: "git",
