@@ -356,3 +356,25 @@ test("kind field add --type declares the type only; remove drops it; a bad type 
     await cleanup();
   }
 });
+
+test("doc update and doc field set refuse a typed list field up front and point to new", async () => {
+  const { dir, bundle, cleanup } = await placeBundle();
+  try {
+    await newCommand(["Place", "cafe", "--title", "Cafe", "--amenities", "wifi", "--dir", dir], { stdout: () => {} });
+    const before = await readDoc(bundle, "places/cafe");
+    const deps = { stdout: () => {}, readStdin: async () => undefined };
+    const refusesList = (command: string) => (err: unknown) => {
+      assert.ok(err instanceof CliError, String(err));
+      assert.equal(err.code, "USAGE");
+      assert.match(err.message, new RegExp(`'amenities' is a string-list field, and '${command}' does not replace lists`));
+      assert.match(err.message, /'new'/);
+      assert.match(err.help ?? "", /new Place --help/);
+      return true;
+    };
+    await assert.rejects(() => doc(["update", "places/cafe", "--amenities", "patio", "--dir", dir, "--json"], deps), refusesList("doc update"));
+    await assert.rejects(() => doc(["field", "set", "places/cafe", "amenities", "patio", "--dir", dir, "--json"], deps), refusesList("doc field set"));
+    assert.deepEqual((await readDoc(bundle, "places/cafe")).frontmatter, before.frontmatter);
+  } finally {
+    await cleanup();
+  }
+});
