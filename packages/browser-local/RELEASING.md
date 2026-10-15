@@ -12,9 +12,10 @@ is the durable process for every browser-local prerelease.
 | @superbee/browser-local | 0.1.0-pre.11 | public / next |
 
 This candidate makes retiring acknowledged body history strictly best effort (superbee#461).
-`retireQuietly` used to rethrow any retirement failure outside a fixed list (a plain `Error`,
-`QuotaExceededError`, `NotFoundError`; core's IndexedDB adapter reports an error-less host
-abort as a plain `Error`) into the settle and every later commit of that document. Now no
+`retireQuietly` used to rethrow any retirement failure other than a guard conflict or a
+transient storage error (for example a plain `Error`, `QuotaExceededError` or `NotFoundError`;
+core's IndexedDB adapter reports an error-less host abort as a plain `Error`) into the settle
+and every later commit of that document. Now no
 retirement failure reaches a commit or settle; the next commit or settle of the target
 retries it, and a target that fails `RETIREMENT_DIAGNOSTIC_FAILURES` (3) times in a row
 through one opened working copy is listed in `syncStatus().retirementFailures`. New exports:
@@ -28,7 +29,8 @@ already published on `next`, so consumers need no core override. Core's body bou
 (`BODY_DELIVERY_LIMITS`, `BODY_RECONCILIATION_BYTES`) are byte-identical between pre.8 and
 pre.14, so the runtime's capacity admission is unchanged. Core and server are not part of this
 candidate and there is no `libraries/v*` tag: there is no core or server change to stage. The
-renderer is not part of this candidate.
+renderer is not part of this candidate. For this candidate, skip "Before release" steps 2 and 3
+(core pre.14 is already published and finalized) and pack only browser-local.
 
 ## Before release
 
