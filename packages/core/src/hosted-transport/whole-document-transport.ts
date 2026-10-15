@@ -56,16 +56,17 @@ export const HOSTED_MANAGED_FIELDS: ReadonlySet<string> = new Set(["actor", "sup
 
 /**
  * The managed fields a bundle's creation carries as the folder states them: provenance a local
- * engine stored, which nothing on the host could restore later. `generated` is a claim about who
- * produced the content, not authority. Every other managed field ({@link IMPORT_DROPPED_FIELDS})
- * never leaves.
+ * engine stored, which nothing on the host could restore later, so a bundle moved to the host
+ * reads as it did. Each is the folder's claim, not authority: `generated` and
+ * `superbee_updated_by` say who produced and last wrote the content (the host shows either as
+ * attribution, never as an authorization input), and `verified` events are the checks the folder
+ * records, which the host has no path to write again. The host's own record of the creation is its
+ * history row, which names the person who published; every later write through the host stamps
+ * `superbee_updated_by` itself and carries `verified` from the stored document. A field outside
+ * this list ({@link IMPORT_DROPPED_FIELDS}) never leaves.
  */
-export const IMPORT_CARRIED_FIELDS: readonly string[] = Object.freeze(["generated", "timestamp", "actor", "okf_version"]);
-/**
- * The managed fields a creation still drops: `superbee_updated_by` is the host's own attribution,
- * and a `verified` event names a verifier and drives the trust tier, which an importer must not
- * be able to assert.
- */
+export const IMPORT_CARRIED_FIELDS: readonly string[] = Object.freeze(["generated", "timestamp", "actor", "okf_version", "superbee_updated_by", "verified"]);
+/** The managed fields a creation drops: none today; a managed field added later stays behind until it is named above. */
 export const IMPORT_DROPPED_FIELDS: readonly string[] = Object.freeze([...HOSTED_MANAGED_FIELDS].filter((field) => !IMPORT_CARRIED_FIELDS.includes(field)));
 
 /** The most frontmatter fields the kernel accepts on a create or replace. */

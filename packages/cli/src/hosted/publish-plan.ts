@@ -6,8 +6,9 @@
 //
 // What travels:
 //   documents       every `.md` file that is not a reserved file, as `{id, frontmatter, body}`;
-//                   provenance (`generated`, `timestamp`, `actor`, `okf_version`) as the file
-//                   states it, never `verified` or `superbee_updated_by` (`provenance` counts both)
+//                   provenance (`generated`, `timestamp`, `actor`, `okf_version`,
+//                   `superbee_updated_by`, `verified`) as the file states it (`provenance` counts
+//                   each)
 //   reserved        `index.md` and `log.md` at any level, as their exact text
 //   blobs           every other plain file, with a content type from its extension (base64 in
 //                   the one-shot request, raw bytes in a staged creation)
@@ -241,7 +242,7 @@ function gitVersions(board: GitBoardFacts, id: string, rel: string, current: str
       label: `imported:git/${sha}`,
       author: cleanAuthor(author ?? ""),
       authoredAt: new Date(when).toISOString(),
-      // An imported version never asserts verification or host attribution, as a current document does not.
+      // An imported version carries the same provenance a current document does.
       frontmatter: Object.fromEntries(
         Object.entries(parsed.frontmatter as Record<string, unknown>).filter(([key]) => !IMPORT_DROPPED_FIELDS.includes(key)),
       ),

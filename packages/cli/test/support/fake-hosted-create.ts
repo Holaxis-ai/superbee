@@ -27,7 +27,7 @@
 //   manifests and staged content go), `dropStagedBlobs()`, `interrupt` (the connection drops
 //   at a given request, before or after the host applied it) and `onRequest`;
 // - the created bundle is then served over whoami, bundles, capabilities (with its root), heads
-//   and snapshot, in the host's own serialization (the managed `superbee_updated_by` field added).
+//   and snapshot, in the host's own serialization of the frontmatter as sent.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -329,7 +329,7 @@ export class FakeCreateHost {
     }
     const docs = new Map<string, { frontmatter: Record<string, unknown>; body: string; version: string }>();
     for (const doc of documents) {
-      const frontmatter = { ...doc.frontmatter, superbee_updated_by: PRINCIPAL };
+      const frontmatter = { ...doc.frontmatter };
       docs.set(doc.id, { frontmatter, body: doc.body, version: versionOfBytes(stringifyDoc(frontmatter as never, doc.body)) });
     }
     const rootFile = reserved.find((r) => r.dir === "" && r.name === "index.md");
@@ -642,7 +642,7 @@ export class FakeCreateHost {
     const docs = new Map<string, { frontmatter: Record<string, unknown>; body: string; version: string }>();
     for (const doc of m.documents) {
       const parsed = parseMarkdown(creation.staged.get(doc.version)!, doc.id);
-      const frontmatter = { ...(parsed.frontmatter as Record<string, unknown>), superbee_updated_by: PRINCIPAL };
+      const frontmatter = { ...(parsed.frontmatter as Record<string, unknown>) };
       docs.set(doc.id, { frontmatter, body: parsed.body ?? "", version: versionOfBytes(stringifyDoc(frontmatter as never, parsed.body ?? "")) });
     }
     this.bundles.set(m.bundleId, {

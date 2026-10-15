@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { decode } from "@toon-format/toon";
+import { stringifyDoc } from "@superbee/core";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 
 import { hostedCheckoutAt } from "../src/autopull.js";
@@ -63,8 +64,8 @@ async function rejects(promise: Promise<unknown>): Promise<CliError> {
 }
 
 const ROOT = '---\nokf_version: "0.2"\ntitle: Team notes\n---\n# Team notes\n';
-const NO_PROVENANCE = { carried: { generated: 0, timestamp: 0, actor: 0, okf_version: 0 }, dropped: { verified: 0, superbee_updated_by: 0 } };
-const PROVENANCE_NOTE = "provenance travels as each file states it (a claim, not a verification); verification events and the last-editor attribution stay in the folder, and the host attributes the creation to you";
+const NO_PROVENANCE = { carried: { generated: 0, timestamp: 0, actor: 0, okf_version: 0, superbee_updated_by: 0, verified: 0 }, dropped: {} };
+const PROVENANCE_NOTE = "provenance travels as each file states it (a claim, not a verification), so documents read on the host as they do here; the host records the creation as yours and stamps the writer itself on every later edit";
 
 async function writeBundle(folder: string): Promise<void> {
   await mkdir(path.join(folder, "notes"), { recursive: true });
@@ -228,7 +229,7 @@ test("--yes creates the bundle and converts the folder in place, rewriting nothi
   assert.equal(again.details?.reason, "already_hosted");
 });
 
-test("publish carries each document's provenance as authored, never verified or superbee_updated_by, and counts both", async () => {
+test("publish carries each document's provenance as authored, attribution and verification included, and counts each field", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "notes-bundle");
   await writeBundle(folder);
@@ -254,7 +255,7 @@ test("publish carries each document's provenance as authored, never verified or 
   );
   await writeFile(path.join(folder, "notes", "delta.md"), "---\ntype: Note\ntitle: Delta\ngenerated:\n  by: agent:writer\n  at: 2026-09-04T00:00:00.000Z\n---\nDelta.\n");
   const fake = new FakeCreateHost();
-  const counts = { carried: { generated: 2, timestamp: 1, actor: 1, okf_version: 0 }, dropped: { verified: 1, superbee_updated_by: 1 } };
+  const counts = { carried: { generated: 2, timestamp: 1, actor: 1, okf_version: 0, superbee_updated_by: 1, verified: 1 }, dropped: {} };
   const preview = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
   assert.equal(fake.requests.length, 0);
   assert.deepEqual((preview.travels as Record<string, unknown>).provenance, { ...counts, note: PROVENANCE_NOTE });
@@ -267,6 +268,8 @@ test("publish carries each document's provenance as authored, never verified or 
     type: "Note",
     title: "Gamma",
     generated: { by: "agent:writer", at: "2026-09-01T00:00:00.000Z" },
+    verified: [{ by: "person:ada", at: "2026-09-02T00:00:00.000Z" }],
+    superbee_updated_by: "person:ada",
     // An OKF 0.2 legacy timestamp is kept as the file spells it, as a local engine reads it.
     timestamp: "2026-09-03T00:00:00Z",
     actor: "person:ada",
@@ -282,6 +285,34 @@ test("publish carries each document's provenance as authored, never verified or 
   assert.deepEqual(state.pending, []);
 });
 
+test("a publish then a fresh checkout reads every document as the folder did, attribution and verification included", async () => {
+  const h = await harness();
+  const folder = path.join(h.cwd, "source");
+  await writeBundle(folder);
+  await mkdir(path.join(folder, "places"), { recursive: true });
+  const bridge = stringifyDoc(
+    {
+      type: "Place",
+      title: "Lift Bridge",
+      verified: [{ by: "anthropic/claude-opus-5-5", at: "2026-10-03T16:58:37.287Z" }],
+      generated: { by: "process:hm-schema-v2-p3", at: "2026-10-04T18:49:44.892Z" },
+      superbee_updated_by: "anthropic/claude",
+    } as never,
+    "A bridge.\n",
+  );
+  await writeFile(path.join(folder, "places", "bridge.md"), bridge);
+  const note = stringifyDoc({ type: "Note", title: "Gamma", superbee_updated_by: "openai/codex" } as never, "Gamma.\n");
+  await writeFile(path.join(folder, "notes", "gamma.md"), note);
+  const documents = ["notes/alpha.md", "notes/beta.md", "notes/gamma.md", "places/bridge.md"];
+  const before = new Map(await Promise.all(documents.map(async (rel) => [rel, await readFile(path.join(folder, rel), "utf8")] as const)));
+  const fake = new FakeCreateHost();
+  await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--bundle-id", "team.notes", "--yes"], fake);
+  const { checkout } = await import("../src/commands/checkout.js");
+  const copy = path.join(h.cwd, "copy");
+  await checkout(["team.notes", "--host", HOST, "--dir", copy], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: fake.fetch });
+  for (const rel of documents) assert.equal(await readFile(path.join(copy, rel), "utf8"), before.get(rel), rel);
+});
+
 test("an OKF 0.1 bundle carries a Kind's required timestamp and actor as authored", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "b");
@@ -293,19 +324,19 @@ test("an OKF 0.1 bundle carries a Kind's required timestamp and actor as authore
   const fake = new FakeCreateHost();
   const preview = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST], fake);
   assert.equal(preview.ready, true, JSON.stringify(preview.blockers));
-  assert.deepEqual(((preview.travels as Record<string, unknown>).provenance as Record<string, unknown>).carried, { generated: 0, timestamp: 1, actor: 1, okf_version: 1 });
+  assert.deepEqual(((preview.travels as Record<string, unknown>).provenance as Record<string, unknown>).carried, { generated: 0, timestamp: 1, actor: 1, okf_version: 1, superbee_updated_by: 0, verified: 0 });
   await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], fake);
   const sent = (fake.creates[0]!.body as { documents: { id: string; frontmatter: Record<string, unknown> }[] }).documents.find((doc) => doc.id === "tasks/done");
   assert.deepEqual(sent?.frontmatter, { type: "Task", title: "Done", timestamp: "2026-07-01T12:05:00.000Z", actor: "person:ada", okf_version: "0.1" });
 });
 
-test("provenance past the host's frontmatter bound blocks before any request, naming the carried fields; a verified list never leaves", async () => {
+test("provenance past the host's frontmatter bound blocks before any request, naming the carried fields", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "b");
   await writeBundle(folder);
   // Authored frontmatter within 16 KiB, which only the carried `generated` pushes past it.
   await writeFile(path.join(folder, "notes", "huge.md"), `---\ntype: Note\ntitle: ${"t".repeat(10 * 1024)}\ngenerated:\n  by: agent:writer\n  note: ${"g".repeat(8 * 1024)}\n---\nx\n`);
-  // Malformed provenance travels as the claim it is; a long verified list stays behind.
+  // Malformed provenance travels as the claim it is, and so does a long verified list.
   const events = Array.from({ length: 50 }, (_, i) => `  - by: person:p${i}\n    at: 2026-09-02T00:00:00.000Z`).join("\n");
   await writeFile(path.join(folder, "notes", "odd.md"), `---\ntype: Note\ngenerated: not a mapping\nverified:\n${events}\n---\nx\n`);
   const fake = new FakeCreateHost();
@@ -320,12 +351,10 @@ test("provenance past the host's frontmatter bound blocks before any request, na
 
   await rm(path.join(folder, "notes", "huge.md"));
   const receipt = await run(h, ["--to", "hosted", "--dir", folder, "--host", HOST, "--yes"], fake);
-  assert.deepEqual((receipt.sent as Record<string, unknown>).provenance, { carried: { generated: 1, timestamp: 0, actor: 0, okf_version: 0 }, dropped: { verified: 1, superbee_updated_by: 0 } });
-  const body = JSON.stringify(fake.creates[0]!.body);
-  assert.doesNotMatch(body, /"verified"/);
-  assert.doesNotMatch(body, /person:p\d/);
+  assert.deepEqual((receipt.sent as Record<string, unknown>).provenance, { carried: { generated: 1, timestamp: 0, actor: 0, okf_version: 0, superbee_updated_by: 0, verified: 1 }, dropped: {} });
   const odd = (fake.creates[0]!.body as { documents: { id: string; frontmatter: Record<string, unknown> }[] }).documents.find((doc) => doc.id === "notes/odd");
-  assert.deepEqual(odd?.frontmatter, { type: "Note", generated: "not a mapping" });
+  assert.equal((odd?.frontmatter.verified as unknown[]).length, 50);
+  assert.equal(odd?.frontmatter.generated, "not a mapping");
 });
 
 test("signed in to two hosts, publish without --host previews a blocker and refuses --yes; it never follows the last sign-in", async () => {
@@ -555,13 +584,12 @@ test("a Git board is published with its history, unbound, and its branch left as
   assert.equal(history[0]!.documentId, "notes/alpha");
   assert.match(history[0]!.label, /^imported:git\/[0-9a-f]{40}$/);
   assert.equal(history[0]!.author, "Ada <ada@example.com>");
-  // An imported version carries provenance but never verification or host attribution.
+  // An imported version carries its provenance as that commit stated it, attribution and verification included.
   const versionFields = (history as unknown as { frontmatter: Record<string, unknown> }[]).map((row) => row.frontmatter);
   assert.deepEqual(versionFields[1]!.generated, { by: "process:importer", at: "2026-01-01T00:00:00.000Z" });
-  for (const frontmatter of versionFields) {
-    assert.equal("verified" in frontmatter, false);
-    assert.equal("superbee_updated_by" in frontmatter, false);
-  }
+  assert.equal(versionFields[1]!.superbee_updated_by, "person:someone-else");
+  assert.deepEqual(versionFields[1]!.verified, [{ by: "person:someone-else", at: "2026-01-02T00:00:00.000Z" }]);
+  assert.equal("verified" in versionFields[0]!, false);
   assert.equal(history[1]!.author.length, 200, "an author is cut to the host's 200 UTF-16 units");
   assert.equal(history[1]!.author, "😀".repeat(100), "never half a surrogate pair");
   const unbound = receipt.git as Record<string, unknown>;
