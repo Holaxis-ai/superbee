@@ -164,6 +164,8 @@ function reasonFor(binding: CheckoutBinding, error: CliError, receipt: string): 
         ? `Relay this sign-in link to the person: ${link}. After they confirm, run: ${sync}`
         : `Sign in (${error.help ?? `${cliInvocation()} login`}), relay the link it returns, then run: ${sync}`,
     );
+  } else if (error.code === "GATE_FAILED") {
+    lines.push(`Fix what the sync gate reports (${error.help ?? "run the gate yourself"}), then run: ${sync}`);
   } else if (ORPHANED_LOCK_REASONS.has(String((error.details as { reason?: unknown } | undefined)?.reason)) && error.help) {
     lines.push(`Tell the person: ${error.help}: ${sync}`);
   } else {
@@ -306,7 +308,7 @@ async function hostedTurnEnd(binding: CheckoutBinding, options: HostedTurnEndOpt
     });
   } catch (error) {
     const reason = error instanceof CliError ? (error.details as { reason?: unknown } | undefined)?.reason : undefined;
-    if (error instanceof CliError && (error.code === "AUTH_REQUIRED" || error.code === "CONFLICT") && reason !== "sync_busy" && reason !== "session_busy") {
+    if (error instanceof CliError && (error.code === "AUTH_REQUIRED" || error.code === "CONFLICT" || error.code === "GATE_FAILED") && reason !== "sync_busy" && reason !== "session_busy") {
       blocking = error;
     }
   }

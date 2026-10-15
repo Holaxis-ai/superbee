@@ -33,6 +33,8 @@ export type HostRoot = { readonly content: string; readonly version: string } | 
 
 export const ROOT_CONFLICT_MESSAGE =
   "The bundle's front page also changed on the host. Nothing was merged or sent. Inspect it, then keep yours (the next sync sends it over the host's version) or take the host's.";
+export const ROOT_CHANGED_SINCE_GATE_MESSAGE =
+  "index.md changed after the sync gate judged it, so it was not sent. Run sync again: the gate judges it, then it is sent.";
 export const ROOT_NOT_LANDED_MESSAGE = "The answer was lost, and the host still has the front page this edit replaces, so it was not applied. Run sync again to send it.";
 export const ROOT_UNKNOWN_MESSAGE = "The answer was lost; the front page may have changed on the host. The next sync reads the host's front page to tell, never sending it twice.";
 
@@ -133,6 +135,11 @@ export interface RootStepContext {
   send?(content: string, base: string | null): Promise<RootWriteOutcome>;
   /** Write the projection record now. */
   persist(): Promise<void>;
+  /**
+   * The digest of the root file the sync gate judged (null: absent), when a gate ran this run. A
+   * file that changed since is not sent: it waits (paused) for the next sync's gate.
+   */
+  readonly judged?: string | null;
 }
 
 export interface RootStepReport {
@@ -262,6 +269,9 @@ async function rootStep(context: RootStepContext): Promise<RootStepReport> {
     return { refreshed: true };
   }
   if (!edited || context.rootWrites !== "allowed" || !context.send) return { refreshed: false };
+  if (context.judged !== undefined && digestOf(bytes!) !== context.judged) {
+    return { row: row("paused", "changed_since_gate", ROOT_CHANGED_SINCE_GATE_MESSAGE), refreshed: false };
+  }
   const content = utf8(bytes!);
   // Text that does not encode back to the file's exact bytes (not UTF-8, or a byte-order mark the
   // decoder drops) would be stored as other bytes than the file holds.

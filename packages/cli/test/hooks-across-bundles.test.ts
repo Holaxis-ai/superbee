@@ -6,6 +6,7 @@
 // board is never synced by the hook.
 import { movedBoardRefusal } from "../src/hosted/moved-marker.js";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -330,6 +331,49 @@ test("turn-end --git-boards hands a conflict back once, stays quiet for offline,
     assert.equal(await turnEndQuietWith({ SUPERBEE_NO_TURN_SYNC: "1" }, home, board), "");
   } finally {
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a hosted checkout's failed sync gate at turn end is handed back once with the gate's next step, and nothing is sent", async () => {
+  const host = new FakeHost();
+  const home = await tempDir("sb-hab-gate-home-");
+  const cwd = await tempDir("sb-hab-gate-cwd-");
+  try {
+    const auth = defaultHostedAuthDeps(home, {
+      env: { SUPERBEE_ACCESS_TOKEN: TOKEN },
+      fetch: async () => {
+        throw new Error("the sign-in module must not be reached");
+      },
+    });
+    await checkout([BUNDLE, "--host", HOST, "--dir", "team", "--json"], { stdout: () => {}, auth, cwd, fetch: host.fetch });
+    const folder = path.join(cwd, "team");
+    execFileSync("git", ["init", "-q", cwd]);
+    execFileSync("git", ["-C", cwd, "config", "superbee.syncGate", "echo 'lint: alpha is broken'; exit 3"]);
+    const alpha = path.join(folder, "notes", "alpha.md");
+    await writeFile(alpha, (await readFile(alpha, "utf8")).replace(/\n---\n[\s\S]*$/, "\n---\nAlpha at turn end.\n"));
+    host.requests.length = 0;
+    const instant = async () => {};
+    const run = async (): Promise<string> => {
+      const out: string[] = [];
+      await turnEnd(["--dir", folder], {
+        stdout: (text) => void out.push(text),
+        env: {},
+        readStdin: async () => "{}",
+        syncDeps: { auth, cwd, fetch: host.fetch, write: { sleep: instant, lookupDelayMs: 0 }, sleep: instant },
+      });
+      return out.join("");
+    };
+
+    const gated = JSON.parse(await run()) as { decision: string; reason: string };
+    assert.equal(gated.decision, "block");
+    assert.match(gated.reason, /the sync gate exited 3; nothing was sent/);
+    assert.match(gated.reason, /Fix what the sync gate reports \(run the gate yourself from /);
+    assert.equal(host.writes.filter((call) => call.route !== "outcome").length, 0, "nothing was sent");
+    // The same failure on the next turn is not handed back again.
+    assert.equal(await run(), "");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 

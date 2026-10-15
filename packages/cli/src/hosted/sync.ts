@@ -88,7 +88,8 @@ import {
 } from "./sync-scan.js";
 import { digestOf, fold, replaceGuarded, ROOT_INDEX } from "./projection.js";
 import { refuseTreePrivateState } from "../private-state-publication.js";
-import { adoptHostRoot, moveRootBase, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
+import { adoptHostRoot, moveRootBase, readRootFile, rootConflict, settleRootSent, syncRoot, type HostRoot, type RootStepReport } from "./root-sync.js";
+import { declaredHostedSyncGate, runHostedSyncGate, SYNC_GATE_CONFIG, type HostedGateDeclaration } from "../commands/sync/gate.js";
 import { recordPulled, recordSynced } from "./freshness.js";
 import { needsPersonAtTerminal, processTerminal, type HostedTerminal } from "./terminal.js";
 export type { HostedTerminal } from "./terminal.js";
@@ -147,6 +148,18 @@ answer was lost; the next sync looks it up by the same request) and paused (sign
 sync quota for this bundle). The exit is 0 only when every row is committed: 5 when a row needs
 your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a lost answer, and
 4 (AUTH_REQUIRED, with the sign-in link) when you must sign in.
+A sync gate declared with git config superbee.syncGate '<command>' (as Git resolves it from the
+checkout folder: system, global, or a repository that contains the folder; never from the
+bundle's documents or the host) runs after the pull and before anything is sent, whenever the
+run has something to send. It runs through the shell from the checkout folder with
+SUPERBEE_SYNC_GATE=1, SUPERBEE_SYNC_HOME=hosted, SUPERBEE_BOARD_PATH, SUPERBEE_HOSTED_ORIGIN and
+SUPERBEE_HOSTED_BUNDLE_ID set (superbee.syncGateTimeoutSeconds overrides the 600s timeout). A
+non-zero exit, a timeout, or any change it makes to the folder sends nothing at all: your edits
+stay recorded in the checkout, and sync exits 5 with code GATE_FAILED and the gate's last output
+lines. A Git configuration that cannot be read fails the same way (reason gate_config_unreadable)
+rather than send ungated. A front page edited after the gate judged it is not sent (paused,
+changed_since_gate) until the next sync's gate judges it. --inspect, --resolve and
+--restore-deletes send nothing and never run it.
 Each write names the agent the sync runs under, recorded with it on the host as unverified
 attribution (never authority): claude-code under Claude Code (CLAUDECODE=1), or SUPERBEE_VIA=<token>
 (1 to 32 of a-z 0-9 . _ -, not starting with superbee); SUPERBEE_NO_VIA=<any value> names none.
@@ -791,6 +804,18 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
   return { acknowledged, deleted, deletedIntents, signInRequired, accessWithdrawn: denied, notSent: null, collisions: [...collisions, ...withheld], via };
 }
 
+/**
+ * Whether this run may send anything: a change not yet settled, or a front page edited where the
+ * host takes front-page writes. When unsure it says yes, so the gate is skipped only when nothing
+ * is known to be sent.
+ */
+async function wouldSend(session: Session): Promise<boolean> {
+  if ((await session.store.listIntents(UNSETTLED_STATES)).length > 0) return true;
+  if (session.capabilities.rootWrites !== "allowed") return false;
+  const root = await readRootFile(session.binding.path);
+  return root.kind === "file" && digestOf(root.bytes) !== session.projection.root;
+}
+
 /** The host's root as the run's capabilities answer serves it (re-read once a heads answer named another root). */
 async function hostRoot(reader: Pick<HostedReadAdapter, "hostedCapabilities">): Promise<HostRoot> {
   const { root } = await reader.hostedCapabilities();
@@ -798,7 +823,7 @@ async function hostRoot(reader: Pick<HostedReadAdapter, "hostedCapabilities">): 
 }
 
 /** The run's front-page step (`root-sync.ts`); `send` false only reads (a pull). */
-function rootStep(session: Session, deps: HostedSyncDeps, send: boolean): Promise<RootStepReport> {
+function rootStep(session: Session, deps: HostedSyncDeps, send: boolean, judged?: string | null): Promise<RootStepReport> {
   const { binding } = session;
   const via = resolveHostedVia(deps.auth.env).token;
   return syncRoot({
@@ -817,6 +842,7 @@ function rootStep(session: Session, deps: HostedSyncDeps, send: boolean): Promis
         }
       : {}),
     persist: session.persist,
+    ...(judged !== undefined ? { judged } : {}),
   });
 }
 
@@ -920,6 +946,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
   // F8: private state copied into the checkout refuses the run before anything is journaled or sent.
   refuseTreePrivateState(binding.path, "sync", String(resumeCommand));
   const takeHostDeletions = values["take-host-deletions"];
+  // From the person's own Git configuration, never from the folder's documents or the host.
+  const declared: HostedGateDeclaration = declaredHostedSyncGate(binding.path);
   let failure: CliError | null = null;
   const receipt = await withSession(binding, deps, resumeCommand, async (session) => {
     const { store, local, reader, projection } = session;
@@ -967,6 +995,40 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
             : { taken: true, removed: first.placed.removed.length, message: "the host's deletions were taken: their files are removed from the folder, apart from files you edited" };
     }
     await recordPulled(deps.auth.home, binding.checkout_id);
+    // The declared sync gate judges the folder after the pull placed the host's changes and before
+    // anything is sent: a failure sends nothing, no document and no front page.
+    let gateDetails: Record<string, unknown> | undefined;
+    // The front page's bytes as the gate judged them: the root step sends only those.
+    let judgedRoot: string | null | undefined;
+    if (declared.kind !== "none" && (await wouldSend(session))) {
+      if (declared.kind === "unreadable") {
+        throw new CliError("GATE_FAILED", `Git could not read ${declared.key} (git config exited ${declared.status}), so a declared sync gate cannot be ruled out; nothing was sent`, {
+          details: {
+            reason: "gate_config_unreadable",
+            folder: binding.path,
+            unsent: await unsent(),
+            gate: { key: declared.key, exit_status: declared.status, ...(declared.stderr ? { output_tail: declared.stderr } : {}) },
+          },
+          help: `fix what git config --get ${commandToken(declared.key)} reports when run from ${binding.path}, then ${resumeCommand}`,
+        });
+      }
+      const root = await readRootFile(binding.path);
+      judgedRoot = root.kind === "file" ? digestOf(root.bytes) : null;
+      const judged = await runHostedSyncGate({ folder: binding.path, origin: binding.origin, bundleId: binding.bundle_id }, declared.gate);
+      if (!judged.passed) {
+        throw new CliError("GATE_FAILED", `the sync gate ${judged.reason ?? "failed"}; nothing was sent`, {
+          details: {
+            reason: "gate_failed",
+            folder: binding.path,
+            unsent: await unsent(),
+            pulled: pulledView(binding, first.report, first.placed.placed, first.placed.removed, first.placed.kept),
+            gate: judged.details,
+          },
+          help: `run the gate yourself from ${binding.path} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${resumeCommand}`,
+        });
+      }
+      gateDetails = judged.details;
+    }
     let outcome: PushOutcome;
     const heldSink: { value?: { deletions: number; baseline: number } } = {};
     try {
@@ -990,7 +1052,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // The front page, after the documents: settled, pulled, or sent against its base.
     let root: RootStepReport;
     try {
-      root = await rootStep(session, deps, true);
+      root = await rootStep(session, deps, true, judgedRoot);
     } catch (error) {
       throw await readFailure(error, session, resumeCommand, await unsent());
     }
@@ -1060,6 +1122,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       ...(scan.deleted.length > 0
         ? { deletions: scan.deleted.map((row) => ({ id: row.id, ...(row.inbound.length > 0 ? { still_linked_from: row.inbound.slice(0, 20), warning: `${row.inbound.length} document(s) still link to '${row.id}'; the links are left as they are` } : {}) })) }
         : {}),
+      ...(gateDetails ? { gate: `passed: ${String(gateDetails.command)} (attempt ${String(gateDetails.attempt)})` } : {}),
       counts,
       rows: shown,
       ...(shown.length < rows.length ? { rows_shown: shown.length, rows_total: rows.length, rows_all: syncCommand(binding, commandFragment` --limit ${commandToken(String(rows.length))}`) } : {}),
