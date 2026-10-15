@@ -121,7 +121,8 @@ change accordingly. When existing documents would violate an added entry, the pl
 `fields.types.<f>` or `fields.values.<f>`, and the message names up to ten violating documents and
 counts the rest. Changing or removing a type or an enum stays refused by the additive merge
 (`RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED`, `RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED`), and an enum
-on an undeclared field stays `RECIPE_EVOLUTION_NON_MONOTONIC`. Apply recomputes the plan and
+on an undeclared field stays `RECIPE_EVOLUTION_NON_MONOTONIC`; its message now says to declare the
+field in `fields.required` or `fields.optional` first, so that plan's text and token change too. Apply recomputes the plan and
 refuses a stale token, but it does not bind instance versions into the convention write, so a
 document written after that recomputation becomes conformance debt that `status` reports. Plans
 for recipes that add neither entry are byte-identical, tokens included. Evidence:

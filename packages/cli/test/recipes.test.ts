@@ -1570,7 +1570,7 @@ test("recipe evolve: enum, retype and in-use removal changes block with their ow
       ),
       code: "RECIPE_EVOLUTION_NON_MONOTONIC",
       field: "colour",
-      message: /cannot add an enum restriction to 'colour' for 'Widget'; only a declared field may gain one/,
+      message: /cannot add an enum restriction to 'colour' for 'Widget'; declare 'colour' in fields.required or fields.optional first/,
     },
     {
       name: "narrowed enum",

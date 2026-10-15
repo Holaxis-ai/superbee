@@ -310,7 +310,7 @@ function monotonicEvolutionBlockers(
         blockers,
         "RECIPE_EVOLUTION_NON_MONOTONIC",
         desired.id,
-        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'; only a declared field may gain one`,
+        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'; declare '${field}' in fields.required or fields.optional first`,
         field,
       );
       continue;
