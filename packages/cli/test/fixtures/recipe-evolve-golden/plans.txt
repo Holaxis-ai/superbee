@@ -1,0 +1,166 @@
+## ready: a new optional field
+{
+  "recipe": "evolution plan",
+  "id": "widget-workflow",
+  "version": "2",
+  "source": "test:evolve-golden:2",
+  "okf_version": "0.2",
+  "ready": true,
+  "changed": true,
+  "plan_token": "sha256:d8db78496ca5bfbe2002ff7726fbe0b5b1b1a234e3abc08bd69dee7889362dae",
+  "definitions": [
+    {
+      "id": "conventions/widget",
+      "governs": "Widget",
+      "action": "update",
+      "expected_version": "sha256:055899d4a4c3e786dc1dea20c13864a2a0e343b71e5cbc6219088ce8a4d76ad3",
+      "desired_version": "sha256:76502f22f4eaa7ca1958080c437f2bfa0da9f7835a08a427a8d99c562b514ec2",
+      "added_paths": [
+        "/frontmatter/fields/optional/colour"
+      ]
+    }
+  ],
+  "counts": {
+    "definitions": 1,
+    "updates": 1,
+    "unchanged": 0,
+    "missing": 0,
+    "instances_checked": 1,
+    "blockers": 0
+  },
+  "blockers": []
+}
+## blocked: a newly required field with a non-conforming instance
+{
+  "recipe": "evolution plan",
+  "id": "widget-workflow",
+  "version": "2",
+  "source": "test:evolve-golden:2",
+  "okf_version": "0.2",
+  "ready": false,
+  "changed": true,
+  "plan_token": "sha256:1fa151c786a256fc72314ff6c405a079736b44e119a5dc330053dbe11b367bb9",
+  "definitions": [
+    {
+      "id": "conventions/widget",
+      "governs": "Widget",
+      "action": "update",
+      "expected_version": "sha256:055899d4a4c3e786dc1dea20c13864a2a0e343b71e5cbc6219088ce8a4d76ad3",
+      "desired_version": "sha256:0bd2b104d61e3ef06b6962ee5549aa3f9d6ea30b452babb9b7e8f42f4e19fb30",
+      "added_paths": [
+        "/frontmatter/fields/required/priority"
+      ]
+    }
+  ],
+  "counts": {
+    "definitions": 1,
+    "updates": 1,
+    "unchanged": 0,
+    "missing": 0,
+    "instances_checked": 1,
+    "blockers": 2
+  },
+  "blockers": [
+    {
+      "code": "RECIPE_EVOLUTION_INSTANCE_INVALID",
+      "id": "widgets/one",
+      "message": "'Widget' requires a non-empty 'priority' field (declared by conventions/widget).",
+      "field": "priority"
+    },
+    {
+      "code": "RECIPE_EVOLUTION_NON_MONOTONIC",
+      "id": "conventions/widget",
+      "message": "automatic evolution cannot newly require 'priority' for 'Widget'; migrate instances explicitly first",
+      "field": "priority"
+    }
+  ]
+}
+## blocked: a new field's enum an instance already violates
+{
+  "recipe": "evolution plan",
+  "id": "widget-workflow",
+  "version": "2",
+  "source": "test:evolve-golden:2",
+  "okf_version": "0.2",
+  "ready": false,
+  "changed": true,
+  "plan_token": "sha256:63491c30f9ee4a78f946fc553b8a5cfd861633e5558391a8583675bdda750973",
+  "definitions": [
+    {
+      "id": "conventions/widget",
+      "governs": "Widget",
+      "action": "update",
+      "expected_version": "sha256:055899d4a4c3e786dc1dea20c13864a2a0e343b71e5cbc6219088ce8a4d76ad3",
+      "desired_version": "sha256:0243c6296b4c92338ee9adf4d9406e4774ee4ef4935fdf2ac799a7acd8c51c3b",
+      "added_paths": [
+        "/frontmatter/fields/optional/finish",
+        "/frontmatter/fields/values/finish"
+      ]
+    }
+  ],
+  "counts": {
+    "definitions": 1,
+    "updates": 1,
+    "unchanged": 0,
+    "missing": 0,
+    "instances_checked": 1,
+    "blockers": 1
+  },
+  "blockers": [
+    {
+      "code": "RECIPE_EVOLUTION_INSTANCE_INVALID",
+      "id": "widgets/one",
+      "message": "'finish' value 'satin' is not one of the allowed values for 'Widget': matte, gloss.",
+      "field": "finish"
+    }
+  ]
+}
+## blocked: a narrowed enum, a retyped site type and a removed field
+{
+  "recipe": "evolution plan",
+  "id": "widget-workflow",
+  "version": "2",
+  "source": "test:evolve-golden:2",
+  "okf_version": "0.2",
+  "ready": false,
+  "changed": false,
+  "plan_token": "sha256:dd499b846a8dd7829fa08fc0b7eff73ee0194ab412da5ce3c7e5715a7c86d912",
+  "definitions": [
+    {
+      "id": "conventions/widget",
+      "governs": "Widget",
+      "action": "unchanged",
+      "expected_version": "sha256:055899d4a4c3e786dc1dea20c13864a2a0e343b71e5cbc6219088ce8a4d76ad3",
+      "desired_version": "sha256:055899d4a4c3e786dc1dea20c13864a2a0e343b71e5cbc6219088ce8a4d76ad3",
+      "added_paths": []
+    }
+  ],
+  "counts": {
+    "definitions": 1,
+    "updates": 0,
+    "unchanged": 1,
+    "missing": 0,
+    "instances_checked": 0,
+    "blockers": 3
+  },
+  "blockers": [
+    {
+      "code": "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
+      "id": "conventions/widget",
+      "message": "automatic evolution preserves the existing declaration value at '/frontmatter/fields/optional'",
+      "field": "/frontmatter/fields/optional"
+    },
+    {
+      "code": "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
+      "id": "conventions/widget",
+      "message": "automatic evolution preserves the existing declaration value at '/frontmatter/fields/values/setting'",
+      "field": "/frontmatter/fields/values/setting"
+    },
+    {
+      "code": "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED",
+      "id": "conventions/widget",
+      "message": "automatic evolution will not replace the existing declaration at '/frontmatter/x_field_types/size'",
+      "field": "/frontmatter/x_field_types/size"
+    }
+  ]
+}

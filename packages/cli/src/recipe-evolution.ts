@@ -297,19 +297,20 @@ function monotonicEvolutionBlockers(
     }
   }
 
-  // An enum on a field this plan newly declares is additive: instance revalidation against the
-  // desired kind still blocks any instance already carrying that key with a disallowed value.
-  const currentDeclared = new Set([...current.fields.required, ...current.fields.optional]);
+  // An enum on a declared field is admitted, installed or newly declared alike: the instance scan
+  // against the desired kind blocks the plan when any existing document carries a disallowed value.
+  // Adding a `fields.types` entry needs no rule here for the same reason; changing or removing one
+  // is refused by the additive merge before this classifier runs.
   const desiredDeclared = new Set([...desired.fields.required, ...desired.fields.optional]);
   for (const [field, desiredValues] of Object.entries(desired.fields.values)) {
     const currentValues = current.fields.values[field];
     if (!currentValues) {
-      if (desiredDeclared.has(field) && !currentDeclared.has(field)) continue;
+      if (desiredDeclared.has(field)) continue;
       evolutionBlocker(
         blockers,
         "RECIPE_EVOLUTION_NON_MONOTONIC",
         desired.id,
-        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'; only a field newly declared by the same plan may gain one`,
+        `automatic evolution cannot add an enum restriction to '${field}' for '${desired.governs}'; only a declared field may gain one`,
         field,
       );
       continue;
@@ -373,6 +374,34 @@ function monotonicEvolutionBlockers(
     );
   }
 }
+
+/**
+ * Restrictions a changing kind adds to fields: every new `fields.types` entry, and every new
+ * `fields.values` entry on a field the installed convention already declares. A field the plan
+ * newly declares keeps the per-instance blocker its enum always had.
+ */
+interface AddedFieldRestrictions {
+  types: Map<string, string>;
+  values: Map<string, string[]>;
+}
+
+function addedFieldRestrictions(current: KindConvention, desired: KindConvention): AddedFieldRestrictions {
+  const types = new Map<string, string>();
+  for (const [field, type] of Object.entries(desired.fields.types ?? {})) {
+    if (!Object.hasOwn(current.fields.types ?? {}, field)) types.set(field, type);
+  }
+  const currentDeclared = new Set([...current.fields.required, ...current.fields.optional]);
+  const values = new Map<string, string[]>();
+  for (const [field, allowed] of Object.entries(desired.fields.values)) {
+    if (!Object.hasOwn(current.fields.values, field) && currentDeclared.has(field)) {
+      values.set(field, allowed.map((value) => String(value)));
+    }
+  }
+  return { types, values };
+}
+
+/** Violating documents named in one restriction blocker; the rest are counted. */
+const RESTRICTION_BLOCKER_DOC_CAP = 10;
 
 /** Outbound link types a changing kind declares that its installed convention did not. */
 function addedLinkTypes(current: KindConvention, desired: KindConvention): string[] {
@@ -448,6 +477,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   const desiredKinds = new Map<string, KindConvention>();
 
   const addedLinkTexts = new Set<string>();
+  const addedRestrictions = new Map<string, AddedFieldRestrictions>();
   const skippedConventions: Array<{ id: ConceptId; reason: string }> = [];
   const installedConventions = await query(bundle, { prefix: CONVENTIONS_PREFIX, type: "Convention" }, {
     onSkip: (skipped) => skippedConventions.push(skipped),
@@ -612,6 +642,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       && parsedCurrent.kind.governs === parsedCandidate.kind.governs
     ) {
       monotonicEvolutionBlockers(parsedCurrent.kind, parsedCandidate.kind, blockers);
+      addedRestrictions.set(parsedCandidate.kind.governs, addedFieldRestrictions(parsedCurrent.kind, parsedCandidate.kind));
       for (const linkType of addedLinkTypes(parsedCurrent.kind, parsedCandidate.kind)) addedLinkTexts.add(linkType);
     }
   }
@@ -708,6 +739,10 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       );
     }
     for (const kind of changingKinds) {
+      const added = addedRestrictions.get(kind.governs);
+      // One blocker per added restriction, naming its violating documents, keeps a large bundle's
+      // plan bounded; every scanned instance is still bound into the token by its proof.
+      const violations = new Map<string, { field: string; docs: Map<string, string> }>();
       for (const doc of docs) {
         if (String(doc.frontmatter.type) !== kind.governs) continue;
         instancesChecked += 1;
@@ -716,15 +751,45 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
           id: doc.id,
           current_version: contentVersion(doc),
         });
-        for (const warning of projectKindValidationWarnings(okfVersion, kind, validateAgainstKind(doc, kind))) {
-          evolutionBlocker(
-            blockers,
-            "RECIPE_EVOLUTION_INSTANCE_INVALID",
-            doc.id,
-            warning.message,
-            warning.field,
-          );
+        const stored = validateAgainstKind(doc, kind);
+        const projected = projectKindValidationWarnings(okfVersion, kind, stored);
+        for (const [index, warning] of projected.entries()) {
+          // Route on the stored field name, which is how the convention declares the restriction.
+          const field = stored[index]!.field ?? "";
+          const restriction = warning.code === "KIND_FIELD_TYPE" && added?.types.has(field)
+            ? `fields.types.${field}`
+            : (warning.code === "KIND_FIELD_VALUE" || warning.code === "KIND_FIELD_ARITY") && added?.values.has(field)
+            ? `fields.values.${field}`
+            : undefined;
+          if (restriction === undefined) {
+            evolutionBlocker(
+              blockers,
+              "RECIPE_EVOLUTION_INSTANCE_INVALID",
+              doc.id,
+              warning.message,
+              warning.field,
+            );
+            continue;
+          }
+          const entry = violations.get(restriction) ?? { field, docs: new Map<string, string>() };
+          if (!entry.docs.has(doc.id)) entry.docs.set(doc.id, warning.message);
+          violations.set(restriction, entry);
         }
+      }
+      for (const [restriction, { field, docs: violating }] of violations) {
+        const ids = [...violating.keys()].sort();
+        const named = ids.slice(0, RESTRICTION_BLOCKER_DOC_CAP).join(", ");
+        const more = ids.length > RESTRICTION_BLOCKER_DOC_CAP ? `, and ${ids.length - RESTRICTION_BLOCKER_DOC_CAP} more` : "";
+        const declared = restriction.startsWith("fields.types.")
+          ? `type '${added!.types.get(field)}'`
+          : `allowed values [${added!.values.get(field)!.join(", ")}]`;
+        evolutionBlocker(
+          blockers,
+          "RECIPE_EVOLUTION_RESTRICTION_VIOLATED",
+          kind.id,
+          `adding ${declared} to '${field}' for '${kind.governs}' would make ${ids.length} existing document(s) invalid: ${named}${more}; fix them first (e.g. ${ids[0]}: ${violating.get(ids[0]!)})`,
+          restriction,
+        );
       }
     }
     if (addedLinkTexts.size > 0) {

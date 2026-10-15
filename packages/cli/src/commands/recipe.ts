@@ -52,7 +52,9 @@ it compares definitions, permits additive declarations only, revalidates existin
 returns one exact apply command. Applying requires that plan's token, recomputes the preflight, and
 writes each changed convention with exact-version CAS. Concurrent non-target changes are detected
 by a postcondition check and reported with completed work. It never replaces existing values,
-active View assets, or artifacts omitted from the source.
+active View assets, or artifacts omitted from the source. It may add a field type (fields.types) or
+an enum (fields.values) to a declared field only when every existing instance conforms; otherwise
+the plan names the violating documents. It never changes or removes a type or an enum.
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
