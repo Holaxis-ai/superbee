@@ -129,7 +129,7 @@ function exportDeps(partial: Partial<ExportDeps>): ExportDeps {
 }
 
 /** The export route's own window (60 s); the default 15 s read deadline would cut a large bundle. */
-const EXPORT_DEADLINE_MS = 60_000;
+export const EXPORT_DEADLINE_MS = 60_000;
 /** Paths shown per list in a receipt; the counts are always the totals. */
 const SHOWN = 20;
 const JOURNAL = IN_PLACE_JOURNAL;
@@ -139,7 +139,7 @@ const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
 const NO_HISTORY = "not exported: the folder holds the current revision only";
 const HOSTED_UNCHANGED = "unchanged: the hosted bundle still exists and was not modified";
 
-interface Source {
+export interface Source {
   readonly target: HostedTarget;
   readonly bundleId: string;
   /** The workspace slug a named bundle's reference gave (`<slug>/<bundle-id>`), or null. */
@@ -209,13 +209,22 @@ const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * or stopped part way is asked for once more before the export fails.
  */
 async function fetchExport(source: Source, deps: ExportDeps, resume: CommandText): Promise<VerifiedExport> {
-  const { bundleId, target } = source;
   // A checkout is read as its own person (in the workspace it names); a named bundle as whoever is
   // signed in, in the workspace its reference or --workspace names.
   const named = source.binding ? null : await namedClient(source, deps, resume);
   const client = named ? named.client : (await connectCheckout(source.binding!, { resume, deadlineMs: EXPORT_DEADLINE_MS }, deps)).client;
   const slug = named ? named.slug : (source.binding!.workspace_slug ?? null);
-  const request = { client, slug, source, resume };
+  return fetchExportThrough({ client, slug, source, resume });
+}
+
+/**
+ * {@link fetchExport} through a client already connected to the bundle (the one `checkout` signed
+ * in with), qualified by `slug` when the reference names a workspace. The client should carry the
+ * export's own window ({@link EXPORT_DEADLINE_MS}).
+ */
+export async function fetchExportThrough(request: ExportRequest): Promise<VerifiedExport> {
+  const { source } = request;
+  const { bundleId, target } = source;
   for (let attempt = 1; ; attempt += 1) {
     const chain = new ExportPageChain();
     let bytes = 0;
@@ -256,7 +265,7 @@ async function fetchExport(source: Source, deps: ExportDeps, resume: CommandText
   }
 }
 
-interface ExportRequest {
+export interface ExportRequest {
   readonly client: HostedSyncClient;
   readonly slug: string | null;
   readonly source: Source;

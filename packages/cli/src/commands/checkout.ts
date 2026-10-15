@@ -3,7 +3,9 @@
 // The folder is a projection of a private working copy: the shared engine
 // (`@superbee/browser-local`) hydrates core's Node log store from the host's streamed snapshot
 // under the signed-in person's bearer token, and the projection places the store's exact bytes in
-// the folder without overwriting anything. A private binding keyed by the folder's path records
+// the folder without overwriting anything. The files the store does not hold (reserved files below
+// the root, and blobs) come from the bundle's verified portable export, so the folder holds what
+// `superbee export` would write. A private binding keyed by the folder's path records
 // the host, audience, workspace, bundle and principal; the folder itself carries no URL. Every
 // existing command then runs unchanged on the folder, and the commands sync cannot send are
 // refused there up front (`hosted/refusals.ts`).
@@ -28,6 +30,7 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderUsage, resolveMode } from "../output.js";
 import { assertBundleOutsidePrivateState } from "../private-state-bundle-boundary.js";
+import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 import {
   defaultHostedAuthDeps,
   hostArgument,
@@ -60,11 +63,13 @@ import {
 } from "../hosted/binding.js";
 import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, type HostedIdentity, type HostedSyncClient } from "../hosted/client.js";
 import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from "../hosted/refusals.js";
-import { digestOf, exportFresh, findPathCollision, ROOT_INDEX } from "../hosted/projection.js";
+import { digestOf, ensureParentInside, exportFresh, findPathCollision, parentUnsafe, placeNew, ROOT_INDEX, UnsafePlacementError } from "../hosted/projection.js";
 import { writeProjection } from "../hosted/sync-scan.js";
 import { addCatalogEntry, assertCatalogLabel, loadCatalog } from "../catalog.js";
 import { checkoutMarkerBytes, readCheckoutMarker, removeCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
 import { adopt } from "./checkout-adopt.js";
+import { EXPORT_DEADLINE_MS, fetchExportThrough, type ExportRequest } from "./export.js";
+import type { VerifiedExport } from "../hosted/export-archive.js";
 import { hostedBundleReferenceText, parseHostedBundleReference, type HostedBundleReference } from "../hosted/reference.js";
 
 /**
@@ -88,8 +93,11 @@ hosted bundle into --dir (default: ./<bundle-id>), which must be new or empty. T
 else, for a folder that is already a checkout, its own host, else the host of your last sign-in
 when it is the only host you are signed in to (never SUPERBEE_HOST alone); signed in to more than
 one host, a checkout without --host is refused and names them. The receipt names the host it
-bound. The folder holds plain bundle files, so every command runs on it with --dir <folder>. The
-link to the host is kept in private state, keyed by the folder's path, never in the folder.
+bound. The folder holds plain bundle files, so every command runs on it with --dir <folder>: the
+same files 'superbee export' writes (documents, every index.md and log.md, and other files such as
+data/*.json), with the bytes the host stores. Sync sends documents only; it leaves the other files
+be while they are as placed. The link to the host is kept in private state, keyed by the folder's
+path, never in the folder.
 Re-running for the same folder and bundle is a no-op. A checkout whose folder was deleted, or
 replaced by a new empty folder, is replaced, unless it holds changes sync has not sent yet; a
 checkout emptied in place is refused, because removing every file is a pending edit.
@@ -487,7 +495,8 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   }
   await assertStandaloneFolder(folder);
 
-  const { identity, reader, listed, workspace, reference, definitionWrites, documentInputBytes } = await connectHostedBundle(typed, target, workspaceFlag, deps, resume);
+  // The connection carries the export's own window: the checkout reads the bundle's portable export too.
+  const { identity, reader, listed, workspace, reference, client, definitionWrites, documentInputBytes } = await connectHostedBundle(typed, target, workspaceFlag, deps, resume, { deadlineMs: EXPORT_DEADLINE_MS });
   const canonical = await canonicalFolder(folder);
   let createdFolder = false;
   const placed = new Map<string, string>();
@@ -550,9 +559,12 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         const stored = await store.readHeads({ project: (head) => head.id });
         assertProjectable(stored, bundleId, target);
         const exported = await exportFresh(store, canonical, (file, digest) => placed.set(file, digest));
-        if (exported.kept.length > 0) {
+        const portable = await exportOrReason({ client: reference.slug === null ? client : client.within(reference.slug), slug: reference.slug, source: { target, bundleId, slug: reference.slug, workspace: workspaceFlag ?? null, binding: null }, resume });
+        const extras = typeof portable === "string" ? NO_EXTRAS : await placeExtras(portable, canonical, (file, digest) => placed.set(file, digest));
+        const kept = [...exported.kept, ...extras.kept];
+        if (kept.length > 0) {
           throw new CliError("CONFLICT", `files appeared in ${canonical} during checkout`, {
-            details: { reason: "folder_changed", kept: exported.kept.slice(0, 20), kept_total: exported.kept.length },
+            details: { reason: "folder_changed", kept: kept.slice(0, 20), kept_total: kept.length },
             help: "retry the same command once nothing else writes to the folder",
           });
         }
@@ -566,7 +578,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         }
         // The root's base is the host's version of the bytes placed: what an edit to it is sent against.
         const rootBase = exported.exported[ROOT_INDEX] !== undefined ? ((await store.readReserved("", "index.md"))?.version ?? null) : null;
-        await writeProjection(deps.auth.home, binding.checkout_id, { files, root: exported.exported[ROOT_INDEX] ?? null, rootBase });
+        await writeProjection(deps.auth.home, binding.checkout_id, { files, root: exported.exported[ROOT_INDEX] ?? null, rootBase, extras: extras.placed });
         // The folder's read-only marker: informational, never routing (`hosted/marker.ts`).
         const markerFile = await writeCheckoutMarker(canonical, binding);
         if (markerFile) placed.set(markerFile, digestOf(checkoutMarkerBytes(binding)));
@@ -575,7 +587,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         // The checkout is a complete pull: reads start fresh instead of pulling or warning at once.
         await recordPulled(deps.auth.home, ready.checkout_id);
         await indexCheckoutPath(deps.auth.home, ready);
-        return { binding: ready, documents: exported.documents, root: exported.root, digest: marker.headsDigest ?? null };
+        return { binding: ready, documents: exported.documents, root: exported.root, unplaced: typeof portable === "string" ? portable : null, reserved: extras.reserved, other: extras.other, digest: marker.headsDigest ?? null };
       } catch (error) {
         await store?.close().catch(() => {});
         store = undefined;
@@ -610,6 +622,12 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         catalog: cataloged,
         documents: result.documents,
         root_index: result.root,
+        ...(result.unplaced === null
+          ? { reserved_files: result.reserved, other_files: result.other }
+          : {
+              other_files: `not placed: ${result.unplaced}, so reserved files below the root and files other than documents stay on the host; superbee export copies them`,
+              warning: "this checkout lacks the host's files other than documents, and sync never brings them: check out again into a new folder to get them",
+            }),
         heads_digest: result.digest,
         ...(replacedBinding ? { replaced_stale_checkout: { bundle_id: replacedBinding.bundle_id, host: replacedBinding.origin } } : {}),
         mode: "sync",
@@ -619,6 +637,114 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       mode,
     ),
   );
+}
+
+/**
+ * The bundle's verified portable export, or why the files other than documents stay on the host:
+ * any refusal or failure of the export itself. A non-CLI error (a defect) is the checkout's.
+ */
+async function exportOrReason(request: ExportRequest): Promise<VerifiedExport | string> {
+  try {
+    return await fetchExportThrough(request);
+  } catch (error) {
+    // The documents' checkout never depends on the export: whatever stopped it (a gateway from
+    // before the route, a bundle too large or too busy to export, a path the export refuses), the
+    // documents are checked out and the receipt says why the other files stayed on the host.
+    if (!(error instanceof CliError)) throw error;
+    if (error.details?.code === "not_found" && error.details?.status === 404) return `${request.source.target.origin} serves no bundle export`;
+    const reason = error.details?.reason ?? error.details?.code;
+    return `the bundle export could not be read: ${error.message.replace(/; nothing was written$/, "")}${typeof reason === "string" ? ` (${reason})` : ""}`;
+  }
+}
+
+/** What {@link placeExtras} placed: each file's digest by folder-relative path, and what it found already there. */
+interface PlacedExtras {
+  readonly placed: Record<string, string>;
+  readonly reserved: number;
+  readonly other: number;
+  readonly kept: string[];
+}
+
+/**
+ * The host's files other than documents in a folder being adopted, as projection extras: each one
+ * the folder holds with the host's exact bytes, and each one it lacks, placed (never over a file).
+ * One the folder holds with other bytes is left out, so sync holds it as the edit it is. An export
+ * that cannot be read records nothing; adopt never fails over these files.
+ */
+export async function adoptedExtras(folder: string, request: ExportRequest): Promise<AdoptedExtras> {
+  const portable = await exportOrReason(request);
+  if (typeof portable === "string") return { extras: {}, placed: new Map(), unplaced: portable };
+  const extras: Record<string, string> = {};
+  const placed = new Map<string, string>();
+  for (const entry of portable.entries) {
+    if (entry.kind === "document" || entry.path === ROOT_INDEX) continue;
+    const file = path.join(folder, ...entry.path.split("/"));
+    if (await parentUnsafe(folder, file)) continue;
+    // One no-follow read decides: a link or a non-file is never read or recorded.
+    const found = readRegularFileNoFollowSync(file);
+    if (found.state === "missing") {
+      try {
+        await ensureParentInside(folder, file);
+      } catch (error) {
+        if (error instanceof UnsafePlacementError) continue;
+        throw error;
+      }
+      if ((await placeNew(file, entry.bytes)).placed) {
+        extras[entry.path] = digestOf(entry.bytes);
+        placed.set(file, digestOf(entry.bytes));
+      }
+      continue;
+    }
+    if (found.state === "present" && Buffer.from(entry.bytes).equals(found.bytes)) extras[entry.path] = digestOf(entry.bytes);
+  }
+  return { extras, placed, unplaced: null };
+}
+
+/** What {@link adoptedExtras} recorded, the files it placed (removed again if the adopt fails), and why none were, when the export could not be read. */
+export interface AdoptedExtras {
+  readonly extras: Record<string, string>;
+  readonly placed: Map<string, string>;
+  readonly unplaced: string | null;
+}
+
+/** Nothing placed: the export could not be read (`exportOrReason`). */
+const NO_EXTRAS: PlacedExtras = Object.freeze({ placed: {}, reserved: 0, other: 0, kept: [] });
+
+/**
+ * Place the files a checkout does not hold as documents: the reserved files below the root and the
+ * blobs, from the bundle's verified portable export, the same bytes `superbee export` writes. The
+ * documents and the root index come from the working copy, so they are not placed twice. Each file
+ * is recorded as an extra, which sync leaves be while it holds those bytes (it cannot send them). A
+ * file already at a path is kept and reported, as for documents.
+ */
+async function placeExtras(exported: VerifiedExport, folder: string, onPlaced: (file: string, digest: string) => void): Promise<PlacedExtras> {
+  const placed: Record<string, string> = {};
+  const kept: string[] = [];
+  let reserved = 0;
+  let other = 0;
+  for (const entry of exported.entries) {
+    if (entry.kind === "document" || entry.path === ROOT_INDEX) continue;
+    const file = path.join(folder, ...entry.path.split("/"));
+    try {
+      await ensureParentInside(folder, file);
+    } catch (error) {
+      // A link or a file put on the way meanwhile: the folder changed under the checkout.
+      if (!(error instanceof UnsafePlacementError)) throw error;
+      kept.push(entry.path);
+      continue;
+    }
+    const outcome = await placeNew(file, entry.bytes);
+    if (!outcome.placed) {
+      kept.push(entry.path);
+      continue;
+    }
+    const digest = digestOf(entry.bytes);
+    onPlaced(file, digest);
+    placed[entry.path] = digest;
+    if (entry.kind === "reserved") reserved += 1;
+    else other += 1;
+  }
+  return { placed, reserved, other, kept };
 }
 
 /** What `connectHostedBundle` found: who signed in, a reader for the bundle, and its workspace. */
@@ -652,12 +778,18 @@ export async function connectHostedBundle(
   workspaceFlag: string | undefined,
   deps: CheckoutDeps,
   resume: CommandText,
+  options: { readonly deadlineMs?: number } = {},
 ): Promise<HostedBundleConnection> {
   const { bundleId } = typed;
   const command = (named: string) => `${cliInvocation()} checkout ${commandToken(named)} --host ${commandToken(hostArgument(target))}`;
   const account = await connectHostedAccount(
     target,
-    { workspace: workspaceFlag, resume, otherWorkspace: `${command(hostedBundleReferenceText(typed))} --workspace <id>` },
+    {
+      workspace: workspaceFlag,
+      resume,
+      otherWorkspace: `${command(hostedBundleReferenceText(typed))} --workspace <id>`,
+      ...(options.deadlineMs !== undefined ? { deadlineMs: options.deadlineMs } : {}),
+    },
     deps,
   );
   const { client, identity, workspace } = account;

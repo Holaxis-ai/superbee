@@ -228,13 +228,15 @@ test("checkout mirrors the bundle into a new folder and binds it privately", asy
   assert.ok((await readdir(path.join(privateDir, "store"))).includes("store.log"));
 
   // The token went only to the named host, in the Authorization header.
-  assert.deepEqual(fake.requests.map((r) => r.path), ["/sync/v1/whoami", "/sync/v1/bundles", "/sync/v1/capabilities", "/sync/v1/heads", "/sync/v1/snapshot"]);
+  // This gateway serves no export route: the checkout says what it could not place.
+  assert.deepEqual(fake.requests.map((r) => r.path), ["/sync/v1/whoami", "/sync/v1/bundles", "/sync/v1/capabilities", "/sync/v1/heads", "/sync/v1/snapshot", "/sync/v1/export"]);
   assert.ok(fake.requests.every((r) => r.authorization === `Bearer ${TOKEN}`));
+  assert.match(String(receipt.other_files), /^not placed: https:\/\/hosted\.example serves no bundle export/);
 
   // Idempotent: the same folder and bundle is a no-op that sends nothing.
   const again = await run(h, [BUNDLE, "--host", HOST], fake);
   assert.equal(again.checkout, "unchanged");
-  assert.equal(fake.requests.length, 5);
+  assert.equal(fake.requests.length, 6);
 });
 
 test("existing commands run unchanged on the checkout folder", async () => {
