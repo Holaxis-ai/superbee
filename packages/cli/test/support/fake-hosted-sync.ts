@@ -562,7 +562,9 @@ export class FakeHost {
   /** The bundle as the export route reads it from storage. */
   currentExportState(): ExportState {
     if (this.exportState) return this.exportState;
-    const files = new Map<string, Uint8Array>([["index.md", Buffer.from(this.rootIndex(), "utf8")]]);
+    // A capabilities answer that states no root (an older gateway's fixture) exports none.
+    const root = this.storedRoot?.content ?? (JSON.parse(fixture(this.capabilities).response.body) as { root?: { content: string } }).root?.content;
+    const files = new Map<string, Uint8Array>(root === undefined ? [] : [["index.md", Buffer.from(root, "utf8")]]);
     for (const [id, doc] of this.docs) files.set(`${id}.md`, Buffer.from(doc.raw, "utf8"));
     for (const [file, bytes] of this.exportExtras) files.set(file, bytes);
     return { tenantId: (this.options.tenants ?? ["tenant-a"])[0]!, bundleId: BUNDLE, revision: this.revision, files };

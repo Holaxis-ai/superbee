@@ -305,6 +305,26 @@ test("pages that leave a gap, overlap, mix revisions or end early are refused wh
   assert.throws(() => verifyExport(storedZip(exportEntries(state, at), at), BUNDLE, { paged: true }), (error: unknown) => error instanceof ExportArchiveError && error.problem === "manifest_mismatch");
 });
 
+test("checkout places the files export writes: reserved files below the root and other files, byte for byte, which sync leaves be", async () => {
+  const h = await harness();
+  h.host.exportExtras.set("notes/index.md", Buffer.from("# Notes\n"));
+  h.host.exportExtras.set("data/census/acs5-2024.json", Buffer.from('{"places":[1,2]}\n'));
+  h.host.exportExtras.set("assets/logo.png", LOGO);
+  const out: string[] = [];
+  await checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: (text) => void out.push(text), auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  const receipt = decode(out.at(-1)!.trim()) as Record<string, unknown>;
+  assert.equal(receipt.reserved_files, 1);
+  assert.equal(receipt.other_files, 2);
+  const folder = await realpath(path.join(h.cwd, "team"));
+  await run(h, [BUNDLE, "--host", HOST, "--to", "exported"]);
+  const exported = path.join(h.cwd, "exported");
+  const files = await filesUnder(exported);
+  assert.deepEqual(await filesUnder(folder), files);
+  for (const file of files) assert.deepEqual(await readFile(path.join(folder, file)), await readFile(path.join(exported, file)), file);
+  // Sync cannot send them, and holds none of them while they are as placed.
+  assert.equal((await hostedStatus((await bindingForPath(h.home, folder))!, h.home)).sync.state, "clean");
+});
+
 test("export --to --git commits the export on the board branch, so the folder is a Git board", async () => {
   const h = await harness();
   h.host.exportExtras.set("assets/logo.png", LOGO);

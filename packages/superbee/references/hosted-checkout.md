@@ -288,7 +288,10 @@ superbee sync --resolve keep --doc index.md     # the next sync sends yours over
   edited root `index.md` is held (`reserved_file`): change it in the Superbee app.
 - A root `index.md` that is a symbolic link (`symlink`) or a folder (`unsafe_path`) is held: sync
   never reads, sends or replaces through it.
-- A subdirectory `index.md` and every `log.md` are always held (`reserved_file`).
+- A subdirectory `index.md` and every `log.md` are always held (`reserved_file`). A checkout
+  places the host's copies of them, and of files other than documents (such as `data/*.json`), as
+  `superbee export` would; sync leaves those be while they are unchanged, and holds them once
+  edited.
 
 ## Refusals that belong to the person
 
@@ -365,7 +368,8 @@ history.
   complete or not at all. `export_incomplete` (TRANSIENT) means the host stopped the export:
   retry the same command.
 - `superbee export --dir <checkout> --in-place` turns the checkout into a local bundle: it adds
-  the files the checkout lacks, never overwrites one (`kept_local` lists files that differ from
+  the files the checkout lacks (documents newer on the host; a checkout from an older CLI may also
+  lack reserved files and blobs), never overwrites one (`kept_local` lists files that differ from
   the host's), and forgets the binding. It refuses `unsent_changes`: run `superbee sync` first. Pass
   `--keep-unsent` only when the person agrees that those changes stay in this folder and never
   reach the host. If it stops part way, re-run the same command: it finishes without the network.
