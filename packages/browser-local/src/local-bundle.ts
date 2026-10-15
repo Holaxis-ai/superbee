@@ -1007,12 +1007,12 @@ export async function deleteLocal(local: LocalTarget, id: ConceptId, options: { 
  * capacity limit unnoticed.
  */
 async function retireQuietly(backend: JournaledBackend, mode: BodyMode, target: ConceptId): Promise<void> {
-  let failure: unknown;
+  let failed = false, failure: unknown;
   try { await retireAcknowledgedBody(backend, mode, target); }
-  catch (error) { failure = error; }
+  catch (error) { failed = true; failure = error; }
   try {
     // A moved target is another realm's progress, not a failure of this one.
-    if (failure === undefined || failure instanceof JournalGuardConflict) retirementFailures.get(backend)?.delete(target);
+    if (!failed || failure instanceof JournalGuardConflict) retirementFailures.get(backend)?.delete(target);
     else recordRetirementFailure(backend, target, failure);
   } catch { /* Diagnostics never reach the caller either. */ }
 }
@@ -1020,7 +1020,7 @@ async function retireQuietly(backend: JournaledBackend, mode: BodyMode, target: 
 /** Consecutive failed retirements of one target after which {@link syncStatus} reports it. */
 export const RETIREMENT_DIAGNOSTIC_FAILURES = 3;
 const RETIREMENT_MESSAGE_CHARS = 512;
-/** A target whose acknowledged history failed to retire on consecutive attempts in this realm. */
+/** A target whose acknowledged history failed to retire on consecutive attempts through this opened working copy. */
 export interface RetirementDiagnostic {
   target: ConceptId;
   /** Consecutive failed attempts; a success or a moved target resets it. */
@@ -1030,7 +1030,7 @@ export interface RetirementDiagnostic {
   /** When the first of these consecutive failures happened. */
   since: string;
 }
-// Per realm and per backend: the diagnostic describes this realm's attempts, which a reload retries.
+// Per opened backend: the diagnostic describes this working copy's attempts; another opening or a reload starts from zero.
 const retirementFailures = new WeakMap<JournaledBackend, Map<ConceptId, RetirementDiagnostic>>();
 function recordRetirementFailure(backend: JournaledBackend, target: ConceptId, error: unknown): void {
   let failures = retirementFailures.get(backend);
@@ -2225,7 +2225,7 @@ export interface SyncStatus {
   lastPull: PullMarker | null;
   /**
    * Present only when some document's acknowledged history failed to retire on
-   * {@link RETIREMENT_DIAGNOSTIC_FAILURES} consecutive attempts in this realm. Commits and settles
+   * {@link RETIREMENT_DIAGNOSTIC_FAILURES} consecutive attempts through this opened working copy. Commits and settles
    * still succeed; the history stays until a later commit or settle of that document retires it.
    */
   retirementFailures?: RetirementDiagnostic[];

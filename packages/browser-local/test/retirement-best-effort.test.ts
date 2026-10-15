@@ -32,6 +32,7 @@ const FAILURES: ReadonlyArray<{ label: string; make: () => unknown; name: string
   { label: "an AbortError", make: () => new DOMException("page closed", "AbortError"), name: "AbortError" },
   { label: "a TypeError from an adapter defect", make: () => new TypeError("cannot read properties of undefined"), name: "TypeError" },
   { label: "a thrown non-Error value", make: () => "bare string", name: "Error" },
+  { label: "a thrown undefined", make: () => undefined, name: "Error" },
 ];
 
 /**

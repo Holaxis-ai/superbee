@@ -93,7 +93,7 @@ newer ones. Unsettled rows are never retired. Retirement is cleanup: a commit or
 depends on it, whatever retirement throws (a storage error, a quota error, a host abort the
 IndexedDB adapter reports as a plain `Error`), and one that fails is retried by the next
 commit or settle of that target. A target whose retirement fails
-`RETIREMENT_DIAGNOSTIC_FAILURES` times in a row in this realm is listed in
+`RETIREMENT_DIAGNOSTIC_FAILURES` times in a row through one opened working copy is listed in
 `syncStatus().retirementFailures` (target, consecutive failures, latest error name and
 message, first failure time) until a retirement succeeds; the field is absent otherwise. An
 adapter without `retireAcknowledged` keeps its history, as before. `syncStatus` therefore
