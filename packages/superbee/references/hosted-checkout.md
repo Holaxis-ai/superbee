@@ -291,7 +291,9 @@ superbee sync --resolve keep --doc index.md     # the next sync sends yours over
 - A subdirectory `index.md` and every `log.md` are always held (`reserved_file`). A checkout
   places the host's copies of them, and of files other than documents (such as `data/*.json`), as
   `superbee export` would; sync leaves those be while they are unchanged, and holds them once
-  edited.
+  edited. Sync does not refresh them: a later host change to one reaches a new checkout or an
+  export, not this folder. When the export could not be read (an older host, a bundle too large to
+  export), the checkout receipt's `other_files` says they stayed on the host.
 
 ## Refusals that belong to the person
 

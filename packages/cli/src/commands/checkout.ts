@@ -558,8 +558,8 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         const stored = await store.readHeads({ project: (head) => head.id });
         assertProjectable(stored, bundleId, target);
         const exported = await exportFresh(store, canonical, (file, digest) => placed.set(file, digest));
-        const portable = await exportOrNull({ client: reference.slug === null ? client : client.within(reference.slug), slug: reference.slug, source: { target, bundleId, slug: reference.slug, workspace: workspaceFlag ?? null, binding: null }, resume });
-        const extras = portable ? await placeExtras(portable, canonical, (file, digest) => placed.set(file, digest)) : NO_EXTRAS;
+        const portable = await exportOrReason({ client: reference.slug === null ? client : client.within(reference.slug), slug: reference.slug, source: { target, bundleId, slug: reference.slug, workspace: workspaceFlag ?? null, binding: null }, resume });
+        const extras = typeof portable === "string" ? NO_EXTRAS : await placeExtras(portable, canonical, (file, digest) => placed.set(file, digest));
         const kept = [...exported.kept, ...extras.kept];
         if (kept.length > 0) {
           throw new CliError("CONFLICT", `files appeared in ${canonical} during checkout`, {
@@ -586,7 +586,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         // The checkout is a complete pull: reads start fresh instead of pulling or warning at once.
         await recordPulled(deps.auth.home, ready.checkout_id);
         await indexCheckoutPath(deps.auth.home, ready);
-        return { binding: ready, documents: exported.documents, root: exported.root, extras: portable !== null, reserved: extras.reserved, other: extras.other, digest: marker.headsDigest ?? null };
+        return { binding: ready, documents: exported.documents, root: exported.root, unplaced: typeof portable === "string" ? portable : null, reserved: extras.reserved, other: extras.other, digest: marker.headsDigest ?? null };
       } catch (error) {
         await store?.close().catch(() => {});
         store = undefined;
@@ -621,9 +621,9 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         catalog: cataloged,
         documents: result.documents,
         root_index: result.root,
-        ...(result.extras
+        ...(result.unplaced === null
           ? { reserved_files: result.reserved, other_files: result.other }
-          : { other_files: `not placed: ${target.origin} serves no bundle export, so reserved files below the root and files other than documents stay on the host` }),
+          : { other_files: `not placed: ${result.unplaced}, so reserved files below the root and files other than documents stay on the host; superbee export copies them` }),
         heads_digest: result.digest,
         ...(replacedBinding ? { replaced_stale_checkout: { bundle_id: replacedBinding.bundle_id, host: replacedBinding.origin } } : {}),
         mode: "sync",
@@ -636,14 +636,22 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
 }
 
 /**
- * The bundle's verified portable export, or null from a host that serves no export route (a gateway
- * from before it answers the route `404 not_found`). Any other failure is the checkout's.
+ * Why the files other than documents were not placed, when the export could not be read for a
+ * reason that leaves the documents' checkout sound: a gateway from before the export route (it
+ * answers the route `404 not_found`), a bundle larger than an export carries, or one that kept
+ * changing while it was exported. The receipt names it; any other failure is the checkout's.
  */
-async function exportOrNull(request: ExportRequest): Promise<VerifiedExport | null> {
+const UNPLACED_REASONS: ReadonlySet<string> = new Set(["export_too_large", "bundle_too_large", "export_source_changed"]);
+
+/** The bundle's verified portable export, or why the files other than documents stay on the host. */
+async function exportOrReason(request: ExportRequest): Promise<VerifiedExport | string> {
   try {
     return await fetchExportThrough(request);
   } catch (error) {
-    if (error instanceof CliError && error.details?.code === "not_found" && error.details?.status === 404) return null;
+    if (!(error instanceof CliError)) throw error;
+    if (error.details?.code === "not_found" && error.details?.status === 404) return `${request.source.target.origin} serves no bundle export`;
+    const reason = error.details?.reason;
+    if (typeof reason === "string" && UNPLACED_REASONS.has(reason)) return `${error.message} (${reason})`;
     throw error;
   }
 }
@@ -656,7 +664,7 @@ interface PlacedExtras {
   readonly kept: string[];
 }
 
-/** Nothing placed: the host served no export. */
+/** Nothing placed: the export could not be read (`exportOrReason`). */
 const NO_EXTRAS: PlacedExtras = Object.freeze({ placed: {}, reserved: 0, other: 0, kept: [] });
 
 /**

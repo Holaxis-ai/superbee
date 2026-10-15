@@ -325,6 +325,27 @@ test("checkout places the files export writes: reserved files below the root and
   assert.equal((await hostedStatus((await bindingForPath(h.home, folder))!, h.home)).sync.state, "clean");
 });
 
+test("checkout still checks out a bundle whose export is too large, and says what it left on the host; any other export failure leaves nothing behind", async () => {
+  const h = await harness();
+  h.host.exportExtras.set("data/census/acs5-2024.json", Buffer.from('{"places":[1,2]}\n'));
+  h.host.exportHook = () => Response.json({ error: { code: "result_too_large", message: "The bundle is larger than an export carries.", retryable: false } }, { status: 413 });
+  const out: string[] = [];
+  await checkout([BUNDLE, "--host", HOST, "--dir", "team"], { stdout: (text) => void out.push(text), auth: h.auth, cwd: h.cwd, fetch: h.host.fetch });
+  const receipt = decode(out.at(-1)!.trim()) as Record<string, unknown>;
+  assert.equal(receipt.checkout, "created");
+  assert.match(String(receipt.other_files), /^not placed: .*larger than an export carries \(bundle_too_large\)/);
+  assert.equal(await exists(path.join(h.cwd, "team", "data")), false);
+
+  // A refusal that is not about the export's size or churn fails the checkout, and every file it placed goes.
+  h.host.exportHook = () => Response.json({ error: { code: "insufficient_scope", message: "No.", retryable: false } }, { status: 403 });
+  await assert.rejects(
+    checkout([BUNDLE, "--host", HOST, "--dir", "again"], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch }),
+    (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN",
+  );
+  assert.equal(await exists(path.join(h.cwd, "again")), false);
+  assert.equal(await bindingForPath(h.home, path.join(h.cwd, "again")), null);
+});
+
 test("export --to --git commits the export on the board branch, so the folder is a Git board", async () => {
   const h = await harness();
   h.host.exportExtras.set("assets/logo.png", LOGO);
