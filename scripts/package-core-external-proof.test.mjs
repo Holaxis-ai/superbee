@@ -547,8 +547,10 @@ export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBacke
     assert.ok(installedManifest.exports["./filesystem"]);
     assert.ok(installedManifest.exports["./view-admission"]);
     assert.deepEqual(installedManifest.exports["./artifact-contract"], { types: "./dist/artifact-contract.d.ts", default: "./dist/artifact-contract.js" });
+    assert.deepEqual(installedManifest.exports["./hosted-client"], { types: "./dist/hosted-client/index.d.ts", default: "./dist/hosted-client/index.js" });
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
+    assert.ok(installedFiles.includes("dist/hosted-client/index.js"), "the hosted client subpath is packed");
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;
     for (const file of installedFiles.filter((name) => /\.(?:js|d\.ts)$/.test(name))) {

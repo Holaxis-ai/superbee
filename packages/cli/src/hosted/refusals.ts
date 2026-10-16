@@ -21,7 +21,8 @@ import { commandToken } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
 import { bindingForPath, type CheckoutBinding } from "./binding.js";
 import type { UnboundCopy } from "../bundle-home.js";
-import { readBundleListing, type HostedSyncClient } from "./client.js";
+import { readBundleListing } from "@superbee/core/hosted-client";
+import type { HostedSyncClient } from "./client.js";
 import { bindingHostArgument, checkoutMarkerPath, unboundCopyInfo } from "./marker.js";
 import { DEFINITIONS_REFUSED, heldPathReason, type HeldFile, type HeldReason } from "./sync-scan.js";
 

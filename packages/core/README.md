@@ -124,6 +124,47 @@ cleanup. Policies are structural snapshots: public data and methods are captured
 may continue to observe live operating-system facts. Do not use opaque private fields or methods
 pre-bound to a mutable receiver.
 
+## Hosted client
+
+`@superbee/core/hosted-client` is the headless client of a hosted Superbee's sync routes
+(`/sync/v1`). It is a supported public API under core's normal versioning; the `superbee` CLI uses
+it. It runs wherever `fetch` does (Node, a browser or a Worker) and reads identity (`whoami`),
+the bundle list (`bundles`, with `readBundleListing`), documents (`reader`), document history
+(`history`) and operations run by id (`listOperations`, `runOperation`). `within(slug)` returns
+the same client naming every bundle-scoped request's bundle as `<slug>/<bundle-id>`.
+
+```ts
+import { bearerCredentials, createHostedClient } from "@superbee/core/hosted-client";
+
+const client = createHostedClient({
+  target: { origin: "https://mcp.getsuperbee.com", syncPrefix: "/sync/v1" },
+  credentials: bearerCredentials(() => getToken()),
+});
+const identity = await client.whoami();
+```
+
+The target is the origin and the sync prefix: `/sync/v1`, or `/agents/<id>/sync/v1` for an agent
+connection. `syncRoutePrefix({ origin, audience })` derives the prefix from a protected-resource
+audience and returns null when the audience has none. `credentials` is the transport carrier's
+own credential provider: an async function returning the headers for one request. It is called
+before every request, so it may renew a short-lived token. `bearerCredentials` builds one from a
+token getter. The client never logs credentials, and its errors carry the route and code, never a
+token.
+
+Failures are typed and carry no wording for any particular surface:
+
+- `HostedCarrierError`: transport. `denied` means no credential (nothing was sent) or the request
+  was refused before sending; `unavailable` means the answer is unknown. `isAnswerTooLarge`
+  distinguishes an answer larger than its bound.
+- `MalformedAnswer` (`code` `MALFORMED_ANSWER`, `route`): the host answered something the
+  contract does not admit. Retrying gets the same answer.
+- `RemoteError` (`code`, `status`): the host refused the request, with its own code.
+- `HostedRouteNotServed` (`code` `ROUTE_NOT_SERVED`, status 404, `route`): a `RemoteError` for a
+  host from before the route.
+
+Operation and history refusals the host states in a `200` (and `bundle_not_found`,
+`unknown_operation` and `invalid_input`) come back as `{ ok: false, refusal }`, not as errors.
+
 ## Release compatibility
 
 This migration describes the source after the Windows extraction. Previously published versions

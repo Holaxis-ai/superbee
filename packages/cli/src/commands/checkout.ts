@@ -61,7 +61,8 @@ import {
   type DefinitionWrites,
   withHostStatement,
 } from "../hosted/binding.js";
-import { createHostedSyncClient, hostedFailure, readBundleListing, syncRoutePrefix, type HostedIdentity, type HostedSyncClient } from "../hosted/client.js";
+import { readBundleListing, type HostedIdentity } from "@superbee/core/hosted-client";
+import { createHostedSyncClient, hostedFailure, syncRoutePrefix, type HostedSyncClient } from "../hosted/client.js";
 import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from "../hosted/refusals.js";
 import { digestOf, ensureParentInside, exportFresh, findPathCollision, parentUnsafe, placeNew, ROOT_INDEX, UnsafePlacementError } from "../hosted/projection.js";
 import { writeProjection } from "../hosted/sync-scan.js";

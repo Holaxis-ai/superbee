@@ -20,7 +20,8 @@ import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery
 import { defaultHostedAuthDeps, hostArgument, hostedBundleHost, SignedOutError, storedSessionMayNeedSignIn, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { checkoutTarget, connectHostedAccount } from "./account.js";
 import { listReadyBindings, liveCheckoutFolders } from "./binding.js";
-import { readBundleListing, type HostedSyncClient } from "./client.js";
+import { readBundleListing } from "@superbee/core/hosted-client";
+import type { HostedSyncClient } from "./client.js";
 import { fetchWithDeadline } from "./freshness.js";
 import { parseHostedBundleReference } from "./reference.js";
 
