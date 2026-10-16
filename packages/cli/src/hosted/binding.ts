@@ -160,9 +160,7 @@ export function checkoutLockName(canonicalPath: string): string {
 }
 
 /** `sha256:<hex>` of the checkout id: the recovery binding's `installation`, never the id itself. */
-export function checkoutBindingDigest(checkoutId: string): string {
-  return `sha256:${createHash("sha256").update(checkoutId, "utf8").digest("hex")}`;
-}
+export { checkoutBindingDigest } from "@superbee/core/hosted-client";
 
 export function newCheckoutId(): string {
   return randomUUID();

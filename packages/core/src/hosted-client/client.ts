@@ -34,6 +34,18 @@ import { MalformedAnswer, RemoteError } from "../remote-error.js";
 import type { HostedBundleRow } from "./bundle-listing.js";
 import { HostedRouteNotServed } from "./errors.js";
 import { hostedBundleReferenceText, isWorkspaceSlug } from "./reference.js";
+import { checkoutBindingDigest } from "./binding.js";
+import { mintRequestId } from "../uncertain-write.js";
+import {
+  createMemoryIntentStore,
+  hostedLookupWrite,
+  hostedWrite,
+  type HostedIntentStore,
+  type HostedWriteContext,
+  type HostedWriteInput,
+  type HostedWriteOptions,
+  type HostedWriteResult,
+} from "./write.js";
 
 const IDENTITY_BYTES = 64 * 1024;
 const BUNDLES_BYTES = 256 * 1024;
@@ -79,6 +91,11 @@ export interface HostedClientOptions {
   readonly deadlineMs?: number;
   /** Aborting it stops every request the client (and each `within` client) sends. */
   readonly signal?: AbortSignal;
+  /**
+   * Where `write` records each write until it settles, for its outcome lookup. Default: an
+   * in-memory store ({@link createMemoryIntentStore}) owned by this client.
+   */
+  readonly intentStore?: HostedIntentStore;
 }
 
 /** One operation run's options. */
@@ -141,6 +158,16 @@ export interface HostedClient {
    * `invalid_input` come back as refusals too. `input.bundleId` is set to `bundleId`.
    */
   runOperation(bundleId: string, operationId: string, input: JsonObject, options?: HostedRunOptions): Promise<HostedOperationRun>;
+  /**
+   * Write one whole serialized document: a create when `expectAbsent` is true, else a replace at
+   * exactly `expectedVersion`. One request identity, minted here unless given, settles it: the
+   * answer, or after an unclear one a lookup under the same identity and this client's binding.
+   * Returns committed, a conflict (final; never resent), a refusal, or `unknown` with the request
+   * identity for {@link lookupWrite}. Nothing is thrown once a request may have left.
+   */
+  write(bundleId: string, input: HostedWriteInput, options?: HostedWriteOptions): Promise<HostedWriteResult>;
+  /** Settle a write whose result was `unknown`, from the intent store, under its own identity and binding. */
+  lookupWrite(requestId: string, options?: { signal?: AbortSignal }): Promise<HostedWriteResult>;
 }
 
 /**
@@ -223,11 +250,14 @@ export function createHostedClient(options: HostedClientOptions): HostedClient {
     throw new TypeError("a hosted client's sync prefix is an absolute path without a trailing slash");
   }
   if (typeof options.credentials !== "function") throw new TypeError("a hosted client needs a credential provider");
-  return clientIn(options, options.signal ?? new AbortController().signal, undefined);
+  // One binding per client instance, shared by its `within` clients: a digest of a random id, as a
+  // checkout's is, so the id itself never leaves.
+  const writes = { binding: checkoutBindingDigest(mintRequestId()), store: options.intentStore ?? createMemoryIntentStore() };
+  return clientIn(options, options.signal ?? new AbortController().signal, undefined, writes);
 }
 
 /** The client, naming its bundles in the workspace with `slug` when there is one. */
-function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: string | undefined): HostedClient {
+function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: string | undefined, writes: { binding: string; store: HostedIntentStore }): HostedClient {
   const { target } = options;
   const prefix = target.syncPrefix;
   const fetchCarrier = createFetchCarrier({
@@ -237,6 +267,15 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     ...(options.deadlineMs ? { deadlineMs: options.deadlineMs } : {}),
   });
   const carrier = slug === undefined ? fetchCarrier : qualifyingCarrier(fetchCarrier, prefix, slug);
+  const writeContext: HostedWriteContext = {
+    ...writes,
+    prefix,
+    workspace: slug ?? null,
+    signal,
+    readRoutes: syncReadRoutes(prefix),
+    // A recorded write is looked up in the workspace it was sent in, whichever client asks.
+    carrierFor: (workspace) => (workspace === null ? fetchCarrier : qualifyingCarrier(fetchCarrier, prefix, workspace)),
+  };
 
   /** An unscoped read: the body on a `200`, otherwise the host's refusal as a `RemoteError`. */
   async function json(route: string, maximum: number): Promise<unknown> {
@@ -321,8 +360,10 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
       return createHostedReadAdapter({ carrier, bundleId, routes: syncReadRoutes(prefix) });
     },
     within(workspace) {
-      return clientIn(options, signal, workspace);
+      return clientIn(options, signal, workspace, writes);
     },
+    write: (bundleId, input, writeOptions) => hostedWrite(writeContext, bundleId, input, writeOptions),
+    lookupWrite: (requestId, lookupOptions) => hostedLookupWrite(writeContext, requestId, lookupOptions),
     async history(bundleId, request) {
       const route = `${prefix}/history`;
       const answer = await send(route, historyInput(bundleId, request), HOSTED_READ_BOUNDS.historyBytes);

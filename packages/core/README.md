@@ -165,6 +165,54 @@ Failures are typed and carry no wording for any particular surface:
 Operation and history refusals the host states in a `200` (and `bundle_not_found`,
 `unknown_operation` and `invalid_input`) come back as `{ ok: false, refusal }`, not as errors.
 
+### Writing a document
+
+`write` sends one whole serialized document (frontmatter and body, as a file holds it) to a hosted
+bundle: a create of an absent id, or a replace at exactly the version the caller read.
+
+```ts
+const created = await client.write("notes", { id: "notes/today", document: text, expectAbsent: true });
+const replaced = await client.write("notes", { id: "notes/today", document: edited, expectedVersion: version });
+```
+
+It returns one of:
+
+- `{ status: "committed", version }`: the host stored it; `version` is the new head.
+- `{ status: "conflict", reason: "version_conflict", currentVersion }`: the document is not at the
+  expected version (for a create: it exists). `currentVersion` is the version the host serves, or
+  null when it serves none. Nothing was written.
+- `{ status: "conflict", reason: "concurrent_change" }`: another write to the bundle overlapped
+  this one past the host's own retries. Nothing was written.
+- `{ status: "refused", code, message }`: the host refused this write (`validation_failed`,
+  `invalid_input`, `AUTH_REQUIRED`, `PERMISSION_DENIED`, a sync quota's `REQUEST_CAPACITY_*`, or
+  `read_only` when the bundle serves no writes). Nothing was written.
+- `{ status: "unknown", requestId }`: the host may or may not hold the write.
+
+Every result names its `requestId`. A conflict is final for that identity: the client never
+resends it, under that identity or a new one. Read the document and decide; another attempt is a
+new `write`.
+
+Each write has one request identity and carries the client's binding, a digest of a random id the
+client mints once (its `within` clients share it). When an answer is lost (a transport failure or
+a deadline after sending), the client looks the identity up on the host and reports what the host
+recorded. When the host never recorded it, the same identity is sent once more, so the write
+applies at most once. Absence counts as evidence only within the retention window the host serves
+in its capabilities (`operationsRetentionMs`, less an hour's margin); after that, the result stays
+`unknown`. When the lookup itself fails, the result is `unknown`; `lookupWrite(requestId)` asks
+again later and settles it the same way.
+
+Until it settles, a write is held in an intent store: its operation, bundle (and workspace),
+document id, document and digest, expected version, request identity and binding, which is
+everything needed to rebuild the lookup exactly. The default store is in memory, so `lookupWrite`
+works for the client's lifetime. Pass `intentStore` (`put`, `get`, `delete`) to keep intents
+durable across restarts; `lookupWrite` uses the binding recorded with the intent. A settled write
+leaves the store. `write(..., { requestId })` with the identity of a held write resumes that write
+and applies nothing new; a different write under a held identity is refused before sending, and the
+host refuses one it recorded for another document (`invalid_input`).
+
+`write` throws only before anything is sent: a malformed input (`TypeError`), or the typed error of
+the capabilities read it makes first. Document deletion is not part of `write`.
+
 ## Release compatibility
 
 This migration describes the source after the Windows extraction. Previously published versions
