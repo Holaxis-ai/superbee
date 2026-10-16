@@ -126,18 +126,20 @@ test("golden: a replace at a stale version is a conflict carrying the actual ver
 
 // ── the stateful fake host ─────────────────────────────────────────────────────────────────
 
-type Fault = "lost-request" | "lost-answer" | "concurrent-change";
+type Fault = "lost-request" | "lost-answer" | "concurrent-change" | "held" | "unauthenticated-401" | "capacity-429";
 
 /**
  * A host with documents and an identified-write ledger, answering as the exchanges do. A request
  * identity reused with a different body is refused `invalid_input` (the host's fingerprint check).
  * A queued fault applies to the next request of its route: `lost-request` fails before anything
  * applies, `lost-answer` applies and then fails, `concurrent-change` records a settled
- * `concurrent_change` refusal.
+ * `concurrent_change` refusal, `held` reserves the identity without answering (its lookup is
+ * `pending` until `release()` commits it), and `unauthenticated-401` and `capacity-429` refuse
+ * before dispatch, recording nothing.
  */
 function fakeHost(options: { retentionMs?: number; operations?: boolean } = {}) {
   const documents = new Map<string, { frontmatter: Record<string, unknown>; body: string; version: string; bytes: string }>();
-  const ledger = new Map<string, { body: string; result: Record<string, unknown>; content?: { version: string; bytes: string } }>();
+  const ledger = new Map<string, { body: string; result?: Record<string, unknown>; content?: { version: string; bytes: string }; held?: { route: "create" | "replace"; input: Parameters<typeof apply>[1] } }>();
   const faults = new Map<string, Fault[]>();
   const capabilities = JSON.parse(fixture("capabilities-200").response.body) as Record<string, unknown>;
   if (options.retentionMs !== undefined) capabilities.operationsRetentionMs = options.retentionMs;
@@ -174,6 +176,12 @@ function fakeHost(options: { retentionMs?: number; operations?: boolean } = {}) 
       }
       case "create":
       case "replace": {
+        if (fault === "unauthenticated-401") return Response.json({ error: { code: "unauthenticated", writeState: "not_applied" } }, { status: 401 });
+        if (fault === "capacity-429") return replay("create-429-request-capacity");
+        if (fault === "held") {
+          ledger.set(requestId, { body: raw, held: { route: name, input } });
+          throw new TypeError("the deadline passed while the host held the request");
+        }
         const recorded = ledger.get(requestId);
         if (recorded && recorded.body !== raw) return Response.json(failure(`documents.${name}.v1`, "invalid_input", "This request identity was used for a different request."));
         if (recorded) return settled(requestId, recorded.result);
@@ -188,8 +196,10 @@ function fakeHost(options: { retentionMs?: number; operations?: boolean } = {}) 
       case "outcome": {
         const recorded = ledger.get(requestId);
         if (!recorded) return Response.json({ schemaVersion: 1, requestId, binding, status: "absent" });
+        if (recorded.held) return Response.json({ schemaVersion: 1, requestId, binding, status: "pending" });
         if (recorded.body !== raw) return Response.json({ error: { code: "invalid_input" } }, { status: 400 });
         const committed = (recorded.result as { ok: boolean }).ok;
+
         return Response.json({
           schemaVersion: 1,
           requestId,
@@ -209,6 +219,14 @@ function fakeHost(options: { retentionMs?: number; operations?: boolean } = {}) 
     ledger,
     fault(route: string, ...queued: Fault[]) {
       faults.set(route, [...(faults.get(route) ?? []), ...queued]);
+    },
+    /** Commit every held request, as the host finishing it would. */
+    release() {
+      for (const entry of ledger.values()) {
+        if (!entry.held) continue;
+        Object.assign(entry, apply(entry.held.route, entry.held.input));
+        delete entry.held;
+      }
     },
     seed(id: string, body: string): string {
       return apply("create", { documentId: id, frontmatter: { type: "Note" }, body }).content!.version;
@@ -616,12 +634,12 @@ test("abort: an abort after sending ends recovery at once, with no lookup and no
     }
     return host.fetch(input, init);
   }) as typeof globalThis.fetch;
-  // The default 250 ms between lookups: an abort that waited for it would take at least that long.
-  const client = clientOf(fetch, { writeRecovery: {} });
+  // A minute between lookups: an abort that waited for it would never finish in time.
+  const client = clientOf(fetch, { writeRecovery: { lookupDelayMs: 60_000 } });
   const started = performance.now();
   const result = await client.write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true }, { signal: controller.signal });
   assert.equal(result.status, "unknown");
-  assert.ok(performance.now() - started < 200);
+  assert.ok(performance.now() - started < 5_000);
   assert.equal(lookups(host.sent).length, 0);
 });
 
@@ -648,4 +666,149 @@ test("performUncertainWrite: an aborted signal stops lookups, the wait between t
   assert.deepEqual(await run(), { outcome: "unknown", submits: 1, lookupCount: 3, sleeps: [7, 7] });
   const controller = new AbortController();
   assert.deepEqual(await run(controller.signal, controller), { outcome: "unknown", submits: 1, lookupCount: 0, sleeps: [] });
+});
+
+// ── QA fixes ───────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The first create is held by the host and its answer lost; the lookup says pending, so the same
+ * identity is sent again, and that resend is refused before dispatch by `refuse`. The held first
+ * delivery then commits on the host.
+ */
+async function heldThenRefused(refuse: "credentials" | "unauthenticated-401" | "capacity-429") {
+  const host = fakeHost();
+  host.fault("create", "held");
+  if (refuse !== "credentials") host.fault("create", refuse);
+  let creates = 0;
+  const store = createMemoryIntentStore();
+  const credentials = async (_signal: AbortSignal) => {
+    // capabilities, create (held), outcome (pending), then the resend's credential.
+    if (refuse === "credentials" && ++creates === 4) throw new Error("signed out");
+    return { Authorization: "Bearer token-1" };
+  };
+  const client = clientOf(host.fetch, { intentStore: store, credentials });
+  const result = await client.write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true });
+  return { host, store, client, result };
+}
+
+for (const refuse of ["credentials", "unauthenticated-401", "capacity-429"] as const) {
+  test(`resend refused before dispatch (${refuse}) after a pending lookup is unknown, keeps the record, and settles later`, async () => {
+    const { host, store, client, result } = await heldThenRefused(refuse);
+    assert.equal(result.status, "unknown", "a refused resend says nothing about the held first delivery");
+    const held = await store.get(result.requestId);
+    assert.equal(held?.state, "unknown");
+    assert.equal(held?.attempts, 2);
+    host.release();
+    const settled = await client.settleWrite(result.requestId);
+    assert.equal(settled.status, "committed");
+    assert.equal(settled.status === "committed" && settled.version, host.documents.get("notes/new")!.version);
+  });
+}
+
+test("performUncertainWrite: a resend refused before execution is unknown; the same refusal of a first submission settles", async () => {
+  const intent: OperationIntent = { requestId: "r", kind: "document.write", target: "t", base: null, local: "sha256:" + "0".repeat(64), content: "", createdAt: new Date().toISOString(), attempts: 0, state: "pending" };
+  const refusal = { kind: "refused" as const, code: "AUTH_REQUIRED", message: "no credential" };
+  let submits = 0;
+  const resend: OperationTransport = {
+    async submit() {
+      submits += 1;
+      if (submits === 1) throw new Error("lost");
+      return refusal;
+    },
+    async lookup() {
+      return null;
+    },
+  };
+  const second = await performUncertainWrite(resend, intent, { lookupDelayMs: 0 });
+  assert.equal(second.outcome.kind, "unknown");
+  assert.equal(second.intent.state, "unknown");
+  assert.equal(second.intent.attempts, 2);
+  const first = await performUncertainWrite({ submit: async () => refusal, lookup: async () => null }, intent, { lookupDelayMs: 0 });
+  assert.deepEqual(first.outcome, refusal);
+  // A held intent (an earlier call's submission) resent and refused is unknown too.
+  const resumed = await performUncertainWrite({ submit: async () => refusal, lookup: async () => null }, { ...intent, attempts: 1 }, { lookupDelayMs: 0 });
+  assert.equal(resumed.outcome.kind, "unknown");
+});
+
+test("abort: an already-aborted write sends nothing, not even capabilities, and throws the abort reason", async () => {
+  const host = fakeHost();
+  const store = createMemoryIntentStore();
+  const controller = new AbortController();
+  const reason = new Error("caller gave up");
+  controller.abort(reason);
+  await assert.rejects(
+    clientOf(host.fetch, { intentStore: store }).write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true }, { signal: controller.signal }),
+    (error) => error === reason,
+  );
+  assert.equal(host.sent.length, 0);
+  assert.deepEqual(await clientOf(host.fetch, { intentStore: store }).heldWrites(), []);
+});
+
+test("abort: an already-aborted settleWrite of a never-sent intent sends nothing, throws the abort reason and keeps the record", async () => {
+  const host = fakeHost();
+  const store = createMemoryIntentStore();
+  const intent: HostedWriteIntent = {
+    requestId: "0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c22",
+    binding: checkoutBindingDigest("persisted-checkout"),
+    bundleId: BUNDLE,
+    workspace: null,
+    operation: "create",
+    documentId: "notes/new",
+    document: doc("new"),
+    digest: sha256(doc("new")),
+    expectedVersion: null,
+    okfVersion: "0.2",
+    createdAt: new Date().toISOString(),
+    attempts: 0,
+    state: "pending",
+  };
+  await store.put(intent);
+  const controller = new AbortController();
+  const reason = new Error("caller gave up");
+  controller.abort(reason);
+  await assert.rejects(clientOf(host.fetch, { intentStore: store }).settleWrite(intent.requestId, { signal: controller.signal }), (error) => error === reason);
+  assert.equal(host.sent.length, 0);
+  assert.deepEqual(await store.get(intent.requestId), intent);
+});
+
+test("abort: a refusal caused by an abort during delivery never settles or deletes the record", async () => {
+  const host = fakeHost();
+  const store = createMemoryIntentStore();
+  const controller = new AbortController();
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    // The capabilities answer arrives, then the caller aborts before the write leaves.
+    const answer = await host.fetch(input, init);
+    if (new URL(String(input)).pathname.endsWith("/capabilities")) controller.abort(new Error("caller gave up"));
+    return answer;
+  }) as typeof globalThis.fetch;
+  const result = await clientOf(fetch, { intentStore: store }).write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true }, { signal: controller.signal });
+  assert.equal(result.status, "unknown");
+  assert.equal(writes(host.sent).length, 0);
+  assert.equal((await store.get(result.requestId))?.state, "unknown");
+});
+
+test("settleWrite on a bundle the host serves no writes for only looks the identity up, and sends nothing", async () => {
+  const host = fakeHost({ operations: false });
+  const store = createMemoryIntentStore();
+  const intent: HostedWriteIntent = {
+    requestId: "0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c23",
+    binding: checkoutBindingDigest("persisted-checkout"),
+    bundleId: BUNDLE,
+    workspace: null,
+    operation: "create",
+    documentId: "notes/new",
+    document: doc("new"),
+    digest: sha256(doc("new")),
+    expectedVersion: null,
+    okfVersion: "0.2",
+    createdAt: new Date().toISOString(),
+    attempts: 0,
+    state: "pending",
+  };
+  await store.put(intent);
+  const result = await clientOf(host.fetch, { intentStore: store }).settleWrite(intent.requestId);
+  assert.equal(result.status, "unknown");
+  assert.equal(writes(host.sent).length, 0);
+  assert.equal(lookups(host.sent).length, 1);
+  assert.ok(await store.get(intent.requestId));
 });

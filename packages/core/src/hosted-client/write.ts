@@ -326,8 +326,11 @@ async function deliver(
     ...(context.lookupDelayMs !== undefined ? { lookupDelayMs: context.lookupDelayMs } : {}),
   });
   if (storeFailure) throw storeFailure.cause;
-  await recordOutcome(context, intent, outcome, settled.attempts);
-  return resultOf(intent, outcome);
+  // A refusal after the caller aborted is the abort's (the carrier sends nothing once it has),
+  // never the host's verdict: the identity stays unknown and its record is kept.
+  const answer: Outcome = callerSignal.aborted && outcome.kind === "refused" ? { kind: "unknown" } : outcome;
+  await recordOutcome(context, intent, answer, settled.attempts);
+  return resultOf(intent, answer);
 }
 
 /** `HostedClient.write`. */
@@ -354,6 +357,7 @@ export async function hostedWrite(context: HostedWriteContext, bundleId: string,
   };
   return serialized(context, requested.requestId, async () => {
     const signal = writeSignal(context, options.signal);
+    signal.throwIfAborted();
     const reader = createHostedReadAdapter({ carrier: context.carrierFor(requested.workspace), bundleId, routes: context.readRoutes });
     const known = options.requestId !== undefined ? await context.store.get(requested.requestId) : undefined;
     if (known && !sameWrite(known, requested)) {
@@ -399,25 +403,31 @@ async function heldIntent(
   }
 }
 
+/** One outcome lookup of a held write, never a send; a host holding no outcome yet is `unknown`. */
+async function lookupOnly(context: HostedWriteContext, intent: HostedWriteIntent, reader: HostedReadAdapter, capabilities: HostedCapabilities, signal: AbortSignal): Promise<HostedWriteResult> {
+  const transport = transportFor(context, intent, reader, capabilities, signal);
+  let outcome: Outcome;
+  try {
+    outcome = (await transport.lookup(intent.requestId)) ?? { kind: "unknown" };
+  } catch {
+    outcome = { kind: "unknown" };
+  }
+  await recordOutcome(context, intent, outcome, intent.attempts);
+  return resultOf(intent, outcome);
+}
+
 /**
  * `HostedClient.lookupWrite`: what the host recorded for a held write, by one outcome lookup under
  * the identity and binding it was sent with. It never sends the write: a host that holds no
  * outcome yet (absent or pending), or a lookup that fails, is `unknown`.
  */
 export async function hostedLookupWrite(context: HostedWriteContext, requestId: string, options: { signal?: AbortSignal } = {}): Promise<HostedWriteLookupResult> {
+  const signal = writeSignal(context, options.signal);
+  signal.throwIfAborted();
   return serialized(context, requestId, async () => {
     const held = await heldIntent(context, requestId);
     if (!("intent" in held)) return held;
-    const { intent, reader, capabilities } = held;
-    const transport = transportFor(context, intent, reader, capabilities, writeSignal(context, options.signal));
-    let outcome: Outcome;
-    try {
-      outcome = (await transport.lookup(intent.requestId)) ?? { kind: "unknown" };
-    } catch {
-      outcome = { kind: "unknown" };
-    }
-    await recordOutcome(context, intent, outcome, intent.attempts);
-    return resultOf(intent, outcome);
+    return lookupOnly(context, held.intent, held.reader, held.capabilities, signal);
   });
 }
 
@@ -425,15 +435,18 @@ export async function hostedLookupWrite(context: HostedWriteContext, requestId: 
  * `HostedClient.settleWrite`: settle a held write. It looks the identity up under the binding it
  * was sent with; when the host never recorded it (within the retention window it serves), it
  * delivers that same identity once more, as the write itself would have. An unclear lookup is
- * `unknown` again.
+ * `unknown` again. A bundle the host serves no writes for is only looked up.
  */
 export async function hostedSettleWrite(context: HostedWriteContext, requestId: string, options: { signal?: AbortSignal } = {}): Promise<HostedWriteLookupResult> {
+  const signal = writeSignal(context, options.signal);
+  signal.throwIfAborted();
   return serialized(context, requestId, async () => {
     const held = await heldIntent(context, requestId);
     if (!("intent" in held)) return held;
+    if (!held.capabilities.operations) return lookupOnly(context, held.intent, held.reader, held.capabilities, signal);
     // A recorded intent may never have left (a store written before a crash): delivery starts
     // with a submission then, under the recorded identity, exactly as the write would have.
-    return deliver(context, held.intent, held.reader, held.capabilities, writeSignal(context, options.signal));
+    return deliver(context, held.intent, held.reader, held.capabilities, signal);
   });
 }
 

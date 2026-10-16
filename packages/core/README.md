@@ -202,7 +202,10 @@ progress ("pending"), but the shared transport reports both as "no outcome yet".
 `write` sends the same identity once more, which the host applies at most once. Absence counts as
 evidence only within the retention window the host serves in its capabilities
 (`operationsRetentionMs`, less an hour's margin); past it, the result stays `unknown` and nothing
-is resent. When the lookups themselves fail, or the caller's `signal` aborts after sending, the
+is resent. The client measures an intent's age by its own clock against the host's window, so that
+margin holds only while the client's clock is within an hour of the host's. A resend refused before
+it reaches the host's execution (no credential, access withdrawn, a spent quota) leaves the result
+`unknown` too, since the first delivery may still commit. When the lookups themselves fail, or the caller's `signal` aborts after sending, the
 result is `unknown`.
 
 An `unknown` write can be resolved later in two ways:
@@ -215,6 +218,9 @@ An `unknown` write can be resolved later in two ways:
 Both answer `{ status: "unrecorded", requestId }` when the intent store holds no write under that
 identity: it was never recorded there, or it already settled and left the store. Both return
 `unknown` when the bundle's capabilities cannot be read, because the write may already have left.
+`settleWrite` only looks up, sending nothing, when the host serves the bundle no writes. A
+`signal` already aborted when `write`, `lookupWrite` or `settleWrite` is called is thrown as its
+reason before any request; an abort during delivery leaves the write `unknown` and held.
 `write` instead throws that failure, because it has sent nothing yet.
 
 Until it settles, a write is held in an intent store: its operation, bundle (and workspace),

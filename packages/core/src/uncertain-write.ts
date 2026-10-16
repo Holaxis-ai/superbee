@@ -255,6 +255,10 @@ async function submitOnce(transport: OperationTransport, intent: OperationIntent
  * transport never answers `null` for an absent record once the intent is older than the host's
  * stated retention window, less a skew margin, so it does not resubmit there.
  *
+ * Only a first submission's refusal before execution ({@link isAuthorizationRefusal}) settles the
+ * intent. The same refusal of a resend is `unknown`: the lookup that allowed the resend may have
+ * found the first delivery held but not yet answered, and that delivery can still commit.
+ *
  * By default every outcome passes through {@link settleAgainstIntent}, so a conflict naming the
  * intent's own version is committed. `recorded-only` preserves the recorded outcome instead.
  */
@@ -288,6 +292,10 @@ export async function performUncertainWrite(
       submissions += 1;
       attempts += 1;
       const outcome = await submitOnce(transport, { ...intent, attempts, state: "in_flight" }, options.deadlineMs, sleep);
+      // A resend refused before it reached execution (no credential, access withdrawn, a spent
+      // quota) is evidence about that resend only: an earlier delivery may still be held by the
+      // authority and commit, so the identity stays unknown and the intent is kept.
+      if (attempts > 1 && isAuthorizationRefusal(outcome)) return finish(UNKNOWN);
       if (outcome.kind !== "unknown") return finish(outcome);
     }
     needSubmission = false;
