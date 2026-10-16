@@ -20,6 +20,8 @@ import {
   isMalformedAnswer,
   isRouteNotServed,
   MALFORMED_ANSWER,
+  parseHostedBundleReference,
+  qualifyingCarrier,
   readBundleListing,
   RemoteError,
   ROUTE_NOT_SERVED,
@@ -89,6 +91,39 @@ test("syncRoutePrefix: the API audience, an agent connection, and no family for 
   assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}${agent}/mcp` }), `${agent}/sync/v1`);
   assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}/agents/not-a-uuid/mcp` }), null);
   assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}/other` }), null);
+});
+
+test("syncRoutePrefix: an audience on another host is no sync family, whatever its length", () => {
+  // Same length as the origin, so slicing by length alone would read `/mcp`.
+  assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: "https://hosted.exampl3/mcp" }), null);
+  assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}.evil/mcp` }), null);
+  assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: `${ORIGIN}:8443/mcp` }), null);
+  assert.equal(syncRoutePrefix({ origin: ORIGIN, audience: ORIGIN }), null);
+});
+
+test("parseHostedBundleReference: references it refuses", () => {
+  for (const value of ["", "/", "notes.a/", "/notes.a", "South/notes.a", "-south/notes.a", "south-/notes.a", "a/b/notes.a", `${"s".repeat(64)}/notes.a`, "south/Notes A", "south/"]) {
+    assert.equal(parseHostedBundleReference(value), null, value);
+  }
+  assert.deepEqual(parseHostedBundleReference("south/notes.a"), { slug: "south", bundleId: "notes.a" });
+  assert.deepEqual(parseHostedBundleReference("notes.a"), { slug: null, bundleId: "notes.a" });
+});
+
+test("qualifyingCarrier: a raw body to a bundle-scoped route is refused; an unscoped one passes", async () => {
+  const sent: string[] = [];
+  const inner = {
+    json: async () => assert.fail("json"),
+    stream: async () => assert.fail("stream"),
+    bytes: async (route: string) => {
+      sent.push(route);
+      return { status: 200, headers: new Headers(), body: {} };
+    },
+  };
+  const carrier = qualifyingCarrier(inner, "/sync/v1", "south");
+  const signal = new AbortController().signal;
+  await assert.rejects(carrier.bytes!("/sync/v1/write", new Uint8Array(1), signal, { maximum: 1024 }), TypeError);
+  await carrier.bytes!("/sync/v1/bundle-create-blob", new Uint8Array(1), signal, { maximum: 1024 });
+  assert.deepEqual(sent, ["/sync/v1/bundle-create-blob"]);
 });
 
 test("an agent-connection prefix routes every request under it", async () => {
@@ -347,6 +382,21 @@ test("a credential provider that rejects sends nothing: the transport's denied",
   const notString = clientOf(fetch, { credentials: bearerCredentials(() => 42 as never) });
   await assert.rejects(notString.whoami(), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
   assert.equal(sent.length, 0);
+});
+
+test("a token getter that throws synchronously sends nothing: the transport's denied", async () => {
+  const { fetch, sent } = serving({ whoami: "whoami-200" });
+  const client = clientOf(fetch, { credentials: bearerCredentials(() => {
+    throw new Error("no session");
+  }) });
+  await assert.rejects(client.whoami(), (error: unknown) => error instanceof HostedCarrierError && error.code === "denied");
+  assert.equal(sent.length, 0);
+});
+
+test("deadlineMs: a host that never answers is the transport's unavailable", async () => {
+  const silent = (async (_input: string | URL | Request, init?: RequestInit) =>
+    new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)))) as typeof fetch;
+  await assert.rejects(clientOf(silent, { deadlineMs: 20 }).whoami(), (error: unknown) => error instanceof HostedCarrierError && error.code === "unavailable");
 });
 
 test("abort: an aborted signal sends nothing, and aborting mid-request ends it as a transport failure", async () => {

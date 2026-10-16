@@ -101,7 +101,7 @@ export interface HostedIdentity {
    */
   readonly documentInputBytes: number | null;
   /** The person's email, when the host names one (null otherwise). */
-  readonly email?: string | null;
+  readonly email: string | null;
 }
 
 export interface HostedWorkspace {
@@ -149,7 +149,10 @@ export interface HostedClient {
  * audience, which has no sync family.
  */
 export function syncRoutePrefix(resource: { readonly origin: string; readonly audience: string }): string | null {
-  const audiencePath = resource.audience.slice(resource.origin.length);
+  const { origin, audience } = resource;
+  // The audience must be on the origin itself, not on another host whose name merely starts the same.
+  if (!audience.startsWith(origin) || (audience.length > origin.length && audience[origin.length] !== "/")) return null;
+  const audiencePath = audience.slice(origin.length);
   if (audiencePath === "/mcp") return "/sync/v1";
   if (AGENT_AUDIENCE_PATH.test(audiencePath)) return `${audiencePath.slice(0, -"/mcp".length)}/sync/v1`;
   return null;

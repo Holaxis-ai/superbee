@@ -63,6 +63,8 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "uncertain-write.js", symbol: "performUncertainWrite" },
   { module: "governed-body-write.js", symbol: "performBodyDelivery" },
   { module: "platform.js", symbol: "provenanceLabel" },
+  { module: "hosted-transport/index.js", symbol: "createHostedReadAdapter" },
+  { module: "hosted-client/index.js", symbol: "createHostedClient" },
 ];
 
 for (const { module, symbol } of BROWSER_SUBPATHS) {
