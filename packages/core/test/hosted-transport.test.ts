@@ -848,6 +848,44 @@ test("fetch carrier: credential, identity and binding headers ride every request
   assert.equal(seen.length, before);
 });
 
+test("fetch carrier: a raw request carries the binding and via exactly as a JSON request does, refuses a malformed one before sending, and is unchanged without them", async () => {
+  const seen: Request[] = [];
+  const fetcher = (async (url: URL, init: RequestInit) => {
+    seen.push(new Request(url, init));
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  const carrier = createFetchCarrier({ baseUrl: "https://host.example", fetch: fetcher, credentials: async () => ({ Authorization: "Bearer token" }) });
+  const signal = new AbortController().signal;
+  const superbee = (request: Request) => [...request.headers].filter(([name]) => name.startsWith("x-superbee-"));
+  const identity = { writeRequest: REQUEST_ID, binding: BINDING, via: "claude-code" };
+  await carrier.json("/sync/v1/replace", {}, signal, { maximum: 1024, ...identity });
+  await carrier.bytes!("/sync/v1/blob", new Uint8Array([1, 2]), signal, { maximum: 1024, ...identity, headers: { "X-Superbee-Blob-Version": "v" } });
+  assert.deepEqual(superbee(seen[1]!).filter(([name]) => name !== "x-superbee-blob-version"), superbee(seen[0]!));
+  assert.deepEqual(superbee(seen[1]!), [
+    ["x-superbee-blob-version", "v"],
+    ["x-superbee-checkout", BINDING],
+    ["x-superbee-via", "claude-code"],
+    ["x-superbee-write-request", REQUEST_ID],
+  ]);
+  // A carrier that names another binding header uses it for raw requests too.
+  const editor = createFetchCarrier({ baseUrl: "https://host.example", fetch: fetcher, bindingHeader: "X-Superbee-Editor", credentials: async () => ({}) });
+  await editor.bytes!("/sync/v1/blob", new Uint8Array([1]), signal, { maximum: 1024, binding: BINDING });
+  assert.equal(seen[2]!.headers.get("x-superbee-editor"), BINDING);
+  assert.equal(seen[2]!.headers.get("x-superbee-checkout"), null);
+  // Without either option the raw request carries only what it did before.
+  await carrier.bytes!("/sync/v1/bundle-create-blob", new Uint8Array([3]), signal, { maximum: 1024, writeRequest: REQUEST_ID });
+  assert.deepEqual(superbee(seen[3]!), [["x-superbee-write-request", REQUEST_ID]]);
+  // Each malformed binding or via is refused on both paths alike, and nothing leaves.
+  const before = seen.length;
+  const bad: Record<string, string>[] = [{ binding: "sha256:" + "B".repeat(64) }, { binding: "not-a-digest" }, { via: "superbee-cli" }, { via: "Claude" }, { via: "" }];
+  for (const option of bad) {
+    const denied = (error: unknown) => error instanceof HostedCarrierError && error.code === "denied";
+    await assert.rejects(carrier.json("/sync/v1/replace", {}, signal, { maximum: 1024, ...option }), denied, JSON.stringify(option));
+    await assert.rejects(carrier.bytes!("/sync/v1/blob", new Uint8Array([1]), signal, { maximum: 1024, ...option }), denied, JSON.stringify(option));
+  }
+  assert.equal(seen.length, before);
+});
+
 test("via: the agent a client names rides each write and its lookup exactly as the golden exchange sends it, and an invalid token never leaves", async () => {
   const golden = JSON.parse(readFileSync(path.join(HERE, "fixtures", "hosted-sync-v1", "create-200-ok-via.json"), "utf8")) as Exchange;
   const sent: { path: string; headers: Headers }[] = [];

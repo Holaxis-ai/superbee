@@ -412,6 +412,18 @@ test("a qualifying client sends the staged routes unqualified, and raw bytes onl
   await assert.rejects(carrier.bytes!("/sync/v1/heads", new Uint8Array(1), signal, { maximum: 1 }), TypeError);
 });
 
+test("a qualifying client passes a raw request's identity, binding and via through unchanged", async () => {
+  const seen: unknown[] = [];
+  const inner = {
+    json: async () => assert.fail("no json"),
+    stream: async () => assert.fail("no stream"),
+    bytes: async (_route: string, _body: Uint8Array, _signal: AbortSignal, options: unknown) => (seen.push(options), { status: 200, headers: new Headers(), body: {} }),
+  };
+  const options = { maximum: 1, writeRequest: "4a2f9c1e-8b3d-4e6f-9a1b-2c3d4e5f6a7b", binding: `sha256:${"b".repeat(64)}`, via: "claude-code", headers: { "X-Superbee-Blob-Version": "v" } };
+  await qualifyingCarrier(inner, "/sync/v1", "acme").bytes!("/sync/v1/bundle-create-blob", new Uint8Array(1), new AbortController().signal, options);
+  assert.deepEqual(seen, [options]);
+});
+
 test("a retryable request_conflict from begin waits a minute and begins again; past five the run stops, to re-run later", async () => {
   const h = await harness();
   const folder = path.join(h.cwd, "big");
