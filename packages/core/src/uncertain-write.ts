@@ -106,6 +106,14 @@ export interface UncertainWriteOptions {
    * call runs every lookup and submission it is permitted.
    */
   signal?: AbortSignal;
+  /**
+   * The intent's earlier submission, made by an earlier call, ended without a definitive answer
+   * (its outcome was unknown, or the call stopped while it was in flight). A resubmission refused
+   * before execution is then `unknown`, as one after an unclear submission in this call is.
+   * Default false: an earlier submission answered with such a refusal (a paused intent requeued)
+   * may be resent and refused again definitively.
+   */
+  earlierDeliveryUnclear?: boolean;
 }
 
 export interface UncertainWriteResult {
@@ -255,9 +263,10 @@ async function submitOnce(transport: OperationTransport, intent: OperationIntent
  * transport never answers `null` for an absent record once the intent is older than the host's
  * stated retention window, less a skew margin, so it does not resubmit there.
  *
- * Only a first submission's refusal before execution ({@link isAuthorizationRefusal}) settles the
- * intent. The same refusal of a resend is `unknown`: the lookup that allowed the resend may have
- * found the first delivery held but not yet answered, and that delivery can still commit.
+ * A refusal before execution ({@link isAuthorizationRefusal}) of a resubmission that follows an
+ * unclear submission (in this call, or an earlier one per `earlierDeliveryUnclear`) is `unknown`,
+ * not settled: the lookup that allowed it cannot tell a request never received from one held but
+ * not yet answered, and the held delivery can still commit.
  *
  * By default every outcome passes through {@link settleAgainstIntent}, so a conflict naming the
  * intent's own version is committed. `recorded-only` preserves the recorded outcome instead.
@@ -275,6 +284,8 @@ export async function performUncertainWrite(
   const maxSubmissions = Math.max(1, options.maxSubmissions ?? 2);
   const lookupDelayMs = options.lookupDelayMs ?? 250;
   const { signal } = options;
+  // Whether a submission of this identity may still be held by the authority unanswered.
+  let unclear = options.earlierDeliveryUnclear === true && intent.attempts > 0;
 
   let attempts = intent.attempts;
   let submissions = 0;
@@ -293,10 +304,11 @@ export async function performUncertainWrite(
       attempts += 1;
       const outcome = await submitOnce(transport, { ...intent, attempts, state: "in_flight" }, options.deadlineMs, sleep);
       // A resend refused before it reached execution (no credential, access withdrawn, a spent
-      // quota) is evidence about that resend only: an earlier delivery may still be held by the
-      // authority and commit, so the identity stays unknown and the intent is kept.
-      if (attempts > 1 && isAuthorizationRefusal(outcome)) return finish(UNKNOWN);
+      // quota) is evidence about that resend only: an earlier, unclear delivery may still be held
+      // by the authority and commit, so the identity stays unknown and the intent is kept.
+      if (unclear && isAuthorizationRefusal(outcome)) return finish(UNKNOWN);
       if (outcome.kind !== "unknown") return finish(outcome);
+      unclear = true;
     }
     needSubmission = false;
     let recorded: Outcome | null | undefined;

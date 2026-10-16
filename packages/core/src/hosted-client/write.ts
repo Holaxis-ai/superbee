@@ -323,6 +323,8 @@ async function deliver(
   const { outcome, intent: settled } = await performUncertainWrite(recording, operationIntent(intent), {
     settlement: transport.settlement,
     signal,
+    // Every held record with a submission is one whose answer was never definitive.
+    earlierDeliveryUnclear: intent.attempts > 0,
     ...(context.lookupDelayMs !== undefined ? { lookupDelayMs: context.lookupDelayMs } : {}),
   });
   if (storeFailure) throw storeFailure.cause;

@@ -705,7 +705,7 @@ for (const refuse of ["credentials", "unauthenticated-401", "capacity-429"] as c
   });
 }
 
-test("performUncertainWrite: a resend refused before execution is unknown; the same refusal of a first submission settles", async () => {
+test("performUncertainWrite: a resend refused before execution after an unclear submission is unknown; after a definitive one, or first, it settles", async () => {
   const intent: OperationIntent = { requestId: "r", kind: "document.write", target: "t", base: null, local: "sha256:" + "0".repeat(64), content: "", createdAt: new Date().toISOString(), attempts: 0, state: "pending" };
   const refusal = { kind: "refused" as const, code: "AUTH_REQUIRED", message: "no credential" };
   let submits = 0;
@@ -725,9 +725,12 @@ test("performUncertainWrite: a resend refused before execution is unknown; the s
   assert.equal(second.intent.attempts, 2);
   const first = await performUncertainWrite({ submit: async () => refusal, lookup: async () => null }, intent, { lookupDelayMs: 0 });
   assert.deepEqual(first.outcome, refusal);
-  // A held intent (an earlier call's submission) resent and refused is unknown too.
-  const resumed = await performUncertainWrite({ submit: async () => refusal, lookup: async () => null }, { ...intent, attempts: 1 }, { lookupDelayMs: 0 });
+  // An earlier call's unclear submission, resent and refused, is unknown too.
+  const resumed = await performUncertainWrite({ submit: async () => refusal, lookup: async () => null }, { ...intent, attempts: 1 }, { lookupDelayMs: 0, earlierDeliveryUnclear: true });
   assert.equal(resumed.outcome.kind, "unknown");
+  // A requeued intent whose earlier submission was refused definitively is refused again, as before.
+  const requeued = await performUncertainWrite({ submit: async () => refusal, lookup: async () => null }, { ...intent, attempts: 1 }, { lookupDelayMs: 0 });
+  assert.deepEqual(requeued.outcome, refusal);
 });
 
 test("abort: an already-aborted write sends nothing, not even capabilities, and throws the abort reason", async () => {
