@@ -38,11 +38,15 @@ import { checkoutBindingDigest } from "./binding.js";
 import { mintRequestId } from "../uncertain-write.js";
 import {
   createMemoryIntentStore,
+  hostedHeldWrites,
   hostedLookupWrite,
+  hostedSettleWrite,
   hostedWrite,
   type HostedIntentStore,
   type HostedWriteContext,
   type HostedWriteInput,
+  type HostedWriteIntent,
+  type HostedWriteLookupResult,
   type HostedWriteOptions,
   type HostedWriteResult,
 } from "./write.js";
@@ -96,6 +100,8 @@ export interface HostedClientOptions {
    * in-memory store ({@link createMemoryIntentStore}) owned by this client.
    */
   readonly intentStore?: HostedIntentStore;
+  /** How a write recovers an unclear answer: the wait between its outcome lookups (default 250 ms). */
+  readonly writeRecovery?: { readonly lookupDelayMs?: number };
 }
 
 /** One operation run's options. */
@@ -166,8 +172,18 @@ export interface HostedClient {
    * identity for {@link lookupWrite}. Nothing is thrown once a request may have left.
    */
   write(bundleId: string, input: HostedWriteInput, options?: HostedWriteOptions): Promise<HostedWriteResult>;
-  /** Settle a write whose result was `unknown`, from the intent store, under its own identity and binding. */
-  lookupWrite(requestId: string, options?: { signal?: AbortSignal }): Promise<HostedWriteResult>;
+  /**
+   * What the host recorded for a held write: one outcome lookup under its own identity and
+   * binding. It never sends the write; a host holding no outcome yet answers `unknown`.
+   */
+  lookupWrite(requestId: string, options?: { signal?: AbortSignal }): Promise<HostedWriteLookupResult>;
+  /**
+   * Settle a held write: look it up and, when the host never recorded it within the retention
+   * window it serves, send that same identity once more.
+   */
+  settleWrite(requestId: string, options?: { signal?: AbortSignal }): Promise<HostedWriteLookupResult>;
+  /** Every write the intent store holds (unsettled, or never sent); needs a store with `list`. */
+  heldWrites(): Promise<HostedWriteIntent[]>;
 }
 
 /**
@@ -252,12 +268,12 @@ export function createHostedClient(options: HostedClientOptions): HostedClient {
   if (typeof options.credentials !== "function") throw new TypeError("a hosted client needs a credential provider");
   // One binding per client instance, shared by its `within` clients: a digest of a random id, as a
   // checkout's is, so the id itself never leaves.
-  const writes = { binding: checkoutBindingDigest(mintRequestId()), store: options.intentStore ?? createMemoryIntentStore() };
+  const writes = { binding: checkoutBindingDigest(mintRequestId()), store: options.intentStore ?? createMemoryIntentStore(), inFlight: new Map<string, Promise<unknown>>() };
   return clientIn(options, options.signal ?? new AbortController().signal, undefined, writes);
 }
 
 /** The client, naming its bundles in the workspace with `slug` when there is one. */
-function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: string | undefined, writes: { binding: string; store: HostedIntentStore }): HostedClient {
+function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: string | undefined, writes: { binding: string; store: HostedIntentStore; inFlight: Map<string, Promise<unknown>> }): HostedClient {
   const { target } = options;
   const prefix = target.syncPrefix;
   const fetchCarrier = createFetchCarrier({
@@ -272,6 +288,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     prefix,
     workspace: slug ?? null,
     signal,
+    ...(options.writeRecovery?.lookupDelayMs !== undefined ? { lookupDelayMs: options.writeRecovery.lookupDelayMs } : {}),
     readRoutes: syncReadRoutes(prefix),
     // A recorded write is looked up in the workspace it was sent in, whichever client asks.
     carrierFor: (workspace) => (workspace === null ? fetchCarrier : qualifyingCarrier(fetchCarrier, prefix, workspace)),
@@ -364,6 +381,8 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     },
     write: (bundleId, input, writeOptions) => hostedWrite(writeContext, bundleId, input, writeOptions),
     lookupWrite: (requestId, lookupOptions) => hostedLookupWrite(writeContext, requestId, lookupOptions),
+    settleWrite: (requestId, settleOptions) => hostedSettleWrite(writeContext, requestId, settleOptions),
+    heldWrites: () => hostedHeldWrites(writeContext),
     async history(bundleId, request) {
       const route = `${prefix}/history`;
       const answer = await send(route, historyInput(bundleId, request), HOSTED_READ_BOUNDS.historyBytes);

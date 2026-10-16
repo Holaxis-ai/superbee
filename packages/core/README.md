@@ -192,26 +192,48 @@ Every result names its `requestId`. A conflict is final for that identity: the c
 resends it, under that identity or a new one. Read the document and decide; another attempt is a
 new `write`.
 
+Each write costs two round trips: a capabilities read of the bundle, then the write itself.
+
 Each write has one request identity and carries the client's binding, a digest of a random id the
 client mints once (its `within` clients share it). When an answer is lost (a transport failure or
 a deadline after sending), the client looks the identity up on the host and reports what the host
-recorded. When the host never recorded it, the same identity is sent once more, so the write
-applies at most once. Absence counts as evidence only within the retention window the host serves
-in its capabilities (`operationsRetentionMs`, less an hour's margin); after that, the result stays
-`unknown`. When the lookup itself fails, the result is `unknown`; `lookupWrite(requestId)` asks
-again later and settles it the same way.
+recorded. The host's outcome route tells a request it never received ("absent") from one still in
+progress ("pending"), but the shared transport reports both as "no outcome yet". On that answer
+`write` sends the same identity once more, which the host applies at most once. Absence counts as
+evidence only within the retention window the host serves in its capabilities
+(`operationsRetentionMs`, less an hour's margin); past it, the result stays `unknown` and nothing
+is resent. When the lookups themselves fail, or the caller's `signal` aborts after sending, the
+result is `unknown`.
+
+An `unknown` write can be resolved later in two ways:
+
+- `lookupWrite(requestId)` makes one outcome lookup and never sends the write. When the host holds
+  no outcome yet (absent or pending), the answer stays `unknown`.
+- `settleWrite(requestId)` looks the identity up and, when the host never recorded it within its
+  retention window, sends the same identity once more, as `write` would have.
+
+Both answer `{ status: "unrecorded", requestId }` when the intent store holds no write under that
+identity: it was never recorded there, or it already settled and left the store. Both return
+`unknown` when the bundle's capabilities cannot be read, because the write may already have left.
+`write` instead throws that failure, because it has sent nothing yet.
 
 Until it settles, a write is held in an intent store: its operation, bundle (and workspace),
 document id, document and digest, expected version, request identity and binding, which is
-everything needed to rebuild the lookup exactly. The default store is in memory, so `lookupWrite`
-works for the client's lifetime. Pass `intentStore` (`put`, `get`, `delete`) to keep intents
-durable across restarts; `lookupWrite` uses the binding recorded with the intent. A settled write
-leaves the store. `write(..., { requestId })` with the identity of a held write resumes that write
-and applies nothing new; a different write under a held identity is refused before sending, and the
-host refuses one it recorded for another document (`invalid_input`).
+everything needed to rebuild the lookup exactly. The default store is in memory and lives as long
+as the client. Pass `intentStore` (`put`, `get`, `delete`, and optionally `list`) to keep intents
+durable across restarts; lookups use the binding recorded with each intent. A service that
+restarts with a durable store calls `heldWrites()` to find the writes that never settled
+(including any recorded but never sent), then settles each with `settleWrite`. `heldWrites()`
+throws `HostedIntentsNotListable` when the store has no `list`. A settled write leaves the store.
 
-`write` throws only before anything is sent: a malformed input (`TypeError`), or the typed error of
-the capabilities read it makes first. Document deletion is not part of `write`.
+`write(..., { requestId })` with the identity of a held write resumes that write and applies
+nothing new. A different write under a held identity, including the same write named in another
+workspace, is refused before sending. The host refuses an identity it recorded for another
+document (`invalid_input`). Calls on one client that name the same identity run one after another.
+
+`write` throws only before anything is sent: a malformed input (`TypeError`), the typed error of
+its capabilities read, or a failure of the intent store to record the write. Document deletion is
+not part of `write`.
 
 ## Release compatibility
 

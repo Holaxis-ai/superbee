@@ -37,9 +37,12 @@ export {
 export { checkoutBindingDigest } from "./binding.js";
 export {
   createMemoryIntentStore,
+  HostedIntentsNotListable,
+  INTENTS_NOT_LISTABLE,
   type HostedIntentStore,
   type HostedWriteInput,
   type HostedWriteIntent,
+  type HostedWriteLookupResult,
   type HostedWriteOptions,
   type HostedWriteRefusalCode,
   type HostedWriteResult,

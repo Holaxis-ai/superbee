@@ -44,7 +44,7 @@ export function syncRoutePrefix(target: HostedTarget): string {
  * Core's hosted client under the CLI's target, its failures in the CLI's words. The CLI writes
  * through its checkout sync, so the one-call write is not part of it.
  */
-export interface HostedSyncClient extends Omit<HostedClient, "target" | "within" | "listOperations" | "runOperation" | "write" | "lookupWrite"> {
+export interface HostedSyncClient extends Omit<HostedClient, "target" | "within" | "listOperations" | "runOperation" | "write" | "lookupWrite" | "settleWrite" | "heldWrites"> {
   readonly target: HostedTarget;
   /** The same client, naming its bundles in the workspace with this slug. */
   within(slug: string): HostedSyncClient;

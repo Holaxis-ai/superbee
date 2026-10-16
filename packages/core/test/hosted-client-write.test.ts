@@ -1,5 +1,5 @@
 /**
- * `HostedClient.write` and `lookupWrite`: the one-call document write over the whole-document
+ * `HostedClient.write`, `lookupWrite`, `settleWrite` and `heldWrites`: the one-call document write over the whole-document
  * transport and the uncertain-write primitive. The plain answers replay the `/sync/v1` golden
  * exchanges byte for byte; recovery runs against a stateful fake host with a request ledger
  * (identity, fingerprint, recorded result) whose answers take the exchanges' shapes, and which
@@ -20,7 +20,10 @@ import {
   type HostedClientOptions,
   type HostedIntentStore,
   type HostedWriteIntent,
+  HostedIntentsNotListable,
+  INTENTS_NOT_LISTABLE,
 } from "../src/hosted-client/index.js";
+import { performUncertainWrite, type OperationIntent, type OperationTransport } from "../src/uncertain-write.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, "fixtures", "hosted-sync-v1");
@@ -62,7 +65,7 @@ function recorder(answer: (route: string, body: string, headers: Headers) => Res
 }
 
 function clientOf(fetch: typeof globalThis.fetch, overrides: Partial<HostedClientOptions> = {}) {
-  return createHostedClient({ target: { origin: ORIGIN, syncPrefix: "/sync/v1" }, credentials: bearerCredentials(() => "token-1"), fetch, ...overrides });
+  return createHostedClient({ target: { origin: ORIGIN, syncPrefix: "/sync/v1" }, credentials: bearerCredentials(() => "token-1"), fetch, writeRecovery: { lookupDelayMs: 0 }, ...overrides });
 }
 
 const routes = (sent: readonly Sent[]) => sent.map((row) => row.route.slice("/sync/v1/".length));
@@ -265,7 +268,8 @@ test("recovery: a lost answer whose lookups are lost too is unknown with its ide
   assert.equal(writes(host.sent).length, 1, "the write was never sent again");
   assert.equal(lookups(host.sent).at(-1)!.binding, writes(host.sent)[0]!.binding);
   assert.equal(await store.get(result.requestId), undefined, "a settled write leaves the store");
-  await assert.rejects(client.lookupWrite(result.requestId), TypeError);
+  assert.deepEqual(await client.lookupWrite(result.requestId), { status: "unrecorded", requestId: result.requestId });
+  assert.deepEqual(await client.settleWrite(result.requestId), { status: "unrecorded", requestId: result.requestId });
 });
 
 test("recovery: a settled concurrent_change is a conflict and is never resent by the client", async () => {
@@ -361,14 +365,18 @@ test("retention: absence is evidence only within the window the host serves, nev
   const short = fakeHost({ retentionMs: 2 * 60 * 60 * 1000 });
   const shortStore = createMemoryIntentStore();
   await shortStore.put(intentFor(binding));
-  const expired = await clientOf(short.fetch, { intentStore: shortStore }).lookupWrite(intentFor(binding).requestId);
+  const expired = await clientOf(short.fetch, { intentStore: shortStore }).settleWrite(intentFor(binding).requestId);
   assert.equal(expired.status, "unknown");
   assert.equal(writes(short.sent).length, 0, "an identity past the served window is never resent");
 
   const long = fakeHost();
   const longStore = createMemoryIntentStore();
   await longStore.put(intentFor(binding));
-  const resent = await clientOf(long.fetch, { intentStore: longStore }).lookupWrite(intentFor(binding).requestId);
+  const longClient = clientOf(long.fetch, { intentStore: longStore });
+  const looked = await longClient.lookupWrite(intentFor(binding).requestId);
+  assert.equal(looked.status, "unknown", "absent is not settled by a lookup");
+  assert.equal(writes(long.sent).length, 0, "lookupWrite never sends the write");
+  const resent = await longClient.settleWrite(intentFor(binding).requestId);
   assert.equal(resent.status, "committed");
   assert.equal(writes(long.sent).length, 1);
   assert.equal(writes(long.sent)[0]!.binding, binding, "the recorded binding, not the new client's");
@@ -497,4 +505,147 @@ test("a write's input is checked before anything is sent", async () => {
 
 test("checkoutBindingDigest is the CLI's digest of a checkout id, byte for byte", () => {
   for (const id of ["0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1e", "", "é"]) assert.equal(checkoutBindingDigest(id), sha256(id));
+});
+
+// ── review fixes ───────────────────────────────────────────────────────────────────────────
+
+test("store failure: a store that cannot record the first submission makes write throw, with nothing sent or looked up", async () => {
+  const host = fakeHost();
+  const inner = createMemoryIntentStore();
+  const failure = new Error("disk full");
+  const store: HostedIntentStore = {
+    put: (intent) => {
+      if (intent.state === "in_flight") throw failure;
+      return inner.put(intent);
+    },
+    get: (requestId) => inner.get(requestId),
+    delete: (requestId) => inner.delete(requestId),
+  };
+  await assert.rejects(clientOf(host.fetch, { intentStore: store }).write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true }), (error) => error === failure);
+  assert.equal(writes(host.sent).length, 0);
+  assert.equal(lookups(host.sent).length, 0);
+  assert.equal(host.documents.size, 0);
+});
+
+test("lookupWrite never sends; settleWrite sends the same identity once when the host never recorded it", async () => {
+  const host = fakeHost();
+  host.fault("create", "lost-request");
+  host.fault("outcome", "lost-request", "lost-request", "lost-request");
+  const client = clientOf(host.fetch);
+  const unknown = await client.write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true });
+  assert.equal(unknown.status, "unknown");
+  const sentWrites = writes(host.sent).length;
+
+  const looked = await client.lookupWrite(unknown.requestId);
+  assert.equal(looked.status, "unknown");
+  assert.equal(writes(host.sent).length, sentWrites, "a lookup that finds nothing sends nothing");
+
+  const settled = await client.settleWrite(unknown.requestId);
+  assert.equal(settled.status, "committed");
+  assert.equal(writes(host.sent).length, sentWrites + 1);
+  assert.equal(writes(host.sent).at(-1)!.requestId, unknown.requestId);
+});
+
+test("unrecorded: an identity the store never held answers unrecorded from lookupWrite and settleWrite, and nothing is sent", async () => {
+  const host = fakeHost();
+  const client = clientOf(host.fetch);
+  const requestId = "0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c20";
+  assert.deepEqual(await client.lookupWrite(requestId), { status: "unrecorded", requestId });
+  assert.deepEqual(await client.settleWrite(requestId), { status: "unrecorded", requestId });
+  assert.equal(host.sent.length, 0);
+});
+
+test("heldWrites: the store's unsettled writes, for a service that restarts; a store without list is a typed error", async () => {
+  const host = fakeHost();
+  host.fault("create", "lost-answer");
+  host.fault("outcome", "lost-request", "lost-request", "lost-request");
+  const store = createMemoryIntentStore();
+  const unknown = await clientOf(host.fetch, { intentStore: store }).write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true });
+  const restarted = clientOf(host.fetch, { intentStore: store });
+  const held = await restarted.heldWrites();
+  assert.deepEqual(held.map((intent) => [intent.requestId, intent.state]), [[unknown.requestId, "unknown"]]);
+  assert.equal((await restarted.settleWrite(held[0]!.requestId)).status, "committed");
+  assert.deepEqual(await restarted.heldWrites(), []);
+
+  const unlistable: HostedIntentStore = { put: () => {}, get: () => undefined, delete: () => {} };
+  await assert.rejects(clientOf(host.fetch, { intentStore: unlistable }).heldWrites(), (error) => error instanceof HostedIntentsNotListable && (error as HostedIntentsNotListable).code === INTENTS_NOT_LISTABLE);
+});
+
+test("workspace: a held identity confirmed from a client naming another workspace is refused, and the message says so", async () => {
+  const host = fakeHost();
+  host.fault("create", "lost-answer");
+  host.fault("outcome", "lost-request", "lost-request", "lost-request");
+  const client = clientOf(host.fetch);
+  const unknown = await client.within("south").write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true });
+  assert.equal(unknown.status, "unknown");
+  const before = host.sent.length;
+  const root = await client.write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true }, { requestId: unknown.requestId });
+  assert.equal(root.status, "refused");
+  assert.match(root.status === "refused" ? root.message : "", /workspace 'south'/);
+  assert.equal(host.sent.length, before);
+  const other = await client.write(BUNDLE, { id: "notes/new", document: doc("other"), expectAbsent: true }, { requestId: unknown.requestId });
+  assert.doesNotMatch(other.status === "refused" ? other.message : "", /workspace/);
+});
+
+test("concurrency: two writes under one identity on one client run one after the other, so the second sees the first's record", async () => {
+  const host = fakeHost();
+  host.fault("create", "lost-answer");
+  host.fault("outcome", "lost-request", "lost-request", "lost-request");
+  const client = clientOf(host.fetch);
+  const requestId = "0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c21";
+  const [first, second] = await Promise.all([
+    client.write(BUNDLE, { id: "notes/new", document: doc("first"), expectAbsent: true }, { requestId }),
+    client.write(BUNDLE, { id: "notes/new", document: doc("second"), expectAbsent: true }, { requestId }),
+  ]);
+  assert.equal(first.status, "unknown");
+  assert.equal(second.status === "refused" && second.code, "invalid_input");
+  assert.equal(writes(host.sent).length, 1, "the second write never left");
+  const held = await client.heldWrites();
+  assert.equal(held.length, 1);
+  assert.equal(held[0]!.document, doc("first"), "the first write's record stands");
+});
+
+test("abort: an abort after sending ends recovery at once, with no lookup and no wait between lookups", async () => {
+  const controller = new AbortController();
+  const host = fakeHost();
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(input)).pathname.endsWith("/create")) {
+      await host.fetch(input, init);
+      controller.abort();
+      throw new TypeError("network lost the answer");
+    }
+    return host.fetch(input, init);
+  }) as typeof globalThis.fetch;
+  // The default 250 ms between lookups: an abort that waited for it would take at least that long.
+  const client = clientOf(fetch, { writeRecovery: {} });
+  const started = performance.now();
+  const result = await client.write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true }, { signal: controller.signal });
+  assert.equal(result.status, "unknown");
+  assert.ok(performance.now() - started < 200);
+  assert.equal(lookups(host.sent).length, 0);
+});
+
+test("performUncertainWrite: an aborted signal stops lookups, the wait between them and resubmission; absent, nothing changes", async () => {
+  const intent: OperationIntent = { requestId: "r", kind: "document.write", target: "t", base: null, local: "sha256:" + "0".repeat(64), content: "", createdAt: new Date().toISOString(), attempts: 0, state: "pending" };
+  const run = async (signal?: AbortSignal, abortOnSubmit?: AbortController) => {
+    let submits = 0;
+    let lookupCount = 0;
+    const sleeps: number[] = [];
+    const transport: OperationTransport = {
+      async submit() {
+        submits += 1;
+        abortOnSubmit?.abort();
+        throw new Error("lost");
+      },
+      async lookup() {
+        lookupCount += 1;
+        throw new Error("lost");
+      },
+    };
+    const result = await performUncertainWrite(transport, intent, { lookupDelayMs: 7, sleep: async (ms) => void sleeps.push(ms), ...(signal ? { signal } : {}) });
+    return { outcome: result.outcome.kind, submits, lookupCount, sleeps };
+  };
+  assert.deepEqual(await run(), { outcome: "unknown", submits: 1, lookupCount: 3, sleeps: [7, 7] });
+  const controller = new AbortController();
+  assert.deepEqual(await run(controller.signal, controller), { outcome: "unknown", submits: 1, lookupCount: 0, sleeps: [] });
 });
