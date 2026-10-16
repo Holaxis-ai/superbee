@@ -396,7 +396,14 @@ test("a token getter that throws synchronously sends nothing: the transport's de
 test("deadlineMs: a host that never answers is the transport's unavailable", async () => {
   const silent = (async (_input: string | URL | Request, init?: RequestInit) =>
     new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)))) as typeof fetch;
-  await assert.rejects(clientOf(silent, { deadlineMs: 20 }).whoami(), (error: unknown) => error instanceof HostedCarrierError && error.code === "unavailable");
+  // The carrier's deadline is an unref'd AbortSignal.timeout and this fake fetch holds no socket,
+  // so a referenced timer keeps the event loop alive until the deadline fires.
+  const hold = setInterval(() => {}, 1000);
+  try {
+    await assert.rejects(clientOf(silent, { deadlineMs: 20 }).whoami(), (error: unknown) => error instanceof HostedCarrierError && error.code === "unavailable");
+  } finally {
+    clearInterval(hold);
+  }
 });
 
 test("abort: an aborted signal sends nothing, and aborting mid-request ends it as a transport failure", async () => {
