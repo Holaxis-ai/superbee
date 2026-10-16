@@ -8,29 +8,23 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.14 (already on npm `next`, unchanged) | public / next |
-| @superbee/browser-local | 0.1.0-pre.11 | public / next |
+| @superbee/core | 0.2.0-pre.15 | public / next |
+| @superbee/server | 0.2.0-pre.15 | public / next |
+| @superbee/browser-local | 0.1.0-pre.12 | public / next |
+| @superbee/markdown-renderer | 0.1.12 | existing restricted access / latest |
 
-This candidate makes retiring acknowledged body history strictly best effort (superbee#461).
-`retireQuietly` used to rethrow any retirement failure other than a guard conflict or a
-transient storage error (for example a plain `Error`, `QuotaExceededError` or `NotFoundError`;
-core's IndexedDB adapter reports an error-less host abort as a plain `Error`) into the settle
-and every later commit of that document. Now no
-retirement failure reaches a commit or settle; the next commit or settle of the target
-retries it, and a target that fails `RETIREMENT_DIAGNOSTIC_FAILURES` (3) times in a row
-through one opened working copy is listed in `syncStatus().retirementFailures`. New exports:
-`RETIREMENT_DIAGNOSTIC_FAILURES` and `type RetirementDiagnostic`; `SyncStatus` gains the
-optional `retirementFailures` field.
+This candidate changes which managed fields a bundle's creation on the host carries
+(superbee#464): core's `IMPORT_CARRIED_FIELDS` now includes `superbee_updated_by` and
+`verified`, and `IMPORT_DROPPED_FIELDS` is empty. Both are the folder's claims, not authority:
+the host shows `superbee_updated_by` as attribution only, never interprets `verified`, and its
+own history row still names the publisher. Everything else in 0.2.0-pre.14 is carried
+unchanged. Server moves with core with no source change.
 
-The registry's newest browser-local is 0.1.0-pre.4 (exact core pre.8); pre.5 to pre.10 were
-prepared but never published, so this is the first publication since pre.4 and also carries
-everything those candidates prepared. Browser-local depends exactly on core pre.14, which is
-already published on `next`, so consumers need no core override. Core's body bounds
-(`BODY_DELIVERY_LIMITS`, `BODY_RECONCILIATION_BYTES`) are byte-identical between pre.8 and
-pre.14, so the runtime's capacity admission is unchanged. Core and server are not part of this
-candidate and there is no `libraries/v*` tag: there is no core or server change to stage. The
-renderer is not part of this candidate. For this candidate, skip "Before release" steps 2 and 3
-(core pre.14 is already published and finalized) and pack only browser-local.
+Browser-local 0.1.0-pre.11 (exact core pre.14) is on npm `next`. 0.1.0-pre.12 moves its exact
+pin to pre.15 with no browser-local source change. Renderer 0.1.12 extends its core peer
+allowance through pre.15 with no source change since 0.1.11. Each is a new version because a
+version is never reused for different bytes, and each is included so consumers can align their
+root core without overriding peer checks. Hand publication of either is optional.
 
 ## Before release
 
