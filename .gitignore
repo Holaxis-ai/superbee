@@ -11,6 +11,8 @@ dist-worker/
 packages/cli/src/generated/
 # Same build-time pattern for the fixed MCP App HTML resource.
 packages/mcp-app/src/generated/
+# Modules the ui build rendered (read by the CLI distribution build for third-party notices).
+packages/ui/build-meta/
 # Playwright E2E output (packages/ui) — never committed.
 packages/ui/test-results/
 packages/ui/playwright-report/

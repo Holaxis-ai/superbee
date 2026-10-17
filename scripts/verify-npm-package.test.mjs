@@ -279,6 +279,7 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "NOTICE",
     "README.md",
     "SKILL.md",
+    "dist/THIRD-PARTY-NOTICES.txt",
     "dist/bundle-descriptor.mjs",
     "dist/bundle-descriptor/generated/bundle-descriptor-v1.d.ts",
     "dist/bundle-descriptor/index.d.ts",

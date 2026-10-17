@@ -12,3 +12,7 @@ Portions of this software were previously distributed under the MIT License as
 "AgentState Lite" / "@holaxis/aslite", Copyright (c) 2026 Holaxis. Versions published under
 that name remain available under the MIT License; this relicensing governs subsequent
 releases only.
+
+This product bundles third-party open-source npm packages into its dist/ files. Their copyright
+notices and license terms are reproduced in dist/THIRD-PARTY-NOTICES.txt. The fonts embedded in
+the local web UI carry their SIL Open Font License text alongside each font file.
