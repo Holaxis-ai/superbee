@@ -1,4 +1,5 @@
 import test from "node:test";
+import { deletionBound, acceptsRefusal } from "@superbee/core/platform";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, symlink, writeFile, truncate, readFile, unlink, readdir } from "node:fs/promises";
@@ -10,7 +11,7 @@ import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { prepareBlobIntent, decodePreparedBlobIntent, blobReceipt, compareStorageKeys, type BlobTargetScope } from "@superbee/core/storage";
 import { decodeHostedCapabilities, type HostedCarrier } from "@superbee/core/hosted-transport";
 import { createHash, randomUUID } from "node:crypto";
-import { BLOB_SYNC_META_KEY, captureBlobSyncMap, encodeBlobSyncMap, decodeBlobSyncMap, changeBlobSyncEntry, blobSyncDirty, seedBlobSyncEntry, readBlobSyncState, settleBlobSyncReceipt, seedInitialBlobBaselines, captureTrackedBlobChanges, stageBlobPlacement, recoverBlobPlacements, type BlobSyncMap } from "../src/hosted/blob-sync.js";
+import { refreshBlobCheckout, blobHostDeletionsToken, BLOB_SYNC_META_KEY, captureBlobSyncMap, encodeBlobSyncMap, decodeBlobSyncMap, changeBlobSyncEntry, blobSyncDirty, seedBlobSyncEntry, readBlobSyncState, settleBlobSyncReceipt, seedInitialBlobBaselines, captureTrackedBlobChanges, stageBlobPlacement, recoverBlobPlacements, type BlobSyncMap } from "../src/hosted/blob-sync.js";
 const digest = (s: string) => `sha256:${createHash("sha256").update(s).digest("hex")}`;
 const scope: BlobTargetScope = { origin: "https://example.test", prefix: "/sync/v1", bundleId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", workspaceSlug: "team" };
 const empty = (): BlobSyncMap => ({ schemaVersion: 1 as const, scope, entries: [] });
@@ -374,4 +375,108 @@ test("unapplied explicit MIME refuses placement before WAL or filesystem work an
     assert.equal(snapshot.map.entries[0]!.head!.version, digest("old"));
     assert.equal(snapshot.map.entries[0]!.head!.contentType, "x/old");
   } finally { await store.close(); await f.cleanup(); }
+});
+
+function refreshHost(rows: { key: string; bytes: Buffer; contentType: string }[], hooks: { beforeRead?: (key: string) => Promise<void>; readFailure?: boolean; listingFailure?: boolean; revision?: number } = {}) {
+  const heads = rows.map(row => ({ key: row.key, version: digest(row.bytes.toString("base64")), contentType: row.contentType }));
+  // Binary versions hash the original bytes, never a UTF8 conversion.
+  for (let i = 0; i < heads.length; i++) heads[i]!.version = `sha256:${createHash("sha256").update(rows[i]!.bytes).digest("hex")}`;
+  heads.sort((a, b) => compareStorageKeys(a.key, b.key));
+  let reads = 0, lists = 0;
+  const revision = hooks.revision ?? 1;
+  const carrier: HostedCarrier = {
+    json: async () => { lists++; return hooks.listingFailure ? { status: 503, headers: new Headers(), body: { error: "unavailable" } } : { status: 200, headers: new Headers(), body: { schemaVersion: 1, bundleId: scope.bundleId, revision, digest: digest(JSON.stringify([revision, heads.map(row => [row.key, row.version, row.contentType])])), total: heads.length, heads, next: null } }; },
+    stream: async (_route, body) => {
+      const pin = body as { key: string }; reads++; await hooks.beforeRead?.(pin.key);
+      if (hooks.readFailure) return { ok: false, status: 409, headers: new Headers(), body: new ReadableStream({ start(c) { c.close(); } }) };
+      const row = rows.find(row => row.key === pin.key)!, head = heads.find(head => head.key === pin.key)!;
+      return { ok: true, status: 200, headers: new Headers({ "content-type": "application/octet-stream", "content-length": String(row.bytes.length), "x-superbee-blob-version": head.version, "x-superbee-content-type": head.contentType }), body: new ReadableStream({ start(c) { c.enqueue(row.bytes); c.close(); } }) };
+    },
+  };
+  return { carrier, counts: () => ({ lists, reads }) };
+}
+const readCaps = async () => decodeHostedCapabilities({ heads: true, snapshot: true, operations: true, root: null, bound: { documents: 10000, bytes: 1000000 }, blobReads: "allowed", blobWrites: "refused", limits: { blobReadBytes: 16 * 1024 * 1024 } });
+async function refreshFixture(entries: BlobSyncMap["entries"] = []) {
+  const dir = await mkdtemp(path.join(tmpdir(), "blob-refresh-")), folder = path.join(dir, "files"); await mkdir(folder);
+  const backend = await FileJournaledBackend.open({ directory: path.join(dir, "store"), lock: { lockRoot: path.join(dir, "locks"), waitMs: 0 } });
+  await backend.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap({ ...empty(), entries }));
+  return { folder, backend, close: async () => { await backend.close(); await rm(dir, { recursive: true, force: true }); } };
+}
+test("blob refresh places exact binary create/replace/delete with read-only capability and same-byte parameterized MIME", async () => {
+  const old = Buffer.from("old"), key = "replace.bin", removed = "gone.bin";
+  const f = await refreshFixture([key, removed].map(key => seedBlobSyncEntry({ key, version: digest("old"), contentType: "x/old" }, digest("old"))));
+  try {
+    await writeFile(path.join(f.folder, key), old); await writeFile(path.join(f.folder, removed), old);
+    const binary = Buffer.from([0, 255, 128]), host = refreshHost([{ key, bytes: binary, contentType: 'image/svg+xml; charset="utf-8"' }, { key: "new.bin", bytes: binary, contentType: "x/new" }]);
+    const out = await refreshBlobCheckout({ ...f, store: f.backend, scope, carrier: host.carrier, capabilities: readCaps });
+    assert.deepEqual(out?.refreshed.sort(), ["new.bin", key].sort()); assert.deepEqual(out?.removed, [removed]); assert.deepEqual(out?.held, []);
+    assert.deepEqual(await readFile(path.join(f.folder, key)), binary); await assert.rejects(readFile(path.join(f.folder, removed)), { code: "ENOENT" });
+    const changedType = refreshHost([{ key, bytes: binary, contentType: 'image/svg+xml; profile="same bytes"' }, { key: "new.bin", bytes: binary, contentType: "x/new" }]);
+    const typeOut = await refreshBlobCheckout({ ...f, store: f.backend, scope, carrier: changedType.carrier, capabilities: readCaps });
+    assert.deepEqual(typeOut?.metadataUpdated, [key]); assert.equal(changedType.counts().reads, 0);
+    const map = decodeBlobSyncMap(await f.backend.readMeta(BLOB_SYNC_META_KEY), scope);
+    assert.equal(map.entries.find(row => row.key === key)?.head?.contentType, 'image/svg+xml; profile="same bytes"'); assert.equal(map.entries.some(row => row.placement), false);
+    assert.equal((await f.backend.listBlobIntents()).length, 0); assert.equal((await f.backend.listIntents()).length, 0);
+  } finally { await f.close(); }
+});
+test("blob refresh defers absence until all pins succeed and preserves edits, recreations, UNKNOWN and occupied legacy bytes", async () => {
+  for (const failure of ["listing", "pin", "edit", "revert", "other-map"] as const) {
+    const f = await refreshFixture(["a.bin", "gone.bin"].map(key => seedBlobSyncEntry({ key, version: digest("old"), contentType: "x/old" }, digest("old"))));
+    try {
+      await writeFile(path.join(f.folder, "a.bin"), "old"); await writeFile(path.join(f.folder, "gone.bin"), "old");
+      const host = refreshHost([{ key: "a.bin", bytes: Buffer.from("new"), contentType: "x/new" }], { listingFailure: failure === "listing", readFailure: failure === "pin", beforeRead: async () => {
+        if (failure === "edit") await writeFile(path.join(f.folder, "a.bin"), "edited meanwhile");
+        if (failure === "revert") { const p = prepareBlobIntent({ scope, intent: { operationId: "blobs.replace.v1", key: "a.bin", expectedVersion: digest("old"), expectedContentType: "x/old", version: digest("frozen"), contentType: "x/new" }, identity: { requestId: randomUUID(), binding: digest("checkout") }, createdAt: new Date().toISOString() }, Buffer.from("frozen")); await f.backend.admitPreparedBlob(p, { guard: (await f.backend.readBlobWithJournal("a.bin")).guard }); }
+        if (failure === "other-map") { const map = decodeBlobSyncMap(await f.backend.readMeta(BLOB_SYNC_META_KEY), scope); await f.backend.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(changeBlobSyncEntry(map, { key: "other.bin", placedDigest: null }))); }
+      } });
+      const out = await refreshBlobCheckout({ ...f, store: f.backend, scope, carrier: host.carrier, capabilities: readCaps });
+      assert.ok(out!.held.length > 0); assert.equal(await readFile(path.join(f.folder, "a.bin"), "utf8"), failure === "edit" ? "edited meanwhile" : "old");
+      if (["listing", "pin", "other-map"].includes(failure)) assert.equal(await readFile(path.join(f.folder, "gone.bin"), "utf8"), "old");
+    } finally { await f.close(); }
+  }
+  const f = await refreshFixture([{ key: "unknown.bin", placedDigest: null }, { key: "absent.bin", head: null, placedDigest: null }]);
+  try {
+    await writeFile(path.join(f.folder, "occupied.bin"), "remote"); await writeFile(path.join(f.folder, "absent.bin"), "recreated");
+    const host = refreshHost(["unknown.bin", "occupied.bin", "absent.bin"].map(key => ({ key, bytes: Buffer.from("remote"), contentType: "x/new" })));
+    assert.equal((await refreshBlobCheckout({ ...f, store: f.backend, scope, carrier: host.carrier, capabilities: readCaps }))?.held.length, 3);
+    assert.equal(host.counts().reads, 0); assert.equal(await readFile(path.join(f.folder, "absent.bin"), "utf8"), "recreated");
+    assert.equal(await refreshBlobCheckout({ ...f, store: f.backend, scope, carrier: host.carrier, capabilities: async () => ({ ...await readCaps(), blobReads: "refused" }) }), undefined);
+    assert.equal(host.counts().lists, 1);
+  } finally { await f.close(); }
+});
+test("blob catastrophic deletion uses exact scoped family refusal and fresh candidate pins, retaining refusal on failed listing", async () => {
+  const entries = Array.from({ length: 10 }, (_, i) => seedBlobSyncEntry({ key: `a${i}.bin`, version: digest("old"), contentType: "x/old" }, digest("old")));
+  const f = await refreshFixture([...entries, { key: "unknown.bin", placedDigest: null }]);
+  try {
+    for (const entry of entries) await writeFile(path.join(f.folder, entry.key), "old");
+    const host = refreshHost([]), options = { ...f, store: f.backend, scope, carrier: host.carrier, capabilities: readCaps };
+    const first = (await refreshBlobCheckout(options))!;
+    assert.equal(first.refused?.reason, "empty-listing"); assert.equal(first.refused?.deletions, 10); assert.equal(first.removed.length, 0);
+    const token = blobHostDeletionsToken(first.refused!);
+    const saved = await f.backend.readMeta(BLOB_SYNC_META_KEY);
+    assert.equal((await refreshBlobCheckout({ ...options, carrier: refreshHost([], { listingFailure: true }).carrier }))?.refused?.digest, first.refused?.digest); assert.equal(await f.backend.readMeta(BLOB_SYNC_META_KEY), saved);
+    assert.equal((await refreshBlobCheckout({ ...options, acceptToken: token.slice(6) }))?.removed.length, 0);
+    assert.equal((await refreshBlobCheckout({ ...options, carrier: refreshHost([], { revision: 2 }).carrier, acceptToken: token }))?.removed.length, 0);
+    const moved = decodeBlobSyncMap(await f.backend.readMeta(BLOB_SYNC_META_KEY), scope).refusal!;
+    // A changed MIME/candidate set at the same count cannot reuse a prior confirmation.
+    const changed = decodeBlobSyncMap(await f.backend.readMeta(BLOB_SYNC_META_KEY), scope); changed.entries[0] = { ...changed.entries[0]!, head: { ...changed.entries[0]!.head!, contentType: "x/changed" } };
+    await f.backend.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(changed));
+    const changedOut = (await refreshBlobCheckout({ ...options, carrier: refreshHost([], { revision: 2 }).carrier, acceptToken: blobHostDeletionsToken(moved) }))!;
+    assert.equal(changedOut.removed.length, 0); assert.notEqual(changedOut.refused?.digest, moved.digest);
+    await writeFile(path.join(f.folder, "a0.bin"), "edited after refusal");
+    const afterEdit = (await refreshBlobCheckout({ ...options, carrier: refreshHost([], { revision: 2 }).carrier, acceptToken: blobHostDeletionsToken(changedOut.refused!) }))!;
+    assert.equal(afterEdit.removed.length, 0); assert.equal(afterEdit.refused?.deletions, 9);
+    const accepted = (await refreshBlobCheckout({ ...options, carrier: refreshHost([], { revision: 2 }).carrier, acceptToken: blobHostDeletionsToken(afterEdit.refused!) }))!;
+    assert.equal(accepted.removed.length, 9); assert.equal(await readFile(path.join(f.folder, "a0.bin"), "utf8"), "edited after refusal");
+    assert.equal(decodeBlobSyncMap(await f.backend.readMeta(BLOB_SYNC_META_KEY), scope).refusal, undefined);
+    assert.throws(() => decodeBlobSyncMap(saved, { ...scope, workspaceSlug: "elsewhere" }), /scope mismatch/);
+  } finally { await f.close(); }
+});
+test("shared deletion policy preserves seven/eight/half boundaries and rejects invalid counts", () => {
+  assert.equal(deletionBound(0, 10, 7, "listing"), undefined);
+  assert.equal(deletionBound(1, 16, 8, "listing"), undefined);
+  assert.deepEqual(deletionBound(1, 15, 8, "listing"), { deletions: 8, reason: "over-half", digest: "listing" });
+  assert.deepEqual(deletionBound(0, 16, 8, "listing"), { deletions: 8, reason: "empty-listing", digest: "listing" });
+  for (const counts of [[-1, 1, 1], [1, NaN, 1], [1, 1, 2], [1, Infinity, 1], [1, 2, .5]]) assert.throws(() => deletionBound(counts[0]!, counts[1]!, counts[2]!, "listing"));
+  const refusal = deletionBound(0, 8, 8, "listing")!; assert.equal(acceptsRefusal(refusal, { ...refusal }), true); assert.equal(acceptsRefusal(refusal, { ...refusal, digest: "other" }), false);
 });

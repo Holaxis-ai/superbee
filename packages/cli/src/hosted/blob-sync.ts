@@ -3,6 +3,7 @@ import { captureBlobHead, isBlobContentType, isContentVersion, compareStorageKey
 import { captureJournalValue, equalJournalValue, JournalGuardConflict } from "@superbee/core/journaled-backend";
 
 import path from "node:path";
+import { deletionBound, acceptsRefusal, type RefusedDeletions } from "@superbee/core/platform";
 import { mintRequestId } from "@superbee/core/uncertain-write";
 import { FileJournalUnavailableError } from "@superbee/core/file-journaled-backend";
 import { createHostedBlobReadAdapter, HostedCarrierError, HostedReadAdapterError, type HostedCarrier, type HostedCapabilities } from "@superbee/core/hosted-transport";
@@ -29,7 +30,7 @@ export interface BlobPlacementDescriptor {
   install?: BlobFileIdentity;
   preimage?: BlobFileIdentity;
 }
-export interface BlobSyncMap { schemaVersion: 1; scope: BlobTargetScope; entries: BlobSyncEntry[] }
+export interface BlobSyncMap { schemaVersion: 1; scope: BlobTargetScope; entries: BlobSyncEntry[]; refusal?: RefusedDeletions }
 export interface BlobSyncSnapshot { map: BlobSyncMap; journal: BlobJournalRead }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const only = (value: object, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key));
@@ -73,14 +74,16 @@ function placementOf(value: BlobPlacementDescriptor, base: Omit<BlobSyncEntry, "
 /** Canonicalizes order and rejects duplicate keys, unknown fields and oversized metadata. */
 export function captureBlobSyncMap(value: BlobSyncMap, expectedScope: BlobTargetScope): BlobSyncMap {
   const input = captureJournalValue(value);
-  if (!object(input) || !only(input, ["schemaVersion", "scope", "entries"]) || input.schemaVersion !== 1 || !Array.isArray(input.entries) || input.entries.length > 10_000) throw new TypeError("invalid blob sync map");
+  if (!object(input) || !only(input, ["schemaVersion", "scope", "entries", "refusal"]) || input.schemaVersion !== 1 || !Array.isArray(input.entries) || input.entries.length > 10_000) throw new TypeError("invalid blob sync map");
   const scope = scopeOf(input.scope);
   if (!equalJournalValue(scope, scopeOf(expectedScope))) throw new TypeError("blob sync scope mismatch");
   const entries = input.entries.map(entryOf).sort((a, b) => compareStorageKeys(a.key, b.key));
   if (entries.some((entry, index) => index > 0 && entries[index - 1]!.key === entry.key)) throw new TypeError("duplicate blob sync key");
   const ids = entries.flatMap(entry => entry.placement ? [entry.placement.id] : []);
   if (new Set(ids).size !== ids.length) throw new TypeError("duplicate placement id");
-  const map: BlobSyncMap = { schemaVersion: 1, scope, entries };
+  const refusal = input.refusal;
+  if (refusal !== undefined && (!object(refusal) || !only(refusal, ["deletions", "reason", "digest"]) || !Number.isSafeInteger(refusal.deletions) || refusal.deletions < 8 || refusal.deletions > 10_000 || !["empty-listing", "over-half"].includes(refusal.reason) || !isContentVersion(refusal.digest))) throw new TypeError("invalid blob deletion refusal");
+  const map: BlobSyncMap = { schemaVersion: 1, scope, entries, ...(refusal === undefined ? {} : { refusal: { deletions: refusal.deletions, reason: refusal.reason, digest: refusal.digest } as RefusedDeletions }) };
   if (Buffer.byteLength(JSON.stringify(map), "utf8") > 32 * 1024 * 1024) throw new RangeError("blob sync metadata exceeds byte bound");
   return map;
 }
@@ -325,4 +328,126 @@ export async function stageBlobPlacement(folder: string, store: BlobJournaledBac
     if (error instanceof UnsafePlacementError || error instanceof JournalGuardConflict || error instanceof FileJournalUnavailableError || error instanceof RangeError && /exceeds the store's .* byte bound/.test(error.message)) return "held";
     throw error;
   }
+}
+
+export interface BlobRefreshReport {
+  refreshed: string[]; removed: string[]; metadataUpdated: string[]; kept: string[];
+  held: BlobCaptureHold[]; refused?: RefusedDeletions; taken?: boolean;
+}
+export function blobHostDeletionsToken(refused: RefusedDeletions): string {
+  return `blobs:${refused.deletions}:${digestOf(Buffer.from(refused.digest)).slice(7, 19)}`;
+}
+/** One read-side pass under the checkout lock. A complete listing is not permission to overwrite local choices. */
+export async function refreshBlobCheckout(options: {
+  folder: string; scope: BlobTargetScope;
+  store: BlobJournaledBackend & Pick<JournaledBackend, "readMeta">;
+  carrier: HostedCarrier; capabilities: () => Promise<HostedCapabilities>; acceptToken?: string;
+}): Promise<BlobRefreshReport | undefined> {
+  const { folder, store, carrier, capabilities } = options, scope = scopeOf(options.scope), acceptToken = options.acceptToken;
+  const raw = await store.readMeta(BLOB_SYNC_META_KEY);
+  let map = decodeBlobSyncMap(raw, scope);
+  const caps = await capabilities();
+  if (caps.blobReads !== "allowed") return undefined;
+  const out: BlobRefreshReport = { refreshed: [], removed: [], metadataUpdated: [], kept: [], held: [] };
+  const hold = (key: string, message: string) => { out.kept.push(key); out.held.push({ key, reason: "not_sendable", message }); };
+  const controller = new AbortController();
+  const reader = createHostedBlobReadAdapter({ carrier, bundleId: scope.bundleId, prefix: scope.prefix, signal: controller.signal, capabilities: async () => caps });
+  const knownReadFailure = (error: unknown) => error instanceof HostedReadAdapterError || error instanceof HostedCarrierError || error instanceof RemoteError;
+  const guardedFailure = (error: unknown) => error instanceof JournalGuardConflict || error instanceof IntentHoldConflict || error instanceof FileJournalUnavailableError || error instanceof RangeError && /exceeds the store's .* byte bound/.test(error.message);
+  const physical = async (key: string): Promise<string | null | undefined> => {
+    const file = path.join(folder, ...key.split("/"));
+    if (await parentUnsafe(folder, file)) return undefined;
+    const found = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
+    if (found.state === "unsafe" || await parentUnsafe(folder, file)) return undefined;
+    return found.state === "missing" ? null : digestOf(found.bytes);
+  };
+  const snapshotFor = async (key: string) => {
+    const snapshot = await readBlobSyncState(store, key, scope);
+    if (!equalJournalValue(snapshot.map, map)) throw new JournalGuardConflict(key);
+    return snapshot;
+  };
+  const eligible = async (key: string): Promise<BlobSyncSnapshot | undefined> => {
+    const entry = map.entries.find(row => row.key === key);
+    if (!ordinarySeedKey(key)) { hold(key, `${key} is a protected namespace`); return; }
+    const snapshot = await snapshotFor(key);
+    if (entry?.placement || snapshot.journal.intents.some(row => row.state !== "acknowledged")) { hold(key, `${key} has preserved intent or placement evidence`); return; }
+    const actual = await physical(key);
+    if (actual === undefined || (entry ? blobSyncDirty(entry, actual) : actual !== null)) { hold(key, `${key} has local bytes, an unknown baseline, an unsafe path, or an outstanding MIME choice`); return; }
+    return snapshot;
+  };
+  const writeMap = async (snapshot: BlobSyncSnapshot, next: BlobSyncMap) => {
+    if (!store.writeBlobMeta) throw new TypeError("file journal does not support guarded blob metadata");
+    await store.writeBlobMeta(snapshot.journal.key, { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(next) }] }, { guard: snapshot.journal.guard });
+    map = next;
+  };
+  try {
+    let listing;
+    try { listing = await reader.heads(); }
+    catch (error) {
+      if (!knownReadFailure(error)) throw error;
+      hold("ordinary files", "ordinary-file listing is unavailable or inconsistent; no absence was applied");
+      if (map.refusal) out.refused = map.refusal;
+      return out;
+    }
+    const listed = new Set(listing.heads.map(head => head.key));
+    let readsComplete = true;
+    // No absence is applied until all required pinned reads finish. Only one body is retained at a time.
+    for (const head of listing.heads) {
+      const prior = map.entries.find(entry => entry.key === head.key);
+      try {
+        let snapshot = await eligible(head.key);
+        if (!snapshot) continue;
+        if (prior?.head && equalJournalValue(prior.head, head)) continue;
+        if (prior?.head?.version === head.version) {
+          const next = changeBlobSyncEntry(map, { ...prior, head });
+          // Physical bytes are checked again after the metadata read; the baseline stays the original placed digest.
+          if (await physical(head.key) !== prior.placedDigest) { hold(head.key, `${head.key} changed during refresh`); continue; }
+          await writeMap(snapshot, next); out.metadataUpdated.push(head.key); continue;
+        }
+        const read = await reader.read(head);
+        snapshot = await eligible(head.key);
+        if (!snapshot) continue;
+        if (await stageBlobPlacement(folder, store, snapshot, { key: head.key, head, bytes: read.bytes }) === "held") { hold(head.key, `${head.key} changed or placement could not finish safely`); continue; }
+        map = (await readBlobSyncState(store, head.key, scope)).map;
+        out.refreshed.push(head.key);
+      } catch (error) {
+        if (knownReadFailure(error)) { readsComplete = false; hold(head.key, `${head.key} pinned read is unavailable or changed; remote deletions are held`); }
+        else if (guardedFailure(error)) { readsComplete = false; hold(head.key, `${head.key} journal changed or capacity was reached; remote deletions are held`); }
+        else throw error;
+      }
+    }
+    if (!readsComplete) { if (map.refusal) out.refused = map.refusal; return out; }
+    const candidates: BlobSyncEntry[] = [];
+    for (const entry of map.entries) if (entry.head && !listed.has(entry.key)) {
+      try { if (await eligible(entry.key)) candidates.push(entry); }
+      catch (error) { if (!guardedFailure(error)) throw error; hold(entry.key, `${entry.key} journal changed; no remote deletion applied`); return out; }
+    }
+    const digest = digestOf(Buffer.from(JSON.stringify(["superbee.blobs.remote-deletions.v1", scope, listing.revision, listing.digest, candidates.map(entry => [entry.key, entry.head!.version, entry.head!.contentType])])));
+    const refused = deletionBound(listing.heads.length, map.entries.filter(entry => entry.head).length, candidates.length, digest);
+    const accepted = map.refusal && acceptToken === blobHostDeletionsToken(map.refusal) ? map.refusal : undefined;
+    const mustRefuse = refused && !acceptsRefusal(refused, accepted);
+    const next = captureBlobSyncMap({ schemaVersion: 1, scope, entries: map.entries, ...(mustRefuse ? { refusal: refused } : {}) }, scope);
+    if (!equalJournalValue(next, map)) {
+      const anchor = map.entries[0]?.key ?? listing.heads[0]?.key ?? "blob-sync-control";
+      try { await writeMap(await snapshotFor(anchor), next); }
+      catch (error) { if (!guardedFailure(error)) throw error; hold(anchor, "ordinary-file refusal metadata could not be committed; no remote deletion applied"); return out; }
+    }
+    if (mustRefuse) {
+      out.refused = refused;
+      for (const entry of candidates) hold(entry.key, `${entry.key} is in a refused set of host deletions`);
+      if (acceptToken !== undefined) out.taken = false;
+      return out;
+    }
+    if (acceptToken !== undefined) out.taken = accepted !== undefined && refused !== undefined;
+    for (const entry of candidates) {
+      try {
+        const snapshot = await eligible(entry.key);
+        if (!snapshot) continue;
+        if (await stageBlobPlacement(folder, store, snapshot, { key: entry.key, head: null }) === "held") { hold(entry.key, `${entry.key} changed or removal could not finish safely`); continue; }
+        map = (await readBlobSyncState(store, entry.key, scope)).map;
+        out.removed.push(entry.key);
+      } catch (error) { if (!guardedFailure(error)) throw error; hold(entry.key, `${entry.key} journal changed or capacity was reached; no remote deletion applied`); }
+    }
+    return out;
+  } finally { controller.abort(); }
 }

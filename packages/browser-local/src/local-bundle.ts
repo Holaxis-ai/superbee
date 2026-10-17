@@ -85,7 +85,7 @@ import {
   type NewIntentRecord,
 } from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
-import type { RefusedDeletions, RefusedDeletionsReason } from "@superbee/core/platform";
+import { deletionBound, acceptsRefusal, type RefusedDeletions, type RefusedDeletionsReason } from "@superbee/core/platform";
 import type { RemoteBackend, WireCapabilities } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
 import { isSnapshotRestart } from "@superbee/core/hosted-transport";
@@ -413,32 +413,6 @@ async function localVersion(backend: JournaledBackend, id: ConceptId): Promise<V
 }
 
 // ── deletions ──────────────────────────────────────────────────────────────────────────────
-
-/**
- * Deletions below this count are applied on a verified listing's word without the bound: a
- * small working copy must follow ordinary deletions (three documents, two removed), and a
- * misrouted bundle is a mass event, not a handful.
- */
-const MIN_BOUNDED_DELETIONS = 8;
-
-/**
- * The bound a verified listing must stay within before any document is removed on its word:
- * `undefined` when the deletions may apply, otherwise the refusal to report. `listedCount` is
- * the number of documents the listing names, `presentCount` how many the working copy holds
- * now, `candidates` how many of those the listing does not name and no local edit holds, and
- * `digest` names the listing so the refusal can be passed back.
- */
-function deletionBound(listedCount: number, presentCount: number, candidates: number, digest: string): DeletionRefusal | undefined {
-  if (candidates < MIN_BOUNDED_DELETIONS) return undefined;
-  if (listedCount === 0) return { deletions: candidates, reason: "empty-listing", digest };
-  if (candidates * 2 > presentCount) return { deletions: candidates, reason: "over-half", digest };
-  return undefined;
-}
-
-/** True when `accepted` is the very refusal `refused` describes: same listing, same count, same reason. */
-function acceptsRefusal(refused: DeletionRefusal, accepted: DeletionRefusal | undefined): boolean {
-  return accepted !== undefined && accepted.digest === refused.digest && accepted.deletions === refused.deletions && accepted.reason === refused.reason;
-}
 
 /**
  * Remove from the working copy every document a verified listing no longer names, each with

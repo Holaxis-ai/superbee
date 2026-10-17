@@ -56,7 +56,7 @@ import { resolveLocalBundleTarget } from "../bundle.js";
 import { parseSyncArgs } from "../commands/sync/orchestrate.js";
 import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
-import { BLOB_SYNC_META_KEY, recoverBlobPlacements, type BlobCaptureContext } from "./blob-sync.js";
+import { BLOB_SYNC_META_KEY, recoverBlobPlacements, refreshBlobCheckout, blobHostDeletionsToken, type BlobRefreshReport, type BlobCaptureContext } from "./blob-sync.js";
 import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
@@ -305,7 +305,7 @@ function parseHosted(argv: string[]): HostedValues {
   }
   const take = values["take-host-deletions"];
   if (take !== undefined) {
-    if (!/^[1-9][0-9]{0,6}:[0-9a-f]{12}$/.test(take)) throw new CliError("USAGE", `--take-host-deletions takes the token printed with the refused deletions (<count>:<digest>), not '${take}'`, { help: `${inv} sync (the receipt's pulled.refused_deletions names the token)` });
+    if (!/^(?:blobs:)?[1-9][0-9]{0,6}:[0-9a-f]{12}$/.test(take)) throw new CliError("USAGE", `--take-host-deletions takes the token printed with the refused deletions (<count>:<digest>), not '${take}'`, { help: `${inv} sync (the receipt's pulled.refused_deletions names the token)` });
     if (values.inspect !== undefined || values.resolve !== undefined || values["restore-deletes"]) throw new CliError("USAGE", "--take-host-deletions goes with a plain sync", { help: `${inv} sync --take-host-deletions ${commandToken(take)}` });
   }
   return values;
@@ -946,6 +946,16 @@ async function blobCaptureContext(session: Session, deps: HostedSyncDeps): Promi
   return { store: session.store, scope: { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null }, binding: checkoutBindingDigest(binding.checkout_id), ...(via === undefined ? {} : { via }), createdAt: new Date(deps.auth.now()).toISOString(), allowed: session.capabilities.blobWrites === "allowed" };
 }
 
+function blobRefresh(session: Session, acceptToken?: string): Promise<BlobRefreshReport | undefined> {
+  const { binding } = session;
+  return refreshBlobCheckout({ folder: binding.path, store: session.store, scope: { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null }, carrier: session.carrier, capabilities: async () => session.capabilities, ...(acceptToken?.startsWith("blobs:") ? { acceptToken } : {}) });
+}
+function blobPulledView(report: BlobRefreshReport): Record<string, unknown> {
+  return { refreshed: report.refreshed.length, removed: report.removed.length, metadata_updated: report.metadataUpdated.length,
+    ...(report.kept.length ? { kept_local_edits: [...new Set(report.kept)].slice(0, 20) } : {}),
+    ...(report.refused ? { refused_deletions: { reason: report.refused.reason, count: report.refused.deletions, token: blobHostDeletionsToken(report.refused), message: "The host's ordinary-file listing would remove an unusually large set; none of these files were removed. Confirm the bundle really shrank before taking the host deletions." } } : {}) };
+}
+
 async function runSync(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
   const limit = rowLimit(values.limit);
   const resumeCommand = syncCommand(binding, values.json ? commandLiteral(" --json") : commandFragment``);
@@ -979,7 +989,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length;
     // `--take-host-deletions` names the refusal the last pull recorded; it applies only while the
     // host still lists exactly the state that was refused, so a listing that moved is refused anew.
-    const lastRefused = takeHostDeletions !== undefined ? await lastRefusedDeletions(store) : undefined;
+    const lastRefused = takeHostDeletions !== undefined && !takeHostDeletions.startsWith("blobs:") ? await lastRefusedDeletions(store) : undefined;
     const accepted = lastRefused !== undefined && hostDeletionsToken(lastRefused) === takeHostDeletions ? lastRefused : undefined;
     let taken: Record<string, unknown> | undefined;
     const pullAndExport = async (acceptRefusedDeletions?: DeletionRefusal) => {
@@ -996,7 +1006,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     };
     // Push always follows a pull in the same run, so nothing is sent against a stale listing.
     const first = await pullAndExport(accepted);
-    if (takeHostDeletions !== undefined) {
+    const blobs = await blobRefresh(session, takeHostDeletions);
+    if (takeHostDeletions !== undefined && !takeHostDeletions.startsWith("blobs:")) {
       taken =
         accepted === undefined
           ? { taken: false, message: `the token given (${JSON.stringify(takeHostDeletions)}) does not name the host deletions the last sync refused${lastRefused ? ` (${hostDeletionsToken(lastRefused)})` : " (none is recorded)"}; nothing was removed` }
@@ -1004,6 +1015,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
             ? { taken: false, message: "the host's listing changed since that refusal, so nothing was removed; check the new refused_deletions" }
             : { taken: true, removed: first.placed.removed.length, message: "the host's deletions were taken: their files are removed from the folder, apart from files you edited" };
     }
+    if (takeHostDeletions?.startsWith("blobs:")) taken = { taken: blobs?.taken === true, removed: blobs?.removed.length ?? 0, message: blobs?.taken ? "the confirmed ordinary-file deletions were taken where the files remained clean" : "the blob token does not authorize this current deletion set; check pulled.blobs.refused_deletions" };
     await recordPulled(deps.auth.home, binding.checkout_id);
     // The declared sync gate judges the folder after the pull placed the host's changes and before
     // anything is sent: a failure sends nothing, no document and no front page.
@@ -1031,7 +1043,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
             reason: "gate_failed",
             folder: binding.path,
             unsent: await unsent(),
-            pulled: pulledView(binding, first.report, first.placed.placed, first.placed.removed, first.placed.kept),
+            pulled: { ...pulledView(binding, first.report, first.placed.placed, first.placed.removed, first.placed.kept), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) },
             gate: judged.details,
           },
           help: `run the gate yourself from ${binding.path} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${resumeCommand}`,
@@ -1090,7 +1102,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       unsettled: await store.listIntents(UNSETTLED_STATES),
       acknowledged: outcome.acknowledged,
       deleted: inbound,
-      held: [...scan.held, ...exported.held, ...unsafeIdRows(session.unsafeIds)],
+      held: [...scan.held, ...exported.held, ...(blobs?.held.map(row => ({ id: row.key, path: row.key, reason: row.reason, message: row.message })) ?? []), ...unsafeIdRows(session.unsafeIds)],
       blocked: outcome.collisions,
       accessWithdrawn: outcome.accessWithdrawn,
       notSent: outcome.notSent,
@@ -1104,7 +1116,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       host: binding.origin,
       folder: binding.path,
       status: rows.every((row) => row.state === "committed") ? (rows.length === 0 ? "up_to_date" : "synced") : "incomplete",
-      pulled: pulledView(binding, pulled, exported.placed, exported.removed, exported.kept),
+      pulled: { ...pulledView(binding, pulled, exported.placed, exported.removed, exported.kept), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) },
       ...(taken ? { take_host_deletions: taken } : {}),
       ...(hold
         ? {
@@ -1138,6 +1150,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       ...(shown.length < rows.length ? { rows_shown: shown.length, rows_total: rows.length, rows_all: syncCommand(binding, commandFragment` --limit ${commandToken(String(rows.length))}`) } : {}),
       help: [
         ...rowHelp(rows, binding),
+        ...(blobs?.refused ? [`only if the ordinary-file set really shrank: ${syncCommand(binding, commandFragment` --take-host-deletions ${commandToken(blobHostDeletionsToken(blobs.refused))}`)}`] : []),
         ...(pulled.refused ? [`only if the bundle really shrank: ${syncCommand(binding, commandFragment` --take-host-deletions ${commandToken(hostDeletionsToken(pulled.refused))}`)}`] : []),
       ],
     };
@@ -1148,7 +1161,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       });
       return null;
     }
-    const exit = rowsFailure(rows);
+    const exit = rowsFailure(rows, blobs !== undefined);
     if (exit) failure = receiptFailure(exit, { counts });
     return record;
   });
@@ -1160,13 +1173,14 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
 function hostedSyncEnvelope(receipt: Record<string, unknown>): SyncEnvelope {
   const counts = (receipt.counts ?? {}) as Record<string, number | undefined>;
   const pulled = (receipt.pulled ?? {}) as Record<string, number | undefined>;
+  const blobs = (receipt.pulled as { blobs?: { refreshed: number; removed: number; metadata_updated: number } } | undefined)?.blobs;
   const help = Array.isArray(receipt.help) ? receipt.help.map(String) : [];
-  return syncEnvelope("hosted", { sent: counts.committed ?? 0, received: (pulled.refreshed ?? 0) + (pulled.removed ?? 0), conflicts: counts.conflict ?? 0, held: counts.held ?? 0, next: help });
+  return syncEnvelope("hosted", { sent: counts.committed ?? 0, received: (pulled.refreshed ?? 0) + (pulled.removed ?? 0) + (blobs ? blobs.refreshed + blobs.removed + blobs.metadata_updated : 0), conflicts: counts.conflict ?? 0, held: counts.held ?? 0, next: help });
 }
 
 /** What a pull-only pass did, or why it did not run. */
 export type HostedPullResult =
-  | { readonly state: "pulled"; readonly refreshed: number; readonly removed: number; readonly kept: number; readonly held?: number }
+  | { readonly state: "pulled"; readonly refreshed: number; readonly removed: number; readonly kept: number; readonly held?: number; readonly blobs?: Record<string, unknown> }
   | { readonly state: "signed_out" }
   /** The checkout or session lock is held by another command; nothing was done. */
   | { readonly state: "busy" };
@@ -1229,6 +1243,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     if (report.held.length > 0 || session.unsafeIds.size > 0) await forgetPullDigest(store);
     const placed = await exportCheckout(binding.path, store, projection);
     await session.persist();
+    const blobs = await blobRefresh(session);
     // The front page too: an unedited one takes the host's bytes; nothing is sent.
     let root: RootStepReport;
     try {
@@ -1237,7 +1252,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
       throw await readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
     }
     await recordPulled(deps.auth.home, binding.checkout_id);
-    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length, ...(scan.blobHeld !== undefined ? { held: scan.blobHeld } : {}) };
+    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length, ...((scan.blobHeld !== undefined || blobs?.held.length) ? { held: new Set([...scan.held.map(row => row.id), ...(blobs?.held.map(row => row.key) ?? [])]).size } : {}), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) };
   }
 }
 

@@ -192,13 +192,13 @@ export function countRows(rows: readonly SyncRow[]): Record<RowState, number> {
  * row that needs the person (conflict, held, refused content) is CONFLICT (exit 5); a bundle
  * that refuses writes is FORBIDDEN (exit 2); a pause or a lost answer is TRANSIENT (exit 1).
  */
-export function rowsFailure(rows: readonly SyncRow[]): { code: CliErrorCode; message: string } | null {
+export function rowsFailure(rows: readonly SyncRow[], includesBlobs = false): { code: CliErrorCode; message: string } | null {
   const pending = rows.filter((row) => row.state !== "committed");
   if (pending.length === 0) return null;
   const needsPerson = pending.filter((row) => row.state === "conflict" || row.state === "held" || (row.state === "refused" && row.reason !== "read_only" && row.reason !== "access_withdrawn"));
-  if (needsPerson.length > 0) return { code: "CONFLICT", message: `${pending.length} document(s) not synced; ${needsPerson.length} need your decision` };
-  if (pending.some((row) => row.reason === "read_only" || row.reason === "access_withdrawn")) return { code: "FORBIDDEN", message: `${pending.length} document(s) not synced: the host refused writes to this bundle` };
-  return { code: "TRANSIENT", message: `${pending.length} document(s) not synced yet; run sync again` };
+  if (needsPerson.length > 0) return { code: "CONFLICT", message: `${pending.length} ${includesBlobs ? "file(s)" : "document(s)"} not synced; ${needsPerson.length} need your decision` };
+  if (pending.some((row) => row.reason === "read_only" || row.reason === "access_withdrawn")) return { code: "FORBIDDEN", message: `${pending.length} ${includesBlobs ? "file(s)" : "document(s)"} not synced: the host refused writes to this bundle` };
+  return { code: "TRANSIENT", message: `${pending.length} ${includesBlobs ? "file(s)" : "document(s)"} not synced yet; run sync again` };
 }
 
 /** The exit that goes with an already-printed receipt: the envelope is not printed again. */

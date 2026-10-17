@@ -1564,3 +1564,53 @@ test("unsupported and UNKNOWN blob baselines remain held with zero blob or docum
     assert.equal(h.host.writes.length, 0);
   }
 });
+
+/** Only the read family is modeled here; any blob mutation route is a test failure. */
+function refreshFetch(h: Harness, rows: { key: string; bytes: Buffer; contentType: string }[]): typeof fetch {
+  return (async (input, init) => {
+    const route = new URL(String(input)).pathname;
+    if (/blob-(?:create|replace|delete)/.test(route)) throw new Error("read-side refresh must not send");
+    const heads = rows.map(row => ({ key: row.key, version: digestOf(row.bytes), contentType: row.contentType })).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    if (route.endsWith("/blob-heads")) return Response.json({ schemaVersion: 1, bundleId: BUNDLE, revision: 1, digest: digestOf(Buffer.from(JSON.stringify([1, heads.map(head => [head.key, head.version, head.contentType])]))), total: heads.length, heads, next: null });
+    if (route.endsWith("/blob-read")) {
+      const request = JSON.parse(String(init?.body)) as { key: string }, row = rows.find(row => row.key === request.key)!;
+      return new Response(row.bytes, { headers: { "content-type": "application/octet-stream", "content-length": String(row.bytes.length), "x-superbee-blob-version": digestOf(row.bytes), "x-superbee-content-type": row.contentType } });
+    }
+    const answer = await h.host.fetch(input, init);
+    if (route.endsWith("/capabilities") && answer.status === 200) { const caps = await answer.json() as { limits?: object }; return Response.json({ ...caps, blobReads: "allowed", blobWrites: "refused", limits: { ...caps.limits, blobReadBytes: 16 * 1024 * 1024 } }); }
+    return answer;
+  }) as typeof fetch;
+}
+test("sync and pull-only refresh ordinary files once with read-only capabilities and retain document-only defaults", async () => {
+  const h = await harness(), key = "opaque.bin", file = path.join(h.folder, key), base = Buffer.from("base");
+  await writeFile(file, base); const binding = await seedCaptureMap(h, key, base);
+  const bytes = Buffer.from([0, 255, 128]);
+  h.fetch = refreshFetch(h, [{ key, bytes, contentType: 'image/svg+xml; profile="first"' }]);
+  const receipt = await runSync(h);
+  assert.deepEqual(await readFile(file), bytes);
+  const pulled = receipt.pulled as { refreshed: number; blobs: { refreshed: number; removed: number } };
+  assert.equal(pulled.refreshed, 0); assert.equal(pulled.blobs.refreshed, 1); assert.equal(pulled.blobs.removed, 0); assert.equal((receipt.counts as { committed: number }).committed, 0);
+  h.fetch = refreshFetch(h, [{ key, bytes, contentType: 'image/svg+xml; profile="second"' }]);
+  const result = await hostedPull(binding, { auth: h.auth, cwd: h.cwd, fetch: h.fetch, sleep: instant });
+  assert.equal(result.state, "pulled"); assert.ok(result.state === "pulled" && result.blobs?.metadata_updated === 1); assert.ok(result.state === "pulled" && result.refreshed === 0);
+  assert.equal(h.host.writes.length, 0);
+  const legacy = await harness(); const old = await runSync(legacy); assert.equal(Object.hasOwn(old.pulled as object, "blobs"), false);
+});
+test("sync routes blobs confirmation only to the exact recorded ordinary-file deletion set", async () => {
+  const h = await harness(), keys = Array.from({ length: 8 }, (_, i) => `opaque${i}.bin`), base = Buffer.from("base");
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try {
+    const scope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
+    await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap({ schemaVersion: 1, scope, entries: keys.map(key => ({ key, head: { key, version: digestOf(base), contentType: "x/old" }, placedDigest: digestOf(base) })) }));
+  } finally { await store.close(); }
+  for (const key of keys) await writeFile(path.join(h.folder, key), base);
+  h.fetch = refreshFetch(h, []);
+  const first = (await failingSync(h)).receipt!, refusal = (first.pulled as { blobs: { refused_deletions: { token: string; count: number } } }).blobs.refused_deletions;
+  assert.match(refusal.token, /^blobs:8:[0-9a-f]{12}$/); assert.equal(refusal.count, 8); assert.equal(first.status, "incomplete");
+  const wrong = (await failingSync(h, ["--take-host-deletions", refusal.token.slice(6)])).receipt!;
+  assert.equal((wrong.take_host_deletions as { taken: boolean }).taken, false); assert.equal(await readFile(path.join(h.folder, keys[0]!), "utf8"), "base");
+  const accepted = await runSync(h, ["--take-host-deletions", refusal.token]);
+  assert.equal((accepted.take_host_deletions as { taken: boolean }).taken, true); assert.equal((accepted.pulled as { blobs: { removed: number } }).blobs.removed, 8);
+  await assert.rejects(readFile(path.join(h.folder, keys[0]!)), { code: "ENOENT" }); assert.equal(h.host.writes.length, 0);
+});
