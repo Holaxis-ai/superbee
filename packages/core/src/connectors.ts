@@ -34,9 +34,9 @@ export const CONNECTOR_PIN_RULES = 1;
 /**
  * Credential providers: provider key to the exact hostnames a `token` or `oauth2` credential may be
  * sent to. A document names a row; it never states a host. Each row is added in its own reviewed
- * change, verified against the vendor's primary documentation. The pin records the provider, not its
- * hosts, so adding a host to an existing row widens every pinned Connection on that provider: such a
- * change bumps {@link CONNECTOR_PIN_RULES}.
+ * change, verified against the vendor's primary documentation. The pin records the hosts a row
+ * resolves to, so adding a host to an existing row changes the pin of every Connection on that
+ * provider, which then needs approving again.
  */
 export const AUTH_PROVIDERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   github: Object.freeze(["api.github.com"]),
@@ -201,19 +201,24 @@ export function credentialHosts(auth: Pick<ConnectorAuth, "kind" | "provider">):
 const SECRET_KEYS = new Set(["token", "secret", "password", "passwd", "client_secret", "private_key", "api_key", "apikey", "authorization", "bearer", "cookie"]);
 const SECRET_PREFIXES = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"];
 
+/**
+ * A URL authority carrying userinfo (`scheme://name@` or `scheme://name:password@`) anywhere in the
+ * text. A linear scan with no `URL` global, so the rule holds in every realm.
+ */
 function hasUserinfo(text: string): boolean {
-  if (!text.includes("@")) return false;
-  try {
-    const url = new URL(text);
-    return url.username !== "" || url.password !== "";
-  } catch {
-    return false;
+  for (let at = text.indexOf("://"); at !== -1; at = text.indexOf("://", at + 3)) {
+    for (let i = at + 3; i < text.length; i++) {
+      const c = text[i]!;
+      if (c === "@") return true;
+      if (c === "/" || c === "?" || c === "#" || c.trim() === "") break;
+    }
   }
+  return false;
 }
 
 function secretShaped(text: string): boolean {
   const s = text.trimStart();
-  return SECRET_PREFIXES.some((prefix) => s.startsWith(prefix)) || /^xox[abprs]-/.test(s) || s.startsWith("Bearer ")
+  return SECRET_PREFIXES.some((prefix) => s.startsWith(prefix)) || /^xox[abprs]-/.test(s) || /^bearer /i.test(s)
     || (text.includes("-----BEGIN") && text.includes("PRIVATE KEY")) || hasUserinfo(text);
 }
 
@@ -222,13 +227,16 @@ function bodyHoldsSecret(body: string): boolean {
   if (/(?:^|[^A-Za-z0-9_])(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8}/.test(body)) return true;
   if (/(?:^|[^A-Za-z0-9_])xox[abprs]-[A-Za-z0-9-]{8}/.test(body)) return true;
   if (body.includes("-----BEGIN") && body.includes("PRIVATE KEY")) return true;
-  for (const match of body.matchAll(/\bBearer[ \t]+([A-Za-z0-9._~+/=-]{16,})/g)) {
+  if (hasUserinfo(body)) return true;
+  for (const match of body.matchAll(/\bbearer[ \t]+([A-Za-z0-9._~+/=-]{16,})/gi)) {
     if (/[0-9]/.test(match[1]!) && /[A-Za-z]/.test(match[1]!)) return true;
   }
   return false;
 }
 
 const holdsSecret = (text: string): boolean => secretShaped(text) || bodyHoldsSecret(text);
+/** Keys hold no prose, so a token shape glued to a word still counts. */
+const keyHoldsSecret = (key: string): boolean => holdsSecret(key) || /(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8}|xox[abprs]-[A-Za-z0-9-]{8}/.test(key);
 
 /**
  * Maps whose keys are data names (target fields, provider natives, input and permission names), not
@@ -242,22 +250,36 @@ function keysAreDataNames(path: Path): boolean {
     || (n === 2 && path[0] === "auth" && path[1] === "permissions");
 }
 
-/** Secret refusals name a path and never a value; a secret-looking key reports its parent. */
-function scanSecrets(value: unknown, path: Path, out: Map<string, ConnectorError>): void {
+/**
+ * Walk the frontmatter once, visiting each container at most once: a container reached twice is a
+ * YAML alias (shared or circular), refused as `CONNECTOR_MALFORMED` so the scan, and every reader
+ * after it, stays bounded by the document's size. Secret refusals name a path and never a value; a
+ * secret-looking key reports its parent.
+ */
+function scanDocument(value: unknown, path: Path, out: Map<string, ConnectorError>, seen: WeakSet<object>): void {
   const add = (at: Path, what: string): void => {
     const p = pointer(at);
     if (!out.has(p)) out.set(p, { code: "CONNECTOR_SECRET_PRESENT", path: p, message: `${what} at '${p || "/"}'; a declaration never carries a credential` });
   };
   if (typeof value === "string") {
     if (holdsSecret(value)) add(path, "a secret-shaped value");
-  } else if (Array.isArray(value)) {
-    value.forEach((item, index) => scanSecrets(item, [...path, index], out));
-  } else if (record(value)) {
-    const data = keysAreDataNames(path);
-    for (const [key, item] of Object.entries(value)) {
-      if ((!data && SECRET_KEYS.has(key.toLowerCase())) || holdsSecret(key)) add(path, "a secret-looking key");
-      else scanSecrets(item, [...path, key], out);
-    }
+    return;
+  }
+  if (!Array.isArray(value) && !record(value)) return;
+  if (seen.has(value)) {
+    const p = pointer(path);
+    out.set(`alias:${p}`, { code: "CONNECTOR_MALFORMED", path: p, message: `a Connector may not use YAML aliases (at '${p || "/"}')` });
+    return;
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => scanDocument(item, [...path, index], out, seen));
+    return;
+  }
+  const data = keysAreDataNames(path);
+  for (const [key, item] of Object.entries(value)) {
+    if ((!data && SECRET_KEYS.has(key.toLowerCase())) || keyHoldsSecret(key)) add(path, "a secret-looking key");
+    else scanDocument(item, [...path, key], out, seen);
   }
 }
 
@@ -379,6 +401,10 @@ function parseIdTemplate(template: unknown): { ok: true; parts: IdPart[]; paths:
   parts.push({ literal: template.slice(last) });
   if (parts.some((p) => "literal" in p && /[{}]/.test(p.literal))) return { ok: false, reason: "has an unbalanced brace" };
   if (paths.length === 0) return { ok: false, reason: "needs at least one {record.path} placeholder" };
+  // Between two placeholders a literal must separate them, or two records could render one id.
+  if (parts.some((p, i) => "literal" in p && p.literal === "" && i > 0 && i < parts.length - 1)) {
+    return { ok: false, reason: "needs literal text between placeholders" };
+  }
   return { ok: true, parts, paths };
 }
 
@@ -622,13 +648,13 @@ function sourceKindErrors(source: ConnectorSource, index: number, kind: KindConv
 /**
  * Parse one Connector document, returning every refusal found. With `ctx.kinds`, a source whose
  * target Kind is in the registry is also checked against it; one whose Kind is absent is left to
- * {@link checkConnectorAgainstKinds} with a warning. A secret-shaped key or value refuses the
- * document alone, so no other refusal can echo it.
+ * {@link checkConnectorAgainstKinds} with a warning. A secret-shaped key or value, or a YAML alias,
+ * refuses the document alone, so no other refusal can echo the one or expand the other.
  */
 export function parseConnectorDoc(doc: OkfDocument, ctx: { kinds?: KindRegistry } = {}): ConnectorParseResult {
   const fm = (doc.frontmatter ?? {}) as unknown as Record<string, unknown>;
   const secrets = new Map<string, ConnectorError>();
-  scanSecrets(fm, [], secrets);
+  scanDocument(fm, [], secrets, new WeakSet());
   if (typeof doc.body === "string" && bodyHoldsSecret(doc.body)) {
     secrets.set("(body)", { code: "CONNECTOR_SECRET_PRESENT", path: "", message: "a secret-shaped token in the body; a declaration never carries a credential" });
   }
@@ -725,13 +751,16 @@ const PIN_DEFAULTS = {
 
 /**
  * The digest a Connection records at enable time: every key {@link CONNECTOR_KEYS} accepts, with
- * defaults filled and order-free lists sorted, under the recipe stamp's canonical JSON. Blind to
+ * defaults filled and order-free lists sorted, plus the credential hosts core resolves the auth kind
+ * to, under the recipe stamp's canonical JSON. Blind to
  * `title`, `description`, `version`, the body, `x_recipe` and unknown top-level keys.
  */
 export function connectorPinDigest(connector: Connector): string {
   const pinned = {
     rules: CONNECTOR_PIN_RULES,
     auth: pinBlock("auth", PIN_DEFAULTS.auth(connector.auth)),
+    // Core's resolution of the provider, so a host joining a row changes every pin on that provider.
+    credential_hosts: [...credentialHosts(connector.auth)].sort(),
     domains: [...connector.domains].sort(),
     sources: byName(connector.sources).map((source) => pinBlock("source", PIN_DEFAULTS.source(source), {
       identity: (v) => pinBlock("identity", v as object),
@@ -776,6 +805,14 @@ export function bindSourceFeed(connector: Connector, feed: { id: ConceptId; fron
     if (fm[key] !== undefined && fm[key] !== null && fm[key] !== bound[key]) refuse(key, `${key} must be the source's ${bound[key]} when present`);
   }
   if (typeof fm.url !== "string" || fm.url.length > MAX_TEMPLATE) refuse("url", "url is required");
+  for (const key of ["owned_fields", "auto_apply", "needs_review"]) {
+    const v = fm[key];
+    if (v !== undefined && v !== null && typeof v !== "string" && !(Array.isArray(v) && v.every((item) => typeof item === "string"))) refuse(key, `${key} must be a list of field or change names`);
+  }
+  for (const key of ["missing_threshold", "exclude_pattern", "wall_time_zone"]) {
+    const v = fm[key];
+    if (v !== undefined && v !== null && typeof v !== "string" && typeof v !== "number") refuse(key, `${key} must be a single value`);
+  }
   const url = fm.url as string;
   const template = parseResourceTemplate(bound.identity.resource);
   if (!template.ok) refuse("url", "the source's identity template is invalid");
@@ -806,7 +843,7 @@ export function bindSourceFeed(connector: Connector, feed: { id: ConceptId; fron
 
 // ----------------------------------------------------------------------------------------- mapping
 
-export type MappingDiagnosticCode = "VALUE_UNMAPPED" | "VALUE_NOT_SCALAR" | "VALUE_MISSING" | "RECORD_REFUSED" | "IDENTITY_MISSING";
+export type MappingDiagnosticCode = "VALUE_UNMAPPED" | "VALUE_NOT_SCALAR" | "VALUE_MISSING" | "RECORD_REFUSED" | "IDENTITY_MISSING" | "IDENTITY_INVALID";
 
 /** Why a record's value was not written; `native` is the provider value, `external_id` the record's. */
 export interface MappingDiagnostic {
@@ -845,25 +882,38 @@ function readPath(value: unknown, path: string): { found: false } | { found: tru
   return current === undefined ? { found: false } : { found: true, value: current };
 }
 
-function renderId(template: string, value: unknown): { ok: true; id: string } | { ok: false; path: string } {
+const MAX_ID = 2048;
+
+/**
+ * Render the id template. A missing, blank or non-scalar value is `IDENTITY_MISSING`; a value holding
+ * the literal that separates two placeholders (so two records could share one id), or an id past
+ * {@link MAX_ID} characters, is `IDENTITY_INVALID`. A finite number renders as `String(n)`, so a
+ * profile emits one type per id.
+ */
+function renderId(template: string, value: unknown): { ok: true; id: string } | { ok: false; code: "IDENTITY_MISSING" | "IDENTITY_INVALID"; path: string } {
   const parsed = parseIdTemplate(template);
-  if (!parsed.ok) return { ok: false, path: template };
+  if (!parsed.ok) return { ok: false, code: "IDENTITY_INVALID", path: template };
+  const separators = parsed.paths.length > 1
+    ? parsed.parts.filter((p, i): p is { literal: string } => "literal" in p && i > 0 && i < parsed.parts.length - 1).map((p) => p.literal)
+    : [];
   let id = "";
   for (const part of parsed.parts) {
     if ("literal" in part) { id += part.literal; continue; }
     const read = readPath(value, part.path);
     const v = read.found ? read.value : undefined;
-    if (typeof v === "string" && v !== "") id += v;
-    else if (typeof v === "number" && Number.isFinite(v)) id += String(v);
-    else return { ok: false, path: part.path };
+    const text = typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : undefined;
+    if (text === undefined || !isPresent(text)) return { ok: false, code: "IDENTITY_MISSING", path: part.path };
+    if (text.length > MAX_ID || separators.some((separator) => text.includes(separator))) return { ok: false, code: "IDENTITY_INVALID", path: part.path };
+    id += text;
   }
-  return id === "" ? { ok: false, path: template } : { ok: true, id };
+  if (id.length > MAX_ID) return { ok: false, code: "IDENTITY_INVALID", path: template };
+  return { ok: true, id };
 }
 
 /** The record's identity: the bound resource and the id template rendered over the record. */
 export function renderIdentity(source: ConnectorSource, bound: Pick<BoundFeed, "resource">, value: unknown): IdentityResult {
   const id = renderId(source.identity.id, value);
-  if (!id.ok) return { ok: false, diagnostic: { code: "IDENTITY_MISSING", field: "identity", from: id.path, native: null, external_id: null } };
+  if (!id.ok) return { ok: false, diagnostic: { code: id.code, field: "identity", from: id.path, native: null, external_id: null } };
   return { ok: true, resource: bound.resource, id: id.id };
 }
 
@@ -872,7 +922,7 @@ const scalar = (v: unknown): v is string | number | boolean => typeof v === "str
 /**
  * Map one normalized record onto the target Kind's fields. An absent path leaves the field
  * unobserved. An empty value (`null` or blank text) clears an optional field and leaves a
- * required one unobserved with `VALUE_MISSING`. A list or mapping is unobserved with
+ * required one, or `title`, unobserved with `VALUE_MISSING`. A list or mapping is unobserved with
  * `VALUE_NOT_SCALAR`. A native outside a values table is looked up as its string (a number as
  * `String(n)`, a boolean as `true` or `false`) and then follows `unmapped`: `keep` leaves the field
  * unobserved with `VALUE_UNMAPPED`; `refuse` refuses the whole record, which still counts as present.
@@ -880,9 +930,10 @@ const scalar = (v: unknown): v is string | number | boolean => typeof v === "str
  */
 export function mapRecord(source: ConnectorSource, value: unknown, kind: Pick<KindConvention, "fields">): MappedRecord {
   const id = renderId(source.identity.id, value);
-  if (!id.ok) return { kind: "refused", present: false, external_id: null, diagnostics: [{ code: "IDENTITY_MISSING", field: "identity", from: id.path, native: null, external_id: null }] };
+  if (!id.ok) return { kind: "refused", present: false, external_id: null, diagnostics: [{ code: id.code, field: "identity", from: id.path, native: null, external_id: null }] };
   const externalId = id.id;
-  const required = new Set(kind.fields.required);
+  // `title` counts as declared by every Kind, so an empty value never clears it either.
+  const required = new Set([...kind.fields.required, "title"]);
   const fields: Record<string, unknown> = {};
   const unobserved: string[] = [];
   const cleared: string[] = [];
@@ -953,7 +1004,13 @@ const FINDING_TEXT: Record<MappingDiagnosticCode, (field: string, native: string
   VALUE_NOT_SCALAR: (field) => `${field}: the provider sent a list or mapping; the stored value was kept`,
   VALUE_MISSING: (field) => `${field}: required, and the provider sent no value; the stored value was kept`,
   IDENTITY_MISSING: () => "records without a value for the identity template were skipped",
+  IDENTITY_INVALID: () => "records whose identity could collide with another's or is too long were skipped",
 };
+
+function* take<T>(items: Iterable<T>, n: number): Generator<T> {
+  if (n <= 0) return;
+  for (const item of items) { yield item; if (--n === 0) return; }
+}
 
 /** A native that carries no value of its own, named by its shape: `list`, `mapping` or `empty`. */
 function nativeShape(native: unknown): string {
@@ -970,27 +1027,29 @@ function nativeShape(native: unknown): string {
  * change; the summary names the count and a sample of record ids.
  */
 export function findingsFor(diagnostics: readonly MappingDiagnostic[], scope: { source: string }): Finding[] {
-  const groups = new Map<string, { diagnostic: MappingDiagnostic; ids: string[] }>();
+  const groups = new Map<string, { diagnostic: MappingDiagnostic; ids: Set<string> }>();
   for (const d of diagnostics) {
-    const key = d.code === "IDENTITY_MISSING"
+    const identity = d.code === "IDENTITY_MISSING" || d.code === "IDENTITY_INVALID";
+    const key = identity
       ? `mapping:${scope.source}:${d.code}`
       : d.code === "VALUE_NOT_SCALAR" || d.code === "VALUE_MISSING"
         ? `mapping:${scope.source}:${d.field}:${d.code}:${nativeShape(d.native)}`
-        : `mapping:${scope.source}:${d.field}:${d.code}:${sha256Hex(overlayCanonicalJson(d.native ?? null)!).slice(0, 16)}`;
-    const group = groups.get(key) ?? { diagnostic: d, ids: [] };
-    if (d.external_id !== null && !group.ids.includes(d.external_id)) group.ids.push(d.external_id);
-    groups.set(key, group);
+        // The string the values table was searched with, so 7 and "7" are one finding as one lookup.
+        : `mapping:${scope.source}:${d.field}:${d.code}:${sha256Hex(typeof d.native === "string" ? d.native : String(d.native)).slice(0, 16)}`;
+    let group = groups.get(key);
+    if (!group) groups.set(key, group = { diagnostic: d, ids: new Set() });
+    if (d.external_id !== null) group.ids.add(d.external_id);
   }
   return [...groups].map(([key, { diagnostic: d, ids }]) => {
     const byShape = d.code === "VALUE_NOT_SCALAR" || d.code === "VALUE_MISSING";
-    const native = d.code === "IDENTITY_MISSING" || byShape ? null : shown(d.native);
-    const sample = ids.slice(0, 3).map((id) => clip(id, 60)).join(", ");
-    const records = ids.length ? `${ids.length} record${ids.length === 1 ? "" : "s"} (${sample}${ids.length > 3 ? ", …" : ""})` : "records";
+    const native = d.code === "IDENTITY_MISSING" || d.code === "IDENTITY_INVALID" || byShape ? null : shown(d.native);
+    const sample = [...take(ids, 3)].map((id) => clip(id, 60)).join(", ");
+    const records = ids.size ? `${ids.size} record${ids.size === 1 ? "" : "s"} (${sample}${ids.size > 3 ? ", …" : ""})` : "records";
     return {
       key,
       title: clip(`Mapping ${d.code} on ${scope.source}.${d.field}`, 140),
       summary: clip(`${FINDING_TEXT[d.code](d.field, native)}: ${records}`, 600),
-      priority: d.code === "RECORD_REFUSED" || d.code === "IDENTITY_MISSING" ? "normal" : "low",
+      priority: d.code === "RECORD_REFUSED" || d.code === "IDENTITY_MISSING" || d.code === "IDENTITY_INVALID" ? "normal" : "low",
       facts: byShape ? { code: d.code, field: d.field, shape: nativeShape(d.native) } : { code: d.code, field: d.field, native },
     };
   });

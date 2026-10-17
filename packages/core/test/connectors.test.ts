@@ -209,7 +209,7 @@ test("CONNECTOR_IDENTITY_UNSTABLE: resource template rules and id templates", ()
     assert.equal(parse(frontmatter).ok, true, good);
   }
   const id = (value: unknown) => (fm: Record<string, any>) => { source(fm).identity.id = value; };
-  for (const bad of ["uid", "", "{}", "{a..b}", "{__proto__}", "{uid", "{summary}"]) refuses(id(bad), "CONNECTOR_IDENTITY_UNSTABLE", "/sources/0/identity/id");
+  for (const bad of ["uid", "", "{}", "{a..b}", "{__proto__}", "{uid", "{summary}", "{calendar.id}{uid}", "x-{a}{b}-y"]) refuses(id(bad), "CONNECTOR_IDENTITY_UNSTABLE", "/sources/0/identity/id");
   const { frontmatter } = base();
   id("{calendar.id}#{uid}")(frontmatter);
   assert.equal(parse(frontmatter).ok, true);
@@ -322,6 +322,38 @@ test("every error code has a refusal case above", () => {
   ]);
 });
 
+// ------------------------------------------------------------------------------------ YAML aliases
+
+/** Extra top-level YAML placed first, so its anchors precede every use. */
+const withYaml = (extra: string): string => CONNECTOR_MD.replace("type: Connector\n", `type: Connector\n${extra}\n`);
+const parseYaml = (markdown: string): ConnectorParseResult => {
+  const { frontmatter, body } = parseMarkdown(markdown);
+  return parseConnectorDoc({ id: CONNECTOR_ID, frontmatter, body });
+};
+const timed = <T>(run: () => T): { value: T; ms: number } => {
+  const started = performance.now();
+  const value = run();
+  return { value, ms: performance.now() - started };
+};
+
+test("a YAML alias is a typed refusal, and neither a circular alias nor an alias expansion can stall the parser", () => {
+  const loop = timed(() => parseYaml(withYaml("x_loop: &loop\n  - *loop")));
+  assert.deepEqual(errorsOf(loop.value).map((e) => [e.code, e.path]), [["CONNECTOR_MALFORMED", "/x_loop/0"]]);
+  assert.ok(loop.ms < 1000, `${loop.ms}ms`);
+  const levels = ["x_b0: &a0 [x,x,x,x,x,x,x,x,x]"];
+  for (let i = 1; i <= 9; i++) levels.push(`x_b${i}: &a${i} [${Array(9).fill(`*a${i - 1}`).join(",")}]`);
+  assert.ok(levels.join("\n").length <= 500, "a document under 500 bytes that expands to nine to the ninth leaves");
+  const bomb = timed(() => parseYaml(withYaml(levels.join("\n"))));
+  assert.equal(bomb.value.ok, false);
+  assert.ok(errorsOf(bomb.value).every((e) => e.code === "CONNECTOR_MALFORMED" && /aliases/.test(e.message)));
+  assert.ok(errorsOf(bomb.value).length <= 81, "one refusal per alias written, never per expanded leaf");
+  assert.ok(bomb.ms < 1000, `${bomb.ms}ms`);
+  const shared = parseYaml(withYaml("x_shared: &shared { from: summary }").replace("      title: summary", "      title: *shared"));
+  assert.deepEqual(errorsOf(shared).map((e) => [e.code, e.path]), [["CONNECTOR_MALFORMED", "/sources/0/fields/title"]], "inside a closed block too");
+  const scalar = parseYaml(withYaml("x_kind: &k Event").replace("    target_kind: Event", "    target_kind: *k"));
+  assert.equal(scalar.ok, true, "an alias to a scalar shares nothing");
+});
+
 // ---------------------------------------------------------------------------------------- secrets
 
 const SECRET = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
@@ -372,6 +404,29 @@ test("a token anywhere in a frontmatter string or key is refused, as in the body
   const { frontmatter } = base();
   frontmatter.description = "Requests carry a Bearer token; GitHub tokens start with ghp_ and are never written here.";
   assert.equal(parse(frontmatter).ok, true, "prose about tokens is not a token");
+});
+
+test("userinfo anywhere, lowercase bearer and tokens glued into keys are refused without echo, in any realm", () => {
+  const cases: Array<[(fm: Record<string, any>) => void, string]> = [
+    [(fm) => { fm.description = "Fetch https://reader:hunter2@calendar.example.org/feed.ics daily."; }, "/description"],
+    [(fm) => { fm.x_note = "mirror at ftp://reader@files.example.org/x"; }, "/x_note"],
+    [(fm) => { source(fm).identity.resource = "https://calendar.example.org/{feed}.ics?src=https://reader:hunter2@x.example.org/"; }, "/sources/0/identity/resource"],
+    [(fm) => { fm.x_note = "bearer abcdef0123456789abcdef01"; }, "/x_note"],
+    [(fm) => { fm.auth[`x${SECRET}`] = true; }, "/auth"],
+    [(fm) => { source(fm).fields[`f${SECRET.replace("ghp_", "ghp_")}`] = "a"; }, "/sources/0/fields"],
+  ];
+  for (const [edit, path] of cases) {
+    const { frontmatter } = base();
+    edit(frontmatter);
+    const result = parse(frontmatter);
+    assert.deepEqual(errorsOf(result).map((e) => [e.code, e.path]), [["CONNECTOR_SECRET_PRESENT", path]], path);
+    const text = JSON.stringify(errorsOf(result));
+    for (const leak of ["hunter2", "reader", SECRET.slice(4), "abcdef0123456789"]) assert.ok(!text.includes(leak), `${leak} echoed in ${text}`);
+  }
+  for (const body of ["Mirror: https://reader:hunter2@calendar.example.org/feed.ics\n", "Send bearer abcdef0123456789abcdef01 upstream.\n"]) {
+    assert.deepEqual(codes(parse(base().frontmatter, { body })), ["CONNECTOR_SECRET_PRESENT"], body);
+  }
+  assert.equal(parse(base().frontmatter, { body: "Write to support@example.org or see https://calendar.example.org/help.\n" }).ok, true);
 });
 
 test("data names (mapping keys, values natives, input and permission names) are not credential slots", () => {
@@ -509,7 +564,7 @@ test("the pin fills the parser's defaults itself, so a Connector built without t
 test("the pin digest is blind to presentation and order, and equal across spellings of one declaration", () => {
   const digest = connectorPinDigest(parseExampleConnector());
   // A changed golden means the normalization changed: bump CONNECTOR_PIN_RULES with it.
-  assert.equal(digest, "sha256:9b255ef3470103ccbb803f233c2f8090165d0f3ec0615a5987304707a06492c8");
+  assert.equal(digest, "sha256:cc2005f38dc96671020ce6128388a61560bcd8aa7ec75c7b62ccf3bb180c79be");
   const variants: Array<(fm: Record<string, any>) => void> = [
     (fm) => { fm.title = "Renamed"; },
     (fm) => { fm.description = "Another sentence."; },
@@ -570,6 +625,43 @@ test("a reach-widening change through the document changes the pin", () => {
 
 const KIND = { fields: { required: ["title", "start", "event_status"], optional: ["end", "event_url"], values: {}, terminal: {}, descriptions: {} } };
 
+test("an empty value never clears the title, even when the Kind does not list it as required", () => {
+  const source = parseExampleConnector().sources[0]!;
+  const loose = { fields: { required: ["start"], optional: ["end", "event_url", "event_status"], values: {}, terminal: {}, descriptions: {} } };
+  for (const summary of [null, "", "   "]) {
+    const mapped = mapRecord(source, { uid: "r1", summary, dtstart: "S", dtend: null }, loose);
+    assert.ok(mapped.kind === "mapped");
+    assert.ok(mapped.unobserved.includes("title") && !mapped.cleared.includes("title"), String(summary));
+    assert.deepEqual(mapped.cleared, ["end"], "an optional field still clears");
+    assert.deepEqual(mapped.diagnostics.filter((d) => d.field === "title").map((d) => d.code), ["VALUE_MISSING"]);
+    const change = changeBetween({ title: "Kept", start: "S", end: "E" }, mapped, { external_id: "r1", change_kind: "changed" });
+    assert.equal(change.after!.title, "Kept");
+    assert.ok(!change.changed_fields.includes("title"));
+  }
+});
+
+test("identity values that could collide, blank ones and over-long ones never render an id", () => {
+  const { frontmatter } = base();
+  source(frontmatter).identity.id = "{cal}#{uid}";
+  const parsed = parse(frontmatter);
+  assert.ok(parsed.ok);
+  const src = parsed.connector.sources[0]!;
+  const code = (record: Record<string, unknown>) => { const m = mapRecord(src, { summary: "x", ...record }, KIND); return m.kind === "refused" ? m.diagnostics[0]!.code : m.external_id; };
+  assert.equal(code({ cal: "a", uid: "b" }), "a#b");
+  assert.equal(code({ cal: "a#b", uid: "c" }), "IDENTITY_INVALID");
+  assert.equal(code({ cal: "a", uid: "b#c" }), "IDENTITY_INVALID");
+  assert.equal(code({ cal: "a", uid: "   " }), "IDENTITY_MISSING");
+  assert.equal(code({ cal: "a", uid: "x".repeat(3000) }), "IDENTITY_INVALID");
+  assert.equal(code({ cal: 7, uid: 8 }), "7#8", "a finite number renders as its decimal string");
+  const single = parseExampleConnector().sources[0]!;
+  const one = mapRecord(single, { uid: "a#b", summary: "x" }, KIND);
+  assert.ok(one.kind === "mapped" && one.external_id === "a#b", "one placeholder cannot collide, so its value may hold any text");
+  const invalid = mapRecord(single, { uid: "x".repeat(2049), summary: "x" }, KIND);
+  assert.ok(invalid.kind === "refused" && invalid.present === false && invalid.diagnostics[0]!.code === "IDENTITY_INVALID");
+  const findings = findingsFor([...invalid.diagnostics, ...invalid.diagnostics], { source: "events" });
+  assert.deepEqual(findings.map((f) => [f.key, f.priority]), [["mapping:events:IDENTITY_INVALID", "normal"]]);
+});
+
 test("changeBetween carries unobserved values, removes cleared ones and changes only mapping keys", () => {
   const source = parseExampleConnector().sources[0]!;
   const mapped = mapRecord(source, { uid: "r1", summary: "B", dtend: null, status: "WITHDRAWN" }, KIND);
@@ -586,6 +678,16 @@ test("changeBetween carries unobserved values, removes cleared ones and changes 
   assert.equal(again.content_digest, change.content_digest, "a carried value keeps the digest");
   const first = changeBetween(null, mapped, { external_id: "r1", change_kind: "new" });
   assert.deepEqual([first.before, first.after, first.changed_fields], [null, { title: "B" }, ["title"]]);
+});
+
+test("findingsFor is linear in records: one unknown value across 80,000 records is one finding, quickly", () => {
+  const diagnostics: MappingDiagnostic[] = [];
+  for (let i = 0; i < 80_000; i++) diagnostics.push({ code: "VALUE_UNMAPPED", field: "event_status", from: "status", native: "WITHDRAWN", external_id: `evt-${i}` });
+  diagnostics.push({ ...diagnostics[0]! });
+  const run = timed(() => findingsFor(diagnostics, { source: "events" }));
+  assert.equal(run.value.length, 1);
+  assert.match(run.value[0]!.summary!, /^.*: 80000 records \(evt-0, evt-1, evt-2, …\)$/);
+  assert.ok(run.ms < 2000, `${run.ms}ms`);
 });
 
 test("findingsFor keys per source, field, code and value; facts hold no record ids or counts", () => {
@@ -624,6 +726,11 @@ test("findingsFor keys per source, field, code and value; facts hold no record i
     ["mapping:events:start:VALUE_MISSING:empty", { code: "VALUE_MISSING", field: "start", shape: "empty" }],
   ], "distinct lists share one finding, and null, empty and blank share one");
   assert.match(shaped[0]!.summary!, /3 records/);
+  const spellings = findingsFor([
+    d("VALUE_UNMAPPED", "event_status", 7, "a"), d("VALUE_UNMAPPED", "event_status", "7", "b"),
+    d("VALUE_UNMAPPED", "event_status", true, "a"), d("VALUE_UNMAPPED", "event_status", "true", "b"),
+  ], { source: "events" });
+  assert.equal(spellings.length, 2, "a number and its decimal string are one lookup, so one finding");
   const long = findingsFor([d("VALUE_UNMAPPED", "title", "x".repeat(200), "a")], { source: "events" })[0]!;
   assert.equal(((long.facts as { native: string }).native).length, 80);
 });

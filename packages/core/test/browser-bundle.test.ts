@@ -493,6 +493,16 @@ test("core/connectors parses, binds, maps and drives record-overlay over MemoryB
   assert.equal(inSandbox.story.title, "Story Time");
   assert.equal(inSandbox.story.event_status, "scheduled");
   assert.deepEqual(inSandbox.steps.map((s) => s.op), ["create-signal"], "two records with one unknown value raise one finding");
+
+  // Without a URL global the userinfo rule still refuses, and the pin is unchanged.
+  const bare: Record<string, unknown> = { TextEncoder };
+  assert.equal(runInNewContext("typeof URL", bare), "undefined");
+  runInNewContext(result.outputFiles[0]!.text, bare);
+  const userinfo = runInNewContext(`JSON.stringify(SuperbeeConnectors.parseConnectorDoc({ id: "connectors/calendar", body: "", frontmatter: {
+    type: "Connector", title: "Calendar", description: "Fetch https://reader:pw@calendar.example.org/x.ics daily.", auth: { kind: "none" },
+    events: [{ name: "changed", signature: { scheme: "hmac-sha256", header: "x-signature" } }],
+  } }))`, bare) as string;
+  assert.deepEqual(JSON.parse(userinfo).errors.map((e: { code: string; path: string }) => [e.code, e.path]), [["CONNECTOR_SECRET_PRESENT", "/description"]]);
 });
 
 test("core/bundle-health computes a report and the Kind findings over MemoryBackend in a sandbox with only TextEncoder and TextDecoder, matching Node's", async () => {

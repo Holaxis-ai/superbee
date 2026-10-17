@@ -38,9 +38,11 @@ import {
   type RecordChange,
 } from "../src/record-overlay/index.js";
 import type { Frontmatter, Version } from "../src/types.js";
+import { buildKindRegistry, type KindRegistry } from "../src/kinds.js";
 import {
   CONNECTOR_ID,
   CONNECTOR_MD,
+  EVENT_CONVENTION_MD,
   parseExampleConnector,
   readObservations,
   RECIPE_FILES,
@@ -247,8 +249,54 @@ test("bindSourceFeed refuses each widening feed value with POLICY_INVALID naming
       label,
     );
   }
+  const nested = (depth: number): unknown => (depth === 0 ? "x" : Array(9).fill(nested(depth - 1)));
+  const shapeCases: Array<[string, Record<string, unknown>, string]> = [
+    ["owned_fields expanding by alias", { ...FEED, owned_fields: nested(6) }, "owned_fields"],
+    ["a nested auto_apply", { ...FEED, auto_apply: [["changed"]] }, "auto_apply"],
+    ["a list needs_review entry", { ...FEED, needs_review: ["new", { kind: "canceled" }] }, "needs_review"],
+    ["a list exclude_pattern", { ...FEED, exclude_pattern: nested(6) }, "exclude_pattern"],
+    ["a list missing_threshold", { ...FEED, missing_threshold: [[3]] }, "missing_threshold"],
+  ];
+  for (const [label, frontmatter, key] of shapeCases) {
+    assert.throws(
+      () => bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: frontmatter as unknown as Frontmatter }, w.overlay.registry),
+      (e: unknown) => e instanceof OverlayRefusal && e.code === "POLICY_INVALID" && e.details.key === key,
+      label,
+    );
+  }
+  const yamlFeed = parseMarkdown(`---\ntype: Source Feed\ntitle: Bomb\nconnector: ${CONNECTOR_ID}\nsource: events\nurl: ${FEED_URL}\nx0: &a0 [title,title,title,title,title,title,title,title,title]\n${[1, 2, 3, 4, 5, 6].map((i) => `x${i}: &a${i} [${Array(9).fill(`*a${i - 1}`).join(",")}]`).join("\n")}\nowned_fields: *a6\n---\n`);
+  assert.throws(
+    () => bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: yamlFeed.frontmatter }, w.overlay.registry),
+    (e: unknown) => e instanceof OverlayRefusal && e.code === "POLICY_INVALID" && e.details.key === "owned_fields",
+    "a YAML alias expansion in a feed is a typed refusal, never a RangeError",
+  );
   const same = bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: { ...FEED, target_kind: "Event", completeness: "complete", profile: "ics" } as unknown as Frontmatter }, w.overlay.registry);
+  const commaList = bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: { ...FEED, owned_fields: "title, start" } as unknown as Frontmatter }, w.overlay.registry);
+  assert.deepEqual(commaList.policy.owned_fields, ["title", "start"], "the reader's comma form still binds");
   assert.equal(same.resource, FEED_URL, "equal values are admitted");
+});
+
+test("bindSourceFeed checks the source against the bundle's Kind as it is now: list types, enum outputs and claim fields", () => {
+  const connector = parseExampleConnector();
+  const { frontmatter, body } = parseMarkdown(EVENT_CONVENTION_MD);
+  const eventWith = (edit: (fm: Record<string, any>) => void) => {
+    const fm = structuredClone(frontmatter) as Record<string, any>;
+    edit(fm);
+    return buildKindRegistry([{ id: "conventions/event", frontmatter: fm as Frontmatter, body }]);
+  };
+  const cases: Array<[string, KindRegistry, string[]]> = [
+    ["event_url became a list", eventWith((fm) => { fm.fields.types.event_url = "https-url-list"; }), ["CONNECTOR_LIST_FIELD_UNSUPPORTED"]],
+    ["canceled left the enum", eventWith((fm) => { fm.fields.values.event_status = ["scheduled", "postponed"]; }), ["CONNECTOR_VALUES_INVALID"]],
+    ["end became the claim owner", eventWith((fm) => { fm.claim = { owner_field: "end", state_field: "event_status" }; }), ["CONNECTOR_FIELD_NEVER_OWNED", "CONNECTOR_FIELD_NEVER_OWNED"]],
+  ];
+  for (const [label, kinds, expected] of cases) {
+    assert.throws(
+      () => bindSourceFeed(connector, { id: FEED_ID, frontmatter: FEED as unknown as Frontmatter }, kinds),
+      (e: unknown) => e instanceof OverlayRefusal && e.code === "POLICY_INVALID" && e.details.key === "connector" && JSON.stringify(e.details.codes) === JSON.stringify(expected),
+      label,
+    );
+  }
+  assert.equal(bindSourceFeed(connector, { id: FEED_ID, frontmatter: FEED as unknown as Frontmatter }, eventWith(() => {})).resource, FEED_URL);
 });
 
 // --------------------------------------------------------------------------------- two observations

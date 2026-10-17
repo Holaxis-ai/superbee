@@ -259,15 +259,16 @@ an identity template (`identity.resource`, an https URL whose placeholders are f
 path, or to `{ from, values, unmapped }`. Mapping keys are the most a Source Feed may own; never-owned
 fields, managed metadata, work state, the body and list-typed fields are refused. Actions and events
 are declared shapes only. Every nested block is closed by `CONNECTOR_KEYS`; `parseConnectorDoc`
-returns every refusal with a typed `code` and a JSON pointer `path`, and a token shape anywhere in a
-frontmatter string, key or the body, or a credential key name outside the data-name maps, refuses
-the document alone, naming a path and never the value. The secret rule is a tripwire; the pin, the
+returns every refusal with a typed `code` and a JSON pointer `path`. A token shape or URL userinfo
+anywhere in a frontmatter string, key or the body, or a credential key name outside the data-name
+maps, refuses the document alone, naming a path and never the value; so does a YAML alias, which
+keeps every reader bounded by the document's size. The secret rule is a tripwire; the pin, the
 credential store and the fetcher are the boundaries.
 
 `connectorPinDigest` covers every key `CONNECTOR_KEYS` accepts, with defaults filled and order-free
-lists sorted, and is blind to the title, description, version, body and unknown top-level keys.
-`CONNECTOR_PIN_RULES` changes whenever a default or sort rule does, or a host joins an existing
-`AUTH_PROVIDERS` row.
+lists sorted, plus the credential hosts core resolves the auth kind to, so a host joining an
+`AUTH_PROVIDERS` row changes the pin. It is blind to the title, description, version, body and
+unknown top-level keys. `CONNECTOR_PIN_RULES` changes whenever a default or sort rule does.
 
 `bindSourceFeed` binds a Source Feed (`connector`, `source`, `url`, `owned_fields`) to one source:
 the `url` must equal the identity template rendered from parameters of `[A-Za-z0-9._~-]+` byte for
@@ -276,7 +277,9 @@ byte, `owned_fields` must be mapping keys, and the source's `target_kind`, `comp
 `mapRecord` never lets a mapping gap erase a stored value: an absent path is unobserved, an
 unmapped native is kept (`unmapped: keep`, the default) or refuses the record while it still counts
 as present (`refuse`), and only an empty value (`null` or blank text) clears an optional field; on a
-required field it is kept with a finding. `changeBetween` takes the last accepted `after`, carries
+required field or `title` it is kept with a finding. An id template separates its placeholders with
+literal text, and a record whose value holds that text, is blank or makes an id past 2048
+characters is refused as `IDENTITY_MISSING` or `IDENTITY_INVALID`, so two records never share one id. `changeBetween` takes the last accepted `after`, carries
 unobserved fields and leaves them out of `changed_fields`. `findingsFor` groups diagnostics per
 source, field, code and value (a list, mapping or empty value by its shape) for `planFindings`, so
 one problem across many records raises one Signal.
