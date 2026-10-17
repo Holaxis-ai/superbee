@@ -1894,3 +1894,38 @@ test("targeted opaque create/type-only replace/delete preserve workspace qualifi
   await deleteCommand(["--doc-key", key, "--dir", folder, "--expected-version", version], commandDeps(h, wire)); assert.equal(wire.calls.length, 3);
   await writeFile(file, "recreated after delete"); await assert.rejects(deleteCommand(["--doc-key", key, "--dir", folder, "--expected-version", version], commandDeps(h, wire)), /preserved observed digest/); assert.equal(wire.calls.length, 3); assert.equal(await readFile(file, "utf8"), "recreated after delete");
 });
+
+test("historical blob ACK reuse requires its current acknowledged baseline; conflict terminals do not cache new explicit commands", async () => {
+  const h = await harness(), key = "historical.bin", file = path.join(h.folder, key), bytes = Buffer.from("same bytes"); await writeFile(file, bytes);
+  const wire = blobAuthority(h), output: string[] = [], deps = commandDeps(h, wire, output);
+  const args = [file, "--doc-key", key, "--dir", h.folder, "--content-type", "x/original", "--json"];
+  await promote(args, deps); const first = (await retainedBlobRows(h))[0]!;
+  await promote(args, deps); assert.equal(JSON.parse(output.at(-1)!).resumed, true); assert.equal(wire.calls.length, 1);
+  // A verified same-byte remote MIME refresh changes the current baseline, not the old receipt.
+  wire.objects.set(key, { bytes, contentType: "x/remote-new" });
+  const pulled = await hostedPull((await bindingForPath(h.home, h.folder))!, { auth: h.auth, cwd: h.cwd, fetch: wire.fetch }); assert.equal(pulled.state, "pulled");
+  await assert.rejects(promote(args, deps), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
+  const conflicted = (await retainedBlobRows(h)).at(-1)!; assert.notEqual(conflicted.requestId, first.requestId); assert.equal(conflicted.state, "conflict"); assert.equal(JSON.parse(output.at(-1)!).resumed, false); assert.equal(wire.calls.length, 2);
+  // Repeating an explicit no-ID command admits a new valid CAS attempt, not a cached refusal.
+  wire.objects.delete(key);
+  await promote(args, deps); const next = (await retainedBlobRows(h)).at(-1)!; assert.notEqual(next.requestId, conflicted.requestId); assert.equal(next.state, "acknowledged"); assert.equal(JSON.parse(output.at(-1)!).resumed, false); assert.equal(wire.calls.length, 3);
+});
+test("a multi-request blob batch reloads full guards and preserves every original intent when unrelated map metadata changes", async () => {
+  const h = await harness(), ids: string[] = [];
+  for (let i = 0; i < 3; i++) { const key = `batch-${i}.bin`, file = path.join(h.folder, key); await writeFile(file, `frozen-${i}`); ids.push(...(await admitOfflineBlob({ operation: "promote", key, source: file, dir: h.folder, home: h.home, cwd: h.cwd }))!.requestIds); }
+  const before = await retainedBlobRows(h), binding = (await bindingForPath(h.home, h.folder))!, scope = decodePreparedBlobIntent(before[0]!.prepared).scope;
+  const original = FileJournaledBackend.prototype.updateBlobIntent; let active: FileJournaledBackend | undefined, changed = false;
+  FileJournaledBackend.prototype.updateBlobIntent = async function (...args) { active = this; return original.apply(this, args); };
+  const wire = blobAuthority(h, { beforeWrite: async () => {
+    if (changed) return; changed = true;
+    const { readBlobSyncState, changeBlobSyncEntry } = await import("../src/hosted/blob-sync.js");
+    const snapshot = await readBlobSyncState(active!, "unrelated.bin", scope);
+    await active!.writeBlobMeta("unrelated.bin", { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(changeBlobSyncEntry(snapshot.map, { key: "unrelated.bin", placedDigest: null, desiredContentType: "x/local" })) }] }, { guard: snapshot.journal.guard });
+  } });
+  const { deliverHostedBlobRequests } = await import("../src/hosted/sync.js");
+  try {
+    const result = await deliverHostedBlobRequests(binding, ids, { auth: h.auth, fetch: wire.fetch }); assert.equal(result.counts.committed, 0); assert.equal(result.counts.unknown, 3); assert.equal(wire.calls.length, 1);
+  } finally { FileJournaledBackend.prototype.updateBlobIntent = original; }
+  const after = await retainedBlobRows(h); assert.deepEqual(after.map(row => row.prepared), before.map(row => row.prepared)); assert.deepEqual(after.map(row => row.attempts), [1, 0, 0]); assert.ok(after.every(row => !row.receipt));
+  const recovered = await deliverHostedBlobRequests(binding, ids, { auth: h.auth, fetch: wire.fetch }); assert.equal(recovered.counts.committed, 3); assert.equal(wire.calls.length, 3); assert.deepEqual((await retainedBlobRows(h)).map(row => row.attempts), [1, 1, 1]);
+});

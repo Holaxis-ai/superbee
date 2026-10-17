@@ -153,7 +153,7 @@ export function projectBlobSyncReceipt(map: BlobSyncMap, record: BlobIntentRecor
   return next;
 }
 /** A declared gate and explicit held-delete acceptance judge the frozen representation, not newer bytes. */
-export async function blobFrozenPhysicalMatches(folder: string, snapshot: BlobSyncSnapshot, record: BlobIntentRecord): Promise<boolean> {
+export async function blobFrozenPhysicalMatches(folder: string, snapshot: Pick<BlobSyncSnapshot, "map">, record: BlobIntentRecord): Promise<boolean> {
   const prepared = decodePreparedBlobIntent(record.prepared), intent = prepared.intent;
   if (!ordinarySeedKey(record.target) || !equalJournalValue(prepared.scope, snapshot.map.scope) || snapshot.map.entries.find(row => row.key === record.target)?.placement) return false;
   const entry = snapshot.map.entries.find(row => row.key === record.target), file = path.join(folder, ...record.target.split("/"));
@@ -527,7 +527,14 @@ export async function admitOfflineBlob(options: {
     const physicalDigest = physical.state === "missing" ? null : digestOf(physical.bytes);
     if (input.operation === "promote" && physical.state !== "present") throw refuse("promote requires the existing checkout target file");
     const outstanding = snapshot.journal.intents.filter(row => row.receipt === undefined);
-    const retained = outstanding.length ? outstanding : snapshot.journal.intents.slice(-1);
+    const latest = snapshot.journal.intents.at(-1);
+    const acknowledged = latest?.state === "acknowledged" && latest.receipt?.result.ok ? latest : undefined;
+    const receiptHead = acknowledged?.receipt && "head" in acknowledged.receipt ? acknowledged.receipt.head : undefined;
+    const acknowledgedPrepared = acknowledged === undefined ? undefined : decodePreparedBlobIntent(acknowledged.prepared);
+    const acknowledgedDigest = acknowledgedPrepared?.intent.operationId === "blobs.delete.v1" ? null : acknowledgedPrepared?.intent.version;
+    const currentAcknowledged = acknowledged !== undefined && receiptHead !== undefined && entry !== undefined &&
+      equalJournalValue(entry.head, receiptHead) && entry.placedDigest === acknowledgedDigest && !blobSyncDirty(entry, physicalDigest);
+    const retained = outstanding.length ? outstanding : currentAcknowledged ? [acknowledged!] : [];
     if (retained.length) {
       const row = retained[0]!, frozen = decodePreparedBlobIntent(row.prepared), intent = frozen.intent;
       const effectiveType = input.contentType ?? (input.expectedVersion === undefined ? (await import("@superbee/core")).resolveContentType(input.key) : entry?.desiredContentType ?? entry?.head?.contentType ?? (intent.operationId === "blobs.delete.v1" ? intent.expectedContentType : intent.contentType));

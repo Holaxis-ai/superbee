@@ -989,18 +989,18 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
   const report = (row: BlobIntentRecord, message?: string, state?: BlobDriveRow["state"]) => {
     out.rows.push({ request_id: row.requestId, key: row.target, state: state ?? (row.state === "acknowledged" ? "committed" : row.state === "conflict" || row.state === "refused" ? row.state : prefixHeld(row) || row.attempts === 0 ? "held" : "unknown"), attempts: row.attempts, ...(message ? { message } : {}), ...(row.receipt ? { result: row.receipt.result } : {}) });
   };
-  const initial = new Map<string, BlobSyncSnapshot>();
+  const initial = new Map<string, BlobIntentRecord[]>();
   let expectedMap: BlobSyncSnapshot["map"] | undefined;
   for (const row of selected) {
     if (!equalJournalValue(decodePreparedBlobIntent(row.prepared).scope, scope) || !ordinarySeedKey(row.target)) throw new CliError("CONFLICT", `request ${row.requestId} does not match this checkout's ordinary-file scope`);
     const snapshot = await readBlobSyncState(store, row.target, scope);
     if (expectedMap && !equalJournalValue(expectedMap, snapshot.map)) throw new JournalGuardConflict(row.target);
-    expectedMap = snapshot.map; initial.set(row.requestId, snapshot);
+    expectedMap ??= snapshot.map; initial.set(row.target, snapshot.journal.intents);
   }
   const heldCandidates: BlobIntentRecord[] = [];
   for (const row of selected.filter(prefixHeld)) {
-    const snapshot = initial.get(row.requestId)!;
-    if (snapshot.journal.intents.some(other => other.requestId !== row.requestId && !other.receipt) || !await blobFrozenPhysicalMatches(session.binding.path, snapshot, row)) continue;
+    const intents = initial.get(row.target)!;
+    if (intents.some(other => other.requestId !== row.requestId && !other.receipt) || !await blobFrozenPhysicalMatches(session.binding.path, { map: expectedMap! }, row)) continue;
     heldCandidates.push(row);
   }
   let acceptance: { token: string; allowance: number } | undefined;
@@ -1047,9 +1047,9 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
     if (row.receipt) continue;
     const fresh = (row.state === "pending" || row.state === "unknown") && (row.notAppliedThrough ?? 0) === row.attempts && (row.attempts === 0 || acceptance !== undefined);
     if (!fresh || session.capabilities.blobWrites !== "allowed") continue;
-    const snapshot = initial.get(row.requestId)!;
-    if (snapshot.map.entries.find(entry => entry.key === row.target)?.placement || snapshot.journal.intents.some(other => other.requestId !== row.requestId && !other.receipt)) continue;
-    if (options.gatePresent && !await blobFrozenPhysicalMatches(session.binding.path, snapshot, row)) continue;
+    const intents = initial.get(row.target)!;
+    if (expectedMap!.entries.find(entry => entry.key === row.target)?.placement || intents.some(other => other.requestId !== row.requestId && !other.receipt)) continue;
+    if (options.gatePresent && !await blobFrozenPhysicalMatches(session.binding.path, { map: expectedMap! }, row)) continue;
     eligible.add(row.requestId);
   }
   await options.gate(eligible.size > 0, eligible.size);
@@ -1059,7 +1059,7 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
     let snapshot: BlobSyncSnapshot;
     try {
       snapshot = await readBlobSyncState(store, row.target, scope);
-      if (!equalJournalValue(snapshot.map, expectedMap) || !equalJournalValue(snapshot.journal.intents, initial.get(row.requestId)!.journal.intents)) throw new JournalGuardConflict(row.target);
+      if (!equalJournalValue(snapshot.map, expectedMap) || !equalJournalValue(snapshot.journal.intents, initial.get(row.target)!)) throw new JournalGuardConflict(row.target);
       if ((options.gatePresent && eligible.has(row.requestId) || acceptance !== undefined) && !await blobFrozenPhysicalMatches(session.binding.path, snapshot, row)) { report(row, "the frozen file or MIME no longer matches what was confirmed or judged by the gate", "held"); continue; }
       const complete = (row.notAppliedThrough ?? 0) === row.attempts;
       if (complete && !eligible.has(row.requestId)) { report(row, row.attempts > 0 ? "this proven held deletion needs current person confirmation" : "this frozen representation cannot be submitted under current capability, gate or journal premises", "held"); continue; }
