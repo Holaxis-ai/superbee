@@ -258,7 +258,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   if (result.foreign_ids.length > 0) {
     receipt.foreign_ids = result.foreign_ids;
     receipt.foreign_help =
-      "another recipe's stamp owns these conventions and keeps them; this recipe reads partial in 'recipes' while it does, and no evolve plan changes that";
+      "another recipe's stamp owns these conventions and keeps them; this recipe reads partial in 'recipes' while it does; an evolve plan takes one over only when it also changes that convention's content, which leaves the other recipe partial";
   }
   const migrationPending = result.docs.some((doc) => doc.migration_required !== undefined);
   if (sourceDiffers > 0 || result.restamp_ids.length > 0 || migrationPending) {
