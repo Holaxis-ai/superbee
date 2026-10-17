@@ -119,7 +119,8 @@ export interface HostedClientOptions {
   /**
    * Receives the timing of every request this client and its `within` clients send: the route,
    * the status or failure, the client's wall time and the host's `Server-Timing` phases
-   * (`HostedRequestTiming`). Called synchronously as each request settles; a throw is ignored.
+   * (`HostedRequestTiming`). Called synchronously as each request settles; a throw, or an async
+   * observer's rejection, is ignored.
    */
   readonly onRequestTiming?: HostedRequestObserver;
 }

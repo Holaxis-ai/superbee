@@ -7,7 +7,7 @@
  * way without parsing the header itself.
  *
  * Observation only: nothing here changes a request, its answer or its failure, and an observer
- * that throws is ignored.
+ * that throws, or an async one that rejects, is ignored.
  */
 import { HostedCarrierError, type HostedCarrier } from "./carrier.js";
 
@@ -56,8 +56,14 @@ function splitOutsideQuotes(text: string, separator: string): string[] | null {
   return parts;
 }
 
-/** HTTP optional whitespace (space and horizontal tab) removed from both ends. */
-const trimOws = (text: string) => text.replace(/^[ \t]+|[ \t]+$/g, "");
+/** HTTP optional whitespace (space and horizontal tab) removed from both ends, in one linear pass. */
+function trimOws(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && (text[start] === " " || text[start] === "\t")) start++;
+  while (end > start && (text[end - 1] === " " || text[end - 1] === "\t")) end--;
+  return text.slice(start, end);
+}
 
 /** Whether `c` may stand in a quoted string, plain or escaped: tab, space, visible ASCII or obs-text. */
 function quotable(c: string): boolean {
