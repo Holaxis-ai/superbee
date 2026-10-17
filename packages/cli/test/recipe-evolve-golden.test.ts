@@ -13,9 +13,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { initBundle, writeDoc } from "@superbee/core";
-import { planRecipeEvolution } from "../src/recipe-evolution.js";
+import { installRecipe, planRecipeEvolution } from "@superbee/core/recipe-lifecycle";
 import { parseRecipeFiles, type LoadedRecipe } from "../src/recipe-source.js";
-import { applyRecipe } from "../src/recipes.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GOLDEN = path.join(here, "fixtures", "recipe-evolve-golden", "plans.txt");
@@ -83,7 +82,7 @@ test("golden: recipe evolve plans are byte-identical for recipes that add no fie
     try {
       const bundle = { root: dir };
       await initBundle(dir);
-      await applyRecipe(bundle, loadRecipe("1", INSTALLED), "2026-10-14T12:00:00.000Z");
+      await installRecipe(bundle, loadRecipe("1", INSTALLED), { now: "2026-10-14T12:00:00.000Z" });
       await writeDoc(bundle, {
         id: "widgets/one",
         frontmatter: { type: "Widget", title: "One", setting: "outdoor", size: "large", finish: "satin" },

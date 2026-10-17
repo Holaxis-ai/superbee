@@ -13,12 +13,12 @@ import { loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
 import { BUNDLE_DIR, BUNDLE_DIRS } from "@superbee/board-git";
 import { configuredInitBundle as initBundle } from "../filesystem-runtime.js";
 import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, TOP_LEVEL_BUNDLE_MOVE, withCreateOnlyTarget } from "../bundle.js";
-import { CliError } from "../errors.js";
+import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
-import { applyRecipe } from "../recipes.js";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe, DEFAULT_RECIPE_REF } from "../recipe-source.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
 
@@ -211,7 +211,13 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   let warnings: unknown[] = [];
   if (loadedRecipe?.ok) {
     if (boundRoute) await assertResolvedLocalRouteIdentity(boundRoute);
-    const result = await applyRecipe(bundle, loadedRecipe.recipe);
+    let result: Awaited<ReturnType<typeof installRecipe>>;
+    try {
+      result = await installRecipe(bundle, loadedRecipe.recipe);
+    } catch (error) {
+      // Core's typed recipe failures classify through the one CLI mapping, as `recipe add`'s do.
+      throw classifyBundleError(error);
+    }
     recipeApplied = result.id;
     selectedRecipeKinds = loadedRecipe.recipe.governs;
     // Duplicate-`governs` against the TARGET bundle (approved §B decision 8(ii)), same as

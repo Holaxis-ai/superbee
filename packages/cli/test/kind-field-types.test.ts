@@ -16,7 +16,7 @@ import { CONVENTION_TYPE, initBundle, readDoc, writeDoc, type Bundle } from "@su
 import { newCommand } from "../src/commands/new.js";
 import { kinds } from "../src/commands/kinds.js";
 import { kind } from "../src/commands/kind.js";
-import { materializeRecipeForEdition } from "../src/recipes.js";
+import { materializeRecipeForEdition } from "@superbee/core/recipe-lifecycle";
 import type { LoadedRecipe } from "../src/recipe-source.js";
 import { doc } from "../src/commands/doc.js";
 import { status } from "../src/commands/status.js";

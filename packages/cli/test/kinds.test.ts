@@ -23,7 +23,7 @@ import { status } from "../src/commands/status.js";
 import { CliError } from "../src/errors.js";
 import { commandReference } from "../src/reference.js";
 import { buildHomeView } from "../src/commands/home.js";
-import { applyRecipe } from "../src/recipes.js";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
 import { shellArg } from "../src/invocation.js";
 import { testInvocation } from "./support/command-prefix.js";
@@ -48,7 +48,7 @@ async function tempDir(): Promise<string> {
 async function makeSeededBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
   await initBundle(dir, { okfVersion: "0.1" });
-  await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
+  await installRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
@@ -1312,9 +1312,9 @@ test("--remote: new + kinds against a served bundle, parity with the same operat
   const remoteDir = await tempDir();
   try {
     await initBundle(localDir);
-    await applyRecipe({ root: localDir }, CONTEXT_NOTES_RECIPE);
+    await installRecipe({ root: localDir }, CONTEXT_NOTES_RECIPE);
     await initBundle(remoteDir);
-    await applyRecipe({ root: remoteDir }, CONTEXT_NOTES_RECIPE);
+    await installRecipe({ root: remoteDir }, CONTEXT_NOTES_RECIPE);
     const handle: ServerHandle = await serve({ bundle: { root: remoteDir }, port: 0 });
     const url = `http://${handle.host}:${handle.port}`;
     try {
@@ -1347,7 +1347,7 @@ test("seed round-trip (usability F2): init seeds 'sections: [Summary]' into 'kin
   const dir = await tempDir();
   try {
     await initBundle(dir);
-    await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
+    await installRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
 
     // init -> kinds shows the seeded sections (the seed exercises the 'sections' feature for
     // real). ONLY Summary is declared — the one section the context-notes recipe scaffolds and

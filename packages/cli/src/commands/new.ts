@@ -19,7 +19,7 @@ import { renderUsage } from "../output.js";
 // silent-data-loss class already closed for `doc write`. It writes with the engine's expect-absent
 // compare-and-swap (`expectedVersion: null`, the same create-race-closing pattern the CLI's recipe
 // machinery
-// (`applyRecipe`) uses): the write succeeds only if the target id does not yet exist, and a
+// (`installRecipe`) uses): the write succeeds only if the target id does not yet exist, and a
 // pre-existing doc maps the resulting `VersionConflict` to a structured ALREADY_EXISTS error
 // (exit 5) that hints `doc update` (to patch it) or `doc write` (to overwrite it outright and
 // deliberately).
@@ -627,7 +627,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   const remote = values.remote as string | undefined;
 
   // "create-only" mode: expect-absent CAS, the same closed-create-race pattern the CLI's recipe
-  // machinery (`applyRecipe`) uses. A pre-existing doc at `targetId` maps to a structured, actionable
+  // machinery (`installRecipe`) uses. A pre-existing doc at `targetId` maps to a structured, actionable
   // ALREADY_EXISTS (exit 5) instead of silently overwriting it. Validation is STRICT (unlike `doc
   // write`'s warn-by-default): a missing required field or a disallowed enum value rejects the
   // write (exit 2) before any write is attempted.

@@ -1,34 +1,34 @@
+// Recipe installation: create-only, expect-absent CAS per artifact through the shared document
+// mutation boundary, so a built-in and an external recipe install through the same function and
+// an existing document is never overwritten. Storage-neutral: no Node globals or builtins.
+import { query, readBlob, readBundleOkfVersion, readDoc, writeBlob } from "../bundle-ops.js";
+import { resolveContentType } from "../content-type.js";
+import { mutateDocument } from "../document-mutation.js";
+import { CONVENTIONS_PREFIX, PROGRESS_STATUS_FIELD, progressStatusStorageField, type KindRegistry } from "../kinds.js";
+import { okfValuesEqual } from "../okf-authored-values.js";
+import { PAGE_REGISTRY_PREFIX, parseRegistration, VIEW_REGISTRY_PREFIX } from "../page.js";
+import type { LoadedRecipe } from "../recipes.js";
+import type { Bundle, ConceptId, OkfDocument } from "../types.js";
+import type { ValidationWarning } from "../validation.js";
+import { VersionConflict } from "../versioning.js";
+import { RecipeAssetConflict, RecipeEditionChanged, RecipeInputError } from "./errors.js";
 import {
-  PROGRESS_STATUS_FIELD,
-  progressStatusStorageField,
-  readBlob,
-  readBundleOkfVersion,
-  readDoc,
-  resolveContentType,
-  writeBlob,
-  mutateDocument,
-  query,
-  CONVENTIONS_PREFIX,
-  VersionConflict,
-  type Bundle,
-  type ConceptId,
-  type KindConvention,
-  type KindRegistry,
-  type OkfDocument,
-  type ValidationWarning,
-} from "@superbee/core";
-import {
-  PAGE_ENTRY_PREFIX,
-  PAGE_REGISTRY_PREFIX,
-  PAGE_TYPE_NAMES,
-  parseRegistration,
-  VIEW_ENTRY_PREFIX,
-  VIEW_REGISTRY_PREFIX,
-} from "@superbee/core/page";
-import { isDeepStrictEqual } from "node:util";
-import { CliError } from "./errors.js";
-import { LEGACY_PAGE_TYPE_NAME } from "./legacy-page.js";
-import type { LoadedRecipe } from "./recipe-source.js";
+  findLegacyViewConvention,
+  governsKind,
+  legacyEntryAlias,
+  legacyRegistryAlias,
+  VIEW_KIND_NAME,
+} from "./legacy-aliases.js";
+
+/**
+ * The logical workflow-field token recipe convention bodies may carry; materialization replaces it
+ * with the target edition's storage field. The built-in recipe content authors it.
+ */
+const RECIPE_PROGRESS_STATUS_TOKEN = "{{superbee:progress_status}}";
+
+function materializeRecipeBody(body: string, storageField: string): string {
+  return body.replaceAll(RECIPE_PROGRESS_STATUS_TOKEN, storageField);
+}
 
 /** Per-doc apply outcome: `changed: false` means the doc already existed (idempotent no-op), or —
  * when `legacy_present`/`migration_required` names a doc — that a legacy-LOCATED counterpart
@@ -63,12 +63,8 @@ export interface RecipeReferenceResult {
   changed: boolean;
 }
 
-/** The receipt `applyRecipe` returns: identity, per-doc outcomes, an overall `changed` (any doc
- * changed), and any non-fatal warnings collected at LOAD time (recipe.md reserved keys, skipped
- * malformed convention docs). Duplicate-`governs` against the TARGET bundle is a separate, POST-
- * apply check (`loadKinds(bundle)`) — the command layer's job, not this function's. */
 /** Per-artifact tally (docs + pages + references; a page's registry/entry pair is ONE artifact). */
-export interface ApplyRecipeCounts {
+export interface RecipeInstallCounts {
   created: number;
   existing: number;
   legacy_present: number;
@@ -78,14 +74,18 @@ export interface ApplyRecipeCounts {
   migration_required: number;
 }
 
-export interface ApplyRecipeResult {
+/** The receipt `installRecipe` returns: identity, per-doc outcomes, an overall `changed` (any doc
+ * changed), and any non-fatal warnings collected at LOAD time (recipe.md reserved keys, skipped
+ * malformed convention docs). Duplicate-`governs` against the TARGET bundle is a separate, POST-
+ * install check (`loadKinds(bundle)`) — the caller's job, not this function's. */
+export interface RecipeInstallResult {
   id: string;
   version: string;
   source: string;
   docs: RecipeDocResult[];
   pages: RecipePageResult[];
   references: RecipeReferenceResult[];
-  counts: ApplyRecipeCounts;
+  counts: RecipeInstallCounts;
   changed: boolean;
   warnings: ValidationWarning[];
 }
@@ -110,8 +110,7 @@ function renameLogicalFieldMap(
     storageField !== PROGRESS_STATUS_FIELD
     && Object.prototype.hasOwnProperty.call(record, storageField)
   ) {
-    throw new CliError(
-      "USAGE",
+    throw new RecipeInputError(
       `recipe '${recipeId}' convention '${docId}' declares both logical '${PROGRESS_STATUS_FIELD}' and storage field '${storageField}'`,
     );
   }
@@ -130,8 +129,7 @@ export function materializeRecipeForEdition(
 ): LoadedRecipe {
   const storageField = progressStatusStorageField(okfVersion);
   if (!storageField) {
-    throw new CliError(
-      "USAGE",
+    throw new RecipeInputError(
       `recipe '${recipe.id}' cannot target unsupported OKF mutation version '${okfVersion}'`,
     );
   }
@@ -141,8 +139,7 @@ export function materializeRecipeForEdition(
     const listField = (value: unknown): unknown => {
       if (!Array.isArray(value) || !value.includes(PROGRESS_STATUS_FIELD)) return value;
       if (value.includes(storageField)) {
-        throw new CliError(
-          "USAGE",
+        throw new RecipeInputError(
           `recipe '${recipe.id}' convention '${doc.id}' declares both logical '${PROGRESS_STATUS_FIELD}' and storage field '${storageField}'`,
         );
       }
@@ -196,10 +193,7 @@ async function createRecipeDocument(
     now: () => now,
     buildCandidate: (_existing, context) => {
       if (context.okfVersion !== okfVersion) {
-        throw new CliError(
-          "CONFLICT",
-          `bundle OKF version changed from '${okfVersion}' to '${context.okfVersion}' during recipe installation; retry`,
-        );
+        throw new RecipeEditionChanged(okfVersion, context.okfVersion, "installation");
       }
       return { frontmatter: { ...doc.frontmatter }, body: doc.body };
     },
@@ -208,17 +202,19 @@ async function createRecipeDocument(
 }
 
 /**
- * Apply `recipe` through the shared document-mutation boundary using expect-absent CAS. Recipe
+ * Install `recipe` through the shared document-mutation boundary using expect-absent CAS. Recipe
  * conventions may declare Superbee's logical `progress_status`; this installer materializes the
  * concrete field for the bundle edition before any write. V0.1 retains the historical install-time
- * `timestamp`; v0.2 preserves explicitly supplied legacy fields but does not invent them. A
- * `VersionConflict` remains an idempotent existing-doc result, never a clobber.
+ * `timestamp` (`options.now`, default the current time); v0.2 preserves explicitly supplied legacy
+ * fields but does not invent them. A `VersionConflict` remains an idempotent existing-doc result,
+ * never a clobber.
  */
-export async function applyRecipe(
+export async function installRecipe(
   bundle: Bundle,
   recipe: LoadedRecipe,
-  now: string = new Date().toISOString(),
-): Promise<ApplyRecipeResult> {
+  options: { now?: string } = {},
+): Promise<RecipeInstallResult> {
+  const now = options.now ?? new Date().toISOString();
   const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
   recipe = materializeRecipeForEdition(recipe, okfVersion);
   await assertPortableTargetsCompatible(bundle, recipe, now, okfVersion);
@@ -326,16 +322,16 @@ export async function applyRecipe(
         continue;
       }
     }
-    const desiredBytes = Buffer.from(page.html, "utf8");
+    const desiredBytes = new TextEncoder().encode(page.html);
     let entryChanged = true;
     try {
       await writeBlob(bundle, page.entry, desiredBytes, undefined, { expectedVersion: null });
     } catch (err) {
       if (!(err instanceof VersionConflict)) throw err;
       const existing = await readBlob(bundle, page.entry);
-      const sameBytes = existing !== null && Buffer.from(existing.bytes).equals(desiredBytes);
+      const bytesMatch = existing !== null && sameBytes(existing.bytes, desiredBytes);
       const sameContentType = existing?.contentType === resolveContentType(page.entry);
-      if (!sameBytes || !sameContentType) throw recipeAssetConflict(recipe.id, page.entry);
+      if (!bytesMatch || !sameContentType) throw new RecipeAssetConflict(recipe.id, page.entry);
       entryChanged = false;
     }
 
@@ -346,7 +342,7 @@ export async function applyRecipe(
     } catch (err) {
       if (!(err instanceof VersionConflict)) throw err;
       const existing = await readDoc(bundle, registry.id);
-      if (!sameInstalledDoc(existing, registry, okfVersion)) throw recipeAssetConflict(recipe.id, `${registry.id}.md`);
+      if (!sameInstalledDoc(existing, registry, okfVersion)) throw new RecipeAssetConflict(recipe.id, `${registry.id}.md`);
       registryChanged = false;
     }
 
@@ -368,7 +364,7 @@ export async function applyRecipe(
     } catch (err) {
       if (!(err instanceof VersionConflict)) throw err;
       const existing = await readDoc(bundle, desired.id);
-      if (!sameInstalledDoc(existing, desired, okfVersion)) throw recipeAssetConflict(recipe.id, `${desired.id}.md`);
+      if (!sameInstalledDoc(existing, desired, okfVersion)) throw new RecipeAssetConflict(recipe.id, `${desired.id}.md`);
       changed = false;
     }
     references.push({ id: desired.id, changed });
@@ -380,7 +376,7 @@ export async function applyRecipe(
     ...references,
   ];
   const sourceDiffers = docs.filter((doc) => doc.source_differs).length;
-  const counts: ApplyRecipeCounts = {
+  const counts: RecipeInstallCounts = {
     created: artifacts.filter((a) => a.changed).length,
     existing: artifacts.filter((a) =>
       !a.changed && a.legacy_present === undefined && a.migration_required === undefined &&
@@ -426,17 +422,17 @@ async function assertPortableTargetsCompatible(
   for (const page of recipe.pages) {
     const existingBlob = await readBlob(bundle, page.entry);
     if (existingBlob) {
-      const desiredBytes = Buffer.from(page.html, "utf8");
-      const sameBytes = Buffer.from(existingBlob.bytes).equals(desiredBytes);
+      const desiredBytes = new TextEncoder().encode(page.html);
+      const bytesMatch = sameBytes(existingBlob.bytes, desiredBytes);
       const sameContentType = existingBlob.contentType === resolveContentType(page.entry);
-      if (!sameBytes || !sameContentType) throw recipeAssetConflict(recipe.id, page.entry);
+      if (!bytesMatch || !sameContentType) throw new RecipeAssetConflict(recipe.id, page.entry);
     }
 
     const existingRegistry = registries.get(page.registry.id);
     if (existingRegistry) {
       const desiredRegistry = recipeDocumentForApply(page.registry, okfVersion, now);
       if (!sameInstalledDoc(existingRegistry, desiredRegistry, okfVersion)) {
-        throw recipeAssetConflict(recipe.id, `${page.registry.id}.md`);
+        throw new RecipeAssetConflict(recipe.id, `${page.registry.id}.md`);
       }
     }
   }
@@ -451,16 +447,25 @@ async function assertPortableTargetsCompatible(
     if (!existing) continue;
     const desired = recipeDocumentForApply(reference.doc, okfVersion, now);
     if (!sameInstalledDoc(existing, desired, okfVersion)) {
-      throw recipeAssetConflict(recipe.id, `${reference.doc.id}.md`);
+      throw new RecipeAssetConflict(recipe.id, `${reference.doc.id}.md`);
     }
   }
+}
+
+/** Byte equality of two blob payloads. */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
 }
 
 export function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, okfVersion: string): boolean {
   const { timestamp: _existingTimestamp, ...existingFrontmatter } = existing.frontmatter;
   const { timestamp: _desiredTimestamp, ...desiredFrontmatter } = desired.frontmatter;
   // A reading-order placement the bundle added to an installed convention is not drift: the
-  // recipe declares none, and evolution keeps it (BUNDLE_LOCAL_PLACEMENT in recipe-evolution).
+  // recipe declares none, and evolution keeps it (BUNDLE_LOCAL_PLACEMENT in evolution.ts).
   if (desiredFrontmatter.order === undefined) delete existingFrontmatter.order;
   if (okfVersion === "0.2") {
     for (const frontmatter of [existingFrontmatter, desiredFrontmatter]) {
@@ -470,16 +475,7 @@ export function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, ok
       frontmatter.generated = rest;
     }
   }
-  return isDeepStrictEqual(existingFrontmatter, desiredFrontmatter) && existing.body === desired.body;
-}
-
-function recipeAssetConflict(recipeId: string, key: string): CliError {
-  return new CliError(
-    "ALREADY_EXISTS",
-    `recipe '${recipeId}' cannot install '${key}' because a different target already exists; ` +
-      "the existing bundle content was left untouched",
-    { details: { recipe: recipeId, key } },
-  );
+  return okfValuesEqual(existingFrontmatter, desiredFrontmatter) && existing.body === desired.body;
 }
 
 /**
@@ -489,14 +485,14 @@ function recipeAssetConflict(recipeId: string, key: string): CliError {
  * doc's content differs from the recipe source (the listing's `drift` bit). The query was always
  * a full read; returning the docs instead of discarding their content costs zero added I/O.
  */
-export async function appliedConventionDocs(bundle: Bundle): Promise<Map<ConceptId, OkfDocument>> {
+export async function installedConventionDocs(bundle: Bundle): Promise<Map<ConceptId, OkfDocument>> {
   const docs = await query(bundle, { prefix: CONVENTIONS_PREFIX });
   return new Map(docs.map((d) => [d.id, d]));
 }
 
 /**
  * True when at least one of `recipe`'s installed docs differs in content from the recipe source
- * (the same `sameInstalledDoc` comparison `recipe add` makes; timestamp-insensitive). Honest at
+ * (the same `sameInstalledDoc` comparison `installRecipe` makes; timestamp-insensitive). Honest at
  * the literal level only: drift can be DELIBERATE — a dismissal record occupying the canonical
  * id, or a kind legitimately evolved via `kind field add` / `recipe evolve`. The listing pairs
  * the bit with descriptive help and NO fixing command (design appendix O2): a proactive "fix"

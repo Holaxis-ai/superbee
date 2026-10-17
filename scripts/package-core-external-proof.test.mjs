@@ -71,6 +71,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/kinds.d.ts"));
     assert.ok(paths.includes("dist/recipes.js"));
     assert.ok(paths.includes("dist/recipes.d.ts"));
+    assert.ok(paths.includes("dist/recipe-lifecycle/index.js"));
+    assert.ok(paths.includes("dist/recipe-lifecycle/index.d.ts"));
     assert.ok(paths.includes("dist/remote.js"));
     assert.ok(paths.includes("dist/remote.d.ts"));
     assert.ok(paths.includes("dist/storage.js"));
@@ -549,10 +551,12 @@ export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBacke
     assert.deepEqual(installedManifest.exports["./artifact-contract"], { types: "./dist/artifact-contract.d.ts", default: "./dist/artifact-contract.js" });
     assert.deepEqual(installedManifest.exports["./hosted-client"], { types: "./dist/hosted-client/index.d.ts", default: "./dist/hosted-client/index.js" });
     assert.deepEqual(installedManifest.exports["./hosted-client/node"], { types: "./dist/hosted-client/node.d.ts", default: "./dist/hosted-client/node.js" });
+    assert.deepEqual(installedManifest.exports["./recipe-lifecycle"], { types: "./dist/recipe-lifecycle/index.d.ts", default: "./dist/recipe-lifecycle/index.js" });
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
     assert.ok(installedFiles.includes("dist/hosted-client/index.js"), "the hosted client subpath is packed");
     assert.ok(installedFiles.includes("dist/hosted-client/node.js"), "the hosted client's Node-only subpath is packed");
+    assert.ok(installedFiles.includes("dist/recipe-lifecycle/index.js"), "the recipe lifecycle subpath is packed");
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;
     for (const file of installedFiles.filter((name) => /\.(?:js|d\.ts)$/.test(name))) {

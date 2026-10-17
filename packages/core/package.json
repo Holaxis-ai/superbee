@@ -47,6 +47,10 @@
       "types": "./dist/recipes.d.ts",
       "default": "./dist/recipes.js"
     },
+    "./recipe-lifecycle": {
+      "types": "./dist/recipe-lifecycle/index.d.ts",
+      "default": "./dist/recipe-lifecycle/index.js"
+    },
     "./kinds": {
       "types": "./dist/kinds.d.ts",
       "default": "./dist/kinds.js"

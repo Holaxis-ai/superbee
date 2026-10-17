@@ -4,43 +4,38 @@
 // This module owns the distinct upgrade authority: a read-only compatibility plan followed by an
 // exact-token preflight and exact-version CAS apply over each changed target. Since the bundle has
 // no cross-document transaction, a postcondition reports concurrent non-target changes honestly.
+import { query, readBlob, readBundleOkfVersion, readDocVersioned } from "../bundle-ops.js";
+import { resolveContentType } from "../content-type.js";
+import { DocumentNotFoundError, mutateDocument } from "../document-mutation.js";
+import { applyV02MutationMetadata } from "../document-write-policy.js";
+import { InvalidInputError, OkfActorError } from "../errors.js";
 import {
   CONVENTIONS_PREFIX,
-  DocumentNotFoundError,
-  InvalidInputError,
-  OkfActorError,
-  VersionConflict,
-  applyV02MutationMetadata,
-  blobVersion,
   buildKindRegistry,
-  contentVersion,
-  mutateDocument,
   parseConventionDoc,
-  parseLinksFromDoc,
   projectKindValidationWarnings,
-  query,
-  readBlob,
-  readBundleOkfVersion,
-  readDocVersioned,
-  resolveContentType,
   validateAgainstKind,
-  type Bundle,
-  type ConceptId,
   type KindConvention,
   type KindRegistry,
-  type OkfDocument,
-  type Version,
-} from "@superbee/core";
-import { createHash } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
-import { CliError, classifyBundleError } from "./errors.js";
-import { collectLinkDeclarations, type LinkTypeDeclaration } from "./link-types.js";
-import type { LoadedRecipe } from "./recipe-source.js";
+} from "../kinds.js";
+import { collectLinkDeclarations, type LinkTypeDeclaration } from "../link-types.js";
+import { parseLinksFromDoc } from "../links.js";
+import { okfValuesEqual } from "../okf-authored-values.js";
+import type { LoadedRecipe } from "../recipes.js";
+import type { Bundle, ConceptId, OkfDocument, Version } from "../types.js";
+import { VersionConflict, blobVersion, contentVersion, sha256Hex } from "../versioning.js";
+import {
+  RecipeEditionChanged,
+  RecipeEvolutionBlocked,
+  RecipeEvolutionInterrupted,
+  RecipeEvolutionPlanChanged,
+  RecipeEvolutionPostcondition,
+} from "./errors.js";
 import {
   materializeRecipeForEdition,
   recipeDocumentForApply,
   sameInstalledDoc,
-} from "./recipes.js";
+} from "./install.js";
 
 const RECIPE_EVOLUTION_WRITE_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
@@ -178,11 +173,11 @@ function additiveConventionCandidate(
       );
       return current;
     }
-    if (isDeepStrictEqual(current, next)) return current;
+    if (okfValuesEqual(current, next)) return current;
     if (Array.isArray(current) && Array.isArray(next)) {
       const merged = [...current];
       for (const value of current) {
-        if (!next.some((candidate) => isDeepStrictEqual(candidate, value))) {
+        if (!next.some((candidate) => okfValuesEqual(candidate, value))) {
           evolutionBlocker(
             blockers,
             "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
@@ -193,7 +188,7 @@ function additiveConventionCandidate(
         }
       }
       for (const value of next) {
-        if (merged.some((candidate) => isDeepStrictEqual(candidate, value))) continue;
+        if (merged.some((candidate) => okfValuesEqual(candidate, value))) continue;
         merged.push(value);
         addedPaths.push(`${pointer}/${pointerSegment(String(value))}`);
       }
@@ -355,7 +350,7 @@ function monotonicEvolutionBlockers(
       `links.${linkType}`,
     );
   }
-  if (!isDeepStrictEqual(current.expectsInbound ?? {}, desired.expectsInbound ?? {})) {
+  if (!okfValuesEqual(current.expectsInbound ?? {}, desired.expectsInbound ?? {})) {
     evolutionBlocker(
       blockers,
       "RECIPE_EVOLUTION_RELATIONSHIP_CHANGE",
@@ -364,7 +359,7 @@ function monotonicEvolutionBlockers(
       "expects_inbound",
     );
   }
-  if (!isDeepStrictEqual(current.fields.terminal, desired.fields.terminal)) {
+  if (!okfValuesEqual(current.fields.terminal, desired.fields.terminal)) {
     evolutionBlocker(
       blockers,
       "RECIPE_EVOLUTION_TERMINAL_CHANGE",
@@ -459,7 +454,7 @@ function linkTypeAdditionBlockers(
 }
 
 function evolutionPlanToken(input: unknown): string {
-  return `sha256:${createHash("sha256").update(JSON.stringify(input), "utf8").digest("hex")}`;
+  return `sha256:${sha256Hex(JSON.stringify(input))}`;
 }
 
 async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe): Promise<PreparedRecipeEvolution> {
@@ -699,7 +694,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   for (const page of recipe.pages) {
     await assetDocProof("view-registry", page.registry);
     const existing = await readBlob(bundle, page.entry);
-    const wantedBytes = Buffer.from(page.html, "utf8");
+    const wantedBytes = new TextEncoder().encode(page.html);
     const wanted = blobVersion(wantedBytes);
     proofs.push({ kind: "view-entry", id: page.entry, current_version: existing?.version ?? null, desired_version: wanted });
     if (!existing) {
@@ -855,23 +850,16 @@ export async function applyRecipeEvolution(
   bundle: Bundle,
   recipe: LoadedRecipe,
   expectedPlanToken: string,
-  actor?: string,
+  options: { actor?: string } = {},
 ): Promise<RecipeEvolutionApplyResult> {
+  const { actor } = options;
   const prepared = await prepareRecipeEvolution(bundle, recipe);
   const { plan } = prepared;
   if (plan.plan_token !== expectedPlanToken) {
-    throw new CliError(
-      "STALE_HEAD",
-      `recipe evolution plan changed (expected ${expectedPlanToken}, current ${plan.plan_token}); inspect a fresh plan before applying`,
-      { details: { expected_plan: expectedPlanToken, current_plan: plan.plan_token } },
-    );
+    throw new RecipeEvolutionPlanChanged(expectedPlanToken, plan.plan_token);
   }
   if (!plan.ready) {
-    throw new CliError(
-      "CONFLICT",
-      `recipe '${plan.id}' cannot evolve automatically (${plan.counts.blockers} blocker${plan.counts.blockers === 1 ? "" : "s"})`,
-      { details: { blocker_count: plan.counts.blockers, blockers: plan.blockers.slice(0, 20) } },
-    );
+    throw new RecipeEvolutionBlocked(plan.id, plan.blockers);
   }
 
   const completed: Array<{ id: ConceptId; changed: boolean; version: Version }> = [];
@@ -903,10 +891,7 @@ export async function applyRecipeEvolution(
         now: () => now,
         buildCandidate: (_existing, context) => {
           if (context.okfVersion !== plan.okf_version) {
-            throw new CliError(
-              "STALE_HEAD",
-              `bundle OKF version changed from '${plan.okf_version}' to '${context.okfVersion}' during recipe evolution`,
-            );
+            throw new RecipeEditionChanged(plan.okf_version, context.okfVersion, "evolution");
           }
           return { frontmatter: { ...desired.frontmatter }, body: desired.body };
         },
@@ -914,28 +899,36 @@ export async function applyRecipeEvolution(
       completed.push({ id: definition.id, changed: result.changed, version: result.version });
       pending.shift();
     } catch (error) {
+      if (error instanceof RecipeEditionChanged) {
+        throw new RecipeEvolutionInterrupted("edition_changed", error.message, completed, pending, error);
+      }
       if (error instanceof VersionConflict || error instanceof DocumentNotFoundError) {
-        throw new CliError(
-          "STALE_HEAD",
+        throw new RecipeEvolutionInterrupted(
+          "race",
           `recipe evolution lost its exact-version race at '${definition.id}'; inspect a fresh plan and resume`,
-          { details: { completed, pending } },
+          completed,
+          pending,
+          error,
         );
       }
-      // An actor rejection is a usage error with a corrected spelling (classifyBundleError), not a
-      // post-preflight conflict; every other typed input rejection keeps the CONFLICT contract.
+      // An actor rejection keeps its own typed error for the presenting boundary (a corrected
+      // spelling), not a post-preflight policy refusal; every other typed input rejection is one.
       if (error instanceof InvalidInputError && !(error instanceof OkfActorError)) {
-        throw new CliError(
-          "CONFLICT",
+        throw new RecipeEvolutionInterrupted(
+          "write_policy",
           `recipe evolution write policy rejected '${definition.id}' after preflight: ${error.message}`,
-          { details: { completed, pending } },
+          completed,
+          pending,
+          error,
         );
       }
-      const classified = error instanceof CliError ? error : classifyBundleError(error);
-      throw new CliError(classified.code, classified.message, {
-        details: { ...(classified.details ?? {}), completed, pending },
-        ...(classified.help ? { help: classified.help } : {}),
-        ...(classified.handled ? { handled: true } : {}),
-      });
+      throw new RecipeEvolutionInterrupted(
+        "other",
+        error instanceof Error ? error.message : String(error),
+        completed,
+        pending,
+        error,
+      );
     }
   }
 
@@ -944,24 +937,19 @@ export async function applyRecipeEvolution(
   try {
     postcondition = await prepareRecipeEvolution(bundle, recipe);
   } catch (error) {
-    throw new CliError(
-      "RUNTIME",
+    throw new RecipeEvolutionPostcondition(
+      "unverifiable",
       `recipe evolution wrote ${updated} definition(s), but its postcondition could not be verified: ${error instanceof Error ? error.message : String(error)}`,
-      { details: { completed, pending: [] } },
+      completed,
+      { cause: error },
     );
   }
   if (!postcondition.plan.ready || postcondition.plan.changed) {
-    throw new CliError(
-      "CONFLICT",
+    throw new RecipeEvolutionPostcondition(
+      "changed",
       `recipe evolution wrote ${updated} definition(s), but the prospective registry changed before the postcondition check`,
-      {
-        details: {
-          completed,
-          pending: [],
-          blockers: postcondition.plan.blockers.slice(0, 20),
-          postcondition_plan: postcondition.plan.plan_token,
-        },
-      },
+      completed,
+      { blockers: postcondition.plan.blockers, postcondition_plan: postcondition.plan.plan_token },
     );
   }
   return {

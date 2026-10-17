@@ -1,53 +1,16 @@
-// The CLI's recipe APPLY machinery + `context-notes`'s CONTENT ("recipe zero").
+// The CLI's built-in recipe CONTENT, starting with `context-notes` ("recipe zero").
 //
 // This is where Context Note SEEDING lives (moved out of `packages/core`: "the
-// engine special-cases NOTHING about conventions"). Core keeps only the generic apply primitive
-// (`writeDocVersioned` expect-absent CAS) and the generic `kindConventionDoc` serializer; this
-// module supplies the SPECIFIC content (the `Context Note` kind's convention + seed prose body,
-// plus the built-in recipe's manifest text) and the generic loop that applies ANY recipe's
-// convention docs idempotently, whether it came from the built-in source or an external folder
-// (`recipe-source.ts`'s `parseRecipeFiles` — the ONE parse+validate path both flow through).
+// engine special-cases NOTHING about conventions"). Core owns the generic install and evolution
+// semantics (`@superbee/core/recipe-lifecycle`) and the generic `kindConventionDoc` serializer;
+// this module supplies the SPECIFIC content (each built-in kind's convention + seed prose body,
+// plus the built-in recipes' manifest text) that `recipe-source-builtin.ts` serializes into recipe
+// files for `parseRecipeFiles`, the ONE parse+validate path built-in and external recipes share.
 //
 // `context-notes` (recipe zero) is the spec-test that a recipe must model a convention doc WITH A
 // BODY, not just bare frontmatter — `CONTEXT_NOTE_SEED_BODY` is the in-bundle authoring reference
 // for kind conventions (see its own doc comment below).
-//
-// Recipes Unit B (pluggable recipes): the registry is no longer an in-code array of `Recipe`
-// objects keyed by name — that shape could only ever hold built-ins. `applyRecipe`'s input widened
-// to `recipe-source.ts`'s `LoadedRecipe` (a folder-shaped `OkfDocument[]`, produced identically
-// whether the folder was a built-in in-code constant or bytes read off disk), so a built-in and an
-// external recipe apply through byte-for-byte the SAME function.
-import {
-  PROGRESS_STATUS_FIELD,
-  progressStatusStorageField,
-  readBlob,
-  readBundleOkfVersion,
-  readDoc,
-  resolveContentType,
-  writeBlob,
-  mutateDocument,
-  query,
-  CONVENTIONS_PREFIX,
-  VersionConflict,
-  type Bundle,
-  type ConceptId,
-  type KindConvention,
-  type KindRegistry,
-  type OkfDocument,
-  type ValidationWarning,
-} from "@superbee/core";
-import {
-  PAGE_ENTRY_PREFIX,
-  PAGE_REGISTRY_PREFIX,
-  PAGE_TYPE_NAMES,
-  parseRegistration,
-  VIEW_ENTRY_PREFIX,
-  VIEW_REGISTRY_PREFIX,
-} from "@superbee/core/page";
-import { isDeepStrictEqual } from "node:util";
-import { CliError } from "./errors.js";
-import { LEGACY_PAGE_TYPE_NAME } from "./legacy-page.js";
-import type { LoadedRecipe } from "./recipe-source.js";
+import { PROGRESS_STATUS_FIELD, type KindConvention } from "@superbee/core";
 
 /** The `type` value the context-notes recipe governs; formerly a core export, localized when the
  * bespoke `note` command (and core's `noteToDoc`) was deleted — the recipe is exactly the thing
@@ -96,7 +59,9 @@ export const CONTEXT_NOTE_KIND: KindConvention = {
  * not just in a doc an agent may never read. Bodies are prose (the registry only parses
  * frontmatter, per `parseConventionDoc`), so a fenced YAML example here is inert to the parser
  * and purely illustrative. The source uses one explicit logical-field token so the recipe
- * materializer can teach the physical workflow coordinate appropriate to the target OKF edition.
+ * materializer (core's `materializeRecipeForEdition`, which owns the token's interpretation) can
+ * teach the physical workflow coordinate appropriate to the target OKF edition; `recipes.test.ts`
+ * pins that an installed body equals `CONTEXT_NOTE_SEED_BODY` and carries no token.
  */
 const RECIPE_PROGRESS_STATUS_TOKEN = "{{superbee:progress_status}}";
 
