@@ -1,0 +1,2360 @@
+{
+  "fixed_now": "2026-10-17T12:00:00.000Z",
+  "canon": {
+    "nested maps with unsorted keys": {
+      "text": "{\"a\":{\"c\":\"x\",\"d\":[3,{\"y\":2,\"z\":1}]},\"b\":1}"
+    },
+    "non-ASCII keys": {
+      "text": "{\"Z\":4,\"e\":2,\"é\":1,\"日本\":3}"
+    },
+    "array holding undefined": {
+      "text": "[1,null,3]"
+    },
+    "member holding undefined": {
+      "text": "{\"a\":1}"
+    },
+    "NaN and Infinity": {
+      "text": "{\"i\":null,\"m\":null,\"n\":null}"
+    },
+    "a Date": {
+      "text": "{}"
+    },
+    "a Date member": {
+      "text": "{\"at\":{}}"
+    },
+    "a function member": {
+      "text": "{\"a\":1}"
+    },
+    "top-level undefined": {
+      "undefined": true
+    },
+    "top-level null": {
+      "text": "null"
+    },
+    "negative zero": {
+      "text": "0"
+    },
+    "a string": {
+      "text": "\"Ünïcödé 🐝\""
+    },
+    "an empty map": {
+      "text": "{}"
+    }
+  },
+  "sha256": [
+    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    "sha256:bc85d108f9013cc82a3c3d946f2049fdb7d4522fbd57093427afc9261528e81a",
+    "sha256:2836b45ac609058b7f04af38198eeaf8195f285005aba9a8b180016222097f9a",
+    "sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+    "sha256:44f8354494a5ba03ba1792a8d3e9c534c47a9181980fde7a3f44b06ef2ae7c7f"
+  ],
+  "short_hash": [
+    "52bacdbaddad",
+    "080ab338d81f",
+    "204d9db65789",
+    "06bc9b976360",
+    "105a503c9629",
+    "8badde10c760",
+    "e3b0c44298fc"
+  ],
+  "finding_digest": [
+    "sha256:20bd9c9297f702308b0cc626f3d7f8252b5c6c49bd8b508887c5a9563eb63388",
+    "sha256:20bd9c9297f702308b0cc626f3d7f8252b5c6c49bd8b508887c5a9563eb63388",
+    "sha256:4184b7976864d8893dcf315c521839db76adf4692b95d739c60b4f31f9e8e9b6",
+    "sha256:fa2d177609476e4c04e83944ad9ac5b2375d60eef72d87f151c7dc7438d1274b",
+    "sha256:d95a9fabecfc7f0be5a8c823c5c815bf8d1835a0ec8ca6c9477daae4559444e6",
+    "sha256:6eb6f7e1f9fdea7ad822e62bb90caa9163e17b32543c0d70015305a1fb7a85b8",
+    "sha256:4184b7976864d8893dcf315c521839db76adf4692b95d739c60b4f31f9e8e9b6"
+  ],
+  "decisions": [
+    {
+      "name": "owned applies, editor-owned named",
+      "decision": {
+        "apply": {
+          "start": {
+            "from": "2026-10-10T10:00:00-04:00",
+            "to": "S2"
+          }
+        },
+        "conflicts": [],
+        "editorFields": [
+          "title"
+        ],
+        "wording": [],
+        "signal": {
+          "priority": "normal",
+          "reasons": [
+            "editor-owned-field-changed"
+          ]
+        }
+      }
+    },
+    {
+      "name": "diverged is a conflict",
+      "decision": {
+        "apply": {},
+        "conflicts": [
+          {
+            "field": "start",
+            "doc_value": "EDITED",
+            "feed_before": "2026-10-10T10:00:00-04:00",
+            "feed_after": "S2"
+          }
+        ],
+        "editorFields": [
+          "title"
+        ],
+        "wording": [],
+        "signal": {
+          "priority": "normal",
+          "reasons": [
+            "OVERLAY_DOC_CONFLICT",
+            "editor-owned-field-changed"
+          ]
+        }
+      }
+    },
+    {
+      "name": "converged writes nothing",
+      "decision": {
+        "apply": {},
+        "conflicts": [],
+        "editorFields": [],
+        "wording": [],
+        "signal": null
+      }
+    },
+    {
+      "name": "no overlay is record-only",
+      "decision": {
+        "apply": {},
+        "conflicts": [],
+        "editorFields": [],
+        "wording": [],
+        "signal": null
+      }
+    },
+    {
+      "name": "editor-owned change the document already says",
+      "decision": {
+        "apply": {},
+        "conflicts": [],
+        "editorFields": [],
+        "wording": [],
+        "signal": null
+      }
+    },
+    {
+      "name": "editor-owned change the document differs on",
+      "decision": {
+        "apply": {},
+        "conflicts": [],
+        "editorFields": [
+          "event_types"
+        ],
+        "wording": [],
+        "signal": {
+          "priority": "normal",
+          "reasons": [
+            "editor-owned-field-changed"
+          ]
+        }
+      }
+    },
+    {
+      "name": "cancel of an overlaid record is urgent",
+      "decision": {
+        "apply": {
+          "event_status": {
+            "from": "scheduled",
+            "to": "canceled"
+          }
+        },
+        "conflicts": [],
+        "editorFields": [],
+        "wording": [],
+        "signal": {
+          "priority": "urgent",
+          "reasons": [
+            "needs_review:canceled"
+          ]
+        }
+      }
+    },
+    {
+      "name": "cancel without an overlay is normal",
+      "decision": {
+        "apply": {},
+        "conflicts": [],
+        "editorFields": [],
+        "wording": [],
+        "signal": {
+          "priority": "normal",
+          "reasons": [
+            "needs_review:canceled"
+          ]
+        }
+      }
+    },
+    {
+      "name": "cancel of a featured record is urgent",
+      "decision": {
+        "apply": {},
+        "conflicts": [],
+        "editorFields": [],
+        "wording": [],
+        "signal": {
+          "priority": "urgent",
+          "reasons": [
+            "needs_review:canceled"
+          ]
+        }
+      }
+    },
+    {
+      "name": "new is low",
+      "decision": {
+        "apply": {},
+        "conflicts": [],
+        "editorFields": [],
+        "wording": [],
+        "signal": {
+          "priority": "low",
+          "reasons": [
+            "needs_review:new"
+          ]
+        }
+      }
+    },
+    {
+      "name": "absent document value against a feed null conflicts",
+      "decision": {
+        "apply": {},
+        "conflicts": [
+          {
+            "field": "start",
+            "feed_before": null,
+            "feed_after": "S2"
+          }
+        ],
+        "editorFields": [],
+        "wording": [],
+        "signal": {
+          "priority": "normal",
+          "reasons": [
+            "OVERLAY_DOC_CONFLICT"
+          ]
+        }
+      }
+    },
+    {
+      "name": "document null against a feed null writes",
+      "decision": {
+        "apply": {
+          "start": {
+            "from": null,
+            "to": "S2"
+          }
+        },
+        "conflicts": [],
+        "editorFields": [],
+        "wording": [],
+        "signal": null
+      }
+    },
+    {
+      "name": "owned change without auto-apply needs judgment",
+      "decision": {
+        "apply": {},
+        "conflicts": [],
+        "editorFields": [],
+        "wording": [],
+        "signal": {
+          "priority": "normal",
+          "reasons": [
+            "owned-field-changed-without-auto-apply"
+          ]
+        }
+      }
+    }
+  ],
+  "guards": [
+    {
+      "name": "identity among other entries passes",
+      "outcome": "ok"
+    },
+    {
+      "name": "another resource with the id is lost",
+      "outcome": {
+        "code": "OVERLAY_IDENTITY_LOST",
+        "message": "document no longer carries the provider identity",
+        "details": {
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "the provider with another id is lost",
+      "outcome": {
+        "code": "OVERLAY_IDENTITY_LOST",
+        "message": "document no longer carries the provider identity",
+        "details": {
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "a provider citation without an id is lost",
+      "outcome": {
+        "code": "OVERLAY_IDENTITY_LOST",
+        "message": "document no longer carries the provider identity",
+        "details": {
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "malformed entries are lost",
+      "outcome": {
+        "code": "OVERLAY_IDENTITY_LOST",
+        "message": "document no longer carries the provider identity",
+        "details": {
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "a mapping instead of a list is lost",
+      "outcome": {
+        "code": "OVERLAY_IDENTITY_LOST",
+        "message": "document no longer carries the provider identity",
+        "details": {
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "no sources is lost",
+      "outcome": {
+        "code": "OVERLAY_IDENTITY_LOST",
+        "message": "document no longer carries the provider identity",
+        "details": {
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "an owned change passes",
+      "outcome": "ok"
+    },
+    {
+      "name": "a non-owned scalar is refused",
+      "outcome": {
+        "code": "FIELD_NOT_OWNED",
+        "message": "write would change non-owned fields: title",
+        "details": {
+          "fields": [
+            "title"
+          ],
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "a non-owned key from absent to null is refused",
+      "outcome": {
+        "code": "FIELD_NOT_OWNED",
+        "message": "write would change non-owned fields: note",
+        "details": {
+          "fields": [
+            "note"
+          ],
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "a body change is refused",
+      "outcome": {
+        "code": "FIELD_NOT_OWNED",
+        "message": "write would change non-owned fields: (body)",
+        "details": {
+          "fields": [
+            "(body)"
+          ],
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "a status write is refused",
+      "outcome": {
+        "code": "FIELD_NOT_OWNED",
+        "message": "write would change non-owned fields: status",
+        "details": {
+          "fields": [
+            "status"
+          ],
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "a moved owned field is a conflict",
+      "outcome": {
+        "code": "OVERLAY_DOC_CONFLICT",
+        "message": "owned field start changed since planning",
+        "details": {
+          "field": "start",
+          "external_id": "rec-1"
+        }
+      }
+    },
+    {
+      "name": "a missing document is lost",
+      "outcome": {
+        "code": "OVERLAY_IDENTITY_LOST",
+        "message": "overlay document no longer exists",
+        "details": {
+          "external_id": "rec-1"
+        }
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "new record raises one low Signal with the feed link and adoption hint",
+      "seeded": {},
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-f0cddb3f0924",
+            "external_id": "evt-006@calendar.example.org",
+            "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "reasons": [
+              "needs_review:new"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "New: Pumpkin Carving",
+                "superbee_progress_status": "todo",
+                "change_kind": "new",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-006@calendar.example.org",
+                "diff_summary": "new record @ 2026-10-25T14:00:00-04:00; end: 2026-10-25T16:00:00-04:00; event_status: scheduled",
+                "priority": "low",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-006@calendar.example.org",
+                    "title": "Pumpkin Carving"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-006@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · new · sha256:1111111111111111111111111111111111111111111111111111111111111111 · new record @ 2026-10-25T14:00:00-04:00; end: 2026-10-25T16:00:00-04:00; event_status: scheduled\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-f0cddb3f0924",
+            "external_id": "evt-006@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:98793db79215e705fdfd5126bc39f8d3a43ec14dd2c62aa0faf074026000d966"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-f0cddb3f0924",
+          "version": "sha256:98793db79215e705fdfd5126bc39f8d3a43ec14dd2c62aa0faf074026000d966",
+          "text": "---\ntype: Signal\ntitle: 'New: Pumpkin Carving'\nsuperbee_progress_status: todo\nchange_kind: new\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-006@calendar.example.org\ndiff_summary: >-\n  new record @ 2026-10-25T14:00:00-04:00; end: 2026-10-25T16:00:00-04:00;\n  event_status: scheduled\npriority: low\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-006@calendar.example.org\n    title: Pumpkin Carving\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-006@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · new · sha256:1111111111111111111111111111111111111111111111111111111111111111 · new record @ 2026-10-25T14:00:00-04:00; end: 2026-10-25T16:00:00-04:00; event_status: scheduled\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "owned fields apply with updated_at; an editor-owned change raises a typed about link",
+      "seeded": {
+        "events/story-time": "sha256:775dee169b25f24fb7b1ec23869f7aa4c88375628164d7b89aa3fa9270cdeb46",
+        "events/harvest-market": "sha256:da1a0492b217820d8b6e452487f0d1adaa7623bb4c200945e51f353a77ffa3c9"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/story-time",
+            "expected_version": "sha256:775dee169b25f24fb7b1ec23869f7aa4c88375628164d7b89aa3fa9270cdeb46",
+            "external_id": "evt-001@calendar.example.org",
+            "change_kind": "changed",
+            "fields": {
+              "start": {
+                "from": "2026-10-10T10:00:00-04:00",
+                "to": "2026-10-10T11:00:00-04:00"
+              },
+              "end": {
+                "from": "2026-10-10T11:00:00-04:00",
+                "to": "2026-10-10T12:00:00-04:00"
+              }
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-c49003462b3f",
+            "external_id": "evt-002@calendar.example.org",
+            "content_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "reasons": [
+              "editor-owned-field-changed"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Changed: Harvest Market and Craft Fair",
+                "superbee_progress_status": "todo",
+                "change_kind": "changed",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-002@calendar.example.org",
+                "diff_summary": "title: Harvest Market → Harvest Market and Craft Fair; not applied (editor-owned): title",
+                "priority": "normal",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-002@calendar.example.org",
+                    "title": "Harvest Market and Craft Fair"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/harvest-market.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:3333333333333333333333333333333333333333333333333333333333333333 · title: Harvest Market → Harvest Market and Craft Fair; not applied (editor-owned): title\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/story-time",
+            "external_id": "evt-001@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:5a783b008ea15e1445f05e89c83bfb611a230eaf62eabc1acc9d29fff40011ea"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-c49003462b3f",
+            "external_id": "evt-002@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:af9dcb6648b4ab9feccd0f6abff82f902801ee84ed887492120c86eb4ed3e633"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "events/story-time",
+          "version": "sha256:5a783b008ea15e1445f05e89c83bfb611a230eaf62eabc1acc9d29fff40011ea",
+          "text": "---\ntype: Event\nevent_status: scheduled\ntitle: Story Time (editor title)\nstart: '2026-10-10T11:00:00-04:00'\nend: '2026-10-10T12:00:00-04:00'\nvenue_text: Community Room\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-001@calendar.example.org\n    title: feed record\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\nupdated_at: '2026-10-17T12:00:00.000Z'\n---\nEditor-written description. Not feed-owned.\n"
+        },
+        {
+          "id": "signals/synthetic-library-c49003462b3f",
+          "version": "sha256:af9dcb6648b4ab9feccd0f6abff82f902801ee84ed887492120c86eb4ed3e633",
+          "text": "---\ntype: Signal\ntitle: 'Changed: Harvest Market and Craft Fair'\nsuperbee_progress_status: todo\nchange_kind: changed\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-002@calendar.example.org\ndiff_summary: >-\n  title: Harvest Market → Harvest Market and Craft Fair; not applied\n  (editor-owned): title\npriority: normal\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-002@calendar.example.org\n    title: Harvest Market and Craft Fair\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/harvest-market.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:3333333333333333333333333333333333333333333333333333333333333333 · title: Harvest Market → Harvest Market and Craft Fair; not applied (editor-owned): title\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "a cancellation of an overlaid record applies the owned status and raises an urgent Signal",
+      "seeded": {
+        "events/trail-cleanup": "sha256:226f10a49fcb8a4065f32aa89ec1bb1c4d73e036da0e5ef2a746ac57df64c0fa"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/trail-cleanup",
+            "expected_version": "sha256:226f10a49fcb8a4065f32aa89ec1bb1c4d73e036da0e5ef2a746ac57df64c0fa",
+            "external_id": "evt-005@calendar.example.org",
+            "change_kind": "canceled",
+            "fields": {
+              "event_status": {
+                "from": "scheduled",
+                "to": "canceled"
+              }
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-9e7658d229d7",
+            "external_id": "evt-005@calendar.example.org",
+            "content_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "reasons": [
+              "needs_review:canceled"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Canceled: Trail Cleanup",
+                "superbee_progress_status": "todo",
+                "change_kind": "canceled",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-005@calendar.example.org",
+                "diff_summary": "event_status: scheduled → canceled",
+                "priority": "urgent",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-005@calendar.example.org",
+                    "title": "Trail Cleanup"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/trail-cleanup.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:4444444444444444444444444444444444444444444444444444444444444444 · event_status: scheduled → canceled\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/trail-cleanup",
+            "external_id": "evt-005@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:1cf8223d9bec83093355857dc59b4c2bdddedfc892221bc35dffd92c8af95f23"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-9e7658d229d7",
+            "external_id": "evt-005@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:762c1826a95cb4d04fbef1e9527c4826d224f0a184259dd762f33dfa9f9f4190"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "events/trail-cleanup",
+          "version": "sha256:1cf8223d9bec83093355857dc59b4c2bdddedfc892221bc35dffd92c8af95f23",
+          "text": "---\ntype: Event\nevent_status: canceled\ntitle: Trail Cleanup\nstart: '2026-10-24T09:00:00-04:00'\nend: '2026-10-24T12:00:00-04:00'\nvenue_text: North Trailhead\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-005@calendar.example.org\n    title: feed record\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\nupdated_at: '2026-10-17T12:00:00.000Z'\n---\nEditor-written description. Not feed-owned.\n"
+        },
+        {
+          "id": "signals/synthetic-library-9e7658d229d7",
+          "version": "sha256:762c1826a95cb4d04fbef1e9527c4826d224f0a184259dd762f33dfa9f9f4190",
+          "text": "---\ntype: Signal\ntitle: 'Canceled: Trail Cleanup'\nsuperbee_progress_status: todo\nchange_kind: canceled\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-005@calendar.example.org\ndiff_summary: 'event_status: scheduled → canceled'\npriority: urgent\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-005@calendar.example.org\n    title: Trail Cleanup\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/trail-cleanup.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:4444444444444444444444444444444444444444444444444444444444444444 · event_status: scheduled → canceled\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "an editor's edit of an owned field is a conflict and the document keeps it",
+      "seeded": {
+        "events/story-time": "sha256:38742ecdaeefc645c4a2c9a296ea79babf773cc34f0f2a22c2f9a111b6b70f8c"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-bc73cb27a92e",
+            "external_id": "evt-001@calendar.example.org",
+            "content_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "reasons": [
+              "OVERLAY_DOC_CONFLICT"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Changed: Story Time",
+                "superbee_progress_status": "todo",
+                "change_kind": "changed",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-001@calendar.example.org",
+                "diff_summary": "start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:30:00-04:00; CONFLICT start: doc has 2026-10-10T11:15:00-04:00, feed was 2026-10-10T10:00:00-04:00",
+                "priority": "normal",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-001@calendar.example.org",
+                    "title": "Story Time"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/story-time.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:5555555555555555555555555555555555555555555555555555555555555555 · start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:30:00-04:00; CONFLICT start: doc has 2026-10-10T11:15:00-04:00, feed was 2026-10-10T10:00:00-04:00\n"
+            }
+          }
+        ],
+        "refusals": [
+          {
+            "code": "OVERLAY_DOC_CONFLICT",
+            "external_id": "evt-001@calendar.example.org",
+            "target": "events/story-time",
+            "field": "start",
+            "message": "owned field was edited in the document since the last accepted feed value"
+          }
+        ]
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-bc73cb27a92e",
+            "external_id": "evt-001@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:eff1020d416b9fd0eefef27916ced53f7c96259934f3bce3eceef7647ba2593e"
+          }
+        ],
+        "refusals": [
+          {
+            "code": "OVERLAY_DOC_CONFLICT",
+            "external_id": "evt-001@calendar.example.org",
+            "target": "events/story-time",
+            "field": "start",
+            "message": "owned field was edited in the document since the last accepted feed value"
+          }
+        ],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-bc73cb27a92e",
+          "version": "sha256:eff1020d416b9fd0eefef27916ced53f7c96259934f3bce3eceef7647ba2593e",
+          "text": "---\ntype: Signal\ntitle: 'Changed: Story Time'\nsuperbee_progress_status: todo\nchange_kind: changed\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-001@calendar.example.org\ndiff_summary: >-\n  start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:30:00-04:00; CONFLICT start:\n  doc has 2026-10-10T11:15:00-04:00, feed was 2026-10-10T10:00:00-04:00\npriority: normal\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-001@calendar.example.org\n    title: Story Time\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/story-time.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:5555555555555555555555555555555555555555555555555555555555555555 · start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:30:00-04:00; CONFLICT start: doc has 2026-10-10T11:15:00-04:00, feed was 2026-10-10T10:00:00-04:00\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "an absent document field against a feed null is a conflict, not a write",
+      "seeded": {
+        "events/story-time": "sha256:e465fa363fb1c39fc7681ee543d6898c912e4763a67050001d1bdc9320d1e2d8"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-646b93d3d12a",
+            "external_id": "evt-001@calendar.example.org",
+            "content_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            "reasons": [
+              "OVERLAY_DOC_CONFLICT"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Changed: Story Time",
+                "superbee_progress_status": "todo",
+                "change_kind": "changed",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-001@calendar.example.org",
+                "diff_summary": "end: null → 2026-10-10T12:00:00-04:00; CONFLICT end: doc has ∅, feed was null",
+                "priority": "normal",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-001@calendar.example.org",
+                    "title": "Story Time"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/story-time.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:6666666666666666666666666666666666666666666666666666666666666666 · end: null → 2026-10-10T12:00:00-04:00; CONFLICT end: doc has ∅, feed was null\n"
+            }
+          }
+        ],
+        "refusals": [
+          {
+            "code": "OVERLAY_DOC_CONFLICT",
+            "external_id": "evt-001@calendar.example.org",
+            "target": "events/story-time",
+            "field": "end",
+            "message": "owned field was edited in the document since the last accepted feed value"
+          }
+        ]
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-646b93d3d12a",
+            "external_id": "evt-001@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:047a89cecb0ab1ccc9cdd817a10dd15005f96da8802acec9795ac825ce7d2ec5"
+          }
+        ],
+        "refusals": [
+          {
+            "code": "OVERLAY_DOC_CONFLICT",
+            "external_id": "evt-001@calendar.example.org",
+            "target": "events/story-time",
+            "field": "end",
+            "message": "owned field was edited in the document since the last accepted feed value"
+          }
+        ],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-646b93d3d12a",
+          "version": "sha256:047a89cecb0ab1ccc9cdd817a10dd15005f96da8802acec9795ac825ce7d2ec5",
+          "text": "---\ntype: Signal\ntitle: 'Changed: Story Time'\nsuperbee_progress_status: todo\nchange_kind: changed\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-001@calendar.example.org\ndiff_summary: 'end: null → 2026-10-10T12:00:00-04:00; CONFLICT end: doc has ∅, feed was null'\npriority: normal\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-001@calendar.example.org\n    title: Story Time\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/story-time.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:6666666666666666666666666666666666666666666666666666666666666666 · end: null → 2026-10-10T12:00:00-04:00; CONFLICT end: doc has ∅, feed was null\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "a replayed change dedupes against a closed Signal's observation log",
+      "seeded": {
+        "signals/synthetic-library-replayed": "sha256:d856c6d194cd60d075cae0f8fecab58d12ebec56c16d5a653616675479528863"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "signal-duplicate",
+            "target": "signals/synthetic-library-replayed",
+            "external_id": "evt-001@calendar.example.org",
+            "content_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "signal-duplicate",
+            "target": "signals/synthetic-library-replayed",
+            "external_id": "evt-001@calendar.example.org",
+            "outcome": "skipped"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [],
+      "deletes": []
+    },
+    {
+      "name": "a change with an open unclaimed Signal collapses into it; a claimed one raises a new Signal",
+      "seeded": {
+        "signals/synthetic-library-open": "sha256:02f2e8a397f28f41a88963a3120e5ec77dfc68bffe492cbb18f595d3a5ca2cfe",
+        "signals/synthetic-library-claimed": "sha256:e2e2ac345755f0fdc26d14498bead58fdbb59c61c8fc4b155405befc53a1e2fb"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "collapse-signal",
+            "target": "signals/synthetic-library-open",
+            "expected_version": "sha256:02f2e8a397f28f41a88963a3120e5ec77dfc68bffe492cbb18f595d3a5ca2cfe",
+            "external_id": "evt-006@calendar.example.org",
+            "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "progress_field": "superbee_progress_status",
+            "observation_line": "- 2026-10-03T14:00:00Z · changed · sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa · title: Pumpkin Carving → Pumpkin Carving Night; start: 2026-10-25T14:00:00-04:00 → 2026-10-25T15:00:00-04:00",
+            "set": {
+              "change_kind": "changed",
+              "priority": "low",
+              "observed_at": "2026-10-03T14:00:00Z",
+              "diff_summary": "title: Pumpkin Carving → Pumpkin Carving Night; start: 2026-10-25T14:00:00-04:00 → 2026-10-25T15:00:00-04:00",
+              "title": "Changed: Pumpkin Carving Night",
+              "external_id": "evt-006@calendar.example.org"
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-e4be710174dd",
+            "external_id": "evt-007@calendar.example.org",
+            "content_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "reasons": [
+              "needs_review:canceled"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Canceled: Fall Fair",
+                "superbee_progress_status": "todo",
+                "change_kind": "canceled",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-007@calendar.example.org",
+                "diff_summary": "event_status: scheduled → canceled",
+                "priority": "normal",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-007@calendar.example.org",
+                    "title": "Fall Fair"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-007@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb · event_status: scheduled → canceled\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "collapse-signal",
+            "target": "signals/synthetic-library-open",
+            "external_id": "evt-006@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:dc0a2d025fbe87121d1216731d8b682c78a2214923ed0b1b6e50097135370575"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-e4be710174dd",
+            "external_id": "evt-007@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:dd6637b07a1acac42b9f3dfb7f5b2ec1add1ae7ad4f9f62fb1226d04a8f5b7a1"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-open",
+          "version": "sha256:dc0a2d025fbe87121d1216731d8b682c78a2214923ed0b1b6e50097135370575",
+          "text": "---\ntype: Signal\nsuperbee_progress_status: todo\npriority: low\nprovider: 'https://calendar.example.org/feed.ics'\ntitle: 'Changed: Pumpkin Carving Night'\nchange_kind: changed\nobserved_at: '2026-10-03T14:00:00Z'\nexternal_id: evt-006@calendar.example.org\ndiff_summary: >-\n  title: Pumpkin Carving → Pumpkin Carving Night; start:\n  2026-10-25T14:00:00-04:00 → 2026-10-25T15:00:00-04:00\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\n# Observations\n\n- 2026-10-03T12:00:00Z · new · sha256:8888888888888888888888888888888888888888888888888888888888888888 · new record\n- 2026-10-03T14:00:00Z · changed · sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa · title: Pumpkin Carving → Pumpkin Carving Night; start: 2026-10-25T14:00:00-04:00 → 2026-10-25T15:00:00-04:00\n"
+        },
+        {
+          "id": "signals/synthetic-library-e4be710174dd",
+          "version": "sha256:dd6637b07a1acac42b9f3dfb7f5b2ec1add1ae7ad4f9f62fb1226d04a8f5b7a1",
+          "text": "---\ntype: Signal\ntitle: 'Canceled: Fall Fair'\nsuperbee_progress_status: todo\nchange_kind: canceled\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-007@calendar.example.org\ndiff_summary: 'event_status: scheduled → canceled'\npriority: normal\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-007@calendar.example.org\n    title: Fall Fair\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-007@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb · event_status: scheduled → canceled\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "two documents claiming one identity are refused as ambiguous with one normal Signal",
+      "seeded": {
+        "events/a-story": "sha256:4c1a6d27387181d8267caaaff297f8fa222786f06e8987ef9e2c46ca20382d36",
+        "events/b-story": "sha256:4c1a6d27387181d8267caaaff297f8fa222786f06e8987ef9e2c46ca20382d36"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-db98f0577781",
+            "external_id": "evt-001@calendar.example.org",
+            "content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "reasons": [
+              "OVERLAY_IDENTITY_AMBIGUOUS"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Changed: Story Time",
+                "superbee_progress_status": "todo",
+                "change_kind": "changed",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-001@calendar.example.org",
+                "diff_summary": "start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:00:00-04:00",
+                "priority": "normal",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-001@calendar.example.org",
+                    "title": "Story Time"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-001@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc · start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:00:00-04:00\n"
+            }
+          }
+        ],
+        "refusals": [
+          {
+            "code": "OVERLAY_IDENTITY_AMBIGUOUS",
+            "external_id": "evt-001@calendar.example.org",
+            "targets": [
+              "events/a-story",
+              "events/b-story"
+            ],
+            "message": "more than one document claims this provider identity; merge or rebind needs review"
+          }
+        ]
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-db98f0577781",
+            "external_id": "evt-001@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:acc1e3667b43378fb36f45fb482a0384da4264812ef9df260ab45dc918edbae4"
+          }
+        ],
+        "refusals": [
+          {
+            "code": "OVERLAY_IDENTITY_AMBIGUOUS",
+            "external_id": "evt-001@calendar.example.org",
+            "targets": [
+              "events/a-story",
+              "events/b-story"
+            ],
+            "message": "more than one document claims this provider identity; merge or rebind needs review"
+          }
+        ],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-db98f0577781",
+          "version": "sha256:acc1e3667b43378fb36f45fb482a0384da4264812ef9df260ab45dc918edbae4",
+          "text": "---\ntype: Signal\ntitle: 'Changed: Story Time'\nsuperbee_progress_status: todo\nchange_kind: changed\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-001@calendar.example.org\ndiff_summary: 'start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:00:00-04:00'\npriority: normal\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-001@calendar.example.org\n    title: Story Time\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-001@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc · start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:00:00-04:00\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "one document carrying the identity twice is ambiguous with that document twice",
+      "seeded": {
+        "events/doubled": "sha256:d024b3be9a394cad69b6e79eab4d05f0352f7428d8d0da59a3d1c819c2b32170"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-4a11123ec113",
+            "external_id": "evt-001@calendar.example.org",
+            "content_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "reasons": [
+              "OVERLAY_IDENTITY_AMBIGUOUS"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Changed: Story Time",
+                "superbee_progress_status": "todo",
+                "change_kind": "changed",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-001@calendar.example.org",
+                "diff_summary": "start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:00:00-04:00",
+                "priority": "normal",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-001@calendar.example.org",
+                    "title": "Story Time"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-001@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd · start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:00:00-04:00\n"
+            }
+          }
+        ],
+        "refusals": [
+          {
+            "code": "OVERLAY_IDENTITY_AMBIGUOUS",
+            "external_id": "evt-001@calendar.example.org",
+            "targets": [
+              "events/doubled",
+              "events/doubled"
+            ],
+            "message": "more than one document claims this provider identity; merge or rebind needs review"
+          }
+        ]
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-4a11123ec113",
+            "external_id": "evt-001@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:4052fa537fdbf37140f6a1193c0f761dd44199af40ecd14e9a0fe7d15f93b0b8"
+          }
+        ],
+        "refusals": [
+          {
+            "code": "OVERLAY_IDENTITY_AMBIGUOUS",
+            "external_id": "evt-001@calendar.example.org",
+            "targets": [
+              "events/doubled",
+              "events/doubled"
+            ],
+            "message": "more than one document claims this provider identity; merge or rebind needs review"
+          }
+        ],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-4a11123ec113",
+          "version": "sha256:4052fa537fdbf37140f6a1193c0f761dd44199af40ecd14e9a0fe7d15f93b0b8",
+          "text": "---\ntype: Signal\ntitle: 'Changed: Story Time'\nsuperbee_progress_status: todo\nchange_kind: changed\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-001@calendar.example.org\ndiff_summary: 'start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:00:00-04:00'\npriority: normal\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-001@calendar.example.org\n    title: Story Time\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-001@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd · start: 2026-10-10T10:00:00-04:00 → 2026-10-10T11:00:00-04:00\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "disappearances: ended retires quietly, before its start is raised, without a first miss is raised",
+      "seeded": {},
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-05T12:00:00Z",
+        "steps": [
+          {
+            "op": "record-only",
+            "external_id": "ended@x.example",
+            "change_kind": "disappeared",
+            "ended": true,
+            "reason": "ended",
+            "last_known_end": "2026-10-03T20:00:00.000Z"
+          },
+          {
+            "op": "record-only",
+            "external_id": "no-end@x.example",
+            "change_kind": "disappeared",
+            "ended": true,
+            "reason": "ended",
+            "last_known_end": "2026-10-04T03:00:00.000Z"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-a536ba215e99",
+            "external_id": "future@x.example",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reasons": [
+              "needs_review:disappeared"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Disappeared: Fall Fair",
+                "superbee_progress_status": "todo",
+                "change_kind": "disappeared",
+                "observed_at": "2026-10-05T12:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "future@x.example",
+                "diff_summary": "missing from 2 consecutive complete observations; vanished before its start: possibly canceled, check the organizer's page; last title: Fall Fair; last start: 2026-10-20T10:00:00-04:00; last end: 2026-10-20T15:00:00-04:00",
+                "priority": "normal",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "future@x.example",
+                    "title": "Fall Fair"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: future@x.example`.\n\n# Observations\n\n- 2026-10-05T12:00:00Z · disappeared · sha256:0000000000000000000000000000000000000000000000000000000000000000 · missing from 2 consecutive complete observations; vanished before its start: possibly canceled, check the organizer's page; last title: Fall Fair; last start: 2026-10-20T10:00:00-04:00; last end: 2026-10-20T15:00:00-04:00\n"
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-99dd6133a766",
+            "external_id": "unknown@x.example",
+            "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "reasons": [
+              "needs_review:disappeared"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Disappeared: Old Store Entry",
+                "superbee_progress_status": "todo",
+                "change_kind": "disappeared",
+                "observed_at": "2026-10-05T12:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "unknown@x.example",
+                "diff_summary": "missing from 2 consecutive complete observations; last title: Old Store Entry; last start: 2026-10-02T10:00:00-04:00; last end: ∅",
+                "priority": "normal",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "unknown@x.example",
+                    "title": "Old Store Entry"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: unknown@x.example`.\n\n# Observations\n\n- 2026-10-05T12:00:00Z · disappeared · sha256:1111111111111111111111111111111111111111111111111111111111111111 · missing from 2 consecutive complete observations; last title: Old Store Entry; last start: 2026-10-02T10:00:00-04:00; last end: ∅\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-05T12:00:00Z",
+        "results": [
+          {
+            "op": "record-only",
+            "target": null,
+            "external_id": "ended@x.example",
+            "outcome": "skipped",
+            "reason": "ended",
+            "last_known_end": "2026-10-03T20:00:00.000Z"
+          },
+          {
+            "op": "record-only",
+            "target": null,
+            "external_id": "no-end@x.example",
+            "outcome": "skipped",
+            "reason": "ended",
+            "last_known_end": "2026-10-04T03:00:00.000Z"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-a536ba215e99",
+            "external_id": "future@x.example",
+            "outcome": "applied",
+            "version": "sha256:04d0894cace803f982775464eeeb21063d533469ba004fee2f39fd52ab04471c"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-99dd6133a766",
+            "external_id": "unknown@x.example",
+            "outcome": "applied",
+            "version": "sha256:84fc0aa55dd38254e3105932ac5f8377a05628b5e2eefa697a7d440f369bb61c"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-a536ba215e99",
+          "version": "sha256:04d0894cace803f982775464eeeb21063d533469ba004fee2f39fd52ab04471c",
+          "text": "---\ntype: Signal\ntitle: 'Disappeared: Fall Fair'\nsuperbee_progress_status: todo\nchange_kind: disappeared\nobserved_at: '2026-10-05T12:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: future@x.example\ndiff_summary: >-\n  missing from 2 consecutive complete observations; vanished before its start:\n  possibly canceled, check the organizer's page; last title: Fall Fair; last\n  start: 2026-10-20T10:00:00-04:00; last end: 2026-10-20T15:00:00-04:00\npriority: normal\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: future@x.example\n    title: Fall Fair\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: future@x.example`.\n\n# Observations\n\n- 2026-10-05T12:00:00Z · disappeared · sha256:0000000000000000000000000000000000000000000000000000000000000000 · missing from 2 consecutive complete observations; vanished before its start: possibly canceled, check the organizer's page; last title: Fall Fair; last start: 2026-10-20T10:00:00-04:00; last end: 2026-10-20T15:00:00-04:00\n"
+        },
+        {
+          "id": "signals/synthetic-library-99dd6133a766",
+          "version": "sha256:84fc0aa55dd38254e3105932ac5f8377a05628b5e2eefa697a7d440f369bb61c",
+          "text": "---\ntype: Signal\ntitle: 'Disappeared: Old Store Entry'\nsuperbee_progress_status: todo\nchange_kind: disappeared\nobserved_at: '2026-10-05T12:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: unknown@x.example\ndiff_summary: >-\n  missing from 2 consecutive complete observations; last title: Old Store Entry;\n  last start: 2026-10-02T10:00:00-04:00; last end: ∅\npriority: normal\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: unknown@x.example\n    title: Old Store Entry\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: unknown@x.example`.\n\n# Observations\n\n- 2026-10-05T12:00:00Z · disappeared · sha256:1111111111111111111111111111111111111111111111111111111111111111 · missing from 2 consecutive complete observations; last title: Old Store Entry; last start: 2026-10-02T10:00:00-04:00; last end: ∅\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "an ended record with an open Signal tells it so; a superseded record joins its successor",
+      "seeded": {
+        "signals/synthetic-library-evening": "sha256:579210ca3026e42f6cd9a42f2c3c0ba549de7438c7daa4cbb67e825ed9ae7ce0",
+        "signals/synthetic-library-old-hours": "sha256:1ca5b6223d26148491e5dae3bd9ee7107d87c28f6f6f11dbfcb304cbbeaa752f"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-05T12:00:00Z",
+        "steps": [
+          {
+            "op": "collapse-signal",
+            "target": "signals/synthetic-library-evening",
+            "expected_version": "sha256:579210ca3026e42f6cd9a42f2c3c0ba549de7438c7daa4cbb67e825ed9ae7ce0",
+            "external_id": "evening@x.example",
+            "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "progress_field": "superbee_progress_status",
+            "observation_line": "- 2026-10-05T12:00:00Z · disappeared · sha256:2222222222222222222222222222222222222222222222222222222222222222 · missing from 2 consecutive complete observations; ended: gone after its last known end; last title: Evening Concert; last start: 2026-10-03T19:00:00-04:00; last end: 2026-10-03T21:00:00-04:00",
+            "set": {
+              "change_kind": "new",
+              "priority": "low",
+              "observed_at": "2026-10-05T12:00:00Z",
+              "diff_summary": "missing from 2 consecutive complete observations; ended: gone after its last known end; last title: Evening Concert; last start: 2026-10-03T19:00:00-04:00; last end: 2026-10-03T21:00:00-04:00",
+              "title": "New: Evening Concert",
+              "external_id": "evening@x.example"
+            }
+          },
+          {
+            "op": "collapse-signal",
+            "target": "signals/synthetic-library-old-hours",
+            "expected_version": "sha256:1ca5b6223d26148491e5dae3bd9ee7107d87c28f6f6f11dbfcb304cbbeaa752f",
+            "external_id": "hours-v2@x.example",
+            "content_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "progress_field": "superbee_progress_status",
+            "observation_line": "- 2026-10-05T12:00:00Z · new · sha256:4444444444444444444444444444444444444444444444444444444444444444 · new record",
+            "set": {
+              "change_kind": "new",
+              "priority": "normal",
+              "observed_at": "2026-10-05T12:00:00Z",
+              "diff_summary": "new record",
+              "title": "New: New Hours",
+              "external_id": "hours-v2@x.example"
+            }
+          },
+          {
+            "op": "record-only",
+            "external_id": "hours-v3@x.example",
+            "change_kind": "new",
+            "collapsed_into": "signals/synthetic-library-old-hours"
+          },
+          {
+            "op": "record-only",
+            "external_id": "hours-v1@x.example",
+            "change_kind": "disappeared",
+            "superseded": true
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-05T12:00:00Z",
+        "results": [
+          {
+            "op": "collapse-signal",
+            "target": "signals/synthetic-library-evening",
+            "external_id": "evening@x.example",
+            "outcome": "applied",
+            "version": "sha256:e182290f31b3c491629b8a4b58aba16e584c0b245b613b81640bdb2b815d5c60"
+          },
+          {
+            "op": "collapse-signal",
+            "target": "signals/synthetic-library-old-hours",
+            "external_id": "hours-v2@x.example",
+            "outcome": "applied",
+            "version": "sha256:6e580f877a9a1fe3a71a03978af30ec880eff0bee3c512cce62fce6442a6b29d"
+          },
+          {
+            "op": "record-only",
+            "target": null,
+            "external_id": "hours-v3@x.example",
+            "outcome": "skipped"
+          },
+          {
+            "op": "record-only",
+            "target": null,
+            "external_id": "hours-v1@x.example",
+            "outcome": "skipped"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-evening",
+          "version": "sha256:e182290f31b3c491629b8a4b58aba16e584c0b245b613b81640bdb2b815d5c60",
+          "text": "---\ntype: Signal\nsuperbee_progress_status: todo\npriority: low\nprovider: 'https://calendar.example.org/feed.ics'\ntitle: 'New: Evening Concert'\nchange_kind: new\nobserved_at: '2026-10-05T12:00:00Z'\nexternal_id: evening@x.example\ndiff_summary: >-\n  missing from 2 consecutive complete observations; ended: gone after its last\n  known end; last title: Evening Concert; last start: 2026-10-03T19:00:00-04:00;\n  last end: 2026-10-03T21:00:00-04:00\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\n# Observations\n\n- 2026-10-02T16:00:00Z · new · sha256:2222222222222222222222222222222222222222222222222222222222222222 · new record\n- 2026-10-05T12:00:00Z · disappeared · sha256:2222222222222222222222222222222222222222222222222222222222222222 · missing from 2 consecutive complete observations; ended: gone after its last known end; last title: Evening Concert; last start: 2026-10-03T19:00:00-04:00; last end: 2026-10-03T21:00:00-04:00\n"
+        },
+        {
+          "id": "signals/synthetic-library-old-hours",
+          "version": "sha256:6e580f877a9a1fe3a71a03978af30ec880eff0bee3c512cce62fce6442a6b29d",
+          "text": "---\ntype: Signal\nsuperbee_progress_status: todo\npriority: normal\nprovider: 'https://calendar.example.org/feed.ics'\ntitle: 'New: New Hours'\nchange_kind: new\nobserved_at: '2026-10-05T12:00:00Z'\nexternal_id: hours-v2@x.example\ndiff_summary: new record\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\n# Observations\n\n- 2026-10-02T16:00:00Z · new · sha256:3333333333333333333333333333333333333333333333333333333333333333 · new record\n- 2026-10-05T12:00:00Z · new · sha256:4444444444444444444444444444444444444444444444444444444444444444 · new record\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "an excluded record is record-only",
+      "seeded": {},
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "record-only",
+            "external_id": "closed@x.example",
+            "change_kind": "new",
+            "excluded": true
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "record-only",
+            "target": null,
+            "external_id": "closed@x.example",
+            "outcome": "skipped"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [],
+      "deletes": []
+    },
+    {
+      "name": "a correlation hint raises the priority and names the related document",
+      "seeded": {
+        "places/corner-cafe": "sha256:08dedf8a5282959b0e95bb66feb564e9a493acaa28325d15bfb8522117f8d8a3",
+        "places/other-shop": "sha256:12e2b254bf272c47b1ec6092b4a7960bf10ebd3e27acd6b8e87f885f0b16a4a6"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-a027803f665f",
+            "external_id": "lic-1@x.example",
+            "content_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "reasons": [
+              "needs_review:new",
+              "related:places/corner-cafe"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "New: Corner Cafe LLC",
+                "superbee_progress_status": "todo",
+                "change_kind": "new",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "lic-1@x.example",
+                "diff_summary": "new record; related: places/corner-cafe (same street address)",
+                "priority": "urgent",
+                "about_doc": "places/corner-cafe",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "lic-1@x.example",
+                    "title": "Corner Cafe LLC"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\nRelated document (content bundle): `places/corner-cafe` (same street address)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: lic-1@x.example`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · new · sha256:7777777777777777777777777777777777777777777777777777777777777777 · new record; related: places/corner-cafe (same street address)\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-a027803f665f",
+            "external_id": "lic-1@x.example",
+            "outcome": "applied",
+            "version": "sha256:eb5654899314705f023b761609a662926c56c18e2cb63eefe7b6b8c350748b7c"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-a027803f665f",
+          "version": "sha256:eb5654899314705f023b761609a662926c56c18e2cb63eefe7b6b8c350748b7c",
+          "text": "---\ntype: Signal\ntitle: 'New: Corner Cafe LLC'\nsuperbee_progress_status: todo\nchange_kind: new\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: lic-1@x.example\ndiff_summary: 'new record; related: places/corner-cafe (same street address)'\npriority: urgent\nabout_doc: places/corner-cafe\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: lic-1@x.example\n    title: Corner Cafe LLC\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\nRelated document (content bundle): `places/corner-cafe` (same street address)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: lic-1@x.example`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · new · sha256:7777777777777777777777777777777777777777777777777777777777777777 · new record; related: places/corner-cafe (same street address)\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "an owned-field removal deletes the field; a change's own priority is honoured",
+      "seeded": {
+        "events/trail-cleanup": "sha256:226f10a49fcb8a4065f32aa89ec1bb1c4d73e036da0e5ef2a746ac57df64c0fa"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/trail-cleanup",
+            "expected_version": "sha256:226f10a49fcb8a4065f32aa89ec1bb1c4d73e036da0e5ef2a746ac57df64c0fa",
+            "external_id": "evt-005@calendar.example.org",
+            "change_kind": "changed",
+            "fields": {
+              "venue_text": {
+                "from": "North Trailhead"
+              }
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-bb20a10133c5",
+            "external_id": "evt-009@calendar.example.org",
+            "content_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+            "reasons": [
+              "needs_review:canceled"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Canceled: Book Swap",
+                "superbee_progress_status": "todo",
+                "change_kind": "canceled",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-009@calendar.example.org",
+                "diff_summary": "event_status: scheduled → canceled",
+                "priority": "urgent",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-009@calendar.example.org",
+                    "title": "Book Swap"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-009@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:9999999999999999999999999999999999999999999999999999999999999999 · event_status: scheduled → canceled\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/trail-cleanup",
+            "external_id": "evt-005@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:2deaa39f86abe5f13fa13812a50b883ef23ffd595a782ec2649cf2a363104a3b"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-bb20a10133c5",
+            "external_id": "evt-009@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:a2a04f4ef63278b09fca20a802b105ec91a16a6450829bddcd7c17a29f755e32"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "events/trail-cleanup",
+          "version": "sha256:2deaa39f86abe5f13fa13812a50b883ef23ffd595a782ec2649cf2a363104a3b",
+          "text": "---\ntype: Event\nevent_status: scheduled\ntitle: Trail Cleanup\nstart: '2026-10-24T09:00:00-04:00'\nend: '2026-10-24T12:00:00-04:00'\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-005@calendar.example.org\n    title: feed record\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\nupdated_at: '2026-10-17T12:00:00.000Z'\n---\nEditor-written description. Not feed-owned.\n"
+        },
+        {
+          "id": "signals/synthetic-library-bb20a10133c5",
+          "version": "sha256:a2a04f4ef63278b09fca20a802b105ec91a16a6450829bddcd7c17a29f755e32",
+          "text": "---\ntype: Signal\ntitle: 'Canceled: Book Swap'\nsuperbee_progress_status: todo\nchange_kind: canceled\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-009@calendar.example.org\ndiff_summary: 'event_status: scheduled → canceled'\npriority: urgent\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-009@calendar.example.org\n    title: Book Swap\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-009@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:9999999999999999999999999999999999999999999999999999999999999999 · event_status: scheduled → canceled\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "a concurrent editor write between plan and apply loses the CAS",
+      "seeded": {
+        "events/trail-cleanup": "sha256:226f10a49fcb8a4065f32aa89ec1bb1c4d73e036da0e5ef2a746ac57df64c0fa"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/trail-cleanup",
+            "expected_version": "sha256:226f10a49fcb8a4065f32aa89ec1bb1c4d73e036da0e5ef2a746ac57df64c0fa",
+            "external_id": "evt-005@calendar.example.org",
+            "change_kind": "canceled",
+            "fields": {
+              "event_status": {
+                "from": "scheduled",
+                "to": "canceled"
+              }
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-7c431505db79",
+            "external_id": "evt-005@calendar.example.org",
+            "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reasons": [
+              "needs_review:canceled"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Canceled: Trail Cleanup",
+                "superbee_progress_status": "todo",
+                "change_kind": "canceled",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-005@calendar.example.org",
+                "diff_summary": "event_status: scheduled → canceled",
+                "priority": "urgent",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-005@calendar.example.org",
+                    "title": "Trail Cleanup"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/trail-cleanup.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa · event_status: scheduled → canceled\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/trail-cleanup",
+            "external_id": "evt-005@calendar.example.org",
+            "outcome": "refused",
+            "code": "STALE_VERSION",
+            "message": "document changed after planning (CAS lost)"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-7c431505db79",
+            "external_id": "evt-005@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:3f2756abc2801791e4be2ffd8f53f5ca16eb060c066321b7a1032f33d417c5ad"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "signals/synthetic-library-7c431505db79",
+          "version": "sha256:3f2756abc2801791e4be2ffd8f53f5ca16eb060c066321b7a1032f33d417c5ad",
+          "text": "---\ntype: Signal\ntitle: 'Canceled: Trail Cleanup'\nsuperbee_progress_status: todo\nchange_kind: canceled\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-005@calendar.example.org\ndiff_summary: 'event_status: scheduled → canceled'\npriority: urgent\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-005@calendar.example.org\n    title: Trail Cleanup\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/trail-cleanup.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa · event_status: scheduled → canceled\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "a forged step that writes a non-owned field is refused",
+      "seeded": {
+        "events/harvest-market": "sha256:da1a0492b217820d8b6e452487f0d1adaa7623bb4c200945e51f353a77ffa3c9"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "refusals": [],
+        "steps": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/harvest-market",
+            "expected_version": "sha256:da1a0492b217820d8b6e452487f0d1adaa7623bb4c200945e51f353a77ffa3c9",
+            "external_id": "evt-002@calendar.example.org",
+            "change_kind": "changed",
+            "fields": {
+              "title": {
+                "from": "Harvest Market",
+                "to": "Hijacked"
+              }
+            }
+          }
+        ]
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/harvest-market",
+            "external_id": "evt-002@calendar.example.org",
+            "outcome": "refused",
+            "code": "FIELD_NOT_OWNED",
+            "message": "write would change non-owned fields: title",
+            "details": {
+              "fields": [
+                "title"
+              ],
+              "external_id": "evt-002@calendar.example.org"
+            }
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [],
+      "deletes": []
+    },
+    {
+      "name": "separate ops and content bundles name the overlay without a typed link",
+      "seeded": {
+        "events/harvest-market": "sha256:da1a0492b217820d8b6e452487f0d1adaa7623bb4c200945e51f353a77ffa3c9"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/harvest-market",
+            "expected_version": "sha256:da1a0492b217820d8b6e452487f0d1adaa7623bb4c200945e51f353a77ffa3c9",
+            "external_id": "evt-002@calendar.example.org",
+            "change_kind": "changed",
+            "fields": {
+              "start": {
+                "from": "2026-10-11T09:00:00-04:00",
+                "to": "2026-10-11T10:00:00-04:00"
+              }
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-e8b25a9ea451",
+            "external_id": "evt-002@calendar.example.org",
+            "content_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "reasons": [
+              "editor-owned-field-changed"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Changed: Harvest Market and Craft Fair",
+                "superbee_progress_status": "todo",
+                "change_kind": "changed",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-002@calendar.example.org",
+                "diff_summary": "title: Harvest Market → Harvest Market and Craft Fair; start: 2026-10-11T09:00:00-04:00 → 2026-10-11T10:00:00-04:00; not applied (editor-owned): title",
+                "priority": "normal",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-002@calendar.example.org",
+                    "title": "Harvest Market and Craft Fair"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\nOverlay document (content bundle): `events/harvest-market`\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb · title: Harvest Market → Harvest Market and Craft Fair; start: 2026-10-11T09:00:00-04:00 → 2026-10-11T10:00:00-04:00; not applied (editor-owned): title\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/harvest-market",
+            "external_id": "evt-002@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:37c8119d579d2bc9c46730f5894011ccf0f102ff548ce01f1a9d9dc95223fb52"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-e8b25a9ea451",
+            "external_id": "evt-002@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:d9ef0eb7dda57363ffe7ff80f5a6eb369ee82a12fe180a9367fc1aae3f5b3087"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "events/harvest-market",
+          "version": "sha256:37c8119d579d2bc9c46730f5894011ccf0f102ff548ce01f1a9d9dc95223fb52",
+          "text": "---\ntype: Event\nevent_status: scheduled\ntitle: Harvest Market\nstart: '2026-10-11T10:00:00-04:00'\nend: '2026-10-11T13:00:00-04:00'\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-002@calendar.example.org\n    title: feed record\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\nupdated_at: '2026-10-17T12:00:00.000Z'\n---\nEditor-written description. Not feed-owned.\n"
+        },
+        {
+          "id": "signals/synthetic-library-e8b25a9ea451",
+          "version": "sha256:d9ef0eb7dda57363ffe7ff80f5a6eb369ee82a12fe180a9367fc1aae3f5b3087",
+          "text": "---\ntype: Signal\ntitle: 'Changed: Harvest Market and Craft Fair'\nsuperbee_progress_status: todo\nchange_kind: changed\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-002@calendar.example.org\ndiff_summary: >-\n  title: Harvest Market → Harvest Market and Craft Fair; start:\n  2026-10-11T09:00:00-04:00 → 2026-10-11T10:00:00-04:00; not applied\n  (editor-owned): title\npriority: normal\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-002@calendar.example.org\n    title: Harvest Market and Craft Fair\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\nOverlay document (content bundle): `events/harvest-market`\n\n# Observations\n\n- 2026-10-03T14:00:00Z · changed · sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb · title: Harvest Market → Harvest Market and Craft Fair; start: 2026-10-11T09:00:00-04:00 → 2026-10-11T10:00:00-04:00; not applied (editor-owned): title\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "a core type refusal with another Kind finding is held and value-free",
+      "seeded": {
+        "events/typed": "sha256:3af2b0121a248298e41ca8c7bb0303e205f754d810b1fa290aeb097598db2d01"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/typed",
+            "expected_version": "sha256:3af2b0121a248298e41ca8c7bb0303e205f754d810b1fa290aeb097598db2d01",
+            "external_id": "evt-010@calendar.example.org",
+            "change_kind": "changed",
+            "fields": {
+              "start": {
+                "from": "2026-10-10T10:00:00-04:00"
+              },
+              "event_url": {
+                "from": "https://calendar.example.org/e/1",
+                "to": "http://calendar.example.org/e/1?token=secret456"
+              }
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/typed",
+            "external_id": "evt-010@calendar.example.org",
+            "outcome": "refused",
+            "code": "FIELD_TYPE_VIOLATION",
+            "message": "candidate violates declared field types: event_url (https-url)",
+            "details": {
+              "kind": "Event",
+              "violations": [
+                {
+                  "field": "event_url",
+                  "type": "https-url",
+                  "code": "KIND_FIELD_TYPE"
+                }
+              ],
+              "also": [
+                "KIND_FIELD_MISSING:start"
+              ]
+            }
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [],
+      "deletes": []
+    },
+    {
+      "name": "a provider URL carrying a token is redacted in every Signal",
+      "seeded": {
+        "events/story-time": "sha256:fed2ca8031f8bb7d3dcaeb2d24efa38aabaf3150fd5b0e42f6b322f05bc0d4a1"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://api.example.org/events.json?token=REDACTED&city=springfield",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/story-time",
+            "expected_version": "sha256:fed2ca8031f8bb7d3dcaeb2d24efa38aabaf3150fd5b0e42f6b322f05bc0d4a1",
+            "external_id": "evt-001@calendar.example.org",
+            "change_kind": "canceled",
+            "fields": {
+              "event_status": {
+                "from": "scheduled",
+                "to": "canceled"
+              }
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-4a11123ec113",
+            "external_id": "evt-001@calendar.example.org",
+            "content_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "reasons": [
+              "needs_review:canceled"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "Canceled: Story Time",
+                "superbee_progress_status": "todo",
+                "change_kind": "canceled",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://api.example.org/events.json?token=REDACTED&city=springfield",
+                "external_id": "evt-001@calendar.example.org",
+                "diff_summary": "event_status: scheduled → canceled",
+                "priority": "urgent",
+                "sources": [
+                  {
+                    "resource": "https://api.example.org/events.json?token=REDACTED&city=springfield",
+                    "id": "evt-001@calendar.example.org",
+                    "title": "Story Time"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/story-time.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd · event_status: scheduled → canceled\n"
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-f82a9fea4af6",
+            "external_id": "evt-011@calendar.example.org",
+            "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "reasons": [
+              "needs_review:new"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "New: Lantern Walk",
+                "superbee_progress_status": "todo",
+                "change_kind": "new",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://api.example.org/events.json?token=REDACTED&city=springfield",
+                "external_id": "evt-011@calendar.example.org",
+                "diff_summary": "new record @ 2026-10-30T19:00:00-04:00",
+                "priority": "low",
+                "sources": [
+                  {
+                    "resource": "https://api.example.org/events.json?token=REDACTED&city=springfield",
+                    "id": "evt-011@calendar.example.org",
+                    "title": "Lantern Walk"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://api.example.org/events.json?token=REDACTED&city=springfield`, `id: evt-011@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · new · sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee · new record @ 2026-10-30T19:00:00-04:00\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://api.example.org/events.json?token=REDACTED&city=springfield",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/story-time",
+            "external_id": "evt-001@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:f0b7042eda030085d84dd9b21768d8cdfc87de576505362ee008cd332ec25722"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-4a11123ec113",
+            "external_id": "evt-001@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:0cce6019f6fdcf84f0e5b29ceaec32019c798e1aa50630f1ee72e53ce0933c91"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-f82a9fea4af6",
+            "external_id": "evt-011@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:1b8a6a76d1ca0704d9de08681729c5351b1e0e123893f12841f8fbdb33b367f1"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "events/story-time",
+          "version": "sha256:f0b7042eda030085d84dd9b21768d8cdfc87de576505362ee008cd332ec25722",
+          "text": "---\ntype: Event\nevent_status: canceled\ntitle: Story Time\nstart: '2026-10-10T10:00:00-04:00'\nend: '2026-10-10T11:00:00-04:00'\nsources:\n  - resource: 'https://api.example.org/events.json?token=fixturetoken987&city=springfield'\n    id: evt-001@calendar.example.org\n    title: feed record\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\nupdated_at: '2026-10-17T12:00:00.000Z'\n---\nEditor-written description. Not feed-owned.\n"
+        },
+        {
+          "id": "signals/synthetic-library-4a11123ec113",
+          "version": "sha256:0cce6019f6fdcf84f0e5b29ceaec32019c798e1aa50630f1ee72e53ce0933c91",
+          "text": "---\ntype: Signal\ntitle: 'Canceled: Story Time'\nsuperbee_progress_status: todo\nchange_kind: canceled\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://api.example.org/events.json?token=REDACTED&city=springfield'\nexternal_id: evt-001@calendar.example.org\ndiff_summary: 'event_status: scheduled → canceled'\npriority: urgent\nsources:\n  - resource: 'https://api.example.org/events.json?token=REDACTED&city=springfield'\n    id: evt-001@calendar.example.org\n    title: Story Time\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n[about event](../events/story-time.md)\n\n# Observations\n\n- 2026-10-03T14:00:00Z · canceled · sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd · event_status: scheduled → canceled\n"
+        },
+        {
+          "id": "signals/synthetic-library-f82a9fea4af6",
+          "version": "sha256:1b8a6a76d1ca0704d9de08681729c5351b1e0e123893f12841f8fbdb33b367f1",
+          "text": "---\ntype: Signal\ntitle: 'New: Lantern Walk'\nsuperbee_progress_status: todo\nchange_kind: new\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://api.example.org/events.json?token=REDACTED&city=springfield'\nexternal_id: evt-011@calendar.example.org\ndiff_summary: 'new record @ 2026-10-30T19:00:00-04:00'\npriority: low\nsources:\n  - resource: 'https://api.example.org/events.json?token=REDACTED&city=springfield'\n    id: evt-011@calendar.example.org\n    title: Lantern Walk\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://api.example.org/events.json?token=REDACTED&city=springfield`, `id: evt-011@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · new · sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee · new record @ 2026-10-30T19:00:00-04:00\n"
+        }
+      ],
+      "deletes": []
+    },
+    {
+      "name": "an OKF v0.1 ops bundle claims Signals through status",
+      "seeded": {
+        "events/story-time": "sha256:b33cf9a9cb5369f1bcbe0417ffaed38f1952582e1d55893906fba623e5914d13",
+        "signals/synthetic-library-open": "sha256:d67a42a487d2b45577f6e02c4d9d8afb53ba3343c2bc87a916760ac6827b862b"
+      },
+      "plan": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "steps": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/story-time",
+            "expected_version": "sha256:b33cf9a9cb5369f1bcbe0417ffaed38f1952582e1d55893906fba623e5914d13",
+            "external_id": "evt-001@calendar.example.org",
+            "change_kind": "changed",
+            "fields": {
+              "start": {
+                "from": "2026-10-10T10:00:00-04:00",
+                "to": "2026-10-10T11:00:00-04:00"
+              }
+            }
+          },
+          {
+            "op": "collapse-signal",
+            "target": "signals/synthetic-library-open",
+            "expected_version": "sha256:d67a42a487d2b45577f6e02c4d9d8afb53ba3343c2bc87a916760ac6827b862b",
+            "external_id": "evt-006@calendar.example.org",
+            "content_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "progress_field": "status",
+            "observation_line": "- 2026-10-03T14:00:00Z · changed · sha256:0000000000000000000000000000000000000000000000000000000000000000 · title: Pumpkin Carving → Pumpkin Carving Night",
+            "set": {
+              "change_kind": "changed",
+              "priority": "low",
+              "observed_at": "2026-10-03T14:00:00Z",
+              "diff_summary": "title: Pumpkin Carving → Pumpkin Carving Night",
+              "title": "Changed: Pumpkin Carving Night",
+              "external_id": "evt-006@calendar.example.org"
+            }
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-2e768c266c0e",
+            "external_id": "evt-012@calendar.example.org",
+            "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "reasons": [
+              "needs_review:new"
+            ],
+            "candidate": {
+              "frontmatter": {
+                "type": "Signal",
+                "title": "New: Leaf Pickup",
+                "status": "todo",
+                "change_kind": "new",
+                "observed_at": "2026-10-03T14:00:00Z",
+                "provider": "https://calendar.example.org/feed.ics",
+                "external_id": "evt-012@calendar.example.org",
+                "diff_summary": "new record @ 2026-11-02T08:00:00-05:00",
+                "priority": "low",
+                "sources": [
+                  {
+                    "resource": "https://calendar.example.org/feed.ics",
+                    "id": "evt-012@calendar.example.org",
+                    "title": "Leaf Pickup"
+                  }
+                ]
+              },
+              "body": "[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-012@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · new · sha256:1111111111111111111111111111111111111111111111111111111111111111 · new record @ 2026-11-02T08:00:00-05:00\n"
+            }
+          }
+        ],
+        "refusals": []
+      },
+      "receipt": {
+        "feed": "source-feeds/synthetic-library",
+        "provider": "https://calendar.example.org/feed.ics",
+        "observed_at": "2026-10-03T14:00:00Z",
+        "results": [
+          {
+            "op": "apply-owned-fields",
+            "target": "events/story-time",
+            "external_id": "evt-001@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:18b5107b7323970f7ea73471549fdae643c9f012fcfb46d37de9119728f05843"
+          },
+          {
+            "op": "collapse-signal",
+            "target": "signals/synthetic-library-open",
+            "external_id": "evt-006@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:63ae4215f2b837a63cc05a7a0ef6748aa7f36975aeb899e96840daecf7389078"
+          },
+          {
+            "op": "create-signal",
+            "target": "signals/synthetic-library-2e768c266c0e",
+            "external_id": "evt-012@calendar.example.org",
+            "outcome": "applied",
+            "version": "sha256:3c9b7a63cbf1cc8f8f334341974a1f89ec77cab93aa177e66fc4240b90bf1718"
+          }
+        ],
+        "refusals": [],
+        "diagnostics": []
+      },
+      "writes": [
+        {
+          "id": "events/story-time",
+          "version": "sha256:18b5107b7323970f7ea73471549fdae643c9f012fcfb46d37de9119728f05843",
+          "text": "---\ntype: Event\nevent_status: scheduled\ntitle: Story Time\nstart: '2026-10-10T11:00:00-04:00'\nend: '2026-10-10T11:00:00-04:00'\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-001@calendar.example.org\n    title: feed record\nactor: 'process:overlay-parity'\nupdated_at: '2026-10-17T12:00:00.000Z'\ntimestamp: '2026-10-17T12:00:00.000Z'\n---\nEditor-written description. Not feed-owned.\n"
+        },
+        {
+          "id": "signals/synthetic-library-open",
+          "version": "sha256:63ae4215f2b837a63cc05a7a0ef6748aa7f36975aeb899e96840daecf7389078",
+          "text": "---\ntype: Signal\nstatus: todo\npriority: low\nprovider: 'https://calendar.example.org/feed.ics'\ntitle: 'Changed: Pumpkin Carving Night'\nchange_kind: changed\nobserved_at: '2026-10-03T14:00:00Z'\nexternal_id: evt-006@calendar.example.org\ndiff_summary: 'title: Pumpkin Carving → Pumpkin Carving Night'\nactor: 'process:overlay-parity'\ntimestamp: '2026-10-17T12:00:00.000Z'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\n# Observations\n\n- 2026-10-03T12:00:00Z · new · sha256:8888888888888888888888888888888888888888888888888888888888888888 · new record\n- 2026-10-03T14:00:00Z · changed · sha256:0000000000000000000000000000000000000000000000000000000000000000 · title: Pumpkin Carving → Pumpkin Carving Night\n"
+        },
+        {
+          "id": "signals/synthetic-library-2e768c266c0e",
+          "version": "sha256:3c9b7a63cbf1cc8f8f334341974a1f89ec77cab93aa177e66fc4240b90bf1718",
+          "text": "---\ntype: Signal\ntitle: 'New: Leaf Pickup'\nstatus: todo\nchange_kind: new\nobserved_at: '2026-10-03T14:00:00Z'\nprovider: 'https://calendar.example.org/feed.ics'\nexternal_id: evt-012@calendar.example.org\ndiff_summary: 'new record @ 2026-11-02T08:00:00-05:00'\npriority: low\nsources:\n  - resource: 'https://calendar.example.org/feed.ics'\n    id: evt-012@calendar.example.org\n    title: Leaf Pickup\nactor: 'process:overlay-parity'\ntimestamp: '2026-10-17T12:00:00.000Z'\n---\n[from feed](../source-feeds/synthetic-library.md)\n\nTo overlay this record, give a document of Kind \"Event\" the source entry `resource: https://calendar.example.org/feed.ics`, `id: evt-012@calendar.example.org`.\n\n# Observations\n\n- 2026-10-03T14:00:00Z · new · sha256:1111111111111111111111111111111111111111111111111111111111111111 · new record @ 2026-11-02T08:00:00-05:00\n"
+        }
+      ],
+      "deletes": []
+    }
+  ],
+  "findings": {
+    "seeded": {
+      "signals/status-review-dismissed": "sha256:920413c386ec34fb8aa36269057090ed54ae908b55a090a18056c05be9309642",
+      "signals/status-review-updated": "sha256:d12a8df5d0a5dea064fa660faa3db0d71ff1e42d4eda29712c0746612f17e788",
+      "signals/status-review-expired": "sha256:d7d7237108c25cfdec00ae57e49012d949548d916b9ae74cb835c121a62f12ca"
+    },
+    "steps": [
+      {
+        "op": "create-signal",
+        "target": "signals/status-review-74fed0ba8849",
+        "external_id": "places/corner-cafe",
+        "content_digest": "sha256:aac58e463b169770555307d481658c4f60108fa240d77d7b5ecb6d8136ecfb7a",
+        "finding": "places/corner-cafe",
+        "reasons": [
+          "finding"
+        ],
+        "candidate": {
+          "frontmatter": {
+            "type": "Signal",
+            "title": "Check places/corner-cafe",
+            "superbee_progress_status": "todo",
+            "change_kind": "status-check",
+            "observed_at": "2026-10-11T02:00:00Z",
+            "provider": "process:status-review",
+            "external_id": "places/corner-cafe",
+            "diff_summary": "Status check for places/corner-cafe",
+            "priority": "urgent",
+            "content_digest": "sha256:aac58e463b169770555307d481658c4f60108fa240d77d7b5ecb6d8136ecfb7a",
+            "about_doc": "places/corner-cafe",
+            "sources": [
+              {
+                "resource": "process:status-review"
+              }
+            ]
+          },
+          "body": "Related document (content bundle): `places/corner-cafe`\n\n# Observations\n\n- 2026-10-11T02:00:00Z · status-check · sha256:aac58e463b169770555307d481658c4f60108fa240d77d7b5ecb6d8136ecfb7a · Status check for places/corner-cafe\n"
+        }
+      },
+      {
+        "op": "signal-duplicate",
+        "target": "signals/status-review-dismissed",
+        "external_id": "places/dismissed",
+        "content_digest": "sha256:d0ddc2d95d2fdda4c03c8203bdbbd2645bf2d5ce5b24f01d55db41533214e2ba",
+        "finding": "places/dismissed"
+      },
+      {
+        "op": "collapse-signal",
+        "target": "signals/status-review-updated",
+        "expected_version": "sha256:d12a8df5d0a5dea064fa660faa3db0d71ff1e42d4eda29712c0746612f17e788",
+        "external_id": "places/updated",
+        "content_digest": "sha256:6e604ed5770413275f2dd927d72ca0db4d10525e480312d46d4ed2af176caa2e",
+        "finding": "places/updated",
+        "progress_field": "superbee_progress_status",
+        "observation_line": "- 2026-10-11T02:00:00Z · status-check · sha256:6e604ed5770413275f2dd927d72ca0db4d10525e480312d46d4ed2af176caa2e · Status check for places/updated",
+        "set": {
+          "title": "Check places/updated",
+          "change_kind": "status-check",
+          "observed_at": "2026-10-11T02:00:00Z",
+          "diff_summary": "Status check for places/updated",
+          "content_digest": "sha256:6e604ed5770413275f2dd927d72ca0db4d10525e480312d46d4ed2af176caa2e",
+          "external_id": "places/updated",
+          "priority": "normal"
+        }
+      },
+      {
+        "op": "create-signal",
+        "target": "signals/status-review-afc6338b37dd",
+        "external_id": "places/expired",
+        "content_digest": "sha256:4fdc61faaa438d4ff7e11cf66a43dda18833399687ad87464bb70f4c36682fec",
+        "finding": "places/expired",
+        "reasons": [
+          "finding"
+        ],
+        "candidate": {
+          "frontmatter": {
+            "type": "Signal",
+            "title": "Check places/expired",
+            "superbee_progress_status": "todo",
+            "change_kind": "status-check",
+            "observed_at": "2026-10-11T02:00:00Z",
+            "provider": "process:status-review",
+            "external_id": "places/expired",
+            "diff_summary": "Status check for places/expired",
+            "priority": "normal",
+            "content_digest": "sha256:4fdc61faaa438d4ff7e11cf66a43dda18833399687ad87464bb70f4c36682fec",
+            "expires_at": "2026-11-10T02:00:00Z",
+            "sources": [
+              {
+                "resource": "process:status-review"
+              }
+            ]
+          },
+          "body": "\n\n# Observations\n\n- 2026-10-11T02:00:00Z · status-check · sha256:4fdc61faaa438d4ff7e11cf66a43dda18833399687ad87464bb70f4c36682fec · Status check for places/expired\n"
+        }
+      },
+      {
+        "op": "create-signal",
+        "target": "signals/status-review-c83ab468da6f",
+        "external_id": "places/sourced",
+        "content_digest": "sha256:58d75e4a537503a7e57b49c69637d55e855d358d9148cdced8ad26c32d300e26",
+        "finding": "places/sourced",
+        "reasons": [
+          "finding"
+        ],
+        "candidate": {
+          "frontmatter": {
+            "type": "Signal",
+            "title": "Check places/sourced",
+            "superbee_progress_status": "todo",
+            "change_kind": "status-check",
+            "observed_at": "2026-10-11T02:00:00Z",
+            "provider": "process:status-review",
+            "external_id": "places/sourced",
+            "diff_summary": "Status check for places/sourced",
+            "priority": "normal",
+            "content_digest": "sha256:58d75e4a537503a7e57b49c69637d55e855d358d9148cdced8ad26c32d300e26",
+            "sources": [
+              {
+                "resource": "https://api.example.org/events.json?token=REDACTED&city=springfield",
+                "id": "row-1",
+                "title": "row"
+              }
+            ]
+          },
+          "body": "Related document (content bundle): `places/a`\nRelated document (content bundle): `places/b`\n\n# Observations\n\n- 2026-10-11T02:00:00Z · status-check · sha256:58d75e4a537503a7e57b49c69637d55e855d358d9148cdced8ad26c32d300e26 · Status check for places/sourced\n"
+        }
+      }
+    ],
+    "receipt": {
+      "feed": null,
+      "provider": "process:status-review",
+      "observed_at": "2026-10-11T02:00:00Z",
+      "results": [
+        {
+          "op": "create-signal",
+          "target": "signals/status-review-74fed0ba8849",
+          "external_id": "places/corner-cafe",
+          "outcome": "applied",
+          "version": "sha256:dd0648d3099bfd6e74518e9147d4884dc8868fdbe2b43b09ecf98ee027d22f2e"
+        },
+        {
+          "op": "signal-duplicate",
+          "target": "signals/status-review-dismissed",
+          "external_id": "places/dismissed",
+          "outcome": "skipped"
+        },
+        {
+          "op": "collapse-signal",
+          "target": "signals/status-review-updated",
+          "external_id": "places/updated",
+          "outcome": "applied",
+          "version": "sha256:7799a06d189c650456336645bc0222b6f847769d2d09e18c197dcdb7d443e344"
+        },
+        {
+          "op": "create-signal",
+          "target": "signals/status-review-afc6338b37dd",
+          "external_id": "places/expired",
+          "outcome": "applied",
+          "version": "sha256:80c72a5f2cb2433196957d7a26943c2153adadf6e74f45b4fc153ef15f07638a"
+        },
+        {
+          "op": "create-signal",
+          "target": "signals/status-review-c83ab468da6f",
+          "external_id": "places/sourced",
+          "outcome": "applied",
+          "version": "sha256:2fcbccdc892fbf0fc62c04913f97353caa6aee0dfa78656e2ea503092aaffb82"
+        }
+      ],
+      "refusals": [],
+      "diagnostics": []
+    },
+    "writes": [
+      {
+        "id": "signals/status-review-74fed0ba8849",
+        "version": "sha256:dd0648d3099bfd6e74518e9147d4884dc8868fdbe2b43b09ecf98ee027d22f2e",
+        "text": "---\ntype: Signal\ntitle: Check places/corner-cafe\nsuperbee_progress_status: todo\nchange_kind: status-check\nobserved_at: '2026-10-11T02:00:00Z'\nprovider: 'process:status-review'\nexternal_id: places/corner-cafe\ndiff_summary: Status check for places/corner-cafe\npriority: urgent\ncontent_digest: 'sha256:aac58e463b169770555307d481658c4f60108fa240d77d7b5ecb6d8136ecfb7a'\nabout_doc: places/corner-cafe\nsources:\n  - resource: 'process:status-review'\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\nRelated document (content bundle): `places/corner-cafe`\n\n# Observations\n\n- 2026-10-11T02:00:00Z · status-check · sha256:aac58e463b169770555307d481658c4f60108fa240d77d7b5ecb6d8136ecfb7a · Status check for places/corner-cafe\n"
+      },
+      {
+        "id": "signals/status-review-updated",
+        "version": "sha256:7799a06d189c650456336645bc0222b6f847769d2d09e18c197dcdb7d443e344",
+        "text": "---\ntype: Signal\nsuperbee_progress_status: todo\ntitle: Check places/updated\nchange_kind: status-check\nobserved_at: '2026-10-11T02:00:00Z'\nprovider: 'process:status-review'\nexternal_id: places/updated\ndiff_summary: Status check for places/updated\npriority: normal\ncontent_digest: 'sha256:6e604ed5770413275f2dd927d72ca0db4d10525e480312d46d4ed2af176caa2e'\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n# Observations\n\n- old\n- 2026-10-11T02:00:00Z · status-check · sha256:6e604ed5770413275f2dd927d72ca0db4d10525e480312d46d4ed2af176caa2e · Status check for places/updated\n"
+      },
+      {
+        "id": "signals/status-review-afc6338b37dd",
+        "version": "sha256:80c72a5f2cb2433196957d7a26943c2153adadf6e74f45b4fc153ef15f07638a",
+        "text": "---\ntype: Signal\ntitle: Check places/expired\nsuperbee_progress_status: todo\nchange_kind: status-check\nobserved_at: '2026-10-11T02:00:00Z'\nprovider: 'process:status-review'\nexternal_id: places/expired\ndiff_summary: Status check for places/expired\npriority: normal\ncontent_digest: 'sha256:4fdc61faaa438d4ff7e11cf66a43dda18833399687ad87464bb70f4c36682fec'\nexpires_at: '2026-11-10T02:00:00Z'\nsources:\n  - resource: 'process:status-review'\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\n\n\n# Observations\n\n- 2026-10-11T02:00:00Z · status-check · sha256:4fdc61faaa438d4ff7e11cf66a43dda18833399687ad87464bb70f4c36682fec · Status check for places/expired\n"
+      },
+      {
+        "id": "signals/status-review-c83ab468da6f",
+        "version": "sha256:2fcbccdc892fbf0fc62c04913f97353caa6aee0dfa78656e2ea503092aaffb82",
+        "text": "---\ntype: Signal\ntitle: Check places/sourced\nsuperbee_progress_status: todo\nchange_kind: status-check\nobserved_at: '2026-10-11T02:00:00Z'\nprovider: 'process:status-review'\nexternal_id: places/sourced\ndiff_summary: Status check for places/sourced\npriority: normal\ncontent_digest: 'sha256:58d75e4a537503a7e57b49c69637d55e855d358d9148cdced8ad26c32d300e26'\nsources:\n  - resource: 'https://api.example.org/events.json?token=REDACTED&city=springfield'\n    id: row-1\n    title: row\ngenerated:\n  by: 'process:overlay-parity'\n  at: '2026-10-17T12:00:00.000Z'\nsuperbee_updated_by: 'process:overlay-parity'\n---\nRelated document (content bundle): `places/a`\nRelated document (content bundle): `places/b`\n\n# Observations\n\n- 2026-10-11T02:00:00Z · status-check · sha256:58d75e4a537503a7e57b49c69637d55e855d358d9148cdced8ad26c32d300e26 · Status check for places/sourced\n"
+      }
+    ],
+    "deletes": []
+  }
+}
