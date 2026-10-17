@@ -37,11 +37,13 @@ import { hostedBundleReferenceText, isWorkspaceSlug } from "./reference.js";
 import { checkoutBindingDigest } from "./binding.js";
 import { mintRequestId } from "../uncertain-write.js";
 import {
+  createCapabilitiesCache,
   createMemoryIntentStore,
   hostedHeldWrites,
   hostedLookupWrite,
   hostedSettleWrite,
   hostedWrite,
+  type HostedCapabilitiesCache,
   type HostedIntentStore,
   type HostedWriteContext,
   type HostedWriteInput,
@@ -102,6 +104,16 @@ export interface HostedClientOptions {
   readonly intentStore?: HostedIntentStore;
   /** How a write recovers an unclear answer: the wait between its outcome lookups (default 250 ms). */
   readonly writeRecovery?: { readonly lookupDelayMs?: number };
+  /**
+   * How long a bundle's capabilities answer serves this client's writes (and its `within`
+   * clients'), in milliseconds after it arrives. Default 60,000; 0 reads them before every write.
+   * A write refused `read_only`, `invalid_input`, `validation_failed` or `PERMISSION_DENIED`, or
+   * whose outcome is `unknown`, drops the answer so the next write reads it again. `reader()` never
+   * shares it.
+   */
+  readonly capabilitiesTtlMs?: number;
+  /** The clock the capabilities answers age by, in epoch milliseconds. Default `Date.now`. */
+  readonly now?: () => number;
 }
 
 /** One operation run's options. */
@@ -268,12 +280,25 @@ export function createHostedClient(options: HostedClientOptions): HostedClient {
   if (typeof options.credentials !== "function") throw new TypeError("a hosted client needs a credential provider");
   // One binding per client instance, shared by its `within` clients: a digest of a random id, as a
   // checkout's is, so the id itself never leaves.
-  const writes = { binding: checkoutBindingDigest(mintRequestId()), store: options.intentStore ?? createMemoryIntentStore(), inFlight: new Map<string, Promise<unknown>>() };
+  const writes: ClientWrites = {
+    binding: checkoutBindingDigest(mintRequestId()),
+    store: options.intentStore ?? createMemoryIntentStore(),
+    inFlight: new Map<string, Promise<unknown>>(),
+    capabilities: createCapabilitiesCache(options.capabilitiesTtlMs, options.now),
+  };
   return clientIn(options, options.signal ?? new AbortController().signal, undefined, writes);
 }
 
+/** What a client and its `within` clients share for writes. */
+interface ClientWrites {
+  readonly binding: string;
+  readonly store: HostedIntentStore;
+  readonly inFlight: Map<string, Promise<unknown>>;
+  readonly capabilities: HostedCapabilitiesCache;
+}
+
 /** The client, naming its bundles in the workspace with `slug` when there is one. */
-function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: string | undefined, writes: { binding: string; store: HostedIntentStore; inFlight: Map<string, Promise<unknown>> }): HostedClient {
+function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: string | undefined, writes: ClientWrites): HostedClient {
   const { target } = options;
   const prefix = target.syncPrefix;
   const fetchCarrier = createFetchCarrier({

@@ -53,7 +53,7 @@ export interface QueryOptions {
 }
 
 /** Read the bundle-root OKF edition through an explicit backend. */
-export async function readBundleOkfVersion(backend: StorageBackend): Promise<string | undefined> {
+export async function readBundleOkfVersion(backend: Pick<StorageBackend, "readReserved">): Promise<string | undefined> {
   const index = await backend.readReserved("", "index.md");
   if (!index) return undefined;
   const value = parseLeadingFrontmatter(index.content, "index.md").okf_version;

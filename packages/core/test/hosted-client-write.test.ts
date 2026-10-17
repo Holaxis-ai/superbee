@@ -147,7 +147,7 @@ function fakeHost(options: { retentionMs?: number; operations?: boolean } = {}) 
   const settled = (requestId: string, body: unknown) => Response.json(body, { headers: { "x-superbee-write-settled": requestId } });
   const failure = (operationId: string, code: string, message: string, extra: Record<string, unknown> = {}) => ({ ok: false, operationId, error: { code, message, retryable: false, writeState: "not_applied", ...extra } });
 
-  function apply(route: "create" | "replace", input: { documentId: string; expectedVersion?: string; frontmatter: Record<string, unknown>; body: string }): { result: Record<string, unknown>; content?: { version: string; bytes: string } } {
+  function apply(route: "create" | "replace", input: { bundleId?: string; documentId: string; expectedVersion?: string; frontmatter: Record<string, unknown>; body: string }): { result: Record<string, unknown>; content?: { version: string; bytes: string } } {
     const operationId = `documents.${route}.v1`;
     const current = documents.get(input.documentId);
     if (route === "create" && current) return { result: failure(operationId, "document_exists", "The document already exists.", { currentVersion: current.version }) };
@@ -156,14 +156,16 @@ function fakeHost(options: { retentionMs?: number; operations?: boolean } = {}) 
     const bytes = `---\n${JSON.stringify(input.frontmatter)}\n---\n${input.body}\n`;
     const version = sha256(bytes);
     documents.set(input.documentId, { frontmatter: input.frontmatter, body: input.body, version, bytes });
-    return { result: { ok: true, operationId, data: { bundleId: BUNDLE, documentId: input.documentId, version, changed: true } }, content: { version, bytes } };
+    // The host's answer names the bare id, whichever workspace the request named it in.
+    const bundleId = (input.bundleId ?? BUNDLE).split("/").pop()!;
+    return { result: { ok: true, operationId, data: { bundleId, documentId: input.documentId, version, changed: true } }, content: { version, bytes } };
   }
 
   const host = recorder((route, raw, headers) => {
     const name = route.slice(route.lastIndexOf("/") + 1);
     const fault = faults.get(name)?.shift();
     if (fault === "lost-request") throw new TypeError("network lost the request");
-    const input = JSON.parse(raw) as { documentId: string; expectedVersion?: string; frontmatter: Record<string, unknown>; body: string };
+    const input = JSON.parse(raw) as { bundleId?: string; documentId: string; expectedVersion?: string; frontmatter: Record<string, unknown>; body: string };
     const requestId = headers.get("x-superbee-write-request")!;
     const binding = headers.get("x-superbee-checkout")!;
     switch (name) {
@@ -814,4 +816,194 @@ test("settleWrite on a bundle the host serves no writes for only looks the ident
   assert.equal(writes(host.sent).length, 0);
   assert.equal(lookups(host.sent).length, 1);
   assert.ok(await store.get(intent.requestId));
+});
+
+// ── the capabilities cache ─────────────────────────────────────────────────────────────────
+
+const capabilityReads = (sent: readonly Sent[]) => sent.filter((row) => row.route.endsWith("/capabilities"));
+
+/** A clock the test moves by hand. */
+function manualClock(start = 1_000_000) {
+  let time = start;
+  return { now: () => time, advance: (ms: number) => void (time += ms) };
+}
+
+/** The fake host with the next answers of a route replaced, in order; a replaced request is recorded as the host records one. */
+function overriding(host: ReturnType<typeof fakeHost>, answers: Record<string, (() => Response | Promise<Response>)[]>) {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(input)).pathname;
+    const next = answers[route.slice(route.lastIndexOf("/") + 1)]?.shift();
+    if (!next) return host.fetch(input, init);
+    const headers = new Headers(init?.headers);
+    host.sent.push({ route, body: String(init?.body ?? ""), requestId: headers.get("x-superbee-write-request"), binding: headers.get("x-superbee-checkout"), authorization: headers.get("authorization") });
+    return next();
+  }) as typeof globalThis.fetch;
+}
+
+const capabilitiesWith = (changes: Record<string, unknown>) => () => Response.json({ ...(JSON.parse(fixture("capabilities-200").response.body) as Record<string, unknown>), ...changes });
+const createRefused = (code: string) => () =>
+  Response.json({ ok: false, operationId: "documents.create.v1", error: { code, message: `The host refused this write (${code}).`, retryable: false, writeState: "not_applied" } });
+
+async function created(client: ReturnType<typeof clientOf>, bundleId: string, id: string): Promise<void> {
+  const result = await client.write(bundleId, { id, document: doc(id), expectAbsent: true });
+  assert.equal(result.status, "committed", `${bundleId} ${id}: ${JSON.stringify(result)}`);
+}
+
+test("capabilities cache: sequential writes to one bundle read its capabilities once, until the TTL passes", async () => {
+  const host = fakeHost();
+  const clock = manualClock();
+  const client = clientOf(host.fetch, { now: clock.now });
+  for (let n = 0; n < 5; n += 1) await created(client, BUNDLE, `notes/n${n}`);
+  assert.equal(capabilityReads(host.sent).length, 1);
+  assert.deepEqual(routes(host.sent), ["capabilities", "create", "create", "create", "create", "create"]);
+
+  clock.advance(59_999);
+  await created(client, BUNDLE, "notes/before-ttl");
+  assert.equal(capabilityReads(host.sent).length, 1, "the answer serves for 60 s by default");
+  clock.advance(1);
+  await created(client, BUNDLE, "notes/at-ttl");
+  assert.equal(capabilityReads(host.sent).length, 2, "an answer 60 s old is read again");
+  await created(client, BUNDLE, "notes/after-ttl");
+  assert.equal(capabilityReads(host.sent).length, 2, "and the new answer serves the writes after it");
+});
+
+test("capabilities cache: capabilitiesTtlMs sets the TTL, and 0 reads capabilities before every write", async () => {
+  const host = fakeHost();
+  const clock = manualClock();
+  const short = clientOf(host.fetch, { now: clock.now, capabilitiesTtlMs: 1_000 });
+  await created(short, BUNDLE, "notes/s1");
+  clock.advance(999);
+  await created(short, BUNDLE, "notes/s2");
+  clock.advance(1);
+  await created(short, BUNDLE, "notes/s3");
+  assert.equal(capabilityReads(host.sent).length, 2);
+
+  const none = fakeHost();
+  const uncached = clientOf(none.fetch, { now: clock.now, capabilitiesTtlMs: 0 });
+  for (let n = 0; n < 3; n += 1) await created(uncached, BUNDLE, `notes/u${n}`);
+  assert.deepEqual(routes(none.sent), ["capabilities", "create", "capabilities", "create", "capabilities", "create"]);
+
+  for (const ttl of [-1, Number.NaN, Number.POSITIVE_INFINITY]) assert.throws(() => clientOf(none.fetch, { capabilitiesTtlMs: ttl }), TypeError);
+});
+
+/** Each case: what makes the first write's result, and the result it is. The next write must read capabilities again. */
+const DROP_CASES: { name: string; arrange(host: ReturnType<typeof fakeHost>): typeof globalThis.fetch; document?: string; expect: { status: string; code?: string } | "throws" }[] = [
+  { name: "a read_only refusal", arrange: (host) => overriding(host, { capabilities: [capabilitiesWith({ operations: false })] }), expect: { status: "refused", code: "read_only" } },
+  { name: "the client's invalid_input (a document that does not parse to a typed document)", arrange: (host) => host.fetch, document: "---\nnote: untyped\n---\nbody", expect: { status: "refused", code: "invalid_input" } },
+  { name: "the host's invalid_input", arrange: (host) => overriding(host, { create: [createRefused("invalid_input")] }), expect: { status: "refused", code: "invalid_input" } },
+  { name: "bundle_not_found (reported as PERMISSION_DENIED)", arrange: (host) => overriding(host, { create: [createRefused("bundle_not_found")] }), expect: { status: "refused", code: "PERMISSION_DENIED" } },
+  { name: "an edition refusal (validation_failed)", arrange: (host) => overriding(host, { create: [createRefused("validation_failed")] }), expect: { status: "refused", code: "validation_failed" } },
+  {
+    name: "an unknown outcome",
+    arrange: (host) => {
+      host.fault("create", "lost-answer");
+      host.fault("outcome", "lost-request", "lost-request", "lost-request");
+      return host.fetch;
+    },
+    expect: { status: "unknown" },
+  },
+  { name: "a failed capabilities read", arrange: (host) => overriding(host, { capabilities: [() => new Response(null, { status: 503 })] }), expect: "throws" },
+];
+
+for (const drop of DROP_CASES) {
+  test(`capabilities cache: ${drop.name} drops the held answer, so the next write reads it again`, async () => {
+    const host = fakeHost();
+    const client = clientOf(drop.arrange(host), { now: manualClock().now });
+    const first = client.write(BUNDLE, { id: "notes/first", document: drop.document ?? doc("first"), expectAbsent: true });
+    if (drop.expect === "throws") await assert.rejects(first, { name: "HostedCarrierError" });
+    else {
+      const result = await first;
+      assert.equal(result.status, drop.expect.status);
+      if (drop.expect.code !== undefined) assert.equal(result.status === "refused" && result.code, drop.expect.code);
+    }
+    assert.equal(capabilityReads(host.sent).length, 1);
+    await created(client, BUNDLE, "notes/second");
+    assert.equal(capabilityReads(host.sent).length, 2, "the next write read capabilities again");
+    await created(client, BUNDLE, "notes/third");
+    assert.equal(capabilityReads(host.sent).length, 2, "and holds the new answer");
+  });
+}
+
+test("capabilities cache: a conflict and a committed write keep the held answer", async () => {
+  const host = fakeHost();
+  const client = clientOf(host.fetch, { now: manualClock().now });
+  await created(client, BUNDLE, "notes/one");
+  const conflict = await client.write(BUNDLE, { id: "notes/one", document: doc("again"), expectAbsent: true });
+  assert.equal(conflict.status, "conflict");
+  await created(client, BUNDLE, "notes/two");
+  assert.equal(capabilityReads(host.sent).length, 1);
+});
+
+test("capabilities cache: each bundle and each workspace holds its own answer; within clients of one workspace share it", async () => {
+  const host = fakeHost();
+  const client = clientOf(host.fetch, { now: manualClock().now });
+  await created(client, BUNDLE, "notes/a");
+  await created(client, "notes.b", "notes/b");
+  await created(client.within("south"), BUNDLE, "notes/c");
+  await created(client.within("south"), BUNDLE, "notes/d");
+  await created(client.within("north"), BUNDLE, "notes/e");
+  await created(client, BUNDLE, "notes/f");
+  await created(client, "notes.b", "notes/g");
+  await created(client.within("north"), BUNDLE, "notes/h");
+  assert.deepEqual(
+    capabilityReads(host.sent).map((row) => JSON.parse(row.body).bundleId),
+    [BUNDLE, "notes.b", `south/${BUNDLE}`, `north/${BUNDLE}`],
+  );
+  // Each write went to the bundle its own answer was read for.
+  assert.deepEqual(
+    writes(host.sent).map((row) => JSON.parse(row.body).bundleId),
+    [BUNDLE, "notes.b", `south/${BUNDLE}`, `south/${BUNDLE}`, `north/${BUNDLE}`, BUNDLE, "notes.b", `north/${BUNDLE}`],
+  );
+});
+
+test("capabilities cache: concurrent writes to one bundle share one capabilities read in flight", async () => {
+  const host = fakeHost();
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  let reads = 0;
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(input)).pathname.endsWith("/capabilities")) {
+      reads += 1;
+      await gate;
+    }
+    return host.fetch(input, init);
+  }) as typeof globalThis.fetch;
+  const client = clientOf(fetch, { now: manualClock().now });
+  const pending = Array.from({ length: 5 }, (_, n) => client.write(BUNDLE, { id: `notes/c${n}`, document: doc(`c${n}`), expectAbsent: true }));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1, "one read is in flight for all five writes");
+  open();
+  const results = await Promise.all(pending);
+  assert.deepEqual(results.map((result) => result.status), Array(5).fill("committed"));
+  assert.equal(reads, 1);
+  assert.equal(writes(host.sent).length, 5);
+});
+
+test("capabilities cache: a settle uses the held answer's retention window, read once with the client's writes", async () => {
+  const host = fakeHost({ retentionMs: 2 * 60 * 60 * 1000 });
+  const store = createMemoryIntentStore();
+  const client = clientOf(host.fetch, { intentStore: store, now: manualClock().now });
+  await created(client, BUNDLE, "notes/fresh");
+  const old: HostedWriteIntent = {
+    requestId: "0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1f",
+    binding: checkoutBindingDigest("persisted-checkout"),
+    bundleId: BUNDLE,
+    workspace: null,
+    operation: "create",
+    documentId: "notes/old",
+    document: doc("old"),
+    digest: sha256(doc("old")),
+    expectedVersion: null,
+    okfVersion: "0.2",
+    // Three hours old: inside the thirty-day default, past the two-hour window this host serves.
+    createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    attempts: 1,
+    state: "unknown",
+  };
+  await store.put(old);
+  const settled = await client.settleWrite(old.requestId);
+  assert.equal(settled.status, "unknown");
+  assert.equal(writes(host.sent).length, 1, "an identity past the served window is never resent");
+  assert.equal(capabilityReads(host.sent).length, 1, "the write's held answer served the settle");
 });

@@ -192,7 +192,15 @@ Every result names its `requestId`. A conflict is final for that identity: the c
 resends it, under that identity or a new one. Read the document and decide; another attempt is a
 new `write`.
 
-Each write costs two round trips: a capabilities read of the bundle, then the write itself.
+A write needs the bundle's capabilities (whether it serves writes, its OKF edition, the write
+bound and the retention window). The client reads them once per bundle and workspace and holds the
+answer for `capabilitiesTtlMs` (default 60,000 ms), shared by the client and its `within` clients
+and never by `reader()`. So a write costs one round trip while its bundle's capabilities are fresh,
+and two when they are read first; concurrent writes to one bundle share one read. A write refused
+`read_only`, `invalid_input`, `validation_failed` or `PERMISSION_DENIED` (which is how a
+`bundle_not_found` write answer arrives), or whose result is `unknown`, drops the held answer, and
+a capabilities read that fails is never held, so the next write reads them again. Set
+`capabilitiesTtlMs: 0` to read them before every write.
 
 Each write has one request identity and carries the client's binding, a digest of a random id the
 client mints once (its `within` clients share it). When an answer is lost (a transport failure or
