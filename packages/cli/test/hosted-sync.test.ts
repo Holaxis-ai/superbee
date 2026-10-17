@@ -14,16 +14,22 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { decode } from "@toon-format/toon";
+import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
+import { decodePreparedBlobIntent } from "@superbee/core/storage";
+import { BLOB_SYNC_META_KEY, encodeBlobSyncMap, admitOfflineBlob } from "../src/hosted/blob-sync.js";
+import { digestOf } from "../src/hosted/projection.js";
 import { parseMarkdown } from "@superbee/core";
 import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
 
 import { CliError } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { sync } from "../src/commands/sync.js";
+import { promote } from "../src/commands/promote.js";
+import { deleteCommand } from "../src/commands/delete.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
-import { bindingForPath, checkoutDir, checkoutLockName } from "../src/hosted/binding.js";
+import { bindingForPath, checkoutDir, checkoutLockName, checkoutStoreDir } from "../src/hosted/binding.js";
 import { hostedStatus } from "../src/hosted/status.js";
 import { hostedPull } from "../src/hosted/sync.js";
 import { recoverPlacements } from "../src/hosted/sync-scan.js";
@@ -505,7 +511,7 @@ test("a deleted file syncs as a CAS-bound delete; the checkout's own later re-cr
 test("`doc delete` in a checkout is no longer refused; the next sync sends the delete", async () => {
   const h = await harness();
   assert.equal(HOSTED_CHECKOUT_REFUSALS.some((row) => row.words.join(" ") === "doc delete"), false);
-  // `delete` is refused only for a blob key (it cannot sync); a document key syncs as a delete.
+  // Protected targets remain refused; ordinary blobs enter offline admission and document deletes retain their existing route.
   assert.ok(HOSTED_CHECKOUT_REFUSALS.find((row) => row.words.join(" ") === "delete")?.when !== undefined);
   const context = { home: h.home, cwd: h.cwd };
   await assertAllowedInHostedCheckout("doc", ["delete", "notes/alpha", "--dir", h.folder], context);
@@ -1468,4 +1474,477 @@ test("a front-page write that did not land when re-read but lands late is settle
   assert.equal(rowFor(receipt, "index.md")?.state, "committed", JSON.stringify(receipt));
   assert.equal(h.host.rootCalls.at(-1)!.body.expectedVersion, versionOf(frontPage("Mine")));
   assert.equal(h.host.root()?.content, frontPage("Next"));
+});
+
+async function seedCaptureMap(h: Harness, key: string, bytes: Uint8Array, desiredContentType?: string) {
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  const scope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
+  try { await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap({ schemaVersion: 1, scope, entries: [{ key, head: { key, version: digestOf(bytes), contentType: 'application/octet-stream; profile="old"' }, placedDigest: digestOf(bytes), ...(desiredContentType === undefined ? {} : { desiredContentType }) }] })); }
+  finally { await store.close(); }
+  return binding;
+}
+function captureFetch(h: Harness, beforeHeads?: () => Promise<void>, allowed = true): typeof fetch {
+  return (async (input, init) => {
+    const route = new URL(String(input)).pathname;
+    if (route.endsWith("/heads")) await beforeHeads?.();
+    const answer = await h.host.fetch(input, init);
+    if (route.endsWith("/capabilities") && answer.status === 200) {
+      const caps = await answer.json() as Record<string, unknown> & { limits?: Record<string, unknown> };
+      return Response.json({ ...caps, blobWrites: allowed ? "allowed" : "refused", limits: { ...caps.limits, blobWriteBytes: 16 * 1024 * 1024 } });
+    }
+    return answer;
+  }) as typeof fetch;
+}
+test("tracked blob capture precedes failed pull and survives restart, later edits and in-flight reopen with lookup only", async () => {
+  const h = await harness();
+  const key = "opaque.bin", file = path.join(h.folder, key), base = Buffer.from("base"), sent = Buffer.from([0, 255, 128, 1]);
+  await writeFile(file, base);
+  const binding = await seedCaptureMap(h, key, base, 'image/svg+xml; charset="utf-8"');
+  await writeFile(file, sent);
+  h.fetch = captureFetch(h, async () => { await writeFile(file, "later"); throw new Error("lost document pull"); });
+  await failingSync(h);
+  let store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  const rows = await store.listBlobIntents();
+  assert.equal(rows.length, 1);
+  const original = rows[0]!, payload = decodePreparedBlobIntent(original.prepared);
+  assert.equal(payload.intent.operationId, "blobs.replace.v1");
+  assert.equal(payload.intent.expectedContentType, 'application/octet-stream; profile="old"');
+  assert.equal(payload.intent.contentType, 'image/svg+xml; charset="utf-8"');
+  assert.deepEqual(Buffer.from(payload.bytesBase64!, "base64"), sent);
+  await store.updateBlobIntent(original.requestId, "pending", { state: "in_flight", attempts: 1 }, { guard: (await store.readBlobWithJournal(key)).guard });
+  await store.close();
+  await writeFile(file, base); // even a revert cannot rewrite the earlier frozen attempt
+  h.fetch = captureFetch(h);
+  const receipt = (await failingSync(h)).receipt!;
+  assert.equal(receipt.status, "incomplete");
+  assert.equal((receipt.blobs as any).rows[0].state, "unknown");
+  assert.equal((receipt.counts as Record<string, number>).committed, 0);
+  store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id), readOnly: true });
+  try { const after = await store.listBlobIntents(); assert.equal(after.length, 1); assert.equal(after[0]!.requestId, original.requestId); assert.equal(after[0]!.prepared, original.prepared); assert.equal(after[0]!.state, "unknown"); assert.equal(after[0]!.attempts, 1); }
+  finally { await store.close(); }
+  assert.ok(h.host.writes.length > 0 && h.host.writes.every(row => row.route === "outcome"));
+  assert.ok(!h.host.requests.some(row => /blob-(?:create|replace|delete)$/.test(row.path)));
+});
+test("pull-only captures legal opaque blobs and reports held without document writes", async () => {
+  const h = await harness();
+  const key = "data/opaque.bin", file = path.join(h.folder, key), base = Buffer.from("base");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, base);
+  const binding = await seedCaptureMap(h, key, base);
+  const opaque = Buffer.from([0, 255, 128]);
+  await writeFile(file, opaque);
+  h.host.put("notes/alpha", { type: "Note", title: "Changed remotely" }, "new remote representation\n");
+  h.fetch = captureFetch(h);
+  const result = await hostedPull(binding, { auth: h.auth, cwd: h.cwd, fetch: h.fetch, sleep: instant });
+  assert.equal(result.state, "pulled");
+  assert.ok(result.state === "pulled" && result.held! > 0);
+  assert.deepEqual(await readFile(file), opaque);
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id), readOnly: true });
+  try { assert.equal((await store.listIntents()).length, 0); assert.equal((await store.listBlobIntents()).length, 1); }
+  finally { await store.close(); }
+  assert.equal(h.host.writes.length, 0);
+});
+test("unsupported and UNKNOWN blob baselines remain held with zero blob or document sends", async () => {
+  for (const unknown of [false, true]) {
+    const h = await harness(), key = "legacy.bin", file = path.join(h.folder, key), base = Buffer.from("old");
+    await writeFile(file, base);
+    const binding = await seedCaptureMap(h, key, base);
+    if (unknown) {
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+      try { const value = JSON.parse((await store.readMeta<string>(BLOB_SYNC_META_KEY))!) as { entries: { head?: unknown }[] }; delete value.entries[0]!.head; await store.writeMeta(BLOB_SYNC_META_KEY, JSON.stringify(value)); }
+      finally { await store.close(); }
+    }
+    await writeFile(file, "new local edit");
+    h.fetch = captureFetch(h, undefined, unknown);
+    const receipt = (await failingSync(h)).receipt!;
+    assert.equal(receipt.status, "incomplete");
+    assert.equal(rowFor(receipt, key)?.state, "held");
+    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id), readOnly: true });
+    try { assert.equal((await store.listBlobIntents()).length, 0); assert.equal((await store.listIntents()).length, 0); }
+    finally { await store.close(); }
+    assert.equal(h.host.writes.length, 0);
+  }
+});
+
+/** Only the read family is modeled here; any blob mutation route is a test failure. */
+function refreshFetch(h: Harness, rows: { key: string; bytes: Buffer; contentType: string }[]): typeof fetch {
+  return (async (input, init) => {
+    const route = new URL(String(input)).pathname;
+    if (/blob-(?:create|replace|delete)/.test(route)) throw new Error("read-side refresh must not send");
+    const heads = rows.map(row => ({ key: row.key, version: digestOf(row.bytes), contentType: row.contentType })).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    if (route.endsWith("/blob-heads")) return Response.json({ schemaVersion: 1, bundleId: BUNDLE, revision: 1, digest: digestOf(Buffer.from(JSON.stringify([1, heads.map(head => [head.key, head.version, head.contentType])]))), total: heads.length, heads, next: null });
+    if (route.endsWith("/blob-read")) {
+      const request = JSON.parse(String(init?.body)) as { key: string }, row = rows.find(row => row.key === request.key)!;
+      return new Response(row.bytes, { headers: { "content-type": "application/octet-stream", "content-length": String(row.bytes.length), "x-superbee-blob-version": digestOf(row.bytes), "x-superbee-content-type": row.contentType } });
+    }
+    const answer = await h.host.fetch(input, init);
+    if (route.endsWith("/capabilities") && answer.status === 200) { const caps = await answer.json() as { limits?: object }; return Response.json({ ...caps, blobReads: "allowed", blobWrites: "refused", limits: { ...caps.limits, blobReadBytes: 16 * 1024 * 1024 } }); }
+    return answer;
+  }) as typeof fetch;
+}
+test("sync and pull-only refresh ordinary files once with read-only capabilities and retain document-only defaults", async () => {
+  const h = await harness(), key = "opaque.bin", file = path.join(h.folder, key), base = Buffer.from("base");
+  await writeFile(file, base); const binding = await seedCaptureMap(h, key, base);
+  const bytes = Buffer.from([0, 255, 128]);
+  h.fetch = refreshFetch(h, [{ key, bytes, contentType: 'image/svg+xml; profile="first"' }]);
+  const receipt = await runSync(h);
+  assert.deepEqual(await readFile(file), bytes);
+  const pulled = receipt.pulled as { refreshed: number; blobs: { refreshed: number; removed: number } };
+  assert.equal(pulled.refreshed, 0); assert.equal(pulled.blobs.refreshed, 1); assert.equal(pulled.blobs.removed, 0); assert.equal((receipt.counts as { committed: number }).committed, 0);
+  h.fetch = refreshFetch(h, [{ key, bytes, contentType: 'image/svg+xml; profile="second"' }]);
+  const result = await hostedPull(binding, { auth: h.auth, cwd: h.cwd, fetch: h.fetch, sleep: instant });
+  assert.equal(result.state, "pulled"); assert.ok(result.state === "pulled" && result.blobs?.metadata_updated === 1); assert.ok(result.state === "pulled" && result.refreshed === 0);
+  assert.equal(h.host.writes.length, 0);
+  const legacy = await harness(); const old = await runSync(legacy); assert.equal(Object.hasOwn(old.pulled as object, "blobs"), false);
+});
+test("sync routes blobs confirmation only to the exact recorded ordinary-file deletion set", async () => {
+  const h = await harness(), keys = Array.from({ length: 8 }, (_, i) => `opaque${i}.bin`), base = Buffer.from("base");
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try {
+    const scope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
+    await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap({ schemaVersion: 1, scope, entries: keys.map(key => ({ key, head: { key, version: digestOf(base), contentType: "x/old" }, placedDigest: digestOf(base) })) }));
+  } finally { await store.close(); }
+  for (const key of keys) await writeFile(path.join(h.folder, key), base);
+  h.fetch = refreshFetch(h, []);
+  const first = (await failingSync(h)).receipt!, refusal = (first.pulled as { blobs: { refused_deletions: { token: string; count: number } } }).blobs.refused_deletions;
+  assert.match(refusal.token, /^blobs:8:[0-9a-f]{12}$/); assert.equal(refusal.count, 8); assert.equal(first.status, "incomplete");
+  const wrong = (await failingSync(h, ["--take-host-deletions", refusal.token.slice(6)])).receipt!;
+  assert.equal((wrong.take_host_deletions as { taken: boolean }).taken, false); assert.equal(await readFile(path.join(h.folder, keys[0]!), "utf8"), "base");
+  await writeFile(path.join(h.folder, keys[0]!), "local edit after refusal");
+  const stale = (await failingSync(h, ["--take-host-deletions", refusal.token])).receipt!;
+  assert.equal((stale.take_host_deletions as { taken: boolean }).taken, false);
+  assert.equal((stale.pulled as { blobs: { removed: number; refused_deletions?: unknown } }).blobs.removed, 0);
+  assert.equal((stale.pulled as { blobs: { refused_deletions?: unknown } }).blobs.refused_deletions, undefined);
+  assert.match((stale.take_host_deletions as { message: string }).message, /without that token/);
+  for (const key of keys.slice(1)) assert.equal(await readFile(path.join(h.folder, key), "utf8"), "base");
+  await writeFile(path.join(h.folder, keys[0]!), base);
+  const accepted = await runSync(h, ["--take-host-deletions", refusal.token]);
+  assert.equal((accepted.take_host_deletions as { taken: boolean }).taken, true); assert.equal((accepted.pulled as { blobs: { removed: number } }).blobs.removed, 8);
+  await assert.rejects(readFile(path.join(h.folder, keys[0]!)), { code: "ENOENT" }); assert.equal(h.host.writes.length, 0);
+});
+
+
+test("offline hosted promote durably admits canonical binary create and MIME replacement without auth or fetch", async () => {
+  const h = await harness(), key = "opaque.bin", file = path.join(h.folder, key), bytes = Buffer.from([0, 255, 128]);
+  await writeFile(file, bytes); let printed = "";
+  const firstAdmission = await admitOfflineBlob({ operation: "promote", key, source: file, dir: h.folder, contentType: 'image/svg+xml; profile="offline"', home: h.home, cwd: h.cwd }); printed = JSON.stringify(firstAdmission!.receipt);
+  const receipt = JSON.parse(printed); assert.equal(receipt.promote, "pending"); assert.equal(receipt.submitted, false); assert.equal(receipt.status, "incomplete"); assert.equal(h.host.requests.length, 0);
+  const binding = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try {
+    const rows = await store.listBlobIntents(); assert.equal(rows.length, 1); const prepared = decodePreparedBlobIntent(rows[0]!.prepared);
+    assert.equal(prepared.intent.operationId, "blobs.create.v1"); assert.equal(prepared.intent.expectedVersion, null); assert.equal(prepared.intent.expectedContentType, null); assert.equal(prepared.intent.contentType, 'image/svg+xml; profile="offline"'); assert.deepEqual(Buffer.from(prepared.bytesBase64!, "base64"), bytes);
+    const map = JSON.parse((await store.readMeta<string>(BLOB_SYNC_META_KEY))!); assert.equal(Object.hasOwn(map.entries[0], "head"), false); assert.equal(map.entries[0].placedDigest, null);
+    await filesystemPushRoleLocks().request(checkoutLockName(h.folder), {}, async () => { await assert.rejects(promote([file, "--doc-key", key, "--dir", h.folder], { home: h.home, cwd: h.cwd, stdout() {} }), /busy/); });
+  } finally { await store.close(); }
+  const resumed = await admitOfflineBlob({ operation: "promote", key, source: file, dir: h.folder, contentType: 'image/svg+xml; profile="offline"', home: h.home, cwd: h.cwd }); assert.equal(resumed!.resumed, true); assert.deepEqual(resumed!.requestIds, firstAdmission!.requestIds);
+  const defaultFile = path.join(h.folder, "new.svg"); await writeFile(defaultFile, "<svg/>"); let defaultOut = "";
+  defaultOut = JSON.stringify((await admitOfflineBlob({ operation: "promote", key: "new.svg", source: defaultFile, dir: h.folder, home: h.home, cwd: h.cwd }))!.receipt);
+  assert.equal(JSON.parse(defaultOut).content_type, "image/svg+xml");
+  const other = await harness(), typeKey = "type.bin", typeFile = path.join(other.folder, typeKey), old = Buffer.from("old"); await writeFile(typeFile, old); const bound = await seedCaptureMap(other, typeKey, old);
+  await assert.rejects(promote([typeFile, "--doc-key", typeKey, "--dir", other.folder, "--expected-version", digestOf(Buffer.from("wrong"))], { home: other.home, cwd: other.cwd, stdout() {} }), /baseline/);
+  await admitOfflineBlob({ operation: "promote", key: typeKey, source: typeFile, dir: other.folder, expectedVersion: digestOf(old), contentType: "x/type-only", home: other.home, cwd: other.cwd });
+  const reopened = await FileJournaledBackend.open({ directory: checkoutStoreDir(other.home, bound.checkout_id) });
+  try { const row = (await reopened.listBlobIntents())[0]!, prepared = decodePreparedBlobIntent(row.prepared); assert.equal(prepared.intent.operationId, "blobs.replace.v1"); if (prepared.intent.operationId !== "blobs.replace.v1") throw new Error("expected replacement"); assert.equal(prepared.intent.expectedContentType, 'application/octet-stream; profile="old"'); assert.equal(prepared.intent.contentType, "x/type-only"); assert.equal(prepared.intent.version, digestOf(old)); }
+  finally { await reopened.close(); }
+  assert.equal(other.host.requests.length, 0);
+});
+test("offline admission refuses external/hardlink/symlink, namespace and copied bindings before mutation", async () => {
+  const h = await harness(), key = "opaque.bin", file = path.join(h.folder, key); await writeFile(file, "target");
+  const outside = path.join(h.cwd, "outside.bin"); await writeFile(outside, "external");
+  await assert.rejects(promote([outside, "--doc-key", key, "--dir", h.folder], { home: h.home, cwd: h.cwd, stdout() {} }), /target pathname/);
+  const { link } = await import("node:fs/promises"); await unlink(outside); await link(file, outside);
+  await assert.rejects(promote([outside, "--doc-key", key, "--dir", h.folder], { home: h.home, cwd: h.cwd, stdout() {} }), /target pathname/);
+  await unlink(file); await symlink(outside, file);
+  await assert.rejects(promote([file, "--doc-key", key, "--dir", h.folder], { home: h.home, cwd: h.cwd, stdout() {} }), /unsafe/);
+  for (const protectedKey of ["References/a.bin", "views/a.html", "conventions/x.bin", "../escape.bin"]) await assert.rejects(promote([file, "--doc-key", protectedKey, "--dir", h.folder], { home: h.home, cwd: h.cwd, stdout() {} }), /reserved|publisher/);
+  const copy = path.join(h.cwd, "copy"); await cp(h.folder, copy, { recursive: true });
+  await assert.rejects(deleteCommand(["--doc-key", key, "--dir", copy], { home: h.home, cwd: h.cwd, stdout() {} }), /adopted/);
+  const binding = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { assert.equal((await store.listBlobIntents()).length, 0); } finally { await store.close(); }
+  assert.equal(await readFile(outside, "utf8"), "target"); assert.equal(h.host.requests.length, 0);
+});
+test("offline opaque delete uses preserved clean pins; failed admission leaves truthful local absence for later scan", async () => {
+  for (const failAdmission of [false, true]) {
+    const h = await harness(), key = "opaque.bin", file = path.join(h.folder, key), old = Buffer.from("old"); await writeFile(file, old); const binding = await seedCaptureMap(h, key, old);
+    await writeFile(file, "dirty"); await assert.rejects(deleteCommand(["--doc-key", key, "--dir", h.folder], { home: h.home, cwd: h.cwd, stdout() {} }), /locally changed/); await writeFile(file, old);
+    const original = FileJournaledBackend.prototype.admitPreparedBlob;
+    let receipt = "";
+    try {
+      if (failAdmission) FileJournaledBackend.prototype.admitPreparedBlob = async () => { throw new RangeError("injected admission capacity refusal"); };
+      const work = admitOfflineBlob({ operation: "delete", key, dir: h.folder, home: h.home, cwd: h.cwd }).then(admitted => { receipt = JSON.stringify(admitted!.receipt); });
+      if (failAdmission) await assert.rejects(work, (error: unknown) => error instanceof CliError && error.details?.reason === "blob_delete_local_unsubmitted" && error.details.local_removed === true && error.details.submitted === false);
+      else { await work; assert.equal(JSON.parse(receipt).delete, "pending"); }
+    } finally { FileJournaledBackend.prototype.admitPreparedBlob = original; }
+    await assert.rejects(readFile(file), { code: "ENOENT" });
+    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+    try { assert.equal((await store.listBlobIntents()).length, failAdmission ? 0 : 1); const map = JSON.parse((await store.readMeta<string>(BLOB_SYNC_META_KEY))!); assert.equal(map.entries[0].head.version, digestOf(old)); assert.equal(map.entries[0].head.contentType, 'application/octet-stream; profile="old"'); }
+    finally { await store.close(); }
+    if (failAdmission) { h.fetch = captureFetch(h); await failingSync(h); const recovered = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) }); try { assert.equal(decodePreparedBlobIntent((await recovered.listBlobIntents())[0]!.prepared).intent.operationId, "blobs.delete.v1"); } finally { await recovered.close(); } }
+    assert.ok(h.host.writes.every(row => row.route === "outcome"));
+    if (!failAdmission) assert.ok(!h.host.requests.some(row => /blob-(?:create|replace|delete)$/.test(row.path)));
+  }
+});
+
+/** Stateful read/write wire seam only; authority and journal selection remain the production owners. */
+function blobAuthority(h: Harness, options: { priorDeletes?: number; baseline?: number; beforeWrite?: (key: string) => Promise<void>; lostAck?: boolean; rehold?: boolean; slug?: string; holdDiagnostics?: Record<string, { deletions: number; baseline: number }> } = {}) {
+  const objects = new Map<string, { bytes: Buffer; contentType: string }>(), outcomes = new Map<string, { binding: string; result: any }>();
+  const calls: { key: string; requestId: string; operationId: string; allowance: number | null; bundle: string; via: string | null }[] = [];
+  let deletes = options.priorDeletes ?? 0, dropped = false;
+  const fetcher: typeof fetch = (async (input, init) => {
+    const request = new Request(input, init), route = new URL(request.url).pathname;
+    if (route.endsWith("/blob-heads")) {
+      const heads = [...objects].map(([key, row]) => ({ key, version: digestOf(row.bytes), contentType: row.contentType })).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+      return Response.json({ schemaVersion: 1, bundleId: BUNDLE, revision: 1, digest: digestOf(Buffer.from(JSON.stringify([1, heads.map(head => [head.key, head.version, head.contentType])]))), total: heads.length, heads, next: null });
+    }
+    if (route.endsWith("/blob-read")) { const body = await request.json() as { key: string }, object = objects.get(body.key)!; return new Response(object.bytes, { headers: { "content-type": "application/octet-stream", "content-length": String(object.bytes.length), "x-superbee-blob-version": digestOf(object.bytes), "x-superbee-content-type": object.contentType } }); }
+    if (/\/blob-(?:create|replace|delete)$/.test(route)) {
+      const deletion = route.endsWith("blob-delete"), body = deletion ? await request.json() as any : undefined;
+      const key = deletion ? body.key : Buffer.from(request.headers.get("x-superbee-blob-key")!, "base64url").toString("utf8"), requestId = request.headers.get("x-superbee-write-request")!, binding = request.headers.get("x-superbee-checkout")!;
+      const operationId = deletion ? "blobs.delete.v1" : route.endsWith("blob-create") ? "blobs.create.v1" : "blobs.replace.v1";
+      const expectedVersion = deletion ? body.expectedVersion : operationId === "blobs.create.v1" ? null : request.headers.get("x-superbee-expected-version"), expectedType = deletion ? body.expectedContentType : operationId === "blobs.create.v1" ? null : request.headers.get("x-superbee-expected-content-type");
+      const bundle = deletion ? body.bundleId : request.headers.get("x-superbee-bundle")!;
+      assert.equal(bundle, options.slug ? `${options.slug}/${BUNDLE}` : BUNDLE);
+      const allowance = request.headers.has("x-superbee-accept-deletes") ? Number(request.headers.get("x-superbee-accept-deletes")) : null;
+      calls.push({ key, requestId, operationId, allowance, bundle, via: request.headers.get("x-superbee-via") });
+      await options.beforeWrite?.(key);
+      if (deletion && (options.rehold || (deletes + 1 > (options.baseline ?? 10) / 2 && (allowance === null || allowance < deletes + 1)))) return Response.json({ error: { code: "deletions_held", message: "person confirmation required", retryable: false, writeState: "not_applied", deletions: options.holdDiagnostics?.[key]?.deletions ?? deletes + 1, baseline: options.holdDiagnostics?.[key]?.baseline ?? options.baseline ?? 10 } }, { status: 428 });
+      const existing = objects.get(key), actual = existing ? digestOf(existing.bytes) : null;
+      let result: any;
+      if (expectedVersion !== actual || expectedType !== (existing?.contentType ?? null)) result = { ok: false, operationId, error: { code: "version_conflict", message: "head changed", retryable: false, writeState: "not_applied", expected: expectedVersion, actual, expectedContentType: expectedType, actualContentType: existing?.contentType ?? null } };
+      else if (deletion) { deletes++; objects.delete(key); result = { ok: true, operationId, data: { key, version: actual, contentType: existing!.contentType, deleted: true } }; }
+      else { const bytes = Buffer.from(await request.arrayBuffer()), contentType = request.headers.get("x-superbee-content-type")!; assert.equal(digestOf(bytes), request.headers.get("x-superbee-blob-version")); objects.set(key, { bytes, contentType }); result = { ok: true, operationId, data: { key, version: digestOf(bytes), contentType, changed: !existing || actual !== digestOf(bytes) || existing.contentType !== contentType } }; }
+      outcomes.set(requestId, { binding, result });
+      if (options.lostAck && !dropped) { dropped = true; throw new Error("lost mutation ACK"); }
+      return Response.json(result, { headers: { "x-superbee-write-settled": requestId } });
+    }
+    if (route.endsWith("/outcome")) {
+      const body = await request.clone().json() as any;
+      if (String(body.operationId).startsWith("blobs.")) {
+        const requestId = request.headers.get("x-superbee-write-request")!, binding = request.headers.get("x-superbee-checkout")!, terminal = outcomes.get(requestId);
+        return Response.json({ schemaVersion: 1, requestId, binding, status: terminal ? terminal.result.ok ? "committed" : "refused" : "absent", ...(terminal ? { result: terminal.result } : {}) });
+      }
+    }
+    const answer = await h.host.fetch(input, init);
+    if (route.endsWith("/capabilities") && answer.status === 200) { const caps = await answer.json() as { limits?: object }; return Response.json({ ...caps, blobReads: "allowed", blobWrites: "allowed", limits: { ...caps.limits, blobReadBytes: 16 * 1024 * 1024, blobWriteBytes: 16 * 1024 * 1024 } }); }
+    return answer;
+  }) as typeof fetch;
+  return { fetch: fetcher, objects, outcomes, calls, setDeletes: (count: number) => { deletes = count; } };
+}
+function commandDeps(h: Harness, wire: ReturnType<typeof blobAuthority>, out: string[] = []) {
+  return { home: h.home, cwd: h.cwd, stdout: (text: string) => { out.push(text); }, hosted: { auth: h.auth, fetch: wire.fetch, write: { sleep: instant, lookupDelayMs: 0, maxLookups: 1 }, sleep: instant } };
+}
+async function retainedBlobRows(h: Harness) {
+  const binding = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { return await store.listBlobIntents(); } finally { await store.close(); }
+}
+test("targeted promote freezes before auth/gate, resumes exactly, and leaves unrelated docs/root/blobs untouched", async () => {
+  const h = await harness(), key = "selected.svg", file = path.join(h.folder, key), bytes = Buffer.from([0, 255, 128]), output: string[] = [];
+  await writeFile(file, bytes); const wire = blobAuthority(h), deps = commandDeps(h, wire, output);
+  const { execFileSync } = await import("node:child_process"); execFileSync("git", ["init", "-q", h.folder]); execFileSync("git", ["-C", h.folder, "config", "superbee.syncGate", "exit 3"]);
+  await assert.rejects(promote([file, "--doc-key", key, "--content-type", "image/svg+xml; profile=exact", "--dir", h.folder], deps), (error: unknown) => error instanceof CliError && error.code === "GATE_FAILED");
+  const frozen = (await retainedBlobRows(h))[0]!; assert.equal(frozen.attempts, 0); assert.equal(wire.calls.length, 0);
+  await writeFile(file, "changed after failure"); await assert.rejects(promote([file, "--doc-key", key, "--content-type", "image/svg+xml; profile=exact", "--dir", h.folder], deps), /differs.*bytes or MIME/); assert.equal(wire.calls.length, 0); await writeFile(file, bytes);
+  await assert.rejects(promote([file, "--doc-key", key, "--content-type", "x/different", "--dir", h.folder], deps), /differs/);
+  const binding = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { await store.writeJournaled("notes/unrelated", { id: "notes/unrelated", frontmatter: { type: "Note" }, body: "private pending" }, { intent: { requestId: "unrelated-document", target: "notes/unrelated", kind: "document.write", base: null, baseContent: null, createdAt: new Date().toISOString() } }); }
+  finally { await store.close(); }
+  const other = path.join(h.folder, "other.bin"); await writeFile(other, "pending other"); await admitOfflineBlob({ operation: "promote", key: "other.bin", source: other, dir: h.folder, home: h.home, cwd: h.cwd });
+  await writeFile(path.join(h.folder, "index.md"), "changed root deliberately not sent");
+  execFileSync("git", ["-C", h.folder, "config", "superbee.syncGate", "exit 0"]);
+  await promote([file, "--doc-key", key, "--content-type", "image/svg+xml; profile=exact", "--dir", h.folder, "--json"], deps);
+  assert.equal(JSON.parse(output.at(-1)!).promote, "committed"); assert.equal(wire.calls.length, 1); assert.equal(wire.calls[0]!.requestId, frozen.requestId); assert.deepEqual(wire.objects.get(key)?.bytes, bytes); assert.equal(h.host.writes.length, 0); assert.equal(h.host.rootCalls.length, 0);
+  const rows = await retainedBlobRows(h); assert.equal(rows.find(row => row.requestId === frozen.requestId)?.attempts, 1); assert.equal(rows.find(row => row.target === "other.bin")?.attempts, 0);
+  await promote([file, "--doc-key", key, "--content-type", "image/svg+xml; profile=exact", "--dir", h.folder], deps); assert.equal(wire.calls.length, 1);
+});
+test("targeted authentication failure retains exact admitted identity and unchanged retry uses it", async () => {
+  const h = await harness(), key = "auth.bin", file = path.join(h.folder, key); await writeFile(file, "frozen"); const wire = blobAuthority(h), good = commandDeps(h, wire);
+  const denied = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => String(input).endsWith("/whoami") ? Response.json({ error: { code: "unauthenticated", message: "expired" } }, { status: 401 }) : wire.fetch(input, init)) as typeof fetch;
+  await assert.rejects(promote([file, "--doc-key", key, "--dir", h.folder], { ...good, hosted: { ...good.hosted, fetch: denied } }), (error: unknown) => error instanceof CliError && error.code === "AUTH_REQUIRED");
+  const before = (await retainedBlobRows(h))[0]!; assert.equal(before.attempts, 0); assert.equal(wire.calls.length, 0);
+  await promote([file, "--doc-key", key, "--dir", h.folder], good); assert.equal(wire.calls[0]!.requestId, before.requestId);
+});
+test("blob-only declared gate edits or preexisting frozen mismatch hold without claims; normal sync shares gate", async () => {
+  const { execFileSync } = await import("node:child_process");
+  for (const mutate of [false, true]) {
+    const h = await harness(), key = "gate.bin", file = path.join(h.folder, key); await writeFile(file, "frozen"); const binding = (await bindingForPath(h.home, h.folder))!;
+    const admission = (await admitOfflineBlob({ operation: "promote", key, source: file, dir: h.folder, home: h.home, cwd: h.cwd }))!;
+    const wire = blobAuthority(h); h.fetch = wire.fetch; execFileSync("git", ["init", "-q", h.folder]); execFileSync("git", ["-C", h.folder, "config", "superbee.syncGate", mutate ? "printf newer > gate.bin" : "exit 0"]);
+    if (!mutate) await writeFile(file, "newer before gate");
+    const { deliverHostedBlobRequests } = await import("../src/hosted/sync.js");
+    const deliver = () => deliverHostedBlobRequests(binding, admission.requestIds, { auth: h.auth, fetch: wire.fetch, cwd: h.cwd, write: { sleep: instant, maxLookups: 1 } });
+    if (mutate) await assert.rejects(deliver(), (error: unknown) => error instanceof CliError && error.code === "GATE_FAILED");
+    else assert.equal((await deliver()).counts.held, 1); assert.equal(wire.calls.length, 0); assert.equal((await retainedBlobRows(h))[0]!.attempts, 0); assert.equal(await readFile(file, "utf8"), mutate ? "newer" : "newer before gate");
+  }
+  const h = await harness(), key = "normal.bin", file = path.join(h.folder, key); await writeFile(file, "old"); await seedCaptureMap(h, key, Buffer.from("old")); await writeFile(file, "new");
+  const wire = blobAuthority(h); wire.objects.set(key, { bytes: Buffer.from("old"), contentType: 'application/octet-stream; profile="old"' }); h.fetch = wire.fetch;
+  execFileSync("git", ["init", "-q", h.folder]); execFileSync("git", ["-C", h.folder, "config", "superbee.syncGate", "exit 3"]);
+  await assert.rejects(runSync(h), (error: unknown) => error instanceof CliError && error.code === "GATE_FAILED"); assert.equal(wire.calls.length, 0); assert.equal((await retainedBlobRows(h))[0]!.attempts, 0);
+  execFileSync("git", ["-C", h.folder, "config", "superbee.syncGate", "exit 0"]); const sent = await runSync(h);
+  assert.equal(sent.status, "synced"); assert.equal((sent.blobs as any).counts.committed, 1); assert.equal((sent.counts as any).committed, 0); assert.equal((sent.counts as any).held, 0); assert.equal(wire.calls.length, 1);
+});
+
+async function heldBlobDeletes(count: number, diagnostics?: Record<string, { deletions: number; baseline: number }>) {
+  const h = await harness(), wire = blobAuthority(h, { priorDeletes: 7, holdDiagnostics: diagnostics }); h.fetch = wire.fetch;
+  const { deliverHostedBlobRequests } = await import("../src/hosted/sync.js");
+  const binding = (await bindingForPath(h.home, h.folder))!, ids: string[] = [], tokens: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const key = `held-${i}.bin`, bytes = Buffer.from(`frozen-${i}`); await writeFile(path.join(h.folder, key), bytes); await seedCaptureMapMerged(h, key, bytes);
+    wire.objects.set(key, { bytes, contentType: 'application/octet-stream; profile="old"' });
+    const admission = (await admitOfflineBlob({ operation: "delete", key, expectedVersion: digestOf(bytes), dir: h.folder, home: h.home, cwd: h.cwd }))!; ids.push(...admission.requestIds);
+    const held = await deliverHostedBlobRequests(binding, admission.requestIds, { auth: h.auth, fetch: wire.fetch, cwd: h.cwd });
+    assert.equal(held.counts.held, 1); tokens.push(held.deletions_held!.token);
+  }
+  const report = await deliverHostedBlobRequests(binding, ids, { auth: h.auth, fetch: wire.fetch, cwd: h.cwd });
+  return { h, wire, binding, ids, tokens, report, deliverHostedBlobRequests };
+}
+async function seedCaptureMapMerged(h: Harness, key: string, bytes: Uint8Array) {
+  const { readBlobSyncState, changeBlobSyncEntry } = await import("../src/hosted/blob-sync.js");
+  const binding = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  const scope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
+  try { const snapshot = await readBlobSyncState(store, key, scope); await store.writeBlobMeta(key, { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(changeBlobSyncEntry(snapshot.map, { key, head: { key, version: digestOf(bytes), contentType: 'application/octet-stream; profile="old"' }, placedDigest: digestOf(bytes) })) }] }, { guard: snapshot.journal.guard }); } finally { await store.close(); }
+}
+test("blob held confirmation names three files but sends max historical window plus N, never summed baselines", async () => {
+  const f = await heldBlobDeletes(3, { "held-0.bin": { deletions: 8, baseline: 10 }, "held-1.bin": { deletions: 6, baseline: 9 }, "held-2.bin": { deletions: 7, baseline: 11 } });
+  assert.equal(f.report.deletions_held?.allowance, 10);
+  const before = f.wire.calls.length, out: string[] = [], prompts: string[] = [];
+  await sync(["--dir", f.h.folder, "--accept-deletes", f.report.deletions_held!.token, "--json"], { ...commandDeps(f.h, f.wire), auth: f.h.auth, fetch: f.wire.fetch, stdout: text => { out.push(text); }, terminal: { interactive: true, ask: async prompt => { prompts.push(prompt); return "3"; } } });
+  assert.equal(JSON.parse(out.at(-1)!).blobs.counts.committed, 3); assert.match(prompts[0]!, /3 deleted ordinary file/); assert.match(prompts[0]!, /allowance is 10, distinct from the 3/);
+  assert.deepEqual(f.wire.calls.slice(before).map(row => row.allowance), [10, 10, 10]); assert.deepEqual(f.wire.calls.slice(before).map(row => row.requestId).sort(), [...f.ids].sort());
+  assert.ok((await retainedBlobRows(f.h)).every(row => row.state === "acknowledged" && row.attempts === 2)); assert.equal(f.h.host.writes.length, 0); assert.equal(f.h.host.rootCalls.length, 0);
+});
+test("blob acceptance is person-only and exact-set addressed; singleton survives unrelated holds while full set changes invalidate", async () => {
+  const f = await heldBlobDeletes(3), before = f.wire.calls.length;
+  await assert.rejects(f.deliverHostedBlobRequests(f.binding, undefined, { auth: f.h.auth, fetch: f.wire.fetch, terminal: { interactive: false, ask: async () => { throw new Error("agent must not be prompted"); } } }, f.report.deletions_held!.token), (error: unknown) => error instanceof CliError && error.details?.reason === "needs_person_at_terminal");
+  assert.equal(f.wire.calls.length, before);
+  const wrong = await f.deliverHostedBlobRequests(f.binding, undefined, { auth: f.h.auth, fetch: f.wire.fetch }, "blobs:3:000000000000"); assert.equal(wrong.counts.held, 3); assert.equal(f.wire.calls.length, before);
+  // A fourth current hold invalidates the old full set, without inventing arbitrary subset matching.
+  const key = "held-3.bin", bytes = Buffer.from("fourth"); await writeFile(path.join(f.h.folder, key), bytes); await seedCaptureMapMerged(f.h, key, bytes); f.wire.objects.set(key, { bytes, contentType: 'application/octet-stream; profile="old"' });
+  const admission = (await admitOfflineBlob({ operation: "delete", key, expectedVersion: digestOf(bytes), dir: f.h.folder, home: f.h.home, cwd: f.h.cwd }))!;
+  await f.deliverHostedBlobRequests(f.binding, admission.requestIds, { auth: f.h.auth, fetch: f.wire.fetch }); const afterFourth = f.wire.calls.length;
+  const stale = await f.deliverHostedBlobRequests(f.binding, undefined, { auth: f.h.auth, fetch: f.wire.fetch, terminal: { interactive: true, ask: async () => { throw new Error("stale token must not prompt"); } } }, f.report.deletions_held!.token); assert.equal(stale.counts.held, 4); assert.equal(f.wire.calls.length, afterFourth);
+  const singleton = await f.deliverHostedBlobRequests(f.binding, undefined, { auth: f.h.auth, fetch: f.wire.fetch, terminal: { interactive: true, ask: async prompt => { assert.match(prompt, /Type 1/); return "1"; } } }, f.tokens[0]);
+  assert.equal(singleton.counts.committed, 1); assert.equal(f.wire.calls.length, afterFourth + 1); assert.equal(f.wire.calls.at(-1)!.requestId, f.ids[0]); assert.equal((await retainedBlobRows(f.h)).filter(row => row.state === "pending").length, 3);
+});
+test("held delete rechecks physical absence and window growth without implicit escalation or automatic resend", async () => {
+  const f = await heldBlobDeletes(1), before = f.wire.calls.length;
+  await writeFile(path.join(f.h.folder, "held-0.bin"), "recreated");
+  const changed = await f.deliverHostedBlobRequests(f.binding, undefined, { auth: f.h.auth, fetch: f.wire.fetch, terminal: { interactive: true, ask: async () => { throw new Error("recreated target must not prompt"); } } }, f.tokens[0]); assert.equal(changed.counts.held, 1); assert.equal(f.wire.calls.length, before);
+  await unlink(path.join(f.h.folder, "held-0.bin")); f.wire.setDeletes(9);
+  const heldAgain = await f.deliverHostedBlobRequests(f.binding, undefined, { auth: f.h.auth, fetch: f.wire.fetch, terminal: { interactive: true, ask: async () => "1" } }, f.tokens[0]);
+  assert.equal(heldAgain.counts.held, 1); assert.equal(f.wire.calls.at(-1)!.allowance, 8); assert.equal(f.wire.calls.length, before + 1);
+  const row = (await retainedBlobRows(f.h))[0]!; assert.equal(row.attempts, 2); assert.equal(row.notAppliedThrough, 2); assert.equal(row.deletionHold?.deletions, 10);
+  const lookupOnly = await f.deliverHostedBlobRequests(f.binding, f.ids, { auth: f.h.auth, fetch: f.wire.fetch }); assert.equal(lookupOnly.counts.held, 1); assert.equal(f.wire.calls.length, before + 1);
+});
+test("blob delivery keeps edits made during wire dispatch dirty and recovers lost ACK without resend", async () => {
+  const h = await harness(), key = "late.bin", file = path.join(h.folder, key), original = Buffer.from("original"); await writeFile(file, original);
+  const admission = (await admitOfflineBlob({ operation: "promote", key, source: file, dir: h.folder, home: h.home, cwd: h.cwd }))!;
+  const wire = blobAuthority(h, { lostAck: true, beforeWrite: async () => { await writeFile(file, "newer local edit"); } });
+  const { deliverHostedBlobRequests } = await import("../src/hosted/sync.js");
+  const result = await deliverHostedBlobRequests(admission.binding, admission.requestIds, { auth: h.auth, fetch: wire.fetch, write: { sleep: instant, maxLookups: 1, lookupDelayMs: 0 } });
+  assert.equal(result.counts.committed, 1); assert.deepEqual(result.kept_local_edits, [key]); assert.deepEqual(wire.objects.get(key)?.bytes, original); assert.equal(await readFile(file, "utf8"), "newer local edit"); assert.equal(wire.calls.length, 1);
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, admission.binding.checkout_id) });
+  try { const map = JSON.parse((await store.readMeta(BLOB_SYNC_META_KEY))!); assert.equal(map.entries[0].placedDigest, digestOf(original)); } finally { await store.close(); }
+  await deliverHostedBlobRequests(admission.binding, admission.requestIds, { auth: h.auth, fetch: wire.fetch }); assert.equal(wire.calls.length, 1);
+});
+
+test("blob receipt persistence failure reports unknown then lookup settles original ID without another write", async () => {
+  const h = await harness(), key = "persist.bin", file = path.join(h.folder, key); await writeFile(file, "frozen");
+  const admission = (await admitOfflineBlob({ operation: "promote", key, source: file, dir: h.folder, home: h.home, cwd: h.cwd }))!, wire = blobAuthority(h);
+  const { deliverHostedBlobRequests } = await import("../src/hosted/sync.js"), original = FileJournaledBackend.prototype.updateBlobIntent; let fail = true;
+  FileJournaledBackend.prototype.updateBlobIntent = async function (id, state, patch, guard) { if (patch.receipt && fail) { fail = false; throw new RangeError("injected receipt capacity refusal"); } return original.call(this, id, state, patch, guard); };
+  try {
+    const result = await deliverHostedBlobRequests(admission.binding, admission.requestIds, { auth: h.auth, fetch: wire.fetch }); assert.equal(result.counts.unknown, 1); assert.equal(result.counts.committed, 0);
+    const row = (await retainedBlobRows(h))[0]!; assert.equal(row.state, "in_flight"); assert.equal(row.receipt, undefined); assert.equal(row.attempts, 1);
+  } finally { FileJournaledBackend.prototype.updateBlobIntent = original; }
+  const { readBlobSyncState, changeBlobSyncEntry } = await import("../src/hosted/blob-sync.js");
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, admission.binding.checkout_id) });
+  const scope = decodePreparedBlobIntent((await store.listBlobIntents())[0]!.prepared).scope;
+  try { const snapshot = await readBlobSyncState(store, key, scope); await store.writeBlobMeta(key, { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(changeBlobSyncEntry(snapshot.map, { ...snapshot.map.entries[0]!, desiredContentType: "x/later-choice" })) }] }, { guard: snapshot.journal.guard }); } finally { await store.close(); }
+  const recovered = await deliverHostedBlobRequests(admission.binding, admission.requestIds, { auth: h.auth, fetch: wire.fetch }); assert.equal(recovered.counts.committed, 1); assert.deepEqual(recovered.kept_local_edits, [key]); assert.equal(wire.calls.length, 1); assert.equal((await retainedBlobRows(h))[0]!.attempts, 1);
+});
+test("blob-only ACK clears stale capture holds but preserves a distinct document with the same concept ID", async () => {
+  const h = await harness(), key = "images/chart.svg", file = path.join(h.folder, key); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "old"); await seedCaptureMap(h, key, Buffer.from("old")); await writeFile(file, "new");
+  await writeFile(`${file}.md`, "this intentionally lacks a document type");
+  const wire = blobAuthority(h); wire.objects.set(key, { bytes: Buffer.from("old"), contentType: 'application/octet-stream; profile="old"' }); h.fetch = wire.fetch;
+  const result = await failingSync(h); assert.equal(result.receipt?.status, "incomplete"); assert.equal((result.receipt?.blobs as any).counts.committed, 1);
+  const rows = result.receipt?.rows as { id: string; path?: string; reason: string }[]; assert.ok(rows.some(row => row.id === key && row.reason === "not_sendable")); assert.equal(wire.calls.length, 1);
+  await unlink(`${file}.md`); const next = await runSync(h); assert.equal(next.status, "up_to_date"); assert.equal(wire.calls.length, 1);
+});
+test("pull-only captures without sends, and equal-byte MIME conflict remains a durable conflict", async () => {
+  const h = await harness(), key = "typed.bin", file = path.join(h.folder, key), bytes = Buffer.from("same bytes"); await writeFile(file, bytes); await seedCaptureMap(h, key, bytes, "x/desired");
+  const wire = blobAuthority(h); wire.objects.set(key, { bytes, contentType: "x/concurrent" }); h.fetch = wire.fetch;
+  await hostedPull((await bindingForPath(h.home, h.folder))!, { auth: h.auth, cwd: h.cwd, fetch: wire.fetch, sleep: instant }); assert.equal(wire.calls.length, 0); const before = (await retainedBlobRows(h))[0]!; assert.equal(before.attempts, 0);
+  const { deliverHostedBlobRequests } = await import("../src/hosted/sync.js"), result = await deliverHostedBlobRequests((await bindingForPath(h.home, h.folder))!, [before.requestId], { auth: h.auth, fetch: wire.fetch });
+  assert.equal(result.counts.conflict, 1); assert.equal(wire.objects.get(key)?.contentType, "x/concurrent"); assert.equal((await retainedBlobRows(h))[0]!.receipt?.result.ok, false); assert.equal(await readFile(file, "utf8"), bytes.toString());
+});
+
+test("targeted opaque create/type-only replace/delete preserve workspace qualification and original MIME pins", async () => {
+  const h = await harness(new FakeHost({ workspaces: [{ tenantId: "tenant-a", slug: "team" }], slug: "team" }));
+  const folder = path.join(h.cwd, "qualified"); await checkout([`team/${BUNDLE}`, "--host", HOST, "--dir", folder], { stdout: () => {}, auth: h.auth, cwd: h.cwd, fetch: h.host.fetch }); h.folder = folder;
+  const wire = blobAuthority(h, { slug: "team" }), key = "opaque.svg", file = path.join(folder, key), bytes = Buffer.from([0, 255, 128]); await writeFile(file, bytes);
+  await promote([file, "--doc-key", key, "--dir", folder, "--content-type", "image/svg+xml; profile=original"], commandDeps(h, wire));
+  const version = digestOf(bytes);
+  await promote([file, "--doc-key", key, "--dir", folder, "--expected-version", version, "--content-type", "image/svg+xml; profile=revised"], commandDeps(h, wire));
+  assert.equal(wire.objects.get(key)?.contentType, "image/svg+xml; profile=revised"); assert.deepEqual(wire.objects.get(key)?.bytes, bytes);
+  await deleteCommand(["--doc-key", key, "--dir", folder, "--expected-version", version], commandDeps(h, wire));
+  assert.deepEqual(wire.calls.map(row => row.operationId), ["blobs.create.v1", "blobs.replace.v1", "blobs.delete.v1"]); assert.ok(wire.calls.every(row => row.bundle === `team/${BUNDLE}`)); assert.equal(wire.objects.has(key), false);
+  const rows = await retainedBlobRows(h), deleted = rows.at(-1)!; assert.equal(deleted.receipt?.result.ok && deleted.receipt.result.data.contentType, "image/svg+xml; profile=revised"); assert.equal(deleted.receipt && "head" in deleted.receipt && deleted.receipt.head, null); assert.equal(decodePreparedBlobIntent(deleted.prepared).scope.workspaceSlug, "team");
+  await deleteCommand(["--doc-key", key, "--dir", folder, "--expected-version", version], commandDeps(h, wire)); assert.equal(wire.calls.length, 3);
+  await writeFile(file, "recreated after delete"); await assert.rejects(deleteCommand(["--doc-key", key, "--dir", folder, "--expected-version", version], commandDeps(h, wire)), /preserved observed digest/); assert.equal(wire.calls.length, 3); assert.equal(await readFile(file, "utf8"), "recreated after delete");
+});
+
+test("historical blob ACK reuse requires its current acknowledged baseline; conflict terminals do not cache new explicit commands", async () => {
+  const h = await harness(), key = "historical.bin", file = path.join(h.folder, key), bytes = Buffer.from("same bytes"); await writeFile(file, bytes);
+  const wire = blobAuthority(h), output: string[] = [], deps = commandDeps(h, wire, output);
+  const args = [file, "--doc-key", key, "--dir", h.folder, "--content-type", "x/original", "--json"];
+  await promote(args, deps); const first = (await retainedBlobRows(h))[0]!;
+  await promote(args, deps); assert.equal(JSON.parse(output.at(-1)!).resumed, true); assert.equal(wire.calls.length, 1);
+  // A verified same-byte remote MIME refresh changes the current baseline, not the old receipt.
+  wire.objects.set(key, { bytes, contentType: "x/remote-new" });
+  const pulled = await hostedPull((await bindingForPath(h.home, h.folder))!, { auth: h.auth, cwd: h.cwd, fetch: wire.fetch }); assert.equal(pulled.state, "pulled");
+  await assert.rejects(promote(args, deps), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
+  const conflicted = (await retainedBlobRows(h)).at(-1)!; assert.notEqual(conflicted.requestId, first.requestId); assert.equal(conflicted.state, "conflict"); assert.equal(JSON.parse(output.at(-1)!).resumed, false); assert.equal(wire.calls.length, 2);
+  // Repeating an explicit no-ID command admits a new valid CAS attempt, not a cached refusal.
+  wire.objects.delete(key);
+  await promote(args, deps); const next = (await retainedBlobRows(h)).at(-1)!; assert.notEqual(next.requestId, conflicted.requestId); assert.equal(next.state, "acknowledged"); assert.equal(JSON.parse(output.at(-1)!).resumed, false); assert.equal(wire.calls.length, 3);
+});
+test("a multi-request blob batch reloads full guards and preserves every original intent when unrelated map metadata changes", async () => {
+  const h = await harness(), ids: string[] = [];
+  for (let i = 0; i < 3; i++) { const key = `batch-${i}.bin`, file = path.join(h.folder, key); await writeFile(file, `frozen-${i}`); ids.push(...(await admitOfflineBlob({ operation: "promote", key, source: file, dir: h.folder, home: h.home, cwd: h.cwd }))!.requestIds); }
+  const before = await retainedBlobRows(h), binding = (await bindingForPath(h.home, h.folder))!, scope = decodePreparedBlobIntent(before[0]!.prepared).scope;
+  const original = FileJournaledBackend.prototype.updateBlobIntent; let active: FileJournaledBackend | undefined, changed = false;
+  FileJournaledBackend.prototype.updateBlobIntent = async function (...args) { active = this; return original.apply(this, args); };
+  const wire = blobAuthority(h, { beforeWrite: async () => {
+    if (changed) return; changed = true;
+    const { readBlobSyncState, changeBlobSyncEntry } = await import("../src/hosted/blob-sync.js");
+    const snapshot = await readBlobSyncState(active!, "unrelated.bin", scope);
+    await active!.writeBlobMeta("unrelated.bin", { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(changeBlobSyncEntry(snapshot.map, { key: "unrelated.bin", placedDigest: null, desiredContentType: "x/local" })) }] }, { guard: snapshot.journal.guard });
+  } });
+  const { deliverHostedBlobRequests } = await import("../src/hosted/sync.js");
+  try {
+    const result = await deliverHostedBlobRequests(binding, ids, { auth: h.auth, fetch: wire.fetch }); assert.equal(result.counts.committed, 0); assert.equal(result.counts.unknown, 3); assert.equal(wire.calls.length, 1);
+  } finally { FileJournaledBackend.prototype.updateBlobIntent = original; }
+  const after = await retainedBlobRows(h); assert.deepEqual(after.map(row => row.prepared), before.map(row => row.prepared)); assert.deepEqual(after.map(row => row.attempts), [1, 0, 0]); assert.ok(after.every(row => !row.receipt));
+  const recovered = await deliverHostedBlobRequests(binding, ids, { auth: h.auth, fetch: wire.fetch }); assert.equal(recovered.counts.committed, 3); assert.equal(wire.calls.length, 3); assert.deepEqual((await retainedBlobRows(h)).map(row => row.attempts), [1, 1, 1]);
+});
+
+test("native spelling aliases refuse ordinary-file admission before journal/map mutation", async t => {
+  const h = await harness(), lower = path.join(h.folder, "a.svg"), upper = path.join(h.folder, "A.svg"); await writeFile(lower, "old");
+  let upperStat; try { upperStat = await stat(upper); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const lowerStat = await stat(lower), names = await readdir(h.folder);
+  if (!upperStat || lowerStat.dev !== upperStat.dev || lowerStat.ino !== upperStat.ino || names.includes("A.svg")) { t.skip("native filesystem does not alias a.svg/A.svg; portable ownership remains covered separately"); return; }
+  t.diagnostic("native a.svg/A.svg resolve to one inode and only lower spelling is listed");
+  const binding = await seedCaptureMap(h, "a.svg", Buffer.from("old"));
+  const beforeStore = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) }); let before;
+  try { before = await beforeStore.readMeta(BLOB_SYNC_META_KEY); } finally { await beforeStore.close(); }
+  await assert.rejects(admitOfflineBlob({ operation: "promote", key: "A.svg", source: upper, contentType: "image/svg+xml", dir: h.folder, cwd: h.cwd, home: h.home }), /aliases another/);
+  const afterStore = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { assert.equal(await afterStore.readMeta(BLOB_SYNC_META_KEY), before); assert.equal((await afterStore.listBlobIntents()).length, 0); } finally { await afterStore.close(); }
+  assert.equal(await readFile(lower, "utf8"), "old"); assert.equal(await readFile(upper, "utf8"), "old");
+  // Even without another tracked owner, an existing native alias may not be treated as an exact target.
+  const untrackedLower = path.join(h.folder, "untracked.svg"), untrackedUpper = path.join(h.folder, "UNTRACKED.svg"); await writeFile(untrackedLower, "local");
+  await assert.rejects(admitOfflineBlob({ operation: "promote", key: "UNTRACKED.svg", source: untrackedUpper, contentType: "image/svg+xml", dir: h.folder, cwd: h.cwd, home: h.home }), /unsafe parent/);
+  assert.equal(await readFile(untrackedLower, "utf8"), "local"); assert.equal((await retainedBlobRows(h)).length, 0);
 });

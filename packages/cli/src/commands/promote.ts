@@ -1,3 +1,7 @@
+import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
+import type { HostedSyncDeps } from "../hosted/sync.js";
+import { homedir } from "node:os";
+import { admitOfflineBlob } from "../hosted/blob-sync.js";
 import { renderUsage } from "../output.js";
 // `superbee promote <file> --doc-key <key>` — the out-of-band byte-IN channel: move a local
 // file's bytes into the store WITHOUT the content ever entering the model context window (the
@@ -56,7 +60,7 @@ import { cliInvocation } from "../invocation.js";
 import { readExternalFileBytes, readExternalTextFile } from "../external-file.js";
 import { mutateDoc } from "../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
-import { commandLiteral, commandToken } from "../command-text.js";
+import { commandFragment, commandLiteral, commandToken } from "../command-text.js";
 
 export const PROMOTE_USAGE = `superbee promote — move a local file's bytes into the store (the reverse of 'doc read --out')
 
@@ -83,7 +87,15 @@ write'. Current v0.2 imports do not invent optional generated metadata or the le
 explicit v0.1 bundles retain their historical defaulted timestamp. Over --remote it is load-bearing:
 there is no other way to get bytes into a served bundle.
 
-The receipt's content_type reports the WRITE-TIME resolution (override, else inferred from the
+In a hosted checkout, an ordinary-file source must already be the canonical target pathname
+inside that checkout. Its frozen bytes and MIME are durable before authentication; an unchanged
+retry resumes exactly that request. Changed bytes, MIME or CAS premises are held. The bound is
+16 MiB or a smaller advertised host bound. A new explicit create keeps the extension default;
+a replacement without --content-type preserves its observed hosted MIME. Historical hosted
+MIME is never inferred from a filename or export. Protected namespaces and Artifact commands
+remain refused. Blob conflicts/unknown outcomes do not use document --resolve/--restore-deletes.
+
+For local/remote backends outside a hosted checkout, the receipt's content_type reports the WRITE-TIME resolution (override, else inferred from the
 key's extension) — history-less backends (the local filesystem) do not persist an explicit
 override and RE-INFER from the extension on every subsequent read, so a follow-up 'pull' may
 report a different content_type than this receipt did; backends that keep state (a remote,
@@ -92,7 +104,7 @@ document-centric store) persist the override and pull reports it back unchanged.
 Options:
   --doc-key <key>          Destination key (required) — ends '.md' -> doc route, else blob route
   --content-type <mime>    Blob route only (USAGE error with a .md key); default: inferred from the
-                            key's extension, else application/octet-stream
+                            key's extension, else application/octet-stream (hosted replacement preserves observed MIME)
   --expected-version <v>   Compare-and-swap token from a prior pull/promote receipt (omit = expect-
                             absent create; see CAS above)
   --strict                 Doc route only: reject (exit 2) instead of writing-with-warnings when a
@@ -118,6 +130,9 @@ Options:
 `;
 
 export interface PromoteCliDeps {
+  hosted?: Partial<HostedSyncDeps>;
+  home?: string;
+  cwd?: string;
   stdout: (s: string) => void;
 }
 
@@ -191,7 +206,19 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
     }
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const home = deps.hosted?.auth?.home ?? deps.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
+  if (deps.home !== undefined && deps.hosted?.auth !== undefined && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "offline admission and hosted delivery must use the same private-state home");
+  if (!remote && !isDocRouteKey(key)) {
+    const pending = await admitOfflineBlob({ operation: "promote", key, ...(values.dir === undefined ? {} : { dir: values.dir }), source: file, ...(values["expected-version"] === undefined ? {} : { expectedVersion: values["expected-version"] }), ...(values["content-type"] === undefined ? {} : { contentType: values["content-type"] }), home, cwd });
+    if (pending) {
+      const { finishAdmittedBlob } = await import("../hosted/sync.js");
+      const resume = commandFragment`${cliInvocation()} promote ${commandToken(file)} --doc-key ${commandToken(key)} --dir ${commandToken(pending.binding.path)}${values["expected-version"] === undefined ? commandFragment`` : commandFragment` --expected-version ${commandToken(values["expected-version"])}`}${values["content-type"] === undefined ? commandFragment`` : commandFragment` --content-type ${commandToken(values["content-type"])}`}`;
+      await finishAdmittedBlob(pending, "promote", { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resolveMode(values), resume);
+      return;
+    }
+  }
+  const bundle = await openBundle(values.dir, remote);
   const mode = resolveMode(values);
   // I9: promote v1 supports token-CAS only via --expected-version; omitting it means EXPECT-ABSENT
   // create (null), never an unconditional last-writer-wins overwrite.

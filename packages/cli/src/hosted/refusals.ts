@@ -1,3 +1,4 @@
+import { ordinarySeedKey } from "./blob-sync.js";
 // Up-front refusals in a hosted checkout (Mike's decision, September 22, 2026: refuse at the
 // command, with "do this in the app"; Kind and recipe commands, which the app cannot do either, say
 // what to do instead). A hosted checkout syncs whole documents only, through
@@ -76,12 +77,12 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
   { words: ["kind", "*"], reason: "not_syncable", why: "a hosted bundle's Kinds cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
   { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
   { words: ["recipe", "evolve"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
-  { words: ["artifact", "*"], reason: "not_syncable", why: "artifacts carry blobs, which do not sync" },
+  { words: ["artifact", "*"], reason: "not_syncable", why: "hosted Artifact publication is not supported yet; use ordinary files until the Artifact publication sequence is available" },
   {
     words: ["promote"],
     reason: "not_syncable",
     why: "a key that is not a .md document is stored as a blob; blobs, reserved files and View files do not sync, and conventions change only through the kind and recipe commands",
-    when: (args) => heldKey(docKey(args) ?? ""),
+    when: (args) => heldKey(docKey(args) ?? "") && !ordinarySeedKey(docKey(args) ?? ""),
   },
   {
     words: ["delete"],
@@ -89,7 +90,7 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     why: "a key that is not a .md document is a blob; blobs, reserved files and View files do not sync, and conventions change only through the kind and recipe commands (delete a document with doc delete)",
     when: (args) => {
       const key = docKey(args);
-      return key !== undefined && heldKey(key);
+      return key !== undefined && heldKey(key) && !ordinarySeedKey(key);
     },
   },
   {

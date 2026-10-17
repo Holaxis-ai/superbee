@@ -1,6 +1,6 @@
 /** Typed delivery of an existing frozen blob journal intent. Persistence, fresh claims and
  * checkout locking belong to the caller; this composition owns no retry or authorization policy. */
-import { blobReceipt, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobIntentRecord, type BlobIntentPatch, type BlobReceipt, type BlobTargetScope } from "../blob-journal.js";
+import { blobReceipt, captureBlobDeletionHold, type BlobDeletionHold, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobIntentRecord, type BlobIntentPatch, type BlobReceipt, type BlobTargetScope } from "../blob-journal.js";
 import { captureJournalValue, equalJournalValue } from "../journaled-backend.js";
 import { performUncertainWrite, type RecordedWriteOptions, type Sleep, type OperationState } from "../uncertain-write.js";
 import { classifyBlobWriteAnswer } from "../hosted-transport/answer-rows.js";
@@ -22,6 +22,7 @@ export type HostedBlobDeliveryOutcome =
   | { kind: "committed"; receipt: Extract<BlobReceipt, { result: { ok: true } }> }
   | { kind: "conflict"; receipt: Extract<BlobReceipt, { result: { ok: false } }> }
   | { kind: "refused"; code: string; message: string; receipt: Extract<BlobReceipt, { result: { ok: false } }> }
+  | { kind: "not-executed"; attempts: number; details: BlobDeletionHold }
   | { kind: "unknown" };
 export interface HostedBlobDeliveryResult {
   attempts: number;
@@ -62,6 +63,7 @@ export async function performHostedBlobDelivery(context: HostedBlobDeliveryConte
   }
   if (sleep !== undefined && typeof sleep !== "function") throw new TypeError("invalid blob delivery timer");
   if (acceptDeletes !== undefined && (start !== "submit-claimed" || prepared.intent.operationId !== "blobs.delete.v1" || !isAcceptedDeletionCount(acceptDeletes))) throw new TypeError("acceptDeletes belongs only to this delete submission");
+  if (start === "submit-claimed" && (row.notAppliedThrough ?? 0) > 0 && (acceptDeletes === undefined || acceptDeletes < row.deletionHold!.deletions)) throw new TypeError("held deletion continuation requires current invocation acceptance of its held count");
   const bytes = prepared.bytesBase64 === undefined ? undefined : Uint8Array.from(atob(prepared.bytesBase64), c => c.charCodeAt(0));
 
   // Each adapter receives one combined lifetime. Race cancellation even if a caller-supplied
@@ -103,11 +105,19 @@ export async function performHostedBlobDelivery(context: HostedBlobDeliveryConte
     async submit(_intent, attempt): Promise<HostedBlobDeliveryOutcome> {
       try {
         const answer = await call(attempt?.signal, false, adapter => adapter.send(prepared.intent, { ...prepared.identity, ...(acceptDeletes === undefined ? {} : { acceptDeletes }) }, bytes));
+        if (answer.status === 428 && answer.result !== undefined && !answer.result.ok && prepared.intent.operationId === "blobs.delete.v1") {
+          const classified = classifyBlobWriteAnswer({ status: 428, body: { error: answer.result.error }, headers: new Headers() }, prepared.intent);
+          const captured = classified.result;
+          if (captured && !captured.ok && equalJournalValue(captured, answer.result) && classified.row.answer === "428 deletions_held" && equalJournalValue(classified.row, answer.row) && captured.error.writeState === "not_applied" && (row.notAppliedThrough ?? 0) === row.attempts - 1) {
+            return freeze({ kind: "not-executed", attempts: row.attempts, details: captureBlobDeletionHold({ deletions: captured.error.deletions!, baseline: captured.error.baseline! }) });
+          }
+          return UNKNOWN;
+        }
         if (answer.status !== 200 || answer.result === undefined) return UNKNOWN;
         const classified = classifyBlobWriteAnswer({ status: 200, body: answer.result, headers: new Headers() }, prepared.intent);
         if (classified.row.answer !== answer.row.answer || classified.row.recorded !== answer.row.recorded || classified.row.outcome !== answer.row.outcome ||
             !(answer.row.recorded === "yes" || answer.row.recorded === "settled-only" && answer.settled === true)) return UNKNOWN;
-        return candidate(answer.result);
+        return candidate(classified.result!);
       } catch { return UNKNOWN; }
     },
     async lookup(): Promise<HostedBlobDeliveryOutcome> {
@@ -121,9 +131,9 @@ export async function performHostedBlobDelivery(context: HostedBlobDeliveryConte
         return outcome;
       } catch { return UNKNOWN; }
     },
-  }, { requestId: row.requestId, kind: prepared.intent.operationId, target: row.target, createdAt: prepared.createdAt, attempts: row.attempts, state: row.state },
+  }, { requestId: row.requestId, kind: prepared.intent.operationId, target: row.target, createdAt: prepared.createdAt, attempts: row.attempts, state: row.state, notAppliedThrough: row.notAppliedThrough ?? 0 },
   { settlement: "recorded-only", start, signal, deadlineMs, maxLookups, lookupDelayMs, sleep });
   const outcome = selected.outcome;
-  const patch = { state: selected.intent.state, attempts: selected.intent.attempts, ...(outcome.kind === "unknown" ? {} : { receipt: outcome.receipt }) };
+  const patch = { state: selected.intent.state, attempts: selected.intent.attempts, ...(outcome.kind === "unknown" ? {} : outcome.kind === "not-executed" ? { notAppliedThrough: outcome.attempts, deletionHold: outcome.details } : { receipt: outcome.receipt }) };
   return freeze({ attempts: selected.intent.attempts, state: selected.intent.state, lookups: selected.lookups, outcome, patch });
 }

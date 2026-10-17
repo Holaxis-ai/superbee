@@ -1,3 +1,7 @@
+import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
+import type { HostedSyncDeps } from "../hosted/sync.js";
+import { homedir } from "node:os";
+import { admitOfflineBlob } from "../hosted/blob-sync.js";
 import { renderUsage } from "../output.js";
 // `superbee delete --doc-key <key>` — hard-delete a doc or blob by its key, symmetric with
 // `promote`/`pull` (the DELETE-operation pass, binding plan item 9 — resolved decision).
@@ -27,7 +31,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
-import { commandLiteral, commandToken } from "../command-text.js";
+import { commandFragment, commandLiteral, commandToken } from "../command-text.js";
 
 export const DELETE_USAGE = `superbee delete — hard-delete a doc or blob by its key (symmetric with promote/pull)
 
@@ -38,19 +42,28 @@ Routes by the --doc-key's target (checked case-insensitively), symmetric with 'p
   A key ending '.md' is a DOC: id = the key minus '.md' — deleted through the engine. A reserved id
   (index.md/log.md) is rejected as USAGE regardless of this route — reserved files were never
   deletable.
-  Any OTHER key is a BLOB: opaque bytes, deleted directly (no OKF semantics to enforce).
+  Any OTHER key is a BLOB: opaque bytes (no OKF semantics to enforce). Outside a hosted
+  checkout it is deleted directly.
 
 'doc delete <id>' (see 'superbee doc --help') is the concept-native form for docs; this verb
 exists because blob addressing lives only in the --doc-key family.
 
-Idempotent: deleting an ABSENT key is SUCCESS (deleted:false, exit 0), never NOT_FOUND. Hard-delete
+Outside a hosted checkout, idempotent: deleting an ABSENT key is SUCCESS (deleted:false, exit 0), never NOT_FOUND. Hard-delete
 — no tombstone, non-cascading (other docs' links to/from the deleted id are left exactly as
 written), and does NOT append a log.md entry.
+
+In a hosted checkout, ordinary-file deletion requires preserved version and MIME pins and a
+clean target. A guarded local removal admits a frozen intent before authentication; delivery
+may remain incomplete. Recreated, dirty or unknown targets are held. This is not an unconditional
+or absent-key success path. Document --inspect/--resolve/--restore-deletes does not recover blob
+requests; an uncertain blob request is looked up by its original identity, never resent merely
+because lookup reports absence. Protected namespaces and Artifact commands remain refused.
 
 Options:
   --doc-key <key>          Key to delete (required) — ends '.md' -> doc route, else blob route
   --expected-version <v>   Compare-and-swap token from a prior read/write/pull receipt (a stale
-                            token is a CONFLICT, exit 5; omit for an unconditional delete)
+                            token is a CONFLICT, exit 5; outside a hosted checkout omit for an
+                            unconditional delete; hosted blobs always use preserved version+MIME pins)
   --dir <path>              Bundle directory (default: discovered from the cwd)
   --remote <url>            Talk to a wire-protocol server instead of a local bundle (mutually
                             exclusive with --dir; remote access is always explicit)
@@ -59,6 +72,9 @@ Options:
 `;
 
 export interface DeleteCliDeps {
+  hosted?: Partial<HostedSyncDeps>;
+  home?: string;
+  cwd?: string;
   stdout: (s: string) => void;
 }
 
@@ -111,7 +127,19 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
     );
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const home = deps.hosted?.auth?.home ?? deps.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
+  if (deps.home !== undefined && deps.hosted?.auth !== undefined && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "offline admission and hosted delivery must use the same private-state home");
+  if (!remote && !isDocRouteKey(key)) {
+    const pending = await admitOfflineBlob({ operation: "delete", key, ...(values.dir === undefined ? {} : { dir: values.dir }), ...(rawExpected === undefined ? {} : { expectedVersion: rawExpected.trim() }), home, cwd });
+    if (pending) {
+      const { finishAdmittedBlob } = await import("../hosted/sync.js");
+      const resume = commandFragment`${cliInvocation()} delete --doc-key ${commandToken(key)} --dir ${commandToken(pending.binding.path)}${rawExpected === undefined ? commandFragment`` : commandFragment` --expected-version ${commandToken(rawExpected.trim())}`}`;
+      await finishAdmittedBlob(pending, "delete", { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resolveMode(values), resume);
+      return;
+    }
+  }
+  const bundle = await openBundle(values.dir, remote);
   const mode: OutputMode = resolveMode(values);
   const expectedVersion = rawExpected?.trim();
   const docRoute = isDocRouteKey(key);

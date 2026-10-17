@@ -65,6 +65,7 @@ import { readBundleListing, type HostedIdentity } from "@superbee/core/hosted-cl
 import { createHostedSyncClient, hostedFailure, syncRoutePrefix, type HostedSyncClient } from "../hosted/client.js";
 import { ambiguousBundle, HOSTED_CHECKOUT_REFUSALS, unboundCopyRefusal } from "../hosted/refusals.js";
 import { digestOf, ensureParentInside, exportFresh, findPathCollision, parentUnsafe, placeNew, ROOT_INDEX, UnsafePlacementError } from "../hosted/projection.js";
+import { seedInitialBlobBaselines } from "../hosted/blob-sync.js";
 import { writeProjection } from "../hosted/sync-scan.js";
 import { addCatalogEntry, assertCatalogLabel, loadCatalog } from "../catalog.js";
 import { checkoutMarkerBytes, readCheckoutMarker, removeCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
@@ -502,6 +503,8 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
   let createdFolder = false;
   const placed = new Map<string, string>();
   let replaced: CheckoutBinding | null = null;
+  let blobSeedError: unknown;
+  let blobSeedFailed = false;
   const result = await filesystemPushRoleLocks()
     .request(checkoutLockName(canonical), { ifAvailable: true }, async (lock) => {
       if (!lock) {
@@ -562,6 +565,11 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
         const exported = await exportFresh(store, canonical, (file, digest) => placed.set(file, digest));
         const portable = await exportOrReason({ client: reference.slug === null ? client : client.within(reference.slug), slug: reference.slug, source: { target, bundleId, slug: reference.slug, workspace: workspaceFlag ?? null, binding: null }, resume });
         const extras = typeof portable === "string" ? NO_EXTRAS : await placeExtras(portable, canonical, (file, digest) => placed.set(file, digest));
+        // Seeding is optional metadata, and must never roll back successfully placed files.
+        try {
+          const scoped = reference.slug === null ? client : client.within(reference.slug);
+          await seedInitialBlobBaselines({ folder: canonical, scope: { origin: binding.origin, prefix: binding.routes, bundleId, workspaceSlug: reference.slug }, exported: extras.placed, store, carrier: scoped.carrier, capabilities: () => reader.hostedCapabilities() });
+        } catch (error) { blobSeedFailed = true; blobSeedError = error; }
         const kept = [...exported.kept, ...extras.kept];
         if (kept.length > 0) {
           throw new CliError("CONFLICT", `files appeared in ${canonical} during checkout`, {
@@ -612,6 +620,7 @@ export async function checkout(argv: string[], partial: Partial<CheckoutDeps> = 
       throw failure;
     });
 
+  if (blobSeedFailed) throw Object.assign(new CliError("RUNTIME", "checkout is ready, but its blob baselines could not be recorded", { details: { reason: "blob_baseline_failed", checkout_state: "ready", folder: canonical, bundle_id: bundleId }, help: "your files and ready binding are preserved; inspect the reported cause before syncing ordinary files" }), { cause: blobSeedError });
   const replacedBinding = replaced as CheckoutBinding | null;
   const cataloged = await registerInCatalog(deps.auth.home, result.binding);
   deps.stdout(

@@ -161,3 +161,53 @@ test("readLeafSync is a test seam: no production module imports it", () => {
   walk(srcRoot);
   assert.deepEqual(offenders, []);
 });
+
+test("bounded reads preserve binary bytes at the limit and refuse overflow and unsafe leaves", () => {
+  const dir = workspace();
+  try {
+    const file = path.join(dir, "opaque.bin");
+    const bytes = Buffer.from([0, 255, 128, 1]);
+    writeFileSync(file, bytes);
+    assert.deepEqual(readRegularFileNoFollowSync(file, { maximumBytes: 4 }), { state: "present", bytes });
+    assert.deepEqual(readRegularFileNoFollowSync(file, { maximumBytes: 3 }), { state: "unsafe" });
+    assert.deepEqual(readLeafSync(file, constants.O_RDONLY, false, { maximumBytes: 4 }), { state: "present", bytes });
+    const link = path.join(dir, "link");
+    symlinkSync(file, link);
+    assert.deepEqual(readRegularFileNoFollowSync(link, { maximumBytes: 4 }), { state: "unsafe" });
+    writeFileSync(file, Buffer.alloc(0));
+    assert.deepEqual(readRegularFileNoFollowSync(file, { maximumBytes: 0 }), { state: "present", bytes: Buffer.alloc(0) });
+    assert.throws(() => readRegularFileNoFollowSync(file, { maximumBytes: -1 }), RangeError);
+    assert.deepEqual(readRegularFileNoFollowSync(path.join(dir, "missing"), { maximumBytes: 4 }), { state: "missing" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("bounded descriptor reads refuse growth, same-size mutation, and leaf replacement during a read", () => {
+  const dir = workspace();
+  try {
+    for (const mutation of ["growth", "same-size", "replacement"]) {
+      const file = path.join(dir, mutation);
+      writeFileSync(file, "original");
+      const probe = execFileSync(process.execPath, ["--import", fileURLToPath(new URL("./ts-loader.mjs", import.meta.url)), "--input-type=module", "-e", `
+        import fs from 'node:fs';
+        import { syncBuiltinESMExports } from 'node:module';
+        const file = ${JSON.stringify(file)};
+        const original = fs.readSync;
+        let changed = false, armed = false;
+        fs.readSync = (fd, buffer, offset, length, position) => {
+          const count = original(fd, buffer, offset, Math.min(length, 2), position);
+          if (armed && !changed) {
+            changed = true;
+            if (${JSON.stringify(mutation)} === 'replacement') { fs.renameSync(file, file + '.old'); fs.writeFileSync(file, 'replaced'); }
+            else fs.writeFileSync(file, ${JSON.stringify(mutation)} === 'growth' ? 'original-expanded' : 'mutated!');
+          }
+          return count;
+        };
+        syncBuiltinESMExports();
+        const { readRegularFileNoFollowSync } = await import(${JSON.stringify(new URL("../src/nofollow-read.ts", import.meta.url).href)});
+        armed = true;
+        process.stdout.write(readRegularFileNoFollowSync(file, { maximumBytes: 8 }).state);
+      `], { encoding: "utf8", timeout: 15_000 });
+      assert.equal(probe, "unsafe", mutation);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

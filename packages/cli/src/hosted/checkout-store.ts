@@ -16,7 +16,7 @@ import { checkoutLockName, checkoutStoreDir, type CheckoutBinding } from "./bind
 export async function withIdleCheckoutStore<T>(
   binding: CheckoutBinding,
   home: string,
-  read: (store: JournaledBackend) => Promise<T>,
+  read: (store: FileJournaledBackend) => Promise<T>,
   options: { readonly readOnly?: boolean } = {},
 ): Promise<T | null> {
   return filesystemPushRoleLocks().request(checkoutLockName(binding.path), { ifAvailable: true }, async (lock) => {

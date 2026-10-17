@@ -363,3 +363,89 @@ test("an exact-capacity store can claim attempts across a transaction digit boun
     await exact.updateBlobIntent(value.identity.requestId, "in_flight", { state: "acknowledged", receipt }, { guard: (await exact.readBlobWithJournal(key)).guard });
   } finally { await exact?.close(); await second?.cleanup(); await b.close(); await f.cleanup(); }
 });
+
+test("guarded blob metadata is same-key atomic, named, bounded, and independent of unrelated retained rows", async () => {
+  const f = await fixture();
+  try {
+    const value = input(), frozen = prepared(value);
+    const other = await f.backend.admitPreparedBlob(frozen, { guard: (await f.backend.readBlobWithJournal(value.intent.key)).guard });
+    await f.backend.updateBlobIntent(other.requestId, "pending", { state: "acknowledged", receipt: blobReceipt(frozen, success(value)) }, { guard: (await f.backend.readBlobWithJournal(value.intent.key)).guard });
+    const key = "placement.bin", snapshot = await f.backend.readBlobWithJournal(key, { meta: ["map"] });
+    const changes = { meta: [{ key: "map", value: { phase: "pending" } }] };
+    const write = f.backend.writeBlobMeta(key, changes, { guard: snapshot.guard });
+    changes.meta[0]!.value.phase = "caller-mutated";
+    await write;
+    assert.deepEqual(await f.backend.readMeta("map"), { phase: "pending" });
+    await assert.rejects(f.backend.writeBlobMeta(key, { meta: [{ key: "map", value: "stale" }] }, { guard: snapshot.guard }), JournalGuardConflict);
+    const current = await f.backend.readBlobWithJournal(key, { meta: ["map"] });
+    await assert.rejects(f.backend.writeBlobMeta(key, { meta: [{ key: "unnamed", value: true }] }, { guard: current.guard }), JournalGuardConflict);
+    const competing = input("delete", key);
+    await f.backend.admitPreparedBlob(prepared(competing), { guard: current.guard });
+    await assert.rejects(f.backend.writeBlobMeta(key, { removeMeta: ["map"] }, { guard: current.guard }), JournalGuardConflict);
+    assert.deepEqual(await f.backend.readMeta("map"), { phase: "pending" });
+  } finally { await f.cleanup(); }
+  const small = await fixture(5000);
+  try {
+    const snap = await small.backend.readBlobWithJournal("small.bin", { meta: ["map"] });
+    await assert.rejects(small.backend.writeBlobMeta("small.bin", { meta: [{ key: "map", value: "x".repeat(6000) }] }, { guard: snap.guard }), RangeError);
+    assert.equal(await small.backend.readMeta("map"), undefined);
+    assert.equal((await small.backend.readBlobWithJournal("small.bin")).intents.length, 0);
+  } finally { await small.cleanup(); }
+});
+
+test("blob non-execution prefix is guarded, one-count, restart-safe, and never terminal authority", async () => {
+  const f = await fixture(); let b = f.backend;
+  try {
+    const value = input("delete"), row = await b.admitPreparedBlob(prepared(value), { guard: (await b.readBlobWithJournal(value.intent.key)).guard });
+    assert.equal(row.notAppliedThrough, undefined);
+    const guard = async () => (await b.readBlobWithJournal(row.target)).guard;
+    const before = b.transaction;
+    await assert.rejects(b.updateBlobIntent(row.requestId, "pending", { state: "in_flight", attempts: 2 }, { guard: await guard() })); assert.equal(b.transaction, before);
+    const claim = await b.updateBlobIntent(row.requestId, "pending", { state: "in_flight", attempts: 1 }, { guard: await guard() });
+    for (const patch of [
+      { state: "pending", attempts: 1, notAppliedThrough: 2, deletionHold: { deletions: 3, baseline: 5 } },
+      { state: "pending", attempts: 1, notAppliedThrough: 1 },
+      { state: "pending", attempts: 1, notAppliedThrough: 1, deletionHold: { deletions: 0, baseline: 5 } },
+      { state: "pending", attempts: 1, notAppliedThrough: 1, deletionHold: { deletions: 3, baseline: 5, acceptDeletes: 3 } },
+      { state: "in_flight", attempts: 1 },
+    ]) await assert.rejects(b.updateBlobIntent(row.requestId, "in_flight", patch as never, { guard: await guard() }));
+    assert.deepEqual(await b.readBlobIntent(row.requestId), claim);
+    const held = await b.updateBlobIntent(row.requestId, "in_flight", { state: "pending", attempts: 1, notAppliedThrough: 1, deletionHold: { deletions: 3, baseline: 5 } }, { guard: await guard() });
+    assert.equal(held.receipt, undefined); await b.compact(); await b.close(); b = await FileJournaledBackend.open(f.options);
+    assert.deepEqual(await b.readBlobIntent(row.requestId), held);
+    const stale = await guard(); const second = await b.updateBlobIntent(row.requestId, "pending", { state: "in_flight", attempts: 2 }, { guard: stale });
+    assert.equal(second.notAppliedThrough, 1); assert.deepEqual(second.deletionHold, held.deletionHold);
+    await assert.rejects(b.updateBlobIntent(row.requestId, "pending", { state: "pending", attempts: 1, notAppliedThrough: 1, deletionHold: held.deletionHold }, { guard: stale }));
+    await b.updateBlobIntent(row.requestId, "in_flight", { state: "unknown", attempts: 2 }, { guard: await guard() });
+    // A crash after the claim leaves a gap; no new claim or stale proof can fill it by counter manipulation.
+    await assert.rejects(b.updateBlobIntent(row.requestId, "unknown", { state: "in_flight", attempts: 3 }, { guard: await guard() }));
+    await assert.rejects(b.updateBlobIntent(row.requestId, "unknown", { state: "pending", attempts: 1, notAppliedThrough: 1, deletionHold: held.deletionHold }, { guard: await guard() }));
+    const receipt = blobReceipt(row.prepared, success(value));
+    await b.updateBlobIntent(row.requestId, "unknown", { state: "acknowledged", receipt }, { guard: await guard() });
+    await assert.rejects(b.updateBlobIntent(row.requestId, "acknowledged", { state: "pending", attempts: 2, notAppliedThrough: 2, deletionHold: { deletions: 4, baseline: 5 } }, { guard: await guard() }));
+    assert.deepEqual((await b.readBlobIntent(row.requestId))?.receipt, receipt);
+  } finally { await b.close(); await f.cleanup(); }
+});
+
+test("held prefix keeps settlement capacity reserved and proof plus named metadata refuses atomically", async () => {
+  const reserve = BLOB_JOURNAL_BOUNDS.terminalReceiptBytes + BLOB_JOURNAL_BOUNDS.settlementStructureBytes + BLOB_JOURNAL_BOUNDS.baselineBytes;
+  const f = await fixture(reserve + 5000), b = f.backend;
+  try {
+    await b.writeMeta("retained", "x".repeat(3800));
+    const value = input("delete"), row = await b.admitPreparedBlob(prepared(value), { guard: (await b.readBlobWithJournal(value.intent.key)).guard });
+    const key = row.target;
+    await b.updateBlobIntent(row.requestId, "pending", { state: "in_flight", attempts: 1 }, { guard: (await b.readBlobWithJournal(key)).guard });
+    const patch = { state: "pending" as const, attempts: 1, notAppliedThrough: 1, deletionHold: { deletions: 3, baseline: 5 } };
+    const guard = (await b.readBlobWithJournal(key, { meta: ["baseline"] })).guard, txn = b.transaction, log = await fs.readFile(path.join(f.directory, FILE_JOURNAL_LOG));
+    await assert.rejects(b.updateBlobIntent(row.requestId, "in_flight", patch, { guard, meta: [{ key: "baseline", value: "x".repeat(2000) }] }), /settlement reserve/);
+    assert.equal(b.transaction, txn); assert.deepEqual(await fs.readFile(path.join(f.directory, FILE_JOURNAL_LOG)), log); assert.equal((await b.readBlobIntent(row.requestId))?.notAppliedThrough, undefined); assert.equal(await b.readMeta("baseline"), undefined);
+    await b.updateBlobIntent(row.requestId, "in_flight", patch, { guard });
+    await assert.rejects(b.writeMeta("padding", "x".repeat(2000)), /settlement reserve/);
+    const beforeBad = b.transaction;
+    await assert.rejects(b.updateBlobIntent(row.requestId, "pending", { notAppliedThrough: null } as never, { guard: (await b.readBlobWithJournal(key)).guard })); assert.equal(b.transaction, beforeBad);
+    await b.updateBlobIntent(row.requestId, "pending", { state: "in_flight", attempts: 2 }, { guard: (await b.readBlobWithJournal(key)).guard });
+    const receipt = blobReceipt(row.prepared, { ok: false, operationId: value.intent.operationId, error: { code: "backend_unavailable", message: "x".repeat(BLOB_JOURNAL_BOUNDS.terminalReceiptBytes - 1024), retryable: false, writeState: "not_applied" } });
+    await b.updateBlobIntent(row.requestId, "in_flight", { state: "refused", attempts: 2, receipt }, { guard: (await b.readBlobWithJournal(key, { meta: ["baseline"] })).guard, meta: [{ key: "baseline", value: "x".repeat(BLOB_JOURNAL_BOUNDS.baselineBytes - 256) }] });
+    assert.deepEqual((await b.readBlobIntent(row.requestId))?.receipt, receipt);
+  } finally { await f.cleanup(); }
+});

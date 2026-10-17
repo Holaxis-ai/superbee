@@ -86,12 +86,17 @@ export interface OperationTransport {
 
 /** Minimal classification for recorded-only delivery. A commit need not invent a new-head
  * version (for example, an identified blob delete can carry its complete absence receipt). */
+export interface NonExecutedAttempt { kind: "not-executed"; attempts: number; details: unknown }
 export type RecordedWriteOutcome =
+  | NonExecutedAttempt
   | { kind: "committed" }
   | { kind: "conflict" }
   | { kind: "refused"; code: string; message: string }
   | { kind: "unknown" };
-export type RecordedWriteIntent = Pick<OperationIntent, "requestId" | "kind" | "target" | "createdAt" | "attempts" | "state">;
+export type RecordedWriteIntent = Pick<OperationIntent, "requestId" | "kind" | "target" | "createdAt" | "attempts" | "state"> & {
+  /** Opt-in qualification; old no-prefix explicit callers retain their contract. */
+  notAppliedThrough?: number;
+};
 export interface RecordedWriteTransport<I extends RecordedWriteIntent, O extends RecordedWriteOutcome> {
   submit(intent: I, options?: { signal?: AbortSignal }): Promise<O>;
   /** Null/absence is inconclusive and NEVER grants this path permission to submit. */
@@ -181,6 +186,8 @@ export function stateForOutcome(outcome: Outcome | RecordedWriteOutcome): Operat
       return "conflict";
     case "refused":
       return "refused";
+    case "not-executed":
+      return "pending";
     case "unknown":
       return "unknown";
   }
@@ -318,6 +325,7 @@ export async function performUncertainWrite(
         !Number.isSafeInteger(intent.attempts) || intent.attempts < 0 ||
         !["pending", "in_flight", "acknowledged", "conflict", "refused", "unknown"].includes(intent.state) ||
         (options.start === "submit-claimed" && (intent.state !== "in_flight" || intent.attempts < 1))) throw new Error("Invalid recorded-only delivery start or durable claim.");
+    if (intent.notAppliedThrough !== undefined && (!Number.isSafeInteger(intent.notAppliedThrough) || intent.notAppliedThrough < 0 || intent.notAppliedThrough > intent.attempts || options.start === "submit-claimed" && intent.notAppliedThrough !== intent.attempts - 1)) throw new Error("Invalid recorded-only non-execution prefix or durable claim.");
     // Capture the descriptor before the first asynchronous boundary. Additional prepared data
     // belongs to the typed caller; the primitive neither fabricates nor interprets its fields.
     intent = { ...intent };
@@ -352,6 +360,10 @@ export async function performUncertainWrite(
       submissions += 1;
       if (!explicitStart) attempts += 1;
       const outcome = await submitOnce(transport, { ...intent, attempts, state: "in_flight" }, options.deadlineMs, sleep);
+      if (outcome.kind === "not-executed") {
+        if (!explicitStart || intent.notAppliedThrough === undefined || intent.notAppliedThrough !== attempts - 1 || outcome.attempts !== attempts || signal?.aborted) return finish(UNKNOWN);
+        return finish(outcome);
+      }
       // A resend refused before it reached execution (no credential, access withdrawn, a spent
       // quota) is evidence about that resend only: an earlier, unclear delivery may still be held
       // by the authority and commit, so the identity stays unknown and the intent is kept.
@@ -375,7 +387,7 @@ export async function performUncertainWrite(
       break;
     }
     if (recorded === undefined) return finish(UNKNOWN);
-    if (recorded !== null) return finish(recorded);
+    if (recorded !== null) return finish(recorded.kind === "not-executed" ? UNKNOWN : recorded);
     if (explicitStart) return finish(UNKNOWN);
     needSubmission = true;
   }

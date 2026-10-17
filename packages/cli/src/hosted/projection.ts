@@ -12,11 +12,13 @@
 //
 // Temporary and pre-image files are dot-files ending in `.tmp` beside their target, so no bundle
 // reader treats them as documents.
+import { readRegularFileNoFollowSync } from "../nofollow-read.js";
+import { assertSafeBlobKey, isWriteRequestId } from "@superbee/core/storage";
 import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { assertSafeConceptId, pathFromConceptId, type JournaledBackend } from "@superbee/core";
+import { assertSafeConceptId, pathFromConceptId, FilesystemBackend, probeFilesystemPath, InvalidInputError, type JournaledBackend } from "@superbee/core";
 
 export type PlaceOutcome =
   | { readonly placed: true }
@@ -159,6 +161,13 @@ export const ROOT_INDEX = "index.md";
 export function fold(segment: string): string {
   return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
 }
+/** Exact native spelling only: metadata probes create no paths and read no bodies. */
+export async function projectionPathExact(folder: string, rel: string): Promise<boolean> {
+  if (await parentUnsafe(folder, path.join(folder, ...rel.split("/")))) return false;
+  try { await probeFilesystemPath(new FilesystemBackend(folder), rel); return true; }
+  catch (error) { if (error instanceof InvalidInputError) return false; throw error; }
+}
+
 
 /** Two document paths that one case-insensitive or normalizing filesystem would merge. */
 export interface PathCollision {
@@ -167,34 +176,31 @@ export interface PathCollision {
 }
 
 /**
- * Check every document path before any file is written: each id must be a safe concept id, and no
- * two paths (or two spellings of one directory) may differ only by letter case or Unicode
- * normalization, because the host's filesystem may treat them as one name. Returns the first
- * collision, or null.
+ * Check relative physical paths using the existing portable projection fold. The caller owns
+ * its path grammar; this owner checks leaf and ancestor spelling and file/directory ownership.
+ * Returns the first collision, or null. Native exact spelling is observed separately.
  */
-export function findPathCollision(ids: readonly string[]): PathCollision | null {
+export function findFilePathCollision(files: Iterable<string>): PathCollision | null {
   const spelled = new Map<string, string>();
-  const claim = (spelling: string): PathCollision | null => {
-    const key = spelling.split("/").map(fold).join("/");
-    const seen = spelled.get(key);
-    if (seen !== undefined && seen !== spelling) return { first: seen, second: spelling };
-    spelled.set(key, spelling);
-    return null;
-  };
-  const root = claim(ROOT_INDEX);
-  if (root) return root;
-  for (const id of ids) {
-    assertSafeConceptId(id);
-    const file = pathFromConceptId(id);
+  for (const file of files) {
     const segments = file.split("/");
-    for (let depth = 1; depth < segments.length; depth += 1) {
-      const collision = claim(`${segments.slice(0, depth).join("/")}/`);
-      if (collision) return collision;
+    for (let depth = 1; depth <= segments.length; depth += 1) {
+      const spelling = segments.slice(0, depth).join("/") + (depth < segments.length ? "/" : "");
+      const key = segments.slice(0, depth).map(fold).join("/");
+      const seen = spelled.get(key);
+      if (seen !== undefined && seen !== spelling) return { first: seen, second: spelling };
+      spelled.set(key, spelling);
     }
-    const collision = claim(file);
-    if (collision) return collision;
   }
   return null;
+}
+/** Document facade retains concept-id validation and the reserved root path. */
+export function findPathCollision(ids: readonly string[]): PathCollision | null {
+  function* files() {
+    yield ROOT_INDEX;
+    for (const id of ids) { assertSafeConceptId(id); yield pathFromConceptId(id); }
+  }
+  return findFilePathCollision(files());
 }
 
 /** Refuse a placement whose parent resolves outside the folder (a symlinked directory inside it). */
@@ -291,4 +297,135 @@ export async function parentUnsafe(folder: string, file: string): Promise<boolea
     }
   }
   return false;
+}
+
+/** Optional ordinary-file staging. Existing document placement and legacy temps are unchanged. */
+export interface BlobFileIdentity { dev: string; ino: string; mtimeNs: string }
+export interface BlobStagePlan {
+  id: string; key: string; operation: "create" | "replace" | "delete";
+  beforeDigest: string | null; afterDigest: string | null;
+  install?: BlobFileIdentity; preimage?: BlobFileIdentity;
+}
+const BLOB_STAGE_NAME = /^\.superbee-bp-([0-9a-f-]{36})-(new|install|pre|del)\.tmp$/i;
+function blobStagePaths(folder: string, plan: BlobStagePlan) {
+  assertSafeBlobKey(plan.key);
+  if (!isWriteRequestId(plan.id)) throw new UnsafePlacementError("invalid blob placement id");
+  const target = path.join(folder, ...plan.key.split("/")), dir = path.dirname(target);
+  return { target, dir, new: path.join(dir, `.superbee-bp-${plan.id}-new.tmp`), install: path.join(dir, `.superbee-bp-${plan.id}-install.tmp`), pre: path.join(dir, `.superbee-bp-${plan.id}-pre.tmp`), del: path.join(dir, `.superbee-bp-${plan.id}-del.tmp`) };
+}
+function sameBlobIdentity(a: BlobFileIdentity, b: BlobFileIdentity): boolean { return a.dev === b.dev && a.ino === b.ino && a.mtimeNs === b.mtimeNs; }
+async function blobStageRead(file: string): Promise<{ bytes: Buffer; identity: BlobFileIdentity } | null> {
+  let before;
+  try { before = await fs.lstat(file, { bigint: true }); } catch (error) { if (isCode(error, "ENOENT")) return null; throw error; }
+  if (!before.isFile() || before.dev <= 0n || before.ino <= 0n) throw new UnsafePlacementError("blob stage has no reliable regular-file identity");
+  const read = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
+  if (read.state !== "present") throw new UnsafePlacementError("blob stage is unsafe or exceeds its bound");
+  const after = await fs.lstat(file, { bigint: true });
+  if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) throw new UnsafePlacementError("blob stage changed during capture");
+  return { bytes: read.bytes, identity: { dev: after.dev.toString(), ino: after.ino.toString(), mtimeNs: after.mtimeNs.toString() } };
+}
+function stageMatches(value: Awaited<ReturnType<typeof blobStageRead>>, digest: string | null, identity?: BlobFileIdentity): boolean {
+  return value !== null && digest !== null && digestOf(value.bytes) === digest && (identity === undefined || sameBlobIdentity(value.identity, identity));
+}
+/** Pending WAL must already be durable. Returns identity evidence to persist BEFORE install. */
+export async function prepareBlobStage(folder: string, plan: BlobStagePlan, supplied?: Uint8Array): Promise<{ install?: BlobFileIdentity; preimage?: BlobFileIdentity }> {
+  const bytes = supplied === undefined ? undefined : new Uint8Array(supplied), p = blobStagePaths(folder, plan);
+  if (!await projectionPathExact(folder, plan.key)) throw new UnsafePlacementError("aliased blob placement path");
+  await ensureParentInside(folder, p.target);
+  const original = await blobStageRead(p.target);
+  if (plan.operation === "create" ? original !== null : !stageMatches(original, plan.beforeDigest)) throw new UnsafePlacementError("blob placement precondition changed");
+  if (plan.operation !== "delete") {
+    if (!bytes || bytes.length > 16 * 1024 * 1024 || digestOf(bytes) !== plan.afterDigest) throw new UnsafePlacementError("blob staged bytes do not match intended digest");
+    await createExclusive(p.new, bytes);
+    await createExclusive(p.install, bytes); // independent evidence: an editor can mutate the installed inode
+  }
+  await syncDir(p.dir);
+  const install = plan.operation === "delete" ? undefined : await blobStageRead(p.install);
+  const evidence = plan.operation === "delete" ? undefined : await blobStageRead(p.new);
+  if (install && evidence && install.identity.dev === evidence.identity.dev && install.identity.ino === evidence.identity.ino) throw new UnsafePlacementError("blob stage evidence must be independent");
+  return { ...(install ? { install: install.identity } : {}), ...(original ? { preimage: original.identity } : {}) };
+}
+/** Installation identity must already be durable in the same pending map descriptor. */
+export async function installBlobStage(folder: string, plan: BlobStagePlan): Promise<void> {
+  const p = blobStagePaths(folder, plan);
+  if (!await projectionPathExact(folder, plan.key)) throw new UnsafePlacementError("unsafe or aliased blob placement path");
+  if (plan.operation !== "delete" && (!plan.install || !stageMatches(await blobStageRead(p.new), plan.afterDigest) || !stageMatches(await blobStageRead(p.install), plan.afterDigest, plan.install))) throw new UnsafePlacementError("blob stage evidence changed");
+  const current = await blobStageRead(p.target);
+  if (plan.operation === "create") {
+    if (current) throw new UnsafePlacementError("blob target appeared");
+  } else {
+    if (!plan.preimage || !stageMatches(current, plan.beforeDigest, plan.preimage)) throw new UnsafePlacementError("blob original changed");
+    const aside = plan.operation === "delete" ? p.del : p.pre;
+    if (await blobStageRead(aside)) throw new UnsafePlacementError("blob preimage name occupied");
+    await fs.rename(p.target, aside);
+    await syncDir(p.dir);
+    if (!stageMatches(await blobStageRead(aside), plan.beforeDigest, plan.preimage)) throw new UnsafePlacementError("blob moved preimage changed");
+  }
+  if (plan.operation !== "delete") { await fs.link(p.install, p.target); await syncDir(p.dir); }
+  if (!await projectionPathExact(folder, plan.key) || (plan.operation === "delete" ? await blobStageRead(p.target) !== null : !stageMatches(await blobStageRead(p.target), plan.afterDigest, plan.install))) throw new UnsafePlacementError("blob target changed during installation");
+}
+/** Recover one WAL-owned operation. Ambiguous/changed evidence is kept, never guessed away. */
+export async function finishBlobStage(folder: string, plan: BlobStagePlan, state: "pending" | "committed"): Promise<boolean> {
+  const p = blobStagePaths(folder, plan);
+  if (!await projectionPathExact(folder, plan.key)) return false;
+  let target = await blobStageRead(p.target);
+  const prePath = plan.operation === "delete" ? p.del : p.pre;
+  const pre = plan.operation === "create" ? null : await blobStageRead(prePath);
+  if (pre && !stageMatches(pre, plan.beforeDigest, plan.preimage)) return false;
+  if (state === "pending") {
+    if (!plan.install && !plan.preimage) {
+      // No target mutation is permitted before identity publication. Unexpected pre/del is held.
+      if (await blobStageRead(p.pre) || await blobStageRead(p.del)) return false;
+    } else if (plan.operation === "create") {
+      if (target) {
+        if (!stageMatches(target, plan.afterDigest, plan.install) || await blobStageRead(p.del)) return false;
+        await fs.rename(p.target, p.del); await syncDir(p.dir);
+        if (!stageMatches(await blobStageRead(p.del), plan.afterDigest, plan.install)) return false;
+        target = null;
+      }
+    } else if (pre) {
+      if (!stageMatches(target, plan.beforeDigest, plan.preimage)) {
+        if (target) {
+          if (plan.operation === "delete" || !stageMatches(target, plan.afterDigest, plan.install) || await blobStageRead(p.del)) return false;
+          if (!stageMatches(await blobStageRead(p.new), plan.afterDigest) || !stageMatches(await blobStageRead(p.install), plan.afterDigest, plan.install)) return false;
+          await fs.rename(p.target, p.del); await syncDir(p.dir);
+          if (!stageMatches(await blobStageRead(p.del), plan.afterDigest, plan.install)) return false;
+        }
+        await fs.link(prePath, p.target); await syncDir(p.dir); // empty name only
+        target = await blobStageRead(p.target);
+      }
+    } else if (!stageMatches(target, plan.beforeDigest, plan.preimage)) return false;
+  }
+  // Validate every retained evidence file before removing any. A mutated install hardlink is
+  // disposable only when the same inode is still reachable under the user's target name.
+  const roles = ["new", "install", "pre", "del"] as const;
+  const removable: string[] = [];
+  for (const role of roles) {
+    const file = p[role], value = await blobStageRead(file);
+    if (!value) continue;
+    const old = role === "pre" || role === "del" && plan.operation === "delete";
+    const digest = old ? plan.beforeDigest : plan.afterDigest;
+    const identity = old ? plan.preimage : role === "new" ? undefined : plan.install;
+    if (!stageMatches(value, digest, identity)) {
+      const sameReachableInstall = state === "committed" && role === "install" && plan.install && sameBlobIdentity(value.identity, { ...plan.install, mtimeNs: value.identity.mtimeNs }) && target && target.identity.dev === value.identity.dev && target.identity.ino === value.identity.ino;
+      if (!sameReachableInstall) return false;
+    }
+    removable.push(file);
+  }
+  for (const file of removable) await fs.unlink(file);
+  if (removable.length > 0) await syncDir(p.dir);
+  return true;
+}
+/** Raw stage names have no target authority; an unreferenced UUID holds recovery, not deletion. */
+export async function orphanBlobStages(folder: string, known: ReadonlySet<string>): Promise<string[]> {
+  const orphans: string[] = [];
+  async function visit(dir: string): Promise<void> {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name), match = BLOB_STAGE_NAME.exec(entry.name);
+      if (match && !known.has(match[1]!)) orphans.push(file);
+      else if (entry.isDirectory() && !entry.name.startsWith(".")) await visit(file);
+    }
+  }
+  await visit(folder);
+  return orphans;
 }

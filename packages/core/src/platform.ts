@@ -260,3 +260,16 @@ export function localPending(version: Version, base: Version | null, requestId: 
 export function localConflict(version: Version, base: Version | null, remote: Version | null, requestId: string): Provenance {
   return { state: "local-conflict", version, base, remote, requestId };
 }
+
+/** Shared catastrophic-listing decision. Held/unknown targets must be excluded by the caller. */
+export function deletionBound(listedCount: number, presentCount: number, candidates: number, digest: string): RefusedDeletions | undefined {
+  if (![listedCount, presentCount, candidates].every(n => Number.isSafeInteger(n) && n >= 0) || candidates > presentCount || typeof digest !== "string" || digest.length === 0) throw new TypeError("invalid deletion bound inputs");
+  if (candidates < 8) return undefined;
+  if (listedCount === 0) return { deletions: candidates, reason: "empty-listing", digest };
+  if (candidates * 2 > presentCount) return { deletions: candidates, reason: "over-half", digest };
+  return undefined;
+}
+/** An acceptance names precisely the refusal currently proposed. */
+export function acceptsRefusal(refused: RefusedDeletions, accepted: RefusedDeletions | undefined): boolean {
+  return accepted !== undefined && accepted.digest === refused.digest && accepted.deletions === refused.deletions && accepted.reason === refused.reason;
+}

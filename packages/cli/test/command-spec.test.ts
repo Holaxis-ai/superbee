@@ -13,6 +13,10 @@ import {
 } from "../src/command-spec.js";
 import { KNOWN_COMMANDS, PUBLIC_HANDLERS, RUNTIME_COMMANDS } from "../src/cli.js";
 import { serve } from "../src/commands/serve.js";
+import { PROMOTE_USAGE } from "../src/commands/promote.js";
+import { DELETE_USAGE } from "../src/commands/delete.js";
+import { HOSTED_SYNC_USAGE } from "../src/hosted/sync.js";
+import { HOSTED_CHECKOUT_REFUSALS } from "../src/hosted/refusals.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
 import { projectCommandSpec } from "./support/command-spec-projector.js";
 
@@ -114,4 +118,30 @@ test("sync catalog summary distinguishes repository creation, establishment, and
   assert.match(sync.summary, /--establish.*board branch/is);
   assert.match(sync.summary, /plain `sync`.*join/is);
   assert.match(sync.summary, /repository-specific.*branch-create policy/i);
+});
+
+
+test("hosted ordinary-file help distinguishes frozen delivery from document recovery and Artifact publication", () => {
+  assert.match(HOSTED_SYNC_USAGE, /Edited documents are sent whole/);
+  assert.match(HOSTED_SYNC_USAGE, /opaque bytes with exact version and MIME pins, up to 16 MiB/);
+  assert.match(HOSTED_SYNC_USAGE, /new local files require explicit promote/);
+  assert.match(HOSTED_SYNC_USAGE, /Document-only conflict inspection and resolution/);
+  assert.match(HOSTED_SYNC_USAGE, /deleted document files back/);
+  assert.match(HOSTED_SYNC_USAGE, /Absence alone does not\s+authorize resubmission/);
+  assert.match(HOSTED_SYNC_USAGE, /two token families are not interchangeable/);
+  assert.match(HOSTED_SYNC_USAGE, /targeted delivery does not run unrelated sync work/);
+  assert.match(HOSTED_SYNC_USAGE, /Exact-request promote\/delete.*without a pull/s);
+  assert.match(PROMOTE_USAGE, /canonical target pathname/);
+  assert.match(PROMOTE_USAGE, /durable before authentication; an unchanged\s+retry resumes exactly/);
+  assert.match(PROMOTE_USAGE, /replacement without --content-type preserves its observed hosted MIME/);
+  assert.match(PROMOTE_USAGE, /Historical hosted\s+MIME is never inferred/);
+  assert.match(DELETE_USAGE, /requires preserved version and MIME pins and a\s+clean target/);
+  assert.match(DELETE_USAGE, /delivery\s+may remain incomplete/);
+  assert.match(DELETE_USAGE, /Recreated, dirty or unknown targets are held/);
+  assert.match(DELETE_USAGE, /not an unconditional\s+or absent-key success path/);
+  for (const usage of [HOSTED_SYNC_USAGE, PROMOTE_USAGE, DELETE_USAGE]) assert.match(usage, /Artifact commands\s+remain refused/);
+  const artifact = HOSTED_CHECKOUT_REFUSALS.find(row => row.words.join(" ") === "artifact *");
+  assert.equal(artifact?.reason, "not_syncable");
+  assert.match(artifact!.why, /hosted Artifact publication is not supported yet/);
+  assert.doesNotMatch(artifact!.why, /blobs.*do not sync/);
 });

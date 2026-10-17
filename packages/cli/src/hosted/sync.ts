@@ -39,7 +39,10 @@ import {
   type SharedBase,
 } from "@superbee/browser-local";
 import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
-import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
+import { decodePreparedBlobIntent, type BlobIntentRecord, type BlobTargetScope } from "@superbee/core/storage";
+import { performHostedBlobDelivery } from "@superbee/core/hosted-client";
+import { createHostedBlobWriteAdapter } from "@superbee/core/hosted-transport";
+import { FileJournaledBackend, FileJournalUnavailableError } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
 import {
   createWholeDocumentTransport,
@@ -49,13 +52,14 @@ import {
   type HostedCarrier,
   type HostedReadAdapter,
 } from "@superbee/core/hosted-transport";
-import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalGuardConflict, JournalSnapshotConflict, type IntentRecord, type NewIntentRecord } from "@superbee/core/journaled-backend";
+import { DELETION_VERSION, DOCUMENT_DELETE_KIND, JournalGuardConflict, JournalSnapshotConflict, equalJournalValue, type IntentRecord, type NewIntentRecord } from "@superbee/core/journaled-backend";
 import { mintRequestId, type UncertainWriteOptions } from "@superbee/core/uncertain-write";
 
 import { resolveLocalBundleTarget } from "../bundle.js";
 import { parseSyncArgs } from "../commands/sync/orchestrate.js";
 import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
+import { BLOB_SYNC_META_KEY, recoverBlobPlacements, refreshBlobCheckout, blobHostDeletionsToken, readBlobSyncState, settleBlobSyncReceipt, projectBlobSyncReceipt, blobFrozenPhysicalMatches, ordinarySeedKey, type BlobSyncSnapshot, type OfflineBlobAdmission, type BlobRefreshReport, type BlobCaptureContext } from "./blob-sync.js";
 import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
@@ -95,7 +99,7 @@ import { needsPersonAtTerminal, processTerminal, type HostedTerminal } from "./t
 export type { HostedTerminal } from "./terminal.js";
 import { syncEnvelope, syncVerbNotApplicable, withSyncEnvelope, type SyncEnvelope } from "../sync-outcomes.js";
 
-export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives whole documents:
+export const HOSTED_SYNC_USAGE = `In a hosted checkout (made by 'superbee checkout'), sync sends and receives documents and admitted ordinary files:
 
 Usage:
   superbee sync [--dir <folder>] [--limit <n>] [--json]
@@ -104,8 +108,10 @@ Usage:
   superbee sync --restore-deletes | --accept-deletes <token> [--dir <folder>] [--json]
   superbee sync --take-host-deletions <token> [--dir <folder>] [--json]
 
-Each edited file is sent as one whole document under your own access, with no approval step;
-documents changed on the host are refreshed in the folder. A change to one document and a
+Edited documents are sent whole under your own access. Tracked ordinary files send frozen
+opaque bytes with exact version and MIME pins, up to 16 MiB or a smaller advertised host bound;
+new local files require explicit promote. Documents changed on the host are refreshed in the folder.
+Document-only conflict inspection and resolution: A change to one document and a
 change on the host to another both land. A document changed on both sides is never merged: it
 comes back as a conflict row, and nothing is sent for it until you resolve it:
   --inspect --doc <id>
@@ -118,13 +124,13 @@ comes back as a conflict row, and nothing is sent for it until you resolve it:
 A resolution is recorded in the checkout; keep and revise are sent by the next plain sync, and
 take sends nothing. keep and revise send over the host's version, so they need an --inspect
 first, and are refused (stale_review) if the host's version changed after it; take needs none.
-A deleted file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
+Document-only deletion recovery: a deleted document file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
 document's history. A mass delete is held: when the deletes of the last day (sent, unsent and
 new) are more than half the checkout and at least 3 (or every document of a smaller one), the new
 ones are not sent, and they stay held until restored or accepted. The host applies the same
 rule to the whole bundle, over everyone's deletes of the last day: a delete it holds
 (deletions_held, counted_over naming the bundle) is parked the same way and never resent by a
-plain sync. --restore-deletes puts held and unsent deleted files back (so does --resolve take
+plain sync. --restore-deletes puts held and unsent deleted document files back (so does --resolve take
 --doc <id> for one of them).
 --accept-deletes <token> sends exactly the held set the receipt names, and only after the person
 types the held count at the prompt: it needs an interactive terminal, and refuses any other
@@ -148,10 +154,18 @@ answer was lost; the next sync looks it up by the same request) and paused (sign
 sync quota for this bundle). The exit is 0 only when every row is committed: 5 when a row needs
 your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a lost answer, and
 4 (AUTH_REQUIRED, with the sign-in link) when you must sign in.
+An uncertain blob request is looked up by its original identity. Absence alone does not
+authorize resubmission; it can remain unknown. Blob conflicts and unknown outcomes do not use
+document --inspect/--resolve/--restore-deletes. Artifact commands remain refused in hosted checkouts.
+The blobs: token for --accept-deletes authorizes only its exact held outgoing write set, after
+person confirmation; this targeted delivery does not run unrelated sync work. The separate
+blobs: token for --take-host-deletions authorizes only a recorded refused incoming deletion set;
+the two token families are not interchangeable.
 A sync gate declared with git config superbee.syncGate '<command>' (as Git resolves it from the
 checkout folder: system, global, or a repository that contains the folder; never from the
-bundle's documents or the host) runs after the pull and before anything is sent, whenever the
-run has something to send. It runs through the shell from the checkout folder with
+bundle's documents or the host) runs after the pull in normal sync and before anything is sent.
+Exact-request promote/delete and blob acceptance delivery run it without a pull, whenever they
+have a fresh submission to send. It runs through the shell from the checkout folder with
 SUPERBEE_SYNC_GATE=1, SUPERBEE_SYNC_HOME=hosted, SUPERBEE_BOARD_PATH, SUPERBEE_HOSTED_ORIGIN and
 SUPERBEE_HOSTED_BUNDLE_ID set (superbee.syncGateTimeoutSeconds overrides the 600s timeout). A
 non-zero exit, a timeout, or any change it makes to the folder sends nothing at all: your edits
@@ -296,7 +310,8 @@ function parseHosted(argv: string[]): HostedValues {
   }
   const accept = values["accept-deletes"];
   if (accept !== undefined) {
-    if (!/^[1-9][0-9]{0,6}:[0-9a-f]{12}$/.test(accept)) throw new CliError("USAGE", `--accept-deletes takes the token printed with the held deletions (<count>:<digest>), not '${accept}'`, { help: `${inv} sync (the receipt's deletions_held names the token)` });
+    if (!/^(?:blobs:)?[1-9][0-9]{0,6}:[0-9a-f]{12}$/.test(accept)) throw new CliError("USAGE", `--accept-deletes takes the token printed with the held deletions (<count>:<digest>), not '${accept}'`, { help: `${inv} sync (the receipt's deletions_held names the token)` });
+    if (accept.startsWith("blobs:") && values["take-host-deletions"] !== undefined) throw new CliError("USAGE", "blob write confirmation and taking host deletions are separate operations");
     if (values.inspect !== undefined || values.resolve !== undefined || values["restore-deletes"]) throw new CliError("USAGE", "--accept-deletes goes with a plain sync", { help: `${inv} sync --accept-deletes ${commandToken(accept)}` });
   }
   if (values["restore-deletes"] && (values.inspect !== undefined || values.resolve !== undefined)) {
@@ -304,7 +319,7 @@ function parseHosted(argv: string[]): HostedValues {
   }
   const take = values["take-host-deletions"];
   if (take !== undefined) {
-    if (!/^[1-9][0-9]{0,6}:[0-9a-f]{12}$/.test(take)) throw new CliError("USAGE", `--take-host-deletions takes the token printed with the refused deletions (<count>:<digest>), not '${take}'`, { help: `${inv} sync (the receipt's pulled.refused_deletions names the token)` });
+    if (!/^(?:blobs:)?[1-9][0-9]{0,6}:[0-9a-f]{12}$/.test(take)) throw new CliError("USAGE", `--take-host-deletions takes the token printed with the refused deletions (<count>:<digest>), not '${take}'`, { help: `${inv} sync (the receipt's pulled.refused_deletions names the token)` });
     if (values.inspect !== undefined || values.resolve !== undefined || values["restore-deletes"]) throw new CliError("USAGE", "--take-host-deletions goes with a plain sync", { help: `${inv} sync --take-host-deletions ${commandToken(take)}` });
   }
   return values;
@@ -455,6 +470,8 @@ async function withSession<T>(
   const locks = filesystemPushRoleLocks(deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {});
   return locks
     .request(checkoutLockName(binding.path), {}, async () => {
+      const currentBinding = await bindingForPath(deps.auth.home, binding.path);
+      if (!currentBinding || currentBinding.checkout_id !== binding.checkout_id || currentBinding.principal_id !== binding.principal_id || !equalJournalValue([currentBinding.origin, currentBinding.routes, currentBinding.bundle_id, currentBinding.workspace_slug ?? null], [binding.origin, binding.routes, binding.bundle_id, binding.workspace_slug ?? null])) throw new CliError("CONFLICT", "checkout binding changed before delivery; nothing was submitted");
       // Sign-in first: AUTH_REQUIRED passes through unchanged with its one link, before any request.
       const { client } = await connectCheckout(binding, { resume: resumeCommand, ...(options.signIn === false ? { signIn: false } : {}) }, deps);
       const unsafeIds = new Map<string, string>();
@@ -463,7 +480,7 @@ async function withSession<T>(
       let projection: ProjectionRecord | undefined;
       try {
         const local = openLocalBundle(binding.checkout_id, { backend: store });
-        const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length;
+        const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length + (await store.listBlobIntents()).filter(row => !row.receipt).length;
         let capabilities: HostedCapabilities;
         try {
           capabilities = await reader.hostedCapabilities();
@@ -480,6 +497,8 @@ async function withSession<T>(
         // anything changes the store, so a crash from here on never leaves it describing a store
         // that moved.
         await recoverPlacements(binding.path, projection);
+        const blobRecovery = await recoverBlobPlacements(binding.path, store, { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null });
+        if (blobRecovery.held.some(row => row.key === null)) throw new CliError("CONFLICT", "unreferenced blob placement evidence needs attention before capture", { details: { reason: "blob_placement_recovery", folder: binding.path }, help: "preserve the staged files and inspect the checkout before syncing" });
         const record = projection;
         const persist = () => writeProjection(deps.auth.home, binding.checkout_id, record);
         await persist();
@@ -811,6 +830,7 @@ async function pushChanges(session: Session, deps: HostedSyncDeps, acceptDeletes
  */
 async function wouldSend(session: Session): Promise<boolean> {
   if ((await session.store.listIntents(UNSETTLED_STATES)).length > 0) return true;
+  if (session.capabilities.blobWrites === "allowed" && (await session.store.listBlobIntents()).some(row => !row.receipt && row.attempts === 0 && (row.state === "pending" || row.state === "unknown"))) return true;
   if (session.capabilities.rootWrites !== "allowed") return false;
   const root = await readRootFile(session.binding.path);
   return root.kind === "file" && digestOf(root.bytes) !== session.projection.root;
@@ -906,29 +926,30 @@ function rowHelp(rows: readonly SyncRow[], binding: CheckoutBinding): string[] {
  * a hook. Accepting a held mass delete is the one step that stays with the person, so the
  * refusal tells the agent to hand the command to them.
  */
-function assertPersonAtTerminal(binding: CheckoutBinding, token: string, terminal: HostedTerminal): void {
+function assertPersonAtTerminal(binding: CheckoutBinding, token: string, terminal: HostedTerminal, family: "documents" | "blobs" = "documents"): void {
   if (terminal.interactive) return;
   const command = syncCommand(binding, commandFragment` --accept-deletes ${commandToken(token)}`);
   throw needsPersonAtTerminal("accepting held deletions needs the person to type a confirmation in their own terminal, and this shell is not interactive; nothing was accepted or sent", String(command), {
     token,
     folder: binding.path,
-    agent_instruction: "Do not retry this or work around it. Name the held documents to the person and ask them to run the command in their own terminal if they want them removed from the bundle; otherwise restore the files.",
+    agent_instruction: family === "blobs" ? "Do not retry this or work around it. Name the held ordinary files and their window allowance to the person; only their terminal confirmation may accept them." : "Do not retry this or work around it. Name the held documents to the person and ask them to run the command in their own terminal if they want them removed from the bundle; otherwise restore the files.",
     command_for_person: command,
-    restore: syncCommand(binding, commandLiteral(" --restore-deletes")),
+    ...(family === "documents" ? { restore: syncCommand(binding, commandLiteral(" --restore-deletes")) } : {}),
   });
 }
 
 /** Ask the person to confirm removing exactly this held set by typing its count. */
-function confirmAtTerminal(binding: CheckoutBinding, terminal: HostedTerminal) {
-  return async (hold: { count: number; ids: readonly string[]; token: string; bundle?: { deletions: number; baseline: number } }): Promise<boolean> => {
+function confirmAtTerminal(binding: CheckoutBinding, terminal: HostedTerminal, family: "documents" | "blobs" = "documents") {
+  return async (hold: { count: number; ids: readonly string[]; token: string; allowance?: number; observations?: { deletions: number; baseline: number }[]; bundle?: { deletions: number; baseline: number } }): Promise<boolean> => {
     const shown = hold.ids.slice(0, 50).map((id) => `  ${id}`);
     const more = hold.ids.length > shown.length ? [`  ... and ${hold.ids.length - shown.length} more`] : [];
     const answer = await terminal.ask(
       [
-        `superbee sync is holding ${hold.count} deleted document(s) in ${binding.path}:`,
+        `superbee sync is holding ${hold.count} deleted ${family === "blobs" ? "ordinary file(s)" : "document(s)"} in ${binding.path}:`,
         ...shown,
         ...more,
-        `Accepting removes them from the hosted bundle '${binding.bundle_id}' for everyone; the host keeps their history.`,
+        family === "blobs" ? `Accepting removes these named files from hosted bundle '${binding.bundle_id}' for everyone. The rolling-window allowance is ${hold.allowance}, distinct from the ${hold.count} named files; the host rechecks its current window.` : `Accepting removes them from the hosted bundle '${binding.bundle_id}' for everyone; the host keeps their history.`,
+        ...(family === "blobs" ? (hold.observations ?? []).map(row => `Historical observed proposed deletions ${row.deletions}, baseline ${row.baseline}; these baselines are not combined into a current count.`) : []),
         ...(hold.bundle ? [`With every deletion in the bundle over the last 24 hours when the host last answered, that is ${hold.bundle.deletions} of the ${hold.bundle.baseline} documents it held; the host counts again when they are sent.`] : []),
         `Type ${hold.count} to remove them, or anything else to keep them held: `,
       ].join("\n"),
@@ -937,10 +958,209 @@ function confirmAtTerminal(binding: CheckoutBinding, terminal: HostedTerminal) {
   };
 }
 
+/** One declared gate owner for ordinary sync and exact-request delivery. */
+async function judgeHostedWrites(session: Session, declared: HostedGateDeclaration, resumeCommand: CommandText, shouldWrite: boolean, unsent: number, pulled?: Record<string, unknown>): Promise<{ gateDetails?: Record<string, unknown>; judgedRoot?: string | null }> {
+  if (declared.kind === "none" || !shouldWrite) return {};
+  const binding = session.binding;
+  if (declared.kind === "unreadable") throw new CliError("GATE_FAILED", `Git could not read ${declared.key} (git config exited ${declared.status}), so a declared sync gate cannot be ruled out; nothing was sent`, {
+    details: { reason: "gate_config_unreadable", folder: binding.path, unsent, gate: { key: declared.key, exit_status: declared.status, ...(declared.stderr ? { output_tail: declared.stderr } : {}) } },
+    help: `fix what git config --get ${commandToken(declared.key)} reports when run from ${binding.path}, then ${resumeCommand}`,
+  });
+  const root = await readRootFile(binding.path), judgedRoot = root.kind === "file" ? digestOf(root.bytes) : null;
+  const judged = await runHostedSyncGate({ folder: binding.path, origin: binding.origin, bundleId: binding.bundle_id }, declared.gate);
+  if (!judged.passed) throw new CliError("GATE_FAILED", `the sync gate ${judged.reason ?? "failed"}; nothing was sent`, {
+    details: { reason: "gate_failed", folder: binding.path, unsent, ...(pulled ? { pulled } : {}), gate: judged.details },
+    help: `run the gate yourself from ${binding.path} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${resumeCommand}`,
+  });
+  return { gateDetails: judged.details, judgedRoot };
+}
+function sessionBlobScope(session: Session): BlobTargetScope {
+  const b = session.binding;
+  return { origin: b.origin, prefix: b.routes, bundleId: b.bundle_id, workspaceSlug: b.workspace_slug ?? null };
+}
+interface BlobDriveRow { request_id: string; key: string; state: "committed" | "conflict" | "refused" | "unknown" | "held"; attempts: number; message?: string; result?: unknown }
+interface BlobDriveReport { kept_local_edits?: string[]; rows: BlobDriveRow[]; counts: Record<BlobDriveRow["state"], number>; deletions_held?: { count: number; token: string; files: string[]; allowance: number; observations: { deletions: number; baseline: number }[]; command: CommandText } }
+function blobAcceptance(scope: BlobTargetScope, rows: readonly BlobIntentRecord[]): { token: string; allowance: number } {
+  const exact = [...rows].sort((a, b) => a.requestId < b.requestId ? -1 : a.requestId > b.requestId ? 1 : 0);
+  const allowance = Math.max(...exact.map(row => row.deletionHold!.deletions - 1)) + exact.length;
+  if (!exact.length || !Number.isSafeInteger(allowance) || allowance < 1 || allowance > 100000) throw new CliError("CONFLICT", "the held ordinary-file window allowance is outside the supported bound; nothing was accepted");
+  return { token: `blobs:${exact.length}:${createHash("sha256").update(JSON.stringify(["superbee.blobs.write-acceptance.v1", scope, exact.map(row => [row.requestId, row.prepared, row.attempts, row.notAppliedThrough, row.deletionHold])])).digest("hex").slice(0, 12)}`, allowance };
+}
+function prefixHeld(row: BlobIntentRecord): boolean {
+  return !row.receipt && (row.state === "pending" || row.state === "unknown") && row.attempts > 0 && row.notAppliedThrough === row.attempts && row.deletionHold !== undefined && decodePreparedBlobIntent(row.prepared).intent.operationId === "blobs.delete.v1";
+}
+/** Existing lock/session and core loop own authority/delivery; this composition owns selection and persistence. */
+async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options: { requestIds?: readonly string[]; acceptToken?: string; gatePresent: boolean; gate: (hasSubmissions: boolean, count: number) => Promise<void> }): Promise<BlobDriveReport> {
+  const scope = sessionBlobScope(session), store = session.store;
+  const all = await store.listBlobIntents(), requested = options.requestIds === undefined ? undefined : new Set(options.requestIds);
+  let selected = all.filter(row => requested ? requested.has(row.requestId) : !row.receipt);
+  if (requested && selected.length !== requested.size) throw new CliError("CONFLICT", "an exact ordinary-file request no longer exists; nothing was submitted");
+  const out: BlobDriveReport = { rows: [], counts: { committed: 0, conflict: 0, refused: 0, unknown: 0, held: 0 } };
+  const report = (row: BlobIntentRecord, message?: string, state?: BlobDriveRow["state"]) => {
+    out.rows.push({ request_id: row.requestId, key: row.target, state: state ?? (row.state === "acknowledged" ? "committed" : row.state === "conflict" || row.state === "refused" ? row.state : prefixHeld(row) || row.attempts === 0 ? "held" : "unknown"), attempts: row.attempts, ...(message ? { message } : {}), ...(row.receipt ? { result: row.receipt.result } : {}) });
+  };
+  const initial = new Map<string, BlobIntentRecord[]>();
+  let expectedMap: BlobSyncSnapshot["map"] | undefined;
+  for (const row of selected) {
+    if (!equalJournalValue(decodePreparedBlobIntent(row.prepared).scope, scope) || !ordinarySeedKey(row.target)) throw new CliError("CONFLICT", `request ${row.requestId} does not match this checkout's ordinary-file scope`);
+    const snapshot = await readBlobSyncState(store, row.target, scope);
+    if (expectedMap && !equalJournalValue(expectedMap, snapshot.map)) throw new JournalGuardConflict(row.target);
+    expectedMap ??= snapshot.map; initial.set(row.target, snapshot.journal.intents);
+  }
+  const heldCandidates: BlobIntentRecord[] = [];
+  for (const row of selected.filter(prefixHeld)) {
+    const intents = initial.get(row.target)!;
+    if (intents.some(other => other.requestId !== row.requestId && !other.receipt) || !await blobFrozenPhysicalMatches(session.binding.path, { map: expectedMap! }, row)) continue;
+    heldCandidates.push(row);
+  }
+  let acceptance: { token: string; allowance: number } | undefined;
+  if (options.acceptToken !== undefined) {
+    const candidates = requested ? [heldCandidates] : [heldCandidates, ...heldCandidates.map(row => [row])];
+    const matches = candidates.filter(rows => rows.length && blobAcceptance(scope, rows).token === options.acceptToken);
+    const unique = new Map(matches.map(rows => [rows.map(row => row.requestId).sort().join(","), rows]));
+    if (unique.size !== 1) {
+      for (const row of selected) report(row, "the blob acceptance token no longer names the exact eligible held set; nothing was submitted", "held");
+      selected = [];
+    } else {
+      selected = [...unique.values()][0]!;
+      acceptance = blobAcceptance(scope, selected);
+      const terminal = deps.terminal ?? processTerminal(); assertPersonAtTerminal(session.binding, options.acceptToken, terminal, "blobs");
+      const accepted = await confirmAtTerminal(session.binding, terminal, "blobs")({ count: selected.length, ids: selected.map(row => row.target), token: options.acceptToken, allowance: acceptance.allowance, observations: selected.map(row => row.deletionHold!) });
+      if (!accepted) { for (const row of selected) report(row, "the person did not confirm this exact held file set", "held"); selected = []; }
+      else {
+        // Reconstruct before claims; no acceptance survives changes during the prompt.
+        const current: BlobIntentRecord[] = [];
+        for (const row of selected) {
+          const snapshot = await readBlobSyncState(store, row.target, scope), actual = snapshot.journal.intents.find(other => other.requestId === row.requestId);
+          if (!actual || !equalJournalValue(snapshot.map, expectedMap) || !equalJournalValue(actual, row) || snapshot.journal.intents.some(other => other.requestId !== row.requestId && !other.receipt) || !await blobFrozenPhysicalMatches(session.binding.path, snapshot, row)) break;
+          current.push(actual);
+        }
+        // A full-set token cannot silently become a subset when another hold appears.
+        // Singleton tokens intentionally remain addressable beside unrelated holds.
+        let fullSetUnchanged = true;
+        if (!requested && selected.length > 1) {
+          const eligibleNow: BlobIntentRecord[] = [];
+          for (const row of (await store.listBlobIntents()).filter(prefixHeld)) {
+            if (!equalJournalValue(decodePreparedBlobIntent(row.prepared).scope, scope)) continue;
+            const snapshot = await readBlobSyncState(store, row.target, scope);
+            if (snapshot.journal.intents.some(other => other.requestId !== row.requestId && !other.receipt) || !await blobFrozenPhysicalMatches(session.binding.path, snapshot, row)) continue;
+            eligibleNow.push(row);
+          }
+          fullSetUnchanged = eligibleNow.length === selected.length && blobAcceptance(scope, eligibleNow).token === options.acceptToken;
+        }
+        if (!fullSetUnchanged || current.length !== selected.length || blobAcceptance(scope, current).token !== options.acceptToken) { for (const row of selected) report(row, "the held set changed during confirmation; nothing was submitted", "held"); selected = []; }
+      }
+    }
+  }
+  const eligible = new Set<string>();
+  for (const row of selected) {
+    if (row.receipt) continue;
+    const fresh = (row.state === "pending" || row.state === "unknown") && (row.notAppliedThrough ?? 0) === row.attempts && (row.attempts === 0 || acceptance !== undefined);
+    if (!fresh || session.capabilities.blobWrites !== "allowed") continue;
+    const intents = initial.get(row.target)!;
+    if (expectedMap!.entries.find(entry => entry.key === row.target)?.placement || intents.some(other => other.requestId !== row.requestId && !other.receipt)) continue;
+    if (options.gatePresent && !await blobFrozenPhysicalMatches(session.binding.path, { map: expectedMap! }, row)) continue;
+    eligible.add(row.requestId);
+  }
+  await options.gate(eligible.size > 0, eligible.size);
+  // Gate mutation of any named premise invalidates all affected candidates before a claim.
+  for (const row of selected) {
+    if (row.receipt) { report(row); continue; }
+    let snapshot: BlobSyncSnapshot;
+    try {
+      snapshot = await readBlobSyncState(store, row.target, scope);
+      if (!equalJournalValue(snapshot.map, expectedMap) || !equalJournalValue(snapshot.journal.intents, initial.get(row.target)!)) throw new JournalGuardConflict(row.target);
+      if ((options.gatePresent && eligible.has(row.requestId) || acceptance !== undefined) && !await blobFrozenPhysicalMatches(session.binding.path, snapshot, row)) { report(row, "the frozen file or MIME no longer matches what was confirmed or judged by the gate", "held"); continue; }
+      const complete = (row.notAppliedThrough ?? 0) === row.attempts;
+      if (complete && !eligible.has(row.requestId)) { report(row, row.attempts > 0 ? "this proven held deletion needs current person confirmation" : "this frozen representation cannot be submitted under current capability, gate or journal premises", "held"); continue; }
+      const fresh = eligible.has(row.requestId);
+      const claimed = fresh ? await store.updateBlobIntent(row.requestId, row.state, { state: "in_flight", attempts: row.attempts + 1 }, { guard: snapshot.journal.guard }) : row;
+      const selectedResult = await performHostedBlobDelivery({ scope, adapterFor: signal => createHostedBlobWriteAdapter({ carrier: session.carrier, bundleId: scope.bundleId, prefix: session.routes, signal, capabilities: () => session.client.reader(scope.bundleId).hostedCapabilities() }) }, claimed, {
+        start: fresh ? "submit-claimed" : "lookup", ...(fresh && acceptance ? { acceptDeletes: acceptance.allowance } : {}),
+        ...(deps.write?.deadlineMs === undefined ? {} : { deadlineMs: deps.write.deadlineMs }), ...(deps.write?.maxLookups === undefined ? {} : { maxLookups: deps.write.maxLookups }), ...(deps.write?.lookupDelayMs === undefined ? {} : { lookupDelayMs: deps.write.lookupDelayMs }), ...(deps.write?.sleep === undefined ? {} : { sleep: deps.write.sleep }), ...(deps.write?.signal === undefined ? {} : { signal: deps.write.signal }),
+      });
+      const after = await readBlobSyncState(store, row.target, scope);
+      if (!equalJournalValue(after.map, expectedMap) || !after.journal.intents.some(actual => equalJournalValue(actual, claimed))) throw new JournalGuardConflict(row.target);
+      let saved: BlobIntentRecord;
+      if (selectedResult.patch.receipt) {
+        const projected = projectBlobSyncReceipt(after.map, claimed, selectedResult.patch);
+        saved = await settleBlobSyncReceipt(store, after, claimed, selectedResult.patch); expectedMap = projected;
+      } else saved = await store.updateBlobIntent(claimed.requestId, claimed.state, selectedResult.patch, { guard: after.journal.guard });
+      report(saved);
+      if (saved.receipt?.result.ok && !await blobFrozenPhysicalMatches(session.binding.path, { ...after, map: expectedMap! }, saved)) (out.kept_local_edits ??= []).push(saved.target);
+    } catch (error) {
+      if (!(error instanceof JournalGuardConflict || error instanceof FileJournalUnavailableError || error instanceof RangeError || error instanceof CliError)) throw error;
+      report((await store.readBlobIntent(row.requestId)) ?? row, "delivery or receipt persistence is incomplete; durable original evidence is preserved", "unknown");
+    }
+  }
+  const currentHeld: BlobIntentRecord[] = [];
+  const reportIds = new Set(out.rows.map(row => row.request_id));
+  for (const row of (await store.listBlobIntents()).filter(row => reportIds.has(row.requestId) && prefixHeld(row))) {
+    const snapshot = await readBlobSyncState(store, row.target, scope);
+    if (!snapshot.journal.intents.some(other => other.requestId !== row.requestId && !other.receipt) && await blobFrozenPhysicalMatches(session.binding.path, snapshot, row)) currentHeld.push(row);
+  }
+  if (currentHeld.length) {
+    const summary = blobAcceptance(scope, currentHeld);
+    out.deletions_held = { count: currentHeld.length, token: summary.token, files: currentHeld.map(row => row.target), allowance: summary.allowance, observations: currentHeld.map(row => row.deletionHold!), command: syncCommand(session.binding, commandFragment` --accept-deletes ${commandToken(summary.token)}`) };
+  }
+  for (const row of out.rows) out.counts[row.state]++;
+  return out;
+}
+
+/** Exact-request command/confirmation path: no scan, pull, export, document push or root write. */
+export async function deliverHostedBlobRequests(binding: CheckoutBinding, requestIds: readonly string[] | undefined, partial: Partial<HostedSyncDeps> = {}, acceptToken?: string, resume?: CommandText): Promise<BlobDriveReport> {
+  const deps = hostedDeps(partial), ids = requestIds === undefined ? undefined : [...requestIds];
+  const resumeCommand = resume ?? syncCommand(binding, acceptToken ? commandFragment` --accept-deletes ${commandToken(acceptToken)}` : commandFragment``);
+  const declared = declaredHostedSyncGate(binding.path);
+  return withSession(binding, deps, resumeCommand, session => driveBlobRequests(session, deps, { ...(ids === undefined ? {} : { requestIds: ids }), ...(acceptToken === undefined ? {} : { acceptToken }), gatePresent: declared.kind !== "none", gate: async (fresh, count) => { await judgeHostedWrites(session, declared, resumeCommand, fresh, count); } }));
+}
+/** Commands enter here only after the offline journal was durably closed. */
+export async function finishAdmittedBlob(admitted: OfflineBlobAdmission, operation: "promote" | "delete", partial: Partial<HostedSyncDeps>, mode: OutputMode, resume: CommandText): Promise<void> {
+  const deps = hostedDeps(partial);
+  let report: BlobDriveReport;
+  try { report = await deliverHostedBlobRequests(admitted.binding, admitted.requestIds, deps, undefined, resume); }
+  catch (error) {
+    if (error instanceof CliError) throw Object.assign(new CliError(error.code, error.message, { details: { ...error.details, request_ids: admitted.requestIds, durable_intent: "preserved", resume }, help: `${error.help ?? "resolve the reported refusal"}; then ${resume}`, handled: error.handled }), { cause: error });
+    throw error;
+  }
+  const failure = blobDeliveryFailure(report), { submitted: _submitted, ...receipt } = admitted.receipt;
+  const result = { ...receipt, [operation]: failure ? "incomplete" : "committed", status: failure ? "incomplete" : "synced", resumed: admitted.resumed, blobs: report, help: report.deletions_held ? [String(report.deletions_held.command)] : failure ? [String(resume)] : [] };
+  deps.stdout(render(result, mode));
+  if (failure) throw receiptFailure(failure, result);
+}
+
+export function blobDeliveryFailure(report: BlobDriveReport): { code: "CONFLICT" | "TRANSIENT"; message: string } | null {
+  if (report.rows.every(row => row.state === "committed") && !report.kept_local_edits?.length) return null;
+  return { code: report.rows.some(row => row.state === "held" || row.state === "conflict" || row.state === "refused") ? "CONFLICT" : "TRANSIENT", message: "ordinary-file delivery is incomplete; preserved requests remain available for recovery" };
+}
+
+async function blobCaptureContext(session: Session, deps: HostedSyncDeps): Promise<BlobCaptureContext | undefined> {
+  if (await session.store.readMeta(BLOB_SYNC_META_KEY) === undefined) return undefined;
+  const { binding } = session, via = resolveHostedVia(deps.auth.env).token;
+  return { store: session.store, scope: { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null }, binding: checkoutBindingDigest(binding.checkout_id), ...(via === undefined ? {} : { via }), createdAt: new Date(deps.auth.now()).toISOString(), allowed: session.capabilities.blobWrites === "allowed" };
+}
+
+function blobRefresh(session: Session, acceptToken?: string): Promise<BlobRefreshReport | undefined> {
+  const { binding } = session;
+  return refreshBlobCheckout({ folder: binding.path, store: session.store, scope: { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null }, carrier: session.carrier, capabilities: async () => session.capabilities, ...(acceptToken?.startsWith("blobs:") ? { acceptToken } : {}) });
+}
+function blobPulledView(report: BlobRefreshReport): Record<string, unknown> {
+  return { refreshed: report.refreshed.length, removed: report.removed.length, metadata_updated: report.metadataUpdated.length,
+    ...(report.kept.length ? { kept_local_edits: [...new Set(report.kept)].slice(0, 20) } : {}),
+    ...(report.refused ? { refused_deletions: { reason: report.refused.reason, count: report.refused.deletions, token: blobHostDeletionsToken(report.refused), message: "The host's ordinary-file listing would remove an unusually large set; none of these files were removed. Confirm the bundle really shrank before taking the host deletions." } } : {}) };
+}
+
 async function runSync(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
   const limit = rowLimit(values.limit);
   const resumeCommand = syncCommand(binding, values.json ? commandLiteral(" --json") : commandFragment``);
   const acceptDeletes = values["accept-deletes"];
+  if (acceptDeletes?.startsWith("blobs:")) {
+    const report = await deliverHostedBlobRequests(binding, undefined, deps, acceptDeletes);
+    const failure = blobDeliveryFailure(report);
+    deps.stdout(render(withSyncEnvelope({ sync: "hosted", bundle_id: binding.bundle_id, host: binding.origin, folder: binding.path, status: failure ? "incomplete" : "synced", blobs: report }, syncEnvelope("hosted", { sent: report.counts.committed, received: 0, conflicts: report.counts.conflict, held: report.counts.held, next: report.deletions_held ? [String(report.deletions_held.command)] : [] })), mode));
+    if (failure) throw receiptFailure(failure, { blobs: report });
+    return;
+  }
   const terminal = deps.terminal ?? processTerminal();
   if (acceptDeletes !== undefined) assertPersonAtTerminal(binding, acceptDeletes, terminal);
   // F8: private state copied into the checkout refuses the run before anything is journaled or sent.
@@ -955,6 +1175,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // push is live, and each such change is looked up before it is ever sent again.
     await reclaimInFlight(local);
     const scan = await scanCheckout({
+      blobs: await blobCaptureContext(session, deps),
       folder: binding.path,
       bundleId: binding.bundle_id,
       okfVersion: session.okfVersion,
@@ -969,7 +1190,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     const unsent = async () => (await store.listIntents(UNSETTLED_STATES)).length;
     // `--take-host-deletions` names the refusal the last pull recorded; it applies only while the
     // host still lists exactly the state that was refused, so a listing that moved is refused anew.
-    const lastRefused = takeHostDeletions !== undefined ? await lastRefusedDeletions(store) : undefined;
+    const lastRefused = takeHostDeletions !== undefined && !takeHostDeletions.startsWith("blobs:") ? await lastRefusedDeletions(store) : undefined;
     const accepted = lastRefused !== undefined && hostDeletionsToken(lastRefused) === takeHostDeletions ? lastRefused : undefined;
     let taken: Record<string, unknown> | undefined;
     const pullAndExport = async (acceptRefusedDeletions?: DeletionRefusal) => {
@@ -986,7 +1207,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     };
     // Push always follows a pull in the same run, so nothing is sent against a stale listing.
     const first = await pullAndExport(accepted);
-    if (takeHostDeletions !== undefined) {
+    const blobs = await blobRefresh(session, takeHostDeletions);
+    if (takeHostDeletions !== undefined && !takeHostDeletions.startsWith("blobs:")) {
       taken =
         accepted === undefined
           ? { taken: false, message: `the token given (${JSON.stringify(takeHostDeletions)}) does not name the host deletions the last sync refused${lastRefused ? ` (${hostDeletionsToken(lastRefused)})` : " (none is recorded)"}; nothing was removed` }
@@ -994,41 +1216,16 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
             ? { taken: false, message: "the host's listing changed since that refusal, so nothing was removed; check the new refused_deletions" }
             : { taken: true, removed: first.placed.removed.length, message: "the host's deletions were taken: their files are removed from the folder, apart from files you edited" };
     }
+    if (takeHostDeletions?.startsWith("blobs:")) taken = { taken: blobs?.taken === true, removed: blobs?.removed.length ?? 0, message: blobs?.taken ? "the confirmed ordinary-file deletions were taken where the files remained clean" : "the blob token does not authorize this current deletion set; check pulled.blobs.refused_deletions if present, or run sync without that token to use ordinary deletion policy" };
     await recordPulled(deps.auth.home, binding.checkout_id);
     // The declared sync gate judges the folder after the pull placed the host's changes and before
     // anything is sent: a failure sends nothing, no document and no front page.
     let gateDetails: Record<string, unknown> | undefined;
-    // The front page's bytes as the gate judged them: the root step sends only those.
     let judgedRoot: string | null | undefined;
-    if (declared.kind !== "none" && (await wouldSend(session))) {
-      if (declared.kind === "unreadable") {
-        throw new CliError("GATE_FAILED", `Git could not read ${declared.key} (git config exited ${declared.status}), so a declared sync gate cannot be ruled out; nothing was sent`, {
-          details: {
-            reason: "gate_config_unreadable",
-            folder: binding.path,
-            unsent: await unsent(),
-            gate: { key: declared.key, exit_status: declared.status, ...(declared.stderr ? { output_tail: declared.stderr } : {}) },
-          },
-          help: `fix what git config --get ${commandToken(declared.key)} reports when run from ${binding.path}, then ${resumeCommand}`,
-        });
-      }
-      const root = await readRootFile(binding.path);
-      judgedRoot = root.kind === "file" ? digestOf(root.bytes) : null;
-      const judged = await runHostedSyncGate({ folder: binding.path, origin: binding.origin, bundleId: binding.bundle_id }, declared.gate);
-      if (!judged.passed) {
-        throw new CliError("GATE_FAILED", `the sync gate ${judged.reason ?? "failed"}; nothing was sent`, {
-          details: {
-            reason: "gate_failed",
-            folder: binding.path,
-            unsent: await unsent(),
-            pulled: pulledView(binding, first.report, first.placed.placed, first.placed.removed, first.placed.kept),
-            gate: judged.details,
-          },
-          help: `run the gate yourself from ${binding.path} (git config --get ${SYNC_GATE_CONFIG}), fix what it reports, then ${resumeCommand}`,
-        });
-      }
-      gateDetails = judged.details;
-    }
+    const blobOutcome = await driveBlobRequests(session, deps, { gatePresent: declared.kind !== "none", gate: async (fresh, count) => {
+      const judged = await judgeHostedWrites(session, declared, resumeCommand, fresh || await wouldSend(session), await unsent() + count, { ...pulledView(binding, first.report, first.placed.placed, first.placed.removed, first.placed.kept), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) });
+      gateDetails = judged.gateDetails; judgedRoot = judged.judgedRoot;
+    } });
     let outcome: PushOutcome;
     const heldSink: { value?: { deletions: number; baseline: number } } = {};
     try {
@@ -1080,7 +1277,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       unsettled: await store.listIntents(UNSETTLED_STATES),
       acknowledged: outcome.acknowledged,
       deleted: inbound,
-      held: [...scan.held, ...exported.held, ...unsafeIdRows(session.unsafeIds)],
+      held: [...scan.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.id && blob.key === row.path)), ...exported.held, ...(blobs?.held.filter(row => !blobOutcome.rows.some(blob => blob.key === row.key)).map(row => ({ id: row.key, path: row.key, reason: row.reason, message: row.message })) ?? []), ...unsafeIdRows(session.unsafeIds)],
       blocked: outcome.collisions,
       accessWithdrawn: outcome.accessWithdrawn,
       notSent: outcome.notSent,
@@ -1093,8 +1290,8 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       bundle_id: binding.bundle_id,
       host: binding.origin,
       folder: binding.path,
-      status: rows.every((row) => row.state === "committed") ? (rows.length === 0 ? "up_to_date" : "synced") : "incomplete",
-      pulled: pulledView(binding, pulled, exported.placed, exported.removed, exported.kept),
+      status: rows.every((row) => row.state === "committed") && blobDeliveryFailure(blobOutcome) === null ? (rows.length === 0 && blobOutcome.rows.length === 0 ? "up_to_date" : "synced") : "incomplete",
+      pulled: { ...pulledView(binding, pulled, exported.placed, exported.removed, exported.kept), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) },
       ...(taken ? { take_host_deletions: taken } : {}),
       ...(hold
         ? {
@@ -1124,10 +1321,13 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
         : {}),
       ...(gateDetails ? { gate: `passed: ${String(gateDetails.command)} (attempt ${String(gateDetails.attempt)})` } : {}),
       counts,
+      ...(blobOutcome.rows.length ? { blobs: blobOutcome } : {}),
       rows: shown,
       ...(shown.length < rows.length ? { rows_shown: shown.length, rows_total: rows.length, rows_all: syncCommand(binding, commandFragment` --limit ${commandToken(String(rows.length))}`) } : {}),
       help: [
         ...rowHelp(rows, binding),
+        ...(blobOutcome.deletions_held ? [String(blobOutcome.deletions_held.command)] : []),
+        ...(blobs?.refused ? [`only if the ordinary-file set really shrank: ${syncCommand(binding, commandFragment` --take-host-deletions ${commandToken(blobHostDeletionsToken(blobs.refused))}`)}`] : []),
         ...(pulled.refused ? [`only if the bundle really shrank: ${syncCommand(binding, commandFragment` --take-host-deletions ${commandToken(hostDeletionsToken(pulled.refused))}`)}`] : []),
       ],
     };
@@ -1138,7 +1338,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       });
       return null;
     }
-    const exit = rowsFailure(rows);
+    const exit = rowsFailure(rows, blobs !== undefined) ?? blobDeliveryFailure(blobOutcome);
     if (exit) failure = receiptFailure(exit, { counts });
     return record;
   });
@@ -1150,13 +1350,15 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
 function hostedSyncEnvelope(receipt: Record<string, unknown>): SyncEnvelope {
   const counts = (receipt.counts ?? {}) as Record<string, number | undefined>;
   const pulled = (receipt.pulled ?? {}) as Record<string, number | undefined>;
+  const blobs = (receipt.pulled as { blobs?: { refreshed: number; removed: number; metadata_updated: number } } | undefined)?.blobs;
   const help = Array.isArray(receipt.help) ? receipt.help.map(String) : [];
-  return syncEnvelope("hosted", { sent: counts.committed ?? 0, received: (pulled.refreshed ?? 0) + (pulled.removed ?? 0), conflicts: counts.conflict ?? 0, held: counts.held ?? 0, next: help });
+  const delivered = receipt.blobs as BlobDriveReport | undefined;
+  return syncEnvelope("hosted", { sent: (counts.committed ?? 0) + (delivered?.counts.committed ?? 0), received: (pulled.refreshed ?? 0) + (pulled.removed ?? 0) + (blobs ? blobs.refreshed + blobs.removed + blobs.metadata_updated : 0), conflicts: (counts.conflict ?? 0) + (delivered?.counts.conflict ?? 0), held: (counts.held ?? 0) + (delivered?.counts.held ?? 0), next: help });
 }
 
 /** What a pull-only pass did, or why it did not run. */
 export type HostedPullResult =
-  | { readonly state: "pulled"; readonly refreshed: number; readonly removed: number; readonly kept: number }
+  | { readonly state: "pulled"; readonly refreshed: number; readonly removed: number; readonly kept: number; readonly held?: number; readonly blobs?: Record<string, unknown> }
   | { readonly state: "signed_out" }
   /** The checkout or session lock is held by another command; nothing was done. */
   | { readonly state: "busy" };
@@ -1208,7 +1410,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     const { store, local, reader, projection } = session;
     // As in sync: an interrupted push's claims are looked up before anything could send them.
     await reclaimInFlight(local);
-    await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, definitionWrites: session.capabilities.definitionWrites, documentInputBytes: session.capabilities.documentInputBytes, rootWrites: session.capabilities.rootWrites });
+    const scan = await scanCheckout({ blobs: await blobCaptureContext(session, deps), folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, definitionWrites: session.capabilities.definitionWrites, documentInputBytes: session.capabilities.documentInputBytes, rootWrites: session.capabilities.rootWrites });
     await session.persist();
     let report: PullReport;
     try {
@@ -1219,6 +1421,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     if (report.held.length > 0 || session.unsafeIds.size > 0) await forgetPullDigest(store);
     const placed = await exportCheckout(binding.path, store, projection);
     await session.persist();
+    const blobs = await blobRefresh(session);
     // The front page too: an unedited one takes the host's bytes; nothing is sent.
     let root: RootStepReport;
     try {
@@ -1227,7 +1430,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
       throw await readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
     }
     await recordPulled(deps.auth.home, binding.checkout_id);
-    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length };
+    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length, ...((scan.blobHeld !== undefined || blobs?.held.length) ? { held: new Set([...scan.held.map(row => row.id), ...(blobs?.held.map(row => row.key) ?? [])]).size } : {}), ...(blobs ? { blobs: blobPulledView(blobs) } : {}) };
   }
 }
 
