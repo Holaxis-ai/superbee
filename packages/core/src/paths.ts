@@ -108,7 +108,7 @@ export function assertSafeConceptId(id: ConceptId): void {
 export type NonCanonicalDocumentId = "segment_whitespace" | "format_character" | "not_nfc";
 
 const FORMAT_AT_EDGE = /^\p{Cf}|\p{Cf}$/u;
-const FORMAT_INSIDE = /(?![‌‍])\p{Cf}/u;
+const FORMAT_INSIDE = /(?![\u200c\u200d])\p{Cf}/u;
 
 /**
  * Why a NEW document id is outside its one canonical spelling, or null when it is in it. This

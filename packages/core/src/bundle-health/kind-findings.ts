@@ -16,7 +16,11 @@ import { matchesFilter } from "../query-filter.js";
 import type { OkfDocument } from "../types.js";
 import type { ValidationWarning } from "../validation.js";
 
-/** Who the checked first edit is attributed to. `producer` defaults to `actor`, as a write's does. */
+/**
+ * Who the checked first edit is attributed to. `producer` defaults to `actor`, as a write's does.
+ * On OKF v0.2 a `person:` actor cannot be a producer, so a v0.2 call with a `person:` actor must
+ * pass a `process:` (or `<producer>/<version>`) producer, or the check throws `OkfActorError`.
+ */
 export interface KindWriteIdentity {
   actor: string;
   producer?: string;
