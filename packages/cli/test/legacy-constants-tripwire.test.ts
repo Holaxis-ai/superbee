@@ -30,6 +30,7 @@ import { PAGE_REGISTRY_PREFIX, PAGE_ENTRY_PREFIX } from "@superbee/core/page";
 // Module-internal to core's recipe lifecycle (not on its public API), so read from the source path.
 import { RETIRED_PAGE_TYPE_NAME } from "../../core/src/recipe-lifecycle/legacy-aliases.js";
 import { LEGACY_PAGE_TYPE_NAME } from "../src/legacy-page.js";
+import { LEGACY_PAGE_TYPE_NAME as BUNDLE_HEALTH_LEGACY_PAGE_TYPE_NAME } from "@superbee/core/bundle-health";
 
 // The frozen historical spellings — literals on purpose, imported from NOTHING.
 const FROZEN_LEGACY_REGISTRY_PREFIX = "pages-registry/";
@@ -41,6 +42,7 @@ test("tripwire: the retired kind name core's recipe install probes equals the CL
   // CLI's diagnostics (`status`, authoring hints) flag the same name. Both must name one kind.
   assert.equal(RETIRED_PAGE_TYPE_NAME, FROZEN_LEGACY_KIND_NAME);
   assert.equal(LEGACY_PAGE_TYPE_NAME, RETIRED_PAGE_TYPE_NAME);
+  assert.equal(BUNDLE_HEALTH_LEGACY_PAGE_TYPE_NAME, RETIRED_PAGE_TYPE_NAME);
 });
 
 test("tripwire: core's legacy prefixes still equal the frozen historical spellings", () => {
@@ -50,14 +52,14 @@ test("tripwire: core's legacy prefixes still equal the frozen historical spellin
 
 test("tripwire: the CLI legacy-detection primitive's frozen constants equal core's legacy prefixes", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const legacyModulePath = path.resolve(here, "../src/legacy-page.ts");
+  const legacyModulePath = path.resolve(here, "../../core/src/bundle-health/legacy-page.ts");
   if (!existsSync(legacyModulePath)) {
     // Unit 2 not merged into this tree yet — the core half above still guards the values.
     return;
   }
   // Specifier via a plain-string variable so tsc does not statically require the module to
   // exist on a tree where Unit 2 has not merged yet.
-  const specifier: string = "../src/legacy-page.js";
+  const specifier: string = "../../core/src/bundle-health/legacy-page.js";
   const legacy = (await import(specifier)) as {
     LEGACY_PAGE_REGISTRY_PREFIX: string;
     LEGACY_PAGE_BLOB_PREFIX: string;

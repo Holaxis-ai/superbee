@@ -10,6 +10,7 @@ export const workspaceAliases = {
       // List browser-safe core subpaths before the package root so esbuild does not append the
       // subpath to `index.ts` (which would resolve as the impossible `index.ts/page`).
       "@superbee/core/artifact-contract": r("../core/src/artifact-contract.ts"),
+      "@superbee/core/bundle-health": r("../core/src/bundle-health/index.ts"),
       "@superbee/core/bundle-ops": r("../core/src/bundle-ops.ts"),
       "@superbee/core/filesystem": r("../core/src/filesystem.ts"),
       "@superbee/core/engine": r("../core/src/engine.ts"),

@@ -1,12 +1,12 @@
 /**
  * The backend-touching half of the kind-convention registry: {@link loadKinds}
  * queries a bundle's `conventions/` prefix and builds the registry out of `kinds.ts`'s pure
- * parsing/derivation. Split from `kinds.ts` ONLY by dependency weight — `kinds.ts` is the
- * browser-safe `@superbee/core/kinds` subpath (browser-safe value imports), while this module may
- * pull the engine (`query` -> backends -> node built-ins). One registry, two entry weights.
+ * parsing/derivation. Split from `kinds.ts` by what it reads: `kinds.ts` is pure, while this module
+ * reads a bundle through `bundle-ops.ts`'s runtime-neutral delegation, never the Node entry, so it
+ * stays browser-safe (`@superbee/core/bundle-health` runs it in any runtime). One registry.
  */
 import { MalformedDocumentError } from "./frontmatter-contract.js";
-import { query, readBundleOkfVersion } from "./bundle.js";
+import { query, readBundleOkfVersion } from "./bundle-ops.js";
 import {
   CONVENTIONS_PREFIX,
   CONVENTION_TYPE,

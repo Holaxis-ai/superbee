@@ -1,50 +1,13 @@
-// One home for the retired `Page` kind name and `bridge` access-field spelling. The runtime no
-// longer recognizes either name: Page-typed docs do not register, and bridge-only docs resolve to
-// `access: none`. Legacy folder locations remain valid, and the migration script rewrites the
-// retired names in place.
+// The CLI's authoring policy for the retired `Page` kind name. The runtime no longer recognizes it:
+// Page-typed docs do not register, and bridge-only docs resolve to `access: none`. Legacy folder
+// locations remain valid, and the migration script rewrites the retired names in place.
 //
-// These literals cannot come from the live core grammar because diagnostics must recognize stock
-// that the runtime deliberately rejects. Authoring commands use them for a non-blocking success
-// hint; `status` uses them for the `legacy_naming` report. Keep the predicates centralized here so
-// those surfaces cannot drift.
+// The frozen literal and its predicate live with the health report that diagnoses them
+// (`@superbee/core/bundle-health`, which `status` renders); authoring commands use them here for a
+// non-blocking success hint, and `new` refuses to scaffold from the known shipped convention.
+import { LEGACY_PAGE_TYPE_NAME, isLegacyPageDoc } from "@superbee/core/bundle-health";
 
-/** The retired legacy kind name, frozen as a historical fact (see the module comment). */
-export const LEGACY_PAGE_TYPE_NAME = "Page";
-
-/**
- * True when this frontmatter declares the LEGACY kind name: `type` exactly `"Page"` — the same
- * EXACT-match strictness core's grammar applies (`isPageTypeName`, `core/src/page.ts`). No
- * trimming: YAML plain scalars are whitespace-trimmed by the YAML parser itself, so a value that
- * reaches consumers with surrounding whitespace was deliberately QUOTED (`type: " Page "`) —
- * that was never a registration, and this predicate agrees it is not legacy.
- */
-export function isLegacyPageDoc(frontmatter: Record<string, unknown>): boolean {
-  return frontmatter["type"] === LEGACY_PAGE_TYPE_NAME;
-}
-
-/**
- * True when this frontmatter carries an OWN legacy `bridge` field on a View-kind doc (current
- * `View` or legacy `Page` spelling). Scope mirrors the migration script's `planDocChange`:
- * `bridge` is only the View kind's legacy capability spelling, not a reserved word — a doc of any
- * OTHER type carrying `bridge` is ordinary user data and is never flagged. Own-property-gated for
- * the same reason core's `declaredAccessValue` is.
- */
-export function hasLegacyBridgeField(frontmatter: Record<string, unknown>): boolean {
-  const viewKind = frontmatter["type"] === LEGACY_PAGE_TYPE_NAME || frontmatter["type"] === "View";
-  return viewKind && Object.hasOwn(frontmatter, "bridge");
-}
-
-/**
- * True when this frontmatter IS a convention declaring the retired legacy kind name (`type:
- * Convention` governing exactly `Page` — the same exact match the migration script's
- * Page-convention deletion applies). A stale one is silent scaffolding: `kinds` advertises the
- * dead name and kind-aware authoring would produce runtime-ignored docs, so `status` flags it
- * loudly and `new` refuses to scaffold from the KNOWN SHIPPED form (see
- * {@link isKnownShippedLegacyPageConvention}).
- */
-export function isLegacyPageConvention(frontmatter: Record<string, unknown>): boolean {
-  return frontmatter["type"] === "Convention" && frontmatter["governs"] === LEGACY_PAGE_TYPE_NAME;
-}
+export { LEGACY_PAGE_TYPE_NAME, isLegacyPageDoc };
 
 /**
  * The SHIPPED legacy Page-convention field signature(s), frozen as historical facts (the form
@@ -82,32 +45,6 @@ export function isKnownShippedLegacyPageConvention(kind: {
       sameList(kind.fields.optional, form.optional) &&
       sameList(kind.fields.values["bridge"] ?? [], form.bridgeValues),
   );
-}
-
-/**
- * The legacy id prefixes, frozen as historical facts (they mirror the legacy-location values
- * core's grammar still accepts; a LEGACY constant can never change by definition, so this is
- * deliberately not an import from the live grammar — `legacy-constants-tripwire.test.ts` pins
- * the two sides equal by assertion instead).
- */
-export const LEGACY_PAGE_REGISTRY_PREFIX = "pages-registry/";
-export const LEGACY_PAGE_BLOB_PREFIX = "pages/";
-
-/**
- * INFORMATIONAL, STORE-AWARE classifiers: registry docs live in the CONCEPT-DOC store and are
- * legacy only under `pages-registry/`; entries live in the BLOB store and are legacy only under
- * `pages/`. The split matters — an unrelated concept doc at e.g. `pages/manual` is NOT a legacy
- * item (the legacy doc prefix is the registry one), so a cross-store check would over-count.
- * Old-prefix LOCATIONS remain fully recognized — a `true` here is REPORTED (the `status`
- * legacy_naming section), never warned about or acted on.
- */
-export function isLegacyRegistryDocId(id: string): boolean {
-  return id.startsWith(LEGACY_PAGE_REGISTRY_PREFIX);
-}
-
-/** See {@link isLegacyRegistryDocId} — the blob-store half. */
-export function isLegacyEntryBlobKey(key: string): boolean {
-  return key.startsWith(LEGACY_PAGE_BLOB_PREFIX);
 }
 
 /**
