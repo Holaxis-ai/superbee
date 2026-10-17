@@ -5,6 +5,8 @@
 import { homedir } from "node:os";
 
 import type { CommandText } from "../command-text.js";
+import type { HostedIdentity } from "@superbee/core/hosted-client";
+
 import type { HostedTarget } from "../hosted-auth/discovery.js";
 import type { HostedAccountDeps } from "./account.js";
 import type { CheckoutBinding } from "./binding.js";
@@ -13,6 +15,8 @@ import type { HostedSyncClient } from "./client.js";
 export interface CheckoutConnection {
   readonly client: HostedSyncClient;
   readonly target: HostedTarget;
+  /** Who the checkout's person is, as the host answered the identity check. */
+  readonly identity: HostedIdentity;
   /** The command that repeats this one, carried on an AUTH_REQUIRED. */
   readonly resume: CommandText;
 }
@@ -20,6 +24,6 @@ export interface CheckoutConnection {
 /** `home` is the directory whose private state holds the session when `hosted` is not given (default: the OS home). */
 export async function openCheckoutConnection(binding: CheckoutBinding, hosted: HostedAccountDeps | undefined, resume: CommandText, home: string = homedir()): Promise<CheckoutConnection> {
   const [{ connectCheckout }, { defaultHostedAuthDeps }] = await Promise.all([import("./account.js"), import("../hosted-auth/session.js")]);
-  const { client, target } = await connectCheckout(binding, { resume }, hosted ?? { auth: defaultHostedAuthDeps(home) });
-  return { client, target, resume };
+  const { client, target, identity } = await connectCheckout(binding, { resume }, hosted ?? { auth: defaultHostedAuthDeps(home) });
+  return { client, target, identity, resume };
 }

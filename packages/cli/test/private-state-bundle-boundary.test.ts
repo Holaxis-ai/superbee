@@ -584,6 +584,23 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     // benign run cannot exit 0; hosted-op.test.ts runs it in a checkout.
     controlSkip: "a local bundle answers op run NOT_IMPLEMENTED (exit 2); hosted-op.test.ts covers the checkout run",
   },
+  ...(
+    [
+      ["notify", ["notify", "self", "probe"]],
+      ["inboxList", ["inbox", "list"]],
+      ["inboxThreads", ["inbox", "threads"]],
+      ["inboxOpen", ["inbox", "open", "item-1"]],
+      ["inboxAck", ["inbox", "ack", "item-1"]],
+      ["inboxCancel", ["inbox", "cancel", "item-1"]],
+    ] as const
+  ).map(([leaf, words]) => ({
+    leaf,
+    surface: "--dir",
+    argv: (t: string) => [...words, "--dir", t, "--json"],
+    // Notifications are hosted-only: a local bundle answers NOT_IMPLEMENTED (exit 2), so the
+    // benign run cannot exit 0; hosted-notify.test.ts runs them in a checkout.
+    controlSkip: "a local bundle answers notify and inbox NOT_IMPLEMENTED (exit 2); hosted-notify.test.ts covers the checkout runs",
+  })),
   { leaf: "docDelete", surface: "--dir", argv: (t) => ["doc", "delete", "probe/absent", "--dir", t, "--json"] },
   { leaf: "list", surface: "--dir", argv: (t) => ["list", "--dir", t, "--json"] },
   { leaf: "query", surface: "--dir", argv: (t) => ["query", "--dir", t, "--json"] },

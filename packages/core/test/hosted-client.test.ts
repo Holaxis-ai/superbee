@@ -203,6 +203,7 @@ test("whoami: the golden identity, its workspaces' slugs and the stated write bo
     workspaces: [{ tenantId: "tenant:a", slug: "tenant-a" }],
     documentInputBytes: 983040,
     email: null,
+    targetAuthorityKey: "orgs",
   });
   assert.deepEqual(sent, [{ path: "/sync/v1/whoami", body: {}, authorization: "Bearer token-1" }]);
 });
@@ -214,6 +215,15 @@ test("whoami: a host from before qualified references names no slugs", async () 
   assert.deepEqual(identity.workspaces, [{ tenantId: "a", slug: null }, { tenantId: "b", slug: null }]);
   assert.equal(identity.documentInputBytes, null);
   assert.equal(identity.email, "p@example.com");
+  // A host that states no target authority key: still an identity, with none.
+  assert.equal(identity.targetAuthorityKey, null);
+});
+
+test("whoami: a target authority key no document target can carry reads as none", async () => {
+  for (const targetAuthorityKey of ["", "a/b", "a\\b", "has space", 7, "x".repeat(257)]) {
+    const { fetch } = host(() => json({ principalId: "p", tenantIds: ["a"], targetAuthorityKey }));
+    assert.equal((await clientOf(fetch).whoami()).targetAuthorityKey, null, JSON.stringify(targetAuthorityKey));
+  }
 });
 
 test("bundles: the golden list's rows, and readBundleListing over them", async () => {

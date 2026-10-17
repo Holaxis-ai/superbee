@@ -137,6 +137,11 @@ export interface HostedIdentity {
   readonly documentInputBytes: number | null;
   /** The person's email, when the host names one (null otherwise). */
   readonly email: string | null;
+  /**
+   * The deployment's document target authority key (`targetAuthorityKey`), the `authorityKey` a
+   * hosted document target names; null when the host states none or states one no target can carry.
+   */
+  readonly targetAuthorityKey: string | null;
 }
 
 export interface HostedWorkspace {
@@ -357,7 +362,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     signal,
     async whoami() {
       const route = `${prefix}/whoami`;
-      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown; workspaces?: unknown; limits?: unknown; email?: unknown } | undefined;
+      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown; workspaces?: unknown; limits?: unknown; email?: unknown; targetAuthorityKey?: unknown } | undefined;
       if (
         typeof body?.principalId !== "string" ||
         body.principalId === "" ||
@@ -391,6 +396,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
         workspaces: tenantIds.map((tenantId) => ({ tenantId, slug: slugs.get(tenantId) ?? null })),
         documentInputBytes: statedDocumentInputBytes(body.limits),
         email: typeof body.email === "string" && /^[^\s\p{Cc}\p{Cf}]{3,320}$/u.test(body.email) ? body.email : null,
+        targetAuthorityKey: isAuthorityKey(body.targetAuthorityKey) ? body.targetAuthorityKey : null,
       };
     },
     async bundles() {
@@ -447,6 +453,11 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
       return decodeOperationRun(operationId, answer.body, route);
     },
   };
+}
+
+/** The document target decoder's key rule: printable ASCII without a slash or backslash, at most 256 characters. */
+function isAuthorityKey(value: unknown): value is string {
+  return typeof value === "string" && /^[\x21-\x7e]{1,256}$/.test(value) && !/[\\/]/.test(value);
 }
 
 /** The sync family's answer to a route it does not have: `404 {"error":"not_found"}`, nothing else. */
