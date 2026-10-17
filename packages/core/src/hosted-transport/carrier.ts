@@ -196,6 +196,11 @@ function idleBounded(body: ReadableStream<Uint8Array>, deadlineMs: number, abort
       flush() {
         clearTimeout(timer);
       },
+      // A consumer that stops reading, or a body that fails, never reaches flush; a live timer
+      // would hold the process open for the rest of the deadline.
+      cancel() {
+        clearTimeout(timer);
+      },
     }),
   );
 }

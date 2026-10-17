@@ -821,6 +821,32 @@ test("intent-kind guard: document.create and document.replace that agree with th
 
 // ── the fetch carrier ──────────────────────────────────────────────────────────────────────
 
+test("fetch carrier: a stream that is cancelled or fails mid-body leaves no idle timer behind", async () => {
+  const timers = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+  const bodies = [
+    new ReadableStream<Uint8Array>({ start: (controller) => controller.enqueue(new Uint8Array([1])) }),
+    new ReadableStream<Uint8Array>({ start: (controller) => controller.enqueue(new Uint8Array([1])), pull: (controller) => controller.error(new Error("reset")) }),
+  ];
+  const fetcher = (async () => new Response(bodies.shift()!, { status: 200 })) as typeof fetch;
+  const carrier = createFetchCarrier({ baseUrl: "https://host.example", fetch: fetcher, deadlineMs: 5_000, credentials: async () => ({}) });
+  const before = timers();
+
+  // A consumer that refuses the export partway, as a too-large or stopped download does.
+  const cancelled = await carrier.stream("/sync/v1/export", {}, new AbortController().signal);
+  assert.equal(cancelled.ok, true);
+  const reader = (cancelled.body as ReadableStream<Uint8Array>).getReader();
+  assert.deepEqual((await reader.read()).value, new Uint8Array([1]));
+  assert.equal(timers(), before + 1);
+  await reader.cancel("too large");
+  assert.equal(timers(), before);
+
+  const failed = await carrier.stream("/sync/v1/export", {}, new AbortController().signal);
+  const failing = (failed.body as ReadableStream<Uint8Array>).getReader();
+  await failing.read();
+  await assert.rejects(failing.read());
+  assert.equal(timers(), before);
+});
+
 test("fetch carrier: credential, identity and binding headers ride every request; no credential sends nothing; an oversize answer is unavailable", async () => {
   const seen: Request[] = [];
   const fetcher = (async (url: URL, init: RequestInit) => {
