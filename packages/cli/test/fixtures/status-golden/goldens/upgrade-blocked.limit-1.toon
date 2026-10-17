@@ -1,0 +1,39 @@
+home: local
+sync: none (local only)
+docs: 6
+kinds: 2
+malformed: 0
+kind_warnings: 0
+unresolved_links: 1
+orphans: 0
+stale: 0
+no_timestamp: 0
+registry_warnings: 0
+link_type_violations: 0
+missing_expected_links: 0
+conformance_debt: 0
+okf_upgrade:
+  current_version: "0.1"
+  target_version: "0.2"
+  readiness: blocked
+  blocker: workflow_status_collision
+  recommended_logical_field: progress_status
+  status_field_kinds: 2
+  affected_documents: 4
+  status_field_rows:
+    shown: 1
+    total: 2
+    rows[1]:
+      - kind: Release
+        convention: conventions/release
+        declaration: enumerated
+        incompatible_values[2]: planned,published
+        observed_incompatible_values[2]: planned,published
+        affected_documents: 2
+  note: "This bundle remains a supported OKF v0.1 bundle. Superbee can author and mutate v0.2, but changing index.md alone is not a migration: OKF v0.2 reserves top-level status for draft|stable|deprecated, while the listed kinds use it for workflow state."
+  help[2]: "Model workflow progress as logical progress_status across conventions, documents, Views, and saved queries before changing okf_version.",Superbee does not currently perform this multi-file migration automatically.
+unresolved:
+  shown: 1
+  total: 1
+  rows[1]{from,href}:
+    tickets/t2,t3.md

@@ -26,15 +26,18 @@ import { readFile } from "node:fs/promises";
 import { parseMarkdown } from "@superbee/core";
 
 import {
-  hasLegacyBridgeField,
-  isLegacyPageConvention,
   isLegacyPageDoc,
-  isLegacyEntryBlobKey,
-  isLegacyRegistryDocId,
   isKnownShippedLegacyPageConvention,
   KNOWN_SHIPPED_LEGACY_PAGE_CONVENTION_FORMS,
   LEGACY_PAGE_TYPE_HINT,
 } from "../src/legacy-page.js";
+// Module-internal to core's bundle health report (not on its public API), so read from the source path.
+import {
+  hasLegacyBridgeField,
+  isLegacyPageConvention,
+  isLegacyEntryBlobKey,
+  isLegacyRegistryDocId,
+} from "../../core/src/bundle-health/legacy-page.js";
 import { doc } from "../src/commands/doc.js";
 import { newCommand } from "../src/commands/new.js";
 import { promote } from "../src/commands/promote.js";

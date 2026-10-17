@@ -3,7 +3,7 @@
  * reports never disagree on key names or order. Highest tier first: the signal a reader wants is
  * "how much of this bundle has a human behind it".
  */
-import { trustTierCounts, type OkfDocument } from "@superbee/core";
+import { trustTierCounts, type OkfDocument, type TrustTierCounts } from "@superbee/core";
 
 export interface TrustCountsRow {
   human_reviewed: number;
@@ -20,7 +20,11 @@ export function trustCountsRow(
   docs: ReadonlyArray<Pick<OkfDocument, "frontmatter">>,
 ): TrustCountsRow | undefined {
   if (okfVersion !== "0.2" || docs.length === 0) return undefined;
-  const counts = trustTierCounts(docs);
+  return trustCountsRowFromCounts(trustTierCounts(docs));
+}
+
+/** Core's trust-tier counts (as the bundle health report carries them) in the CLI's key names and order. */
+export function trustCountsRowFromCounts(counts: TrustTierCounts): TrustCountsRow {
   return {
     human_reviewed: counts["human-reviewed"],
     machine_confirmed: counts["machine-confirmed"],

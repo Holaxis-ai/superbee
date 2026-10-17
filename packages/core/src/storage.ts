@@ -30,9 +30,11 @@ export {
   compareStorageKeys,
   conceptIdFromPath,
   isReservedFile,
+  nonCanonicalDocumentId,
   pathFromConceptId,
   toPosix,
 } from "./paths.js";
+export type { NonCanonicalDocumentId } from "./paths.js";
 export { VersionConflict, isContentVersion, stripETagWrapper } from "./version-transport.js";
 // The journaled-backend seam: what an adapter adds to `StorageBackend` to host a browser-local
 // working copy's intent journal. Runtime-neutral, like the seam it extends.

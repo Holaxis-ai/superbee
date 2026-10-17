@@ -55,6 +55,10 @@
       "types": "./dist/record-overlay/index.d.ts",
       "default": "./dist/record-overlay/index.js"
     },
+    "./bundle-health": {
+      "types": "./dist/bundle-health/index.d.ts",
+      "default": "./dist/bundle-health/index.js"
+    },
     "./kinds": {
       "types": "./dist/kinds.d.ts",
       "default": "./dist/kinds.js"

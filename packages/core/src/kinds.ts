@@ -20,8 +20,9 @@
  * convention-doc (de)serialization) is dependency-free — this module carries ONLY that, and is
  * exported as the browser-safe `@superbee/core/kinds` subpath (the ui shell's bridge
  * `open` filter consumes `isTerminal` there; a browser bundler must never be dragged through the
- * engine's node built-ins for a pure predicate). The one backend-touching entry point,
- * `loadKinds`, lives in `kinds-load.ts` — same ONE registry, split only by dependency weight.
+ * engine's node built-ins for a pure predicate). The bundle read, `loadKinds`, lives in
+ * `kinds-load.ts`, which reads through `bundle-ops.ts` and is browser-safe too: the split is
+ * between pure parsing and the bundle read, over the same ONE registry.
  */
 import { isOkfLifecycleStatus, OKF_LIFECYCLE_STATUSES } from "./okf-lifecycle.js";
 import { isUsableTimestamp } from "./frontmatter.js";

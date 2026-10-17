@@ -20,7 +20,8 @@
  * read/decide/CAS document mutation path; `uncertain-write` is the shared unknown-outcome
  * primitive its sync component pushes intents through, and `remote-operations` the transport
  * that carries those intents to a wire authority as identified writes; `platform` is the
- * contract a presentation programs against above both execution modes.
+ * contract a presentation programs against above both execution modes. `bundle-health` is the
+ * status report a browser host computes in process, and `kinds-load` the registry load it runs.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -67,6 +68,8 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "hosted-client/index.js", symbol: "createHostedClient" },
   { module: "recipe-lifecycle/index.js", symbol: "planRecipeEvolution" },
   { module: "record-overlay/index.js", symbol: "planRecordOverlay" },
+  { module: "kinds-load.js", symbol: "loadKinds" },
+  { module: "bundle-health/index.js", symbol: "bundleHealth" },
 ];
 
 for (const { module, symbol } of BROWSER_SUBPATHS) {
@@ -402,6 +405,71 @@ test("core/record-overlay plans and applies over MemoryBackend in a sandbox with
   assert.equal(inSandbox.signals, 2);
   assert.deepEqual(inSandbox.plan, inNode.plan, "the sandbox plan equals Node's: ids, digests, versions and redaction");
   assert.ok(!JSON.stringify(inSandbox.plan.steps.filter((s) => s.op === "create-signal")).includes("sandbox-secret"));
+});
+
+test("core/bundle-health computes a report and the Kind findings over MemoryBackend in a sandbox with only TextEncoder and TextDecoder, matching Node's", async () => {
+  const result = await build({
+    stdin: {
+      contents: [
+        'export { bundleHealth, bundleKindFindings } from "./bundle-health/index.js";',
+        'export { MemoryBackend } from "./memory-backend.js";',
+      ].join("\n"),
+      resolveDir: path.resolve(here, "../dist"),
+      loader: "js",
+    },
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    globalName: "SuperbeeHealth",
+    write: false,
+    logLevel: "silent",
+  });
+  assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 2));
+  const sandbox: Record<string, unknown> = { TextEncoder, TextDecoder };
+  assert.equal(runInNewContext("typeof process", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof Buffer", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof require", sandbox), "undefined");
+  runInNewContext("globalThis.structuredClone = (value) => JSON.parse(JSON.stringify(value));", sandbox);
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+
+  // No Node entry ran in the sandbox, so a bare { root } has no filesystem default to fall back on.
+  const refusal = (await runInNewContext(
+    "SuperbeeHealth.bundleHealth({ root: '/nowhere' }).then(() => null, (error) => ({ name: error.name }))",
+    sandbox,
+  )) as { name: string } | null;
+  assert.equal(refusal?.name, "InvalidInputError");
+
+  // The same scenario runs in Node from source; the reports must agree.
+  const scenario = `async (api) => {
+    const { bundleHealth, bundleKindFindings, MemoryBackend } = api;
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", "---\\nokf_version: '0.2'\\n---\\n# Sandbox health\\n");
+    const docs = [
+      { id: "conventions/widget", body: "", frontmatter: { type: "Convention", title: "Widget", governs: "Widget", fields: { required: ["title", "owner"] }, freshness_horizon: "1h" } },
+      { id: "widgets/stale", body: "[unowned](unowned.md)\\n[ghost](ghost.md)\\n", frontmatter: { type: "Widget", title: "Ünïcödé 🐝", owner: "ada", generated: { at: "2026-10-17T09:00:00Z" } } },
+      { id: "widgets/unowned", body: "", frontmatter: { type: "Widget", title: "Unowned", generated: { at: "2026-10-17T11:30:00Z" }, stale_after: "2026-12-01" } },
+      { id: "views-registry/ghost", body: "", frontmatter: { type: "View", title: "Ghost", entry: "views/ghost.html", access: "none" } },
+      { id: "menus/whale", body: "[pours](okf://beers/beers/whale.md)\\n", frontmatter: { type: "Menu Item", title: "Whale" } },
+    ];
+    for (const doc of docs) await backend.write(doc.id, doc);
+    const report = await bundleHealth({ root: "browser-health", backend }, { now: new Date("2026-10-17T12:00:00.000Z") });
+    const findings = bundleKindFindings(docs, "0.2", { actor: "person:ada", producer: "process:sandbox" });
+    return JSON.stringify({ report, findings: findings.documents.map((finding) => finding.id) });
+  }`;
+  const inSandbox = JSON.parse(await (runInNewContext(`(${scenario})(SuperbeeHealth)`, sandbox) as Promise<string>)) as {
+    report: Record<string, unknown> & { stale: unknown[]; kindLint: unknown[]; unresolvedLinks: unknown[]; views: { danglingEntries: unknown[] }; crossBundle: { unchecked: number } | null };
+    findings: string[];
+  };
+  const healthApi = await import("../src/bundle-health/index.js");
+  const { MemoryBackend } = await import("../src/memory-backend.js");
+  const inNode = JSON.parse(await (new Function("api", `return (${scenario})(api)`)({ ...healthApi, MemoryBackend }) as Promise<string>)) as typeof inSandbox;
+  assert.deepEqual(inSandbox, inNode, "the sandbox report equals Node's");
+  assert.deepEqual(inSandbox.report.stale, [{ id: "widgets/stale", age_ms: 10_800_000, horizon_ms: 3_600_000 }]);
+  assert.deepEqual(inSandbox.report.kindLint, [{ id: "widgets/unowned", field: "owner", code: "KIND_FIELD_MISSING" }]);
+  assert.deepEqual(inSandbox.report.unresolvedLinks, [{ from: "widgets/stale", href: "ghost.md" }]);
+  assert.equal(inSandbox.report.views.danglingEntries.length, 1);
+  assert.equal(inSandbox.report.crossBundle?.unchecked, 0);
+  assert.deepEqual(inSandbox.findings, ["widgets/unowned"]);
 });
 
 test("artifact contract imports and decodes without storage, network or DOM globals", async () => {

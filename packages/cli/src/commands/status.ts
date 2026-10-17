@@ -1,18 +1,11 @@
 import { renderUsage } from "../output.js";
-// `superbee status` — a read-only, whole-bundle health report (bundle lint).
+// `superbee status`: a read-only, whole-bundle health report (bundle lint).
 //
-// COMPOSITION only: this command adds NO new core validation/link/freshness logic. It composes
-// existing core machinery — `loadKinds`/`validateAgainstKind` (kind conformance), `parseLinksFromDoc`
-// (cross-links, indexed in-memory for graph-isolation derivation), and `freshness()` fed a kind's declared
-// horizon (staleness) — into one report. ONE registry load (`loadKinds`) + ONE `query(bundle)` + TWO
-// prefix-scoped `listBlobs` (the legacy_naming audit + the dangling-view-entry lint) per invocation;
-// everything else derives in memory. Orphans come from the SAME edge set built
-// while scanning for unresolved links — never a per-doc `backlinks()` call (that would be N
-// whole-bundle traversals over data this command already has in hand).
-//
-// "Unresolved links", not "broken": OKF §5 explicitly permits links to not-yet-written knowledge, so
-// a link whose target isn't in the queried doc set is informational, not an error. External hrefs
-// (`isExternalHref`, already filtered out by `parseLinksFromDoc`) never count.
+// The findings are computed by core (`bundleHealth`, `@superbee/core/bundle-health`) from one read
+// of the bundle; this command is one client of it. It owns what only a client can: the flags and
+// help, the `--limit` row caps, the record's key order and omit-when-empty rules, the `help` and
+// `note` prose, the home and `sync` blocks, and `--with`/`--with-deps` binding (Git, filesystem and
+// catalog aware), which core calls as a hook at its own point in the sequence.
 //
 // Findings are REPORTS, not errors: exit is ALWAYS 0 once the analysis runs (a bad invocation or a
 // missing bundle still exits USAGE/NOT_FOUND as usual, via the owned parser/openBundle). A future
@@ -21,63 +14,16 @@ import { renderUsage } from "../output.js";
 // Duplicate-id detection (the old v1.1 wishlist item) is DELIBERATELY DROPPED: a concept id IS its
 // storage path, so ids are structurally unique per backend — there is nothing to detect.
 import { parseArgs } from "node:util";
-import {
-  freshness,
-  freshnessHorizonMs,
-  staleAfterInstant,
-  invalidOkfTimestamps,
-  invalidLegacyTimestamp,
-  isTerminal,
-  isOkfLifecycleStatus,
-  listBlobs,
-  loadKinds,
-  MalformedDocumentError,
-  readBundleOkfVersion,
-  type KindRegistry,
-  type OkfDocument,
-  parseLinksFromDoc,
-  query,
-  validateAgainstKind,
-  projectKindValidationWarnings,
-  isKindFieldValidationWarning,
-  BUNDLE_NAME_DOC_ID as BUNDLE_DOC_ID,
-  DEPENDENCIES_DOC_ID,
-  DEPENDENCIES_DOC_TYPE,
-  createLocalResolver,
-  declaredBundleId,
-  isQualifiedHref,
-  parseDependencies,
-  parseQualifiedLinks,
-  resolveQualifiedLinks,
-  type QualifiedLink,
-  type QualifiedRef,
-} from "@superbee/core";
-import { resolveBundleBindings } from "../bundle-bindings.js";
-import { trustCountsRow } from "../trust.js";
-import {
-  isAnyEntryKey,
-  isAnyRegistryId,
-  isPageTypeName,
-  isViewEntryVersion,
-  parseRegistration,
-  VIEW_ENTRY_PREFIX,
-} from "@superbee/core/page";
+import { bundleHealth, type BundleHealthReport } from "@superbee/core/bundle-health";
+import { resolveBundleBindings, type BindingProblem } from "../bundle-bindings.js";
+import { trustCountsRowFromCounts } from "../trust.js";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { hostedCheckoutAt, maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
-import { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "@superbee/core";
-import {
-  hasLegacyBridgeField,
-  isLegacyPageConvention,
-  isLegacyPageDoc,
-  isLegacyRegistryDocId,
-  LEGACY_PAGE_BLOB_PREFIX,
-} from "../legacy-page.js";
 import { cliInvocation } from "../invocation.js";
-import { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE } from "../bundle-name.js";
 import { homedir } from "node:os";
 import { realpath } from "node:fs/promises";
 import { bundleHomeAt, gitBoardSyncBlock, unboundCopyOf } from "../bundle-home.js";
@@ -275,7 +221,7 @@ export interface StatusCliDeps {
   autoPull: (dir?: string) => Promise<unknown>;
   /** The home whose private state holds hosted checkout bindings (default: the OS home). */
   home: string;
-  /** The clock the hosted checkout's staleness is judged by (default: now). */
+  /** The clock the hosted checkout's staleness and the report's freshness are judged by (default: now). */
   now: () => Date;
 }
 
@@ -283,532 +229,49 @@ export interface StatusCliDeps {
 const DEFAULT_LIMIT = 20;
 
 /** A finding category's row list, capped with `shown`/`total` so truncation is always explicit. */
-interface Capped {
+interface Capped<T> {
   shown: number;
   total: number;
-  rows: Record<string, unknown>[];
+  rows: T[];
 }
 
-function cap(rows: Record<string, unknown>[], limit: number): Capped {
+function cap<T>(rows: T[], limit: number): Capped<T> {
   const bounded = limit > 0 ? rows.slice(0, limit) : rows;
   return { shown: bounded.length, total: rows.length, rows: bounded };
 }
 
-/** A doc's `type` field, or "" when absent/non-string — the ONE place this coercion happens. */
-function docType(doc: OkfDocument): string {
-  return typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
-}
-
-/** Preserve ordinary YAML value shapes while keeping unsupported JSON values legible. */
-function diagnosticValue(value: unknown): unknown {
-  try {
-    return JSON.parse(JSON.stringify(value, (_key, item: unknown) =>
-      typeof item === "number" && !Number.isFinite(item) ? `<${String(item)}>` : item));
-  } catch {
-    // YAML aliases can form cycles; the health report must still name the offending document.
-    return `<non-JSON ${Array.isArray(value) ? "array" : typeof value}: circular or too deeply nested>`;
-  }
-}
-
 /**
- * Documents that define the bundle's operating model or identity rather than participating as
- * concept instances. Their lack of inbound concept links is intentional and already explained by
- * their dedicated product surface, so repeating them as orphan findings is pure noise.
+ * The status record for one report: summary counts first, then the row blocks, each omitted when
+ * empty so a clean bundle's report stays a short summary. `bindingProblems` are the binder's rows,
+ * listed after core's `DEP_*` rows in `dependency_problems`.
  */
-function isGraphDefinition(doc: OkfDocument): boolean {
-  const type = docType(doc);
-  return type === "Convention" ||
-    isPageTypeName(type) ||
-    isLegacyPageDoc(doc.frontmatter) ||
-    (type === "Reference" && doc.id.startsWith("references/")) ||
-    (type === BUNDLE_NAME_DOC_TYPE && doc.id === BUNDLE_NAME_DOC_ID) ||
-    (type === DEPENDENCIES_DOC_TYPE && doc.id === DEPENDENCIES_DOC_ID);
-}
-
-function okfV02WorkflowStatusCollisions(
-  registry: KindRegistry,
-  docs: OkfDocument[],
-): Record<string, unknown>[] {
-  const affectedByKind = new Map<string, number>();
-  const observedValuesByKind = new Map<string, Set<string>>();
-  for (const doc of docs) {
-    const value = doc.frontmatter.status;
-    if (value === undefined || isOkfLifecycleStatus(value)) continue;
-    const type = docType(doc);
-    affectedByKind.set(type, (affectedByKind.get(type) ?? 0) + 1);
-    const display = typeof value === "string" ? value : `<${Array.isArray(value) ? "array" : typeof value}>`;
-    const observed = observedValuesByKind.get(type) ?? new Set<string>();
-    observed.add(display);
-    observedValuesByKind.set(type, observed);
-  }
-
-  const rows: Record<string, unknown>[] = [];
-  for (const kind of [...registry.kinds.values()].sort((a, b) => a.governs.localeCompare(b.governs))) {
-    const declaresStatus =
-      kind.fields.required.includes("status") || kind.fields.optional.includes("status");
-    if (!declaresStatus) continue;
-    const declaredValues = kind.fields.values.status;
-    const incompatibleValues = (declaredValues ?? []).filter(
-      (value) => !isOkfLifecycleStatus(value),
-    );
-    const affectedDocuments = affectedByKind.get(kind.governs) ?? 0;
-    if (declaredValues !== undefined && incompatibleValues.length === 0 && affectedDocuments === 0) continue;
-    rows.push({
-      kind: kind.governs,
-      convention: kind.id,
-      declaration: declaredValues === undefined ? "unbounded" : "enumerated",
-      incompatible_values: incompatibleValues,
-      observed_incompatible_values: [...(observedValuesByKind.get(kind.governs) ?? [])].sort(),
-      affected_documents: affectedDocuments,
-    });
-  }
-  return rows;
-}
-
-export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}): Promise<void> {
-  const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
-
-  const { values } = parseLeafOrUsage(
-    () =>
-      parseArgs({
-        args: argv,
-        options: {
-          limit: { type: "string" },
-          dir: { type: "string" },
-          remote: { type: "string" },
-          with: { type: "string", multiple: true },
-          "with-deps": { type: "boolean" },
-          json: { type: "boolean" },
-          help: { type: "boolean", short: "h" },
-        },
-        allowPositionals: true,
-      }),
-    CLI_LEAVES.status,
-  );
-  if (values.help) {
-    stdout(renderUsage(STATUS_USAGE));
-    return;
-  }
-
-  let limit = DEFAULT_LIMIT;
-  if (values.limit !== undefined) {
-    const raw = values.limit.trim();
-    if (!/^\d+$/.test(raw)) {
-      throw new CliError("USAGE", "--limit must be a non-negative integer (0 = unlimited)");
-    }
-    limit = Number(raw);
-  }
-
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
-  // A hosted checkout reports its sync state from local state only: no automatic pull, so the
-  // report never waits on the network and its staleness is the checkout's own.
-  const home = deps.home ?? homedir();
-  const hosted = remote ? null : await hostedCheckoutAt(values.dir, home).catch(() => null);
-  // Opportunistic board freshness (autopull.ts): silent, fail-soft, detection-gated — see list.ts.
-  if (!remote && !hosted) await (deps.autoPull ?? maybeAutoPull)(values.dir);
-  // Loaded only in a hosted checkout, so an ordinary status never loads the sync engine.
-  const hostedReport = hosted
-    ? await (await import("../hosted/status.js")).hostedStatus(hosted, home, (deps.now ?? (() => new Date()))())
-    : null;
-  const bundle = await openBundle(values.dir, remote);
-
-  // ONE registry load, ONE query — every finding below derives from these two results in memory.
-  // A corrupt document (unparseable YAML frontmatter) is collected as its OWN finding rather than
-  // crashing the health report — a health report that can't run because one doc is broken is the
-  // opposite of useful; the broken doc IS the headline finding.
-  const malformedRows: Record<string, unknown>[] = [];
-  const [registry, docs, legacyBlobKeys, viewBlobKeys, okfVersionRead] = await Promise.all([
-    loadKinds(bundle),
-    query(bundle, {}, { onSkip: (s) => malformedRows.push({ id: s.id, reason: s.reason }) }),
-    // legacy_naming audit (below): blob keys still under the legacy pages/ prefix — one extra
-    // prefix-scoped listing on a command that is already an explicit whole-bundle read.
-    listBlobs(bundle, LEGACY_PAGE_BLOB_PREFIX),
-    // dangling_view_entries (below): the views/ half of the entry-key existence set (the pages/
-    // half is the legacy listing above — the only two prefixes a valid entry key can name).
-    listBlobs(bundle, VIEW_ENTRY_PREFIX),
-    readBundleOkfVersion(bundle)
-      .then((version) => ({ version }))
-      .catch((error: unknown) => {
-        if (!(error instanceof MalformedDocumentError)) throw error;
-        return { version: undefined, malformed: { id: "index.md", reason: error.message } };
-      }),
-  ]);
-  if ("malformed" in okfVersionRead) malformedRows.unshift(okfVersionRead.malformed);
-  const okfVersion = okfVersionRead.version;
-  const byId = new Set(docs.map((d) => d.id));
-  // `id -> doc`, for the link-type-violation check's target-doc-type lookup below (never a second
-  // per-edge query — the doc is already in hand from the ONE `query(bundle)` above).
-  const docsById = new Map(docs.map((d) => [d.id, d]));
-
-  // Kind lint: for every doc whose `type` is governed by a declared kind, validate it (the ONE
-  // validator `doc write`/`new` already use — no second implementation).
-  //
-  // Conformance debt (tasks/status-conformance-debt): re-grouped from this SAME lint pass, by DOC
-  // rather than by VIOLATION, and narrowed to FRONTMATTER-shaped codes only — no new query, no new
-  // pass over `docs`, and no read of `doc.body` of its OWN (validateAgainstKind's body-section check
-  // already ran, as part of computing `kind_warnings`, on docs this loop already has in hand; this
-  // block only inspects each warning's `code`, never `doc.body`). `KIND_SECTION_MISSING` (a missing
-  // body heading) is deliberately excluded — it names no frontmatter field a `doc update --<field>`
-  // could set.
-  const lintRows: Record<string, unknown>[] = [];
-  const conformanceDebtDocs = new Map<string, string>(); // id -> type, first-seen (docs is id-sorted)
-  for (const doc of docs) {
-    const kind = registry.kinds.get(docType(doc));
-    if (!kind) continue;
-    for (const w of projectKindValidationWarnings(okfVersion, kind, validateAgainstKind(doc, kind))) {
-      lintRows.push({ id: doc.id, field: w.field ?? "", code: w.code });
-      if (isKindFieldValidationWarning(w) && !conformanceDebtDocs.has(doc.id)) {
-        conformanceDebtDocs.set(doc.id, docType(doc));
-      }
-    }
-  }
-
-  // The declared typed-edge vocabulary (`links` maps across every kind), flattened ONCE for the
-  // link-type-violation check below — shared with `link add`'s own write-time lint (core link-types.ts),
-  // never a second implementation.
-  const linkTypeDeclarations = collectLinkDeclarations(registry);
-
-  // Unresolved links + the graph edge sets (reused below for orphans AND the two graph lints —
-  // never a per-doc backlinks() call, which would be N whole-bundle traversals over data already
-  // in hand).
-  const unresolvedRows: Record<string, unknown>[] = [];
-  const inbound = new Set<string>();
-  const outbound = new Set<string>();
-  // `id -> {text, sourceType}[]` for every RESOLVED inbound edge from an OTHER concept doc (the
-  // same "from OTHER concept docs" rule orphans uses — a self-link doesn't rescue a doc from a
-  // missing-expected-link finding either). Feeds `missing_expected_links` below.
-  const inboundEdges = new Map<string, { text: string; sourceType: string }[]>();
-  const linkTypeViolationRows: Record<string, unknown>[] = [];
-  const crossLinkTypeViolationRows: Record<string, unknown>[] = [];
-  for (const doc of docs) {
-    for (const l of parseLinksFromDoc(doc)) {
-      // A malformed `okf:` href without `//` also parses as a local relative link; it is counted
-      // once, as a cross-bundle invalid_ref below, never as a local edge.
-      if (isQualifiedHref(l.href)) continue;
-      // A local link under a qualified declaration (`links: {pours: "beers:Beer"}`) is a
-      // cross-bundle type violation whether or not its local target exists.
-      const qualifiedDeclaration = localEdgeQualifiedDeclaration(linkTypeDeclarations.get(l.text), docType(doc));
-      if (qualifiedDeclaration) {
-        crossLinkTypeViolationRows.push({
-          from: doc.id,
-          href: l.href,
-          text: l.text,
-          expected: `${qualifiedDeclaration.governs} -> ${qualifiedDeclaration.target}`,
-        });
-      }
-      // Any non-self link is an intentional outgoing graph edge. An unresolved one already has
-      // its own actionable finding below, so it must not also duplicate the doc as an orphan.
-      if (l.to !== doc.id) outbound.add(doc.id);
-      if (!byId.has(l.to)) {
-        unresolvedRows.push({ from: doc.id, href: l.href });
-        continue;
-      }
-      // "From OTHER concept docs" — a self-link does not rescue a doc from orphan (or
-      // missing-expected-link) status.
-      if (l.to !== doc.id) {
-        inbound.add(l.to);
-        const list = inboundEdges.get(l.to) ?? [];
-        list.push({ text: l.text, sourceType: docType(doc) });
-        inboundEdges.set(l.to, list);
-      }
-
-      // link_type_violations: this edge's text matches a declared typed-edge vocabulary entry (some
-      // kind's 'links' map) but the actual source and/or target kind doesn't conform — the SAME rule
-      // `link add` warns on at write time, applied bundle-wide over every resolved edge.
-      const declared = linkTypeDeclarations.get(l.text);
-      if (declared && declared.length > 0 && !qualifiedDeclaration) {
-        const sourceType = docType(doc);
-        const targetType = docType(docsById.get(l.to)!);
-        const matched = declared.find((d) => d.governs === sourceType) ?? declared[0]!;
-        const sourceOk = declared.some((d) => d.governs === sourceType);
-        const targetOk = targetType === matched.target;
-        if (!sourceOk || !targetOk) {
-          linkTypeViolationRows.push({
-            from: doc.id,
-            to: l.to,
-            text: l.text,
-            expected: `${matched.governs} -> ${matched.target}`,
-          });
-        }
-      }
-    }
-  }
-
-  // Cross-bundle links (okf://): parsed from the docs already in hand. Foreign copies are read only
-  // when bound explicitly (--with / --with-deps), in ONE batched resolve call.
-  const qualifiedLinks: QualifiedLink[] = [];
-  for (const doc of docs) {
-    for (const q of parseQualifiedLinks(doc)) {
-      qualifiedLinks.push(q);
-      if (!q.ref) continue;
-      const violation = qualifiedEdgeViolation(linkTypeDeclarations.get(q.text), docType(doc), q.ref.alias);
-      if (violation) {
-        crossLinkTypeViolationRows.push({
-          from: doc.id,
-          href: q.href,
-          text: q.text,
-          expected: `${violation.governs} -> ${violation.target}`,
-        });
-      }
-    }
-  }
-  const dependenciesDoc = docsById.get(DEPENDENCIES_DOC_ID);
-  const crossBundle = dependenciesDoc !== undefined || qualifiedLinks.length > 0;
-  const selfBundleId = declaredBundleId(docsById.get(BUNDLE_DOC_ID)) ?? hosted?.bundle_id;
-  const declaredDeps = parseDependencies(dependenciesDoc, selfBundleId === undefined ? {} : { selfBundleId });
-  const bindings = await resolveBundleBindings({
-    referringRoot: remote ? null : bundle.root,
-    dependencies: declaredDeps.dependencies,
-    withValues: values.with ?? [],
-    withDeps: values["with-deps"] === true,
-    home,
-  });
-  const crossUnresolvedRows: Record<string, unknown>[] = [];
-  const dependencyRows: Record<string, unknown>[] = [];
-  let crossUnchecked = 0;
-  if (crossBundle) {
-    const checked = qualifiedLinks.filter((q) => {
-      const unbound = q.ref !== null && declaredDeps.dependencies.has(q.ref.alias) && !bindings.bindings.has(q.ref.alias);
-      if (unbound) crossUnchecked++;
-      return !unbound;
-    });
-    const resolver = createLocalResolver({ dependencies: declaredDeps.dependencies, rejected: declaredDeps.rejected, bindings: bindings.bindings });
-    // One probe per bound alias rides the same resolve call, so each alias's binding verdict
-    // (identity, pin) comes from core's resolver and its copy is still read in one batch.
-    const probeAliases = [...bindings.bindings.keys()];
-    const probes: QualifiedLink[] = probeAliases.map((alias) => {
-      const ref: QualifiedRef = { alias, id: BUNDLE_DOC_ID };
-      return { from: BUNDLE_DOC_ID, text: "", href: "", ref };
-    });
-    const results = await resolveQualifiedLinks(resolver, [...checked, ...probes]);
-    const verdictByAlias = new Map<string, string>();
-    results.slice(checked.length).forEach((r, i) => {
-      const resolution = r.resolution;
-      const state = resolution.state === "resolved" || resolution.reason === "target_missing" ? "ok" : resolution.reason;
-      verdictByAlias.set(probeAliases[i]!, state);
-    });
-    for (const { link, resolution } of results.slice(0, checked.length)) {
-      if (resolution.state === "resolved") continue;
-      crossUnresolvedRows.push({ from: link.from, href: link.href, reason: resolution.reason, detail: resolution.detail });
-    }
-    for (const entry of declaredDeps.dependencies.values()) {
-      dependencyRows.push({
-        alias: entry.alias,
-        bundle_id: entry.bundle_id,
-        state: verdictByAlias.get(entry.alias) ?? "unbound",
-        bound: bindings.bound.get(entry.alias)?.root ?? null,
-        pin: entry.pin?.value ?? null,
-      });
-    }
-  }
-  const dependencyProblemRows: Record<string, unknown>[] = [
-    ...declaredDeps.problems.map((p) => ({ code: p.code, alias: p.alias ?? null, detail: p.detail })),
-    ...bindings.problems.map((p) => ({ code: p.code, alias: p.alias, detail: p.detail })),
-  ];
-
-  // Orphans are ISOLATED content docs inside an ESTABLISHED graph. A bundle with no resolved
-  // cross-doc edge has not adopted graph structure yet, so zero-inbound is not evidence of a
-  // defect (and a first doc is necessarily a root). Once a graph exists, roots with outbound
-  // edges remain intentional; definition/metadata docs are classified centrally above; and a doc
-  // with an unresolved outbound edge already has the more precise unresolved_links finding.
-  const orphanRows: Record<string, unknown>[] = [];
-  if (inbound.size > 0) {
-    for (const doc of docs) {
-      if (!inbound.has(doc.id) && !outbound.has(doc.id) && !isGraphDefinition(doc)) {
-        orphanRows.push({ id: doc.id, type: docType(doc) });
-      }
-    }
-  }
-
-  // One freshness authority handles both standard v0.2 `stale_after` and optional Kind horizons.
-  const now = new Date();
-  const staleRows: Record<string, unknown>[] = [];
-  const noTimestampRows: Record<string, unknown>[] = [];
-  const invalidStaleAfterRows: Record<string, unknown>[] = [];
-  const invalidTimestampRows: Record<string, unknown>[] = [];
-  const invalidLegacyTimestampRows: Record<string, unknown>[] = [];
-  for (const doc of docs) {
-    const invalidLegacy = invalidLegacyTimestamp(doc.frontmatter, okfVersion);
-    if (invalidLegacy) {
-      invalidLegacyTimestampRows.push({ id: doc.id, type: docType(doc), field: invalidLegacy.field, value: diagnosticValue(invalidLegacy.value) });
-    }
-    if (okfVersion === "0.2") {
-      for (const { field, value } of invalidOkfTimestamps(doc.frontmatter)) {
-        invalidTimestampRows.push({ id: doc.id, type: docType(doc), field, value: diagnosticValue(value) });
-      }
-    }
-    const kind = registry.kinds.get(docType(doc));
-    const horizonMs = kind ? freshnessHorizonMs(kind) : undefined;
-    const hasStaleAfter = okfVersion === "0.2" && Object.hasOwn(doc.frontmatter, "stale_after");
-    const invalidStaleAfter = hasStaleAfter && staleAfterInstant(doc.frontmatter.stale_after) === null;
-    if (invalidStaleAfter) {
-      invalidStaleAfterRows.push({ id: doc.id, type: docType(doc), value: diagnosticValue(doc.frontmatter.stale_after) });
-    }
-    const staleAfter = hasStaleAfter && !invalidStaleAfter
-      ? doc.frontmatter.stale_after
-      : undefined;
-    if (horizonMs === undefined && staleAfter === undefined) continue;
-    const result = freshness(doc, { maxAgeMs: horizonMs, now, okfVersion });
-    if (result.verdict === "empty" && horizonMs !== undefined) {
-      noTimestampRows.push({ id: doc.id, type: docType(doc) });
-    } else if (result.verdict === "stale") {
-      staleRows.push({
-        id: doc.id,
-        ...(result.ageMs === undefined ? {} : { age_ms: result.ageMs }),
-        ...(horizonMs === undefined ? {} : { horizon_ms: horizonMs }),
-        ...(staleAfter === undefined ? {} : { stale_after: staleAfter }),
-      });
-    }
-  }
-
-  // OKF v0.2 trust tiers (SPEC 5.3), one derivation (core `trustTier`) folded once. Present on a
-  // v0.2 bundle with at least one document — see `trustCountsRow` for why v0.1 and empty bundles omit it.
-  const trust = trustCountsRow(okfVersion, docs);
-
-  // missing_expected_links: for every kind instance whose OWN kind declares `expects_inbound`,
-  // check each declared `{link type: expected source kind}` entry against the doc's resolved
-  // inbound edges (built above, one whole-bundle pass — never a second traversal). A doc missing
-  // one or more expectations gets ONE row naming all of them. `status` is included on the row only
-  // when the kind itself declares a `status` field (the triage signal).
-  //
-  // tasks/status-terminal-declaration.md: an instance whose OWN kind declares a terminal set
-  // (`kind.fields.terminal`) that its frontmatter currently matches is EXCLUDED entirely — a
-  // done/canceled instance is noise for this lint (the original gate, 2026-07-07). The exclusion
-  // is counted (`terminalSkipped`) rather than silently shrinking the total; a kind with NO
-  // terminal declaration keeps every instance, exactly as before this declaration existed.
-  const missingExpectedRanked: { row: Record<string, unknown>; sortsFirst: boolean }[] = [];
-  let terminalSkipped = 0;
-  for (const doc of docs) {
-    const kind = registry.kinds.get(docType(doc));
-    if (!kind?.expectsInbound) continue;
-    const terminalDeclared = Object.keys(kind.fields.terminal).length > 0;
-    if (terminalDeclared && isTerminal(kind, doc.frontmatter)) {
-      terminalSkipped++;
-      continue;
-    }
-    const edges = inboundEdges.get(doc.id) ?? [];
-    const missing = Object.entries(kind.expectsInbound)
-      .filter(([text, sourceKind]) => !edges.some((e) => e.text === text && e.sourceType === sourceKind))
-      .map(([text]) => text);
-    if (missing.length === 0) continue;
-    const row: Record<string, unknown> = { id: doc.id };
-    const declaresStatus = kind.fields.required.includes("status") || kind.fields.optional.includes("status");
-    if (declaresStatus) row.status = doc.frontmatter.status;
-    row.missing = missing;
-    // Sort key: when the kind DECLARES a terminal set, order by the ACTUAL declaration
-    // (`isTerminal`) rather than a hardcoded "done" string — a bundle whose enum uses different
-    // terminal words (e.g. resolved/archived) still gets non-terminal-first triage ordering.
-    // A kind with no terminal declaration keeps the EXACT pre-existing hardcoded fallback (no
-    // regression). Every row here is already non-terminal by construction (terminal instances
-    // were excluded above), so for a terminal-declaring kind this is always `false` — the
-    // fallback branch is the only one that can ever sort a row second.
-    const sortsFirst = terminalDeclared ? isTerminal(kind, doc.frontmatter) : row.status === "done";
-    missingExpectedRanked.push({ row, sortsFirst });
-  }
-  missingExpectedRanked.sort((a, b) => {
-    if (a.sortsFirst !== b.sortsFirst) return a.sortsFirst ? 1 : -1;
-    return String(a.row.id).localeCompare(String(b.row.id));
-  });
-  const missingExpectedRows = missingExpectedRanked.map((e) => e.row);
-
-  // legacy_naming (legacy-page.ts; removal phase tasks/remove-legacy-page-bridge-support): the
-  // legacy names are NO LONGER accepted, so this is a real FINDING now, not a report — a
-  // Page-typed doc silently fails to register and a legacy own-`bridge` field silently grants
-  // nothing, and NOTHING else diagnoses either (post-removal they fall out of the
-  // isPageTypeName-based View-surface lints above by design; legacy-page.ts's frozen literals
-  // exist precisely to detect what the runtime no longer accepts). The legacy-prefix rows stay
-  // informational: LOCATIONS remain recognized.
-  const pageTypedRows: Record<string, unknown>[] = docs
-    .filter((doc) => isLegacyPageDoc(doc.frontmatter))
-    .map((doc) => ({ id: doc.id }));
-  const bridgeFieldRows: Record<string, unknown>[] = docs
-    .filter((doc) => hasLegacyBridgeField(doc.frontmatter))
-    .map((doc) => ({ id: doc.id }));
-  // A stale convention governing the legacy 'Page' name is silent scaffolding:
-  // `kinds` advertises the dead name and kind-aware authoring would produce runtime-ignored
-  // docs, yet no doc-level scan above sees it (it scans instances, not governs declarations).
-  const pageConventionRows: Record<string, unknown>[] = docs
-    .filter((doc) => isLegacyPageConvention(doc.frontmatter))
-    .map((doc) => ({ id: doc.id }));
-  // STORE-AWARE: docs count only under the legacy registry prefix; blob keys only under the
-  // legacy entry prefix (already prefix-scoped at the `listBlobs` call above) — a concept doc
-  // that merely lives at e.g. `pages/manual` is not a legacy item.
-  const legacyPrefixRows: Record<string, unknown>[] = [
-    ...docs.filter((doc) => isLegacyRegistryDocId(doc.id)).map((doc) => ({ id: doc.id, store: "doc" })),
-    ...legacyBlobKeys
-      .slice()
-      .sort()
-      .map((key) => ({ id: key, store: "blob" })),
-  ];
-
-  // The View-surface lints (tasks/view-entry-dangling-lint), over every View-typed doc
-  // (legacy LOCATIONS included; a legacy Page-TYPED doc is no longer recognized here — it lands
-  // in legacy_naming below instead) — recognized via core's `isPageTypeName`/`parseRegistration`,
-  // the SAME predicates the ui launcher/loopback server consume, so recognition is
-  // convention-independent by construction. dangling_view_entries: a VALID registration whose declared `entry` names a
-  // blob that does not exist (a never-promoted, typo'd, or since-deleted key mints a view that
-  // serves nothing); existence derives from the two prefix-scoped listings batched above, never a
-  // per-registration existence probe. Nothing on the write path checks either lint (deliberately
-  // — read-side also catches hand-written docs, external bundles, and post-hoc blob deletions).
-  const entryBlobKeys = new Set<string>([...viewBlobKeys, ...legacyBlobKeys]);
-  let viewTypedCount = 0;
-  const danglingViewEntryRows: Record<string, unknown>[] = [];
-  const invalidRegistrationRows: Record<string, unknown>[] = [];
-  for (const doc of docs) {
-    if (!isPageTypeName(doc.frontmatter.type)) continue;
-    viewTypedCount++;
-    const registration = parseRegistration(doc.id, doc.frontmatter);
-    if (registration) {
-      if (!entryBlobKeys.has(registration.entry)) {
-        danglingViewEntryRows.push({ id: registration.id, entry: registration.entry });
-      }
-      continue;
-    }
-    // invalid_view_registrations: the doc DECLARES an accepted registration kind name but fails
-    // the registration predicate itself — the launcher cannot mint or serve it, and nothing else
-    // diagnoses it (kind validation checks field presence/enums, not this grammar; strict `new`
-    // accepts an off-prefix id or a wrong-prefix entry key silently). The failing leg(s) are
-    // named by the same core grammar helpers `parseRegistration` composes — no second grammar.
-    const legs: string[] = [];
-    if (!isAnyRegistryId(doc.id)) legs.push("id");
-    if (!isAnyEntryKey(doc.frontmatter.entry)) legs.push("entry");
-    if (
-      Object.hasOwn(doc.frontmatter, "entry_version") &&
-      !isViewEntryVersion(doc.frontmatter.entry_version)
-    ) {
-      legs.push("entry_version");
-    }
-    invalidRegistrationRows.push({ id: doc.id, problem: legs.join("+") });
-  }
-
-  const malformed = cap(malformedRows, limit);
-  const lint = cap(lintRows, limit);
-  const unresolved = cap(unresolvedRows, limit);
-  const orphans = cap(orphanRows, limit);
-  const stale = cap(staleRows, limit);
-  const noTimestamp = cap(noTimestampRows, limit);
-  const invalidStaleAfter = cap(invalidStaleAfterRows, limit);
-  const invalidTimestamps = cap(invalidTimestampRows, limit);
-  const invalidLegacyTimestamps = cap(invalidLegacyTimestampRows, limit);
-  const statusCollisions = okfV02WorkflowStatusCollisions(registry, docs);
+function statusRecord(
+  report: BundleHealthReport,
+  options: { limit: number; bindingProblems: readonly BindingProblem[] },
+): Record<string, unknown> {
+  const { limit } = options;
+  const malformed = cap(report.malformed, limit);
+  const lint = cap(report.kindLint, limit);
+  const unresolved = cap(report.unresolvedLinks, limit);
+  const orphans = cap(report.orphans, limit);
+  const stale = cap(report.stale, limit);
+  const noTimestamp = cap(report.noTimestamp, limit);
+  const invalidStaleAfter = cap(report.invalidStaleAfter, limit);
+  const invalidTimestamps = cap(report.invalidTimestamps, limit);
+  const invalidLegacyTimestamps = cap(report.invalidLegacyTimestamps, limit);
   const registryLint = cap(
-    registry.warnings.map((w): Record<string, unknown> => ({ ...w })),
+    report.registryWarnings.map((w): Record<string, unknown> => ({ ...w })),
     limit,
   );
-  const linkTypeViolations = cap(linkTypeViolationRows, limit);
-  const missingExpectedLinks = cap(missingExpectedRows, limit);
-  const conformanceDebt = cap(
-    [...conformanceDebtDocs].map(([id, type]) => ({ id, type })),
-    limit,
-  );
-  const danglingViewEntries = cap(danglingViewEntryRows, limit);
-  const invalidViewRegistrations = cap(invalidRegistrationRows, limit);
-  const okfV02StatusCollisionRows =
-    okfVersion === "0.1" ? statusCollisions : [];
+  const linkTypeViolations = cap(report.linkTypeViolations, limit);
+  const missingExpectedLinks = cap(report.missingExpectedLinks, limit);
+  const conformanceDebt = cap(report.conformanceDebt ?? [], limit);
+  const danglingViewEntries = cap(report.views.danglingEntries, limit);
+  const invalidViewRegistrations = cap(report.views.invalidRegistrations, limit);
 
   const out: Record<string, unknown> = {
-    docs: docs.length,
-    kinds: registry.kinds.size,
+    docs: report.docs,
+    kinds: report.kinds,
     malformed: malformed.total,
     kind_warnings: lint.total,
     unresolved_links: unresolved.total,
@@ -824,40 +287,31 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   };
   // Present only for a bundle that declares dependencies or holds any okf: href, so every other
   // bundle's report stays byte-identical.
-  if (crossBundle) {
-    out.cross_bundle_links = qualifiedLinks.length;
-    out.cross_bundle_unresolved = crossUnresolvedRows.length;
-    out.cross_bundle_unchecked = crossUnchecked;
+  if (report.crossBundle) {
+    out.cross_bundle_links = report.crossBundle.links;
+    out.cross_bundle_unresolved = report.crossBundle.unresolved.length;
+    out.cross_bundle_unchecked = report.crossBundle.unchecked;
   }
-  if (trust) out.trust = trust;
+  if (report.trust) out.trust = trustCountsRowFromCounts(report.trust);
   // Beside the count, unconditionally at the top level (never nested inside the row block below,
   // which is itself omitted when `missing_expected_links` is 0 — a bundle where EVERY matching
-  // instance happened to be terminal-skipped would otherwise hide this field entirely, exactly
-  // the silent shrink the exclusion above must not cause). Semantics: INSTANCES skipped BEFORE
-  // the missing_expected_links lint evaluated them — not findings suppressed (a skipped instance
-  // might have carried its expected edge and linted clean anyway).
-  if (terminalSkipped > 0) out.terminal_skipped = terminalSkipped;
-  // Conformance debt (tasks/status-conformance-debt): present — even at 0 — whenever the bundle
-  // declares ANY kind at all, mirroring `kind_warnings`'s own always-shown-when-relevant shape;
-  // absent entirely on a conventions-free bundle (`registry.kinds.size === 0`), which is what keeps
-  // that bundle shape's status output BYTE-IDENTICAL to before this field existed (gate 2/3 — see
-  // status.test.ts's byte-identity pin). The row block + its fixing-command help hatch follow the
-  // SAME omitted-when-empty convention as every other finding category below.
-  if (registry.kinds.size > 0) out.conformance_debt = conformanceDebt.total;
-  // Present — even at 0 — whenever the bundle carries at least one View-typed doc (the
-  // conformance_debt gating idiom): "all entries resolvable" / "all registrations valid" are
-  // reports worth seeing, while a bundle with no View surface at all keeps output byte-identical
-  // to before these lints existed (the byte-identity pins in status.test.ts).
-  if (viewTypedCount > 0) {
+  // instance happened to be terminal-skipped would otherwise hide this field entirely). Semantics:
+  // INSTANCES skipped BEFORE the missing_expected_links lint evaluated them — not findings
+  // suppressed (a skipped instance might have carried its expected edge and linted clean anyway).
+  if (report.terminalSkipped > 0) out.terminal_skipped = report.terminalSkipped;
+  // Conformance debt: present — even at 0 — whenever the bundle declares ANY kind at all; absent
+  // entirely on a conventions-free bundle, which keeps that bundle shape's output BYTE-IDENTICAL to
+  // before this field existed (see status.test.ts's byte-identity pin).
+  if (report.conformanceDebt !== null) out.conformance_debt = conformanceDebt.total;
+  // Present — even at 0 — whenever the bundle carries at least one View-typed doc: "all entries
+  // resolvable" / "all registrations valid" are reports worth seeing, while a bundle with no View
+  // surface keeps output byte-identical to before these lints existed.
+  if (report.views.typed > 0) {
     out.dangling_view_entries = danglingViewEntries.total;
     out.invalid_view_registrations = invalidViewRegistrations.total;
   }
-  if (okfV02StatusCollisionRows.length > 0) {
-    const statusFieldKinds = cap(okfV02StatusCollisionRows, limit);
-    const affectedDocuments = okfV02StatusCollisionRows.reduce(
-      (total, row) => total + Number(row.affected_documents ?? 0),
-      0,
-    );
+  if (report.okfUpgrade) {
+    const statusFieldKinds = cap(report.okfUpgrade.statusFieldRows, limit);
     out.okf_upgrade = {
       current_version: "0.1",
       target_version: "0.2",
@@ -865,7 +319,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
       blocker: "workflow_status_collision",
       recommended_logical_field: "progress_status",
       status_field_kinds: statusFieldKinds.total,
-      affected_documents: affectedDocuments,
+      affected_documents: report.okfUpgrade.affectedDocuments,
       status_field_rows: statusFieldKinds,
       note:
         "This bundle remains a supported OKF v0.1 bundle. Superbee can author and mutate v0.2, " +
@@ -924,19 +378,25 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   if (noTimestamp.total > 0) out.no_timestamp_docs = noTimestamp;
   if (linkTypeViolations.total > 0) out.link_type_violations_rows = linkTypeViolations;
   if (missingExpectedLinks.total > 0) out.missing_expected_links_rows = missingExpectedLinks;
+  const dependencyRows = report.crossBundle?.dependencies ?? [];
+  const dependencyProblemRows: { code: string; alias: string | null; detail: string }[] = [
+    ...(report.crossBundle?.problems ?? []),
+    ...options.bindingProblems.map((p) => ({ code: p.code, alias: p.alias, detail: p.detail })),
+  ];
+  const crossUnresolvedRows = report.crossBundle?.unresolved ?? [];
   if (dependencyRows.length > 0) out.dependencies = cap(dependencyRows, limit);
   if (dependencyProblemRows.length > 0) out.dependency_problems = cap(dependencyProblemRows, limit);
   if (crossUnresolvedRows.length > 0) out.cross_bundle_unresolved_rows = cap(crossUnresolvedRows, limit);
-  if (crossLinkTypeViolationRows.length > 0) out.cross_bundle_link_type_violations_rows = cap(crossLinkTypeViolationRows, limit);
+  if (report.crossLinkTypeViolations.length > 0) out.cross_bundle_link_type_violations_rows = cap(report.crossLinkTypeViolations, limit);
   if (danglingViewEntries.total > 0) out.dangling_view_entries_rows = danglingViewEntries;
   if (invalidViewRegistrations.total > 0) out.invalid_view_registrations_rows = invalidViewRegistrations;
   if (registryLint.total > 0) out.registry_lint = registryLint;
   // Omitted entirely on a legacy-free bundle (the `terminal_skipped` present-only-when-relevant
   // idiom) — a clean report stays byte-identical to before this finding existed.
-  const pageTyped = cap(pageTypedRows, limit);
-  const bridgeField = cap(bridgeFieldRows, limit);
-  const pageConvention = cap(pageConventionRows, limit);
-  const legacyPrefix = cap(legacyPrefixRows, limit);
+  const pageTyped = cap(report.legacyNaming.pageTyped, limit);
+  const bridgeField = cap(report.legacyNaming.bridgeField, limit);
+  const pageConvention = cap(report.legacyNaming.pageConvention, limit);
+  const legacyPrefix = cap(report.legacyNaming.legacyPrefix, limit);
   if (pageTyped.total > 0 || bridgeField.total > 0 || pageConvention.total > 0 || legacyPrefix.total > 0) {
     // The loud FINDING note (+ the migration-script help) fires only for retired NAMES —
     // instances, legacy fields, OR a convention still declaring the dead kind name; a migrated
@@ -968,6 +428,77 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     if (legacyPrefix.total > 0) legacy.legacy_prefix_rows = legacyPrefix;
     out.legacy_naming = legacy;
   }
+  return out;
+}
+
+export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}): Promise<void> {
+  const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
+
+  const { values } = parseLeafOrUsage(
+    () =>
+      parseArgs({
+        args: argv,
+        options: {
+          limit: { type: "string" },
+          dir: { type: "string" },
+          remote: { type: "string" },
+          with: { type: "string", multiple: true },
+          "with-deps": { type: "boolean" },
+          json: { type: "boolean" },
+          help: { type: "boolean", short: "h" },
+        },
+        allowPositionals: true,
+      }),
+    CLI_LEAVES.status,
+  );
+  if (values.help) {
+    stdout(renderUsage(STATUS_USAGE));
+    return;
+  }
+
+  let limit = DEFAULT_LIMIT;
+  if (values.limit !== undefined) {
+    const raw = values.limit.trim();
+    if (!/^\d+$/.test(raw)) {
+      throw new CliError("USAGE", "--limit must be a non-negative integer (0 = unlimited)");
+    }
+    limit = Number(raw);
+  }
+
+  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  // A hosted checkout reports its sync state from local state only: no automatic pull, so the
+  // report never waits on the network and its staleness is the checkout's own.
+  const home = deps.home ?? homedir();
+  const hosted = remote ? null : await hostedCheckoutAt(values.dir, home).catch(() => null);
+  // Opportunistic board freshness (autopull.ts): silent, fail-soft, detection-gated — see list.ts.
+  if (!remote && !hosted) await (deps.autoPull ?? maybeAutoPull)(values.dir);
+  // One clock judges both the hosted checkout's staleness and the report's freshness.
+  const now = (deps.now ?? (() => new Date()))();
+  // Loaded only in a hosted checkout, so an ordinary status never loads the sync engine.
+  const hostedReport = hosted
+    ? await (await import("../hosted/status.js")).hostedStatus(hosted, home, now)
+    : null;
+  const bundle = await openBundle(values.dir, remote);
+
+  // Core calls the binder once, after its own read and its one parse of docs/dependencies, so a
+  // malformed declaration stays a finding and every CliError the binder throws keeps its exit code.
+  let bindingProblems: BindingProblem[] = [];
+  const report = await bundleHealth(bundle, {
+    now,
+    ...(hosted ? { selfBundleId: hosted.bundle_id } : {}),
+    bindings: async (declared) => {
+      const resolved = await resolveBundleBindings({
+        referringRoot: remote ? null : bundle.root,
+        dependencies: declared.dependencies,
+        withValues: values.with ?? [],
+        withDeps: values["with-deps"] === true,
+        home,
+      });
+      bindingProblems = resolved.problems;
+      return resolved.bindings;
+    },
+  });
+  const out = statusRecord(report, { limit, bindingProblems });
 
   if (hostedReport) {
     const record: Record<string, unknown> = { home: "hosted", sync: hostedReport.sync, ...out };
