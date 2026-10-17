@@ -23,7 +23,7 @@ import { bindingForPath } from "../src/hosted/binding.js";
 import { openBundle } from "../src/bundle.js";
 import { assertAllowedInHostedCheckout, assertKindOnlyRecipe } from "../src/hosted/refusals.js";
 import { servedBundle } from "../src/hosted/served-bundle.js";
-import { heldPathReason } from "../src/hosted/sync-scan.js";
+import { heldPathReason, unsendable } from "../src/hosted/sync-scan.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 
 interface Harness {
@@ -394,5 +394,96 @@ test("allowed: recipe add refuses a recipe with a View end to end, before anythi
   }
   await assert.rejects(readFile(path.join(h.folder, "conventions/term.md"), "utf8"), "nothing was written");
   await rm(dir, { recursive: true, force: true });
+  await rm(h.home, { recursive: true, force: true });
+});
+
+/** A recipe folder whose one convention is the fake host's Note Kind, at `version`. */
+async function noteRecipeFolder(version: string, governs = "Note"): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "sb-defs-stamp-recipe-"));
+  await mkdir(path.join(dir, "conventions"), { recursive: true });
+  await writeFile(path.join(dir, "recipe.md"), `---\ntype: Recipe\nid: notes\ntitle: Notes\nversion: "${version}"\nsummary: The Note Kind.\n---\n`);
+  await writeFile(path.join(dir, `conventions/${governs.toLowerCase()}.md`), `---\ntype: Convention\ntitle: ${governs}\ngoverns: ${governs}\n---\n# ${governs}\n`);
+  return dir;
+}
+
+/** `superbee recipe …` in the checkout as the CLI runs it: the up-front refusal, then the command (whose own check reads HOME). */
+async function runRecipe(h: Harness, args: string[]): Promise<Record<string, unknown>> {
+  const argv = [...args, "--dir", h.folder];
+  await assertAllowedInHostedCheckout("recipe", argv, { home: h.home, cwd: h.cwd });
+  const previousHome = process.env.HOME;
+  process.env.HOME = h.home;
+  let out = "";
+  try {
+    await recipe([...argv, "--json"], { stdout: (text: string) => void (out += text) });
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+  return JSON.parse(out) as Record<string, unknown>;
+}
+
+test("T11 allowed: recipe evolve --apply in a checkout stamps the Kind, and sync sends the stamp as a definition write", async () => {
+  const h = await harness("allowed");
+  const source = await noteRecipeFolder("1");
+  const plan = await runRecipe(h, ["evolve", source]);
+  assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+  assert.equal(plan.changed, false);
+  assert.equal(plan.writes, 1);
+  const applied = await runRecipe(h, ["evolve", source, "--apply", String(plan.plan_token)]);
+  assert.equal(applied.recipe, "stamped");
+  const local = parseMarkdown(await readFile(path.join(h.folder, "conventions/note.md"), "utf8"));
+  assert.equal((local.frontmatter.x_recipe as Record<string, unknown>).id, "notes");
+  const { rows, error } = await runSync(h);
+  assert.equal(error, null, JSON.stringify(rows));
+  assert.deepEqual(rows.map((row) => [row.id, row.state]), [["conventions/note", "committed"]]);
+  assert.deepEqual(sentOrder(h), ["replace conventions/note"]);
+  const stored = h.host.docs.get("conventions/note")?.frontmatter.x_recipe as Record<string, unknown> | undefined;
+  assert.deepEqual(stored, local.frontmatter.x_recipe, "the host stores the stamp as written");
+  // The stamp round-tripped: nothing more to send, and a fresh plan has nothing to write.
+  assert.deepEqual((await runSync(h)).rows, []);
+  assert.equal((await runRecipe(h, ["evolve", source])).writes, 0);
+  // The host's write gate sees a stamped convention as sendable.
+  const bytes = new TextEncoder().encode(await readFile(path.join(h.folder, "conventions/note.md"), "utf8"));
+  assert.equal(unsendable("conventions/note", "conventions/note.md", bytes, null, { bundleId: BUNDLE, okfVersion: "0.2", documentInputBytes: null }, { definitionWrites: "allowed" }), null);
+  await rm(source, { recursive: true, force: true });
+  await rm(h.home, { recursive: true, force: true });
+});
+
+test("T11 refused: recipe evolve is refused before any stamp exists", async () => {
+  const h = await harness("refused");
+  const source = await noteRecipeFolder("1");
+  const before = await readFile(path.join(h.folder, "conventions/note.md"), "utf8");
+  await assert.rejects(runRecipe(h, ["evolve", source]), (error: unknown) => error instanceof CliError && error.details?.reason === "definitions_refused");
+  assert.equal(await readFile(path.join(h.folder, "conventions/note.md"), "utf8"), before);
+  assert.doesNotMatch(before, /x_recipe/);
+  await rm(source, { recursive: true, force: true });
+  await rm(h.home, { recursive: true, force: true });
+});
+
+test("T11: a conventions-only recipe governing View or Convention is refused in a checkout before any write, naming it", async () => {
+  const h = await harness("allowed");
+  const recipeOf = (docs: Array<{ id: string; governs: string }>) => ({
+    id: "reserved",
+    docs: docs.map(({ id, governs }) => ({ id, frontmatter: { type: "Convention", title: governs, governs }, body: "" })),
+    pages: [],
+    references: [],
+  }) as unknown as Parameters<typeof assertKindOnlyRecipe>[2];
+  for (const governs of ["View", "Convention"]) {
+    const error = await assertKindOnlyRecipe("recipe evolve", h.folder, recipeOf([{ id: "conventions/idea", governs: "Idea" }, { id: `conventions/${governs.toLowerCase()}`, governs }]), { home: h.home, cwd: h.cwd }).then(
+      () => assert.fail(`a recipe governing ${governs} was not refused`),
+      (caught: unknown) => caught as CliError,
+    );
+    assert.equal(error.code, "FORBIDDEN");
+    assert.equal(error.details?.conventions, `conventions/${governs.toLowerCase()}`);
+    assert.match(error.message, /declares 1 Kind\(s\) governing View or Convention/);
+  }
+  // End to end, before anything is written.
+  const source = await noteRecipeFolder("1", "View");
+  await assert.rejects(runRecipe(h, ["add", source]), (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN" && error.details?.conventions === "conventions/view");
+  await assert.rejects(readFile(path.join(h.folder, "conventions/view.md"), "utf8"), "nothing was written");
+  // Outside a checkout it is not a hosted refusal at all.
+  const plain = await realpath(await mkdtemp(path.join(tmpdir(), "sb-defs-plain-")));
+  await assertKindOnlyRecipe("recipe add", plain, recipeOf([{ id: "conventions/view", governs: "View" }]), { home: h.home, cwd: h.cwd });
+  await rm(source, { recursive: true, force: true });
   await rm(h.home, { recursive: true, force: true });
 });

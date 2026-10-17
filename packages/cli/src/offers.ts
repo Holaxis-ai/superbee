@@ -5,7 +5,7 @@
 // render's offline guarantee is untouched. The CLI supplies these FACTS; the Agent Skill's
 // "Opening a session" section supplies the BEHAVIOR that turns them into an opener.
 import { builtinNames, resolveBuiltinSync } from "./recipe-source-builtin.js";
-import { isRecipeApplied } from "./recipes.js";
+import { isRecipeApplied } from "@superbee/core/recipe-lifecycle";
 import { commandLiteral, commandToken, type CommandPrefix, type CommandText } from "./command-text.js";
 
 /** One ready-made offer: a builtin capability this bundle is not using, with its exact command. */

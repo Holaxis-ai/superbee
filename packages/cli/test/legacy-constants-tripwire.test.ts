@@ -27,10 +27,21 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { PAGE_REGISTRY_PREFIX, PAGE_ENTRY_PREFIX } from "@superbee/core/page";
+// Module-internal to core's recipe lifecycle (not on its public API), so read from the source path.
+import { RETIRED_PAGE_TYPE_NAME } from "../../core/src/recipe-lifecycle/legacy-aliases.js";
+import { LEGACY_PAGE_TYPE_NAME } from "../src/legacy-page.js";
 
 // The frozen historical spellings — literals on purpose, imported from NOTHING.
 const FROZEN_LEGACY_REGISTRY_PREFIX = "pages-registry/";
 const FROZEN_LEGACY_BLOB_PREFIX = "pages/";
+const FROZEN_LEGACY_KIND_NAME = "Page";
+
+test("tripwire: the retired kind name core's recipe install probes equals the CLI's legacy-detection literal", () => {
+  // Recipe install skips a View convention when a convention still governs the retired name; the
+  // CLI's diagnostics (`status`, authoring hints) flag the same name. Both must name one kind.
+  assert.equal(RETIRED_PAGE_TYPE_NAME, FROZEN_LEGACY_KIND_NAME);
+  assert.equal(LEGACY_PAGE_TYPE_NAME, RETIRED_PAGE_TYPE_NAME);
+});
 
 test("tripwire: core's legacy prefixes still equal the frozen historical spellings", () => {
   assert.equal(PAGE_REGISTRY_PREFIX, FROZEN_LEGACY_REGISTRY_PREFIX);

@@ -55,6 +55,13 @@ export { HostedRouteNotServed, isRouteNotServed, ROUTE_NOT_SERVED } from "./erro
 // this one subpath.
 export { MALFORMED_ANSWER, MalformedAnswer, RemoteError, isMalformedAnswer } from "../remote-error.js";
 export { HostedAnswerTooLarge, HostedCarrierError, isAnswerTooLarge } from "../hosted-transport/carrier.js";
+export {
+  performHostedBlobDelivery,
+  type HostedBlobDeliveryContext,
+  type HostedBlobDeliveryOptions,
+  type HostedBlobDeliveryOutcome,
+  type HostedBlobDeliveryResult,
+} from "./blob-delivery.js";
 // Request timing (`onRequestTiming`), re-exported so a caller reads the host's phases from this subpath.
 export {
   parseServerTiming,

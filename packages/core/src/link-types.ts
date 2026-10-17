@@ -1,9 +1,10 @@
-// Shared typed-edge vocabulary derivation for the graph-lints unit: flattens a loaded
-// `KindRegistry`'s per-kind `links` declarations into one `link-type text -> declaring kind(s)`
-// index. Consumed by BOTH `link.ts` (write-time lint on a just-added edge) and `status.ts`
-// (bundle-wide `link_type_violations` sweep) — kept here so the two commands share ONE
-// derivation instead of each carrying its own copy (one registry, no parallel logic).
-import { parseQualifiedKindTarget, type KindRegistry } from "@superbee/core";
+// Shared typed-edge vocabulary derivation: flattens a loaded `KindRegistry`'s per-kind `links`
+// declarations into one `link-type text -> declaring kind(s)` index. Consumed by the CLI's `link`
+// (write-time lint on a just-added edge) and `status` (bundle-wide `link_type_violations` sweep),
+// and by recipe evolution's link-type addition check, so every consumer shares ONE derivation
+// instead of each carrying its own copy (one registry, no parallel logic).
+import { parseQualifiedKindTarget } from "./qualified-links.js";
+import type { KindRegistry } from "./kinds.js";
 
 /** One kind's declared `links` entry for a given link-type text: the declaring kind + its required target kind. */
 export interface LinkTypeDeclaration {

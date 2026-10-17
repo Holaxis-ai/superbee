@@ -10,6 +10,16 @@
 // The 0/1/2/4/5/6 exit taxonomy is PRESERVED intact from holaxis-agentstate.
 import { FieldActionError, InvalidInputError, MalformedDocumentError, OkfActorError, RemoteError, VersionConflict } from "@superbee/core";
 import { isBoardGitError, type BoardGitError } from "@superbee/board-git";
+import {
+  RecipeAssetConflict,
+  RecipeEditionChanged,
+  RecipeEvolutionBlocked,
+  RecipeEvolutionInterrupted,
+  RecipeEvolutionPlanChanged,
+  RecipeEvolutionPostcondition,
+  RecipeInputError,
+  RecipeLifecycleError,
+} from "@superbee/core/recipe-lifecycle";
 import { commandLiteral, commandToken } from "./command-text.js";
 import { actorRefusal } from "./actor-guidance.js";
 
@@ -185,6 +195,9 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  *  - `CliError` -> unchanged (already classified).
  *  - `BoardGitError` (structural guard, never `instanceof` — the dual-load hazard) -> the
  *    same-named `CliErrorCode`, message/details/help preserved verbatim.
+ *  - `RecipeLifecycleError` (`@superbee/core/recipe-lifecycle`) -> the code each recipe failure
+ *    has always had, through {@link cliErrorFromRecipeLifecycle}, so `recipe add`, `recipe
+ *    evolve`, `init`, `kind draft`, `recipes` and the uncaught path agree.
  *  - `InvalidInputError` (core's typed input-validation rejection: unsafe/reserved ids,
  *    empty type, bad option values) -> USAGE (2). This TYPE is the only path by which a
  *    non-`CliError` throw reaches USAGE — "fix your input" is a claim about the input, so it
@@ -212,6 +225,7 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
 export function classifyBundleError(err: unknown, remoteUrl?: string): CliError {
   if (err instanceof CliError) return err;
   if (isBoardGitError(err)) return cliErrorFromBoardGit(err);
+  if (err instanceof RecipeLifecycleError) return cliErrorFromRecipeLifecycle(err);
   if (err instanceof OkfActorError) {
     // Self-correcting: the refusal names the conforming spelling and the once-only env fix, so an
     // agent on any machine repairs its own next command without a project instruction file.
@@ -280,6 +294,64 @@ export function cliErrorFromBoardGit(err: BoardGitError): CliError {
     ...(err.details !== undefined ? { details: err.details } : {}),
     ...(err.help !== undefined ? { help: err.help } : {}),
   });
+}
+
+/** Plan and postcondition blockers shown in an error envelope; the count carries the rest. */
+const RECIPE_ERROR_BLOCKER_CAP = 20;
+
+/**
+ * THE one RecipeLifecycleError→CliError mapping (the CLI command boundary for core's recipe
+ * install and evolution): each typed failure maps to a stable CLI code, message and details. An
+ * edition change maps by its operation: CONFLICT during installation, STALE_HEAD during
+ * evolution. An interrupted evolution that failed for any other reason is
+ * classified by its cause, with the completed and pending definitions merged into the details.
+ * Pinned row by row by `test/error-boundary.test.ts`.
+ */
+export function cliErrorFromRecipeLifecycle(err: RecipeLifecycleError): CliError {
+  if (err instanceof RecipeInputError) return new CliError("USAGE", err.message);
+  if (err instanceof RecipeAssetConflict) {
+    return new CliError("ALREADY_EXISTS", err.message, { details: { recipe: err.recipe, key: err.key } });
+  }
+  if (err instanceof RecipeEditionChanged) {
+    return new CliError(err.operation === "evolution" ? "STALE_HEAD" : "CONFLICT", err.message);
+  }
+  if (err instanceof RecipeEvolutionPlanChanged) {
+    return new CliError("STALE_HEAD", err.message, {
+      details: { expected_plan: err.expected, current_plan: err.current },
+    });
+  }
+  if (err instanceof RecipeEvolutionBlocked) {
+    return new CliError("CONFLICT", err.message, {
+      details: { blocker_count: err.blockers.length, blockers: err.blockers.slice(0, RECIPE_ERROR_BLOCKER_CAP) },
+    });
+  }
+  if (err instanceof RecipeEvolutionInterrupted) {
+    const progress = { completed: err.completed, pending: err.pending };
+    if (err.reason === "race" || err.reason === "edition_changed") {
+      return new CliError("STALE_HEAD", err.message, { details: progress });
+    }
+    if (err.reason === "write_policy") return new CliError("CONFLICT", err.message, { details: progress });
+    const classified = classifyBundleError(err.cause);
+    return new CliError(classified.code, classified.message, {
+      details: { ...(classified.details ?? {}), ...progress },
+      ...(classified.help ? { help: classified.help } : {}),
+      ...(classified.handled ? { handled: true } : {}),
+    });
+  }
+  if (err instanceof RecipeEvolutionPostcondition) {
+    if (err.reason === "unverifiable") {
+      return new CliError("RUNTIME", err.message, { details: { completed: err.completed, pending: [] } });
+    }
+    return new CliError("CONFLICT", err.message, {
+      details: {
+        completed: err.completed,
+        pending: [],
+        blockers: (err.blockers ?? []).slice(0, RECIPE_ERROR_BLOCKER_CAP),
+        postcondition_plan: err.postcondition_plan,
+      },
+    });
+  }
+  return new CliError("RUNTIME", err.message);
 }
 
 /**

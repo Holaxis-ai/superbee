@@ -5,7 +5,7 @@ import { mkdtemp, rm, mkdir, writeFile, readFile, symlink, chmod } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initBundle, readDoc } from "@superbee/core";
-import { applyRecipe } from "../src/recipes.js";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
 
 import {
   parseRecipeFiles,
@@ -358,7 +358,7 @@ test("recipe acquisition preserves ambiguous legacy clocks for v0.2 install and 
     for (const edition of ["0.1", "0.2"] as const) {
       const dir = path.join(scratch, edition);
       const bundle = await initBundle(dir, { okfVersion: edition });
-      const installed = await applyRecipe(bundle, loaded.recipe);
+      const installed = await installRecipe(bundle, loaded.recipe);
       assert.equal(installed.changed, true);
       for (const [index, value] of values.entries()) {
         const saved = await readDoc(bundle, `conventions/term-${index}`);
@@ -371,7 +371,7 @@ test("recipe acquisition preserves ambiguous legacy clocks for v0.2 install and 
         }
       }
       const before = await Promise.all(values.map((_value, index) => readFile(path.join(dir, "conventions", `term-${index}.md`), "utf8")));
-      assert.equal((await applyRecipe(bundle, loaded.recipe)).changed, false);
+      assert.equal((await installRecipe(bundle, loaded.recipe)).changed, false);
       assert.deepEqual(await Promise.all(values.map((_value, index) => readFile(path.join(dir, "conventions", `term-${index}.md`), "utf8"))), before);
     }
   } finally { await rm(scratch, { recursive: true, force: true }); }

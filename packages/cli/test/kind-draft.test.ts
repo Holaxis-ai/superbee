@@ -23,7 +23,7 @@ import {
 import { kind } from "../src/commands/kind.js";
 import { newCommand } from "../src/commands/new.js";
 import { recipes } from "../src/commands/recipes.js";
-import { applyRecipe } from "../src/recipes.js";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { resolveBuiltinSync } from "../src/recipe-source-builtin.js";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
@@ -399,7 +399,7 @@ test("kind draft: refuses a DESCRIPTIONS-ONLY convention — field guidance is a
 test("kind dismiss: refuses a declaration-bearing governed type", async () => {
   const { dir, cleanup } = await tempBundle();
   try {
-    await applyRecipe({ root: dir }, resolveBuiltinSync("context-notes"));
+    await installRecipe({ root: dir }, resolveBuiltinSync("context-notes"));
     const err = await kindError(["dismiss", "Context Note", "--dir", dir]);
     assert.equal(err.code, "USAGE");
     assert.match(err.message, /governed by 'conventions\/context-note'/);
@@ -467,7 +467,7 @@ test("catalog dismiss of Task: recipes reports applied+drift with the command-fr
     assert.doesNotMatch(listing.drift_help as string, /recipe (add|evolve)|kind (draft|field)/);
 
     // `recipe add work-tracking` after the dismissal: conflict path, record left untouched.
-    const result = await applyRecipe({ root: dir }, resolveBuiltinSync("work-tracking"));
+    const result = await installRecipe({ root: dir }, resolveBuiltinSync("work-tracking"));
     const taskDoc = result.docs.find((d) => d.id === "conventions/task")!;
     assert.equal(taskDoc.changed, false);
     assert.equal(taskDoc.source_differs, true);
@@ -524,7 +524,7 @@ test("catalog draft of a multi-convention recipe names the sibling it does not i
 test("recipes drift bit also flags a legitimately evolved kind (the documented false-positive shape) — descriptive, never a defect claim", async () => {
   const { dir, cleanup } = await tempBundle();
   try {
-    await applyRecipe({ root: dir }, resolveBuiltinSync("context-notes"));
+    await installRecipe({ root: dir }, resolveBuiltinSync("context-notes"));
     await runKind(["field", "Context Note", "add", "due", "--dir", dir]); // sanctioned evolution
 
     let out = "";
@@ -545,7 +545,7 @@ test("recipes drift bit also flags a legitimately evolved kind (the documented f
 test("recipes: a pristine applied recipe reports no drift and no drift_help (omitted-when-empty)", async () => {
   const { dir, cleanup } = await tempBundle();
   try {
-    await applyRecipe({ root: dir }, resolveBuiltinSync("context-notes"));
+    await installRecipe({ root: dir }, resolveBuiltinSync("context-notes"));
     let out = "";
     await recipes(["--dir", dir, "--json"], { stdout: (s: string) => (out += s) } as never);
     const listing = JSON.parse(out) as Record<string, unknown>;
