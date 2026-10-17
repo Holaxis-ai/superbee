@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, symlink, writeFile, truncate } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
-import { prepareBlobIntent, blobReceipt, type BlobTargetScope } from "@superbee/core/storage";
+import { prepareBlobIntent, blobReceipt, compareStorageKeys, type BlobTargetScope } from "@superbee/core/storage";
+import { decodeHostedCapabilities, type HostedCarrier } from "@superbee/core/hosted-transport";
 import { createHash, randomUUID } from "node:crypto";
-import { BLOB_SYNC_META_KEY, captureBlobSyncMap, encodeBlobSyncMap, decodeBlobSyncMap, changeBlobSyncEntry, blobSyncDirty, seedBlobSyncEntry, readBlobSyncState, settleBlobSyncReceipt } from "../src/hosted/blob-sync.js";
+import { BLOB_SYNC_META_KEY, captureBlobSyncMap, encodeBlobSyncMap, decodeBlobSyncMap, changeBlobSyncEntry, blobSyncDirty, seedBlobSyncEntry, readBlobSyncState, settleBlobSyncReceipt, seedInitialBlobBaselines } from "../src/hosted/blob-sync.js";
 const digest = (s: string) => `sha256:${createHash("sha256").update(s).digest("hex")}`;
 const scope: BlobTargetScope = { origin: "https://example.test", prefix: "/sync/v1", bundleId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", workspaceSlug: "team" };
 const empty = () => ({ schemaVersion: 1 as const, scope, entries: [] });
@@ -75,5 +76,38 @@ test("whole-map CAS protects another key; selected delete leaves physical recrea
     assert.equal(entry.head, null);
     assert.equal(entry.placedDigest, null);
     assert.equal(blobSyncDirty(entry, digest("recreated")), true);
+  } finally { await backend.close(); await rm(dir, { recursive: true, force: true }); }
+});
+test("initial baselines refuse unsafe/oversize/protected files and retain existing journal evidence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "blob-seed-"));
+  const backend = await FileJournaledBackend.open({ directory: path.join(dir, "store"), lock: { lockRoot: path.join(dir, "locks"), waitMs: 0 } });
+  const folder = path.join(dir, "folder");
+  await mkdir(folder);
+  try {
+    await writeFile(path.join(dir, "outside"), "small");
+    await symlink(path.join(dir, "outside"), path.join(folder, "leaf.bin"));
+    await mkdir(path.join(dir, "outside-dir"));
+    await writeFile(path.join(dir, "outside-dir", "x.bin"), "small");
+    await symlink(path.join(dir, "outside-dir"), path.join(folder, "ancestor"));
+    await writeFile(path.join(folder, "big.bin"), "");
+    await truncate(path.join(folder, "big.bin"), 16 * 1024 * 1024 + 1); // sparse; no large allocation/read
+    await writeFile(path.join(folder, "a.bin"), "small");
+    await mkdir(path.join(folder, "References"));
+    await writeFile(path.join(folder, "References", "x.bin"), "small");
+    const keys = ["References/x.bin", "a.bin", "ancestor/x.bin", "big.bin", "leaf.bin"];
+    keys.sort(compareStorageKeys);
+    const heads = keys.map(key => ({ key, version: digest("small"), contentType: "x/binary" }));
+    const carrier: HostedCarrier = { stream: async () => { throw new Error("no blob content read expected"); }, json: async () => ({ status: 200, headers: new Headers(), body: { schemaVersion: 1, bundleId: scope.bundleId, revision: 1, digest: digest(JSON.stringify([1, heads.map(row => [row.key, row.version, row.contentType])])), total: heads.length, heads, next: null } }) };
+    const options = { folder, scope, exported: Object.fromEntries(keys.map(key => [key, digest("small")])), store: backend, carrier, capabilities: async () => decodeHostedCapabilities({ heads: true, snapshot: true, operations: true, root: null, bound: { documents: 10000, bytes: 1000000 }, blobReads: "allowed", limits: { blobReadBytes: 16 * 1024 * 1024 } }) };
+    const capacityStore = { readMeta: backend.readMeta.bind(backend), writeMeta: async () => { throw new RangeError("a projected snapshot of 999 bytes exceeds the store's 100 byte bound"); } };
+    assert.equal((await seedInitialBlobBaselines({ ...options, store: capacityStore })).state, "capacity");
+    assert.equal(await backend.readMeta(BLOB_SYNC_META_KEY), undefined);
+    assert.deepEqual(await seedInitialBlobBaselines(options), { state: "seeded", count: 1 });
+    const saved = await backend.readMeta(BLOB_SYNC_META_KEY);
+    const prepared = prepareBlobIntent({ scope, intent: { operationId: "blobs.delete.v1", key: "a.bin", expectedVersion: digest("small"), expectedContentType: "x/binary" }, identity: { requestId: randomUUID(), binding: digest("checkout") }, createdAt: new Date().toISOString() });
+    const row = await backend.admitPreparedBlob(prepared, { guard: (await backend.readBlobWithJournal("a.bin")).guard });
+    assert.equal((await seedInitialBlobBaselines({ ...options, carrier: { ...carrier, json: async () => { throw new Error("retained map must not request heads"); } } })).state, "retained");
+    assert.deepEqual(await backend.readMeta(BLOB_SYNC_META_KEY), saved);
+    assert.deepEqual(await backend.readBlobIntent(row.requestId), row);
   } finally { await backend.close(); await rm(dir, { recursive: true, force: true }); }
 });

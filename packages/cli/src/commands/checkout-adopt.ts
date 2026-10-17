@@ -59,6 +59,7 @@ import { clearPublishedExtras, readPublishedExtras } from "../hosted/publish-sta
 import { bindingHostArgument, readCheckoutMarker, writeCheckoutMarker } from "../hosted/marker.js";
 import { digestOf, ensureParentInside, parentUnsafe, placeNew, ROOT_INDEX } from "../hosted/projection.js";
 import { sameAsStored, walk, writeProjection, type ProjectionEntry } from "../hosted/sync-scan.js";
+import { seedInitialBlobBaselines } from "../hosted/blob-sync.js";
 import { storeOkfVersion } from "../hosted/checkout-store.js";
 import {
   adoptedExtras,
@@ -269,7 +270,7 @@ export async function adopt(folderArg: string, options: AdoptOptions, deps: Chec
     ...host.extras,
     ...(published && published.host === target.origin && published.bundle_id === bundleId ? published.extras : {}),
   };
-  const result = await bindWithExtras({ canonical, target, bundleId, connection, deps, resume, extras }, host);
+  const result = await bindWithExtras({ canonical, target, bundleId, connection, deps, resume, extras, blobSeedExtras: host.extras }, host);
   if (published) await clearPublishedExtras(home, canonical);
   const cataloged = await registerInCatalog(home, result.binding);
   const syncHelp = `${cliInvocation()} sync --dir ${commandToken(canonical)}`;
@@ -375,7 +376,7 @@ async function rebindToWorkspace(canonical: string, bound: CheckoutBinding, opti
     return pending;
   });
   const host = await adoptedExtras(canonical, exportRequestFor(connection, target, bound.bundle_id, resume));
-  const result = await bindWithExtras({ canonical, target, bundleId: bound.bundle_id, connection, deps, resume, extras: host.extras }, host);
+  const result = await bindWithExtras({ canonical, target, bundleId: bound.bundle_id, connection, deps, resume, extras: host.extras, blobSeedExtras: host.extras }, host);
   deps.stdout(
     render(
       {
@@ -424,12 +425,16 @@ export async function bindFolderInPlace(input: {
   readonly deps: CheckoutDeps;
   readonly resume: CommandText;
   readonly extras?: Readonly<Record<string, string>>;
+  /** Fresh verified export matches only; published/legacy projection extras are not evidence. */
+  readonly blobSeedExtras?: Readonly<Record<string, string>>;
 }): Promise<BindResult> {
   const { canonical, target, bundleId, deps, resume } = input;
   const { identity, reader, listed: isListed, workspace, reference, definitionWrites, documentInputBytes } = input.connection;
   const home = deps.auth.home;
   const placedFiles = new Map<string, string>();
-  return withCheckoutLock(canonical, async () => {
+  let blobSeedError: unknown;
+  let blobSeedFailed = false;
+  const result = await withCheckoutLock(canonical, async () => {
     if (await bindingForPath(home, canonical)) {
       throw new CliError("CONFLICT", `${canonical} was bound by another command meanwhile`, { details: { reason: "checkout_busy", folder: canonical }, help: "retry the same command" });
     }
@@ -534,6 +539,12 @@ export async function bindFolderInPlace(input: {
         if (!hostIds.has(id)) localOnly.push(id);
       }
       await writeProjection(home, binding.checkout_id, { files, root, rootBase, ...(input.extras && Object.keys(input.extras).length > 0 ? { extras: { ...input.extras } } : {}) });
+      if (input.blobSeedExtras) {
+        try {
+          const scoped = reference.slug === null ? input.connection.client : input.connection.client.within(reference.slug);
+          await seedInitialBlobBaselines({ folder: canonical, scope: { origin: binding.origin, prefix: binding.routes, bundleId, workspaceSlug: reference.slug }, exported: input.blobSeedExtras, store, carrier: scoped.carrier, capabilities: () => reader.hostedCapabilities() });
+        } catch (error) { blobSeedFailed = true; blobSeedError = error; }
+      }
       const ready: CheckoutBinding = { ...binding, state: "ready" };
       await writeBinding(home, ready);
       await recordPulled(home, ready.checkout_id);
@@ -551,7 +562,8 @@ export async function bindFolderInPlace(input: {
       await store?.close();
     }
   });
-
+  if (blobSeedFailed) throw Object.assign(new CliError("RUNTIME", "adopted checkout is ready, but its blob baselines could not be recorded", { details: { reason: "blob_baseline_failed", checkout_state: "ready", folder: canonical, bundle_id: bundleId }, help: "your files and ready binding are preserved; inspect the reported cause before syncing ordinary files" }), { cause: blobSeedError });
+  return result;
 }
 
 /** The export request for a bundle through an adopt's own connection, in the workspace its reference names. */
@@ -571,7 +583,7 @@ async function bindWithExtras(input: Parameters<typeof bindFolderInPlace>[0], ho
     const result = await bindFolderInPlace(input);
     return host.unplaced === null ? result : { ...result, otherFiles: `not recorded: ${host.unplaced}; files other than documents here that differ from nothing on record read as edits until the next checkout` };
   } catch (error) {
-    await removePlaced(input.canonical, host.placed, false).catch(() => {});
+    if (!(error instanceof CliError && error.details?.reason === "blob_baseline_failed" && error.details.checkout_state === "ready")) await removePlaced(input.canonical, host.placed, false).catch(() => {});
     throw error;
   }
 }

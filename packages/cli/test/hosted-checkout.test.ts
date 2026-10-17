@@ -5,6 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { prepareBlobIntent } from "@superbee/core/storage";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -32,7 +34,8 @@ import { hostedAuthRoot, hostedWriteHost, storedSessionHosts, writeDefaultHost }
 import { seedHostedSession } from "./support/hosted-session.js";
 import { writeUserStateFileAtomic0600 } from "../src/user-state.js";
 import { assertAllowedInHostedCheckout, HOSTED_CHECKOUT_REFUSALS } from "../src/hosted/refusals.js";
-import { findPathCollision, placeNew, replaceGuarded } from "../src/hosted/projection.js";
+import { BLOB_SYNC_META_KEY, decodeBlobSyncMap } from "../src/hosted/blob-sync.js";
+import { digestOf, findPathCollision, placeNew, replaceGuarded } from "../src/hosted/projection.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
 import { FakeHost } from "./support/fake-hosted-sync.js";
 import { isolatedUserEnv } from "./support/user-env.js";
@@ -1153,4 +1156,84 @@ test("catalog list --hosted signs in with a resume that re-runs it, and --host i
   const usage = await rejects(catalog(["list", "--host", HOST], { stdout: () => {}, home: () => h.home, auth: h.auth, fetch: fake.fetch }));
   assert.equal(usage.code, "USAGE");
   assert.equal(fake.requests.length, 0);
+});
+
+function baselineHost(bytes: Uint8Array, options: { slug?: string; headVersion?: string; beforeHeads?: () => Promise<void>; malformed?: boolean; allowed?: boolean } = {}) {
+  const host = new FakeHost(options.slug ? { workspaces: TWO_WORKSPACES.workspaces, tenants: TWO_WORKSPACES.tenants, slug: options.slug } : {});
+  host.exportExtras.set("data/opaque.bin", bytes);
+  const blobRequests: unknown[] = [];
+  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+    const route = new URL(String(input)).pathname;
+    if (route.endsWith("/blob-heads")) {
+      blobRequests.push(JSON.parse(String(init?.body)));
+      await options.beforeHeads?.();
+      const heads = [{ key: "data/opaque.bin", version: options.headVersion ?? digestOf(bytes), contentType: 'application/octet-stream; profile="opaque"' }];
+      return Response.json({ schemaVersion: 1, bundleId: BUNDLE, revision: 1, digest: options.malformed ? digestOf("wrong") : digestOf(JSON.stringify([1, heads.map(row => [row.key, row.version, row.contentType])])), total: 1, heads, next: null });
+    }
+    const answer = await host.fetch(input, init);
+    if (route.endsWith("/capabilities") && answer.status === 200 && options.allowed !== false) {
+      const caps = await answer.json() as { limits?: Record<string, unknown> };
+      return Response.json({ ...caps, blobReads: "allowed", limits: { ...caps.limits, blobReadBytes: 16 * 1024 * 1024 } });
+    }
+    return answer;
+  }) as typeof fetch;
+  return { fetch: fetcher, blobRequests };
+}
+async function blobBaseline(h: Harness, folder: string) {
+  const binding = (await bindingForPath(h.home, await realpath(folder)))!;
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id), readOnly: true });
+  try { return decodeBlobSyncMap(await store.readMeta(BLOB_SYNC_META_KEY), { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null }); }
+  finally { await store.close(); }
+}
+test("checkout blob baselines preserve exact binary/MIME and workspace; fresh and moved adoption preserve meaning", async () => {
+  const h = await harness();
+  const bytes = Uint8Array.from([0, 255, 128, 10]);
+  const fake = baselineHost(bytes, { slug: "south" });
+  const runBlob = (args: string[]) => checkout(args, { stdout: text => h.out.push(text), auth: h.auth, cwd: h.cwd, fetch: fake.fetch });
+  await runBlob([`south/${BUNDLE}`, "--host", HOST, "--dir", "blobs"]);
+  const folder = path.join(h.cwd, "blobs"), map = await blobBaseline(h, folder);
+  assert.deepEqual(fake.blobRequests, [{ bundleId: `south/${BUNDLE}` }]);
+  assert.equal(map.scope.workspaceSlug, "south");
+  assert.deepEqual(map.entries, [{ key: "data/opaque.bin", head: { key: "data/opaque.bin", version: digestOf(bytes), contentType: 'application/octet-stream; profile="opaque"' }, placedDigest: digestOf(bytes) }]);
+  assert.deepEqual(await readFile(path.join(folder, "data/opaque.bin")), Buffer.from(bytes));
+  for (const modified of [true, false]) {
+    const copy = path.join(h.cwd, modified ? "modified" : "matching");
+    await cp(folder, copy, { recursive: true });
+    if (modified) await writeFile(path.join(copy, "data/opaque.bin"), "local edit");
+    await runBlob(["--adopt", copy, "--host", HOST]);
+    assert.deepEqual((await blobBaseline(h, copy)).entries, modified ? [] : map.entries);
+  }
+  const bound = (await bindingForPath(h.home, await realpath(folder)))!;
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, bound.checkout_id) });
+  const prepared = prepareBlobIntent({ scope: map.scope, intent: { operationId: "blobs.delete.v1", key: "data/opaque.bin", expectedVersion: digestOf(bytes), expectedContentType: map.entries[0]!.head!.contentType }, identity: { requestId: randomUUID(), binding: digestOf("checkout") }, createdAt: new Date().toISOString() });
+  const pending = await store.admitPreparedBlob(prepared, { guard: (await store.readBlobWithJournal("data/opaque.bin")).guard });
+  await store.close();
+  const moved = path.join(h.cwd, "moved");
+  await rename(folder, moved);
+  await checkout(["--adopt", moved], { stdout: text => h.out.push(text), auth: h.auth, cwd: h.cwd, fetch: async () => { throw new Error("moved adopt must stay offline"); } });
+  assert.deepEqual(await blobBaseline(h, moved), map);
+  const reopened = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, bound.checkout_id), readOnly: true });
+  try { assert.deepEqual(await reopened.readBlobIntent(pending.requestId), pending); } finally { await reopened.close(); }
+});
+test("head/export and placed-byte races stay unseeded; old hosts make no blob requests", async () => {
+  const h = await harness();
+  for (const kind of ["head", "physical", "unsupported"] as const) {
+    const folder = path.join(h.cwd, kind);
+    const fake = baselineHost(Uint8Array.from([0, 255]), { ...(kind === "head" ? { headVersion: digestOf("later") } : {}), ...(kind === "physical" ? { beforeHeads: async () => { await writeFile(path.join(folder, "data/opaque.bin"), "new edit"); } } : {}), allowed: kind !== "unsupported" });
+    await checkout([BUNDLE, "--host", HOST, "--dir", kind], { stdout: text => h.out.push(text), auth: h.auth, cwd: h.cwd, fetch: fake.fetch });
+    assert.deepEqual((await blobBaseline(h, folder)).entries, []);
+    assert.equal(fake.blobRequests.length, kind === "unsupported" ? 0 : 1);
+    if (kind === "physical") assert.equal(await readFile(path.join(folder, "data/opaque.bin"), "utf8"), "new edit");
+  }
+});
+test("unexpected blob seed failure preserves placed files and ready binding with original cause", async () => {
+  const h = await harness(), fake = baselineHost(Uint8Array.from([0, 255]), { malformed: true });
+  const folder = path.join(h.cwd, "bad-heads");
+  const error = await rejects(checkout([BUNDLE, "--host", HOST, "--dir", "bad-heads"], { stdout: text => h.out.push(text), auth: h.auth, cwd: h.cwd, fetch: fake.fetch }));
+  assert.equal(error.details?.reason, "blob_baseline_failed");
+  assert.equal(error.details?.checkout_state, "ready");
+  assert.ok(error.cause instanceof Error);
+  assert.equal((await bindingForPath(h.home, await realpath(folder)))?.state, "ready");
+  assert.deepEqual(await readFile(path.join(folder, "data/opaque.bin")), Buffer.from([0, 255]));
+  assert.deepEqual((await blobBaseline(h, folder)).entries, []);
 });

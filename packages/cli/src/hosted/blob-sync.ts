@@ -1,6 +1,14 @@
-/** Scoped ordinary-file baselines. This module performs no filesystem or network operations. */
-import { captureBlobHead, isBlobContentType, isContentVersion, compareStorageKeys, blobReceipt, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobHead, type BlobTargetScope, type BlobIntentRecord, type BlobIntentPatch, type BlobJournaledBackend, type BlobJournalRead } from "@superbee/core/storage";
-import { captureJournalValue, equalJournalValue } from "@superbee/core/journaled-backend";
+/** Scoped ordinary-file baselines. Physical capture is bounded and leaf-only; callers own checkout locking. */
+import { captureBlobHead, isBlobContentType, isContentVersion, compareStorageKeys, blobReceipt, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobHead, type BlobTargetScope, type BlobIntentRecord, type BlobIntentPatch, type BlobJournaledBackend, isReservedFile, IntentHoldConflict, type JournaledBackend, type BlobJournalRead } from "@superbee/core/storage";
+import { captureJournalValue, equalJournalValue, JournalGuardConflict } from "@superbee/core/journaled-backend";
+
+import path from "node:path";
+import { FileJournalUnavailableError } from "@superbee/core/file-journaled-backend";
+import { createHostedBlobReadAdapter, HostedCarrierError, HostedReadAdapterError, type HostedCarrier, type HostedCapabilities } from "@superbee/core/hosted-transport";
+import { RemoteError } from "@superbee/core";
+import { PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "@superbee/core/page";
+import { digestOf, parentUnsafe, fold } from "./projection.js";
+import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 
 export const BLOB_SYNC_META_KEY = "hosted.blob-sync.v1";
 export interface BlobSyncEntry {
@@ -92,4 +100,58 @@ export async function settleBlobSyncReceipt(backend: BlobJournaledBackend, snaps
   }
   const encoded = encodeBlobSyncMap(next);
   return backend.updateBlobIntent(record.requestId, record.state, update, { guard: captured.journal.guard, meta: [{ key: BLOB_SYNC_META_KEY, value: encoded }] });
+}
+
+/** Optional initial seeding, never a refresh or an inference from old projection extras. */
+export type BlobBaselineSeed = { state: "seeded"; count: number } | { state: "retained" | "unsupported" | "unavailable" | "capacity" | "busy"; count: 0 };
+export async function seedInitialBlobBaselines(options: {
+  folder: string;
+  scope: BlobTargetScope;
+  /** Only digests from this invocation's verified export and placed/matching files. */
+  exported: Readonly<Record<string, string>>;
+  store: Pick<JournaledBackend, "readMeta" | "writeMeta">;
+  carrier: HostedCarrier;
+  capabilities: () => Promise<HostedCapabilities>;
+}): Promise<BlobBaselineSeed> {
+  const { folder, store, carrier, capabilities } = options;
+  const scope = scopeOf(options.scope), exported = captureJournalValue(options.exported);
+  const existing = await store.readMeta(BLOB_SYNC_META_KEY);
+  if (existing !== undefined) { decodeBlobSyncMap(existing, scope); return { state: "retained", count: 0 }; }
+  let heads: readonly BlobHead[];
+  try {
+    const caps = await capabilities();
+    if (caps.blobReads !== "allowed" || !Number.isSafeInteger(caps.blobReadBytes) || !(caps.blobReadBytes! > 0)) return { state: "unsupported", count: 0 };
+    const controller = new AbortController();
+    try { heads = (await createHostedBlobReadAdapter({ carrier, bundleId: scope.bundleId, prefix: scope.prefix, signal: controller.signal, capabilities: async () => caps }).heads()).heads; }
+    finally { controller.abort(); }
+  } catch (error) {
+    if (error instanceof HostedReadAdapterError || error instanceof HostedCarrierError || error instanceof RemoteError && error.code !== "MALFORMED_ANSWER") return { state: "unavailable", count: 0 };
+    throw error;
+  }
+  let map: BlobSyncMap = { schemaVersion: 1, scope, entries: [] };
+  for (const head of heads) {
+    if (!ordinarySeedKey(head.key) || exported[head.key] !== head.version) continue;
+    const file = path.join(folder, ...head.key.split("/"));
+    if (await parentUnsafe(folder, file)) continue;
+    const actual = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
+    if (actual.state !== "present" || digestOf(actual.bytes) !== head.version || await parentUnsafe(folder, file)) continue;
+    map.entries.push(seedBlobSyncEntry(head, head.version));
+  }
+  if (map.entries.length === 0) return { state: "seeded", count: 0 };
+  map = captureBlobSyncMap(map, scope);
+  try {
+    // Whole-map CAS and global journal emptiness are checked in the same existing transaction.
+    await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(map), { expected: { present: false }, requireEmptyJournal: true });
+  } catch (error) {
+    if (error instanceof FileJournalUnavailableError) return { state: "unavailable", count: 0 };
+    if (error instanceof JournalGuardConflict || error instanceof IntentHoldConflict) return { state: "busy", count: 0 };
+    if (error instanceof RangeError && /exceeds the store's .* byte bound/.test(error.message)) return { state: "capacity", count: 0 };
+    throw error;
+  }
+  return { state: "seeded", count: map.entries.length };
+}
+function ordinarySeedKey(key: string): boolean {
+  if (isReservedFile(key)) return false;
+  const root = fold(key.split("/")[0]!);
+  return ![PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX, "conventions/", "recipes/", "references/"].some(prefix => root === prefix.slice(0, -1));
 }
