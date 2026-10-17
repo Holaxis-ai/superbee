@@ -170,8 +170,111 @@ export interface HostedWriteContext {
   readonly signal: AbortSignal;
   /** The wait between outcome lookups (default 250 ms). */
   readonly lookupDelayMs?: number;
+  /** Each bundle's capabilities as writes use them, shared by a client and its `within` clients. */
+  readonly capabilities: HostedCapabilitiesCache;
   carrierFor(workspace: string | null): HostedCarrier;
   readRoutes: HostedReadRoutes;
+}
+
+/** The capabilities a write uses, from one answer: the flags and bounds, and the edition its root declares. */
+interface WriteSideAnswer {
+  readonly capabilities: HostedCapabilities;
+  readonly okfVersion: "0.1" | "0.2" | null;
+}
+
+/**
+ * One bundle's write side: a reader of its own (never the public `reader()`, whose held answer
+ * is checked against heads answers) and its one capabilities answer, in flight or arrived.
+ */
+interface WriteSide {
+  readonly reader: HostedReadAdapter;
+  readonly answer: Promise<WriteSideAnswer>;
+  /** When the answer arrived, by the cache's clock; undefined while it is in flight. */
+  answeredAt: number | undefined;
+}
+
+/**
+ * Each bundle's write side, keyed by the workspace the bundle is named in and its id, and held
+ * for `ttlMs` after its answer arrives. A `ttlMs` of 0 holds nothing: every write reads anew.
+ */
+export interface HostedCapabilitiesCache {
+  readonly ttlMs: number;
+  readonly now: () => number;
+  readonly entries: Map<string, WriteSide>;
+}
+
+/** The default time a bundle's capabilities answer serves writes: 60 s. */
+export const DEFAULT_CAPABILITIES_TTL_MS = 60_000;
+
+export function createCapabilitiesCache(ttlMs: number = DEFAULT_CAPABILITIES_TTL_MS, now: () => number = Date.now): HostedCapabilitiesCache {
+  if (typeof ttlMs !== "number" || !Number.isFinite(ttlMs) || ttlMs < 0) throw new TypeError("capabilitiesTtlMs is a finite number of milliseconds, 0 or more");
+  return { ttlMs, now, entries: new Map() };
+}
+
+/**
+ * The write side of a bundle named in `workspace`: the held one while its answer is in flight or
+ * fresh, so concurrent writes share one read, else (or when `fresh`) a new reader and read, which
+ * replaces the held one. A read that fails is never held. Each new read also removes every
+ * expired entry, so a long-lived client holds only bundles written within the TTL.
+ */
+function writeSide(context: HostedWriteContext, workspace: string | null, bundleId: string, fresh = false): WriteSide {
+  const cache = context.capabilities;
+  const key = JSON.stringify([workspace, bundleId]);
+  const live = (side: WriteSide) => side.answeredAt === undefined || cache.now() - side.answeredAt < cache.ttlMs;
+  const held = cache.entries.get(key);
+  if (held && !fresh && live(held)) return held;
+  for (const [other, side] of cache.entries) if (!live(side)) cache.entries.delete(other);
+  const reader = createHostedReadAdapter({ carrier: context.carrierFor(workspace), bundleId, routes: context.readRoutes });
+  const answer = reader.hostedCapabilities().then(async (capabilities): Promise<WriteSideAnswer> => {
+    // The edition from this same answer's root; the editions core parses, any other reads as
+    // none, as the CLI's checkout reads it.
+    const edition = await readBundleOkfVersion({ readReserved: async () => capabilities.root });
+    return { capabilities, okfVersion: edition === "0.1" || edition === "0.2" ? edition : null };
+  });
+  const side: WriteSide = { reader, answer, answeredAt: undefined };
+  if (cache.ttlMs === 0) return side;
+  cache.entries.set(key, side);
+  answer.then(
+    () => {
+      side.answeredAt = cache.now();
+    },
+    () => {
+      if (cache.entries.get(key) === side) cache.entries.delete(key);
+    },
+  );
+  return side;
+}
+
+/**
+ * Refusals after which a bundle's held capabilities may be what went wrong, so the next write
+ * reads them again: no writes served (`read_only`); input the host or the client's parse under
+ * the held edition refused (`invalid_input`, `validation_failed`); and the bundle gone or access
+ * withdrawn, which the write answer reports as `PERMISSION_DENIED` (`bundle_not_found`,
+ * `insufficient_scope`, `access_denied`).
+ */
+const DROPPING_REFUSALS: ReadonlySet<string> = new Set(["read_only", "invalid_input", "validation_failed", "bundle_not_found", "PERMISSION_DENIED"]);
+
+/** Drop a write side after a result that may say its capabilities are stale: such a refusal, or any `unknown`. */
+function settleWriteSide(context: HostedWriteContext, workspace: string | null, bundleId: string, side: WriteSide, result: HostedWriteResult): HostedWriteResult {
+  if (result.status === "unknown" || (result.status === "refused" && DROPPING_REFUSALS.has(result.code))) {
+    const key = JSON.stringify([workspace, bundleId]);
+    if (context.capabilities.entries.get(key) === side) context.capabilities.entries.delete(key);
+  }
+  return result;
+}
+
+/**
+ * The reader a transport needs. The retention window decides whether an `absent` lookup lets an
+ * intent be resent, so it always comes from a capabilities read made now, never a held answer: a
+ * window the host has since shortened must not resend an identity it may already have expired.
+ * That read refreshes the held entry. It runs only after an `absent` lookup; a failure leaves the
+ * outcome unknown.
+ */
+function writeRemote(context: HostedWriteContext, intent: HostedWriteIntent, reader: HostedReadAdapter): Pick<HostedReadAdapter, "read" | "operationsRetentionMs"> {
+  return {
+    read: (id) => reader.read(id),
+    operationsRetentionMs: async () => (await writeSide(context, intent.workspace, intent.bundleId, true).answer).capabilities.operationsRetentionMs,
+  };
 }
 
 /**
@@ -251,7 +354,7 @@ function writeSignal(context: HostedWriteContext, signal: AbortSignal | undefine
   return signal ? AbortSignal.any([context.signal, signal]) : context.signal;
 }
 
-function transportFor(context: HostedWriteContext, intent: HostedWriteIntent, reader: HostedReadAdapter, capabilities: Pick<HostedCapabilities, "documentInputBytes">, signal: AbortSignal) {
+function transportFor(context: HostedWriteContext, intent: HostedWriteIntent, reader: HostedReadAdapter, capabilities: HostedCapabilities, signal: AbortSignal) {
   const { store } = context;
   return createWholeDocumentTransport({
     carrier: context.carrierFor(intent.workspace),
@@ -261,7 +364,7 @@ function transportFor(context: HostedWriteContext, intent: HostedWriteIntent, re
       const stored = await store.get(requestId);
       return stored ? operationIntent(stored) : undefined;
     },
-    remote: reader,
+    remote: writeRemote(context, intent, reader),
     routes: writeRoutes(context.prefix),
     ...(intent.okfVersion !== null ? { okfVersion: intent.okfVersion } : {}),
     documentInputBytes: capabilities.documentInputBytes,
@@ -296,7 +399,7 @@ async function deliver(
   context: HostedWriteContext,
   intent: HostedWriteIntent,
   reader: HostedReadAdapter,
-  capabilities: Pick<HostedCapabilities, "documentInputBytes">,
+  capabilities: HostedCapabilities,
   callerSignal: AbortSignal,
 ): Promise<HostedWriteResult> {
   // Stopping on a store failure ends the primitive's lookups at once, without the delay between them.
@@ -360,7 +463,6 @@ export async function hostedWrite(context: HostedWriteContext, bundleId: string,
   return serialized(context, requested.requestId, async () => {
     const signal = writeSignal(context, options.signal);
     signal.throwIfAborted();
-    const reader = createHostedReadAdapter({ carrier: context.carrierFor(requested.workspace), bundleId, routes: context.readRoutes });
     const known = options.requestId !== undefined ? await context.store.get(requested.requestId) : undefined;
     if (known && !sameWrite(known, requested)) {
       const message = onlyWorkspaceDiffers(known, requested)
@@ -368,37 +470,38 @@ export async function hostedWrite(context: HostedWriteContext, bundleId: string,
         : "This request identity already names a different write; nothing was sent.";
       return { requestId: requested.requestId, documentId: id, status: "refused", code: "invalid_input", message };
     }
-    // Nothing has left yet: a failure to read the bundle's capabilities is the caller's typed error.
-    const capabilities = await reader.hostedCapabilities();
-    if (known) return deliver(context, known, reader, capabilities, signal);
+    // Nothing has left yet: a failure to read the bundle's capabilities is the caller's typed
+    // error. Everything this write uses from capabilities comes from this one answer.
+    const side = writeSide(context, requested.workspace, bundleId);
+    const { capabilities, okfVersion } = await side.answer;
+    const settle = (result: HostedWriteResult) => settleWriteSide(context, requested.workspace, bundleId, side, result);
+    if (known) return settle(await deliver(context, known, side.reader, capabilities, signal));
     if (!capabilities.operations) {
-      return { requestId: requested.requestId, documentId: id, status: "refused", code: "read_only", message: "The host serves no identified writes for this bundle; nothing was sent." };
+      return settle({ requestId: requested.requestId, documentId: id, status: "refused", code: "read_only", message: "The host serves no identified writes for this bundle; nothing was sent." });
     }
-    // The editions core parses; any other reads as none, as the CLI's checkout reads it.
-    const edition = await readBundleOkfVersion(reader);
     const intent: HostedWriteIntent = {
       ...requested,
       binding: context.binding,
-      okfVersion: edition === "0.1" || edition === "0.2" ? edition : null,
+      okfVersion,
       createdAt: new Date().toISOString(),
       attempts: 0,
       state: "pending",
     };
     await context.store.put(intent);
-    return deliver(context, intent, reader, capabilities, signal);
+    return settle(await deliver(context, intent, side.reader, capabilities, signal));
   });
 }
 
-/** The held intent and its bundle's reader and capabilities, or what a lookup answers without them. */
+/** The held intent and its bundle's write side and capabilities, or what a lookup answers without them. */
 async function heldIntent(
   context: HostedWriteContext,
   requestId: string,
-): Promise<{ intent: HostedWriteIntent; reader: HostedReadAdapter; capabilities: HostedCapabilities } | HostedWriteLookupResult> {
+): Promise<{ intent: HostedWriteIntent; side: WriteSide; reader: HostedReadAdapter; capabilities: HostedCapabilities } | HostedWriteLookupResult> {
   const intent = typeof requestId === "string" ? await context.store.get(requestId) : undefined;
   if (!intent) return { status: "unrecorded", requestId };
-  const reader = createHostedReadAdapter({ carrier: context.carrierFor(intent.workspace), bundleId: intent.bundleId, routes: context.readRoutes });
+  const side = writeSide(context, intent.workspace, intent.bundleId);
   try {
-    return { intent, reader, capabilities: await reader.hostedCapabilities() };
+    return { intent, side, reader: side.reader, capabilities: (await side.answer).capabilities };
   } catch {
     // The write may have left: an unreadable bundle is no evidence either way.
     return { requestId: intent.requestId, documentId: intent.documentId, status: "unknown" };
@@ -429,7 +532,7 @@ export async function hostedLookupWrite(context: HostedWriteContext, requestId: 
   return serialized(context, requestId, async () => {
     const held = await heldIntent(context, requestId);
     if (!("intent" in held)) return held;
-    return lookupOnly(context, held.intent, held.reader, held.capabilities, signal);
+    return settleWriteSide(context, held.intent.workspace, held.intent.bundleId, held.side, await lookupOnly(context, held.intent, held.reader, held.capabilities, signal));
   });
 }
 
@@ -445,10 +548,11 @@ export async function hostedSettleWrite(context: HostedWriteContext, requestId: 
   return serialized(context, requestId, async () => {
     const held = await heldIntent(context, requestId);
     if (!("intent" in held)) return held;
-    if (!held.capabilities.operations) return lookupOnly(context, held.intent, held.reader, held.capabilities, signal);
+    const settle = (result: HostedWriteResult) => settleWriteSide(context, held.intent.workspace, held.intent.bundleId, held.side, result);
+    if (!held.capabilities.operations) return settle(await lookupOnly(context, held.intent, held.reader, held.capabilities, signal));
     // A recorded intent may never have left (a store written before a crash): delivery starts
     // with a submission then, under the recorded identity, exactly as the write would have.
-    return deliver(context, held.intent, held.reader, held.capabilities, signal);
+    return settle(await deliver(context, held.intent, held.reader, held.capabilities, signal));
   });
 }
 
