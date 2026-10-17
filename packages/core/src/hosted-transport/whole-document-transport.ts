@@ -33,7 +33,7 @@
 
 import { parseMarkdown } from "../frontmatter.js";
 import type { Frontmatter, Version } from "../types.js";
-import type { OperationIntent, OperationTransport, Outcome, UncertainWriteOptions } from "../uncertain-write.js";
+import { LOOKUP_PENDING, type LookupPending, type OperationIntent, type OperationTransport, type Outcome, type UncertainWriteOptions } from "../uncertain-write.js";
 import {
   classifyWriteAnswer,
   decodeOutcomeAnswer,
@@ -296,7 +296,9 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   const now = options.now ?? Date.now;
   const lifetime = options.signal ?? new AbortController().signal;
   const requestSignal = (signal?: AbortSignal) => (signal ? AbortSignal.any([lifetime, signal]) : lifetime);
-  const denial = (code: AuthorizationCode, message: string): Outcome => ({ kind: "refused", code, message });
+  // A denial is never the identity's recorded answer: `false` when the row says the attempt was
+  // refused before dispatch, `"unknown"` when the row cannot say.
+  const denial = (code: AuthorizationCode, message: string, executed: false | "unknown" = false): Outcome => ({ kind: "refused", code, message, executed });
   // Checked here, so the carrier's own refusal of a bad token (a `denied`, read as a sign-in
   // pause) is never reached from a write.
   if (options.via !== undefined && !isAgentLabelVia(options.via)) throw new TypeError("the via token is not one the host admits");
@@ -322,11 +324,11 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   }
 
   /** The sync quota, as the pausing refusal its scope names. */
-  function capacity(error: WriteFailure["error"]): Outcome {
+  function capacity(error: WriteFailure["error"], executed?: false): Outcome {
     const scope = error.scope ?? "bundle";
     const reset = error.resetAt ? ` It resets at ${error.resetAt}.` : "";
     const whose = scope === "principal" ? "Your sync quota for this bundle is used up." : "This bundle's sync capacity is used up.";
-    return { kind: "refused", code: CAPACITY_REFUSAL_CODES[scope], message: `${whose}${reset} Nothing was written; sync resumes when it resets.` };
+    return { kind: "refused", code: CAPACITY_REFUSAL_CODES[scope], message: `${whose}${reset} Nothing was written; sync resumes when it resets.`, ...(executed === false ? { executed } : {}) };
   }
 
   /** A definitive recorded refusal, from the write answer or from the stored result a lookup returns. */
@@ -388,7 +390,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     }
   }
 
-  async function lookupIntent(intent: OperationIntent): Promise<Outcome | null> {
+  async function lookupIntent(intent: OperationIntent): Promise<Outcome | LookupPending | null> {
     let request: WholeDocumentRequest;
     try {
       request = prepare(intent).request;
@@ -415,7 +417,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
         return request.kind === "delete" ? deleteReadBack(intent) : UNKNOWN;
       }
       case "pending":
-        return null;
+        return LOOKUP_PENDING;
       case "refused":
         return settleRecorded(intent, outcome.result);
       case "committed": {
@@ -440,7 +442,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
       prepared = prepare(intent);
     } catch (error) {
       const code = error instanceof WholeDocumentInputError ? error.code : "invalid_input";
-      return { kind: "refused", code, message: `${(error as Error).message}; it was not sent.` };
+      return { kind: "refused", code, message: `${(error as Error).message}; it was not sent.`, executed: false };
     }
     const { request } = prepared;
     let answer: HostedAnswer;
@@ -456,7 +458,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     // version is the tombstone. One naming another base is not evidence about this request.
     if (result?.ok && request.kind === "delete" && result.data.deletedVersion !== intent.base) return UNKNOWN;
     if (result?.ok) return { kind: "committed", version: result.data.version };
-    if (result && !result.ok && result.error.code === "request_capacity") return capacity(result.error);
+    if (result && !result.ok && result.error.code === "request_capacity") return capacity(result.error, false);
     if (result && !result.ok && result.error.code === "deletions_held") {
       const { deletions = 0, baseline = 0 } = result.error;
       try {
@@ -464,22 +466,27 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
       } catch {
         // Reporting never changes the outcome.
       }
-      return { kind: "refused", code: DELETIONS_HELD_REFUSAL_CODE, message: result.error.message };
+      return { kind: "refused", code: DELETIONS_HELD_REFUSAL_CODE, message: result.error.message, executed: false };
     }
     // The carrier refuses a malformed identity, binding or via token before sending, so a 400
     // here, and any invalid_input, is the host's schema refusing this exact document (were the
     // via grammar ever to drift from the host's, every write would land here: the golden
     // exchanges pin it). That is deterministic:
-    // resending or looking it up again can only repeat it, so it is a terminal refusal.
+    // resending or looking it up again can only repeat it, so it is a terminal refusal. It was
+    // refused before dispatch, so it settles nothing once a lookup says an earlier delivery is
+    // held (pending), which only a host that changed its verdict could have admitted.
     if (row.answer === "400") {
       const code = (answer.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
-      return { kind: "refused", code: typeof code?.code === "string" ? code.code : "invalid_input", message: typeof code?.message === "string" ? code.message : "The host refused the request as malformed; nothing was written." };
+      return { kind: "refused", code: typeof code?.code === "string" ? code.code : "invalid_input", message: typeof code?.message === "string" ? code.message : "The host refused the request as malformed; nothing was written.", executed: false };
     }
-    if (result && !result.ok && result.error.code === "invalid_input") return { kind: "refused", code: "invalid_input", message: result.error.message };
+    // Unrecorded here (the settled header is not read): the host also answers it before reserving,
+    // for an identity another request or principal holds, so it may be about this attempt only.
+    if (result && !result.ok && result.error.code === "invalid_input") return { kind: "refused", code: "invalid_input", message: result.error.message, executed: "unknown" };
     const settled = answer.headers.get("X-Superbee-Write-Settled") === intent.requestId;
     const lookupRecorded = async (): Promise<Outcome> => {
       try {
-        return (await lookupIntent(intent)) ?? UNKNOWN;
+        const recorded = await lookupIntent(intent);
+        return recorded === null || recorded.kind === "pending" ? UNKNOWN : recorded;
       } catch {
         return UNKNOWN;
       }
@@ -496,14 +503,14 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
       case "no":
         return row.code ? denial(row.code, result?.ok === false ? result.error.message : "The host refused the request before dispatch.") : UNKNOWN;
       default:
-        return row.code ? denial(row.code, "The host denied the request.") : UNKNOWN;
+        return row.code ? denial(row.code, "The host denied the request.", "unknown") : UNKNOWN;
     }
   }
 
   return {
     settlement: WHOLE_DOCUMENT_SETTLEMENT,
     submit,
-    async lookup(requestId: string): Promise<Outcome | null> {
+    async lookup(requestId: string): Promise<Outcome | LookupPending | null> {
       const intent = await options.intentFor(requestId);
       if (!intent) throw new HostedOutcomeError("unavailable");
       return lookupIntent(intent);

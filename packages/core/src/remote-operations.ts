@@ -92,13 +92,13 @@ function buildTransport(remote: RemoteBackend, options: RemoteOperationTransport
       // Refused rather than thrown: the primitive classifies a throw as unknown, and an intent
       // that can never be sent would then stay pending as possibly delivered on every push.
       if (intent.kind !== "document.write") {
-        return { kind: "refused", code: "USAGE", message: `remote operation transport: unsupported intent kind '${intent.kind}'` };
+        return { kind: "refused", code: "USAGE", message: `remote operation transport: unsupported intent kind '${intent.kind}'`, executed: false };
       }
       let parsed: ReturnType<typeof parseMarkdown>;
       try {
         parsed = parseMarkdown(intent.content, pathFromConceptId(intent.target));
       } catch (error) {
-        return { kind: "refused", code: "USAGE", message: error instanceof Error ? error.message : String(error) };
+        return { kind: "refused", code: "USAGE", message: error instanceof Error ? error.message : String(error), executed: false };
       }
       const { frontmatter, body } = parsed;
       const writeOptions = {
@@ -115,6 +115,8 @@ function buildTransport(remote: RemoteBackend, options: RemoteOperationTransport
       } catch (error) {
         if (error instanceof RemoteDocumentValueError) return { kind: "refused", code: "USAGE", message: error.message };
         if (error instanceof VersionConflict) return { kind: "conflict", actual: error.actual };
+        // The reference router authorizes before it claims a key: a 401 or 403 executed nothing.
+        if (error instanceof RemoteError && (error.status === 401 || error.status === 403)) return { kind: "refused", code: error.code, message: error.message, executed: false };
         if (error instanceof RemoteError && error.status < 500) return { kind: "refused", code: error.code, message: error.message };
         throw error;
       }

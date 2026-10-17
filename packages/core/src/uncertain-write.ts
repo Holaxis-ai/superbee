@@ -73,15 +73,41 @@ export type Outcome =
    * It is never a version any read serves, so it is never a base or a remote version.
    */
   | { kind: "conflict"; actual: Version | null; tombstone?: Version }
-  | { kind: "refused"; code: string; message: string }
-  | { kind: "unknown" };
+  /**
+   * `executed` is present only on a refusal that is not the identity's recorded answer: `false`
+   * when this attempt was refused before it could execute (nothing was sent, or the authority
+   * refused it before dispatch), `"unknown"` when the authority's answer does not say. Such a
+   * refusal is evidence about this attempt only, never about an earlier delivery of the identity.
+   */
+  | { kind: "refused"; code: string; message: string; executed?: false | "unknown" }
+  /**
+   * `refusal` names the attempt-only refusal that ended the call, when one did: a resend refused
+   * before execution while an earlier delivery may still be held. The identity stays unknown;
+   * the refusal says why it could not be settled now (for example, access withdrawn).
+   */
+  | { kind: "unknown"; refusal?: { code: string; message: string } };
+
+/**
+ * A lookup's answer that the authority holds the identity without a result yet: a delivery of
+ * it was admitted and may still commit. Distinct from `null`, which says it was never admitted.
+ */
+export interface LookupPending {
+  kind: "pending";
+}
+
+/** The one {@link LookupPending} answer. */
+export const LOOKUP_PENDING: LookupPending = Object.freeze({ kind: "pending" });
 
 /** A transport to a shared authority that records outcomes by request identity. */
 export interface OperationTransport {
   /** Deliver the intent once; a repeated `requestId` must return the recorded outcome unchanged. */
   submit(intent: OperationIntent, options?: { signal?: AbortSignal }): Promise<Outcome>;
-  /** The recorded outcome for `requestId`, or `null` when the authority never recorded it. */
-  lookup(requestId: string): Promise<Outcome | null>;
+  /**
+   * The recorded outcome for `requestId`; {@link LookupPending} when the authority holds it
+   * unanswered; or `null` when the authority never recorded it. A transport that cannot tell
+   * pending from absent answers `null` for both.
+   */
+  lookup(requestId: string): Promise<Outcome | LookupPending | null>;
 }
 
 /** Minimal classification for recorded-only delivery. A commit need not invent a new-head
@@ -177,6 +203,18 @@ export function isAuthorizationRefusal(outcome: Outcome | RecordedWriteOutcome):
   return outcome.kind === "refused" && AUTHORIZATION_REFUSAL_CODES.has(outcome.code);
 }
 
+/**
+ * True when a resend's refusal cannot settle an identity whose earlier delivery is unclear. An
+ * authorization refusal never can: access lost now says nothing about a delivery authorized
+ * earlier. Once a lookup answered {@link LookupPending}, an earlier delivery is known to be held,
+ * so no refusal the transport marks as attempt-only (`executed`) can either. Without that
+ * answer, a marked refusal of the same bytes (a schema `400`, the mass-delete hold) settles, as
+ * it would refuse a delayed first delivery too.
+ */
+function refusalLeavesUnknown(outcome: RecordedWriteOutcome, held: boolean): outcome is Extract<RecordedWriteOutcome, { kind: "refused" }> {
+  return outcome.kind === "refused" && (isAuthorizationRefusal(outcome) || (held && (outcome as { executed?: unknown }).executed !== undefined));
+}
+
 /** The journal state an outcome settles an intent into. */
 export function stateForOutcome(outcome: Outcome | RecordedWriteOutcome): OperationState {
   switch (outcome.kind) {
@@ -258,7 +296,7 @@ export function settleAgainstIntent(outcome: Outcome, intent: OperationIntent): 
  * One submission under a deadline. A transport rejection or a deadline overrun both yield
  * `unknown`: the request may have reached the authority, so nothing here decides otherwise.
  */
-async function submitOnce<I extends RecordedWriteIntent, O extends RecordedWriteOutcome>(transport: RecordedWriteTransport<I, O>, intent: I, deadlineMs: number | undefined, sleep: Sleep): Promise<O | typeof UNKNOWN> {
+async function submitOnce<I extends RecordedWriteIntent, O extends RecordedWriteOutcome>(transport: Pick<RecordedWriteTransport<I, O>, "submit">, intent: I, deadlineMs: number | undefined, sleep: Sleep): Promise<O | typeof UNKNOWN> {
   const controller = new AbortController();
   const attempt = transport.submit(intent, { signal: controller.signal }).then(
     (outcome) => ({ settled: true as const, outcome }),
@@ -301,8 +339,10 @@ async function submitOnce<I extends RecordedWriteIntent, O extends RecordedWrite
  *
  * A refusal before execution ({@link isAuthorizationRefusal}) of a resubmission that follows an
  * unclear submission (in this call, or an earlier one per `earlierDeliveryUnclear`) is `unknown`,
- * not settled: the lookup that allowed it cannot tell a request never received from one held but
- * not yet answered, and the held delivery can still commit.
+ * carrying that refusal, not settled: a `null` lookup cannot prove an earlier delivery will not
+ * still arrive, and the delivery can still commit. After a {@link LookupPending} answer, which
+ * says a delivery is held, the same holds for every refusal the transport marks `executed`
+ * (a gateway's `400` included). A pending lookup still permits the resubmission.
  *
  * By default every outcome passes through {@link settleAgainstIntent}, so a conflict naming the
  * intent's own version is committed. `recorded-only` preserves the recorded outcome instead.
@@ -316,7 +356,8 @@ export function performUncertainWrite(
   transport: OperationTransport, intent: OperationIntent, options?: UncertainWriteOptions,
 ): Promise<UncertainWriteResult>;
 export async function performUncertainWrite(
-  transport: RecordedWriteTransport<RecordedWriteIntent, RecordedWriteOutcome>, intent: RecordedWriteIntent,
+  transport: { submit: RecordedWriteTransport<RecordedWriteIntent, RecordedWriteOutcome>["submit"]; lookup(requestId: string): Promise<RecordedWriteOutcome | LookupPending | null> },
+  intent: RecordedWriteIntent,
   options: UncertainWriteOptions & { start?: "submit-claimed" | "lookup" } = {},
 ): Promise<RecordedWriteResult<RecordedWriteIntent, RecordedWriteOutcome>> {
   const explicitStart = "start" in options;
@@ -341,6 +382,9 @@ export async function performUncertainWrite(
   const { signal } = options;
   // Whether a submission of this identity may still be held by the authority unanswered.
   let unclear = options.earlierDeliveryUnclear === true && intent.attempts > 0;
+  // Whether any lookup in this call answered pending: a delivery of this identity was held, so
+  // a later absent answer in the same call does not undo it.
+  let held = false;
 
   let attempts = intent.attempts;
   let submissions = 0;
@@ -365,14 +409,15 @@ export async function performUncertainWrite(
         return finish(outcome);
       }
       // A resend refused before it reached execution (no credential, access withdrawn, a spent
-      // quota) is evidence about that resend only: an earlier, unclear delivery may still be held
+      // quota, a gateway's schema check) is evidence about that resend only: an earlier, unclear delivery may still be held
       // by the authority and commit, so the identity stays unknown and the intent is kept.
-      if (unclear && isAuthorizationRefusal(outcome)) return finish(UNKNOWN);
+      if (unclear && refusalLeavesUnknown(outcome, held))
+        return finish(explicitStart ? UNKNOWN : ({ kind: "unknown", refusal: { code: outcome.code, message: outcome.message } } satisfies Outcome));
       if (outcome.kind !== "unknown") return finish(outcome);
       unclear = true;
     }
     needSubmission = false;
-    let recorded: RecordedWriteOutcome | null | undefined;
+    let recorded: RecordedWriteOutcome | LookupPending | null | undefined;
     for (let round = 0; round < maxLookups; round++) {
       if (signal?.aborted) break;
       if (round > 0) await sleep(lookupDelayMs, signal);
@@ -387,6 +432,12 @@ export async function performUncertainWrite(
       break;
     }
     if (recorded === undefined) return finish(UNKNOWN);
+    if (recorded !== null && recorded.kind === "pending") {
+      // Held unanswered: a delivery of this identity was admitted and may still commit.
+      unclear = true;
+      held = true;
+      recorded = null;
+    }
     if (recorded !== null) return finish(recorded.kind === "not-executed" ? UNKNOWN : recorded);
     if (explicitStart) return finish(UNKNOWN);
     needSubmission = true;

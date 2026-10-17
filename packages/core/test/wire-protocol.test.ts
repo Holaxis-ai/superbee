@@ -1544,12 +1544,17 @@ test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the pri
 
   status = 403;
   code = "FORBIDDEN";
-  assert.deepEqual(await transport.submit(intent), { kind: "refused", code: "FORBIDDEN", message: "FORBIDDEN from the wire" });
+  // Refused before the router claimed a key: evidence about this attempt only.
+  assert.deepEqual(await transport.submit(intent), { kind: "refused", code: "FORBIDDEN", message: "FORBIDDEN from the wire", executed: false });
+  status = 422;
+  code = "VALIDATION";
+  // Any other refusal may be the identity's recorded answer, replayed: it carries no mark.
+  assert.deepEqual(await transport.submit(intent), { kind: "refused", code: "VALIDATION", message: "VALIDATION from the wire" });
 
   // A gated host that refuses the capabilities route itself is classified the same way, so the
   // authorization pause fires instead of an unknown loop.
   const gated = createRemoteOperationTransport(new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: async () => envelope(401, "AUTH_REQUIRED"), maxRetries: 0 }));
-  assert.deepEqual(await gated.submit(intent), { kind: "refused", code: "AUTH_REQUIRED", message: "AUTH_REQUIRED from the wire" });
+  assert.deepEqual(await gated.submit(intent), { kind: "refused", code: "AUTH_REQUIRED", message: "AUTH_REQUIRED from the wire", executed: false });
 });
 
 test("wire: createRemoteOperationTransport refuses an intent it cannot send, so the primitive settles it as refused instead of unknown", async () => {

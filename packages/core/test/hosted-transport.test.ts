@@ -60,7 +60,7 @@ import {
 import { RemoteError } from "../src/remote-error.js";
 import { SNAPSHOT_TRUNCATED } from "../src/remote-parsers.js";
 import { stringifyDoc } from "../src/frontmatter.js";
-import { isAuthorizationRefusal, performUncertainWrite, type OperationIntent, type Outcome } from "../src/uncertain-write.js";
+import { LOOKUP_PENDING, isAuthorizationRefusal, performUncertainWrite, type OperationIntent, type Outcome } from "../src/uncertain-write.js";
 import { versionOfBytes } from "../src/versioning.js";
 
 /** The hosted commit the fixtures were copied from. */
@@ -541,7 +541,8 @@ test("whole-document transport: a pending claim is not evidence either way, and 
     await assert.rejects(transport.lookup(REQUEST_ID), (error: unknown) => error instanceof HostedOutcomeError && error.reason === "refused" && error.status === fixture(outcome).response.status);
   }
   const { transport } = transportOver({ "/sync/v1/outcome": [fixture("outcome-200-pending")] }, intent);
-  assert.equal(await transport.lookup(REQUEST_ID), null);
+  // Pending is told apart from absent: a delivery was admitted and may still commit.
+  assert.deepEqual(await transport.lookup(REQUEST_ID), LOOKUP_PENDING);
   await assert.rejects(transport.lookup("00000000-0000-4000-8000-000000000000"), HostedOutcomeError);
 });
 
@@ -627,7 +628,8 @@ test("whole-document transport: a 400 or an unrecorded invalid_input is a termin
   assert.equal(four.requests.length, 1);
   const invalid = (): HostedAnswer => ({ status: 200, headers: new Headers(), body: { ok: false, operationId: "documents.replace.v1", error: { code: "invalid_input", message: "too many fields", retryable: false, writeState: "not_applied" } } });
   const unsettled = transportOver({ "/sync/v1/replace": [invalid] }, intent);
-  assert.deepEqual((await unsettled.deliver()).outcome, { kind: "refused", code: "invalid_input", message: "too many fields" });
+  // Still terminal on a first send; marked so it never settles an identity a lookup says is held.
+  assert.deepEqual((await unsettled.deliver()).outcome, { kind: "refused", code: "invalid_input", message: "too many fields", executed: "unknown" });
   assert.deepEqual(unsettled.requests.map((request) => request.path), ["/sync/v1/replace"]);
 });
 
@@ -1113,4 +1115,22 @@ test("a root write never carries a request identity, and a lost answer is settle
   assert.equal(rootLanding(ROOT_BASE, sent, ROOT_BASE), "not_landed");
   assert.equal(rootLanding(null, sent, null), "not_landed");
   assert.equal(rootLanding(`sha256:${"c".repeat(64)}`, sent, ROOT_BASE), "conflict");
+});
+
+test("whole-document transport: a refusal that is not the identity's recorded answer says so, from the row's `recorded`", async () => {
+  const intent = intentOf(BASE);
+  const submitted = async (exchange: string, rewrite?: (body: string) => string) =>
+    transportOver({ "/sync/v1/replace": [fixture(exchange)] }, intent, rewrite ? { rewrite: (body) => rewrite(toReplace(body)) } : {}).transport.submit({ ...intent, attempts: 1, state: "in_flight" });
+  // Rows recorded "no": refused before dispatch.
+  for (const exchange of ["update-401-not-applied", "update-400"]) {
+    const outcome = await submitted(exchange);
+    assert.equal(outcome.kind, "refused", exchange);
+    assert.equal(outcome.kind === "refused" && outcome.executed, false, exchange);
+  }
+  // "401 other": the row cannot say whether the attempt ran.
+  const other = await submitted("update-401-not-applied", () => JSON.stringify({ error: { code: "unrecognized" } }));
+  assert.equal(other.kind === "refused" && other.executed, "unknown");
+  // Nothing sent: no credential, or input the transport will not send.
+  const unsent = await createWholeDocumentTransport({ carrier: { json: async () => { throw new HostedCarrierError("denied"); } } as never, bundleId: "team.knowledge", binding: BINDING, intentFor: async () => intent, remote: { read: async () => { throw new Error("unused"); }, operationsRetentionMs: async () => 0 } }).submit(intent);
+  assert.equal(unsent.kind === "refused" && unsent.executed, false);
 });

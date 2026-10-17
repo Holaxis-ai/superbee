@@ -147,8 +147,13 @@ export type HostedWriteResult =
   /** Another write to the bundle overlapped this one past the host's own retries; nothing was applied. */
   | (WriteResultBase & { readonly status: "conflict"; readonly reason: "concurrent_change"; readonly message: string })
   | (WriteResultBase & { readonly status: "refused"; readonly code: HostedWriteRefusalCode; readonly message: string })
-  /** The host may or may not hold the write. `lookupWrite` or `settleWrite` asks again later. */
-  | (WriteResultBase & { readonly status: "unknown" });
+  /**
+   * The host may or may not hold the write. `lookupWrite` or `settleWrite` asks again later.
+   * `refusal` is the refusal of this call's resend, when one ended it: the resend was refused
+   * before it ran (access withdrawn, signed out, a spent quota, a malformed request) while an
+   * earlier delivery may still commit, so the write is kept. It says why settling must wait.
+   */
+  | (WriteResultBase & { readonly status: "unknown"; readonly refusal?: { readonly code: string; readonly message: string } });
 
 /**
  * What `lookupWrite` and `settleWrite` answer: a write's result, or `unrecorded` when the intent
@@ -345,7 +350,7 @@ function resultOf(intent: HostedWriteIntent, outcome: Outcome): HostedWriteResul
       if (outcome.code === "concurrent_change") return { ...base, status: "conflict", reason: "concurrent_change", message: outcome.message };
       return { ...base, status: "refused", code: outcome.code, message: outcome.message };
     case "unknown":
-      return { ...base, status: "unknown" };
+      return { ...base, status: "unknown", ...(outcome.refusal ? { refusal: { code: outcome.refusal.code, message: outcome.refusal.message } } : {}) };
   }
 }
 
@@ -432,8 +437,8 @@ async function deliver(
   });
   if (storeFailure) throw storeFailure.cause;
   // A refusal after the caller aborted is the abort's (the carrier sends nothing once it has),
-  // never the host's verdict: the identity stays unknown and its record is kept.
-  const answer: Outcome = callerSignal.aborted && outcome.kind === "refused" ? { kind: "unknown" } : outcome;
+  // never the host's verdict: the identity stays unknown and its record is kept, with no reason.
+  const answer: Outcome = callerSignal.aborted && (outcome.kind === "refused" || outcome.kind === "unknown") ? { kind: "unknown" } : outcome;
   await recordOutcome(context, intent, answer, settled.attempts);
   return resultOf(intent, answer);
 }
@@ -513,7 +518,8 @@ async function lookupOnly(context: HostedWriteContext, intent: HostedWriteIntent
   const transport = transportFor(context, intent, reader, capabilities, signal);
   let outcome: Outcome;
   try {
-    outcome = (await transport.lookup(intent.requestId)) ?? { kind: "unknown" };
+    const recorded = await transport.lookup(intent.requestId);
+    outcome = recorded === null || recorded.kind === "pending" ? { kind: "unknown" } : recorded;
   } catch {
     outcome = { kind: "unknown" };
   }
@@ -530,6 +536,8 @@ export async function hostedLookupWrite(context: HostedWriteContext, requestId: 
   const signal = writeSignal(context, options.signal);
   signal.throwIfAborted();
   return serialized(context, requestId, async () => {
+    // Aborted while an earlier call under this identity ran: this one sends nothing.
+    signal.throwIfAborted();
     const held = await heldIntent(context, requestId);
     if (!("intent" in held)) return held;
     return settleWriteSide(context, held.intent.workspace, held.intent.bundleId, held.side, await lookupOnly(context, held.intent, held.reader, held.capabilities, signal));
@@ -546,6 +554,8 @@ export async function hostedSettleWrite(context: HostedWriteContext, requestId: 
   const signal = writeSignal(context, options.signal);
   signal.throwIfAborted();
   return serialized(context, requestId, async () => {
+    // Aborted while an earlier call under this identity ran: this one sends nothing.
+    signal.throwIfAborted();
     const held = await heldIntent(context, requestId);
     if (!("intent" in held)) return held;
     const settle = (result: HostedWriteResult) => settleWriteSide(context, held.intent.workspace, held.intent.bundleId, held.side, result);
