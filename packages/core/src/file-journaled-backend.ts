@@ -523,7 +523,7 @@ function settlementReserve(state: State, txn: number): number {
     // All stored blob rows passed captureBlobIntentRecord and assertReceiptBound, including
     // replay. Unknown/nonterminal evidence can never release this allocation.
     if (row.receipt !== undefined && ["acknowledged", "refused", "conflict"].includes(row.state)) continue;
-    const mutableBytes = encodePayload({ state: row.state, attempts: row.attempts, updatedAt: row.updatedAt, transaction: txn }).byteLength;
+    const mutableBytes = encodePayload({ state: row.state, attempts: row.attempts, updatedAt: row.updatedAt, transaction: txn, ...(row.notAppliedThrough === undefined ? {} : { notAppliedThrough: row.notAppliedThrough }), ...(row.deletionHold === undefined ? {} : { deletionHold: row.deletionHold }) }).byteLength;
     const remaining = BLOB_JOURNAL_BOUNDS.terminalReceiptBytes + BLOB_JOURNAL_BOUNDS.settlementStructureBytes + BLOB_JOURNAL_BOUNDS.baselineBytes - mutableBytes;
     if (!Number.isSafeInteger(remaining) || remaining < 0 || !Number.isSafeInteger(reserved + remaining)) throw new RangeError("blob settlement reserve is not representable");
     reserved += remaining;
@@ -1341,7 +1341,7 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
   async updateBlobIntent(requestId: string, expectedState: OperationState, patch: BlobIntentPatch, options: BlobJournalMutationOptions): Promise<BlobIntentRecord> {
     patch = captureJournalValue(patch);
     options = captureBlobMutationOptions(options);
-    if (!patch || typeof patch !== "object" || Array.isArray(patch) || Object.keys(patch).some(key => !["state", "attempts", "receipt"].includes(key))) throw new JournalGuardConflict(options.guard.key);
+    if (!patch || typeof patch !== "object" || Array.isArray(patch) || Object.keys(patch).some(key => !["state", "attempts", "receipt", "notAppliedThrough", "deletionHold"].includes(key))) throw new JournalGuardConflict(options.guard.key);
     const { guard, meta = [], removeMeta = [] } = options;
     const now = new Date().toISOString();
     return this.#mutate(state => {
@@ -1351,7 +1351,16 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
       if (current.target !== guard.key) throw new JournalGuardConflict(guard.key);
       const next = captureBlobIntentRecord({ ...current, ...patch, updatedAt: now });
       assertReceiptBound(next);
-      if (next.attempts < current.attempts || current.receipt && (next.attempts !== current.attempts || next.state !== current.state || !equalJournalValue(current.receipt, next.receipt))) throw new JournalGuardConflict(guard.key);
+      const beforePrefix = current.notAppliedThrough ?? 0, afterPrefix = next.notAppliedThrough ?? 0;
+      const sameHold = equalJournalValue(current.deletionHold, next.deletionHold);
+      if (current.receipt && (next.attempts !== current.attempts || next.state !== current.state || !equalJournalValue(current.receipt, next.receipt) || afterPrefix !== beforePrefix || !sameHold)) throw new JournalGuardConflict(guard.key);
+      if (next.attempts !== current.attempts) {
+        // The durable claim consumes exactly one eligibility before any wire operation.
+        if (current.receipt || !["pending", "unknown"].includes(current.state) || next.state !== "in_flight" || next.attempts !== current.attempts + 1 || beforePrefix !== current.attempts || afterPrefix !== beforePrefix || !sameHold) throw new JournalGuardConflict(guard.key);
+      } else if (afterPrefix !== beforePrefix) {
+        // Typed evidence belongs to this exact claimed count and must extend the complete prefix.
+        if (current.receipt || !["in_flight", "unknown"].includes(current.state) || next.state !== "pending" || patch.attempts !== current.attempts || beforePrefix !== current.attempts - 1 || afterPrefix !== current.attempts || patch.deletionHold === undefined || next.receipt !== undefined) throw new JournalGuardConflict(guard.key);
+      } else if (!sameHold || patch.state === "in_flight") throw new JournalGuardConflict(guard.key);
       return { changes: [{ family: "intent", key: requestId, value: structuredClone(next) }, ...FileJournaledBackend.#metaChanges(meta, removeMeta)], result: next };
     });
   }

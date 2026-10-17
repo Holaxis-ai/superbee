@@ -343,3 +343,20 @@ test("a deadline-late candidate cannot replace the selected typed lookup receipt
     } else assert.deepEqual(result.outcome, { kind: "unknown" });
   }
 });
+
+test("prefix-qualified explicit delivery preserves only current submission non-execution; old callers retain count3", async () => {
+  const proof = { kind: "not-executed" as const, attempts: 1, details: { deletions: 3, baseline: 5 } };
+  let sends = 0, lookups = 0;
+  const transport = { submit: async () => { sends++; return proof; }, lookup: async () => { lookups++; return proof; } };
+  const qualified = { ...deleteClaim(), notAppliedThrough: 0 };
+  const result = await performUncertainWrite(transport, qualified, { settlement: "recorded-only", start: "submit-claimed" });
+  assert.equal(result.outcome, proof); assert.equal(result.intent.state, "pending"); assert.equal(result.intent.attempts, 1); assert.equal(sends, 1); assert.equal(lookups, 0);
+  for (const [claim, start] of [[deleteClaim(), "submit-claimed"], [qualified, "lookup"]] as const) {
+    const refused = await performUncertainWrite(transport, claim, { settlement: "recorded-only", start }); assert.equal(refused.outcome.kind, "unknown");
+  }
+  await assert.rejects(performUncertainWrite(transport, { ...deleteClaim(2), notAppliedThrough: 0 }, { settlement: "recorded-only", start: "submit-claimed" }), /prefix/);
+  for (const prefix of [-1, 2, NaN, Infinity]) await assert.rejects(performUncertainWrite(transport, { ...deleteClaim(), notAppliedThrough: prefix }, { settlement: "recorded-only", start: "lookup" }), /prefix/);
+  const stale = await performUncertainWrite({ submit: async () => ({ ...proof, attempts: 2 }), lookup: async () => null }, qualified, { settlement: "recorded-only", start: "submit-claimed" }); assert.equal(stale.outcome.kind, "unknown");
+  const controller = new AbortController();
+  const cancelled = await performUncertainWrite({ submit: async () => { controller.abort(); return proof; }, lookup: async () => null }, qualified, { settlement: "recorded-only", start: "submit-claimed", signal: controller.signal }); assert.equal(cancelled.outcome.kind, "unknown");
+});

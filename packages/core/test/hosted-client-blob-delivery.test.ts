@@ -209,3 +209,52 @@ test("actual within clients qualify composed raw creates and replaces without cr
     assert.equal(request.token, `Bearer fresh-${index + 1}`);
   }
 });
+
+test("strict held delete persists a complete prefix across restart then one confirmed exact-identity submission", async () => {
+  const value = retained("blob-delete-428-held"), { row, exchange } = value;
+  const directory = await fs.mkdtemp(path.join(tmpdir(), "blob-held-prefix-"));
+  const options = { directory, lock: { lockRoot: path.join(directory, "locks") } };
+  let backend = await FileJournaledBackend.open(options), sends = 0;
+  const holdCarrier: HostedCarrier = { stream: unused, json: async (_route, body, _signal, headers) => { sends++; assert.deepEqual(body, { bundleId: scope.bundleId, ...value.intent }); assert.equal(headers?.acceptDeletes, undefined); return { status: 428, body: JSON.parse(exchange.response.body), headers: new Headers() }; } };
+  try {
+    const admitted = await backend.admitPreparedBlob(row.prepared, { guard: (await backend.readBlobWithJournal(row.target)).guard });
+    let claimed = await backend.updateBlobIntent(admitted.requestId, "pending", { state: "in_flight", attempts: 1 }, { guard: (await backend.readBlobWithJournal(row.target)).guard });
+    const held = await performHostedBlobDelivery(contextFor(holdCarrier), claimed, { start: "submit-claimed" });
+    assert.equal(held.outcome.kind, "not-executed"); assert.equal(held.lookups, 0); assert.equal(held.patch.notAppliedThrough, 1); assert.deepEqual(held.patch.deletionHold, { deletions: 3, baseline: 5 }); assert.equal(held.patch.receipt, undefined);
+    await backend.updateBlobIntent(claimed.requestId, "in_flight", held.patch, { guard: (await backend.readBlobWithJournal(row.target)).guard });
+    await backend.close(); backend = await FileJournaledBackend.open(options);
+    const persisted = (await backend.readBlobIntent(row.requestId))!; assert.equal(persisted.prepared, row.prepared);
+    const absent = await performHostedBlobDelivery(stub({ send: unused, lookup: async () => ({ status: "absent" }) }), persisted, { start: "lookup" }); assert.equal(absent.outcome.kind, "unknown"); assert.equal(absent.patch.notAppliedThrough, undefined);
+    claimed = await backend.updateBlobIntent(row.requestId, "pending", { state: "in_flight", attempts: 2 }, { guard: (await backend.readBlobWithJournal(row.target)).guard });
+    await assert.rejects(performHostedBlobDelivery(contextFor(holdCarrier), claimed, { start: "submit-claimed" }), /acceptance/);
+    const terminal = { ok: true as const, operationId: "blobs.delete.v1" as const, data: { key: value.intent.key, version: value.intent.expectedVersion!, contentType: value.intent.expectedContentType!, deleted: true as const } };
+    const successCarrier: HostedCarrier = { stream: unused, json: async (_route, body, _signal, headers) => { sends++; assert.deepEqual(body, { bundleId: scope.bundleId, ...value.intent }); assert.equal(headers?.acceptDeletes, 3); return { status: 200, body: terminal, headers: new Headers() }; } };
+    const sent = await performHostedBlobDelivery(contextFor(successCarrier), claimed, { start: "submit-claimed", acceptDeletes: 3 }); assert.equal(sent.state, "acknowledged"); assert.equal(sent.attempts, 2); assert.equal(sends, 2);
+    await backend.updateBlobIntent(row.requestId, "in_flight", sent.patch, { guard: (await backend.readBlobWithJournal(row.target)).guard });
+    const saved = (await backend.readBlobIntent(row.requestId))!; assert.equal(saved.prepared, row.prepared); assert.equal("head" in saved.receipt! && saved.receipt.head, null); assert.equal(saved.receipt?.result.ok && saved.receipt.result.data.contentType, value.intent.expectedContentType);
+    assert.equal(Object.hasOwn(saved, "acceptDeletes"), false);
+  } finally { await backend.close(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+test("hold-shaped answers cannot fill uncertainty, lookup proof, wrong status or malformed count gaps", async () => {
+  const { row, exchange } = retained("blob-delete-428-held"), raw = JSON.parse(exchange.response.body);
+  const result = { ok: false, operationId: "blobs.delete.v1", error: raw.error };
+  for (const answer of [
+    { status: 200, row: updateRow("200 other"), result, settled: false },
+    { status: 428, row: updateRow("428 deletions_held"), result: { ...result, error: { ...result.error, writeState: "unknown" } }, settled: false },
+    { status: 428, row: updateRow("428 deletions_held"), result: { ...result, error: { ...result.error, deletions: 0 } }, settled: false },
+  ]) {
+    const selected = await performHostedBlobDelivery(stub({ send: async () => answer as never, lookup: async () => ({ status: "absent" }) }), row, { start: "submit-claimed", maxLookups: 1 }); assert.equal(selected.outcome.kind, "unknown"); assert.equal(selected.patch.notAppliedThrough, undefined);
+  }
+  let sends = 0;
+  await assert.rejects(performHostedBlobDelivery(stub({ send: async () => { sends++; throw new Error(); }, lookup: unused }), { ...row, attempts: 2 }, { start: "submit-claimed" }), /prefix/); assert.equal(sends, 0);
+  const fromLookup = await performHostedBlobDelivery(stub({ send: unused, lookup: async () => ({ status: "refused", result: result as never }) }), row, { start: "lookup" });
+  // A lookup cannot mint the attempt witness. Its explicit terminal envelope remains a receipt, not prefix proof.
+  assert.equal(fromLookup.patch.notAppliedThrough, undefined);
+  let release!: () => void;
+  const late = new Promise<void>(resolve => { release = resolve; });
+  const timed = await performHostedBlobDelivery(stub({ send: async () => { await late; return { status: 428, row: updateRow("428 deletions_held"), result: result as never, settled: false }; }, lookup: async () => ({ status: "absent" }) }), row, { start: "submit-claimed", deadlineMs: 1, maxLookups: 1, sleep: async () => {} });
+  release(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(timed.outcome.kind, "unknown"); assert.equal(timed.patch.notAppliedThrough, undefined);
+  const controller = new AbortController();
+  const cancelled = await performHostedBlobDelivery(stub({ send: async () => { controller.abort(); return { status: 428, row: updateRow("428 deletions_held"), result: result as never, settled: false }; }, lookup: unused }), row, { start: "submit-claimed", signal: controller.signal }); assert.equal(cancelled.outcome.kind, "unknown"); assert.equal(cancelled.patch.notAppliedThrough, undefined);
+});

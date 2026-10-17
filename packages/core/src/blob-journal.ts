@@ -27,6 +27,13 @@ export interface PreparedBlobIntent extends BlobPreparedInput { schemaVersion: 1
 export type BlobReceipt =
   | { scope: BlobTargetScope; result: Extract<BlobWriteResult, { ok: true }>; head: BlobHead | null; removed?: BlobHead }
   | { scope: BlobTargetScope; result: Extract<BlobWriteResult, { ok: false }> };
+export interface BlobDeletionHold { deletions: number; baseline: number }
+/** Bounded diagnostics, never acceptance or a terminal receipt. */
+export function captureBlobDeletionHold(value: BlobDeletionHold): BlobDeletionHold {
+  const hold = captureJournalValue(value);
+  if (!object(hold) || !only(hold, ["deletions", "baseline"]) || ![hold.deletions, hold.baseline].every(n => Number.isSafeInteger(n) && n >= 1)) throw new TypeError("invalid blob deletion hold");
+  return hold;
+}
 export interface BlobIntentRecord {
   recordFamily: "blob";
   requestId: string;
@@ -38,6 +45,9 @@ export interface BlobIntentRecord {
   state: OperationState;
   updatedAt: string;
   receipt?: BlobReceipt;
+  /** Proven non-execution for every attempt through this count; omitted means zero. */
+  notAppliedThrough?: number;
+  deletionHold?: BlobDeletionHold;
 }
 export interface BlobJournalGuard {
   key: string;
@@ -46,7 +56,7 @@ export interface BlobJournalGuard {
 }
 export interface BlobJournalRead { key: string; intents: BlobIntentRecord[]; meta: Map<string, unknown>; guard: BlobJournalGuard }
 export interface BlobJournalMutationOptions { guard: BlobJournalGuard; meta?: MetaRecord[]; removeMeta?: string[] }
-export interface BlobIntentPatch { state?: OperationState; attempts?: number; receipt?: BlobReceipt }
+export interface BlobIntentPatch { state?: OperationState; attempts?: number; receipt?: BlobReceipt; notAppliedThrough?: number; deletionHold?: BlobDeletionHold }
 export interface BlobJournaledBackend {
   /** Optional file-only atomic metadata mutation under the complete same-key/named-meta guard. */
   writeBlobMeta?(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): Promise<void>;
@@ -118,9 +128,16 @@ export function blobReceipt(prepared: string, raw: unknown): BlobReceipt {
 }
 export function captureBlobIntentRecord(value: BlobIntentRecord): BlobIntentRecord {
   const row = captureJournalValue(value);
-  if (!object(row) || !only(row, ["recordFamily", "requestId", "target", "prepared", "sequence", "attempts", "state", "updatedAt", "receipt"]) || row.recordFamily !== "blob" || !Number.isSafeInteger(row.sequence) || row.sequence < 1 || !Number.isSafeInteger(row.attempts) || row.attempts < 0 || !timestamp(row.updatedAt) || !["pending", "in_flight", "acknowledged", "conflict", "refused", "unknown"].includes(row.state)) throw new TypeError("invalid blob intent record");
+  if (!object(row) || !only(row, ["recordFamily", "requestId", "target", "prepared", "sequence", "attempts", "state", "updatedAt", "receipt", "notAppliedThrough", "deletionHold"]) || row.recordFamily !== "blob" || !Number.isSafeInteger(row.sequence) || row.sequence < 1 || !Number.isSafeInteger(row.attempts) || row.attempts < 0 || !timestamp(row.updatedAt) || !["pending", "in_flight", "acknowledged", "conflict", "refused", "unknown"].includes(row.state)) throw new TypeError("invalid blob intent record");
   const prepared = decodePreparedBlobIntent(row.prepared);
   if (row.requestId !== prepared.identity.requestId || row.target !== prepared.intent.key) throw new TypeError("blob record index does not match payload");
+  const prefix = row.notAppliedThrough === undefined ? 0 : row.notAppliedThrough;
+  if (!Number.isSafeInteger(prefix) || prefix < 0 || prefix > row.attempts) throw new TypeError("invalid blob non-execution prefix");
+  if (row.deletionHold !== undefined) {
+    captureBlobDeletionHold(row.deletionHold);
+    if (prefix === 0 || prepared.intent.operationId !== "blobs.delete.v1") throw new TypeError("blob hold requires its proven deletion prefix");
+  }
+  if (prefix > 0 && row.deletionHold === undefined) throw new TypeError("blob non-execution prefix requires hold diagnostics");
   const terminal = row.state === "acknowledged" || row.state === "conflict" || row.state === "refused";
   if (terminal !== (row.receipt !== undefined)) throw new TypeError("blob terminal state requires its receipt");
   if (row.receipt !== undefined) {
