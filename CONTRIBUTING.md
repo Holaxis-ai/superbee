@@ -7,8 +7,10 @@ answer.
 
 ## Start here
 
-1. Fork or branch from the current `origin/main`, then run `npm ci` from the repository root. A
-   fresh worktree has no trustworthy dependency installation until that succeeds.
+1. Fork or branch from the current `origin/main`. For code work, run `npm ci` from the repository
+   root before trusting dependency-backed checks in a fresh worktree. Documentation-only checks
+   need only their actual dependencies: Node built-ins require no install; identify any reused tools
+   and their applicable source provenance before trusting them.
 2. Read `CLAUDE.md` for the mandatory cold-start and safety rules. Use this document for the
    contribution procedure.
 3. Keep the change to one coherent behavioral or policy claim. If correctness needs another
@@ -61,9 +63,10 @@ Start from current `origin/main`, not another PR tip. Commit one reviewed unit w
 message and no AI-attribution or tool-generated authorship trailers. Do not force-push an open PR
 except for an explicitly coordinated rebase; preserve review deltas as appended commits. The human
 maintainer owns the PR and merge gate. An orchestrator may open or merge a named PR only when a
-human maintainer explicitly delegates that action. Delegation is scoped to the named branch or PR,
-requires every applicable review and required CI check to pass, and does not imply release,
-publication, deployment, or other external authority.
+human maintainer explicitly delegates that action. Delegation is scoped to the named branch or PR.
+Opening the explicitly delegated PR after the branch push starts PR CI; it does not declare the
+change ready. Merging requires every applicable review and required CI check to pass. Delegation
+does not imply release, publication, deployment, or other external authority.
 
 After merging another branch into a working branch, re-read generated prose near the change and the
 front-door README. A generator can prove byte agreement; it cannot prove that retained prose is
@@ -86,6 +89,19 @@ to an orchestrator acting under a human maintainer's explicit instruction for a 
 CI on the pushed SHA is the authoritative gate. During implementation, run the smallest lane that
 owns the affected behavior. `npm run check` is the fullest local stand-in only when CI is
 unavailable; the pre-commit smoke is not the full gate.
+
+For code changes, builder smoke is root build and typecheck plus the owning targeted tests named in
+the task packet. Select the affected test files or supported test filters; a package script that
+runs every test is not automatically the required smoke. Cover the changed public behavior and
+preserve any load-bearing adversarial probe. Documentation-only changes use their relevant document
+checks. Reviewer and QA packets reuse valid exact-SHA evidence and add focused probes, not broad
+suite reruns.
+
+Expand local coverage only for a named risk or coverage gap, or when CI is unavailable. Record the
+reason in the packet before starting; routine caution alone is not a reason to duplicate CI's full
+suites. Before long runs, verify the packet's supported Node runtime, complete required dependencies,
+and necessary fixture permissions. Keep source and generated artifacts frozen while tests execute,
+and report each command's own exit.
 
 The runtime lane builds each TypeScript project before running `typecheck:after-build`. That
 command retains checks for bundled/Vite packages and any additional or newly introduced check;
@@ -212,9 +228,9 @@ dependencies, or isolate Actions before other workflow jobs execute them. Human 
 existing merge queue remain required; major renewals also need compatibility review. Refresh
 Dependabot branches after this policy lands so their checks evaluate the current validators.
 
-Minimum iteration lanes by reach:
+CI coverage and broader local reproduction commands by reach (not the default builder smoke):
 
-| Touched surface | Run at minimum |
+| Touched surface | Owning CI coverage / local reproduction |
 | --- | --- |
 | Package source or tests | `npm run ci:runtime` |
 | `package.json`, `scripts/`, or packaging code | `npm run ci:distribution` and `npm run ci:scripts` |
@@ -235,9 +251,11 @@ proof run in the Windows repository against explicitly pinned core and CLI artif
 
 ### Running checks
 
-Before each commit, run `npm run build && npm run typecheck` from the repository root plus the
-touched test target. For the exact lanes and their components, use the table above and
-`scripts/ci-lanes.json` rather than reconstructing commands from prose.
+Before each code commit, run root `npm run build` and `npm run typecheck` plus the owning targeted
+tests. Documentation-only and test-only policy corrections with no consequential mechanism change
+use their relevant targeted checks under the Assurance tier below. Full repository or package
+suites are not the default local smoke; broader coverage follows the named-risk rule above. For
+exact CI lanes and reproduction components, use the table above and `scripts/ci-lanes.json`.
 
 Redirect potentially large output to a temporary log and read the command's own exit code. A pipe
 to `tail` or `grep` reports the last process's status and can turn a failing check into a false
