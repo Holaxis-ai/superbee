@@ -57,7 +57,7 @@ function ownedStep(version: Version, fields: Record<string, { from?: unknown; to
 }
 const startStep = (version: Version, over: Record<string, unknown> = {}) => ownedStep(version, { start: { from: STORY.start, to: LATER } }, over);
 function createStep(target: string, frontmatter: Record<string, unknown> = SIGNAL_FM): CreateSignalStep {
-  return { op: "create-signal", target, external_id: UID("009"), content_digest: DIGEST("9"), reasons: ["test"], candidate: { frontmatter: frontmatter as OkfDocument["frontmatter"], body: "# Observations\n\n- line\n" } };
+  return { op: "create-signal", target, external_id: UID("009"), content_digest: DIGEST("9"), reasons: ["test"], candidate: { frontmatter: frontmatter as OkfDocument["frontmatter"], body: `# Observations\n\n- ${AT} · new · ${DIGEST("9")} · new record\n` } };
 }
 function collapseStep(target: string, version: Version, set: Record<string, unknown>, observation = line(), over: Partial<CollapseSignalStep> = {}): CollapseSignalStep {
   return { op: "collapse-signal", target, expected_version: version, external_id: UID("009"), content_digest: DIGEST("8"), progress_field: "superbee_progress_status", observation_line: observation, set, ...over };

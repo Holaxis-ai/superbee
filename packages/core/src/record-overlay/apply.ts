@@ -28,6 +28,7 @@ import {
   type DocumentMutationResult,
 } from "../document-mutation.js";
 import { PreconditionFailed } from "../document-precondition.js";
+import { InvalidInputError } from "../errors.js";
 import type { KindRegistry } from "../kinds.js";
 import { isManagedDocumentMetadataField } from "../managed-document-metadata.js";
 import { okfValuesEqual } from "../okf-authored-values.js";
@@ -111,12 +112,17 @@ export function ownershipGuard(o: {
   expectedFrom?: Record<string, unknown>;
   derivedFields?: readonly string[];
   sourceProperties?: Record<string, unknown>;
+  /** The Kind the plan was derived for; a fresh document of any other type is refused. */
+  targetKind?: string;
 }): AssertCandidate {
-  const { ownedFields, provider, externalId, expectedFrom = {}, derivedFields = [], sourceProperties } = o;
+  const { ownedFields, provider, externalId, expectedFrom = {}, derivedFields = [], sourceProperties, targetKind } = o;
   assertAdmissibleFields(ownedFields, derivedFields);
   const admitted = new Set([...ownedFields, ...derivedFields]);
   return (existing, candidate) => {
     if (!existing) throw new OverlayRefusal(REFUSAL_CODES.OVERLAY_IDENTITY_LOST, "overlay document no longer exists", { external_id: externalId });
+    if (targetKind !== undefined && existing.frontmatter.type !== targetKind) {
+      throw new OverlayRefusal(REFUSAL_CODES.FIELD_NOT_OWNED, `owned-field writes reach ${targetKind} documents only`, { field: "type", external_id: externalId });
+    }
     const before = existing.frontmatter as unknown as Record<string, unknown>;
     const after = candidate.frontmatter as unknown as Record<string, unknown>;
     const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
@@ -156,7 +162,7 @@ function notOwned(message: string, details: Record<string, unknown> = {}): Overl
  * The Signal create guard: a new attention Kind document under its path, fixed keys, state `todo`.
  * Exported for this package's tests only; the subpath entry does not re-export it.
  */
-export function signalCreateGuard(attention: AttentionResolution, step: CreateSignalStep): AssertCandidate {
+export function signalCreateGuard(attention: AttentionResolution, step: CreateSignalStep, run: { observedAt: string; provider: string }): AssertCandidate {
   return (_existing, candidate) => {
     if (!attention.ok) throw notOwned(`record-overlay creates documents of an attention Kind only: ${attention.reason}`, { external_id: step.external_id });
     const { name, prefix, stateField } = attention.value;
@@ -170,7 +176,32 @@ export function signalCreateGuard(attention: AttentionResolution, step: CreateSi
     if (!Array.isArray(fm.sources) || !fm.sources.every((entry) => record(entry) && typeof entry.resource === "string")) {
       throw notOwned("create-signal sources must be a list of entries naming a resource", { field: "sources", external_id: step.external_id });
     }
+    if (fm.provider !== redactUrl(run.provider)) throw notOwned("create-signal must name the run's provider", { field: "provider", external_id: step.external_id });
+    if (fm.external_id !== step.external_id) throw notOwned("create-signal must name the step's record", { field: "external_id", external_id: step.external_id });
+    if (!plannedSignalBody(candidate.body, run.observedAt)) throw notOwned("create-signal body is not a planned Signal body", { fields: ["(body)"], external_id: step.external_id });
   };
+}
+
+const LINE_BREAK = /[\r\n\u0085\u2028\u2029]/;
+/** One observation line of this observation: no line break of any kind, the planner's prefix. */
+function observationLineOf(text: string, observedAt: string): boolean {
+  return !LINE_BREAK.test(text) && text.startsWith(`- ${observedAt} · `);
+}
+const PREAMBLE_LINES = [
+  /^\[[^\]]+\]\([^)\s]+\)$/,
+  /^Overlay document \(content bundle\): `[^`]+`$/,
+  /^Related document \(content bundle\): `[^`]+`(?: \(.*\))?$/,
+  /^To overlay this record, give a document of Kind "[^"]*" the source entry `resource: [^`]*`, `id: [^`]*`\.$/,
+];
+/**
+ * The planner's Signal body: link and hint lines (at most eight), a `# Observations` heading and
+ * exactly one observation line of this observation.
+ */
+function plannedSignalBody(body: string, observedAt: string): boolean {
+  const match = /^([\s\S]*?)# Observations\n\n([^\n]*)\n$/.exec(body);
+  if (!match || !observationLineOf(match[2]!, observedAt)) return false;
+  const lines = match[1]!.split("\n").filter((text) => text !== "");
+  return lines.length <= 8 && lines.every((text) => !LINE_BREAK.test(text) && PREAMBLE_LINES.some((pattern) => pattern.test(text)));
 }
 
 const UPDATE_FIELDS = new Set(["change_kind", "priority", "observed_at", "diff_summary", "title", "external_id", "about_doc", "content_digest", "expires_at"]);
@@ -189,7 +220,7 @@ export function signalUpdateGuard(attention: AttentionResolution, step: Collapse
     }
     const before = existing.frontmatter as unknown as Record<string, unknown>;
     if (before.provider !== redactUrl(observation.provider)) throw notOwned("collapse-signal target belongs to another provider", { field: "provider", external_id: step.external_id });
-    if (/[\r\n]/.test(step.observation_line) || !step.observation_line.startsWith(`- ${observation.observedAt} · `)) {
+    if (!observationLineOf(step.observation_line, observation.observedAt)) {
       throw notOwned("collapse-signal observation line must be one line of this observation", { fields: ["(body)"], external_id: step.external_id });
     }
     const after = candidate.frontmatter as unknown as Record<string, unknown>;
@@ -233,8 +264,27 @@ function toRefusal(err: unknown, step: OverlayStep, registries: KindRegistry[]):
     // A fixed message and the reason and field only: core's sentences and candidates can echo a provider value.
     return { code: REFUSAL_CODES.INVALID_INPUT, message: "core refused the field actions for this step", details: { reason: err.details.reason, field: err.details.field } };
   }
+  if (err instanceof InvalidInputError) {
+    // A value core's write policy refuses (an OKF v0.2 field type, a hook's list): held and
+    // value-free. The actor, editions and targets were checked before the first write.
+    return { code: REFUSAL_CODES.INVALID_INPUT, message: "core refused a value in this step", details: { reason: "invalid-value" } };
+  }
   throw err;
 }
+
+const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+/** JSON data: strings, booleans, null, finite numbers other than -0, lists and plain mappings; `undefined` members only. */
+function jsonData(value: unknown, depth = 0): boolean {
+  if (depth > 64) return false;
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value) && !Object.is(value, -0);
+  if (Array.isArray(value)) return value.every((item) => item !== undefined && jsonData(item, depth + 1));
+  if (typeof value === "object" && Object.prototype.toString.call(value) === "[object Object]") {
+    return Object.entries(value).every(([key, item]) => !PROTOTYPE_KEYS.has(key) && (item === undefined || jsonData(item, depth + 1)));
+  }
+  return false;
+}
+const scalar = (value: unknown): boolean => typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && jsonData(value));
 
 function malformed(index: number, op: unknown): OverlayRefusal {
   return new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, `plan step ${index} is not a well-formed ${typeof op === "string" ? op : "plan"} step`, { step: index });
@@ -255,14 +305,14 @@ function validatePlan(plan: OverlayPlan): void {
     if (step.op === "apply-owned-fields") {
       const fields = step.fields;
       if (!target() || !str("expected_version") || typeof step.external_id !== "string" || !record(fields) || Object.keys(fields).length === 0
-        || !Object.values(fields).every(record)) throw malformed(index, step.op);
+        || !Object.entries(fields).every(([key, v]) => !PROTOTYPE_KEYS.has(key) && record(v) && (v.to === undefined || jsonData(v.to)))) throw malformed(index, step.op);
       if (step.sources !== undefined && (!record(step.sources) || Object.entries(step.sources).some(([key, value]) =>
-        key === "resource" || key === "id" || !(typeof value === "string" || typeof value === "number" || typeof value === "boolean")))) throw malformed(index, step.op);
+        key === "resource" || key === "id" || PROTOTYPE_KEYS.has(key) || !scalar(value)))) throw malformed(index, step.op);
     } else if (step.op === "create-signal") {
       const candidate = step.candidate;
-      if (!target() || !record(candidate) || !record(candidate.frontmatter) || typeof candidate.body !== "string") throw malformed(index, step.op);
+      if (!target() || !record(candidate) || !record(candidate.frontmatter) || typeof candidate.body !== "string" || !jsonData(candidate.frontmatter)) throw malformed(index, step.op);
     } else if (step.op === "collapse-signal") {
-      if (!target() || !str("expected_version") || typeof step.observation_line !== "string" || !record(step.set)) throw malformed(index, step.op);
+      if (!target() || !str("expected_version") || typeof step.observation_line !== "string" || !record(step.set) || !jsonData(step.set)) throw malformed(index, step.op);
     } else if (step.op === "signal-duplicate") {
       if (!target()) throw malformed(index, step.op);
     }
@@ -294,8 +344,16 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
     const targetKind = policy.target_kind === undefined ? undefined : content.registry.kinds.get(policy.target_kind);
     assertAdmissibleFields(policy.owned_fields, derive?.fields ?? [], workStateFields(targetKind, [contentEdition]));
     if (typeof policy.provider !== "string" || policy.provider === "") throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "owned-field steps need the policy's provider identity");
+    if (targetKind === undefined) throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "owned-field steps need a target Kind declared in the content bundle");
+    if (policy.target_kind === (ctx.signals?.kind ?? "Signal")) throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "the target Kind cannot be the attention Kind");
   }
-  const attention: AttentionResolution = plan.steps.some((step) => step.op === "create-signal" || step.op === "collapse-signal")
+  const signalSteps = plan.steps.some((step) => step.op === "create-signal" || step.op === "collapse-signal");
+  // Signal writes are bound to the provider the caller runs for, never to a field of the plan.
+  if (signalSteps && (typeof policy.provider !== "string" || policy.provider === "")) {
+    throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "Signal steps need the run's provider identity");
+  }
+  const run = { observedAt: plan.observed_at, provider: policy.provider };
+  const attention: AttentionResolution = signalSteps
     ? resolveAttentionKind(ops.registry, opsEdition, ctx.signals?.kind ?? "Signal", policy.target_kind)
     : { ok: false, reason: "no Signal steps" };
 
@@ -313,7 +371,7 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
       ...common, bundle: content.bundle, registry: content.registry, id: step.target, mode: "patch" as const, onAbsent: "fail" as const,
       expectedVersion: step.expected_version,
       assertCandidate: composeGuards(
-        ownershipGuard({ ownedFields: policy.owned_fields, provider: policy.provider, externalId: step.external_id, expectedFrom, derivedFields, sourceProperties: step.sources }),
+        ownershipGuard({ ownedFields: policy.owned_fields, provider: policy.provider, externalId: step.external_id, expectedFrom, derivedFields, sourceProperties: step.sources, targetKind: policy.target_kind }),
         siteHook(step, "content"),
       ),
     };
@@ -399,13 +457,21 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
       } else if (step.op === "create-signal") {
         r = await mutateDocument({
           ...common, bundle: ops.bundle, registry: ops.registry, id: step.target, mode: "patch", onAbsent: "create",
-          preconditions: [{ field: "type", expect: "absent" }],
-          // A document without a type passes the precondition; it is never overwritten by a create.
+          // A create never overwrites. An existing Signal of this provider is the type precondition
+          // the reference reports (retryable); another provider's Signal holding the id, or any
+          // other document there, is refused outright.
           buildCandidate: (existing) => {
-            if (existing) throw notOwned("create-signal target already exists", { external_id: step.external_id });
+            if (existing) {
+              const fm = existing.frontmatter as unknown as Record<string, unknown>;
+              if (fm.type === undefined) throw notOwned("create-signal target already exists", { external_id: step.external_id });
+              if (attention.ok && fm.type === attention.value.name && fm.provider !== redactUrl(run.provider)) {
+                throw notOwned("create-signal target holds another provider's Signal", { field: "provider", external_id: step.external_id });
+              }
+              throw new OverlayRefusal(REFUSAL_CODES.STALE_VERSION, "precondition on type no longer holds", { field: "type" });
+            }
             return structuredClone(step.candidate);
           },
-          assertCandidate: composeGuards(signalCreateGuard(attention, step), siteHook(step, "ops")),
+          assertCandidate: composeGuards(signalCreateGuard(attention, step, run), siteHook(step, "ops")),
         });
       } else {
         const claim = attention.ok ? attention.value : undefined;
@@ -423,7 +489,7 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
               body: existing!.body.includes(step.observation_line) ? existing!.body : existing!.body.replace(/\n*$/, "\n") + step.observation_line + "\n",
             };
           },
-          assertCandidate: composeGuards(signalUpdateGuard(attention, step, { observedAt: plan.observed_at, provider: plan.provider }), siteHook(step, "ops")),
+          assertCandidate: composeGuards(signalUpdateGuard(attention, step, run), siteHook(step, "ops")),
         });
       }
       results.push({ op: step.op, target: step.target, external_id: step.external_id, outcome: r.changed ? "applied" : "unchanged", version: r.version });

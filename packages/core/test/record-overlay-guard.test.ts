@@ -11,7 +11,6 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { InvalidInputError } from "../src/errors.js";
 import type { OkfDocument, Version } from "../src/types.js";
 import { resolveAttentionKind } from "../src/record-overlay/signal-kind.js";
 import { signalCreateGuard, signalUpdateGuard } from "../src/record-overlay/apply.js";
@@ -61,7 +60,7 @@ function ownedStep(version: Version, fields: Record<string, { from: unknown; to:
   return { op: "apply-owned-fields", target: "events/story-time", expected_version: version, external_id: UID("001"), change_kind: "changed", fields, ...over } as OverlayStep;
 }
 function createStep(target: string, frontmatter: Record<string, unknown>): CreateSignalStep {
-  return { op: "create-signal", target, external_id: UID("009"), content_digest: DIGEST("9"), reasons: ["test"], candidate: { frontmatter: frontmatter as OkfDocument["frontmatter"], body: "# Observations\n\n- line\n" } };
+  return { op: "create-signal", target, external_id: UID("009"), content_digest: DIGEST("9"), reasons: ["test"], candidate: { frontmatter: frontmatter as OkfDocument["frontmatter"], body: `# Observations\n\n- ${AT} · new · ${DIGEST("9")} · new record\n` } };
 }
 const SIGNAL_FM = { type: "Signal", title: "New: x", superbee_progress_status: "todo", change_kind: "new", observed_at: AT, provider: PROVIDER, external_id: UID("009"), diff_summary: "new record", priority: "low", sources: [{ resource: PROVIDER, id: UID("009") }] };
 function collapseStep(target: string, version: Version, set: Record<string, unknown>, line = `- ${AT} · changed · ${DIGEST("8")} · changed`): CollapseSignalStep {
@@ -366,14 +365,14 @@ test("INVALID_INPUT: an owned field holding a list is refused by the subpath; a 
   assert.equal((await w.read("events/story-time")).version, version);
 });
 
-test("other core input errors still throw: a derive hook that returns a list fails the run", async () => {
+test("a value core's write policy refuses inside a step is a held, value-free row: a derive hook that returns a list", async () => {
   const w = await overlayWorld();
   const version = await overlaid(w);
-  const derive = { fields: ["note"], derive: () => ({ note: ["a"] }) };
-  await assert.rejects(
-    applyRecordOverlay(planOf([ownedStep(version, { start: { from: STORY.start, to: "2026-10-10T11:00:00-04:00" } })]), ctxOf(w, { hooks: { deriveFields: derive } })),
-    (e: unknown) => e instanceof InvalidInputError && !(e instanceof OverlayRefusal),
-  );
+  const derive = { fields: ["note"], derive: () => ({ note: ["secret-list-value"] }) };
+  const r = await applyRecordOverlay(planOf([ownedStep(version, { start: { from: STORY.start, to: "2026-10-10T11:00:00-04:00" } })]), ctxOf(w, { hooks: { deriveFields: derive } }));
+  assert.deepEqual([r.results[0]!.code, r.results[0]!.message, r.results[0]!.details], ["INVALID_INPUT", "core refused a value in this step", { reason: "invalid-value" }]);
+  assert.doesNotMatch(JSON.stringify(r), /secret-list-value/);
+  assert.equal((await w.read("events/story-time")).version, version);
 });
 
 // ------------------------------------------------------------------------------- races and invariants

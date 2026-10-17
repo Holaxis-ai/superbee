@@ -109,8 +109,8 @@ function sourcePropertiesOf(hook: PlanInput["hooks"], change: RecordChange): Rec
     if (key === "resource" || key === "id") {
       throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, `sourceProperties may not set the identity property ${key}`, { external_id: change.external_id, field: key });
     }
-    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
-      throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, `sourceProperties property ${key} must be a string, number or boolean`, { external_id: change.external_id, field: key });
+    if (typeof value !== "string" && typeof value !== "boolean" && !(typeof value === "number" && Number.isFinite(value) && !Object.is(value, -0))) {
+      throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, `sourceProperties property ${key} must be a string, finite number or boolean`, { external_id: change.external_id, field: key });
     }
   }
   return Object.keys(props).length ? { ...props } : undefined;
@@ -262,7 +262,8 @@ export async function planRecordOverlay(input: PlanInput): Promise<OverlayPlan> 
       diff_summary: summary,
       priority: signal.priority,
       ...aboutDoc,
-      sources: [{ resource: providerOut, id: change.external_id, ...(recTitle ? { title: recTitle } : {}) }],
+      // A source entry's title is text on OKF v0.2; a numeric or boolean record title is written as its text.
+      sources: [{ resource: providerOut, id: change.external_id, ...(recTitle ? { title: typeof recTitle === "number" || typeof recTitle === "boolean" ? String(recTitle) : recTitle } : {}) }],
     };
     const body = `${linkLines.join("\n")}\n${adopt}\n# Observations\n\n${line}\n`;
     steps.push({ op: "create-signal", target: id, external_id: change.external_id, content_digest: change.content_digest, reasons: signal.reasons, candidate: { frontmatter, body } });

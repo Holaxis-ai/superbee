@@ -199,10 +199,12 @@ document's value: a document that already says the new value is left alone, one 
 the old value is written, and anything else is an `OVERLAY_DOC_CONFLICT` with a Signal, so an
 editor's override is never overwritten. Each step carries the version it was planned against.
 `applyRecordOverlay` writes every step through `mutateDocument` with a guard core builds itself and
-runs on the fresh read: an owned-field write may change only owned and derived fields, never the
-body, and needs the record's `sources` identity; a Signal may be created only as a new, unclaimed
-document of the attention Kind under its path, and updated only in a fixed set of fields plus one
-appended line of this observation, and only when it belongs to the plan's provider. Nothing of the
+runs on the fresh read: an owned-field write reaches documents of the policy's target Kind only,
+may change only owned and derived fields, never the body, and needs the record's `sources`
+identity; a Signal may be created only as a new, unclaimed document of the attention Kind under its
+path, with the planner's body shape, and updated only in a fixed set of fields plus one appended
+line of this observation. Signal writes are bound to the provider of the policy the caller passes,
+never to a field of the plan, and an id held by another provider's Signal is refused. Nothing of the
 target Kind is created and nothing is deleted. A feed never owns its target's work state: the
 progress storage fields and the target Kind's claim fields are refused like `status`. The
 attention Kind (default `Signal`) must declare a claim owner and state field and the fields
@@ -213,9 +215,12 @@ record is always raised), `correlate`, `sourceProperties` (an upsert of the reco
 entry in the same write, OKF v0.2 only), `assertCandidate` (site candidate checks after the core
 guards) and `deriveFields` (fields such as `updated_at` written in the same version). Refusals are
 receipt rows with a `REFUSAL_CODES` code; `RETRYABLE` and `HOLD_STORE` say which leave a record to be
-planned again. A malformed plan (an unknown step, a non-canonical target, non-scalar or identity
-`sources` properties), actor or bundle edition throws `OverlayRefusal` before any write, and so
-does a plan with owned-field steps whose owned or derived list names a field a feed can never own.
+planned again. A value core's write policy refuses (an OKF v0.2 field type, for example) is a held
+`INVALID_INPUT` row, so one bad record never stops the rest of a run. A malformed plan (an unknown
+step, a non-canonical target, written values that are not JSON data with finite numbers, prototype
+keys, non-scalar or identity `sources` properties), actor or bundle edition throws `OverlayRefusal`
+before any write, and so does a plan with owned-field steps whose policy names no declared target
+Kind or whose owned or derived list names a field a feed can never own.
 
 `SourceIndex` holds one head read for a whole run. It is bounded to that run: an edited or deleted
 overlay is still caught at write time, but a second document given an identity during the run is
