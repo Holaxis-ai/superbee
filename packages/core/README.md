@@ -165,6 +165,82 @@ Failures are typed and carry no wording for any particular surface:
 Operation and history refusals the host states in a `200` (and `bundle_not_found`,
 `unknown_operation` and `invalid_input`) come back as `{ ok: false, refusal }`, not as errors.
 
+### Writing a document
+
+`write` sends one whole serialized document (frontmatter and body, as a file holds it) to a hosted
+bundle: a create of an absent id, or a replace at exactly the version the caller read.
+
+```ts
+const created = await client.write("notes", { id: "notes/today", document: text, expectAbsent: true });
+const replaced = await client.write("notes", { id: "notes/today", document: edited, expectedVersion: version });
+```
+
+It returns one of:
+
+- `{ status: "committed", version }`: the host stored it; `version` is the new head.
+- `{ status: "conflict", reason: "version_conflict", currentVersion }`: the document is not at the
+  expected version (for a create: it exists). `currentVersion` is the version the host serves, or
+  null when it serves none. Nothing was written.
+- `{ status: "conflict", reason: "concurrent_change" }`: another write to the bundle overlapped
+  this one past the host's own retries. Nothing was written.
+- `{ status: "refused", code, message }`: the host refused this write (`validation_failed`,
+  `invalid_input`, `AUTH_REQUIRED`, `PERMISSION_DENIED`, a sync quota's `REQUEST_CAPACITY_*`, or
+  `read_only` when the bundle serves no writes). Nothing was written.
+- `{ status: "unknown", requestId }`: the host may or may not hold the write.
+
+Every result names its `requestId`. A conflict is final for that identity: the client never
+resends it, under that identity or a new one. Read the document and decide; another attempt is a
+new `write`.
+
+Each write costs two round trips: a capabilities read of the bundle, then the write itself.
+
+Each write has one request identity and carries the client's binding, a digest of a random id the
+client mints once (its `within` clients share it). When an answer is lost (a transport failure or
+a deadline after sending), the client looks the identity up on the host and reports what the host
+recorded. The host's outcome route tells a request it never received ("absent") from one still in
+progress ("pending"), but the shared transport reports both as "no outcome yet". On that answer
+`write` sends the same identity once more, which the host applies at most once. Absence counts as
+evidence only within the retention window the host serves in its capabilities
+(`operationsRetentionMs`, less an hour's margin); past it, the result stays `unknown` and nothing
+is resent. The client measures an intent's age by its own clock against the host's window, so that
+margin holds only while the client's clock is within an hour of the host's. A resend refused before
+it reaches the host's execution (no credential, access withdrawn, a spent quota) leaves the result
+`unknown` too, since the first delivery may still commit. When the lookups themselves fail, or the caller's `signal` aborts after sending, the
+result is `unknown`.
+
+An `unknown` write can be resolved later in two ways:
+
+- `lookupWrite(requestId)` makes one outcome lookup and never sends the write. When the host holds
+  no outcome yet (absent or pending), the answer stays `unknown`.
+- `settleWrite(requestId)` looks the identity up and, when the host never recorded it within its
+  retention window, sends the same identity once more, as `write` would have.
+
+Both answer `{ status: "unrecorded", requestId }` when the intent store holds no write under that
+identity: it was never recorded there, or it already settled and left the store. Both return
+`unknown` when the bundle's capabilities cannot be read, because the write may already have left.
+`settleWrite` only looks up, sending nothing, when the host serves the bundle no writes. A
+`signal` already aborted when `write`, `lookupWrite` or `settleWrite` is called is thrown as its
+reason before any request; an abort during delivery leaves the write `unknown` and held.
+`write` instead throws that failure, because it has sent nothing yet.
+
+Until it settles, a write is held in an intent store: its operation, bundle (and workspace),
+document id, document and digest, expected version, request identity and binding, which is
+everything needed to rebuild the lookup exactly. The default store is in memory and lives as long
+as the client. Pass `intentStore` (`put`, `get`, `delete`, and optionally `list`) to keep intents
+durable across restarts; lookups use the binding recorded with each intent. A service that
+restarts with a durable store calls `heldWrites()` to find the writes that never settled
+(including any recorded but never sent), then settles each with `settleWrite`. `heldWrites()`
+throws `HostedIntentsNotListable` when the store has no `list`. A settled write leaves the store.
+
+`write(..., { requestId })` with the identity of a held write resumes that write and applies
+nothing new. A different write under a held identity, including the same write named in another
+workspace, is refused before sending. The host refuses an identity it recorded for another
+document (`invalid_input`). Calls on one client that name the same identity run one after another.
+
+`write` throws only before anything is sent: a malformed input (`TypeError`), the typed error of
+its capabilities read, or a failure of the intent store to record the write. Document deletion is
+not part of `write`.
+
 ## Release compatibility
 
 This migration describes the source after the Windows extraction. Previously published versions

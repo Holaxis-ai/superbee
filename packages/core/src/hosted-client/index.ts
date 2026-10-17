@@ -4,8 +4,9 @@
  * (`fetch` and Web streams only), so it runs in Node, a browser or a Worker.
  *
  * The caller supplies the target (origin and sync prefix) and an async credential provider; the
- * client supplies identity, the bundle list, reads, history, workspace qualification and
- * operations by id over `@superbee/core/hosted-transport`, and throws typed errors only.
+ * client supplies identity, the bundle list, reads, history, workspace qualification, operations
+ * by id and the one-call document write over `@superbee/core/hosted-transport`, and throws typed
+ * errors only.
  */
 export {
   bearerCredentials,
@@ -33,6 +34,19 @@ export {
   parseHostedBundleReference,
   type HostedBundleReference,
 } from "./reference.js";
+export { checkoutBindingDigest } from "./binding.js";
+export {
+  createMemoryIntentStore,
+  HostedIntentsNotListable,
+  INTENTS_NOT_LISTABLE,
+  type HostedIntentStore,
+  type HostedWriteInput,
+  type HostedWriteIntent,
+  type HostedWriteLookupResult,
+  type HostedWriteOptions,
+  type HostedWriteRefusalCode,
+  type HostedWriteResult,
+} from "./write.js";
 export { HostedRouteNotServed, isRouteNotServed, ROUTE_NOT_SERVED } from "./errors.js";
 // The other typed failures, re-exported (same identities) so a caller can tell them apart from
 // this one subpath.
