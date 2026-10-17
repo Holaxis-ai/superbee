@@ -108,8 +108,10 @@ Usage:
   superbee sync --restore-deletes | --accept-deletes <token> [--dir <folder>] [--json]
   superbee sync --take-host-deletions <token> [--dir <folder>] [--json]
 
-Each edited file is sent as one whole document under your own access, with no approval step;
-documents changed on the host are refreshed in the folder. A change to one document and a
+Edited documents are sent whole under your own access. Tracked ordinary files send frozen
+opaque bytes with exact version and MIME pins, up to 16 MiB or a smaller advertised host bound;
+new local files require explicit promote. Documents changed on the host are refreshed in the folder.
+Document-only conflict inspection and resolution: A change to one document and a
 change on the host to another both land. A document changed on both sides is never merged: it
 comes back as a conflict row, and nothing is sent for it until you resolve it:
   --inspect --doc <id>
@@ -122,13 +124,13 @@ comes back as a conflict row, and nothing is sent for it until you resolve it:
 A resolution is recorded in the checkout; keep and revise are sent by the next plain sync, and
 take sends nothing. keep and revise send over the host's version, so they need an --inspect
 first, and are refused (stale_review) if the host's version changed after it; take needs none.
-A deleted file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
+Document-only deletion recovery: a deleted document file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
 document's history. A mass delete is held: when the deletes of the last day (sent, unsent and
 new) are more than half the checkout and at least 3 (or every document of a smaller one), the new
 ones are not sent, and they stay held until restored or accepted. The host applies the same
 rule to the whole bundle, over everyone's deletes of the last day: a delete it holds
 (deletions_held, counted_over naming the bundle) is parked the same way and never resent by a
-plain sync. --restore-deletes puts held and unsent deleted files back (so does --resolve take
+plain sync. --restore-deletes puts held and unsent deleted document files back (so does --resolve take
 --doc <id> for one of them).
 --accept-deletes <token> sends exactly the held set the receipt names, and only after the person
 types the held count at the prompt: it needs an interactive terminal, and refuses any other
@@ -152,10 +154,18 @@ answer was lost; the next sync looks it up by the same request) and paused (sign
 sync quota for this bundle). The exit is 0 only when every row is committed: 5 when a row needs
 your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a lost answer, and
 4 (AUTH_REQUIRED, with the sign-in link) when you must sign in.
+An uncertain blob request is looked up by its original identity. Absence alone does not
+authorize resubmission; it can remain unknown. Blob conflicts and unknown outcomes do not use
+document --inspect/--resolve/--restore-deletes. Artifact commands remain refused in hosted checkouts.
+The blobs: token for --accept-deletes authorizes only its exact held outgoing write set, after
+person confirmation; this targeted delivery does not run unrelated sync work. The separate
+blobs: token for --take-host-deletions authorizes only a recorded refused incoming deletion set;
+the two token families are not interchangeable.
 A sync gate declared with git config superbee.syncGate '<command>' (as Git resolves it from the
 checkout folder: system, global, or a repository that contains the folder; never from the
-bundle's documents or the host) runs after the pull and before anything is sent, whenever the
-run has something to send. It runs through the shell from the checkout folder with
+bundle's documents or the host) runs after the pull in normal sync and before anything is sent.
+Exact-request promote/delete and blob acceptance delivery run it without a pull, whenever they
+have a fresh submission to send. It runs through the shell from the checkout folder with
 SUPERBEE_SYNC_GATE=1, SUPERBEE_SYNC_HOME=hosted, SUPERBEE_BOARD_PATH, SUPERBEE_HOSTED_ORIGIN and
 SUPERBEE_HOSTED_BUNDLE_ID set (superbee.syncGateTimeoutSeconds overrides the 600s timeout). A
 non-zero exit, a timeout, or any change it makes to the folder sends nothing at all: your edits

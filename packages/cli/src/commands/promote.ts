@@ -87,7 +87,15 @@ write'. Current v0.2 imports do not invent optional generated metadata or the le
 explicit v0.1 bundles retain their historical defaulted timestamp. Over --remote it is load-bearing:
 there is no other way to get bytes into a served bundle.
 
-The receipt's content_type reports the WRITE-TIME resolution (override, else inferred from the
+In a hosted checkout, an ordinary-file source must already be the canonical target pathname
+inside that checkout. Its frozen bytes and MIME are durable before authentication; an unchanged
+retry resumes exactly that request. Changed bytes, MIME or CAS premises are held. The bound is
+16 MiB or a smaller advertised host bound. A new explicit create keeps the extension default;
+a replacement without --content-type preserves its observed hosted MIME. Historical hosted
+MIME is never inferred from a filename or export. Protected namespaces and Artifact commands
+remain refused. Blob conflicts/unknown outcomes do not use document --resolve/--restore-deletes.
+
+For local/remote backends outside a hosted checkout, the receipt's content_type reports the WRITE-TIME resolution (override, else inferred from the
 key's extension) — history-less backends (the local filesystem) do not persist an explicit
 override and RE-INFER from the extension on every subsequent read, so a follow-up 'pull' may
 report a different content_type than this receipt did; backends that keep state (a remote,
@@ -96,7 +104,7 @@ document-centric store) persist the override and pull reports it back unchanged.
 Options:
   --doc-key <key>          Destination key (required) — ends '.md' -> doc route, else blob route
   --content-type <mime>    Blob route only (USAGE error with a .md key); default: inferred from the
-                            key's extension, else application/octet-stream
+                            key's extension, else application/octet-stream (hosted replacement preserves observed MIME)
   --expected-version <v>   Compare-and-swap token from a prior pull/promote receipt (omit = expect-
                             absent create; see CAS above)
   --strict                 Doc route only: reject (exit 2) instead of writing-with-warnings when a
