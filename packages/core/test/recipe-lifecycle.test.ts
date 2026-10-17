@@ -391,6 +391,8 @@ class StampProbeBackend extends EditionFlipBackend {
   failCreateOf: ConceptId | null = null;
   failCasWriteOf: ConceptId | null = null;
   onFirstCasWrite: ((backend: StampProbeBackend) => Promise<void>) | null = null;
+  /** Runs once, after the `count`-th successful CAS write: another writer acting after the apply's writes. */
+  afterCasWrites: { count: number; hook: (backend: StampProbeBackend) => Promise<void> } | null = null;
 
   /** A write outside the counted, armed path: another writer. */
   async rawWrite(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
@@ -412,7 +414,16 @@ class StampProbeBackend extends EditionFlipBackend {
       }
     }
     this.writes += 1;
-    return super.write(id, doc, options);
+    const version = await super.write(id, doc, options);
+    if (typeof options.expectedVersion === "string" && this.afterCasWrites) {
+      this.afterCasWrites.count -= 1;
+      if (this.afterCasWrites.count === 0) {
+        const { hook } = this.afterCasWrites;
+        this.afterCasWrites = null;
+        await hook(this);
+      }
+    }
+    return version;
   }
 }
 
@@ -442,6 +453,13 @@ async function editConvention(backend: StampProbeBackend, id: ConceptId, change:
   await backend.rawWrite(id, change(structuredClone(current.doc)), { expectedVersion: current.version });
 }
 
+/** The same value with object keys reversed at every depth; arrays keep their order. */
+const reverseKeys = (value: unknown): unknown =>
+  Array.isArray(value)
+    ? value.map(reverseKeys)
+    : value !== null && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value).reverse().map(([key, inner]) => [key, reverseKeys(inner)]))
+      : value;
 const withFields = (doc: OkfDocument, fields: KindFields): OkfDocument => ({ ...doc, frontmatter: { ...doc.frontmatter, fields } });
 const withStamp = (doc: OkfDocument, stamp: unknown): OkfDocument => ({ ...doc, frontmatter: { ...doc.frontmatter, x_recipe: stamp } });
 const withoutStamp = (doc: OkfDocument): OkfDocument => {
@@ -734,6 +752,25 @@ test("T7 (red probe): a concurrent edit of an unchanged convention after the app
   assert.deepEqual(row.diverged, ["conventions/beta"]);
 });
 
+test("T7b: a stamp stripped after the apply's last write fails the postcondition instead of reporting evolved", async () => {
+  const { bundle, backend } = await probeBundle("t7b");
+  await installRecipe(bundle, trio("1"), { now: NOW });
+  const v2 = trio("2", { required: ["title"], optional: ["colour"] });
+  const plan = await planRecipeEvolution(bundle, v2);
+  assert.equal(plan.writes, 3);
+  // After the third and last CAS write, another writer strips Alpha's new stamp.
+  backend.afterCasWrites = { count: 3, hook: (probe) => editConvention(probe, "conventions/alpha", withoutStamp) };
+  await assert.rejects(applyRecipeEvolution(bundle, v2, plan.plan_token), (error: unknown) => {
+    assert.ok(error instanceof RecipeEvolutionPostcondition, String(error));
+    assert.equal(error.reason, "changed");
+    assert.deepEqual(error.completed.map(({ id }) => id), [...TRIO_IDS]);
+    assert.match(error.postcondition_plan ?? "", /^sha256:/);
+    return true;
+  });
+  const row = (await stateOf(bundle)).rows[0]!;
+  assert.equal(row.state, "partial");
+});
+
 test("T8: a stamped install plans no removal and re-adds as already applied, without drift", async () => {
   const bundle = await v02Bundle("t8");
   await installRecipe(bundle, trio("1"), { now: NOW });
@@ -799,6 +836,13 @@ test("T9: the definition digest before the write equals the digest read back, on
           for (const doc of materializeRecipeForEdition(recipe, "0.2").docs) {
             assert.equal(readRecipeStamp(await readDoc(bundle, doc.id))?.definition, definitionDigest(doc), `${label}: ${doc.id} candidate`);
           }
+          // Reordering every frontmatter key, at every depth, keeps the same states.
+          for (const doc of recipe.docs) {
+            const current = await bundle.backend.read(doc.id);
+            const frontmatter = reverseKeys(current.doc.frontmatter) as OkfDocument["frontmatter"];
+            await bundle.backend.write(doc.id, { ...current.doc, frontmatter }, { expectedVersion: current.version });
+          }
+          assert.deepEqual((await stateOf(bundle)).rows, rows, `${label}: keys reordered`);
         } else {
           // A CRLF copy of the stamped bundle reads the same states.
           for (const doc of recipe.docs) {
@@ -889,6 +933,13 @@ test("T16: unknown digest rules read unknown, never diverged; a tampered definit
   await editConvention(backend, "conventions/beta", (doc) => withStamp(doc, { ...beta, definition: `sha256:${"0".repeat(64)}` }));
   row = (await stateOf(bundle)).rows[0]!;
   assert.deepEqual([row.state, row.diverged], ["diverged", ["conventions/beta"]]);
+  // Beta's content still equals what the recipe writes, so a same-version plan re-stamps it.
+  const repair = await planRecipeEvolution(bundle, trio("1"));
+  assert.equal(repair.definitions.find((definition) => definition.id === "conventions/beta")?.stamp, "stale");
+  assert.equal(repair.writes, 1);
+  await applyRecipeEvolution(bundle, trio("1"), repair.plan_token);
+  assert.equal((await stateOf(bundle)).rows[0]!.state, "installed");
+  assert.equal((await planRecipeEvolution(bundle, trio("1"))).writes, 0);
 
   for (const tamper of [{ version: "0" }, { of: 4 }, { source_digest: `sha256:${"1".repeat(64)}` }]) {
     const gamma = await stampOf("conventions/gamma");

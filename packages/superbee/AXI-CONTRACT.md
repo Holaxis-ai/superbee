@@ -142,6 +142,8 @@ other reader treats it as an unknown `x_` key, so `kinds` output is unchanged.
 (`current`, `stale`, `foreign` or `missing`), and `counts` gains `stamp_writes`. `action` and
 `changed` keep their content-only meaning; the write set is every content update plus every
 convention whose stamp is `stale` or `missing`, and a `foreign` stamp alone is never rewritten. A
+current stamp whose `definition` no longer matches content that equals what the recipe writes
+plans as `stale`, so the next apply re-stamps it. A
 ready plan with `changed: false` and `writes` above zero has an apply command: it records stamps
 only, which is how a bundle from before stamps gets them. Plan tokens change for every recipe,
 because each definition's `stamp` and the recipe's source digest enter the token input. The apply
@@ -163,9 +165,13 @@ hand.
 `installed_count`, `installed` (one row per stamped recipe: `state` of `installed`, `partial`,
 `diverged` or `unknown`, `version`, `source_digest`, `conventions`, `of`, and `records`,
 `missing`, `missing_ids`, `diverged` or `unknown_rules` when they apply), `unstamped_count`, a
-capped `unstamped` list with `unstamped_shown` and `unstamped_help`, and a descriptive
+capped `unstamped` list with `unstamped_help` (plus `unstamped_shown` and `conventions_all`, a
+command listing every convention, when the list is capped), and a descriptive
 `stamp_help` when any row is not `installed`; the built-in rows and every existing key are
-unchanged. Exit codes are unchanged. Evidence: `packages/core/test/recipe-lifecycle.test.ts`,
+unchanged. Exit codes are unchanged. The definition digest reads CRLF as LF, while evolve still
+compares convention bodies byte for byte, so on a CRLF checkout `recipes` can read a state that a
+plan cannot converge (blocked at `/body`); normalizing that comparison is a follow-up. Evidence:
+`packages/core/test/recipe-lifecycle.test.ts`,
 `packages/cli/test/recipe-evolve-golden.test.ts`, the stamp tests in
 `packages/cli/test/recipes.test.ts` and `packages/cli/test/hosted-definition-writes.test.ts`.
 

@@ -248,9 +248,11 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
       stamps.unstamped = shown;
       if (shown.length < unstamped.length) {
         stamps.unstamped_shown = shown.length;
-        stamps.unstamped_all = `${inv} list --type Convention --prefix conventions/ --limit 0${commandTargetSuffix({ dir: values.dir, remote: values.remote })}`;
+        stamps.conventions_all = `${inv} list --type Convention --prefix conventions/ --limit 0${commandTargetSuffix({ dir: values.dir, remote: values.remote })}`;
       }
-      stamps.unstamped_help = "conventions no recipe wrote, or written before recipe stamps; a 'recipe evolve' apply stamps the ones its recipe declares";
+      stamps.unstamped_help =
+        "conventions no recipe wrote, or written before recipe stamps; a 'recipe evolve' apply stamps the ones its recipe declares" +
+        (shown.length < unstamped.length ? "; conventions_all lists every convention, and the unstamped ones carry no x_recipe" : "");
     }
     if (installedRows.some((row) => row.state !== "installed")) stamps.stamp_help = STAMP_HELP;
   }

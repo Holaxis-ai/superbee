@@ -3228,8 +3228,9 @@ test("T12: recipes reports each recipe's stamp state: installed, partial, diverg
     assert.equal((listed.unstamped as string[]).length, 20);
     assert.equal(listed.unstamped_shown, 20);
     assert.equal((listed.unstamped as string[])[0], "conventions/hand-00");
-    assert.equal(listed.unstamped_all, `${cliInvocation()} list --type Convention --prefix conventions/ --limit 0 --dir ${shellArg(dir)}`);
+    assert.equal(listed.conventions_all, `${cliInvocation()} list --type Convention --prefix conventions/ --limit 0 --dir ${shellArg(dir)}`);
     assert.match(String(listed.unstamped_help), /conventions no recipe wrote, or written before recipe stamps/);
+    assert.match(String(listed.unstamped_help), /conventions_all lists every convention, and the unstamped ones carry no x_recipe/);
     assert.match(String(listed.stamp_help), /^partial: .*; diverged: .*; unknown: no stamp, or stamp rules this version does not read$/);
     assert.match(String(listed.stamp_help), /except a Kind declined with 'kind dismiss', which is deliberate/);
   } finally {

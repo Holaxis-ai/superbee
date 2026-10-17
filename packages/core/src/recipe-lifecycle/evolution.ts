@@ -40,6 +40,7 @@ import {
 } from "./install.js";
 import {
   RECIPE_STAMP_KEY,
+  conventionStampState,
   recipeStampIdentity,
   recipeStampState,
   withRecipeStamp,
@@ -636,7 +637,13 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
 
     const desiredVersion = contentVersion(comparableRecipeDoc(candidate, okfVersion));
     const unchanged = sameInstalledDoc(existing.doc, candidate, okfVersion);
-    const stamp = recipeStampState(existing.doc, identity);
+    // Content equal to what this recipe writes, under a current identity whose definition digest
+    // disagrees, is re-stamped: a fresh stamp is the honest record, and nothing else repairs it.
+    const identityState = recipeStampState(existing.doc, identity);
+    const stamp =
+      unchanged && identityState === "current" && conventionStampState(existing.doc) === "diverged"
+        ? "stale"
+        : identityState;
     definitions.push({
       id: target.id,
       governs: parsedDesired.kind.governs,
