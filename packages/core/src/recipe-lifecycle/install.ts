@@ -1,0 +1,521 @@
+import {
+  PROGRESS_STATUS_FIELD,
+  progressStatusStorageField,
+  readBlob,
+  readBundleOkfVersion,
+  readDoc,
+  resolveContentType,
+  writeBlob,
+  mutateDocument,
+  query,
+  CONVENTIONS_PREFIX,
+  VersionConflict,
+  type Bundle,
+  type ConceptId,
+  type KindConvention,
+  type KindRegistry,
+  type OkfDocument,
+  type ValidationWarning,
+} from "@superbee/core";
+import {
+  PAGE_ENTRY_PREFIX,
+  PAGE_REGISTRY_PREFIX,
+  PAGE_TYPE_NAMES,
+  parseRegistration,
+  VIEW_ENTRY_PREFIX,
+  VIEW_REGISTRY_PREFIX,
+} from "@superbee/core/page";
+import { isDeepStrictEqual } from "node:util";
+import { CliError } from "./errors.js";
+import { LEGACY_PAGE_TYPE_NAME } from "./legacy-page.js";
+import type { LoadedRecipe } from "./recipe-source.js";
+
+/** Per-doc apply outcome: `changed: false` means the doc already existed (idempotent no-op), or —
+ * when `legacy_present`/`migration_required` names a doc — that a legacy-LOCATED counterpart
+ * already occupies the artifact's slot (working, or awaiting migration, respectively). */
+export interface RecipeDocResult {
+  id: ConceptId;
+  changed: boolean;
+  /** The existing doc was preserved, but its definition differs from this recipe's source. */
+  source_differs?: true;
+  /** Set when creation was skipped because this existing legacy-located doc satisfies the artifact. */
+  legacy_present?: ConceptId;
+  /** NON-SUCCESS skip: the counterpart still carries the RETIRED legacy names, so it
+   * no longer works at runtime — the bundle needs the migration script before this artifact is
+   * genuinely satisfied. Named alongside a receipt-level warning carrying the remedy. */
+  migration_required?: ConceptId;
+}
+
+export interface RecipePageResult {
+  registry_id: ConceptId;
+  entry: string;
+  registry_changed: boolean;
+  entry_changed: boolean;
+  changed: boolean;
+  /** Set when creation was skipped because a COMPLETE, still-REGISTERING legacy-located pair satisfies the artifact. */
+  legacy_present?: { registry: ConceptId; entry: string };
+  /** See {@link RecipeDocResult.migration_required} — the page-pair variant. */
+  migration_required?: { registry: ConceptId; entry: string };
+}
+
+export interface RecipeReferenceResult {
+  id: ConceptId;
+  changed: boolean;
+}
+
+/** The receipt `applyRecipe` returns: identity, per-doc outcomes, an overall `changed` (any doc
+ * changed), and any non-fatal warnings collected at LOAD time (recipe.md reserved keys, skipped
+ * malformed convention docs). Duplicate-`governs` against the TARGET bundle is a separate, POST-
+ * apply check (`loadKinds(bundle)`) — the command layer's job, not this function's. */
+/** Per-artifact tally (docs + pages + references; a page's registry/entry pair is ONE artifact). */
+export interface ApplyRecipeCounts {
+  created: number;
+  existing: number;
+  legacy_present: number;
+  /** Existing convention docs whose definitions do not match the recipe source. */
+  source_differs?: number;
+  /** Artifacts whose slot is held by RETIRED-name content (see `migration_required` fields). */
+  migration_required: number;
+}
+
+export interface ApplyRecipeResult {
+  id: string;
+  version: string;
+  source: string;
+  docs: RecipeDocResult[];
+  pages: RecipePageResult[];
+  references: RecipeReferenceResult[];
+  counts: ApplyRecipeCounts;
+  changed: boolean;
+  warnings: ValidationWarning[];
+}
+
+const RECIPE_WRITE_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
+
+function plainRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function renameLogicalFieldMap(
+  value: unknown,
+  storageField: string,
+  recipeId: string,
+  docId: ConceptId,
+): unknown {
+  const record = plainRecord(value);
+  if (!record || !Object.prototype.hasOwnProperty.call(record, PROGRESS_STATUS_FIELD)) return value;
+  if (
+    storageField !== PROGRESS_STATUS_FIELD
+    && Object.prototype.hasOwnProperty.call(record, storageField)
+  ) {
+    throw new CliError(
+      "USAGE",
+      `recipe '${recipeId}' convention '${docId}' declares both logical '${PROGRESS_STATUS_FIELD}' and storage field '${storageField}'`,
+    );
+  }
+  return Object.fromEntries(
+    Object.entries(record).map(([field, fieldValue]) => [
+      field === PROGRESS_STATUS_FIELD ? storageField : field,
+      fieldValue,
+    ]),
+  );
+}
+
+/** Materialize explicit logical recipe fields into the target edition's physical convention keys. */
+export function materializeRecipeForEdition(
+  recipe: LoadedRecipe,
+  okfVersion: string,
+): LoadedRecipe {
+  const storageField = progressStatusStorageField(okfVersion);
+  if (!storageField) {
+    throw new CliError(
+      "USAGE",
+      `recipe '${recipe.id}' cannot target unsupported OKF mutation version '${okfVersion}'`,
+    );
+  }
+  const docs = recipe.docs.map((doc) => {
+    const fields = plainRecord(doc.frontmatter.fields);
+    if (!fields) return doc;
+    const listField = (value: unknown): unknown => {
+      if (!Array.isArray(value) || !value.includes(PROGRESS_STATUS_FIELD)) return value;
+      if (value.includes(storageField)) {
+        throw new CliError(
+          "USAGE",
+          `recipe '${recipe.id}' convention '${doc.id}' declares both logical '${PROGRESS_STATUS_FIELD}' and storage field '${storageField}'`,
+        );
+      }
+      return value.map((field) => field === PROGRESS_STATUS_FIELD ? storageField : field);
+    };
+    const materializedFields: Record<string, unknown> = { ...fields };
+    for (const key of ["required", "optional"]) {
+      if (Object.prototype.hasOwnProperty.call(fields, key)) {
+        materializedFields[key] = listField(fields[key]);
+      }
+    }
+    for (const key of ["values", "value_descriptions", "terminal", "descriptions", "types"]) {
+      if (Object.prototype.hasOwnProperty.call(fields, key)) {
+        materializedFields[key] = renameLogicalFieldMap(fields[key], storageField, recipe.id, doc.id);
+      }
+    }
+    return {
+      ...doc,
+      frontmatter: { ...doc.frontmatter, fields: materializedFields },
+      body: materializeRecipeBody(doc.body, storageField),
+    };
+  });
+  return { ...recipe, docs };
+}
+
+export function recipeDocumentForApply(
+  doc: OkfDocument,
+  okfVersion: string,
+  now: string,
+): OkfDocument {
+  return okfVersion === "0.1"
+    ? { ...doc, frontmatter: { ...doc.frontmatter, timestamp: now } }
+    : { ...doc, frontmatter: { ...doc.frontmatter } };
+}
+
+async function createRecipeDocument(
+  bundle: Bundle,
+  doc: OkfDocument,
+  okfVersion: string,
+  now: string,
+): Promise<OkfDocument> {
+  const result = await mutateDocument({
+    bundle,
+    id: doc.id,
+    mode: "create-only",
+    registry: RECIPE_WRITE_REGISTRY,
+    strict: false,
+    // Installed definitions must stay byte-comparable to their recipe source (sameInstalledDoc
+    // strips generated.at but not an engine-seeded generated.by), so never seed a clock here.
+    seedGenerationClock: false,
+    now: () => now,
+    buildCandidate: (_existing, context) => {
+      if (context.okfVersion !== okfVersion) {
+        throw new CliError(
+          "CONFLICT",
+          `bundle OKF version changed from '${okfVersion}' to '${context.okfVersion}' during recipe installation; retry`,
+        );
+      }
+      return { frontmatter: { ...doc.frontmatter }, body: doc.body };
+    },
+  });
+  return result.doc;
+}
+
+/**
+ * Apply `recipe` through the shared document-mutation boundary using expect-absent CAS. Recipe
+ * conventions may declare Superbee's logical `progress_status`; this installer materializes the
+ * concrete field for the bundle edition before any write. V0.1 retains the historical install-time
+ * `timestamp`; v0.2 preserves explicitly supplied legacy fields but does not invent them. A
+ * `VersionConflict` remains an idempotent existing-doc result, never a clobber.
+ */
+export async function applyRecipe(
+  bundle: Bundle,
+  recipe: LoadedRecipe,
+  now: string = new Date().toISOString(),
+): Promise<ApplyRecipeResult> {
+  const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
+  recipe = materializeRecipeForEdition(recipe, okfVersion);
+  await assertPortableTargetsCompatible(bundle, recipe, now, okfVersion);
+
+  // Legacy-alias probes (see the module comment above the alias helpers): resolved lazily, once.
+  const legacyConventionId = recipe.docs.some((d) => governsKind(d, VIEW_KIND_NAME))
+    ? await findLegacyViewConvention(bundle)
+    : null;
+  let legacyRegistryDocs: Map<ConceptId, OkfDocument> | null = null;
+  const legacyRegistryDoc = async (id: ConceptId): Promise<OkfDocument | undefined> => {
+    legacyRegistryDocs ??= new Map(
+      (await query(bundle, { prefix: PAGE_REGISTRY_PREFIX })).map((doc) => [doc.id, doc]),
+    );
+    return legacyRegistryDocs.get(id);
+  };
+  const migrationWarnings: ValidationWarning[] = [];
+  const migrationHelp =
+    "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` from the Superbee repository root to migrate it in place";
+
+  const docs: RecipeDocResult[] = [];
+  for (const d of recipe.docs) {
+    if (legacyConventionId !== null && governsKind(d, VIEW_KIND_NAME)) {
+      // A convention still governing the RETIRED legacy name is unmigrated state: skip creating
+      // the current-name convention (never two conventions for one kind), but as an explicit
+      // NON-SUCCESS — not a satisfied-looking skip.
+      docs.push({ id: d.id, changed: false, migration_required: legacyConventionId });
+      migrationWarnings.push({
+        code: "MIGRATION_REQUIRED",
+        message:
+          `'${legacyConventionId}' still governs the retired legacy 'Page' kind name — ` +
+          `'${d.id}' was not installed; ${migrationHelp}`,
+        severity: "warning",
+      });
+      continue;
+    }
+    let doc = recipeDocumentForApply(d, okfVersion, now);
+    let changed = true;
+    let sourceDiffers = false;
+    try {
+      doc = await createRecipeDocument(bundle, doc, okfVersion, now);
+    } catch (err) {
+      if (err instanceof VersionConflict) {
+        const existing = await readDoc(bundle, doc.id);
+        if (!sameInstalledDoc(existing, doc, okfVersion)) {
+          sourceDiffers = true;
+          migrationWarnings.push({
+            code: "RECIPE_SOURCE_DIFFERS",
+            message:
+              `recipe '${recipe.id}' source for '${doc.id}.md' differs from the existing convention; ` +
+              "the existing bundle content was left untouched — run 'recipe evolve <same-name-or-path>' to inspect a safe additive upgrade plan",
+            severity: "warning",
+          });
+        }
+        changed = false;
+      } else {
+        throw err;
+      }
+    }
+    docs.push({ id: doc.id, changed, ...(sourceDiffers ? { source_differs: true as const } : {}) });
+  }
+
+  const pages: RecipePageResult[] = [];
+  for (const page of recipe.pages) {
+    const registryAlias = legacyRegistryAlias(page.registry.id);
+    const entryAlias = legacyEntryAlias(page.entry);
+    const aliasDoc = registryAlias !== null && entryAlias !== null ? await legacyRegistryDoc(registryAlias) : undefined;
+    if (registryAlias !== null && entryAlias !== null && aliasDoc !== undefined) {
+      // Skip ONLY on a COMPLETE legacy pair: a partial legacy leftover (registry doc without its
+      // blob) must not suppress the new install — that would leave no working card at all.
+      // Creating under the new ids is always safe (expect-absent CAS; ids never collide across
+      // prefixes), and the leftover is the audit's business, not the installer's.
+      const legacyBlob = await readBlob(bundle, entryAlias);
+      if (legacyBlob !== null) {
+        // The counterpart's KIND decides the outcome: a registering View at the
+        // legacy location genuinely satisfies the artifact; a RETIRED-name (Page-typed or
+        // otherwise non-registering) counterpart holds the slot but no longer works — an
+        // explicit non-success naming the remedy, never a satisfied-looking skip.
+        const registers = parseRegistration(aliasDoc.id, aliasDoc.frontmatter) !== null;
+        if (registers) {
+          pages.push({
+            registry_id: page.registry.id,
+            entry: page.entry,
+            registry_changed: false,
+            entry_changed: false,
+            changed: false,
+            legacy_present: { registry: registryAlias, entry: entryAlias },
+          });
+        } else {
+          pages.push({
+            registry_id: page.registry.id,
+            entry: page.entry,
+            registry_changed: false,
+            entry_changed: false,
+            changed: false,
+            migration_required: { registry: registryAlias, entry: entryAlias },
+          });
+          migrationWarnings.push({
+            code: "MIGRATION_REQUIRED",
+            message:
+              `'${registryAlias}' holds this artifact's slot but still carries the retired legacy names ` +
+              `and does not register — '${page.registry.id}' was not installed; ${migrationHelp}`,
+            severity: "warning",
+          });
+        }
+        continue;
+      }
+    }
+    const desiredBytes = Buffer.from(page.html, "utf8");
+    let entryChanged = true;
+    try {
+      await writeBlob(bundle, page.entry, desiredBytes, undefined, { expectedVersion: null });
+    } catch (err) {
+      if (!(err instanceof VersionConflict)) throw err;
+      const existing = await readBlob(bundle, page.entry);
+      const sameBytes = existing !== null && Buffer.from(existing.bytes).equals(desiredBytes);
+      const sameContentType = existing?.contentType === resolveContentType(page.entry);
+      if (!sameBytes || !sameContentType) throw recipeAssetConflict(recipe.id, page.entry);
+      entryChanged = false;
+    }
+
+    let registry = recipeDocumentForApply(page.registry, okfVersion, now);
+    let registryChanged = true;
+    try {
+      registry = await createRecipeDocument(bundle, registry, okfVersion, now);
+    } catch (err) {
+      if (!(err instanceof VersionConflict)) throw err;
+      const existing = await readDoc(bundle, registry.id);
+      if (!sameInstalledDoc(existing, registry, okfVersion)) throw recipeAssetConflict(recipe.id, `${registry.id}.md`);
+      registryChanged = false;
+    }
+
+    pages.push({
+      registry_id: registry.id,
+      entry: page.entry,
+      registry_changed: registryChanged,
+      entry_changed: entryChanged,
+      changed: registryChanged || entryChanged,
+    });
+  }
+
+  const references: RecipeReferenceResult[] = [];
+  for (const reference of recipe.references) {
+    let desired = recipeDocumentForApply(reference.doc, okfVersion, now);
+    let changed = true;
+    try {
+      desired = await createRecipeDocument(bundle, desired, okfVersion, now);
+    } catch (err) {
+      if (!(err instanceof VersionConflict)) throw err;
+      const existing = await readDoc(bundle, desired.id);
+      if (!sameInstalledDoc(existing, desired, okfVersion)) throw recipeAssetConflict(recipe.id, `${desired.id}.md`);
+      changed = false;
+    }
+    references.push({ id: desired.id, changed });
+  }
+
+  const artifacts: Array<{ changed: boolean; legacy_present?: unknown; migration_required?: unknown }> = [
+    ...docs,
+    ...pages,
+    ...references,
+  ];
+  const sourceDiffers = docs.filter((doc) => doc.source_differs).length;
+  const counts: ApplyRecipeCounts = {
+    created: artifacts.filter((a) => a.changed).length,
+    existing: artifacts.filter((a) =>
+      !a.changed && a.legacy_present === undefined && a.migration_required === undefined &&
+      !("source_differs" in a && a.source_differs === true)
+    )
+      .length,
+    legacy_present: artifacts.filter((a) => a.legacy_present !== undefined).length,
+    migration_required: artifacts.filter((a) => a.migration_required !== undefined).length,
+    ...(sourceDiffers > 0 ? { source_differs: sourceDiffers } : {}),
+  };
+
+  return {
+    id: recipe.id,
+    version: recipe.version,
+    source: recipe.source,
+    docs,
+    pages,
+    references,
+    counts,
+    changed:
+      docs.some((d) => d.changed) ||
+      pages.some((page) => page.changed) ||
+      references.some((reference) => reference.changed),
+    warnings: [...recipe.warnings, ...migrationWarnings],
+  };
+}
+
+async function assertPortableTargetsCompatible(
+  bundle: Bundle,
+  recipe: LoadedRecipe,
+  now: string,
+  okfVersion: string,
+): Promise<void> {
+  const registries = new Map<ConceptId, OkfDocument>();
+  if (recipe.pages.length > 0) {
+    // Both accepted registry prefixes (views-registry/ current, pages-registry/ legacy) — the
+    // query takes ONE prefix, so run it per prefix and merge (ids never collide across prefixes).
+    for (const prefix of [PAGE_REGISTRY_PREFIX, VIEW_REGISTRY_PREFIX]) {
+      const registryDocs = await query(bundle, { prefix });
+      for (const doc of registryDocs) registries.set(doc.id, doc);
+    }
+  }
+  for (const page of recipe.pages) {
+    const existingBlob = await readBlob(bundle, page.entry);
+    if (existingBlob) {
+      const desiredBytes = Buffer.from(page.html, "utf8");
+      const sameBytes = Buffer.from(existingBlob.bytes).equals(desiredBytes);
+      const sameContentType = existingBlob.contentType === resolveContentType(page.entry);
+      if (!sameBytes || !sameContentType) throw recipeAssetConflict(recipe.id, page.entry);
+    }
+
+    const existingRegistry = registries.get(page.registry.id);
+    if (existingRegistry) {
+      const desiredRegistry = recipeDocumentForApply(page.registry, okfVersion, now);
+      if (!sameInstalledDoc(existingRegistry, desiredRegistry, okfVersion)) {
+        throw recipeAssetConflict(recipe.id, `${page.registry.id}.md`);
+      }
+    }
+  }
+
+  const installedReferences = new Map<ConceptId, OkfDocument>();
+  if (recipe.references.length > 0) {
+    const referenceDocs = await query(bundle, { prefix: "references/" });
+    for (const doc of referenceDocs) installedReferences.set(doc.id, doc);
+  }
+  for (const reference of recipe.references) {
+    const existing = installedReferences.get(reference.doc.id);
+    if (!existing) continue;
+    const desired = recipeDocumentForApply(reference.doc, okfVersion, now);
+    if (!sameInstalledDoc(existing, desired, okfVersion)) {
+      throw recipeAssetConflict(recipe.id, `${reference.doc.id}.md`);
+    }
+  }
+}
+
+export function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, okfVersion: string): boolean {
+  const { timestamp: _existingTimestamp, ...existingFrontmatter } = existing.frontmatter;
+  const { timestamp: _desiredTimestamp, ...desiredFrontmatter } = desired.frontmatter;
+  // A reading-order placement the bundle added to an installed convention is not drift: the
+  // recipe declares none, and evolution keeps it (BUNDLE_LOCAL_PLACEMENT in recipe-evolution).
+  if (desiredFrontmatter.order === undefined) delete existingFrontmatter.order;
+  if (okfVersion === "0.2") {
+    for (const frontmatter of [existingFrontmatter, desiredFrontmatter]) {
+      const generated = plainRecord(frontmatter.generated);
+      if (!generated) continue;
+      const { at: _at, ...rest } = generated;
+      frontmatter.generated = rest;
+    }
+  }
+  return isDeepStrictEqual(existingFrontmatter, desiredFrontmatter) && existing.body === desired.body;
+}
+
+function recipeAssetConflict(recipeId: string, key: string): CliError {
+  return new CliError(
+    "ALREADY_EXISTS",
+    `recipe '${recipeId}' cannot install '${key}' because a different target already exists; ` +
+      "the existing bundle content was left untouched",
+    { details: { recipe: recipeId, key } },
+  );
+}
+
+/**
+ * The convention docs currently present under `conventions/`, by id — ONE round-trip
+ * (backend-agnostic, works over `--remote`), used by `recipes` to report whether a built-in is
+ * already applied to `bundle` (every one of its docs' ids present) AND whether any installed
+ * doc's content differs from the recipe source (the listing's `drift` bit). The query was always
+ * a full read; returning the docs instead of discarding their content costs zero added I/O.
+ */
+export async function appliedConventionDocs(bundle: Bundle): Promise<Map<ConceptId, OkfDocument>> {
+  const docs = await query(bundle, { prefix: CONVENTIONS_PREFIX });
+  return new Map(docs.map((d) => [d.id, d]));
+}
+
+/**
+ * True when at least one of `recipe`'s installed docs differs in content from the recipe source
+ * (the same `sameInstalledDoc` comparison `recipe add` makes; timestamp-insensitive). Honest at
+ * the literal level only: drift can be DELIBERATE — a dismissal record occupying the canonical
+ * id, or a kind legitimately evolved via `kind field add` / `recipe evolve`. The listing pairs
+ * the bit with descriptive help and NO fixing command (design appendix O2): a proactive "fix"
+ * pointer here would re-propose exactly what a `kind dismiss` recorded declining.
+ */
+export function recipeDrifts(
+  recipe: LoadedRecipe,
+  installed: Map<ConceptId, OkfDocument>,
+  okfVersion: string,
+  now: string,
+): boolean {
+  const materialized = materializeRecipeForEdition(recipe, okfVersion);
+  return materialized.docs.some((doc) => {
+    const existing = installed.get(doc.id);
+    return existing !== undefined && !sameInstalledDoc(existing, recipeDocumentForApply(doc, okfVersion, now), okfVersion);
+  });
+}
+
+/** True when every convention doc `recipe` installs is already present in `appliedIds`. */
+export function isRecipeApplied(recipe: LoadedRecipe, appliedIds: Set<ConceptId>): boolean {
+  return recipe.docs.every((doc) => appliedIds.has(doc.id));
+}
