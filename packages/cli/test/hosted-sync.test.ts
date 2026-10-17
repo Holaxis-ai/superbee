@@ -2102,6 +2102,23 @@ test("blob keep without a MIME choice adopts the host's MIME change instead of r
   assert.deepEqual(f.wire.objects.get(f.key)?.bytes, Buffer.from(f.mine));
 });
 
+test("blob keep is refused when the edited file went missing, so it never becomes a host deletion", async () => {
+  const f = await blobConflict(), calls = f.wire.calls.length;
+  await unlink(f.file);
+  await assert.rejects(runSync(f.h, ["--resolve", "keep", "--doc", f.key]), (error: unknown) => error instanceof CliError && error.code === "CONFLICT" && error.details?.reason === "missing_since_conflict");
+  assert.equal((await retainedBlobRows(f.h)).find(row => row.requestId === f.conflictId)?.state, "conflict");
+  assert.equal((await failingSync(f.h)).error.code, "CONFLICT");
+  assert.equal(f.wire.calls.length, calls); assert.deepEqual(f.wire.objects.get(f.key)?.bytes, f.theirs);
+});
+
+test("blob take on a file with no conflict refuses before signing in or making a request", async () => {
+  const f = await blobConflict();
+  await runSync(f.h, ["--resolve", "take", "--doc", f.key]);
+  const calls = f.wire.calls.length, requests = f.h.host.requests.length;
+  await assert.rejects(runSync(f.h, ["--resolve", "take", "--doc", f.key]), (error: unknown) => error instanceof CliError && error.code === "NOT_FOUND");
+  assert.equal(f.wire.calls.length, calls); assert.equal(f.h.host.requests.length, requests);
+});
+
 test("blob inspect reports the recorded conflict pins offline", async () => {
   const f = await blobConflict(), calls = f.wire.calls.length, requests = f.h.host.requests.length;
   const shown = await runSync(f.h, ["--inspect", "--doc", f.key]);

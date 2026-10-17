@@ -2169,7 +2169,7 @@ async function runInspectBlob(binding: CheckoutBinding, key: string, values: Hos
     remote: e.actual === null ? { deleted: true } : { version: e.actual, content_type: e.actualContentType },
     file_now: bytes === null ? "missing" : e.version !== null && digestOf(bytes) === e.version ? "as_conflicted" : "edited_since_conflict",
     choices: {
-      keep: e.actual === null ? "re-create the file on the host from your copy (a new create request), or keep your deletion" : "keep your file: the next sync sends it as it is then over the host's version",
+      keep: e.actual === null ? "re-create the file on the host from your copy (a new create request), or keep your deletion" : bytes === null && e.operation !== "blobs.delete.v1" ? "refused while the file is missing: put it back first (keep would delete the host's version)" : "keep your file: the next sync sends it as it is then over the host's version",
       take: e.actual === null ? "accept the deletion: the file is removed" : "replace your file with the host's version",
     },
     help: [keep, take],
@@ -2187,6 +2187,9 @@ async function runResolveBlob(binding: CheckoutBinding, key: string, requested: 
     const identity = { binding: checkoutBindingDigest(binding.checkout_id), ...(via === undefined ? {} : { via }), createdAt: new Date(deps.auth.now()).toISOString() };
     resolution = await withLocalStore(binding, deps, store => resolveBlobConflict({ folder: binding.path, store, scope, key, choice, identity }), false);
   } else {
+    // A refusal needs no sign-in: settle it from local state first.
+    const found = await withLocalStore(binding, deps, store => readBlobConflict(store, scope, key));
+    if (found.state !== "conflict") await withLocalStore(binding, deps, store => resolveBlobConflict({ folder: binding.path, store, scope, key, choice }));
     resolution = await withSession(binding, deps, resumeCommand, session => resolveBlobConflict({ folder: binding.path, store: session.store, scope, key, choice, read: async head => {
       const controller = new AbortController();
       try { return (await createHostedBlobReadAdapter({ carrier: session.carrier, bundleId: scope.bundleId, prefix: scope.prefix, signal: controller.signal, capabilities: async () => session.capabilities }).read(head)).bytes; }

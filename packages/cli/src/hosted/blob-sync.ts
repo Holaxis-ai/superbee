@@ -696,6 +696,10 @@ export async function resolveBlobConflict(options: {
     // Only a MIME the person chose survives keep; the old head's type must not revert the host's.
     const chosenType = snapshot.map.entries.find(row => row.key === key)?.desiredContentType;
     const frozenType = evidence.contentType ?? undefined;
+    if (hostHead && physical.state === "missing" && evidence.operation !== "blobs.delete.v1") {
+      // keep means "send my edit"; a file gone since the conflict would turn it into a host deletion nobody chose.
+      throw new CliError("CONFLICT", `${file} is missing, so keep would delete the host's version; nothing was resolved`, { details: { reason: "missing_since_conflict", key, file }, help: `put the file back to keep it, or take the host's version: ${resolveHelp.replace("keep|take", "take")}` });
+    }
     if (hostHead) {
       // The base moves: the host's version becomes what this checkout last saw.
       await retire(snapshot, { key, head: hostHead, placedDigest: hostHead.version, ...(chosenType === undefined || chosenType === hostHead.contentType ? {} : { desiredContentType: chosenType }) });
