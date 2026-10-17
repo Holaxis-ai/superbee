@@ -7,7 +7,13 @@ import { sha256HexOfBytes } from "./sha256.js";
 import { captureJournalValue, equalJournalValue, assertMetaExpectation, JournalGuardConflict, type MetaExpectation, type MetaRecord } from "./journaled-backend.js";
 import type { OperationState } from "./uncertain-write.js";
 
-export const BLOB_JOURNAL_BOUNDS = Object.freeze({ rawBytes: 16 * 1024 * 1024, preparedBytes: 24 * 1024 * 1024 });
+export const BLOB_JOURNAL_BOUNDS = Object.freeze({ rawBytes: 16 * 1024 * 1024, preparedBytes: 24 * 1024 * 1024,
+  /** The file codec checks the actual tagged encoding, not an estimate of JSON text. */
+  terminalReceiptBytes: 128 * 1024,
+  settlementStructureBytes: 4 * 1024,
+  /** Aggregate encoded metadata growth ordinarily needed for the settled byte+MIME baseline. */
+  baselineBytes: 16 * 1024,
+});
 export interface BlobTargetScope { origin: string; prefix: string; bundleId: string; workspaceSlug: string | null }
 export interface BlobPreparedInput {
   scope: BlobTargetScope;

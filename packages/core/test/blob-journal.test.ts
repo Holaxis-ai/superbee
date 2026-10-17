@@ -180,14 +180,16 @@ test("legacy blob rows and mismatched payload/frame formats refuse reopen withou
 });
 
 test("exact transaction and whole-snapshot budgets reject atomically, including promoted growth; retirement frees space", async () => {
-  const f = await fixture(5000);
+  const reserve = BLOB_JOURNAL_BOUNDS.terminalReceiptBytes + BLOB_JOURNAL_BOUNDS.settlementStructureBytes + BLOB_JOURNAL_BOUNDS.baselineBytes;
+  const limit = reserve + 5000;
+  const f = await fixture(limit);
   try {
     await f.backend.writeMeta("retained", "x".repeat(2500));
     const value = input(), frozen = prepared(value), guard = (await f.backend.readBlobWithJournal(value.intent.key, { meta: ["new"] })).guard;
     const record = await f.backend.admitPreparedBlob(frozen, { guard, meta: [{ key: "new", value: "ok" }] });
     const before = f.backend.transaction, log = await fs.readFile(path.join(f.directory, FILE_JOURNAL_LOG));
     await assert.rejects(f.backend.writeMeta("growth", "x".repeat(2000)), /projected snapshot/);
-    await assert.rejects(f.backend.writeMeta("huge-transaction", "x".repeat(6000)), /transaction/);
+    await assert.rejects(f.backend.writeMeta("huge-transaction", "x".repeat(limit + 1000)), /transaction/);
     const other = input("create", "other");
     await assert.rejects(f.backend.admitPreparedBlob(prepared(other), { guard: (await f.backend.readBlobWithJournal("other", { meta: ["new"] })).guard, meta: [{ key: "new", value: "not committed".repeat(100) }] }), /snapshot/);
     assert.equal(f.backend.transaction, before);
@@ -199,7 +201,7 @@ test("exact transaction and whole-snapshot budgets reject atomically, including 
     const next = await f.backend.admitPreparedBlob(prepared(other), { guard: (await f.backend.readBlobWithJournal("other")).guard });
     assert.equal(next.sequence, 2);
     await f.backend.compact();
-    assert.ok((await fs.stat(path.join(f.directory, FILE_JOURNAL_SNAPSHOT))).size <= 5044);
+    assert.ok((await fs.stat(path.join(f.directory, FILE_JOURNAL_SNAPSHOT))).size <= limit + 44);
   } finally { await f.cleanup(); }
 });
 
@@ -266,4 +268,98 @@ test("snapshot writer checks the exact encoded bound before opening its temporar
     assert.deepEqual(await fs.readFile(file), before);
     await assert.rejects(fs.stat(path.join(f.directory, "store.snapshot.tmp")), { code: "ENOENT" });
   } finally { await b.close(); await f.cleanup(); }
+});
+
+
+test("crowded admission protects terminal progress from later growth and rejects oversized receipts atomically", async () => {
+  const reserve = BLOB_JOURNAL_BOUNDS.terminalReceiptBytes + BLOB_JOURNAL_BOUNDS.settlementStructureBytes + BLOB_JOURNAL_BOUNDS.baselineBytes;
+  const limit = reserve + 5000;
+  const f = await fixture(limit);
+  let b = f.backend;
+  try {
+    await b.writeMeta("retained", "x".repeat(3800));
+    const value = input(), frozen = prepared(value), key = value.intent.key;
+    const record = await b.admitPreparedBlob(frozen, { guard: (await b.readBlobWithJournal(key)).guard });
+    await b.compact(); await b.close();
+    b = await FileJournaledBackend.open(f.options);
+    const before = b.transaction;
+    await assert.rejects(b.writeMeta("padding", "x".repeat(2000)), /settlement reserve/);
+    await assert.rejects(b.write("padding", { id: "padding", frontmatter: { type: "Note" }, body: "x".repeat(2000) }), /settlement reserve/);
+    assert.equal(b.transaction, before);
+    assert.equal(await b.readMeta("padding"), undefined);
+    assert.equal(await b.exists("padding"), false);
+    // A durable claim at a crowded boundary must not consume the same record's reserve.
+    await b.updateBlobIntent(record.requestId, "pending", { state: "in_flight", attempts: 1 }, { guard: (await b.readBlobWithJournal(key)).guard });
+    const refusal = (message: string) => blobReceipt(frozen, { ok: false, operationId: value.intent.operationId, error: { code: "backend_unavailable", message, retryable: false, writeState: "not_applied" } });
+    const guard = (await b.readBlobWithJournal(key, { meta: ["baseline"] })).guard;
+    const log = await fs.readFile(path.join(f.directory, FILE_JOURNAL_LOG)), txn = b.transaction;
+    await assert.rejects(b.updateBlobIntent(record.requestId, "in_flight", { state: "refused", receipt: refusal("x".repeat(BLOB_JOURNAL_BOUNDS.terminalReceiptBytes)) }, { guard, meta: [{ key: "baseline", value: "not committed" }] }), /blob terminal receipt/);
+    assert.equal(b.transaction, txn);
+    assert.deepEqual(await fs.readFile(path.join(f.directory, FILE_JOURNAL_LOG)), log);
+    assert.equal((await b.readBlobIntent(record.requestId))?.state, "in_flight");
+    assert.equal(await b.readMeta("baseline"), undefined);
+    // A near-ceiling valid witness plus the documented ordinary metadata allowance fits.
+    const receipt = refusal("x".repeat(BLOB_JOURNAL_BOUNDS.terminalReceiptBytes - 1024));
+    await b.updateBlobIntent(record.requestId, "in_flight", { state: "refused", receipt }, { guard, meta: [{ key: "baseline", value: "x".repeat(BLOB_JOURNAL_BOUNDS.baselineBytes - 256) }] });
+    assert.deepEqual((await b.readBlobIntent(record.requestId))?.receipt, receipt);
+    await b.retireBlobIntents(key, [record.requestId], { guard: (await b.readBlobWithJournal(key)).guard });
+    await b.writeMeta("padding", "capacity released");
+    await b.compact();
+    assert.ok((await fs.stat(path.join(f.directory, FILE_JOURNAL_SNAPSHOT))).size <= limit + 44);
+  } finally { await b.close(); await f.cleanup(); }
+});
+
+test("a store without settlement headroom refuses the review's crowded pending admission", async () => {
+  const f = await fixture(5000);
+  try {
+    await f.backend.writeMeta("retained", "x".repeat(3800));
+    const value = input(), before = f.backend.transaction;
+    await assert.rejects(f.backend.admitPreparedBlob(prepared(value), { guard: (await f.backend.readBlobWithJournal(value.intent.key)).guard }), /settlement reserve/);
+    assert.equal(f.backend.transaction, before);
+    assert.deepEqual(await f.backend.listBlobIntents(), []);
+    await f.backend.compact();
+    assert.equal((await fs.readFile(path.join(f.directory, FILE_JOURNAL_SNAPSHOT))).readUInt32BE(4), 1);
+  } finally { await f.cleanup(); }
+});
+
+
+test("an exact-capacity store can claim attempts across a transaction digit boundary and then settle", async () => {
+  const f = await fixture();
+  let b = f.backend;
+  let second: Awaited<ReturnType<typeof fixture>> | undefined;
+  let exact: FileJournaledBackend | undefined;
+  try {
+    const value = input(), frozen = prepared(value), key = value.intent.key;
+    const row = await b.admitPreparedBlob(frozen, { guard: (await b.readBlobWithJournal(key)).guard });
+    // Nine real commits make the first claim grow the transaction counter from9 to10.
+    for (let i = 0; i < 8; i++) await b.writeMeta("counter", i);
+    await b.compact(); await b.close();
+    const snapshotBytes = (await fs.stat(path.join(f.directory, FILE_JOURNAL_SNAPSHOT))).size - 44;
+    // Ask a fresh admission for its actual pending capacity, without reimplementing the codec
+    // or reserve formula. Its snapshot has the same rows and single-digit txn as the9-commit one.
+    second = await fixture(4096);
+    await second.backend.writeMeta("counter", 7);
+    let exactLimit = 0;
+    try { await second.backend.admitPreparedBlob(frozen, { guard: (await second.backend.readBlobWithJournal(key)).guard }); }
+    catch (error) {
+      const match = /snapshot of (\d+) bytes plus (\d+) bytes of blob settlement reserve/.exec(String(error));
+      assert.ok(match);
+      exactLimit = Number(match[1]) + Number(match[2]);
+    }
+    assert.ok(exactLimit > snapshotBytes);
+    await b.close();
+    const exactOptions = { ...f.options, [STORE_BYTE_LIMIT]: exactLimit };
+    b = await FileJournaledBackend.open(exactOptions);
+    await b.updateBlobIntent(row.requestId, "pending", { state: "in_flight", attempts: 1 }, { guard: (await b.readBlobWithJournal(key)).guard });
+    assert.equal(b.transaction, 10);
+    const receipt = blobReceipt(frozen, success(value));
+    await b.updateBlobIntent(row.requestId, "in_flight", { state: "acknowledged", receipt }, { guard: (await b.readBlobWithJournal(key)).guard });
+    // Prove the same bound admits from empty, not only after lowering a preexisting store.
+    await second.backend.close();
+    const freshOptions = { ...second.options, [STORE_BYTE_LIMIT]: exactLimit };
+    exact = await FileJournaledBackend.open(freshOptions);
+    await exact.admitPreparedBlob(frozen, { guard: (await exact.readBlobWithJournal(key)).guard });
+    await exact.updateBlobIntent(value.identity.requestId, "pending", { state: "in_flight", attempts: 1 }, { guard: (await exact.readBlobWithJournal(key)).guard });
+    await exact.updateBlobIntent(value.identity.requestId, "in_flight", { state: "acknowledged", receipt }, { guard: (await exact.readBlobWithJournal(key)).guard });
+  } finally { await exact?.close(); await second?.cleanup(); await b.close(); await f.cleanup(); }
 });

@@ -40,7 +40,7 @@ import { promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 
 import { assertBlobKey } from "./blob-contract.js";
-import { assertBlobJournalGuard, captureBlobIntentRecord, captureBlobMutationOptions, decodePreparedBlobIntent, type BlobIntentRecord, type BlobJournaledBackend, type BlobJournalGuard, type BlobJournalMutationOptions, type BlobJournalRead, type BlobIntentPatch } from "./blob-journal.js";
+import { BLOB_JOURNAL_BOUNDS, assertBlobJournalGuard, captureBlobIntentRecord, captureBlobMutationOptions, decodePreparedBlobIntent, type BlobIntentRecord, type BlobJournaledBackend, type BlobJournalGuard, type BlobJournalMutationOptions, type BlobJournalRead, type BlobIntentPatch } from "./blob-journal.js";
 import { resolveContentType } from "./content-type.js";
 import { OPEN_LOG, STORE_RAW, STORE_BYTE_LIMIT, type FileJournalHandle } from "./file-journaled-backend-internal.js";
 import { captureFilesystemHostPolicy, type FilesystemHostPolicy } from "./filesystem-host.js";
@@ -497,7 +497,7 @@ function validateIntentChanges(changes: readonly Change[], format: number, file:
     const row = change.value;
     if ("recordFamily" in row) {
       if (row.recordFamily !== "blob" || format !== 2) throw new FileJournalCorruptError(file, "blob intent is not allowed in this format");
-      try { captureBlobIntentRecord(row); } catch { throw new FileJournalCorruptError(file, "invalid blob intent payload"); }
+      try { captureBlobIntentRecord(row); assertReceiptBound(row); } catch { throw new FileJournalCorruptError(file, "invalid blob intent payload"); }
       if (row.requestId !== change.key) throw new FileJournalCorruptError(file, "blob identity index mismatch");
     }
   }
@@ -505,6 +505,32 @@ function validateIntentChanges(changes: readonly Change[], format: number, file:
 function snapshotPayload(state: State, txn: number): SnapshotPayload {
   return { format: state.format, txn, sequence: state.sequence, documents: [...state.documents], reserved: [...state.reserved], blobs: [...state.blobs], intents: [...state.intents], meta: [...state.meta] };
 }
+/** Terminal evidence must fit the space protected when its pending record was admitted. */
+function assertReceiptBound(row: BlobIntentRecord): void {
+  if (row.receipt !== undefined) assertByteBound(encodePayload(row.receipt), BLOB_JOURNAL_BOUNDS.terminalReceiptBytes, "blob terminal receipt");
+}
+
+/** Derived from existing records only: no persisted reservation map or quota ledger. The
+ * mutable projection (including transaction-number width) is subtracted so claiming an
+ * attempt/state cannot consume its own reserve.
+ * The 4 KiB structural allowance covers the terminal record envelope/tagging and counter/time
+ * changes; the additional 16 KiB is aggregate encoded growth of ordinary baseline metadata.
+ * Arbitrary extra metadata growth still requires unreserved store capacity. */
+function settlementReserve(state: State, txn: number): number {
+  let reserved = 0;
+  for (const row of state.intents.values()) {
+    if (isDocumentIntent(row)) continue;
+    // All stored blob rows passed captureBlobIntentRecord and assertReceiptBound, including
+    // replay. Unknown/nonterminal evidence can never release this allocation.
+    if (row.receipt !== undefined && ["acknowledged", "refused", "conflict"].includes(row.state)) continue;
+    const mutableBytes = encodePayload({ state: row.state, attempts: row.attempts, updatedAt: row.updatedAt, transaction: txn }).byteLength;
+    const remaining = BLOB_JOURNAL_BOUNDS.terminalReceiptBytes + BLOB_JOURNAL_BOUNDS.settlementStructureBytes + BLOB_JOURNAL_BOUNDS.baselineBytes - mutableBytes;
+    if (!Number.isSafeInteger(remaining) || remaining < 0 || !Number.isSafeInteger(reserved + remaining)) throw new RangeError("blob settlement reserve is not representable");
+    reserved += remaining;
+  }
+  return reserved;
+}
+
 function assertByteBound(payload: Uint8Array, maximum: number, family: string): void {
   if (payload.byteLength > maximum) throw new RangeError(`a ${family} of ${payload.byteLength} bytes exceeds the store's ${maximum} byte bound`);
 }
@@ -861,7 +887,12 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
       assertByteBound(payload, this.#maximumBytes, "transaction");
       const projected: State = { ...this.#state, format: nextFormat, documents: new Map(this.#state.documents), reserved: new Map(this.#state.reserved), blobs: new Map(this.#state.blobs), intents: new Map(this.#state.intents), meta: new Map(this.#state.meta) };
       applyChanges(projected, changes);
-      assertByteBound(encodePayload(snapshotPayload(projected, record.txn)), this.#maximumBytes, "projected snapshot");
+      const snapshotBytes = encodePayload(snapshotPayload(projected, record.txn));
+      assertByteBound(snapshotBytes, this.#maximumBytes, "projected snapshot");
+      if (nextFormat === 2) {
+        const reserved = settlementReserve(projected, record.txn);
+        if (snapshotBytes.byteLength + reserved > this.#maximumBytes) throw new RangeError(`a projected snapshot of ${snapshotBytes.byteLength} bytes plus ${reserved} bytes of blob settlement reserve exceeds the store's ${this.#maximumBytes} byte bound`);
+      }
       const bytes = frame(RECORD_MAGIC, payload, nextFormat);
       const at = this.#logBytes;
       try {
@@ -1309,6 +1340,7 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
       if (!current || isDocumentIntent(current) || current.state !== expectedState) throw new IntentStateConflict(requestId, expectedState, current?.state ?? null);
       if (current.target !== guard.key) throw new JournalGuardConflict(guard.key);
       const next = captureBlobIntentRecord({ ...current, ...patch, updatedAt: now });
+      assertReceiptBound(next);
       if (next.attempts < current.attempts || current.receipt && (next.attempts !== current.attempts || next.state !== current.state || !equalJournalValue(current.receipt, next.receipt))) throw new JournalGuardConflict(guard.key);
       return { changes: [{ family: "intent", key: requestId, value: structuredClone(next) }, ...FileJournaledBackend.#metaChanges(meta, removeMeta)], result: next };
     });
