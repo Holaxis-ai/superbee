@@ -293,6 +293,7 @@ export function installedRecipes(
       || declaredCounts.size > 1
       || stamped.length !== of
       || presentWithoutStamp.length > 0
+      || (recipe !== undefined && missingIds.length > 0)
     ) state = "partial";
     else if (diverged.length > 0) state = "diverged";
     else if (unknownRules.length > 0) state = "unknown";

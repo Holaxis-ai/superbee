@@ -72,7 +72,7 @@ const UNSTAMPED_CAP = 20;
  * needs a person, so no single fixing command fits every row.
  */
 const STAMP_HELP =
-  "partial: the recipe's conventions record different versions or fewer than it declares; a fresh 'recipe evolve <source>' plan (or 'recipe add' for an interrupted install) converges them, except a Kind declined with 'kind dismiss', which is deliberate; diverged: a convention changed since its recipe wrote it; an added declaration blocks the next evolve until the recipe adopts it or it is removed by hand, a removed optional one is put back, and a removed required field, section, terminal value or inbound expectation blocks until restored by hand; unknown: no stamp, or stamp rules this version does not read";
+  "partial: the recipe's conventions record different versions or fewer than it declares; a fresh 'recipe evolve <source>' plan (or 'recipe add' for an interrupted install) converges them, except a Kind declined with 'kind dismiss', which is deliberate, and a declared convention another recipe's stamp owns, which stays with that recipe; diverged: a convention changed since its recipe wrote it; an added declaration blocks the next evolve until the recipe adopts it or it is removed by hand, a removed optional one is put back, and a removed required field, section, terminal value or inbound expectation blocks until restored by hand; unknown: no stamp, or stamp rules this version does not read";
 
 /** One installed-recipe row as `recipes` renders it: the core row without its id list. */
 function installedRow(row: InstalledRecipeRow): Record<string, unknown> {

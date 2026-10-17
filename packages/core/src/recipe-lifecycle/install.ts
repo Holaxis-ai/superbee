@@ -94,9 +94,13 @@ export interface RecipeInstallResult {
   /**
    * The worst stamp among the recipe's conventions after the install, in the order current,
    * stale, foreign, missing: a created convention is `current`; an existing one keeps its stamp,
-   * since install never rewrites it. Anything but `current` is converged by `recipe evolve`.
+   * since install never rewrites it. A `stale` or `missing` stamp is converged by `recipe evolve`.
    */
   stamp: RecipeStampState;
+  /** Existing conventions whose stamp is `stale` or `missing`: what an evolve plan would re-stamp. */
+  restamp_ids: string[];
+  /** Existing conventions another recipe's stamp owns; they stay with that recipe. */
+  foreign_ids: string[];
   warnings: ValidationWarning[];
 }
 
@@ -248,6 +252,8 @@ export async function installRecipe(
 
   const docs: RecipeDocResult[] = [];
   const stamps: RecipeStampState[] = [];
+  const restampIds: string[] = [];
+  const foreignIds: string[] = [];
   for (const d of recipe.docs) {
     if (legacyConventionId !== null && governsKind(d, VIEW_KIND_NAME)) {
       // A convention still governing the RETIRED legacy name is unmigrated state: skip creating
@@ -274,7 +280,10 @@ export async function installRecipe(
     } catch (err) {
       if (err instanceof VersionConflict) {
         const existing = await readDoc(bundle, doc.id);
-        stamps.push(recipeStampState(existing, identity));
+        const existingStamp = recipeStampState(existing, identity);
+        stamps.push(existingStamp);
+        if (existingStamp === "stale" || existingStamp === "missing") restampIds.push(doc.id);
+        else if (existingStamp === "foreign") foreignIds.push(doc.id);
         if (!sameInstalledDoc(existing, doc, okfVersion)) {
           sourceDiffers = true;
           migrationWarnings.push({
@@ -418,6 +427,8 @@ export async function installRecipe(
       pages.some((page) => page.changed) ||
       references.some((reference) => reference.changed),
     stamp: worstRecipeStampState(stamps),
+    restamp_ids: restampIds.sort(),
+    foreign_ids: foreignIds.sort(),
     warnings: [...recipe.warnings, ...migrationWarnings],
   };
 }

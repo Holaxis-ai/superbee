@@ -252,9 +252,16 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   // by the migration script, never duplicated).
   receipt.counts = result.counts;
   if (warnings.length > 0) receipt.warnings = warnings;
-  // Install never rewrites an existing convention, so a stale, foreign or missing stamp (or a
-  // differing source) is converged by the explicit evolve plan.
-  if (sourceDiffers > 0 || result.stamp !== "current") {
+  // Install never rewrites an existing convention, so a stale or missing stamp (or a differing
+  // source) is converged by the explicit evolve plan. A foreign stamp stays with its recipe, so no
+  // plan changes it; the receipt names those conventions instead.
+  if (result.foreign_ids.length > 0) {
+    receipt.foreign_ids = result.foreign_ids;
+    receipt.foreign_help =
+      "another recipe's stamp owns these conventions and keeps them; this recipe reads partial in 'recipes' while it does, and no evolve plan changes that";
+  }
+  const migrationPending = result.docs.some((doc) => doc.migration_required !== undefined);
+  if (sourceDiffers > 0 || result.restamp_ids.length > 0 || migrationPending) {
     const target: CommandText = values.dir !== undefined
       ? commandFragment` --dir ${commandQuoted(values.dir)}`
       : remote !== undefined

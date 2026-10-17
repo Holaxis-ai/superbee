@@ -3171,6 +3171,26 @@ test("T10: a built-in parsed from its serialized bytes has the source digest of 
   assert.equal(recipeSourceDigest(fromConstants), recipeSourceDigest(CONTEXT_NOTES_RECIPE));
 });
 
+test("shared convention: the second shipped recipe names the convention another recipe's stamp owns and offers no plan that cannot change it", async () => {
+  const dir = await tempDir();
+  try {
+    await init(["--dir", dir, "--recipe", "none"], { stdout: () => {} });
+    const personal = path.resolve(import.meta.dirname, "../../../examples/recipes/personal-task-system");
+    await recipe(["add", personal, "--dir", dir], { stdout: () => {} });
+    const second = await runJson(recipe, ["add", REVIEW_WORKFLOW_RECIPE, "--dir", dir]);
+    assert.equal(second.stamp, "foreign");
+    assert.deepEqual(second.foreign_ids, ["conventions/view"]);
+    assert.match(String(second.foreign_help), /another recipe's stamp owns these conventions and keeps them/);
+    assert.equal((second.commands as Record<string, unknown> | undefined)?.plan_evolution, undefined);
+    const listed = await runJson(recipes, ["--dir", dir]);
+    const rows = Object.fromEntries((listed.installed as Array<Record<string, unknown>>).map((row) => [row.id, row.state]));
+    assert.deepEqual(rows, { "personal-task-system": "installed", "review-workflow": "partial" });
+    assert.match(String(listed.stamp_help), /a declared convention another recipe's stamp owns, which stays with that recipe/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("T12: recipes reports each recipe's stamp state: installed, partial, diverged, unknown, with records, missing ids and the capped unstamped list", async () => {
   const dir = await tempDir();
   try {
@@ -3233,6 +3253,7 @@ test("T12: recipes reports each recipe's stamp state: installed, partial, diverg
     assert.match(String(listed.unstamped_help), /conventions_all lists every convention, and the unstamped ones carry no x_recipe/);
     assert.match(String(listed.stamp_help), /^partial: .*; diverged: .*; unknown: no stamp, or stamp rules this version does not read$/);
     assert.match(String(listed.stamp_help), /except a Kind declined with 'kind dismiss', which is deliberate/);
+    assert.match(String(listed.stamp_help), /a declared convention another recipe's stamp owns, which stays with that recipe/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

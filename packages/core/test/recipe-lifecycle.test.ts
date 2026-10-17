@@ -344,7 +344,7 @@ test("RecipeEvolutionPostcondition: an unverifiable or changed re-plan after the
   await assert.rejects(changed.run, (error: unknown) => {
     assert.ok(error instanceof RecipeEvolutionPostcondition, String(error));
     assert.equal(error.reason, "changed");
-    assert.equal(error.message, "recipe evolution wrote 1 definition(s), but the prospective registry changed before the postcondition check");
+    assert.equal(error.message, "recipe evolution wrote 1 definition(s), but the bundle changed (a definition or its stamp) before the postcondition check; a fresh recipe evolve plan shows the current state");
     assert.ok(error.blockers?.some((blocker) => blocker.code === "RECIPE_EVOLUTION_BODY_REPLACEMENT_UNSUPPORTED"));
     assert.match(error.postcondition_plan ?? "", /^sha256:[0-9a-f]{64}$/);
     return true;
@@ -940,6 +940,16 @@ test("T16: unknown digest rules read unknown, never diverged; a tampered definit
   await applyRecipeEvolution(bundle, trio("1"), repair.plan_token);
   assert.equal((await stateOf(bundle)).rows[0]!.state, "installed");
   assert.equal((await planRecipeEvolution(bundle, trio("1"))).writes, 0);
+  // A local duplicate in a declaration list is a real edit (the merge compares lists as sets):
+  // it stays diverged and plans no write.
+  await editConvention(backend, "conventions/beta", (doc) => {
+    const fields = doc.frontmatter.fields as KindFields;
+    return withFields(doc, { ...fields, required: [...(fields.required ?? []), ...(fields.required ?? [])] });
+  });
+  const reordered = await planRecipeEvolution(bundle, trio("1"));
+  assert.equal(reordered.definitions.find((definition) => definition.id === "conventions/beta")?.stamp, "current");
+  assert.equal(reordered.writes, 0);
+  assert.deepEqual((await stateOf(bundle)).rows[0]!.diverged, ["conventions/beta"]);
 
   for (const tamper of [{ version: "0" }, { of: 4 }, { source_digest: `sha256:${"1".repeat(64)}` }]) {
     const gamma = await stampOf("conventions/gamma");
@@ -948,6 +958,19 @@ test("T16: unknown digest rules read unknown, never diverged; a tampered definit
     assert.equal(plan.definitions.find((definition) => definition.id === "conventions/gamma")?.stamp, "stale", JSON.stringify(tamper));
     await editConvention(backend, "conventions/gamma", (doc) => withStamp(doc, gamma));
   }
+});
+
+test("T16b: a known recipe with a declared convention renamed away reads partial and names it, even with the count padded", async () => {
+  const { bundle, backend } = await probeBundle("t16b");
+  await installRecipe(bundle, trio("1"), { now: NOW });
+  const beta = await backend.read("conventions/beta");
+  await backend.rawWrite("conventions/beta-renamed", { ...beta.doc, id: "conventions/beta-renamed" }, { expectedVersion: null });
+  await backend.delete("conventions/beta", { expectedVersion: beta.version });
+  const known = (await stateOf(bundle, [trio("1")])).rows[0]!;
+  assert.equal(known.state, "partial");
+  assert.deepEqual(known.missing_ids, ["conventions/beta"]);
+  // Without the recipe the reader only has the count, which the renamed copy still satisfies.
+  assert.equal((await stateOf(bundle)).rows[0]!.state, "installed");
 });
 
 test("T17: a malformed stamp reads missing, is listed unstamped, and the next apply rewrites it without a crash", async () => {

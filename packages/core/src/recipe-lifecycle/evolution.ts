@@ -41,6 +41,7 @@ import {
 import {
   RECIPE_STAMP_KEY,
   conventionStampState,
+  definitionDigest,
   recipeStampIdentity,
   recipeStampState,
   withRecipeStamp,
@@ -637,11 +638,16 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
 
     const desiredVersion = contentVersion(comparableRecipeDoc(candidate, okfVersion));
     const unchanged = sameInstalledDoc(existing.doc, candidate, okfVersion);
-    // Content equal to what this recipe writes, under a current identity whose definition digest
-    // disagrees, is re-stamped: a fresh stamp is the honest record, and nothing else repairs it.
+    // A current identity whose definition disagrees with the stored content is re-stamped only when
+    // that content's definition digest equals the digest of the recipe's own convention: a fresh
+    // stamp is then the honest record. The merge treats lists as sets, so `unchanged` alone would
+    // also re-baseline a local reorder or duplicate.
     const identityState = recipeStampState(existing.doc, identity);
     const stamp =
-      unchanged && identityState === "current" && conventionStampState(existing.doc) === "diverged"
+      unchanged &&
+      identityState === "current" &&
+      conventionStampState(existing.doc) === "diverged" &&
+      definitionDigest(existing.doc) === definitionDigest(target)
         ? "stale"
         : identityState;
     definitions.push({
@@ -993,7 +999,7 @@ export async function applyRecipeEvolution(
   if (!postcondition.plan.ready || postcondition.plan.changed || postcondition.plan.writes > 0) {
     throw new RecipeEvolutionPostcondition(
       "changed",
-      `recipe evolution wrote ${written} definition(s), but the prospective registry changed before the postcondition check`,
+      `recipe evolution wrote ${written} definition(s), but the bundle changed (a definition or its stamp) before the postcondition check; a fresh recipe evolve plan shows the current state`,
       completed,
       { blockers: postcondition.plan.blockers, postcondition_plan: postcondition.plan.plan_token },
     );
