@@ -30,6 +30,8 @@ export const workspaceAliases = {
       "@superbee/core/file-journaled-backend": r("../core/src/file-journaled-backend.ts"),
       "@superbee/core/filesystem-push-role": r("../core/src/filesystem-push-role.ts"),
       "@superbee/core/governed-body-write": r("../core/src/governed-body-write.ts"),
+      // The Node-only subpath first, so it is not read as `hosted-client` with `/node` appended.
+      "@superbee/core/hosted-client/node": r("../core/src/hosted-client/node.ts"),
       "@superbee/core/hosted-client": r("../core/src/hosted-client/index.ts"),
       "@superbee/core/hosted-transport": r("../core/src/hosted-transport/index.ts"),
       "@superbee/core/indexeddb-backend": r("../core/src/indexeddb-backend.ts"),

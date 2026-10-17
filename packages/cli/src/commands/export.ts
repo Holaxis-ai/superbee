@@ -4,7 +4,7 @@
 // reserved file and blob at the bundle's latest confirmed revision, as the host stores them, in
 // store-only zips with digest manifests: one page at a time from a host that pages the export, else
 // one archive. Every page is read whole and verified, and the pages joined, before anything is
-// written (`hosted/export-archive.ts`), so a stopped or tampered export never becomes files.
+// written (core's `downloadExport`), so a stopped or tampered export never becomes files.
 //
 // Two ways to land it, each safe to interrupt:
 //
@@ -57,12 +57,12 @@ import {
   ExportArchiveError,
   IN_PLACE_JOURNAL,
   IN_PLACE_STAGING,
-  ExportPageChain,
   MAX_EXPORT_BYTES,
-  verifyExport,
   type ArchiveEntry,
   type VerifiedExport,
 } from "../hosted/export-archive.js";
+import { isMalformedAnswer, isRouteNotServed } from "@superbee/core/hosted-client";
+import { downloadExport, EXPORT_WINDOW_MS, isHostedExportError } from "@superbee/core/hosted-client/node";
 
 export { IN_PLACE_STAGING } from "../hosted/export-archive.js";
 
@@ -129,7 +129,7 @@ function exportDeps(partial: Partial<ExportDeps>): ExportDeps {
 }
 
 /** The export route's own window (60 s); the default 15 s read deadline would cut a large bundle. */
-export const EXPORT_DEADLINE_MS = 60_000;
+export const EXPORT_DEADLINE_MS = EXPORT_WINDOW_MS;
 /** Paths shown per list in a receipt; the counts are always the totals. */
 const SHOWN = 20;
 const JOURNAL = IN_PLACE_JOURNAL;
@@ -168,13 +168,6 @@ function shown(paths: readonly string[]): string[] {
 
 // ── fetch and verify ─────────────────────────────────────────────────────────────────────────
 
-function refusalCode(body: unknown): string | undefined {
-  const error = (body as { error?: unknown } | undefined)?.error;
-  if (typeof error === "string") return error;
-  const code = (error as { code?: unknown } | undefined)?.code;
-  return typeof code === "string" ? code : undefined;
-}
-
 /** The client a named bundle is exported through: the signed-in account, with the reference
  * (typed, or qualified by `--workspace`) checked as checkout checks it (`resolveBundleReference`). */
 async function namedClient(source: Source, deps: ExportDeps, resume: CommandText) {
@@ -189,24 +182,11 @@ async function namedClient(source: Source, deps: ExportDeps, resume: CommandText
   return { client: reference.slug === null ? account.client : account.client.within(reference.slug), slug: reference.slug };
 }
 
-/** How many times a paged export starts again from its first page when the bundle moves under it. */
-const PAGED_EXPORT_ATTEMPTS = 3;
-/** The pause before each restart, so a burst of writes can settle (with jitter). */
-const PAGED_EXPORT_RESTART_MS: readonly number[] = [500, 1500];
-/** The pause before asking for a page again after a busy host or a page it stopped part way. */
-const PAGE_RETRY_MS = 1000;
-
-const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /**
- * The bundle's verified export. A host that pages the export (`{ paged: true }`) answers it a page
- * at a time, each page a whole archive inside the host's export window, so a bundle of any size
- * staged creation allows is exported; each page is verified and checked against the pages before
- * it as it arrives, and the pages are joined (`ExportPageChain`). A host from before paging refuses
- * the paged request's body as `invalid_input`, and the whole bundle is then read as one archive, as
- * before. A bundle that changes between pages (`concurrent_change`) is read again from its first
- * page, a few times. A page the host was too busy for (`backend_unavailable`, its one export slot)
- * or stopped part way is asked for once more before the export fails.
+ * The bundle's verified export, downloaded and verified by core (`downloadExport`): a paged
+ * export a page at a time, the whole archive from a host from before paging, restarted when the
+ * bundle moves between pages, with a busy or stopped page asked for once more. Its typed failures
+ * are worded here ({@link exportFailure}).
  */
 async function fetchExport(source: Source, deps: ExportDeps, resume: CommandText): Promise<VerifiedExport> {
   // A checkout is read as its own person (in the workspace it names); a named bundle as whoever is
@@ -223,45 +203,10 @@ async function fetchExport(source: Source, deps: ExportDeps, resume: CommandText
  * export's own window ({@link EXPORT_DEADLINE_MS}).
  */
 export async function fetchExportThrough(request: ExportRequest): Promise<VerifiedExport> {
-  const { source } = request;
-  const { bundleId, target } = source;
-  for (let attempt = 1; ; attempt += 1) {
-    const chain = new ExportPageChain();
-    let bytes = 0;
-    let cursor: string | undefined;
-    let moved = false;
-    for (;;) {
-      let page: VerifiedExport | undefined;
-      for (let tries = 1; page === undefined; tries += 1) {
-        const answer = await exportAnswer(request, { bundleId, paged: true, ...(cursor !== undefined ? { cursor } : {}) });
-        // Only the very first request can meet a host from before paging.
-        if (answer.refused === "invalid_input" && cursor === undefined && attempt === 1) return verified(await readArchive(await wholeAnswer(request), source, MAX_EXPORT_BYTES), source);
-        if (answer.refused === "concurrent_change") {
-          moved = true;
-          break;
-        }
-        try {
-          if (answer.refused !== undefined) throw await exportRefusal(request, answer.refused, answer.status);
-          page = verified(await readArchive(answer.ok, source, MAX_EXPORT_BYTES - bytes), source, { paged: true });
-        } catch (error) {
-          const again = error instanceof CliError && (error.details?.reason === "export_incomplete" || (answer.refused === "backend_unavailable" && error.code === "TRANSIENT"));
-          if (!again || tries >= 2) throw error;
-          await pause(PAGE_RETRY_MS);
-        }
-      }
-      if (moved) break;
-      bytes += page!.bytes;
-      cursor = joining(source, () => chain.add(page!));
-      if (cursor === undefined) return joining(source, () => chain.joined());
-    }
-    if (attempt >= PAGED_EXPORT_ATTEMPTS) {
-      throw new CliError("TRANSIENT", `'${bundleId}' kept changing on ${target.origin} while it was exported; nothing was written`, {
-        details: { reason: "export_source_changed", bundle_id: bundleId, host: target.origin, retryable: true },
-        help: "retry the same command once the bundle is not being edited",
-      });
-    }
-    const base = PAGED_EXPORT_RESTART_MS[attempt - 1]!;
-    await pause(Math.round(base / 2 + (Math.random() * base) / 2));
+  try {
+    return await downloadExport(request.client, request.source.bundleId);
+  } catch (error) {
+    throw await exportFailure(request, error);
   }
 }
 
@@ -271,25 +216,29 @@ export interface ExportRequest {
   readonly source: Source;
   readonly resume: CommandText;
 }
-type ExportAnswer = { readonly ok: ReadableStream<Uint8Array>; readonly refused?: undefined; readonly status?: undefined } | { readonly ok?: undefined; readonly refused: string; readonly status: number };
 
-/** One export request's answer: the archive's body, or the refusal code the host answered. */
-async function exportAnswer({ client, source, resume }: ExportRequest, input: Record<string, unknown>): Promise<ExportAnswer> {
-  let answer;
-  try {
-    answer = await client.carrier.stream(`${client.prefix}/export`, input, client.signal);
-  } catch (error) {
-    throw hostedFailure(error, source.target, resume);
+/** The CLI error a failed download is. */
+async function exportFailure(request: ExportRequest, error: unknown): Promise<unknown> {
+  const { source } = request;
+  const { bundleId, target } = source;
+  if (isHostedExportError(error, "too_large")) return exportTooLarge(source);
+  if (isHostedExportError(error, "stopped")) {
+    return new CliError("TRANSIENT", `the export of '${bundleId}' from ${target.origin} stopped part way; nothing was written`, {
+      details: { reason: "export_incomplete", bundle_id: bundleId, host: target.origin, retryable: true },
+      help: "retry the same command",
+    });
   }
-  if (!answer.ok) return { refused: refusalCode(answer.body) ?? "RUNTIME", status: answer.status };
-  return { ok: answer.body };
-}
-
-/** The whole bundle as one archive (a host from before paged export). */
-async function wholeAnswer(request: ExportRequest): Promise<ReadableStream<Uint8Array>> {
-  const answer = await exportAnswer(request, { bundleId: request.source.bundleId });
-  if (answer.refused !== undefined) throw await exportRefusal(request, answer.refused, answer.status);
-  return answer.ok;
+  if (isHostedExportError(error, "source_changed")) {
+    return new CliError("TRANSIENT", `'${bundleId}' kept changing on ${target.origin} while it was exported; nothing was written`, {
+      details: { reason: "export_source_changed", bundle_id: bundleId, host: target.origin, retryable: true },
+      help: "retry the same command once the bundle is not being edited",
+    });
+  }
+  if (error instanceof ExportArchiveError) return archiveRefusal(source, error);
+  // A gateway from before the export route answers the family's own `404 {"error":"not_found"}`.
+  if (isRouteNotServed(error)) return await exportRefusal(request, "not_found", 404);
+  if (error instanceof RemoteError && !isMalformedAnswer(error)) return await exportRefusal(request, error.code, error.status);
+  return hostedFailure(error, source.target, request.resume);
 }
 
 function exportTooLarge(source: Source): CliError {
@@ -326,64 +275,20 @@ async function exportRefusal({ client, slug, source, resume }: ExportRequest, co
   return hostedFailure(new RemoteError(`hosted export answered ${status}`, code, status), target, resume);
 }
 
-/** One archive's body, read whole and bounded by `budget` (what the export may still hold). */
-async function readArchive(body: ReadableStream<Uint8Array>, source: Source, budget: number): Promise<Uint8Array> {
-  const { target, bundleId } = source;
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const part = await reader.read();
-      if (part.done) break;
-      size += part.value.byteLength;
-      if (size > budget) throw exportTooLarge(source);
-      chunks.push(part.value);
-    }
-  } catch (error) {
-    if (error instanceof CliError) throw error;
-    throw new CliError("TRANSIENT", `the export of '${bundleId}' from ${target.origin} stopped part way; nothing was written`, {
-      details: { reason: "export_incomplete", bundle_id: bundleId, host: target.origin, retryable: true },
+/** The CLI error an archive the verifier refused means. */
+function archiveRefusal(source: Source, error: ExportArchiveError): CliError {
+  if (error.problem === "incomplete") {
+    // The host ends an export it could not finish (the bundle changed, the deadline passed, the
+    // grant was withdrawn) without its central directory; the same request may well succeed.
+    return new CliError("TRANSIENT", `the export of '${source.bundleId}' was not completed by the host; nothing was written`, {
+      details: { reason: "export_incomplete", bundle_id: source.bundleId, host: source.target.origin, retryable: true },
       help: "retry the same command",
     });
-  } finally {
-    void reader.cancel().catch(() => {});
   }
-  const archive = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    archive.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return archive;
-}
-
-function verified(archive: Uint8Array, source: Source, options: { readonly paged?: boolean } = {}): VerifiedExport {
-  return refusingArchive(source, () => verifyExport(archive, source.bundleId, options));
-}
-
-function joining<T>(source: Source, join: () => T): T {
-  return refusingArchive(source, join);
-}
-
-function refusingArchive<T>(source: Source, verify: () => T): T {
-  try {
-    return verify();
-  } catch (error) {
-    if (!(error instanceof ExportArchiveError)) throw error;
-    if (error.problem === "incomplete") {
-      // The host ends an export it could not finish (the bundle changed, the deadline passed, the
-      // grant was withdrawn) without its central directory; the same request may well succeed.
-      throw new CliError("TRANSIENT", `the export of '${source.bundleId}' was not completed by the host; nothing was written`, {
-        details: { reason: "export_incomplete", bundle_id: source.bundleId, host: source.target.origin, retryable: true },
-        help: "retry the same command",
-      });
-    }
-    throw new CliError("RUNTIME", `${source.target.origin} answered an export this CLI refuses (${error.message}); nothing was written`, {
-      details: { reason: `export_${error.problem}`, bundle_id: source.bundleId, host: source.target.origin, retryable: false },
-      help: "upgrade Superbee (npm install -g superbee); if it persists, report this bundle and reason",
-    });
-  }
+  return new CliError("RUNTIME", `${source.target.origin} answered an export this CLI refuses (${error.message}); nothing was written`, {
+    details: { reason: `export_${error.problem}`, bundle_id: source.bundleId, host: source.target.origin, retryable: false },
+    help: "upgrade Superbee (npm install -g superbee); if it persists, report this bundle and reason",
+  });
 }
 
 // ── writing ──────────────────────────────────────────────────────────────────────────────────
