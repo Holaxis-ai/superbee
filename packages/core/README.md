@@ -270,6 +270,25 @@ which Kind problems a strict host write would refuse, preparing each document as
 so a timestamp or actor the write supplies is no finding. The CLI's publish preview runs it; the
 report's `kindLint` stays advisory. Both use core's one validator, `validateAgainstKind`.
 
+## Search
+
+`@superbee/core/search` is the one `documents.search.v1` engine: the request and result contract,
+query normalization, ranking (`portal-webmcp-search/v1`), the any-term fallback, facets, cursors
+and page budgets. A backend supplies what it searches through `SearchSource`: one `evidence()`
+call per request and `text()` for the page's excerpts. `memorySearchSource` indexes a complete
+corpus in memory. The subpath uses no Node globals or builtins.
+
+```ts
+import { memorySearchSource, searchDocuments } from "@superbee/core/search";
+
+const source = memorySearchSource(documents, { key: headsDigest });
+const result = await searchDocuments(source, { query: "lock keeper", limit: 10 }, { scope: bundleId });
+```
+
+`key` identifies the corpus; a cursor is refused for another key, scope, query, match or filters.
+A request outside the contract throws `SearchInputError` and a corpus over a bound throws
+`SearchLimitError`, both with fixed text.
+
 ## Hosted client
 
 `@superbee/core/hosted-client` is the headless client of a hosted Superbee's sync routes

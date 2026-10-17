@@ -70,6 +70,8 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "record-overlay/index.js", symbol: "planRecordOverlay" },
   { module: "kinds-load.js", symbol: "loadKinds" },
   { module: "bundle-health/index.js", symbol: "bundleHealth" },
+  // The one search engine: the working copy's page tool and a site Worker run it in process.
+  { module: "search/index.js", symbol: "searchDocuments" },
 ];
 
 for (const { module, symbol } of BROWSER_SUBPATHS) {
@@ -470,6 +472,49 @@ test("core/bundle-health computes a report and the Kind findings over MemoryBack
   assert.equal(inSandbox.report.views.danglingEntries.length, 1);
   assert.equal(inSandbox.report.crossBundle?.unchecked, 0);
   assert.deepEqual(inSandbox.findings, ["widgets/unowned"]);
+});
+
+test("core/search answers the parity golden in a sandbox with only TextEncoder and TextDecoder, matching Node's", async () => {
+  const result = await build({
+    entryPoints: [path.resolve(here, "../dist/search/index.js")],
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    globalName: "SuperbeeSearch",
+    write: false,
+    logLevel: "silent",
+    metafile: true,
+  });
+  assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 2));
+  const inputs = Object.keys(result.metafile!.inputs).map((input) => input.split(path.sep).join("/"));
+  assert.deepEqual(
+    inputs.filter((input) => !/(?:^|\/)dist\/(?:search\/[a-z-]+|sha256)\.js$/.test(input)),
+    [],
+    "the bundle holds only the search subpath and core's SHA-256",
+  );
+  const sandbox: Record<string, unknown> = { TextEncoder, TextDecoder };
+  assert.equal(runInNewContext("typeof process", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof Buffer", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof require", sandbox), "undefined");
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+
+  const { readFile } = await import("node:fs/promises");
+  const fixture = await readFile(path.resolve(here, "fixtures/search-parity.json"), "utf8");
+  const scenario = `async (api, fixture) => {
+    const parity = JSON.parse(fixture);
+    const source = api.memorySearchSource(parity.documents, { key: "parity" });
+    const answers = [];
+    for (const { request } of parity.cases)
+      answers.push(await api.searchDocuments(source, { ...request, limit: 50, facets: ["type", "tags"] }, { scope: "sandbox" }));
+    const paged = await api.searchDocuments(source, { query: "alpha", limit: 2 }, { scope: "sandbox" });
+    return JSON.stringify({ indexDigest: source.indexDigest, answers, paged });
+  }`;
+  sandbox.fixture = fixture;
+  const inSandbox = (await runInNewContext(`(${scenario})(SuperbeeSearch, fixture)`, sandbox)) as string;
+  const searchApi = await import("../src/search/index.js");
+  const inNode = (await (new Function("api", "fixture", `return (${scenario})(api, fixture)`)(searchApi, fixture) as Promise<string>));
+  assert.equal(inSandbox, inNode, "the sandbox answers equal Node's, byte for byte");
+  assert.equal(JSON.parse(inSandbox).indexDigest, JSON.parse(fixture).indexDigest);
 });
 
 test("artifact contract imports and decodes without storage, network or DOM globals", async () => {

@@ -182,6 +182,10 @@
     "./portable-export": {
       "types": "./dist/portable-export.d.ts",
       "default": "./dist/portable-export.js"
+    },
+    "./search": {
+      "types": "./dist/search/index.d.ts",
+      "default": "./dist/search/index.js"
     }
   },
   "files": [
