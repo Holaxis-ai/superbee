@@ -8,23 +8,28 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.15 | public / next |
-| @superbee/server | 0.2.0-pre.15 | public / next |
-| @superbee/browser-local | 0.1.0-pre.12 | public / next |
-| @superbee/markdown-renderer | 0.1.12 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.16 | public / next |
+| @superbee/server | 0.2.0-pre.16 | public / next |
+| @superbee/browser-local | 0.1.0-pre.13 | public / next |
+| @superbee/markdown-renderer | 0.1.13 | existing restricted access / latest |
 
-This candidate changes which managed fields a bundle's creation on the host carries
-(superbee#464): core's `IMPORT_CARRIED_FIELDS` now includes `superbee_updated_by` and
-`verified`, and `IMPORT_DROPPED_FIELDS` is empty. Both are the folder's claims, not authority:
-the host shows `superbee_updated_by` as attribution only, never interprets `verified`, and its
-own history row still names the publisher. Everything else in 0.2.0-pre.14 is carried
-unchanged. Server moves with core with no source change.
+This candidate adds core's hosted client and recipe lifecycle (superbee#467 to #481). New
+public core subpaths: `@superbee/core/hosted-client` (browser-safe client with a one-call
+document write and a per-bundle capabilities cache), `@superbee/core/hosted-client/node`
+(Node-only verified export download) and `@superbee/core/recipe-lifecycle` (storage-neutral
+recipe install and evolve, with `x_recipe` install receipts on installed conventions).
+`@superbee/core/hosted-transport` gains blob read and write transports and blob result
+decoding, and the file journal can persist guarded blob intents (it promotes lazily to a
+sticky format 2 on the first blob admission; older readers refuse it). The shared
+`performUncertainWrite` gains optional `signal`, `earlierDeliveryUnclear` and a recorded-only
+start; defaults are unchanged. Server moves with core with no source change.
 
-Browser-local 0.1.0-pre.11 (exact core pre.14) is on npm `next`. 0.1.0-pre.12 moves its exact
-pin to pre.15 with no browser-local source change. Renderer 0.1.12 extends its core peer
-allowance through pre.15 with no source change since 0.1.11. Each is a new version because a
-version is never reused for different bytes, and each is included so consumers can align their
-root core without overriding peer checks. Hand publication of either is optional.
+Browser-local 0.1.0-pre.13 moves its exact pin to core pre.16 with no browser-local source
+change since 0.1.0-pre.12. Renderer 0.1.13 extends its core peer allowance through pre.16
+and also carries the renderer source change of superbee#475 (`doc-markdown-fallback`
+marker). Each is a new version because a version is never reused for different bytes, and
+each is included so consumers can align their root core without overriding peer checks.
+Hand publication of either is optional.
 
 ## Before release
 
