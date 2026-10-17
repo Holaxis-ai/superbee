@@ -480,3 +480,25 @@ test("shared deletion policy preserves seven/eight/half boundaries and rejects i
   for (const counts of [[-1, 1, 1], [1, NaN, 1], [1, 1, 2], [1, Infinity, 1], [1, 2, .5]]) assert.throws(() => deletionBound(counts[0]!, counts[1]!, counts[2]!, "listing"));
   const refusal = deletionBound(0, 8, 8, "listing")!; assert.equal(acceptsRefusal(refusal, { ...refusal }), true); assert.equal(acceptsRefusal(refusal, { ...refusal, digest: "other" }), false);
 });
+
+
+test("explicit stale blob token holds all seven remaining candidates; no-token small-set policy still applies", async () => {
+  const entries = Array.from({ length: 8 }, (_, i) => seedBlobSyncEntry({ key: `a${i}.bin`, version: digest("old"), contentType: "x/old" }, digest("old")));
+  const f = await refreshFixture(entries);
+  try {
+    for (const entry of entries) await writeFile(path.join(f.folder, entry.key), "old");
+    const options = { ...f, store: f.backend, scope, carrier: refreshHost([]).carrier, capabilities: readCaps };
+    const first = (await refreshBlobCheckout(options))!, token = blobHostDeletionsToken(first.refused!);
+    const saved = await f.backend.readMeta(BLOB_SYNC_META_KEY);
+    await writeFile(path.join(f.folder, "a0.bin"), "local edit");
+    const stale = (await refreshBlobCheckout({ ...options, acceptToken: token }))!;
+    assert.equal(stale.taken, false); assert.deepEqual(stale.removed, []); assert.equal(stale.refused, undefined);
+    assert.equal(stale.held.filter(row => /token no longer names/.test(row.message)).length, 7);
+    assert.equal(await f.backend.readMeta(BLOB_SYNC_META_KEY), saved);
+    for (const entry of entries.slice(1)) assert.equal(await readFile(path.join(f.folder, entry.key), "utf8"), "old");
+    const ordinary = (await refreshBlobCheckout(options))!;
+    assert.equal(ordinary.removed.length, 7); assert.equal(ordinary.refused, undefined);
+    assert.equal(await readFile(path.join(f.folder, "a0.bin"), "utf8"), "local edit");
+    assert.equal(decodeBlobSyncMap(await f.backend.readMeta(BLOB_SYNC_META_KEY), scope).refusal, undefined);
+  } finally { await f.close(); }
+});

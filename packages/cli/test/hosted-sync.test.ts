@@ -1610,6 +1610,14 @@ test("sync routes blobs confirmation only to the exact recorded ordinary-file de
   assert.match(refusal.token, /^blobs:8:[0-9a-f]{12}$/); assert.equal(refusal.count, 8); assert.equal(first.status, "incomplete");
   const wrong = (await failingSync(h, ["--take-host-deletions", refusal.token.slice(6)])).receipt!;
   assert.equal((wrong.take_host_deletions as { taken: boolean }).taken, false); assert.equal(await readFile(path.join(h.folder, keys[0]!), "utf8"), "base");
+  await writeFile(path.join(h.folder, keys[0]!), "local edit after refusal");
+  const stale = (await failingSync(h, ["--take-host-deletions", refusal.token])).receipt!;
+  assert.equal((stale.take_host_deletions as { taken: boolean }).taken, false);
+  assert.equal((stale.pulled as { blobs: { removed: number; refused_deletions?: unknown } }).blobs.removed, 0);
+  assert.equal((stale.pulled as { blobs: { refused_deletions?: unknown } }).blobs.refused_deletions, undefined);
+  assert.match((stale.take_host_deletions as { message: string }).message, /without that token/);
+  for (const key of keys.slice(1)) assert.equal(await readFile(path.join(h.folder, key), "utf8"), "base");
+  await writeFile(path.join(h.folder, keys[0]!), base);
   const accepted = await runSync(h, ["--take-host-deletions", refusal.token]);
   assert.equal((accepted.take_host_deletions as { taken: boolean }).taken, true); assert.equal((accepted.pulled as { blobs: { removed: number } }).blobs.removed, 8);
   await assert.rejects(readFile(path.join(h.folder, keys[0]!)), { code: "ENOENT" }); assert.equal(h.host.writes.length, 0);

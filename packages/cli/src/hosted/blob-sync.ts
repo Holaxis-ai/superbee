@@ -425,6 +425,13 @@ export async function refreshBlobCheckout(options: {
     const digest = digestOf(Buffer.from(JSON.stringify(["superbee.blobs.remote-deletions.v1", scope, listing.revision, listing.digest, candidates.map(entry => [entry.key, entry.head!.version, entry.head!.contentType])])));
     const refused = deletionBound(listing.heads.length, map.entries.filter(entry => entry.head).length, candidates.length, digest);
     const accepted = map.refusal && acceptToken === blobHostDeletionsToken(map.refusal) ? map.refusal : undefined;
+    // Supplying a token selects exact-set confirmation, even if the set has since shrunk
+    // below the ordinary safety threshold. It must never fall through to no-token policy.
+    if (acceptToken !== undefined && !refused) {
+      out.taken = false;
+      for (const entry of candidates) hold(entry.key, `${entry.key} is held because the supplied blob deletion token no longer names the current set; run sync without that token to use ordinary deletion policy`);
+      return out;
+    }
     const mustRefuse = refused && !acceptsRefusal(refused, accepted);
     const next = captureBlobSyncMap({ schemaVersion: 1, scope, entries: map.entries, ...(mustRefuse ? { refusal: refused } : {}) }, scope);
     if (!equalJournalValue(next, map)) {

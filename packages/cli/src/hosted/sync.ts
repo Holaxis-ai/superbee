@@ -1015,7 +1015,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
             ? { taken: false, message: "the host's listing changed since that refusal, so nothing was removed; check the new refused_deletions" }
             : { taken: true, removed: first.placed.removed.length, message: "the host's deletions were taken: their files are removed from the folder, apart from files you edited" };
     }
-    if (takeHostDeletions?.startsWith("blobs:")) taken = { taken: blobs?.taken === true, removed: blobs?.removed.length ?? 0, message: blobs?.taken ? "the confirmed ordinary-file deletions were taken where the files remained clean" : "the blob token does not authorize this current deletion set; check pulled.blobs.refused_deletions" };
+    if (takeHostDeletions?.startsWith("blobs:")) taken = { taken: blobs?.taken === true, removed: blobs?.removed.length ?? 0, message: blobs?.taken ? "the confirmed ordinary-file deletions were taken where the files remained clean" : "the blob token does not authorize this current deletion set; check pulled.blobs.refused_deletions if present, or run sync without that token to use ordinary deletion policy" };
     await recordPulled(deps.auth.home, binding.checkout_id);
     // The declared sync gate judges the folder after the pull placed the host's changes and before
     // anything is sent: a failure sends nothing, no document and no front page.
