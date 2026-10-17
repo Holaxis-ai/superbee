@@ -51,10 +51,12 @@ async function networkLog(box: Sandbox): Promise<string[]> {
 /**
  * Every read, write and sync verb a persona-A session uses, in one bundle, and the exit code each
  * must return: 0 (including `whoami` with no hosted host selected: not signed in is a result),
- * except `op run`, `notify` and `inbox`, which a local or Git bundle answers NOT_IMPLEMENTED (exit 2).
+ * except `op run`, which a local or Git bundle answers NOT_IMPLEMENTED (exit 2), and `notify` and
+ * `inbox`, which a signed-out person is refused with the sign-in command (AUTH_REQUIRED, exit 4).
  */
 function expectedCode(args: string[]): number {
-  if (args[0] === "notify" || args[0] === "inbox") return 2;
+  // Signed out, notify and inbox refuse with the sign-in command (AUTH_REQUIRED, exit 4).
+  if (args[0] === "notify" || args[0] === "inbox") return 4;
   return args[0] === "op" && args[1] === "run" ? 2 : 0;
 }
 
@@ -95,7 +97,7 @@ function localCommands(): string[][] {
     // No host operations here: none listed, none run, nothing fetched.
     ["op", "list"],
     ["op", "run", "documents.history.v1", "--input", '{"documentId":"notes/first"}'],
-    // Notifications are hosted-only: refused, with nothing fetched and no local inbox.
+    // Notifications are hosted-only: signed out they are refused, with nothing fetched and no local inbox.
     ["notify", "self", "done"],
     ["inbox", "list"],
     ["sync"],

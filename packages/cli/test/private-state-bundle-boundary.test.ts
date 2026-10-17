@@ -597,9 +597,9 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     leaf,
     surface: "--dir",
     argv: (t: string) => [...words, "--dir", t, "--json"],
-    // Notifications are hosted-only: a local bundle answers NOT_IMPLEMENTED (exit 2), so the
-    // benign run cannot exit 0; hosted-notify.test.ts runs them in a checkout.
-    controlSkip: "a local bundle answers notify and inbox NOT_IMPLEMENTED (exit 2); hosted-notify.test.ts covers the checkout runs",
+    // Notifications act as the person's hosted sign-in: signed out the benign run answers
+    // AUTH_REQUIRED (exit 4), so it cannot exit 0; hosted-notify.test.ts runs them signed in.
+    controlSkip: "signed out, notify and inbox answer AUTH_REQUIRED (exit 4); hosted-notify.test.ts covers the signed-in runs",
   })),
   { leaf: "docDelete", surface: "--dir", argv: (t) => ["doc", "delete", "probe/absent", "--dir", t, "--json"] },
   { leaf: "list", surface: "--dir", argv: (t) => ["list", "--dir", t, "--json"] },

@@ -200,19 +200,26 @@ then `doc update <id> --body-file <path> --expected-version <version>`.
 
 ## Notifications: `notify` and `inbox`
 
-Notifications are part of hosted Superbee. In a hosted checkout, `superbee notify <recipient>
-"<note>"` puts an item in a person's Superbee inbox as the checkout's own person, and `superbee
-inbox` reads and handles the inbox. In a local or Git bundle both are refused with
-`NOT_IMPLEMENTED` ("Notifications need hosted Superbee"), naming `superbee checkout`; there is no
-local inbox.
+Notifications are part of hosted Superbee, and there is no local inbox. `superbee notify
+<recipient> "<note>"` puts an item in a person's Superbee inbox as you, and `superbee inbox` reads
+and handles yours. They work from any folder when you are signed in:
+
+- Inside a hosted checkout they use its account and the workspace that holds its bundle.
+- Anywhere else (a local or Git bundle, or no bundle) they use your signed-in hosted login
+  (`--host`, else your last sign-in) and the workspace `--workspace` names, else the default
+  `superbee setup hosted` recorded, else your only workspace. With several and none chosen they are
+  refused, listing them. Next-step commands carry `--host` (and `--workspace`) instead of `--dir`.
+- Signed out, both are refused with `AUTH_REQUIRED` and the one command that signs in; nothing is
+  sent. Relay it to your person rather than signing in yourself.
 
 - `<recipient>` is `self` (you: the usual case for telling your person something is ready) or a
   workspace member's principal id. Naming someone by email is not supported yet.
 - `--kind` is `needs_input` (default), `ready`, `review_requested` (both need `--doc`) or `reply`
   (needs `--thread`). `--label <text>` adds your run or worktree name, shown as your tool's own
   words. `--alert none` keeps it out of email.
-- `--doc <id>` points the item at a document of the checkout's bundle at the version the host
-  holds, so sync first. It needs the host to report its document authority; a host that does not
+- `--doc <id>` points the item at a document at the version the host holds: in a checkout, of its
+  bundle (sync first); elsewhere, of the hosted bundle `--bundle <bundle-id>` (or
+  `<workspace>/<bundle-id>`) names, and `--doc` without either is refused. It needs the host to report its document authority; a host that does not
   yet refuses `--doc` with `NOT_IMPLEMENTED`, so send without it and name the document in the note.
 - Each send has one ticket. When the answer never arrives, `notify` retries with the same ticket,
   and its `TRANSIENT` error carries `details.ticket` and the resume command with `--ticket`: re-run

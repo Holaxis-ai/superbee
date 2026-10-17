@@ -20,24 +20,29 @@ export const NOTIFY_USAGE = `superbee notify — ask a person, or yourself, to l
 Usage:
   superbee notify <recipient> [<note>] [--kind <kind>] [--doc <document-id>] [--thread <thread-id>]
                   [--label <text> [--label-namespace <namespace>]] [--alert default|none]
-                  [--ticket <ticket>] [--dir <path>] [--json]
+                  [--ticket <ticket>] [--dir <path> | --host <url> [--workspace <id>] [--bundle <bundle-id>]] [--json]
 
-Puts an item in the recipient's Superbee inbox, as the person signed in to this hosted checkout.
+Puts an item in the recipient's Superbee inbox, as you, signed in to hosted Superbee. Inside a
+hosted checkout it uses the checkout's account and workspace. Anywhere else (a local or Git bundle,
+or no bundle) it uses your signed-in hosted login, in the workspace --workspace names, else the
+default setup hosted recorded, else your only one.
 <recipient> is self (you: the usual case for an agent telling its person something) or a
 workspace member's principal id. Naming someone by email is not supported yet.
 
 Kinds: needs_input (default: this needs you), ready (this is ready for you), review_requested
 (please review this), reply (on a thread: needs --thread). ready and review_requested need --doc.
 
---doc points the item at a document of this checkout's bundle, at the version the host holds now:
-sync your edits first. The recipient sees its live title and a link, only if they can read it.
+--doc points the item at a document, at the version the host holds now: in a checkout, of its bundle
+(sync your edits first); elsewhere, of the hosted bundle --bundle names. The recipient sees its live
+title and a link, only if they can read it. The host must report its document authority.
 
 Each send has one ticket. If the host's answer never arrives, the command retries with the same
 ticket, and its error carries the ticket: re-run with --ticket <it> within 24 hours and the host
 answers the first send's item instead of making a second one.
 
-Notifications are part of hosted Superbee: in a local or Git bundle notify is refused
-(NOT_IMPLEMENTED) and names the command that connects. Read replies with superbee inbox.
+Notifications are part of hosted Superbee and there is no local inbox: signed out, notify is
+refused (AUTH_REQUIRED) with the one command that signs in, and nothing is sent. Read replies with
+superbee inbox.
 
 Options:
   --kind <kind>                  needs_input | ready | review_requested | reply
@@ -48,7 +53,12 @@ Options:
   --label-namespace <namespace>  The app namespace the label is filed under (default dev.superbee.cli)
   --alert default|none           none: inbox only, no email (default: default)
   --ticket <ticket>              Re-send under the ticket a failed send reported
-  --dir <path>                   Checkout directory (default: discovered from the cwd)
+  --dir <path>                   A hosted checkout to send from (default: the cwd's, when it is one)
+  --host <url>                   Outside a checkout: the hosted Superbee (default: your last sign-in)
+  --workspace <id>               Outside a checkout: the workspace (default: the one setup hosted
+                                 recorded, else your only one)
+  --bundle <bundle-id>           Outside a checkout: the hosted bundle (or <workspace>/<bundle-id>)
+                                 --doc names a document of
   --json                         Emit compact JSON instead of TOON
   -h, --help                     Show this help`;
 
@@ -82,6 +92,9 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
           alert: { type: "string" },
           ticket: { type: "string" },
           dir: { type: "string" },
+          host: { type: "string" },
+          workspace: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -117,37 +130,45 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
   const namespace = values["label-namespace"] ?? DEFAULT_NAMESPACE;
   if (!META_NAMESPACE.test(namespace)) throw usage("--label-namespace is a lowercase dotted app namespace, such as com.example.tool");
   if (values.label !== undefined && (values.label.trim() === "" || values.label.length > LABEL_MAX)) throw usage(`--label is 1 to ${LABEL_MAX} characters`);
+  if (values.bundle !== undefined && values.doc === undefined) throw usage("--bundle names the bundle a --doc document is in: pass --doc too");
   const meta: InboxAppMeta | undefined = values.label === undefined ? undefined : { [namespace]: { run: values.label } };
 
-  const resumeFor = (dir: CommandText, ticket?: string) =>
+  const resumeFor = (where: CommandText, ticket?: string) =>
     commandFragment`${cliInvocation()} notify ${commandToken(recipientArgument)}${note === undefined ? commandFragment`` : commandFragment` ${commandToken(note)}`}${
       values.kind === undefined ? commandFragment`` : commandFragment` --kind ${commandToken(kind)}`
     }${values.doc === undefined ? commandFragment`` : commandFragment` --doc ${commandToken(values.doc)}`}${values.thread === undefined ? commandFragment`` : commandFragment` --thread ${commandToken(values.thread)}`}${
       values.label === undefined ? commandFragment`` : commandFragment` --label ${commandToken(values.label)}`
     }${values["label-namespace"] === undefined ? commandFragment`` : commandFragment` --label-namespace ${commandToken(namespace)}`}${
       values.alert === undefined ? commandFragment`` : commandFragment` --alert ${commandToken(values.alert)}`
-    }${ticket === undefined ? (values.ticket === undefined ? commandFragment`` : commandFragment` --ticket ${commandToken(values.ticket)}`) : commandFragment` --ticket ${commandToken(ticket)}`} --dir ${dir}${values.json ? commandFragment` --json` : commandFragment``}`;
+    }${ticket === undefined ? (values.ticket === undefined ? commandFragment`` : commandFragment` --ticket ${commandToken(values.ticket)}`) : commandFragment` --ticket ${commandToken(ticket)}`}${where}${values.json ? commandFragment` --json` : commandFragment``}`;
 
-  const session = await openInboxSession("notify", values.dir, deps, (dir) => resumeFor(dir));
-  const { binding, identity, client } = session;
+  const session = await openInboxSession(
+    "notify",
+    { dir: values.dir, host: values.host, workspace: values.workspace, bundle: values.bundle },
+    deps,
+    (where) => resumeFor(where),
+    { documents: values.doc !== undefined },
+  );
+  const { identity, target: host } = session;
   const recipient: InboxRecipient = { kind: "principal", principalId: recipientArgument === "self" ? identity.principalId : recipientArgument };
 
   let target: AttentionRequestInput["target"];
-  if (values.doc !== undefined) {
+  const documents = session.documents;
+  if (values.doc !== undefined && documents !== null) {
     if (identity.targetAuthorityKey === undefined) {
-      throw new CliError("NOT_IMPLEMENTED", `${binding.origin} does not report its document authority yet, so notify cannot point at a document`, {
-        details: { reason: "target_authority_unknown", host: binding.origin },
+      throw new CliError("NOT_IMPLEMENTED", `${host.origin} does not report its document authority yet, so notify cannot point at a document`, {
+        details: { reason: "target_authority_unknown", host: host.origin },
         help: "send without --doc and name the document in the note; a later release of the host reports it",
       });
     }
     let version: string;
     try {
-      version = (await client.reader(binding.bundle_id).read(values.doc)).version;
+      version = (await documents.client.reader(documents.bundleId).read(values.doc)).version;
     } catch (error) {
       if ((error as { code?: unknown }).code === "ENOENT") {
-        throw new CliError("NOT_FOUND", `the host has no document '${values.doc}' in ${binding.bundle_id}`, {
-          details: { host: binding.origin, bundle: binding.bundle_id, document: values.doc },
-          help: `sync a new document first (${cliInvocation()} sync --dir ${session.dirArgument})`,
+        throw new CliError("NOT_FOUND", `the host has no document '${values.doc}' in ${documents.bundleId}`, {
+          details: { host: host.origin, bundle: documents.bundleId, document: values.doc },
+          help: session.via === "checkout" ? "sync a new document first, then send" : "check the document id with superbee doc read in the bundle's checkout",
         });
       }
       throw await inboxFailure(error, session);
@@ -156,7 +177,7 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
       document: {
         schemaVersion: "superbee.document-target.v1",
         authority: { mode: "hosted", authorityKey: identity.targetAuthorityKey, workspaceKey: session.tenantId },
-        bundleKey: binding.bundle_id,
+        bundleKey: documents.bundleId,
         documentId: values.doc,
       },
       eventVersion: version,
@@ -177,14 +198,15 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
   try {
     receipt = await session.inbox.request(input);
   } catch (error) {
-    throw await inboxFailure(error, session, { ticketHelp: (ticket) => `re-run with the same ticket within 24 hours, which never makes a second item: ${resumeFor(session.dirArgument, ticket)}` });
+    throw await inboxFailure(error, session, { ticketHelp: (ticket) => "re-run with the same ticket within 24 hours, which never makes a second item: " + resumeFor(session.scopeArgs, ticket) });
   }
   const toSelf = recipient.principalId === identity.principalId;
   stdout(
     renderInboxRecord(
       {
         notify: receipt.replayed ? "already sent" : "sent",
-        host: binding.origin,
+        host: host.origin,
+        through: session.via,
         workspace: session.tenantId,
         item: receipt.itemId,
         thread: receipt.threadId,
@@ -195,8 +217,8 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
         email: receipt.delivery.email,
         ticket: receipt.ticket,
         help: [
-          commandFragment`${cliInvocation()} inbox list --thread ${commandToken(receipt.threadId)} --dir ${session.dirArgument}` + " reads this thread, replies included",
-          commandFragment`${cliInvocation()} inbox cancel ${commandToken(receipt.itemId)} --dir ${session.dirArgument}` + " withdraws it while it is unhandled",
+          commandFragment`${cliInvocation()} inbox list --thread ${commandToken(receipt.threadId)}${session.scopeArgs}` + " reads this thread, replies included",
+          commandFragment`${cliInvocation()} inbox cancel ${commandToken(receipt.itemId)}${session.scopeArgs}` + " withdraws it while it is unhandled",
         ],
       },
       mode,

@@ -16,7 +16,8 @@ import { checkout } from "../src/commands/checkout.js";
 import { init } from "../src/commands/init.js";
 import { inbox } from "../src/commands/inbox.js";
 import { notify } from "../src/commands/notify.js";
-import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
+import { defaultHostedAuthDeps, writeDefaultHost, type HostedAuthDeps } from "../src/hosted-auth/session.js";
+import { writeDefaultWorkspace } from "../src/hosted/defaults.js";
 import { BUNDLE, FakeHost, HOST, PRINCIPAL, TOKEN, type FakeHostOptions } from "./support/fake-hosted-sync.js";
 
 const TENANT = "tenant:a";
@@ -399,35 +400,168 @@ test("inbox open marks read (--peek does not), ack reads the revision first and 
   assert.equal(missing.code, "NOT_FOUND");
 });
 
-// ── local and Git bundles ──────────────────────────────────────────────────────────────────
+// ── outside a checkout: the signed-in account ─────────────────────────────────────────────
 
-const noNetwork = (async () => assert.fail("a local or Git bundle makes no request")) as typeof fetch;
+const noNetwork = (async () => assert.fail("a signed-out command makes no request")) as typeof fetch;
+const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "t@example.invalid" };
 
-test("a local and a Git bundle refuse notify and inbox as hosted-only, naming the command that connects, with no request", async () => {
-  const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "t@example.invalid" };
-  for (const home of ["local", "git"] as const) {
-    const root = await realpath(await mkdtemp(path.join(tmpdir(), "sb-notify-local-")));
-    const userHome = await mkdtemp(path.join(tmpdir(), "sb-notify-local-home-"));
-    await init(["--dir", path.join(root, ".superbee"), "--recipe", "none"], { stdout: () => {} });
-    if (home === "git") {
-      execFileSync("git", ["init", "-q"], { cwd: root, env: gitEnv });
-      execFileSync("git", ["add", "-A"], { cwd: root, env: gitEnv });
-      execFileSync("git", ["commit", "-q", "-m", "bundle"], { cwd: root, env: gitEnv });
-    }
-    const deps = { stdout: () => {}, hosted: { auth: defaultHostedAuthDeps(userHome), fetch: noNetwork } };
+/** A folder that is not a checkout: a local bundle, a Git bundle, or no bundle at all. */
+async function folder(kind: "local" | "git" | "none"): Promise<string> {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "sb-notify-folder-")));
+  if (kind === "none") return root;
+  await init(["--dir", path.join(root, ".superbee"), "--recipe", "none"], { stdout: () => {} });
+  if (kind === "git") {
+    execFileSync("git", ["init", "-q"], { cwd: root, env: gitEnv });
+    execFileSync("git", ["add", "-A"], { cwd: root, env: gitEnv });
+    execFileSync("git", ["commit", "-q", "-m", "bundle"], { cwd: root, env: gitEnv });
+  }
+  return root;
+}
+
+interface Account {
+  home: string;
+  auth: HostedAuthDeps;
+  host: FakeHost;
+  attention: AttentionFake;
+  fetch: typeof globalThis.fetch;
+}
+
+/** A person signed in to HOST (the last sign-in recorded, a token in the environment), with no checkout. */
+async function account(options: FakeHostOptions = {}, signedIn = true): Promise<Account> {
+  const host = new FakeHost({ tenants: [TENANT], ...options });
+  const attention = new AttentionFake();
+  const home = await mkdtemp(path.join(tmpdir(), "sb-notify-account-"));
+  const auth = defaultHostedAuthDeps(home, {
+    env: signedIn ? { SUPERBEE_ACCESS_TOKEN: TOKEN } : {},
+    fetch: async () => assert.fail("the sign-in module must not be reached"),
+  });
+  await writeDefaultHost(home, HOST);
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (!url.pathname.startsWith("/sync/v1/attention/")) return host.fetch(input, init);
+    const operationId = url.pathname.slice("/sync/v1/attention/".length);
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    attention.calls.push({ operationId, body, headers: new Headers(init?.headers) });
+    return attention.handle(operationId, body);
+  }) as typeof globalThis.fetch;
+  return { home, auth, host, attention, fetch };
+}
+
+async function runAt(a: Pick<Account, "auth" | "fetch">, cwd: string, command: typeof notify, argv: string[]): Promise<Record<string, unknown>> {
+  const out: string[] = [];
+  await command([...argv, "--json"], { stdout: (text) => void out.push(text), cwd, hosted: { auth: a.auth, fetch: a.fetch } });
+  return JSON.parse(out.join("")) as Record<string, unknown>;
+}
+
+test("from a local bundle, a Git bundle or no bundle, notify and inbox use the signed-in account's only workspace", async () => {
+  for (const kind of ["local", "git", "none"] as const) {
+    const a = await account();
+    const cwd = await folder(kind);
+    const sent = await runAt(a, cwd, notify, ["self", `from a ${kind} folder`]);
+    assert.equal(sent.notify, "sent", kind);
+    assert.equal(sent.through, "account");
+    assert.equal(sent.workspace, TENANT);
+    assert.equal(a.attention.calls[0]!.headers.get("superbee-workspace"), TENANT);
+    assert.deepEqual(a.attention.calls[0]!.body.recipient, { kind: "principal", principalId: PRINCIPAL });
+    // Next steps reach the same inbox by host, not by folder.
+    assert.match((sent.help as string[])[0]!, new RegExp(`inbox list --thread \\S+ --host ${HOST.replace(/[.]/g, "\\.")}`));
+    assert.doesNotMatch((sent.help as string[])[0]!, /--dir/);
+    const listed = await runAt(a, cwd, inbox, ["list"]);
+    assert.equal(listed.through, "account");
+    assert.equal(listed.shown, 1);
+  }
+});
+
+test("outside a checkout the workspace is --workspace, then the setup hosted default, then the only one; several and none chosen is refused, naming them", async () => {
+  const tenants = { tenants: ["tenant:a", "tenant:b"], workspaces: [{ tenantId: "tenant:a", slug: "north" }, { tenantId: "tenant:b", slug: "south" }] };
+  const cwd = await folder("none");
+
+  const ambiguous = await account(tenants);
+  const error = await rejects(() => runAt(ambiguous, cwd, notify, ["self", "hi"]));
+  assert.equal(error.code, "USAGE");
+  assert.equal(error.details?.reason, "workspace_ambiguous");
+  assert.deepEqual(error.details?.workspaces, ["north", "south"]);
+  assert.match(error.help ?? "", /--workspace set to one of: north, south/);
+  assert.equal(ambiguous.attention.calls.length, 0, "nothing is sent");
+
+  const named = await account(tenants);
+  assert.equal((await runAt(named, cwd, notify, ["self", "hi", "--workspace", "south"])).workspace, "tenant:b");
+  assert.equal(named.attention.calls[0]!.headers.get("superbee-workspace"), "tenant:b");
+  const record = await runAt(named, cwd, inbox, ["list", "--workspace", "south"]);
+  assert.match((record.help as string[] | undefined)?.[0] ?? "", /--workspace south/);
+
+  const defaulted = await account(tenants);
+  await writeDefaultWorkspace(defaulted.home, { origin: HOST, workspace: "tenant:a" });
+  assert.equal((await runAt(defaulted, cwd, notify, ["self", "hi"])).workspace, "tenant:a");
+  // --workspace still wins over the default.
+  assert.equal((await runAt(defaulted, cwd, notify, ["self", "hi", "--workspace", "tenant:b"])).workspace, "tenant:b");
+
+  const outsider = await account(tenants);
+  const notMember = await rejects(() => runAt(outsider, cwd, notify, ["self", "hi", "--workspace", "west"]));
+  assert.equal(notMember.code, "NOT_FOUND");
+});
+
+test("signed out, from any folder: AUTH_REQUIRED with the one command that signs in, and no request", async () => {
+  // The last sign-in is remembered, but there is no session for it.
+  const remembered = await account({}, false);
+  for (const kind of ["local", "none"] as const) {
+    const cwd = await folder(kind);
     for (const [command, argv] of [
       [notify, ["self", "hi"]],
       [inbox, ["list"]],
-      [inbox, ["ack", "item-1"]],
     ] as const) {
-      const error = await rejects(() => command([...argv, "--dir", path.join(root, ".superbee")], deps));
-      assert.equal(error.code, "NOT_IMPLEMENTED");
-      assert.match(error.message, /^Notifications need hosted Superbee: /);
-      assert.equal(error.details?.home, home);
-      assert.equal(error.details?.reason, "hosted_only");
-      assert.match(error.help ?? "", /checkout <bundle-id>/);
+      const error = await rejects(() => runAt({ auth: remembered.auth, fetch: noNetwork }, cwd, command, [...argv]));
+      assert.equal(error.code, "AUTH_REQUIRED");
+      assert.equal(error.details?.status, "not_signed_in");
+      assert.match(error.message, /^not signed in to https:\/\/hosted\.example: /);
+      assert.match(error.help ?? "", /login --host /);
     }
   }
+  // No sign-in ever on this machine: the first sign-in command.
+  const home = await mkdtemp(path.join(tmpdir(), "sb-notify-fresh-"));
+  const fresh = { auth: defaultHostedAuthDeps(home, { env: {}, fetch: async () => assert.fail("no sign-in") }), fetch: noNetwork };
+  const plain = await folder("none");
+  const first = await rejects(() => runAt(fresh, plain, notify, ["self", "hi"]));
+  assert.equal(first.code, "AUTH_REQUIRED");
+  assert.equal(first.details?.status, "not_signed_in");
+  assert.match(first.help ?? "", /login --host /);
+});
+
+test("outside a checkout --doc needs --bundle, refused before any request; with it the target names that bundle and its workspace", async () => {
+  const a = await account({ targetAuthorityKey: "orgs", tenants: ["tenant:a", "tenant:b"], workspaces: [{ tenantId: "tenant:a", slug: "north" }, { tenantId: "tenant:b", slug: "tenant-b" }], slug: "north" });
+  const cwd = await folder("local");
+  const missing = await rejects(() => runAt({ auth: a.auth, fetch: noNetwork }, cwd, notify, ["self", "--kind", "ready", "--doc", "notes/a"]));
+  assert.equal(missing.code, "USAGE");
+  assert.equal(missing.details?.reason, "document_bundle_unknown");
+  assert.match(missing.message, /--bundle <bundle-id>/);
+  const lonely = await rejects(() => runAt({ auth: a.auth, fetch: noNetwork }, cwd, notify, ["self", "--bundle", BUNDLE]));
+  assert.match(lonely.message, /--bundle names the bundle a --doc document is in/);
+
+  const id = [...a.host.docs.keys()][0]!;
+  const sent = await runAt(a, cwd, notify, ["self", "--kind", "review_requested", "--doc", id, "--bundle", `north/${BUNDLE}`]);
+  assert.equal(sent.workspace, "tenant:a", "the bundle's workspace is the inbox's");
+  assert.deepEqual(a.attention.calls[0]!.body.target, {
+    document: { schemaVersion: "superbee.document-target.v1", authority: { mode: "hosted", authorityKey: "orgs", workspaceKey: "tenant:a" }, bundleKey: BUNDLE, documentId: id },
+    eventVersion: a.host.docs.get(id)!.version,
+  });
+  const read = a.host.requests.find((request) => request.path === "/sync/v1/read")!;
+  assert.equal((read.body as { bundleId?: unknown }).bundleId, `north/${BUNDLE}`, "the read names the bundle in its workspace");
+  const clash = await rejects(() => runAt(a, cwd, notify, ["self", "--kind", "ready", "--doc", id, "--bundle", `north/${BUNDLE}`, "--workspace", "tenant-b"]));
+  assert.equal(clash.code, "USAGE");
+  assert.match(clash.message, /names workspace 'north', but --workspace names 'tenant-b'/);
+});
+
+test("--dir with an account flag is refused; account flags inside a checkout use the account", async () => {
+  const h = await harness();
+  const both = await rejects(() => run(h, notify, ["self", "hi", "--workspace", TENANT]));
+  assert.equal(both.code, "USAGE");
+  assert.match(both.message, /pass one or the other/);
+  await writeDefaultHost(h.auth.home, HOST);
+  const out: string[] = [];
+  await notify(["self", "hi", "--workspace", TENANT, "--json"], { stdout: (text) => void out.push(text), cwd: h.folder, hosted: { auth: h.auth, fetch: h.fetch } });
+  assert.equal((JSON.parse(out.join("")) as Record<string, unknown>).through, "account");
+  const inside = await json(h, notify, ["self", "hi"]);
+  assert.equal(inside.through, "checkout");
 });
 
 test("each verb's --help is focused and needs no folder", async () => {
