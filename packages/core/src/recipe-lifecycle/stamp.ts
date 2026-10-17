@@ -108,6 +108,13 @@ function canonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
+/**
+ * The definitions-digest canon, for core's other definitions digest (the Connector pin). Named apart
+ * from `site-capabilities`' canonical JSON, whose semantics differ; the subpath entry does not
+ * re-export it.
+ */
+export { canonicalJson as definitionCanonicalJson };
+
 function digest(value: unknown): string {
   return `sha256:${sha256Hex(canonicalJson(value))}`;
 }

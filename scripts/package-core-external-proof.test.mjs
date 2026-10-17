@@ -71,6 +71,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/kinds.d.ts"));
     assert.ok(paths.includes("dist/recipes.js"));
     assert.ok(paths.includes("dist/recipes.d.ts"));
+    assert.ok(paths.includes("dist/connectors.js"));
+    assert.ok(paths.includes("dist/connectors.d.ts"));
     assert.ok(paths.includes("dist/recipe-lifecycle/index.js"));
     assert.ok(paths.includes("dist/recipe-lifecycle/index.d.ts"));
     assert.ok(paths.includes("dist/record-overlay/index.js"));
@@ -481,6 +483,7 @@ import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
 import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
 import { applyRecordOverlay, buildSourceIndex, OverlayRefusal, planRecordOverlay, type OverlayBundle, type OverlayPolicy, type OverlayReceipt, type RecordChange } from "@superbee/core/record-overlay";
 import { bundleHealth, bundleKindFindings, type BindDependencies, type BundleHealthReport } from "@superbee/core/bundle-health";
+import { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapRecord, parseConnectorDoc, type Connector, type ConnectorError } from "@superbee/core/connectors";
 import type { BundleBinding } from "@superbee/core/cross-bundle";
 
 declare const backend: StorageBackend;
@@ -517,6 +520,20 @@ export async function exerciseRecordOverlay(): Promise<OverlayReceipt> {
   return applyRecordOverlay(plan, { content: overlayBundle, ops: overlayBundle, policy: overlayPolicy, actor: "process:worker", overlays });
 }
 export const overlayRuntime = { OverlayRefusal };
+declare const connectorDocument: OkfDocument;
+declare const sourceFeed: OkfDocument;
+export async function exerciseConnectors(): Promise<string | ConnectorError[]> {
+  const parsed = parseConnectorDoc(connectorDocument, { kinds: overlayBundle.registry });
+  if (!parsed.ok) return parsed.errors;
+  const connector: Connector = parsed.connector;
+  const bound = bindSourceFeed(connector, sourceFeed, overlayBundle.registry);
+  const mapped = mapRecord(bound.source, { uid: "worker-1" }, bound.kind);
+  if (mapped.kind === "mapped") {
+    const change: RecordChange = changeBetween(null, mapped, { external_id: mapped.external_id, change_kind: "new" });
+    await planRecordOverlay({ content: overlayBundle, ops: overlayBundle, policy: bound.policy, changes: [change], observedAt: "2026-10-17T00:00:00Z" });
+  }
+  return findingsFor(mapped.diagnostics, { source: bound.source.name }).length + connectorPinDigest(connector);
+}
 declare const healthBundle: Parameters<typeof bundleHealth>[0];
 export async function exerciseBundleHealth(): Promise<number> {
   const bind: BindDependencies = async (declared) => new Map([...declared.dependencies.keys()].map((alias): [string, BundleBinding] => [alias, { backend, label: alias }]));
@@ -561,6 +578,7 @@ export async function exerciseBundleHealth(): Promise<number> {
     });
     assert.equal(workerBundle.errors.length, 0);
     assert.ok(workerBundle.outputFiles[0].text.includes("RemoteBackend"));
+    assert.ok(workerBundle.outputFiles[0].text.includes("connectorPinDigest"), "the connectors subpath bundles for a Worker");
 
     const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
     const sourceManifest = JSON.parse(
@@ -587,6 +605,7 @@ export async function exerciseBundleHealth(): Promise<number> {
     assert.deepEqual(installedManifest.exports["./hosted-client/node"], { types: "./dist/hosted-client/node.d.ts", default: "./dist/hosted-client/node.js" });
     assert.deepEqual(installedManifest.exports["./recipe-lifecycle"], { types: "./dist/recipe-lifecycle/index.d.ts", default: "./dist/recipe-lifecycle/index.js" });
     assert.deepEqual(installedManifest.exports["./record-overlay"], { types: "./dist/record-overlay/index.d.ts", default: "./dist/record-overlay/index.js" });
+    assert.deepEqual(installedManifest.exports["./connectors"], { types: "./dist/connectors.d.ts", default: "./dist/connectors.js" });
     assert.deepEqual(installedManifest.exports["./bundle-health"], { types: "./dist/bundle-health/index.d.ts", default: "./dist/bundle-health/index.js" });
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
@@ -596,6 +615,7 @@ export async function exerciseBundleHealth(): Promise<number> {
     assert.ok(installedFiles.includes("dist/recipe-lifecycle/stamp.js"), "the recipe install stamps are packed");
     assert.ok(installedFiles.includes("dist/record-overlay/index.js"), "the record overlay subpath is packed");
     assert.ok(installedFiles.includes("dist/record-overlay/apply.js"), "the record overlay guards are packed");
+    assert.ok(installedFiles.includes("dist/connectors.js"), "the connectors subpath is packed");
     assert.ok(installedFiles.includes("dist/bundle-health/index.js"), "the bundle health subpath is packed");
     assert.ok(installedFiles.includes("dist/bundle-health/report.js"), "the bundle health report is packed");
     assert.ok(installedFiles.includes("dist/bundle-health/kind-findings.js"), "the Kind findings rule is packed");

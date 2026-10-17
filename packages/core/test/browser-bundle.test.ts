@@ -22,6 +22,7 @@
  * that carries those intents to a wire authority as identified writes; `platform` is the
  * contract a presentation programs against above both execution modes. `bundle-health` is the
  * status report a browser host computes in process, and `kinds-load` the registry load it runs.
+ * `connectors` is the declaration parser and mapping contract a hosted runner shares.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -68,6 +69,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "hosted-client/index.js", symbol: "createHostedClient" },
   { module: "recipe-lifecycle/index.js", symbol: "planRecipeEvolution" },
   { module: "record-overlay/index.js", symbol: "planRecordOverlay" },
+  { module: "connectors.js", symbol: "parseConnectorDoc" },
   { module: "kinds-load.js", symbol: "loadKinds" },
   { module: "bundle-health/index.js", symbol: "bundleHealth" },
 ];
@@ -405,6 +407,92 @@ test("core/record-overlay plans and applies over MemoryBackend in a sandbox with
   assert.equal(inSandbox.signals, 2);
   assert.deepEqual(inSandbox.plan, inNode.plan, "the sandbox plan equals Node's: ids, digests, versions and redaction");
   assert.ok(!JSON.stringify(inSandbox.plan.steps.filter((s) => s.op === "create-signal")).includes("sandbox-secret"));
+});
+
+test("core/connectors parses, binds, maps and drives record-overlay over MemoryBackend in a sandbox with only TextEncoder, URL and structuredClone, matching Node's", async () => {
+  const result = await build({
+    stdin: {
+      contents: [
+        'export { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapRecord, parseConnectorDoc } from "./connectors.js";',
+        'export { applyRecordOverlay, planFindings, planRecordOverlay } from "./record-overlay/index.js";',
+        'export { MemoryBackend } from "./memory-backend.js";',
+        'export { buildKindRegistry } from "./kinds.js";',
+      ].join("\n"),
+      resolveDir: path.resolve(here, "../dist"),
+      loader: "js",
+    },
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    globalName: "SuperbeeConnectors",
+    write: false,
+    logLevel: "silent",
+  });
+  assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 2));
+  const sandbox: Record<string, unknown> = { TextEncoder, URL };
+  assert.equal(runInNewContext("typeof process", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof Buffer", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof require", sandbox), "undefined");
+  runInNewContext("globalThis.structuredClone = (value) => JSON.parse(JSON.stringify(value));", sandbox);
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+
+  const scenario = `async (api) => {
+    const { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapRecord, parseConnectorDoc, applyRecordOverlay, planFindings, planRecordOverlay, MemoryBackend, buildKindRegistry } = api;
+    const url = "https://calendar.example.org/library.ics";
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", "---\\nokf_version: '0.2'\\n---\\n# Sandbox connectors\\n");
+    const bundle = { root: "browser-connectors", backend };
+    const conventions = [
+      { id: "conventions/event", body: "", frontmatter: { type: "Convention", title: "Event", governs: "Event", fields: { required: ["title", "event_status"], optional: [], values: { event_status: ["scheduled", "canceled"] } } } },
+      { id: "conventions/signal", body: "", frontmatter: { type: "Convention", title: "Signal", governs: "Signal", path: "signals/", claim: { owner_field: "assignee", state_field: "progress_status" },
+        fields: { required: ["title", "superbee_progress_status", "change_kind", "observed_at"], optional: ["provider", "external_id", "diff_summary", "priority", "assignee", "content_digest"] } } },
+    ];
+    for (const doc of conventions) await backend.write(doc.id, doc);
+    await backend.write("events/story", { id: "events/story", body: "Editor text.\\n", frontmatter: { type: "Event", title: "Story", event_status: "scheduled", sources: [{ resource: url, id: "evt-1" }] } });
+    const registry = buildKindRegistry(conventions, [], { okfVersion: "0.2" });
+    const parsed = parseConnectorDoc({ id: "connectors/calendar", body: "Prose.\\n", frontmatter: {
+      type: "Connector", title: "Calendar", auth: { kind: "none" }, domains: ["calendar.example.org"],
+      sources: [{ name: "events", profile: "ics", target_kind: "Event", identity: { resource: "https://calendar.example.org/{feed}.ics", id: "{uid}" },
+        fields: { title: "summary", event_status: { from: "status", values: { CONFIRMED: "scheduled", CANCELLED: "canceled" } } }, completeness: "complete" }],
+    } }, { kinds: registry });
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.errors));
+    const bound = bindSourceFeed(parsed.connector, { id: "source-feeds/library", frontmatter: { type: "Source Feed", connector: "connectors/calendar", source: "events", url, owned_fields: ["title", "event_status"], auto_apply: ["changed", "canceled"] } }, registry);
+    const overlay = { bundle, registry, okfVersion: "0.2" };
+    const previous = { title: "Story", event_status: "scheduled" };
+    const changes = [];
+    const diagnostics = [];
+    for (const record of [{ uid: "evt-1", summary: "Story Time", status: "WITHDRAWN" }, { uid: "evt-2", summary: "Ünïcödé 🐝", status: "WITHDRAWN" }]) {
+      const mapped = mapRecord(bound.source, record, bound.kind);
+      diagnostics.push(...mapped.diagnostics);
+      if (mapped.kind !== "mapped") continue;
+      const before = mapped.external_id === "evt-1" ? previous : null;
+      changes.push(changeBetween(before, mapped, { external_id: mapped.external_id, change_kind: before ? "changed" : "new" }));
+    }
+    const plan = await planRecordOverlay({ content: overlay, ops: overlay, policy: bound.policy, sameBundle: true, observedAt: "2026-10-03T14:00:00Z", changes });
+    const receipt = await applyRecordOverlay(plan, { content: overlay, ops: overlay, policy: bound.policy, actor: "process:sandbox" });
+    const steps = await planFindings({ ops: overlay, provider: url, feed: "source-feeds/library", slug: "library-mapping", findings: findingsFor(diagnostics, { source: "events" }), observedAt: "2026-10-03T14:00:00Z" });
+    const story = await backend.read("events/story");
+    const { title, event_status } = story.doc.frontmatter;
+    return JSON.stringify({ pin: connectorPinDigest(parsed.connector), changes, plan, outcomes: receipt.results.map((r) => r.outcome), steps, story: { title, event_status } });
+  }`;
+  const inSandbox = JSON.parse(await (runInNewContext(`(${scenario})(SuperbeeConnectors)`, sandbox) as Promise<string>)) as {
+    pin: string;
+    changes: Array<{ changed_fields: string[]; after: Record<string, unknown> }>;
+    plan: unknown;
+    outcomes: string[];
+    steps: Array<{ op: string }>;
+    story: Record<string, unknown>;
+  };
+  const connectorsApi = await import("../src/connectors.js");
+  const overlayApi = await import("../src/record-overlay/index.js");
+  const { MemoryBackend } = await import("../src/memory-backend.js");
+  const { buildKindRegistry } = await import("../src/kinds.js");
+  const inNode = JSON.parse(await (new Function("api", `return (${scenario})(api)`)({ ...connectorsApi, ...overlayApi, MemoryBackend, buildKindRegistry }) as Promise<string>)) as typeof inSandbox;
+  assert.deepEqual(inSandbox, inNode, "the sandbox run equals Node's: pin, changes, plan, outcomes and finding steps");
+  assert.deepEqual(inSandbox.changes[0]!.changed_fields, ["title"], "the unmapped status is carried, not removed");
+  assert.equal(inSandbox.story.title, "Story Time");
+  assert.equal(inSandbox.story.event_status, "scheduled");
+  assert.deepEqual(inSandbox.steps.map((s) => s.op), ["create-signal"], "two records with one unknown value raise one finding");
 });
 
 test("core/bundle-health computes a report and the Kind findings over MemoryBackend in a sandbox with only TextEncoder and TextDecoder, matching Node's", async () => {
