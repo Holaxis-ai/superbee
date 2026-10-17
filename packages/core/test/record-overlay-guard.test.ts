@@ -227,15 +227,17 @@ test("G9 the update guard: a collapse may set only the attention update fields",
 test("G9 the update guard: the body may only gain the one observation line; a Signal outside the path is refused", async () => {
   const w = await overlayWorld();
   const attention = resolveAttentionKind(w.ops.registry, "0.2", "Signal", "Event");
-  const step = collapseStep("signals/open", "v", {}, "- one line");
-  const guard = signalUpdateGuard(attention, step);
+  const line = `- ${AT} · changed · d · one line`;
+  const observation = { observedAt: AT, provider: PROVIDER };
+  const step = collapseStep("signals/open", "v", {}, line);
+  const guard = signalUpdateGuard(attention, step, observation);
   const fresh: OkfDocument = { id: "signals/open", frontmatter: { ...SIGNAL_FM } as never, body: "# Observations\n\n- first\n\n" };
   guard(fresh, { frontmatter: fresh.frontmatter, body: fresh.body });
-  guard(fresh, { frontmatter: fresh.frontmatter, body: "# Observations\n\n- first\n- one line\n" });
-  for (const body of ["rewritten\n", "# Observations\n\n- first\n- one line\n- two\n", ""]) {
+  guard(fresh, { frontmatter: fresh.frontmatter, body: `# Observations\n\n- first\n${line}\n` });
+  for (const body of ["rewritten\n", `# Observations\n\n- first\n${line}\n- two\n`, ""]) {
     assert.throws(() => guard(fresh, { frontmatter: fresh.frontmatter, body }), (e: unknown) => refusedWith("FIELD_NOT_OWNED")(e) && String((e as OverlayRefusal).details.fields) === "(body)");
   }
-  const outside = signalUpdateGuard(attention, collapseStep("notes/open", "v", {}));
+  const outside = signalUpdateGuard(attention, collapseStep("notes/open", "v", {}), observation);
   assert.throws(() => outside({ ...fresh, id: "notes/open" }, { frontmatter: fresh.frontmatter, body: fresh.body }), refusedWith("FIELD_NOT_OWNED"));
 });
 
@@ -450,7 +452,7 @@ test("G9 a non-Signal stored under the Signal path, and a missing fresh document
   const r = await applyRecordOverlay(planOf([collapseStep("signals/misfiled-task", version, { title: "Retitled" })]), ctxOf(w));
   assert.deepEqual([r.results[0]!.code, r.results[0]!.message, r.results[0]!.details], ["FIELD_NOT_OWNED", "collapse-signal target is not a Signal under signals/", { external_id: UID("009") }]);
   assert.deepEqual(await w.snapshot("ops"), before);
-  const guard = signalUpdateGuard(resolveAttentionKind(w.ops.registry, "0.2", "Signal", "Event"), collapseStep("signals/gone", "v", {}));
+  const guard = signalUpdateGuard(resolveAttentionKind(w.ops.registry, "0.2", "Signal", "Event"), collapseStep("signals/gone", "v", {}), { observedAt: AT, provider: PROVIDER });
   assert.throws(() => guard(undefined, { frontmatter: {} as never, body: "" }), refusedWith("FIELD_NOT_OWNED"));
 });
 

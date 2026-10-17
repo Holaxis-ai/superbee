@@ -202,7 +202,9 @@ editor's override is never overwritten. Each step carries the version it was pla
 runs on the fresh read: an owned-field write may change only owned and derived fields, never the
 body, and needs the record's `sources` identity; a Signal may be created only as a new, unclaimed
 document of the attention Kind under its path, and updated only in a fixed set of fields plus one
-appended observation line. Nothing of the target Kind is created and nothing is deleted. The
+appended line of this observation, and only when it belongs to the plan's provider. Nothing of the
+target Kind is created and nothing is deleted. A feed never owns its target's work state: the
+progress storage fields and the target Kind's claim fields are refused like `status`. The
 attention Kind (default `Signal`) must declare a claim owner and state field and the fields
 `change_kind`, `observed_at`, `provider`, `external_id` and `diff_summary`.
 
@@ -211,9 +213,9 @@ record is always raised), `correlate`, `sourceProperties` (an upsert of the reco
 entry in the same write, OKF v0.2 only), `assertCandidate` (site candidate checks after the core
 guards) and `deriveFields` (fields such as `updated_at` written in the same version). Refusals are
 receipt rows with a `REFUSAL_CODES` code; `RETRYABLE` and `HOLD_STORE` say which leave a record to be
-planned again. A malformed plan, actor or bundle edition throws `OverlayRefusal` before any write,
-and so does a plan with owned-field steps whose owned or derived list names a field a feed can
-never own.
+planned again. A malformed plan (an unknown step, a non-canonical target, non-scalar or identity
+`sources` properties), actor or bundle edition throws `OverlayRefusal` before any write, and so
+does a plan with owned-field steps whose owned or derived list names a field a feed can never own.
 
 `SourceIndex` holds one head read for a whole run. It is bounded to that run: an edited or deleted
 overlay is still caught at write time, but a second document given an identity during the run is

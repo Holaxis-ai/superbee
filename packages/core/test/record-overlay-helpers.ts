@@ -104,15 +104,18 @@ const NO_KINDS: KindRegistry = { kinds: new Map(), warnings: [] };
 
 export async function overlayWorld(options: {
   edition?: "0.1" | "0.2";
+  /** The ops bundle's edition when it differs from the content bundle's (implies separate bundles). */
+  opsEdition?: "0.1" | "0.2";
   separate?: boolean;
   signal?: Record<string, unknown> | null;
   conventions?: Record<string, Record<string, unknown>>;
   feed?: Record<string, unknown>;
 } = {}): Promise<World> {
   const edition = options.edition ?? "0.2";
-  const progress = edition === "0.1" ? "status" : "superbee_progress_status";
+  const opsEdition = options.opsEdition ?? edition;
+  const progress = opsEdition === "0.1" ? "status" : "superbee_progress_status";
   const content = await bundleOf("overlay-content", edition);
-  const ops = options.separate ? await bundleOf("overlay-ops", edition) : content;
+  const ops = options.separate || opsEdition !== edition ? await bundleOf("overlay-ops", opsEdition) : content;
   await seed(content.bundle, NO_KINDS, "conventions/event", EVENT_CONVENTION, "# Event\n");
   if (options.signal !== null) await seed(ops.bundle, NO_KINDS, "conventions/signal", options.signal ?? signalConvention(progress), "# Signal\n");
   await seed(ops.bundle, NO_KINDS, "conventions/source-feed", SOURCE_FEED_CONVENTION, "# Source Feed\n");
@@ -120,7 +123,7 @@ export async function overlayWorld(options: {
   const contentRegistry = await loadKinds(content.bundle);
   const opsRegistry = ops === content ? contentRegistry : await loadKinds(ops.bundle);
   const contentOverlay: OverlayBundle = { bundle: content.bundle, registry: contentRegistry, okfVersion: edition };
-  const opsOverlay: OverlayBundle = ops === content ? contentOverlay : { bundle: ops.bundle, registry: opsRegistry, okfVersion: edition };
+  const opsOverlay: OverlayBundle = ops === content ? contentOverlay : { bundle: ops.bundle, registry: opsRegistry, okfVersion: opsEdition };
   const feed = { ...FEED_FRONTMATTER, ...options.feed };
   await seed(ops.bundle, opsRegistry, FEED, feed, "Synthetic feed.\n");
   const pick = (where: "content" | "ops" = "content"): OverlayBundle => (where === "ops" ? opsOverlay : contentOverlay);

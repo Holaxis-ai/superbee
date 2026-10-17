@@ -34,14 +34,29 @@ export function matchesFilter(
   return true;
 }
 
+/**
+ * The identity one `sources[]` entry carries: its own string `resource` and `id`, each omitted when
+ * absent, inherited or not a string. Undefined when the entry is not a mapping. The one reading of
+ * an entry's identity, shared by {@link matchesSourceIdentity} and identity indexes.
+ */
+export function sourceIdentityOf(entry: unknown): { resource?: string; id?: string } | undefined {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+  const row = entry as Record<string, unknown>;
+  const identity: { resource?: string; id?: string } = {};
+  for (const key of ["resource", "id"] as const) {
+    if (Object.hasOwn(row, key) && typeof row[key] === "string") identity[key] = row[key] as string;
+  }
+  return identity;
+}
+
 /** THE `sources[]` identity predicate for one entry; see {@link SourceIdentity} for the rule. */
 export function matchesSourceIdentity(entry: unknown, identity: SourceIdentity): boolean {
-  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
-  const row = entry as Record<string, unknown>;
+  const own = sourceIdentityOf(entry);
+  if (!own) return false;
   for (const key of ["resource", "id"] as const) {
     const expected = identity[key];
     if (expected === undefined) continue;
-    if (!Object.hasOwn(row, key) || typeof row[key] !== "string" || row[key] !== expected) return false;
+    if (own[key] === undefined || own[key] !== expected) return false;
   }
   return true;
 }

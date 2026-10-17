@@ -2,6 +2,7 @@
  * Source Feed policy: which fields a feed owns and what each change kind may do. Reads the feed's
  * frontmatter and decides per change, purely.
  */
+import { claimCoordinates, progressStatusStorageField, type KindConvention } from "../kinds.js";
 import type { ConceptId, Frontmatter } from "../types.js";
 import { same } from "./canonical.js";
 import { OverlayRefusal, REFUSAL_CODES } from "./errors.js";
@@ -13,6 +14,16 @@ export const DEFAULT_NEEDS_REVIEW: readonly string[] = Object.freeze(["new", "ca
 export const NEVER_OWNED: ReadonlySet<string> = new Set([
   "type", "sources", "verified", "generated", "status", "stale_after", "tags", "superbee_updated_by",
 ]);
+
+/**
+ * The work state of a target Kind, which no feed may own whatever the Kind declares: both editions'
+ * progress storage fields and the Kind's resolved claim coordinates on the given editions.
+ */
+export function workStateFields(kind: KindConvention | undefined, editions: readonly ("0.1" | "0.2")[]): Set<string> {
+  const fields = new Set<string>([progressStatusStorageField("0.1")!, progressStatusStorageField("0.2")!]);
+  if (kind) for (const edition of editions) for (const field of claimCoordinates(edition, kind)?.fields ?? []) fields.add(field);
+  return fields;
+}
 
 const list = (v: unknown): string[] | undefined => (
   Array.isArray(v) ? v.map(String).filter(Boolean)
@@ -39,6 +50,11 @@ export function readOverlayPolicy(doc: { id: ConceptId; frontmatter: Frontmatter
   const ownedFields = owned!;
   const bad = presentation ? [] : ownedFields.filter((f) => NEVER_OWNED.has(f));
   if (bad.length) refuse(`fields can never be feed-owned: ${bad.join(", ")}`, { fields: bad });
+  if (ctx.targetKind) {
+    const work = workStateFields(ctx.targetKind, ["0.1", "0.2"]);
+    const claimed = ownedFields.filter((f) => work.has(f));
+    if (claimed.length) refuse(`fields hold the work state of ${ctx.targetKind.governs} and can never be feed-owned: ${claimed.join(", ")}`, { fields: claimed });
+  }
   if (ctx.targetKind) {
     const declared = new Set([...ctx.targetKind.fields.required, ...ctx.targetKind.fields.optional, "title"]);
     const undeclared = ownedFields.filter((f) => !declared.has(f));

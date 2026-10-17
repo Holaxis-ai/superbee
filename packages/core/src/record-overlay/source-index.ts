@@ -9,21 +9,19 @@
  * claimant and the next run, with a fresh index, refuses both as ambiguous.
  */
 import { queryHeads } from "../bundle-ops.js";
+import { sourceIdentityOf } from "../query-filter.js";
 import type { Bundle, ConceptId, HeadResult, OkfDocument, QueryFilter, Version } from "../types.js";
 
 const byId = (a: HeadResult, b: HeadResult): number => a.id.localeCompare(b.id);
 
-/** The `(resource, id)` pairs a frontmatter carries, once per well-formed entry. */
+/** The `(resource, id)` pairs a frontmatter carries, once per entry naming both, by core's identity rule. */
 function identities(frontmatter: Record<string, unknown>): Array<{ resource: string; id: string }> {
   const sources = frontmatter.sources;
   if (!Array.isArray(sources)) return [];
   const out: Array<{ resource: string; id: string }> = [];
   for (const entry of sources) {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const row = entry as Record<string, unknown>;
-    if (!Object.hasOwn(row, "resource") || !Object.hasOwn(row, "id")) continue;
-    if (typeof row.resource !== "string" || typeof row.id !== "string") continue;
-    out.push({ resource: row.resource, id: row.id });
+    const own = sourceIdentityOf(entry);
+    if (own?.resource !== undefined && own.id !== undefined) out.push({ resource: own.resource, id: own.id });
   }
   return out;
 }

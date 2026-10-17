@@ -31,13 +31,15 @@ import { PreconditionFailed } from "../document-precondition.js";
 import type { KindRegistry } from "../kinds.js";
 import { isManagedDocumentMetadataField } from "../managed-document-metadata.js";
 import { okfValuesEqual } from "../okf-authored-values.js";
+import { assertSafeConceptId } from "../paths.js";
 import { isOkfActor } from "../okf-actor.js";
 import { hasSourceIdentity, matchesSourceIdentity } from "../query-filter.js";
 import type { OkfDocument } from "../types.js";
 import { VersionConflict } from "../versioning.js";
 import { same } from "./canonical.js";
 import { CORE_VALUE_CODES, OverlayRefusal, REFUSAL_CODES, type RefusalCode } from "./errors.js";
-import { NEVER_OWNED } from "./policy.js";
+import { NEVER_OWNED, workStateFields } from "./policy.js";
+import { redactUrl } from "./redact.js";
 import { resolveAttentionKind, type AttentionResolution } from "./signal-kind.js";
 import type {
   ApplyContext,
@@ -57,13 +59,16 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** The owned and derived lists may never name a never-owned field or core's managed metadata. */
-function assertAdmissibleFields(ownedFields: readonly unknown[], derivedFields: readonly unknown[]): void {
+/**
+ * The owned and derived lists may never name a never-owned field, core's managed metadata, or the
+ * target's work state (the progress storage fields always; the target Kind's claim fields when known).
+ */
+function assertAdmissibleFields(ownedFields: readonly unknown[], derivedFields: readonly unknown[], workState: ReadonlySet<string> = workStateFields(undefined, [])): void {
   for (const [list, name] of [[ownedFields, "owned_fields"], [derivedFields, "deriveFields.fields"]] as const) {
     if (list.some((field) => typeof field !== "string")) {
       throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, `${name} must be a list of field names`, { list: name });
     }
-    const bad = (list as readonly string[]).filter((field) => NEVER_OWNED.has(field) || isManagedDocumentMetadataField(field));
+    const bad = (list as readonly string[]).filter((field) => NEVER_OWNED.has(field) || isManagedDocumentMetadataField(field) || workState.has(field));
     if (bad.length) {
       throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, `${name} names fields a feed can never own: ${bad.join(", ")}`, { list: name, fields: bad });
     }
@@ -171,10 +176,11 @@ export function signalCreateGuard(attention: AttentionResolution, step: CreateSi
 const UPDATE_FIELDS = new Set(["change_kind", "priority", "observed_at", "diff_summary", "title", "external_id", "about_doc", "content_digest", "expires_at"]);
 
 /**
- * The Signal update guard: an existing attention Kind document, fixed keys, one appended line.
+ * The Signal update guard: an existing attention Kind document of this plan's provider, fixed keys,
+ * and one appended observation line of this observation.
  * Exported for this package's tests only; the subpath entry does not re-export it.
  */
-export function signalUpdateGuard(attention: AttentionResolution, step: CollapseSignalStep): AssertCandidate {
+export function signalUpdateGuard(attention: AttentionResolution, step: CollapseSignalStep, observation: { observedAt: string; provider: string }): AssertCandidate {
   return (existing, candidate) => {
     if (!attention.ok) throw notOwned(`record-overlay updates documents of an attention Kind only: ${attention.reason}`, { external_id: step.external_id });
     const { name, prefix } = attention.value;
@@ -182,6 +188,10 @@ export function signalUpdateGuard(attention: AttentionResolution, step: Collapse
       throw notOwned(`collapse-signal target is not a ${name} under ${prefix}`, { external_id: step.external_id });
     }
     const before = existing.frontmatter as unknown as Record<string, unknown>;
+    if (before.provider !== redactUrl(observation.provider)) throw notOwned("collapse-signal target belongs to another provider", { field: "provider", external_id: step.external_id });
+    if (/[\r\n]/.test(step.observation_line) || !step.observation_line.startsWith(`- ${observation.observedAt} · `)) {
+      throw notOwned("collapse-signal observation line must be one line of this observation", { fields: ["(body)"], external_id: step.external_id });
+    }
     const after = candidate.frontmatter as unknown as Record<string, unknown>;
     const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !same(before[k], after[k]));
     const outside = changed.filter((k) => !UPDATE_FIELDS.has(k));
@@ -238,18 +248,23 @@ function validatePlan(plan: OverlayPlan): void {
       throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, `unknown plan step ${record(step) ? String(step.op) : typeof step}`, { step: index });
     }
     const str = (key: string): boolean => typeof step[key] === "string" && step[key] !== "";
+    const target = (): boolean => {
+      if (!str("target")) return false;
+      try { assertSafeConceptId(step.target as string); return true; } catch { return false; }
+    };
     if (step.op === "apply-owned-fields") {
       const fields = step.fields;
-      if (!str("target") || !str("expected_version") || typeof step.external_id !== "string" || !record(fields) || Object.keys(fields).length === 0
+      if (!target() || !str("expected_version") || typeof step.external_id !== "string" || !record(fields) || Object.keys(fields).length === 0
         || !Object.values(fields).every(record)) throw malformed(index, step.op);
-      if (step.sources !== undefined && !record(step.sources)) throw malformed(index, step.op);
+      if (step.sources !== undefined && (!record(step.sources) || Object.entries(step.sources).some(([key, value]) =>
+        key === "resource" || key === "id" || !(typeof value === "string" || typeof value === "number" || typeof value === "boolean")))) throw malformed(index, step.op);
     } else if (step.op === "create-signal") {
       const candidate = step.candidate;
-      if (!str("target") || !record(candidate) || !record(candidate.frontmatter) || typeof candidate.body !== "string") throw malformed(index, step.op);
+      if (!target() || !record(candidate) || !record(candidate.frontmatter) || typeof candidate.body !== "string") throw malformed(index, step.op);
     } else if (step.op === "collapse-signal") {
-      if (!str("target") || !str("expected_version") || typeof step.observation_line !== "string" || !record(step.set)) throw malformed(index, step.op);
+      if (!target() || !str("expected_version") || typeof step.observation_line !== "string" || !record(step.set)) throw malformed(index, step.op);
     } else if (step.op === "signal-duplicate") {
-      if (!str("target")) throw malformed(index, step.op);
+      if (!target()) throw malformed(index, step.op);
     }
   });
 }
@@ -276,7 +291,8 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
     if (derive !== undefined && (!Array.isArray(derive.fields) || typeof derive.derive !== "function")) {
       throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "deriveFields needs a fields list and a derive function", { list: "deriveFields.fields" });
     }
-    assertAdmissibleFields(policy.owned_fields, derive?.fields ?? []);
+    const targetKind = policy.target_kind === undefined ? undefined : content.registry.kinds.get(policy.target_kind);
+    assertAdmissibleFields(policy.owned_fields, derive?.fields ?? [], workStateFields(targetKind, [contentEdition]));
     if (typeof policy.provider !== "string" || policy.provider === "") throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "owned-field steps need the policy's provider identity");
   }
   const attention: AttentionResolution = plan.steps.some((step) => step.op === "create-signal" || step.op === "collapse-signal")
@@ -323,6 +339,9 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
       return mutateDocument({
         ...base,
         input: (existing): DocumentMutationInput => {
+          // Core's field actions throw on metadata before any guard runs; refuse what the guard would.
+          const outside = Object.keys(step.fields).filter((f) => !admitted.has(f));
+          if (outside.length) throw new OverlayRefusal(REFUSAL_CODES.FIELD_NOT_OWNED, `write would change non-owned fields: ${outside.join(", ")}`, { fields: outside, external_id: step.external_id });
           assertNoListAssignment(existing, entries());
           const entry = Array.isArray(existing.frontmatter.sources)
             ? (existing.frontmatter.sources as unknown[]).filter((row) => matchesSourceIdentity(row, { resource: policy.provider, id: step.external_id }))
@@ -404,7 +423,7 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
               body: existing!.body.includes(step.observation_line) ? existing!.body : existing!.body.replace(/\n*$/, "\n") + step.observation_line + "\n",
             };
           },
-          assertCandidate: composeGuards(signalUpdateGuard(attention, step), siteHook(step, "ops")),
+          assertCandidate: composeGuards(signalUpdateGuard(attention, step, { observedAt: plan.observed_at, provider: plan.provider }), siteHook(step, "ops")),
         });
       }
       results.push({ op: step.op, target: step.target, external_id: step.external_id, outcome: r.changed ? "applied" : "unchanged", version: r.version });
