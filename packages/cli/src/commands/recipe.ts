@@ -7,21 +7,21 @@ import { renderUsage } from "../output.js";
 //
 // Mirrors `new.ts`'s create-only / expect-absent-CAS receipt shape, but at the RECIPE level: each
 // of the recipe's convention docs is written via the engine's expect-absent CAS create
-// (`recipes.ts`'s `applyRecipe`), so a doc that already exists is left untouched (idempotent
-// changed:false) rather than erroring or overwriting. A built-in and an external recipe both flow
-// through `resolveRecipe` -> `applyRecipe` — the SAME functions, no special-casing — which is what
-// makes recipe application generic rather than a one-off `init`-only special case.
+// (`installRecipe` from `@superbee/core/recipe-lifecycle`), so a doc that already exists is left
+// untouched (idempotent changed:false) rather than erroring or overwriting. A built-in and an
+// external recipe both flow through `resolveRecipe` -> `installRecipe` — the SAME functions, no
+// special-casing — which is what makes recipe application generic rather than a one-off
+// `init`-only special case.
 import { parseArgs } from "node:util";
 import { loadKinds } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { assertActorAcceptedByBundle } from "../actor.js";
-import { CliError } from "../errors.js";
+import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, exactCliInvocation } from "../invocation.js";
-import { applyRecipe } from "../recipes.js";
-import { applyRecipeEvolution, planRecipeEvolution } from "../recipe-evolution.js";
+import { applyRecipeEvolution, installRecipe, planRecipeEvolution } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe } from "../recipe-source.js";
 import { assertKindOnlyRecipe } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
@@ -142,12 +142,22 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     // Before apply: the evolution's own error wrapping would present a write-policy refusal as
     // CONFLICT; the actor rule is a usage error with a corrected spelling, decided up front.
     await assertActorAcceptedByBundle(bundle, values.actor?.trim());
-    const result = await applyRecipeEvolution(bundle, loaded.recipe, values.apply.trim(), values.actor?.trim());
+    let result: Awaited<ReturnType<typeof applyRecipeEvolution>>;
+    try {
+      result = await applyRecipeEvolution(bundle, loaded.recipe, values.apply.trim(), { actor: values.actor?.trim() });
+    } catch (error) {
+      throw classifyBundleError(error);
+    }
     stdout(render({ ...result, help: [planCommand, `${cliInvocation()} kinds`] }, resolveMode(values)));
     return;
   }
 
-  const plan = await planRecipeEvolution(bundle, loaded.recipe);
+  let plan: Awaited<ReturnType<typeof planRecipeEvolution>>;
+  try {
+    plan = await planRecipeEvolution(bundle, loaded.recipe);
+  } catch (error) {
+    throw classifyBundleError(error);
+  }
   const receipt: Record<string, unknown> = {
     ...plan,
     blockers: plan.blockers.slice(0, 20),
@@ -199,7 +209,14 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   const remote = await resolveRemoteFlag(values.remote, values.dir);
   if (remote === undefined) await assertKindOnlyRecipe("recipe add", values.dir, loaded.recipe);
   const bundle = await openBundle(values.dir, remote);
-  const result = await applyRecipe(bundle, loaded.recipe);
+  // Core's recipe lifecycle throws typed errors; classify them here, through the one CLI mapping,
+  // so this command throws a CliError like every other command.
+  let result: Awaited<ReturnType<typeof installRecipe>>;
+  try {
+    result = await installRecipe(bundle, loaded.recipe);
+  } catch (error) {
+    throw classifyBundleError(error);
+  }
 
   // Duplicate-`governs` against the TARGET bundle (approved §B decision 8(ii)) is surfaced via the
   // EXISTING `loadKinds` machinery, post-apply — no new conflict machinery. A doc that lost its

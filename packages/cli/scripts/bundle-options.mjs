@@ -15,6 +15,7 @@ export const workspaceAliases = {
       "@superbee/core/engine": r("../core/src/engine.ts"),
       "@superbee/core/document-codec": r("../core/src/document-codec.ts"),
       "@superbee/core/recipes": r("../core/src/recipes.ts"),
+      "@superbee/core/recipe-lifecycle": r("../core/src/recipe-lifecycle/index.ts"),
       "@superbee/core/storage": r("../core/src/storage.ts"),
       "@superbee/core/view-admission": r("../core/src/view-admission.ts"),
       "@superbee/core/page": r("../core/src/page.ts"),

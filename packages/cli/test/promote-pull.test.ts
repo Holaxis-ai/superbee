@@ -28,7 +28,7 @@ import { pull, type PullCliDeps } from "../src/commands/pull.js";
 import { CliError } from "../src/errors.js";
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { commandReference } from "../src/reference.js";
-import { applyRecipe } from "../src/recipes.js";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
 import { testInvocation } from "./support/command-prefix.js";
 
@@ -57,7 +57,7 @@ async function makeBundle(): Promise<{ dir: string; cleanup: () => Promise<void>
 async function makeSeededBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
   await initBundle(dir);
-  await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
+  await installRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 

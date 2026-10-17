@@ -65,6 +65,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "platform.js", symbol: "provenanceLabel" },
   { module: "hosted-transport/index.js", symbol: "createHostedReadAdapter" },
   { module: "hosted-client/index.js", symbol: "createHostedClient" },
+  { module: "recipe-lifecycle/index.js", symbol: "planRecipeEvolution" },
 ];
 
 for (const { module, symbol } of BROWSER_SUBPATHS) {
@@ -238,6 +239,92 @@ test("core/document-mutation updates a document body over MemoryBackend in a san
   assert.equal(historyLength, 2, "one create and one CAS update, no retries");
 });
 
+test("core/recipe-lifecycle installs a View recipe, plans and applies its evolution in a sandbox with no process, Buffer, or node builtins", async () => {
+  // The esbuild bundle alone cannot see a free `Buffer` identifier; executing install (View blob
+  // write and compare), plan (View entry version) and apply in a realm without one can.
+  const result = await build({
+    stdin: {
+      contents: [
+        'export { applyRecipeEvolution, installRecipe, planRecipeEvolution } from "./recipe-lifecycle/index.js";',
+        'export { MemoryBackend } from "./memory-backend.js";',
+      ].join("\n"),
+      resolveDir: path.resolve(here, "../dist"),
+      loader: "js",
+    },
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    globalName: "SuperbeeRecipes",
+    write: false,
+    logLevel: "silent",
+  });
+  assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 2));
+  const sandbox: Record<string, unknown> = { TextEncoder, TextDecoder };
+  assert.equal(runInNewContext("typeof process", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof Buffer", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof require", sandbox), "undefined");
+  // The vm realm has no structuredClone; the document-mutation proof above uses the same in-realm shim.
+  runInNewContext("globalThis.structuredClone = (value) => JSON.parse(JSON.stringify(value));", sandbox);
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+
+  const html = "<!doctype html><p>\u00dcn\u00efc\u00f6d\u00e9 gallery \u{1F41D}</p>\n";
+  const proof = (await runInNewContext(
+    `(async () => {
+      const { applyRecipeEvolution, installRecipe, planRecipeEvolution, MemoryBackend } = SuperbeeRecipes;
+      const backend = new MemoryBackend();
+      await backend.writeReserved("", "index.md", "---\\nokf_version: '0.2'\\n---\\n# Sandbox recipes\\n");
+      const bundle = { root: "browser-recipes", backend };
+      const recipe = (version, optional) => ({
+        id: "gallery", title: "Gallery", version, summary: "Gallery.", offer: "Gallery", source: "sandbox:gallery:" + version,
+        docs: [{ id: "conventions/exhibit", frontmatter: { type: "Convention", title: "Exhibit", governs: "Exhibit", fields: { required: ["title"], optional } }, body: "# Exhibit\\n" }],
+        pages: [{
+          registry: { id: "views-registry/gallery", frontmatter: { type: "View", title: "Gallery", entry: "views/gallery/index.html", access: "none" }, body: "Every exhibit.\\n" },
+          entry: "views/gallery/index.html",
+          html: ${JSON.stringify(html)},
+        }],
+        references: [], governs: ["Exhibit"], warnings: [],
+      });
+      const installed = await installRecipe(bundle, recipe("1", []), { now: "2026-10-16T12:00:00.000Z" });
+      const reinstalled = await installRecipe(bundle, recipe("1", []), { now: "2026-10-16T12:00:00.000Z" });
+      const plan = await planRecipeEvolution(bundle, recipe("2", ["room"]));
+      const applied = await applyRecipeEvolution(bundle, recipe("2", ["room"]), plan.plan_token, { actor: "process:sandbox" });
+      const settled = await planRecipeEvolution(bundle, recipe("2", ["room"]));
+      const blob = await backend.readBlob("views/gallery/index.html");
+      const convention = await backend.read("conventions/exhibit");
+      return JSON.stringify({
+        installed: installed.counts, reinstalled: reinstalled.counts,
+        plan: { ready: plan.ready, changed: plan.changed, token: plan.plan_token, blockers: plan.blockers },
+        applied: { recipe: applied.recipe, counts: applied.counts },
+        settled: { ready: settled.ready, changed: settled.changed },
+        blob: Array.from(blob.bytes), blobVersion: blob.version,
+        optional: convention.doc.frontmatter.fields.optional,
+      });
+    })()`,
+    sandbox,
+  )) as string;
+  const outcome = JSON.parse(proof) as {
+    installed: Record<string, number>;
+    reinstalled: Record<string, number>;
+    plan: { ready: boolean; changed: boolean; token: string; blockers: unknown[] };
+    applied: { recipe: string; counts: Record<string, number> };
+    settled: { ready: boolean; changed: boolean };
+    blob: number[];
+    blobVersion: string;
+    optional: string[];
+  };
+  assert.deepEqual(outcome.installed, { created: 2, existing: 0, legacy_present: 0, migration_required: 0 });
+  assert.deepEqual(outcome.reinstalled, { created: 0, existing: 2, legacy_present: 0, migration_required: 0 });
+  assert.deepEqual(outcome.plan.blockers, []);
+  assert.equal(outcome.plan.ready, true);
+  assert.equal(outcome.plan.changed, true);
+  assert.match(outcome.plan.token, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(outcome.applied, { recipe: "evolved", counts: { updated: 1, unchanged: 0 } });
+  assert.deepEqual(outcome.settled, { ready: true, changed: false });
+  assert.deepEqual(outcome.optional, ["room"]);
+  const nodeBytes = Buffer.from(html, "utf8");
+  assert.deepEqual(outcome.blob, Array.from(nodeBytes), "the sandbox wrote the bytes Node's UTF-8 encoder produces");
+  assert.equal(outcome.blobVersion, `sha256:${createHash("sha256").update(nodeBytes).digest("hex")}`);
+});
 
 test("artifact contract imports and decodes without storage, network or DOM globals", async () => {
   const result = await build({

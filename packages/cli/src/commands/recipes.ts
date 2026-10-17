@@ -26,7 +26,7 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import type { OkfDocument, ConceptId } from "@superbee/core";
 import { readBundleOkfVersion } from "@superbee/core";
-import { appliedConventionDocs, isRecipeApplied, recipeDrifts } from "../recipes.js";
+import { installedConventionDocs, isRecipeApplied, recipeDrifts } from "@superbee/core/recipe-lifecycle";
 import { builtinNames, resolveRecipe, type LoadedRecipe } from "../recipe-source.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandPrefix, type CommandText } from "../command-text.js";
 
@@ -168,7 +168,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
   }
 
   const bundle = await optionalBundle(values, resolvedDeps);
-  const installed: Map<ConceptId, OkfDocument> | undefined = bundle ? await appliedConventionDocs(bundle) : undefined;
+  const installed: Map<ConceptId, OkfDocument> | undefined = bundle ? await installedConventionDocs(bundle) : undefined;
   const appliedIds = installed === undefined ? undefined : new Set(installed.keys());
   const okfVersion = bundle ? (await readBundleOkfVersion(bundle)) ?? "0.1" : undefined;
   const now = new Date().toISOString();

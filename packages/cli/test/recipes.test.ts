@@ -59,16 +59,20 @@ import { list } from "../src/commands/list.js";
 import { pull } from "../src/commands/pull.js";
 import { promote } from "../src/commands/promote.js";
 import { link } from "../src/commands/link.js";
-import { CliError } from "../src/errors.js";
+import { CliError, classifyBundleError } from "../src/errors.js";
 import {
   CONTEXT_NOTE_SEED_BODY,
   TASK_SEED_BODY,
   ROADMAP_SEED_BODY,
   ROADMAP_ITEM_SEED_BODY,
   ROADMAP_DESC_BODY,
-  applyRecipe,
 } from "../src/recipes.js";
-import { applyRecipeEvolution, planRecipeEvolution } from "../src/recipe-evolution.js";
+import {
+  applyRecipeEvolution,
+  installRecipe,
+  planRecipeEvolution,
+  RecipeLifecycleError,
+} from "@superbee/core/recipe-lifecycle";
 import {
   CONTEXT_NOTES_RECIPE,
   filesRecipeSource,
@@ -916,7 +920,7 @@ test("conventions-free: init's default does NOT install roadmap — a bundle sta
 
 // ── Row 2: external loads+applies through the SAME path ───────────────────────────────────────
 
-test("recipe add <path>: an EXTERNAL recipe folder loads via filesRecipeSource -> parseRecipeFiles -> applyRecipe, the SAME functions as the built-in", async () => {
+test("recipe add <path>: an EXTERNAL recipe folder loads via filesRecipeSource -> parseRecipeFiles -> installRecipe, the SAME functions as the built-in", async () => {
   const dir = await tempDir();
   try {
     await initBundle(dir);
@@ -943,7 +947,7 @@ test("recipe add <path>: an EXTERNAL recipe folder loads via filesRecipeSource -
   }
 });
 
-test("applyRecipe carries serialized Claim lifecycle descriptions through the ordinary recipe path", async () => {
+test("installRecipe carries serialized Claim lifecycle descriptions through the ordinary recipe path", async () => {
   const dir = await tempDir();
   try {
     // This fixture intentionally exercises the legacy physical `status` coordinate.
@@ -968,7 +972,7 @@ test("applyRecipe carries serialized Claim lifecycle descriptions through the or
         descriptions: {},
       },
     };
-    const result = await applyRecipe(
+    const result = await installRecipe(
       { root: dir },
       {
         id: "described-claims",
@@ -982,7 +986,7 @@ test("applyRecipe carries serialized Claim lifecycle descriptions through the or
         governs: ["Claim"],
         warnings: [],
       },
-      T,
+      { now: T },
     );
     assert.equal(result.changed, true);
     const registry = await loadKinds({ root: dir });
@@ -1011,7 +1015,7 @@ test("a recipe carrying a type View pair under views-registry//views/ parses and
     assert.equal(loaded.ok, true, loaded.ok ? "" : loaded.error.message);
     if (!loaded.ok) return;
 
-    const result = await applyRecipe({ root: dir }, loaded.recipe, T);
+    const result = await installRecipe({ root: dir }, loaded.recipe, { now: T });
     assert.equal(result.changed, true);
     assert.equal(result.pages.length, 1);
     assert.equal(result.pages[0]!.registry_id, "views-registry/board");
@@ -1026,7 +1030,7 @@ test("a recipe carrying a type View pair under views-registry//views/ parses and
 
     // Idempotent + preflight-parity: a second apply is changed:false (the views-registry/ prefix
     // is covered by the existing-registry preflight, so an identical re-apply never conflicts).
-    const second = await applyRecipe({ root: dir }, loaded.recipe, T);
+    const second = await installRecipe({ root: dir }, loaded.recipe, { now: T });
     assert.equal(second.changed, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1265,7 +1269,7 @@ test("recipe evolve: a tightening schema and its incompatible instances block be
   const backend = new MemoryBackend();
   const bundle: Bundle = { root: "mem://recipe-evolution-tightening", backend };
   const initial = widgetRecipe("1", widgetFields(["title"]));
-  await applyRecipe(bundle, initial, T);
+  await installRecipe(bundle, initial, { now: T });
   await writeDoc(bundle, {
     id: "widgets/one",
     frontmatter: { type: "Widget", title: "One" },
@@ -1281,8 +1285,8 @@ test("recipe evolve: a tightening schema and its incompatible instances block be
   assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_INSTANCE_INVALID"));
 
   await assert.rejects(
-    applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent"),
-    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+    applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "test-agent" }),
+    (error: unknown) => classifyBundleError(error).code === "CONFLICT",
   );
   assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.required, ["title"]);
 });
@@ -1291,10 +1295,10 @@ test("recipe evolve: legacy v0.1 writes a fresh timestamp rather than its compar
   const dir = await tempDir();
   try {
     const bundle = await initBundle(dir, { okfVersion: "0.1" });
-    await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+    await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
     const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
     const plan = await planRecipeEvolution(bundle, desired);
-    await applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent");
+    await applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "test-agent" });
 
     const evolved = await readDoc(bundle, "conventions/widget");
     assert.notEqual(evolved.frontmatter.timestamp, "1970-01-01T00:00:00.000Z");
@@ -1331,7 +1335,7 @@ test("recipe evolve: write-policy-invalid source metadata blocks the whole plan 
   const dir = await tempDir();
   try {
     const bundle = await initBundle(dir);
-    await applyRecipe(bundle, initial, T);
+    await installRecipe(bundle, initial, { now: T });
     const alphaBefore = await readDoc(bundle, "conventions/alpha");
 
     const plan = await planRecipeEvolution(bundle, desired);
@@ -1339,7 +1343,7 @@ test("recipe evolve: write-policy-invalid source metadata blocks the whole plan 
     assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_WRITE_POLICY_INVALID"));
     await assert.rejects(
       applyRecipeEvolution(bundle, desired, plan.plan_token),
-      (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+      (error: unknown) => classifyBundleError(error).code === "CONFLICT",
     );
     assert.deepEqual(await readDoc(bundle, "conventions/alpha"), alphaBefore);
   } finally {
@@ -1352,7 +1356,7 @@ test("recipe evolve: an unattributed v0.2 change records the Superbee process an
   try {
     const bundle = await initBundle(dir);
     const initial = widgetRecipe("1", widgetFields());
-    await applyRecipe(bundle, initial, T);
+    await installRecipe(bundle, initial, { now: T });
     const installed = await readDoc(bundle, "conventions/widget");
     await writeDoc(bundle, {
       ...installed,
@@ -1382,7 +1386,7 @@ test("recipe evolve: recipe-authored provenance and mutation attribution are nev
   const dir = await tempDir();
   try {
     const bundle = await initBundle(dir);
-    await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+    await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
     const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
     desired.docs[0] = {
       ...desired.docs[0]!,
@@ -1397,7 +1401,7 @@ test("recipe evolve: recipe-authored provenance and mutation attribution are nev
     const plan = await planRecipeEvolution(bundle, desired);
     assert.equal(plan.ready, true);
     assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
-    await applyRecipeEvolution(bundle, desired, plan.plan_token, "process:recipe-writer");
+    await applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "process:recipe-writer" });
     const evolved = await readDoc(bundle, "conventions/widget");
     assert.equal(evolved.frontmatter.generated, undefined);
     assert.equal(evolved.frontmatter.verified, undefined);
@@ -1409,7 +1413,7 @@ test("recipe evolve: recipe-authored provenance and mutation attribution are nev
 
 test("recipe evolve: additive declaration arrays behave as sets and never persist duplicates", async () => {
   const bundle: Bundle = { root: "mem://recipe-evolution-array-set", backend: new MemoryBackend() };
-  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
   const desired = widgetRecipe("2", widgetFields(["title"], ["colour", "colour"]));
 
   const plan = await planRecipeEvolution(bundle, desired);
@@ -1439,7 +1443,7 @@ test("recipe evolve: prototype-looking nested declaration keys remain own data p
     frontmatter: { ...desired.docs[0]!.frontmatter, custom },
   };
   const bundle: Bundle = { root: "mem://recipe-evolution-own-keys", backend: new MemoryBackend() };
-  await applyRecipe(bundle, initial, T);
+  await installRecipe(bundle, initial, { now: T });
 
   const plan = await planRecipeEvolution(bundle, desired);
   assert.equal(plan.ready, true);
@@ -1464,7 +1468,7 @@ test("recipe evolve: a locally added declaration is preserved and source removal
       },
     },
   };
-  await applyRecipe(bundle, initial, T);
+  await installRecipe(bundle, initial, { now: T });
   const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
 
   const plan = await planRecipeEvolution(bundle, desired);
@@ -1472,7 +1476,7 @@ test("recipe evolve: a locally added declaration is preserved and source removal
   assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED"));
   await assert.rejects(
     applyRecipeEvolution(bundle, desired, plan.plan_token),
-    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+    (error: unknown) => classifyBundleError(error).code === "CONFLICT",
   );
   const kind = (await loadKinds(bundle)).kinds.get("Widget")!;
   assert.deepEqual(kind.fields.optional, ["owner"]);
@@ -1485,7 +1489,7 @@ test("recipe evolve: terminal-set changes block because they alter open-work vis
   const desiredFields = widgetFields(["title"], ["state"], { state: ["todo", "done"] });
   desiredFields.terminal = { state: ["todo", "done"] };
   const bundle: Bundle = { root: "mem://recipe-evolution-terminal", backend: new MemoryBackend() };
-  await applyRecipe(bundle, widgetRecipe("1", fields), T);
+  await installRecipe(bundle, widgetRecipe("1", fields), { now: T });
   await writeDoc(bundle, {
     id: "widgets/open",
     frontmatter: { type: "Widget", title: "Open", state: "todo" },
@@ -1499,7 +1503,7 @@ test("recipe evolve: terminal-set changes block because they alter open-work vis
 
 test("recipe evolve: an enum on a field the same plan declares is additive", async () => {
   const bundle: Bundle = { root: "mem://recipe-evolution-new-field-enum", backend: new MemoryBackend() };
-  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
   await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One" }, body: "One." });
   const desired = widgetRecipe("2", widgetFields(["title"], ["setting"], { setting: ["indoor", "outdoor"] }));
 
@@ -1512,7 +1516,7 @@ test("recipe evolve: an enum on a field the same plan declares is additive", asy
   ]);
   assert.equal(plan.counts.instances_checked, 1);
 
-  await applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent");
+  await applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "test-agent" });
   const widget = (await loadKinds(bundle)).kinds.get("Widget")!;
   assert.deepEqual(widget.fields.optional, ["setting"]);
   assert.deepEqual(widget.fields.values.setting, ["indoor", "outdoor"]);
@@ -1521,7 +1525,7 @@ test("recipe evolve: an enum on a field the same plan declares is additive", asy
 
 test("recipe evolve: a new field's enum blocks when an instance already carries a disallowed value", async () => {
   const bundle: Bundle = { root: "mem://recipe-evolution-new-field-enum-instance", backend: new MemoryBackend() };
-  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
   await writeDoc(bundle, {
     id: "widgets/one",
     frontmatter: { type: "Widget", title: "One", setting: "garden" },
@@ -1537,7 +1541,7 @@ test("recipe evolve: a new field's enum blocks when an instance already carries 
   );
   await assert.rejects(
     applyRecipeEvolution(bundle, desired, plan.plan_token),
-    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+    (error: unknown) => classifyBundleError(error).code === "CONFLICT",
   );
   assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.optional, []);
 });
@@ -1605,7 +1609,7 @@ test("recipe evolve: enum, retype and in-use removal changes block with their ow
   ];
   for (const row of rows) {
     const bundle: Bundle = { root: `mem://recipe-evolution-refusal-${row.name.replaceAll(" ", "-")}`, backend: new MemoryBackend() };
-    await applyRecipe(bundle, installed(), T);
+    await installRecipe(bundle, installed(), { now: T });
     await writeDoc(bundle, {
       id: "widgets/one",
       frontmatter: { type: "Widget", title: "One", setting: "outdoor", size: "large" },
@@ -1620,7 +1624,7 @@ test("recipe evolve: enum, retype and in-use removal changes block with their ow
     assert.match(blocker.message, row.message, row.name);
     await assert.rejects(
       applyRecipeEvolution(bundle, row.desired, plan.plan_token),
-      (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+      (error: unknown) => classifyBundleError(error).code === "CONFLICT",
       row.name,
     );
     assert.deepEqual(await readDoc(bundle, "conventions/widget"), before, row.name);
@@ -1637,7 +1641,7 @@ const typedWidgetFields = (
 
 test("recipe evolve: adds fields.types and fields.values entries to installed fields when instances conform", async () => {
   const bundle: Bundle = { root: "mem://recipe-evolution-add-types", backend: new MemoryBackend() };
-  await applyRecipe(bundle, widgetRecipe("1", typedWidgetFields(undefined)), T);
+  await installRecipe(bundle, widgetRecipe("1", typedWidgetFields(undefined)), { now: T });
   await writeDoc(bundle, {
     id: "widgets/one",
     frontmatter: { type: "Widget", title: "One", opened: "2024-02-29", size: "s", tags: ["red", "blue"] },
@@ -1650,7 +1654,7 @@ test("recipe evolve: adds fields.types and fields.values entries to installed fi
   assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
   assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/types", "/frontmatter/fields/values"]);
   assert.equal(plan.counts.instances_checked, 2);
-  await applyRecipeEvolution(bundle, first, plan.plan_token, "test-agent");
+  await applyRecipeEvolution(bundle, first, plan.plan_token, { actor: "test-agent" });
   let widget = (await loadKinds(bundle)).kinds.get("Widget")!;
   assert.deepEqual(widget.fields.types, { opened: "date" });
   assert.deepEqual(widget.fields.values, { size: ["s", "m"] });
@@ -1661,7 +1665,7 @@ test("recipe evolve: adds fields.types and fields.values entries to installed fi
   const next = await planRecipeEvolution(bundle, second);
   assert.equal(next.ready, true, JSON.stringify(next.blockers));
   assert.deepEqual(next.definitions[0]!.added_paths, ["/frontmatter/fields/types/tags", "/frontmatter/fields/values/tags"]);
-  await applyRecipeEvolution(bundle, second, next.plan_token, "test-agent");
+  await applyRecipeEvolution(bundle, second, next.plan_token, { actor: "test-agent" });
   widget = (await loadKinds(bundle)).kinds.get("Widget")!;
   assert.deepEqual(widget.fields.types, { opened: "date", tags: "string-list" });
   assert.deepEqual(widget.fields.values.tags, ["red", "blue"]);
@@ -1669,7 +1673,7 @@ test("recipe evolve: adds fields.types and fields.values entries to installed fi
 
 test("recipe evolve: a type existing documents violate is refused with one capped blocker naming them", async () => {
   const bundle: Bundle = { root: "mem://recipe-evolution-type-violated", backend: new MemoryBackend() };
-  await applyRecipe(bundle, widgetRecipe("1", typedWidgetFields(undefined)), T);
+  await installRecipe(bundle, widgetRecipe("1", typedWidgetFields(undefined)), { now: T });
   for (let n = 1; n <= 12; n += 1) {
     const id = `widgets/w${String(n).padStart(2, "0")}`;
     await writeDoc(bundle, { id, frontmatter: { type: "Widget", title: id, opened: n === 12 ? null : "last spring" }, body: "Bad." });
@@ -1688,8 +1692,8 @@ test("recipe evolve: a type existing documents violate is refused with one cappe
   assert.match(message, /^adding type 'date' to 'opened' for 'Widget' would make 12 existing document\(s\) invalid: widgets\/w01, widgets\/w02, .*widgets\/w10, and 2 more; fix them first \(e\.g\. widgets\/w01: /);
   assert.doesNotMatch(message, /widgets\/w11|widgets\/ok/);
   await assert.rejects(
-    applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent"),
-    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+    applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "test-agent" }),
+    (error: unknown) => classifyBundleError(error).code === "CONFLICT",
   );
   assert.deepEqual(await readDoc(bundle, "conventions/widget"), before);
 });
@@ -1724,7 +1728,7 @@ test("recipe evolve: a changed or removed field type or enum stays refused by th
   ];
   for (const row of rows) {
     const bundle: Bundle = { root: `mem://recipe-evolution-type-${row.name.replaceAll(" ", "-")}`, backend: new MemoryBackend() };
-    await applyRecipe(bundle, installed(), T);
+    await installRecipe(bundle, installed(), { now: T });
     await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One", opened: "2026-01-01", size: ["s"] }, body: "In use." });
     const before = await readDoc(bundle, "conventions/widget");
     const plan = await planRecipeEvolution(bundle, row.desired);
@@ -1735,7 +1739,7 @@ test("recipe evolve: a changed or removed field type or enum stays refused by th
     );
     await assert.rejects(
       applyRecipeEvolution(bundle, row.desired, plan.plan_token),
-      (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+      (error: unknown) => classifyBundleError(error).code === "CONFLICT",
       row.name,
     );
     assert.deepEqual(await readDoc(bundle, "conventions/widget"), before, row.name);
@@ -1745,7 +1749,7 @@ test("recipe evolve: a changed or removed field type or enum stays refused by th
 
 test("recipe evolve: a type-adding plan token goes stale when an instance changes after the plan", async () => {
   const bundle: Bundle = { root: "mem://recipe-evolution-type-stale", backend: new MemoryBackend() };
-  await applyRecipe(bundle, widgetRecipe("1", typedWidgetFields(undefined)), T);
+  await installRecipe(bundle, widgetRecipe("1", typedWidgetFields(undefined)), { now: T });
   await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One", opened: "2026-01-01" }, body: "Good." });
   const before = await readDoc(bundle, "conventions/widget");
   const desired = widgetRecipe("2", typedWidgetFields({ opened: "date" }));
@@ -1754,8 +1758,8 @@ test("recipe evolve: a type-adding plan token goes stale when an instance change
 
   await writeDoc(bundle, { id: "widgets/one", frontmatter: { type: "Widget", title: "One", opened: "soon" }, body: "Changed." });
   await assert.rejects(
-    applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent"),
-    (error: unknown) => error instanceof CliError && error.code === "STALE_HEAD",
+    applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "test-agent" }),
+    (error: unknown) => classifyBundleError(error).code === "STALE_HEAD",
   );
   assert.deepEqual(await readDoc(bundle, "conventions/widget"), before);
   const fresh = await planRecipeEvolution(bundle, desired);
@@ -1779,17 +1783,18 @@ test("recipe evolve: a race after exact-plan recomputation fails with completed/
 
   const backend = new EvolutionRaceBackend();
   const bundle: Bundle = { root: "mem://recipe-evolution-race", backend };
-  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
   const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
   const plan = await planRecipeEvolution(bundle, desired);
   assert.equal(plan.ready, true);
   backend.armed = true;
 
   await assert.rejects(
-    applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent"),
+    applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "test-agent" }),
     (error: unknown) => {
-      if (!(error instanceof CliError) || error.code !== "STALE_HEAD") return false;
-      const details = error.details as Record<string, unknown>;
+      const cliError = classifyBundleError(error);
+      if (cliError.code !== "STALE_HEAD") return false;
+      const details = cliError.details as Record<string, unknown>;
       assert.deepEqual(details.completed, []);
       assert.deepEqual(details.pending, ["conventions/widget"]);
       return true;
@@ -1828,7 +1833,7 @@ test("recipe evolve: every mid-loop failure retains completed/pending recovery",
   const backend = new EditionFlipBackend();
   await backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n# Initial\n");
   const bundle: Bundle = { root: "mem://recipe-evolution-edition-flip", backend };
-  await applyRecipe(bundle, recipeWith("1"), T);
+  await installRecipe(bundle, recipeWith("1"), { now: T });
   const desired = recipeWith("2", ["colour"]);
   const plan = await planRecipeEvolution(bundle, desired);
   assert.equal(plan.ready, true);
@@ -1837,8 +1842,9 @@ test("recipe evolve: every mid-loop failure retains completed/pending recovery",
   await assert.rejects(
     applyRecipeEvolution(bundle, desired, plan.plan_token),
     (error: unknown) => {
-      if (!(error instanceof CliError) || error.code !== "STALE_HEAD") return false;
-      const details = error.details as Record<string, unknown>;
+      const cliError = classifyBundleError(error);
+      if (cliError.code !== "STALE_HEAD") return false;
+      const details = cliError.details as Record<string, unknown>;
       assert.deepEqual(
         (details.completed as Array<Record<string, unknown>>).map(({ id, changed }) => ({ id, changed })),
         [{ id: "conventions/alpha", changed: true }],
@@ -1870,7 +1876,7 @@ test("recipe evolve: a competing authority racing after preflight is reported by
 
   const backend = new AuthorityRaceBackend();
   const bundle: Bundle = { root: "mem://recipe-evolution-authority-race", backend };
-  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
   const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
   const plan = await planRecipeEvolution(bundle, desired);
   backend.armed = true;
@@ -1878,8 +1884,9 @@ test("recipe evolve: a competing authority racing after preflight is reported by
   await assert.rejects(
     applyRecipeEvolution(bundle, desired, plan.plan_token),
     (error: unknown) => {
-      if (!(error instanceof CliError) || error.code !== "CONFLICT") return false;
-      const details = error.details as Record<string, unknown>;
+      const cliError = classifyBundleError(error);
+      if (cliError.code !== "CONFLICT") return false;
+      const details = cliError.details as Record<string, unknown>;
       assert.equal((details.completed as Array<Record<string, unknown>>)[0]!.changed, true);
       assert.ok((details.blockers as Array<Record<string, unknown>>).some((blocker) =>
         blocker.code === "RECIPE_EVOLUTION_DUPLICATE_GOVERNS"
@@ -1892,7 +1899,7 @@ test("recipe evolve: a competing authority racing after preflight is reported by
 test("recipe evolve: a competing convention authority blocks the prospective registry", async () => {
   const backend = new MemoryBackend();
   const bundle: Bundle = { root: "mem://recipe-evolution-duplicate", backend };
-  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
   await writeDoc(bundle, kindConventionDoc({
     id: "conventions/alternate-widget",
     title: "Alternate Widget",
@@ -1906,7 +1913,7 @@ test("recipe evolve: a competing convention authority blocks the prospective reg
   assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_DUPLICATE_GOVERNS"));
   await assert.rejects(
     applyRecipeEvolution(bundle, widgetRecipe("2", widgetFields(["title"], ["colour"])), plan.plan_token),
-    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+    (error: unknown) => classifyBundleError(error).code === "CONFLICT",
   );
 });
 
@@ -1933,7 +1940,7 @@ test("recipe evolve: an active View asset change blocks instead of updating a re
   if (!initial.ok || !desired.ok) return;
 
   const bundle: Bundle = { root: "mem://recipe-evolution-view", backend: new MemoryBackend() };
-  await applyRecipe(bundle, initial.recipe, T);
+  await installRecipe(bundle, initial.recipe, { now: T });
   const plan = await planRecipeEvolution(bundle, desired.recipe);
   assert.equal(plan.ready, false);
   assert.ok(plan.blockers.some((blocker) =>
@@ -1941,7 +1948,7 @@ test("recipe evolve: an active View asset change blocks instead of updating a re
   ));
   await assert.rejects(
     applyRecipeEvolution(bundle, desired.recipe, plan.plan_token),
-    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+    (error: unknown) => classifyBundleError(error).code === "CONFLICT",
   );
   const installed = await readBlob(bundle, "views/board.html");
   assert.equal(Buffer.from(installed!.bytes).toString("utf8"), "<!doctype html><title>Board v1</title>");
@@ -1970,7 +1977,7 @@ function linkedRecipe(version: string, eventLinks: string): LoadedRecipe {
 
 async function linkedBundle(root: string, eventBody: string, extra: OkfDocument[] = []): Promise<Bundle> {
   const bundle: Bundle = { root, backend: new MemoryBackend() };
-  await applyRecipe(bundle, linkedRecipe("1", AT_PLACE), T);
+  await installRecipe(bundle, linkedRecipe("1", AT_PLACE), { now: T });
   await writeDoc(bundle, { id: "places/hall", frontmatter: { type: "Place", title: "Hall" }, body: "A hall." });
   await writeDoc(bundle, { id: "notices/vote", frontmatter: { type: "Notice", title: "Vote" }, body: "A vote." });
   await writeDoc(bundle, { id: "events/meeting", frontmatter: { type: "Event", title: "Meeting" }, body: eventBody });
@@ -1992,7 +1999,7 @@ test("recipe evolve: a new outbound link type is additive and revalidates the ed
   assert.deepEqual(event.added_paths, ["/frontmatter/links/explained in"]);
   assert.equal(plan.counts.instances_checked, 1);
 
-  await applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent");
+  await applyRecipeEvolution(bundle, desired, plan.plan_token, { actor: "test-agent" });
   assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place", "explained in": "Notice" });
   const settled = await planRecipeEvolution(bundle, desired);
   assert.equal(settled.changed, false);
@@ -2015,7 +2022,7 @@ test("recipe evolve: a new link type blocks when an existing edge with its text 
   assert.equal(plan.counts.instances_checked, 2);
   await assert.rejects(
     applyRecipeEvolution(bundle, desired, plan.plan_token),
-    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+    (error: unknown) => classifyBundleError(error).code === "CONFLICT",
   );
   assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place" });
 });
@@ -2034,7 +2041,7 @@ test("recipe evolve: an edge added to another kind's doc after the plan invalida
     frontmatter: { type: "Place", title: "Annex" },
     body: "[explained in](../notices/vote.md)\n",
   });
-  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), (error: unknown) => error instanceof CliError);
+  await assert.rejects(applyRecipeEvolution(bundle, desired, plan.plan_token), (error: unknown) => error instanceof RecipeLifecycleError);
   assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place" });
 });
 
@@ -2065,7 +2072,7 @@ test("recipe evolve: a link key that differs only by whitespace cannot retarget 
   );
   await assert.rejects(
     applyRecipeEvolution(bundle, desired, plan.plan_token),
-    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+    (error: unknown) => classifyBundleError(error).code === "CONFLICT",
   );
   assert.deepEqual((await loadKinds(bundle)).kinds.get("Event")?.links, { at: "Place" });
 });
@@ -2079,7 +2086,7 @@ test("recipe evolve: an edge that already violates another Kind's declaration of
     return recipe;
   };
   const bundle: Bundle = { root: "mem://recipe-evolution-link-preexisting", backend: new MemoryBackend() };
-  await applyRecipe(bundle, files("1", AT_PLACE), T);
+  await installRecipe(bundle, files("1", AT_PLACE), { now: T });
   await writeDoc(bundle, { id: "places/hall", frontmatter: { type: "Place", title: "Hall" }, body: "A hall." });
   await writeDoc(bundle, { id: "notices/vote", frontmatter: { type: "Notice", title: "Vote" }, body: "A vote." });
   await writeDoc(bundle, { id: "notices/memo", frontmatter: { type: "Notice", title: "Memo" }, body: "[explained in](vote.md)\n" });
@@ -2534,7 +2541,7 @@ test("status coupling WITH the recipe: an old Context Note is reported stale und
   const dir = await tempDir();
   try {
     await initBundle(dir);
-    await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
+    await installRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
     const bundle: Bundle = { root: dir };
     const oldTs = new Date(Date.now() - 25 * 3_600_000).toISOString(); // 25h old > 24h horizon
     await writeDoc(bundle, {
@@ -2577,7 +2584,7 @@ test("Fork-4: an EXISTING type:Context Note doc (written before the note command
   const dir = await tempDir();
   try {
     await initBundle(dir);
-    await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
+    await installRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
     const bundle: Bundle = { root: dir };
     await writeDoc(bundle, {
       id: "context-notes/legacy",
@@ -2604,7 +2611,7 @@ test("Fork-4: 'new \"Context Note\" <id>' creates a governed instance under the 
   const dir = await tempDir();
   try {
     await initBundle(dir);
-    await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
+    await installRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
 
     const created = await runJson(newCommand, ["Context Note", "cycle-x", "--title", "cycle-x", "--dir", dir]);
     assert.equal(created.id, "context-notes/cycle-x");
@@ -2669,7 +2676,7 @@ test("--remote: recipe evolve plans and applies through the same state-bound CAS
   const remoteDir = await tempDir();
   try {
     await initBundle(remoteDir);
-    await applyRecipe({ root: remoteDir }, CONTEXT_NOTES_RECIPE, T);
+    await installRecipe({ root: remoteDir }, CONTEXT_NOTES_RECIPE, { now: T });
     const installed = await readDoc({ root: remoteDir }, "conventions/context-note");
     const olderFrontmatter = { ...installed.frontmatter };
     delete olderFrontmatter.browse_collapsed;
@@ -3091,7 +3098,7 @@ test("recipe evolve: known v0.2 lifecycle collisions use the existing parser-war
     const backend = new MemoryBackend();
     const bundle: Bundle = { root: "mem://recipe-lifecycle", backend };
     if (okfVersion) await backend.writeReserved("", "index.md", `---\nokf_version: '${okfVersion}'\n---\n`);
-    await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+    await installRecipe(bundle, widgetRecipe("1", widgetFields()), { now: T });
     const desired = widgetRecipe("2", widgetFields(["title"], ["status"], { status: ["investigating", "closed"] }));
     const plan = await planRecipeEvolution(bundle, desired);
     assert.equal(plan.blockers.some(blocker => blocker.code === "OKF_WORKFLOW_STATUS_COLLISION"), okfVersion === "0.2");
@@ -3105,7 +3112,7 @@ test("recipe evolve: retained local status enums are diagnosed on the prospectiv
   const backend = new MemoryBackend();
   const bundle: Bundle = { root: "mem://recipe-local-lifecycle", backend };
   await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
-  await applyRecipe(bundle, widgetRecipe("1", widgetFields(["title"], ["status"], { status: ["investigating", "closed"] })), T);
+  await installRecipe(bundle, widgetRecipe("1", widgetFields(["title"], ["status"], { status: ["investigating", "closed"] })), { now: T });
   const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
   const plan = await planRecipeEvolution(bundle, desired);
   assert.equal(plan.ready, false);

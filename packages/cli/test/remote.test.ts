@@ -32,7 +32,7 @@ import { list } from "../src/commands/list.js";
 import { link } from "../src/commands/link.js";
 import { init } from "../src/commands/init.js";
 import { CliError } from "../src/errors.js";
-import { applyRecipe } from "../src/recipes.js";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -71,9 +71,9 @@ test("new \"Context Note\" + doc read --remote: round-trip parity with the same 
   const remoteDir = await tempDir();
   try {
     await initBundle(localDir);
-    await applyRecipe({ root: localDir }, CONTEXT_NOTES_RECIPE);
+    await installRecipe({ root: localDir }, CONTEXT_NOTES_RECIPE);
     await initBundle(remoteDir);
-    await applyRecipe({ root: remoteDir }, CONTEXT_NOTES_RECIPE);
+    await installRecipe({ root: remoteDir }, CONTEXT_NOTES_RECIPE);
     const server = await bootServer(remoteDir);
     try {
       const createArgs = ["Context Note", "c1", "--title", "c1", "--timestamp", T];

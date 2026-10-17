@@ -66,7 +66,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
-import { collectLinkDeclarations, qualifiedEdgeViolation } from "../link-types.js";
+import { collectLinkDeclarations, qualifiedEdgeViolation } from "@superbee/core";
 import { resolveBundleBindings } from "../bundle-bindings.js";
 import { resolveActor } from "../actor.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../concept-id.js";
