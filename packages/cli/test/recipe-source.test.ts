@@ -132,6 +132,18 @@ test("resolveRecipe: loads the content-free Review Workflow package with its dec
   assert.equal(result.recipe.references[0]!.doc.id, "references/view-authoring-v0");
 });
 
+test("resolveRecipe: loads the Source Feeds example recipe by path, outside the built-in registry", async () => {
+  const fixture = path.resolve(import.meta.dirname, "../../../examples/recipes/source-feeds");
+  const result = await resolveRecipe(fixture);
+  assert.equal(result.ok, true, result.ok ? "" : result.error.message);
+  if (!result.ok) return;
+  assert.equal(result.recipe.id, "source-feeds");
+  assert.equal(result.recipe.contentPolicy, "definitions-only");
+  assert.deepEqual([...result.recipe.governs].sort(), ["Signal", "Source Feed"]);
+  assert.deepEqual(result.recipe.warnings, []);
+  assert.ok(!builtinNames().includes("source-feeds"), "an example recipe is never offered as a built-in");
+});
+
 test("resolveRecipe: definitions-only scans the full folder and rejects hidden instance data", async () => {
   const dir = await tempDir();
   try {

@@ -95,8 +95,10 @@ function byCodeUnit(a: string, b: string): number {
 /**
  * JSON with object keys sorted at every depth, `Date` values as ISO strings and `undefined`
  * members omitted, so equal values hash equally whatever their key order or YAML spelling.
+ * Exported for core's other definitions digest (the Connector pin); the subpath entry does not
+ * re-export it.
  */
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (value instanceof Date) return JSON.stringify(value.toISOString());
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;

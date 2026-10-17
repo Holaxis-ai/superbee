@@ -229,6 +229,59 @@ Kind or whose owned or derived list names a field a feed can never own.
 overlay is still caught at write time, but a second document given an identity during the run is
 only refused as ambiguous on the next run.
 
+## Connectors
+
+`@superbee/core/connectors` parses Connector declarations: `type: Connector` documents under
+`connectors/` that say what an integration is, independent of any one target Kind. A declaration
+holds no authority and nothing in the subpath fetches, executes or receives. It uses no Node globals
+or builtins.
+
+```ts
+import { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapRecord, parseConnectorDoc } from "@superbee/core/connectors";
+
+const parsed = parseConnectorDoc(connectorDoc, { kinds: registry });
+if (!parsed.ok) throw new Error(parsed.errors.map((e) => `${e.code} ${e.path}`).join("; "));
+const pin = connectorPinDigest(parsed.connector);
+const bound = bindSourceFeed(parsed.connector, sourceFeedDoc, registry);
+const mapped = mapRecord(bound.source, normalizedRecord, bound.kind);
+if (mapped.kind === "mapped") {
+  const change = changeBetween(lastAcceptedAfter, mapped, { external_id: mapped.external_id, change_kind: "changed" });
+}
+const findings = findingsFor(mapped.diagnostics, { source: bound.source.name });
+```
+
+`auth.kind` is `none`, `token`, `github-app`, `oauth2` or `signed-webhook`. A credential's hosts
+come only from core: `token` and `oauth2` name a row of `AUTH_PROVIDERS`, `github-app` is fixed,
+and `credentialHosts` is the one reader. `domains` lists hosts for keyless fetches and may not
+repeat a credential host. Each source names a catalog `profile`, a `target_kind`, mode `overlay`,
+an identity template (`identity.resource`, an https URL whose placeholders are feed parameters, and
+`identity.id` over record paths), `completeness`, and `fields`: target field to a dotted record
+path, or to `{ from, values, unmapped }`. Mapping keys are the most a Source Feed may own; never-owned
+fields, managed metadata, work state, the body and list-typed fields are refused. Actions and events
+are declared shapes only. Every nested block is closed by `CONNECTOR_KEYS`; `parseConnectorDoc`
+returns every refusal with a typed `code` and a JSON pointer `path`, and a secret-shaped key or
+value refuses the document alone, naming a path and never the value. The secret rule is a
+tripwire; the pin, the credential store and the fetcher are the boundaries.
+
+`connectorPinDigest` covers every key `CONNECTOR_KEYS` accepts, with defaults filled and order-free
+lists sorted, and is blind to the title, description, version, body and unknown top-level keys.
+`CONNECTOR_PIN_RULES` changes whenever a default or sort rule does.
+
+`bindSourceFeed` binds a Source Feed (`connector`, `source`, `url`, `owned_fields`) to one source:
+the `url` must equal the identity template rendered from parameters of `[A-Za-z0-9._~-]+` byte for
+byte, `owned_fields` must be mapping keys, and the source's `target_kind`, `completeness` and
+`profile` win. Each refusal is an `OverlayRefusal` with `POLICY_INVALID`, the feed and the key.
+`mapRecord` never lets a mapping gap erase a stored value: an absent path is unobserved, an
+unmapped native is kept (`unmapped: keep`, the default) or refuses the record while it still counts
+as present (`refuse`), and only an empty value (`null` or blank text) clears an optional field; on a
+required field it is kept with a finding. `changeBetween` takes the last accepted `after`, carries
+unobserved fields and leaves them out of `changed_fields`. `findingsFor` groups diagnostics per
+source, field, code and value for `planFindings`, so one unknown value across many records raises
+one Signal.
+
+`examples/recipes/source-feeds` is an example recipe with the `Source Feed` and `Signal` Kinds a
+connector-backed feed uses.
+
 ## Bundle health
 
 `@superbee/core/bundle-health` computes the health report behind `superbee status` from a core

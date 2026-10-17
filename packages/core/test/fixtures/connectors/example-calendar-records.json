@@ -1,0 +1,22 @@
+{
+  "observations": [
+    {
+      "observed_at": "2026-10-03T14:00:00Z",
+      "vevents": [
+        { "UID": "evt-story@calendar.example.org", "SUMMARY": "Story Time", "DTSTART": "20261010T140000Z", "DTEND": "20261010T150000Z", "URL": "https://calendar.example.org/events/story", "STATUS": "CONFIRMED", "LAST-MODIFIED": "20261001T090000Z" },
+        { "UID": "evt-market@calendar.example.org", "SUMMARY": "Harvest Market", "DTSTART": "20261011T130000Z", "DTEND": "20261011T170000Z", "STATUS": "TENTATIVE", "LAST-MODIFIED": "20261001T090000Z" },
+        { "UID": "evt-film@calendar.example.org", "SUMMARY": "Film Night", "DTSTART": "20261012T230000Z", "STATUS": "CONFIRMED", "LAST-MODIFIED": "20261001T090000Z" },
+        { "UID": "evt-talk@calendar.example.org", "SUMMARY": "Author Talk", "DTSTART": "20261013T220000Z", "DTEND": "20261013T233000Z", "STATUS": "CONFIRMED", "LAST-MODIFIED": "20261001T090000Z" }
+      ]
+    },
+    {
+      "observed_at": "2026-10-04T14:00:00Z",
+      "vevents": [
+        { "UID": "evt-story@calendar.example.org", "SUMMARY": "Story Time for Toddlers", "DTSTART": "20261010T140000Z", "DTEND": "20261010T150000Z", "URL": "https://calendar.example.org/events/story", "STATUS": "CONFIRMED", "LAST-MODIFIED": "20261003T180000Z" },
+        { "UID": "evt-market@calendar.example.org", "SUMMARY": "Harvest Market", "DTSTART": "20261011T130000Z", "DTEND": "20261011T170000Z", "STATUS": "CANCELLED", "LAST-MODIFIED": "20261003T180000Z" },
+        { "UID": "evt-film@calendar.example.org", "SUMMARY": "Film Night", "DTSTART": "20261012T230000Z", "STATUS": "CONFIRMED", "LAST-MODIFIED": "20261001T090000Z" },
+        { "UID": "evt-talk@calendar.example.org", "SUMMARY": "Author Talk", "DTSTART": "20261013T220000Z", "DTEND": "20261013T233000Z", "STATUS": "CONFIRMED", "LAST-MODIFIED": "20261001T090000Z" }
+      ]
+    }
+  ]
+}

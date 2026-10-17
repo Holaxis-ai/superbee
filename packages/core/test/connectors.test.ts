@@ -1,0 +1,507 @@
+/**
+ * `@superbee/core/connectors`: the parser's refusals (one case per code), the secret tripwire's
+ * no-echo rule, credential hosts that only core's table supplies, the pin digest over every key the
+ * closed-shape table accepts, and the mapping primitives.
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  AUTH_PROVIDERS,
+  changeBetween,
+  checkConnectorAgainstKinds,
+  CONNECTOR_ERROR_CODES,
+  CONNECTOR_KEYS,
+  connectorPinDigest,
+  credentialHosts,
+  findingsFor,
+  mapRecord,
+  parseConnectorDoc,
+  type Connector,
+  type ConnectorBlock,
+  type ConnectorErrorCode,
+  type ConnectorParseResult,
+  type MappingDiagnostic,
+} from "../src/connectors.js";
+import { parseMarkdown } from "../src/frontmatter.js";
+import { buildKindRegistry, type KindRegistry } from "../src/kinds.js";
+import type { OkfDocument } from "../src/types.js";
+import { CONNECTOR_ID, CONNECTOR_MD, EVENT_CONVENTION_MD, parseExampleConnector } from "./fixtures/connectors/example-calendar.js";
+
+const base = (): { frontmatter: Record<string, unknown>; body: string } => {
+  const { frontmatter, body } = parseMarkdown(CONNECTOR_MD);
+  return { frontmatter: structuredClone(frontmatter) as Record<string, unknown>, body };
+};
+const parse = (frontmatter: Record<string, unknown>, options: { body?: string; id?: string; kinds?: KindRegistry } = {}): ConnectorParseResult =>
+  parseConnectorDoc({ id: options.id ?? CONNECTOR_ID, frontmatter, body: options.body ?? "" } as OkfDocument, options.kinds ? { kinds: options.kinds } : {});
+const codes = (result: ConnectorParseResult): string[] => (result.ok ? [] : result.errors.map((e) => e.code));
+const errorsOf = (result: ConnectorParseResult) => (result.ok ? [] : result.errors);
+
+/** Parse with one edit and expect exactly the given code among the refusals, at the given path. */
+function refuses(edit: (fm: Record<string, any>) => void, code: ConnectorErrorCode, path?: string, options: { body?: string; id?: string; kinds?: KindRegistry } = {}): void {
+  const { frontmatter } = base();
+  edit(frontmatter);
+  const result = parse(frontmatter, options);
+  assert.equal(result.ok, false, `${code} expected; parsed`);
+  const hit = errorsOf(result).filter((e) => e.code === code);
+  assert.ok(hit.length > 0, `${code} expected; got ${JSON.stringify(errorsOf(result))}`);
+  if (path !== undefined) assert.ok(hit.some((e) => e.path === path), `${code} at ${path}; got ${JSON.stringify(hit)}`);
+}
+
+const source = (fm: Record<string, any>) => fm.sources[0];
+const eventKinds = (): KindRegistry => {
+  const { frontmatter, body } = parseMarkdown(EVENT_CONVENTION_MD);
+  return buildKindRegistry([{ id: "conventions/event", frontmatter, body }]);
+};
+
+// ------------------------------------------------------------------------------------------- parse
+
+test("the example declaration parses with defaults filled and no warnings", () => {
+  const result = parse(base().frontmatter, { kinds: eventKinds() });
+  assert.ok(result.ok, JSON.stringify(errorsOf(result)));
+  const c = result.connector;
+  assert.deepEqual(c.auth, { kind: "none" });
+  assert.deepEqual(c.domains, ["calendar.example.org"]);
+  assert.equal(c.version, "1");
+  assert.deepEqual(c.sources[0]!.fields.title, { from: "summary" });
+  assert.deepEqual(c.sources[0]!.fields.event_status, { from: "status", values: { CONFIRMED: "scheduled", TENTATIVE: "scheduled", CANCELLED: "canceled" }, unmapped: "keep" });
+  assert.deepEqual(c.events[0], { name: "changed", signature: { scheme: "hmac-sha256", header: "x-signature-256" }, references: ["events"] });
+  assert.deepEqual(result.warnings, []);
+});
+
+test("a registry that lacks the target Kind defers its rules with a warning; checkConnectorAgainstKinds then refuses it", () => {
+  const empty = buildKindRegistry([]);
+  const result = parse(base().frontmatter, { kinds: empty });
+  assert.ok(result.ok);
+  assert.deepEqual(result.warnings.map((w) => w.code), ["CONNECTOR_TARGET_KIND_DEFERRED"]);
+  assert.deepEqual(checkConnectorAgainstKinds(result.connector, empty).map((e) => [e.code, e.path]), [["CONNECTOR_TARGET_KIND_INVALID", "/sources/0/target_kind"]]);
+  assert.deepEqual(checkConnectorAgainstKinds(result.connector, eventKinds()), []);
+});
+
+test("every refusal is returned in one pass, each with a JSON pointer", () => {
+  const { frontmatter } = base();
+  frontmatter.title = "";
+  frontmatter.domains = ["127.1"];
+  source(frontmatter).profile = "ICS";
+  source(frontmatter).mode = "mirror";
+  const result = parse(frontmatter);
+  assert.deepEqual(errorsOf(result).map((e) => [e.code, e.path]), [
+    ["CONNECTOR_MALFORMED", "/title"],
+    ["CONNECTOR_DOMAIN_INVALID", "/domains/0"],
+    ["CONNECTOR_PROFILE_INVALID", "/sources/0/profile"],
+    ["CONNECTOR_MODE_UNSUPPORTED", "/sources/0/mode"],
+  ]);
+});
+
+test("CONNECTOR_MALFORMED: type, title, auth, block shapes, empty declarations and value sets", () => {
+  refuses((fm) => { fm.type = "Convention"; }, "CONNECTOR_MALFORMED", "/type");
+  refuses((fm) => { delete fm.title; }, "CONNECTOR_MALFORMED", "/title");
+  refuses((fm) => { delete fm.auth; }, "CONNECTOR_MALFORMED", "/auth");
+  refuses((fm) => { fm.auth = "none"; }, "CONNECTOR_MALFORMED", "/auth");
+  refuses((fm) => { fm.sources = { events: {} }; }, "CONNECTOR_MALFORMED", "/sources");
+  refuses((fm) => { fm.sources = []; fm.events = []; }, "CONNECTOR_MALFORMED", "");
+  refuses((fm) => { source(fm).completeness = "full"; }, "CONNECTOR_MALFORMED", "/sources/0/completeness");
+  refuses((fm) => { delete source(fm).completeness; }, "CONNECTOR_MALFORMED", "/sources/0/completeness");
+  refuses((fm) => { source(fm).mode = 1; }, "CONNECTOR_MALFORMED", "/sources/0/mode");
+  refuses((fm) => { source(fm).fields = {}; }, "CONNECTOR_MALFORMED", "/sources/0/fields");
+  refuses((fm) => { fm.actions = [{ name: "a", method: "FETCH", host: "calendar.example.org" }]; }, "CONNECTOR_MALFORMED", "/actions/0/method");
+  refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", confirm: "sometimes" }]; }, "CONNECTOR_MALFORMED", "/actions/0/confirm");
+  refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", input: { n: { type: "float" } } }]; }, "CONNECTOR_MALFORMED", "/actions/0/input/n/type");
+  refuses(() => {}, "CONNECTOR_MALFORMED", "", { id: "conventions/example-calendar" });
+});
+
+test("CONNECTOR_UNKNOWN_KEY inside every closed block, identity and signature included", () => {
+  refuses((fm) => { fm.auth.hosts = ["collector.example"]; }, "CONNECTOR_UNKNOWN_KEY", "/auth/hosts");
+  refuses((fm) => { source(fm).cursor = "token"; }, "CONNECTOR_UNKNOWN_KEY", "/sources/0/cursor");
+  refuses((fm) => { source(fm).identity.fetch = "https://elsewhere.example.org/"; }, "CONNECTOR_UNKNOWN_KEY", "/sources/0/identity/fetch");
+  refuses((fm) => { source(fm).fields.event_status.default = "scheduled"; }, "CONNECTOR_UNKNOWN_KEY", "/sources/0/fields/event_status/default");
+  refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", path: "/x" }]; }, "CONNECTOR_UNKNOWN_KEY", "/actions/0/path");
+  refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", input: { n: { type: "string", pattern: ".*" } } }]; }, "CONNECTOR_UNKNOWN_KEY", "/actions/0/input/n/pattern");
+  refuses((fm) => { fm.events[0].url = "https://hooks.example.org/"; }, "CONNECTOR_UNKNOWN_KEY", "/events/0/url");
+  refuses((fm) => { fm.events[0].signature.algorithm = "sha1"; }, "CONNECTOR_UNKNOWN_KEY", "/events/0/signature/algorithm");
+  const { frontmatter } = base();
+  frontmatter.x_extension = { anything: true };
+  assert.equal(parse(frontmatter).ok, true, "top-level keys outside the table are tolerated");
+});
+
+test("CONNECTOR_AUTH_INVALID: unknown kinds, providers outside core's table, keys of another kind, schemes and permissions", () => {
+  refuses((fm) => { fm.auth = { kind: "basic" }; }, "CONNECTOR_AUTH_INVALID", "/auth/kind");
+  refuses((fm) => { fm.auth = { kind: "token" }; }, "CONNECTOR_AUTH_INVALID", "/auth/provider");
+  for (const provider of ["gitlab", "constructor", "__proto__", "toString"]) {
+    refuses((fm) => { fm.auth = { kind: "oauth2", provider }; }, "CONNECTOR_AUTH_INVALID", "/auth/provider");
+  }
+  refuses((fm) => { fm.auth = { kind: "none", provider: "github" }; }, "CONNECTOR_AUTH_INVALID", "/auth/provider");
+  refuses((fm) => { fm.auth = { kind: "token", provider: "github", permissions: { issues: "read" } }; }, "CONNECTOR_AUTH_INVALID", "/auth/permissions");
+  refuses((fm) => { fm.auth = { kind: "signed-webhook", scheme: "hmac-sha1" }; }, "CONNECTOR_AUTH_INVALID", "/auth/scheme");
+  refuses((fm) => { fm.auth = { kind: "github-app", permissions: { issues: "admin" } }; }, "CONNECTOR_AUTH_INVALID", "/auth/permissions/issues");
+});
+
+test("credential hosts come only from core's table: the document cannot name, add or overlap one", () => {
+  assert.ok(Object.isFrozen(AUTH_PROVIDERS) && Object.isFrozen(AUTH_PROVIDERS.github));
+  assert.throws(() => { (AUTH_PROVIDERS as Record<string, readonly string[]>).collector = ["collector.example"]; });
+  const { frontmatter } = base();
+  frontmatter.auth = { kind: "token", provider: "github" };
+  frontmatter.domains = ["calendar.example.org", "collector.example.org"];
+  const parsed = parse(frontmatter);
+  assert.ok(parsed.ok);
+  assert.deepEqual(credentialHosts(parsed.connector.auth), ["api.github.com"], "domains never widen a credential's hosts");
+  assert.deepEqual(credentialHosts({ kind: "github-app" }), ["api.github.com"]);
+  assert.deepEqual(credentialHosts({ kind: "token", provider: "constructor" }), []);
+  for (const kind of ["none", "signed-webhook"] as const) assert.deepEqual(credentialHosts({ kind }), []);
+  refuses((fm) => { fm.auth = { kind: "token", provider: "github" }; fm.domains = ["api.github.com"]; }, "CONNECTOR_DOMAIN_INVALID", "/domains/0");
+  refuses((fm) => { fm.auth = { kind: "token", provider: "github", hosts: ["collector.example.org"] }; }, "CONNECTOR_UNKNOWN_KEY", "/auth/hosts");
+  const action = (host: string) => (fm: Record<string, any>) => { fm.auth = { kind: "token", provider: "github" }; fm.actions = [{ name: "create", method: "POST", host }]; };
+  const { frontmatter: ok } = base();
+  action("api.github.com")(ok);
+  assert.equal(parse(ok).ok, true, "an action may target a credential host");
+  refuses(action("uploads.github.com"), "CONNECTOR_ACTION_INVALID", "/actions/0/host");
+});
+
+test("CONNECTOR_DOMAIN_INVALID: grammar, address literals, duplicates", () => {
+  for (const domain of ["127.1", "0x7f.1", "10.0.0.1", "calendar.example.org.", "Calendar.example.org", "*.example.org", "example.org:443", "localhost", "https://example.org", "-bad.example.org", "a..example.org", "[::1]", "x".repeat(64) + ".example.org", "", 7]) {
+    refuses((fm) => { fm.domains = [domain]; }, "CONNECTOR_DOMAIN_INVALID", "/domains/0");
+  }
+  refuses((fm) => { fm.domains = ["calendar.example.org", "calendar.example.org"]; }, "CONNECTOR_DOMAIN_INVALID", "/domains/1");
+  refuses((fm) => { fm.auth = { kind: "github-app" }; fm.domains = ["api.github.com"]; }, "CONNECTOR_DOMAIN_INVALID", "/domains/0");
+});
+
+test("CONNECTOR_DUPLICATE: sources, actions, events and references", () => {
+  refuses((fm) => { fm.sources.push(structuredClone(source(fm))); }, "CONNECTOR_DUPLICATE", "/sources/1/name");
+  refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org" }, { name: "a", method: "GET", host: "calendar.example.org" }]; }, "CONNECTOR_DUPLICATE", "/actions/1/name");
+  refuses((fm) => { fm.events.push(structuredClone(fm.events[0])); }, "CONNECTOR_DUPLICATE", "/events/1/name");
+  refuses((fm) => { fm.events[0].references = ["events", "events"]; }, "CONNECTOR_DUPLICATE", "/events/0/references/1");
+});
+
+test("CONNECTOR_PROFILE_INVALID, CONNECTOR_TARGET_KIND_INVALID and CONNECTOR_MODE_UNSUPPORTED", () => {
+  for (const profile of ["ICS", "", "ics profile", 3]) refuses((fm) => { source(fm).profile = profile; }, "CONNECTOR_PROFILE_INVALID", "/sources/0/profile");
+  for (const kind of ["", "  ", "Convention", "View", "Connector", "Reference", "Source Feed", "Signal"]) {
+    refuses((fm) => { source(fm).target_kind = kind; }, "CONNECTOR_TARGET_KIND_INVALID", "/sources/0/target_kind");
+  }
+  refuses((fm) => { source(fm).mode = "mirror"; }, "CONNECTOR_MODE_UNSUPPORTED", "/sources/0/mode");
+  const { frontmatter } = base();
+  source(frontmatter).mode = "mirror";
+  assert.match(errorsOf(parse(frontmatter))[0]!.message, /I4/);
+  refuses((fm) => { source(fm).mode = "sync"; }, "CONNECTOR_MODE_UNSUPPORTED", "/sources/0/mode");
+});
+
+test("CONNECTOR_IDENTITY_UNSTABLE: resource template rules and id templates", () => {
+  const resource = (value: unknown) => (fm: Record<string, any>) => { source(fm).identity.resource = value; };
+  for (const bad of [
+    "http://calendar.example.org/{feed}.ics",
+    "https://{tenant}.example.org/feed.ics",
+    "https://calendar.example.org:8443/{feed}.ics",
+    "https://calendar.example.org/{feed}.ics#top",
+    "https://calendar.example.org/{a}{b}.ics",
+    "https://calendar.example.org/{feed}/{feed}.ics",
+    "https://calendar.example.org/{Feed}.ics",
+    "https://calendar.example.org/../{feed}.ics",
+    "https://calendar.example.org/feed.ics?{key}=1",
+    "https://calendar.example.org/feed.ics?key=x{v}",
+    "https://calendar.example.org/{feed.ics",
+    "https://calendar.example.org/a b/{feed}",
+    "calendar.example.org/{feed}.ics",
+    "",
+    7,
+  ]) refuses(resource(bad), "CONNECTOR_IDENTITY_UNSTABLE", "/sources/0/identity/resource");
+  for (const good of ["https://calendar.example.org/feed.ics", "https://calendar.example.org/c/{feed}/events?page={page}&format=ics"]) {
+    const { frontmatter } = base();
+    resource(good)(frontmatter);
+    assert.equal(parse(frontmatter).ok, true, good);
+  }
+  const id = (value: unknown) => (fm: Record<string, any>) => { source(fm).identity.id = value; };
+  for (const bad of ["uid", "", "{}", "{a..b}", "{__proto__}", "{uid", "{summary}"]) refuses(id(bad), "CONNECTOR_IDENTITY_UNSTABLE", "/sources/0/identity/id");
+  const { frontmatter } = base();
+  id("{calendar.id}#{uid}")(frontmatter);
+  assert.equal(parse(frontmatter).ok, true);
+});
+
+test("CONNECTOR_FIELD_INVALID and CONNECTOR_FIELD_NEVER_OWNED: key grammar, path grammar and fields no source may own", () => {
+  for (const key of ["1st", "event-status", "constructor"]) refuses((fm) => { source(fm).fields[key] = "x"; }, "CONNECTOR_FIELD_INVALID", `/sources/0/fields/${key}`);
+  for (const from of ["a..b", "a b", "__proto__", "a.prototype", ""]) {
+    refuses((fm) => { source(fm).fields.note = { from }; }, "CONNECTOR_FIELD_INVALID", "/sources/0/fields/note/from");
+  }
+  refuses((fm) => { source(fm).fields.note = "a.constructor"; }, "CONNECTOR_FIELD_INVALID", "/sources/0/fields/note");
+  for (const key of ["type", "sources", "status", "tags", "verified", "generated", "stale_after", "superbee_updated_by", "actor", "timestamp", "progress_status", "superbee_progress_status", "body"]) {
+    refuses((fm) => { source(fm).fields[key] = "x"; }, "CONNECTOR_FIELD_NEVER_OWNED", `/sources/0/fields/${key}`);
+  }
+});
+
+test("with a Kind: undeclared keys, claim fields, enum tables and list types", () => {
+  const kinds = buildKindRegistry([{
+    id: "conventions/item", body: "",
+    frontmatter: {
+      type: "Convention", title: "Item", governs: "Item", claim: { owner_field: "assignee", state_field: "progress_status" },
+      fields: {
+        required: ["title", "progress_status"], optional: ["assignee", "labels", "links", "state"],
+        values: { progress_status: ["todo", "done"], state: ["open", "closed"] }, types: { labels: "string-list", links: "https-url-list" },
+      },
+    },
+  }]);
+  const withItem = (fields: Record<string, unknown>) => (fm: Record<string, any>) => { source(fm).target_kind = "Item"; source(fm).fields = fields; };
+  refuses(withItem({ venue: "venue" }), "CONNECTOR_FIELD_UNDECLARED", "/sources/0/fields/venue", { kinds });
+  refuses(withItem({ assignee: "owner" }), "CONNECTOR_FIELD_NEVER_OWNED", "/sources/0/fields/assignee", { kinds });
+  refuses(withItem({ labels: "labels" }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/labels", { kinds });
+  refuses(withItem({ links: "links" }), "CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/links", { kinds });
+  refuses(withItem({ state: "state" }), "CONNECTOR_VALUES_INVALID", "/sources/0/fields/state", { kinds });
+  refuses(withItem({ state: { from: "state", values: { OPEN: "open", GONE: "deleted" } } }), "CONNECTOR_VALUES_INVALID", "/sources/0/fields/state/values/GONE", { kinds });
+  const { frontmatter } = base();
+  withItem({ title: "name", state: { from: "state", values: { OPEN: "open", CLOSED: "closed" } } })(frontmatter);
+  assert.equal(parse(frontmatter, { kinds }).ok, true, "title counts as declared by every Kind");
+});
+
+test("CONNECTOR_VALUES_INVALID without a Kind: unmapped needs a table, two policies, string rows", () => {
+  refuses((fm) => { source(fm).fields.title = { from: "summary", unmapped: "keep" }; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/title/unmapped");
+  refuses((fm) => { source(fm).fields.event_status.unmapped = "skip"; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/event_status/unmapped");
+  refuses((fm) => { source(fm).fields.event_status.values = { CONFIRMED: 1 }; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/event_status/values/CONFIRMED");
+  refuses((fm) => { source(fm).fields.event_status.values = {}; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/event_status/values");
+  refuses((fm) => { source(fm).fields.event_status.values = ["scheduled"]; }, "CONNECTOR_VALUES_INVALID", "/sources/0/fields/event_status/values");
+});
+
+test("CONNECTOR_ACTION_INVALID and CONNECTOR_EVENT_INVALID", () => {
+  const action = (extra: Record<string, unknown>) => (fm: Record<string, any>) => { fm.actions = [{ name: "create", method: "POST", host: "calendar.example.org", ...extra }]; };
+  refuses(action({ host: "elsewhere.example.org" }), "CONNECTOR_ACTION_INVALID", "/actions/0/host");
+  refuses(action({ input: { count: { type: "integer", values: ["1"] } } }), "CONNECTOR_ACTION_INVALID", "/actions/0/input/count/values");
+  refuses(action({ input: { Count: { type: "integer" } } }), "CONNECTOR_ACTION_INVALID", "/actions/0/input/Count");
+  const { frontmatter } = base();
+  action({ input: { title: { type: "string", required: true }, kind: { type: "string", values: ["note", "task"] } } })(frontmatter);
+  const parsed = parse(frontmatter);
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.connector.actions[0], { name: "create", method: "POST", host: "calendar.example.org", confirm: "always", input: { title: { type: "string", required: true }, kind: { type: "string", required: false, values: ["note", "task"] } } });
+  refuses((fm) => { fm.events[0].references = ["tasks"]; }, "CONNECTOR_EVENT_INVALID", "/events/0/references/0");
+  refuses((fm) => { fm.events[0].signature.header = "X-Signature"; }, "CONNECTOR_EVENT_INVALID", "/events/0/signature/header");
+  refuses((fm) => { fm.events[0].signature.scheme = "hmac-sha1"; }, "CONNECTOR_EVENT_INVALID", "/events/0/signature/scheme");
+});
+
+test("every error code has a refusal case above", () => {
+  // The cases in this file name each code; this guards the list against a new code with no test.
+  assert.deepEqual([...CONNECTOR_ERROR_CODES].sort(), [
+    "CONNECTOR_ACTION_INVALID", "CONNECTOR_AUTH_INVALID", "CONNECTOR_DOMAIN_INVALID", "CONNECTOR_DUPLICATE", "CONNECTOR_EVENT_INVALID",
+    "CONNECTOR_FIELD_INVALID", "CONNECTOR_FIELD_NEVER_OWNED", "CONNECTOR_FIELD_UNDECLARED", "CONNECTOR_IDENTITY_UNSTABLE",
+    "CONNECTOR_LIST_FIELD_UNSUPPORTED", "CONNECTOR_MALFORMED", "CONNECTOR_MODE_UNSUPPORTED", "CONNECTOR_PROFILE_INVALID",
+    "CONNECTOR_SECRET_PRESENT", "CONNECTOR_TARGET_KIND_INVALID", "CONNECTOR_UNKNOWN_KEY", "CONNECTOR_VALUES_INVALID",
+  ]);
+});
+
+// ---------------------------------------------------------------------------------------- secrets
+
+const SECRET = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+
+test("CONNECTOR_SECRET_PRESENT names a path and never the value; a secret-looking key reports its parent", () => {
+  const cases: Array<[(fm: Record<string, any>) => void, string]> = [
+    [(fm) => { fm.auth.token = "anything"; }, "/auth"],
+    [(fm) => { fm.auth.Client_Secret = "anything"; }, "/auth"],
+    [(fm) => { fm.description = SECRET; }, "/description"],
+    [(fm) => { fm.x_note = `Bearer ${SECRET}`; }, "/x_note"],
+    [(fm) => { fm.x_note = "xoxb-123456-abcdef"; }, "/x_note"],
+    [(fm) => { fm.x_key = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----"; }, "/x_key"],
+    [(fm) => { source(fm).identity.resource = "https://user:pass@calendar.example.org/{feed}.ics"; }, "/sources/0/identity/resource"],
+    [(fm) => { source(fm).fields.event_status.values[SECRET] = "scheduled"; }, "/sources/0/fields/event_status/values"],
+    [(fm) => { fm.events[0].signature.cookie = "x"; }, "/events/0/signature"],
+  ];
+  for (const [edit, path] of cases) {
+    const { frontmatter } = base();
+    edit(frontmatter);
+    frontmatter.title = "";
+    const result = parse(frontmatter);
+    assert.deepEqual(errorsOf(result).map((e) => [e.code, e.path]), [["CONNECTOR_SECRET_PRESENT", path]], "only the secret refusal, so nothing else can echo it");
+    const text = JSON.stringify(errorsOf(result));
+    for (const leak of [SECRET, "anything", "pass@", "MIIB", "xoxb-123456"]) assert.ok(!text.includes(leak), `${leak} echoed in ${text}`);
+  }
+});
+
+test("the body is scanned for token shapes, not for words", () => {
+  const body = (text: string) => parse(base().frontmatter, { body: text });
+  assert.equal(body("Requests use a Bearer token issued per workspace; see the Bearer authentication note.\n").ok, true);
+  assert.equal(body("Tokens look like ghp_ followed by characters.\n").ok, true);
+  for (const leak of [`Use ${SECRET} to test.\n`, "Header: Bearer abcdef0123456789abcdef01\n", "-----BEGIN OPENSSH PRIVATE KEY-----\n", "Slack: xoxp-12345678-abc\n"]) {
+    const result = body(leak);
+    assert.deepEqual(codes(result), ["CONNECTOR_SECRET_PRESENT"], leak);
+    assert.ok(!JSON.stringify(errorsOf(result)).includes(leak.trim().slice(0, 12)));
+  }
+});
+
+// -------------------------------------------------------------------------------------------- pin
+
+const FULL: Connector = {
+  id: CONNECTOR_ID, title: "Full", auth: { kind: "github-app", permissions: { issues: "read" } }, domains: ["calendar.example.org", "feeds.example.org"],
+  sources: [{
+    name: "events", profile: "ics", target_kind: "Event", mode: "overlay",
+    identity: { resource: "https://calendar.example.org/{feed}.ics", id: "{uid}" },
+    fields: { title: { from: "summary" }, event_status: { from: "status", values: { CONFIRMED: "scheduled" }, unmapped: "keep" } },
+    completeness: "complete",
+  }],
+  actions: [{ name: "create", method: "POST", host: "api.github.com", input: { title: { type: "string", required: true, values: ["a"] } }, confirm: "always" }],
+  events: [{ name: "changed", signature: { scheme: "hmac-sha256", header: "x-signature-256" }, references: ["events"] }],
+};
+
+/** One mutation per accepted key of every closed block; the table must cover CONNECTOR_KEYS exactly. */
+const MUTATIONS: Record<ConnectorBlock, Record<string, (c: any) => void>> = {
+  auth: {
+    kind: (c) => { c.auth.kind = "none"; },
+    provider: (c) => { c.auth.provider = "github"; },
+    permissions: (c) => { c.auth.permissions.issues = "write"; },
+    scheme: (c) => { c.auth.scheme = "hmac-sha256"; },
+  },
+  source: {
+    name: (c) => { c.sources[0].name = "events-2"; },
+    profile: (c) => { c.sources[0].profile = "ics-event"; },
+    target_kind: (c) => { c.sources[0].target_kind = "Place"; },
+    mode: (c) => { c.sources[0].mode = "mirror"; },
+    identity: (c) => { c.sources[0].identity = { resource: "https://calendar.example.org/x.ics", id: "{uid}" }; },
+    fields: (c) => { c.sources[0].fields.end = { from: "dtend" }; },
+    completeness: (c) => { c.sources[0].completeness = "partial"; },
+  },
+  identity: {
+    resource: (c) => { c.sources[0].identity.resource = "https://feeds.example.org/{feed}.ics"; },
+    id: (c) => { c.sources[0].identity.id = "{uid}#{recurrence}"; },
+  },
+  mapping: {
+    from: (c) => { c.sources[0].fields.title.from = "name"; },
+    values: (c) => { c.sources[0].fields.event_status.values.CANCELLED = "canceled"; },
+    unmapped: (c) => { c.sources[0].fields.event_status.unmapped = "refuse"; },
+  },
+  action: {
+    name: (c) => { c.actions[0].name = "update"; },
+    method: (c) => { c.actions[0].method = "PUT"; },
+    host: (c) => { c.actions[0].host = "calendar.example.org"; },
+    input: (c) => { c.actions[0].input.body = { type: "text", required: false }; },
+    confirm: (c) => { c.actions[0].confirm = "never"; },
+  },
+  input: {
+    type: (c) => { c.actions[0].input.title.type = "text"; },
+    required: (c) => { c.actions[0].input.title.required = false; },
+    values: (c) => { c.actions[0].input.title.values = ["a", "b"]; },
+  },
+  event: {
+    name: (c) => { c.events[0].name = "deleted"; },
+    signature: (c) => { c.events[0].signature = { scheme: "hmac-sha256", header: "x-hub-signature-256" }; },
+    references: (c) => { c.events[0].references = []; },
+  },
+  signature: {
+    scheme: (c) => { c.events[0].signature.scheme = "hmac-sha512"; },
+    header: (c) => { c.events[0].signature.header = "x-other"; },
+  },
+};
+
+test("the pin digest changes when any accepted key of any closed block changes", () => {
+  assert.deepEqual(Object.keys(MUTATIONS).sort(), Object.keys(CONNECTOR_KEYS).sort(), "a mutation table per closed block");
+  const digest = connectorPinDigest(FULL);
+  for (const [block, keys] of Object.entries(CONNECTOR_KEYS) as Array<[ConnectorBlock, readonly string[]]>) {
+    assert.deepEqual(Object.keys(MUTATIONS[block]).sort(), [...keys].sort(), `every ${block} key has a mutation`);
+    for (const key of keys) {
+      const mutated = structuredClone(FULL);
+      MUTATIONS[block][key]!(mutated);
+      assert.notEqual(connectorPinDigest(mutated), digest, `${block}.${key} reaches the pin`);
+    }
+  }
+  const domain = structuredClone(FULL);
+  domain.domains.push("more.example.org");
+  assert.notEqual(connectorPinDigest(domain), digest, "every domain is pinned");
+});
+
+test("the pin digest is blind to presentation and order, and equal across spellings of one declaration", () => {
+  const digest = connectorPinDigest(parseExampleConnector());
+  // A changed golden means the normalization changed: bump CONNECTOR_PIN_RULES with it.
+  assert.equal(digest, "sha256:9b255ef3470103ccbb803f233c2f8090165d0f3ec0615a5987304707a06492c8");
+  const variants: Array<(fm: Record<string, any>) => void> = [
+    (fm) => { fm.title = "Renamed"; },
+    (fm) => { fm.description = "Another sentence."; },
+    (fm) => { fm.version = "2"; },
+    (fm) => { fm.x_recipe = { id: "example", version: "1", of: 1 }; },
+    (fm) => { fm.x_extension = "ignored"; },
+    (fm) => { fm.tags = ["integration"]; },
+    (fm) => { source(fm).fields.title = { from: "summary" }; },
+    (fm) => { delete source(fm).fields.event_status.unmapped; },
+    (fm) => { delete source(fm).mode; },
+    (fm) => { const s = source(fm); fm.sources[0] = Object.fromEntries(Object.entries(s).reverse()); },
+    (fm) => { fm.actions = []; },
+    (fm) => { delete fm.actions; },
+  ];
+  for (const edit of variants) {
+    const { frontmatter } = base();
+    edit(frontmatter);
+    const parsed = parse(frontmatter, { body: "Different prose.\n" });
+    assert.ok(parsed.ok, JSON.stringify(errorsOf(parsed)));
+    assert.equal(connectorPinDigest(parsed.connector), digest, edit.toString());
+  }
+  const order = structuredClone(FULL);
+  order.domains.reverse();
+  const second = structuredClone(order.sources[0]!);
+  second.name = "archive";
+  order.sources.push(second);
+  order.events[0]!.references = ["events", "archive"];
+  const reordered = structuredClone(order);
+  reordered.sources.reverse();
+  reordered.events[0]!.references.reverse();
+  assert.equal(connectorPinDigest(reordered), connectorPinDigest(order), "domains, sources and references are order-free");
+  const action = structuredClone(FULL);
+  action.actions[0]!.input.title!.values = ["b", "a"];
+  assert.notEqual(connectorPinDigest(action), connectorPinDigest(FULL), "an input's values keep their order");
+});
+
+test("a reach-widening change through the document changes the pin", () => {
+  const digest = connectorPinDigest(parseExampleConnector());
+  const edits: Array<(fm: Record<string, any>) => void> = [
+    (fm) => { fm.domains.push("feeds.example.org"); },
+    (fm) => { fm.auth = { kind: "token", provider: "github" }; },
+    (fm) => { source(fm).identity.resource = "https://calendar.example.org/{feed}/all.ics"; },
+    (fm) => { source(fm).fields.note = "description"; },
+    (fm) => { source(fm).completeness = "partial"; },
+    (fm) => { fm.events[0].signature.header = "x-hub-signature-256"; },
+    (fm) => { fm.actions = [{ name: "create", method: "POST", host: "calendar.example.org" }]; },
+  ];
+  for (const edit of edits) {
+    const { frontmatter } = base();
+    edit(frontmatter);
+    const parsed = parse(frontmatter);
+    assert.ok(parsed.ok, JSON.stringify(errorsOf(parsed)));
+    assert.notEqual(connectorPinDigest(parsed.connector), digest, edit.toString());
+  }
+});
+
+// ---------------------------------------------------------------------------------------- mapping
+
+const KIND = { fields: { required: ["title", "start", "event_status"], optional: ["end", "event_url"], values: {}, terminal: {}, descriptions: {} } };
+
+test("changeBetween carries unobserved values, removes cleared ones and changes only mapping keys", () => {
+  const source = parseExampleConnector().sources[0]!;
+  const mapped = mapRecord(source, { uid: "r1", summary: "B", dtend: null, status: "WITHDRAWN" }, KIND);
+  assert.ok(mapped.kind === "mapped");
+  assert.deepEqual([mapped.fields, mapped.unobserved.sort(), mapped.cleared], [{ title: "B" }, ["event_status", "event_url", "start"], ["end"]]);
+  const previous = { title: "A", start: "S", end: "E", event_status: "scheduled", extra: "not mapped" };
+  const change = changeBetween(previous, mapped, { external_id: "r1", change_kind: "changed" });
+  assert.deepEqual(change.after, { title: "B", start: "S", event_status: "scheduled" });
+  assert.deepEqual(change.changed_fields, ["end", "title"]);
+  assert.deepEqual(change.before, previous);
+  assert.match(change.content_digest, /^sha256:[0-9a-f]{64}$/);
+  const again = changeBetween(change.after, mapped, { external_id: "r1", change_kind: "changed" });
+  assert.deepEqual(again.changed_fields, []);
+  assert.equal(again.content_digest, change.content_digest, "a carried value keeps the digest");
+  const first = changeBetween(null, mapped, { external_id: "r1", change_kind: "new" });
+  assert.deepEqual([first.before, first.after, first.changed_fields], [null, { title: "B" }, ["title"]]);
+});
+
+test("findingsFor keys per source, field, code and value; facts hold no record ids or counts", () => {
+  const d = (code: MappingDiagnostic["code"], field: string, native: unknown, id: string | null): MappingDiagnostic => ({ code, field, from: field, native, external_id: id });
+  const findings = findingsFor([
+    d("VALUE_UNMAPPED", "event_status", "WITHDRAWN", "a"),
+    d("VALUE_UNMAPPED", "event_status", "WITHDRAWN", "b"),
+    d("VALUE_UNMAPPED", "event_status", "POSTPONED", "a"),
+    d("RECORD_REFUSED", "event_status", "WITHDRAWN", "c"),
+    d("VALUE_MISSING", "start", null, "a"),
+    d("VALUE_NOT_SCALAR", "title", ["x"], "a"),
+    d("IDENTITY_MISSING", "identity", null, null),
+    d("IDENTITY_MISSING", "identity", null, null),
+  ], { source: "events" });
+  assert.equal(findings.length, 6);
+  const first = findings[0]!;
+  assert.match(first.key, /^mapping:events:event_status:VALUE_UNMAPPED:[0-9a-f]{16}$/);
+  assert.deepEqual(first.facts, { code: "VALUE_UNMAPPED", field: "event_status", native: "WITHDRAWN" });
+  assert.equal(first.priority, "low");
+  assert.equal(first.external_id, undefined, "never the record's id, so a change Signal is never retitled");
+  assert.match(first.summary!, /2 records \(a, b\)/);
+  assert.equal(findings.find((f) => f.facts && (f.facts as { code: string }).code === "RECORD_REFUSED")!.priority, "normal");
+  assert.equal(findings.find((f) => f.key === "mapping:events:IDENTITY_MISSING")!.priority, "normal");
+  const long = findingsFor([d("VALUE_UNMAPPED", "title", "x".repeat(200), "a")], { source: "events" })[0]!;
+  assert.equal(((long.facts as { native: string }).native).length, 80);
+});

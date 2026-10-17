@@ -47,6 +47,10 @@
       "types": "./dist/recipes.d.ts",
       "default": "./dist/recipes.js"
     },
+    "./connectors": {
+      "types": "./dist/connectors.d.ts",
+      "default": "./dist/connectors.js"
+    },
     "./recipe-lifecycle": {
       "types": "./dist/recipe-lifecycle/index.d.ts",
       "default": "./dist/recipe-lifecycle/index.js"
