@@ -58,3 +58,6 @@ export type { Outcome } from "./uncertain-write.js";
 // version, so a client can learn in one round trip whether anything changed.
 export { headsDigest, isHeadsDigest, sortHeads } from "./heads-digest.js";
 export type { DocumentHead } from "./heads-digest.js";
+
+// Optional file-only frozen ordinary-file journal; no broader backend requirement.
+export * from "./blob-journal.js";
