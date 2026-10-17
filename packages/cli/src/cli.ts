@@ -50,6 +50,8 @@ import { login, logout, whoami } from "./commands/hosted-auth.js";
 import { checkout } from "./commands/checkout.js";
 import { exportCommand } from "./commands/export.js";
 import { op } from "./commands/op.js";
+import { notify } from "./commands/notify.js";
+import { inbox } from "./commands/inbox.js";
 import { publish } from "./commands/publish.js";
 import { access } from "./commands/access.js";
 import { deps } from "./commands/deps.js";
@@ -144,6 +146,8 @@ export const PUBLIC_HANDLERS = Object.freeze({
   op,
   access,
   deps,
+  notify,
+  inbox,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;

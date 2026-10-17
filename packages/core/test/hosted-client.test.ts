@@ -214,6 +214,21 @@ test("whoami: a host from before qualified references names no slugs", async () 
   assert.deepEqual(identity.workspaces, [{ tenantId: "a", slug: null }, { tenantId: "b", slug: null }]);
   assert.equal(identity.documentInputBytes, null);
   assert.equal(identity.email, "p@example.com");
+  // A host that states no target authority key: still an identity, with none.
+  assert.equal(identity.targetAuthorityKey, undefined);
+  assert.equal(Object.hasOwn(identity, "targetAuthorityKey"), false);
+});
+
+test("whoami: a host that states its target authority key names it", async () => {
+  const { fetch } = host(() => json({ principalId: "p", tenantIds: ["a"], targetAuthorityKey: "superbee-orgs" }));
+  assert.equal((await clientOf(fetch).whoami()).targetAuthorityKey, "superbee-orgs");
+});
+
+test("whoami: a target authority key no document target can carry reads as none", async () => {
+  for (const targetAuthorityKey of ["", "a/b", "a\\b", "has space", 7, "x".repeat(257)]) {
+    const { fetch } = host(() => json({ principalId: "p", tenantIds: ["a"], targetAuthorityKey }));
+    assert.equal((await clientOf(fetch).whoami()).targetAuthorityKey, undefined, JSON.stringify(targetAuthorityKey));
+  }
 });
 
 test("bundles: the golden list's rows, and readBundleListing over them", async () => {

@@ -402,6 +402,41 @@ document (`invalid_input`). Calls on one client that name the same identity run 
 its capabilities read, or a failure of the intent store to record the write. Document deletion is
 not part of `write`.
 
+### Inbox
+
+`createHostedInbox(client, { tenantId })` is a person's hosted inbox in one workspace, over the
+same client (its credential, deadline and abort; a `within` client serves too). It reaches the
+attention routes, `POST <prefix>/attention/<operationId>`, and names the workspace in the
+`Superbee-Workspace` header on every request, since a sync sign-in spans all of the person's
+workspaces. Notifications are a hosted capability: a host without these routes answers
+`HostedRouteNotServed`, and nothing here emulates a local inbox.
+
+```ts
+import { createHostedInbox } from "@superbee/core/hosted-client";
+
+const identity = await client.whoami();
+const inbox = createHostedInbox(client, { tenantId: identity.tenantIds[0]!, via: "my-agent" });
+const receipt = await inbox.request({ recipient: { kind: "principal", principalId: identity.principalId }, kind: "needs_input", note: "Ready for you" });
+const page = await inbox.list({ threadId: receipt.threadId, afterSeq: 0 });
+```
+
+The methods are `list`, `threads`, `summary`, `get` (does not mark read), `open` (marks read),
+`ack` (at the revision read), `request` (send) and `cancel` (withdraw your own send), with the
+open contract's shapes (`InboxEntry`, `InboxThread`, `AttentionReceipt` and the inputs). A
+recipient is a principal id; to notify yourself, use `whoami().principalId`. A document target
+names `whoami().targetAuthorityKey` as its `authorityKey` and the document's current version; a
+host that reports no key (the field is absent, as on every `/sync/v1` host today) cannot take one yet.
+
+`request` mints one UUIDv7 ticket per send (or takes the one you pass). When an answer is lost or
+the host marks its refusal retryable, it sends the same body under the same ticket again
+(`sendAttempts`, default 3), which the host answers as a replay of the first send, never as a second
+item. A send still unclear after that throws `HostedAttentionOutcomeUnknown` with its `ticket`:
+`request({ ...input, ticket })` within 24 hours settles it. Refusals are
+`HostedAttentionRefusal` (a `RemoteError`) with the catalog's `code` (`attention_disabled`,
+`not_found`, `target_unavailable`, `target_unsupported`, `quota_exceeded`, `request_conflict`,
+`version_conflict`, `ticket_expired` with `serverTime`, `workspace_not_available` and the rest),
+`retryable`, and a message in this client's words: the host's message and hint are never repeated.
+
 ### Export download (Node only)
 
 `@superbee/core/hosted-client/node` downloads and verifies a hosted bundle's portable export. It

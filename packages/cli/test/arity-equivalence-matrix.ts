@@ -165,6 +165,12 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("publish", 0),
   ordinary("opList", 0),
   ordinary("opRun", 1),
+  ordinary("notify", 1, { arityKind: "bounded" }),
+  ordinary("inboxList", 0),
+  ordinary("inboxThreads", 0),
+  ordinary("inboxOpen", 1),
+  ordinary("inboxAck", 1),
+  ordinary("inboxCancel", 1),
   ordinary("accessList", 1),
   ordinary("accessGrant", 2),
   ordinary("accessRevoke", 2),
@@ -193,6 +199,7 @@ export const BUILT_KEY_REPRESENTATIVE_IDS = [
   "hookInstall",
   "mcp",
   "export",
+  "notify",
 ] as const satisfies readonly PublicLeafId[];
 
 /**

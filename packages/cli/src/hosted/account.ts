@@ -5,10 +5,13 @@
 // workspace choice cannot drift apart. A command that works in an existing checkout (`sync`,
 // `export`, `doc history`) connects through `connectCheckout` instead: the checkout's own host,
 // workspace and person.
-import { commandToken, type CommandText } from "../command-text.js";
+import { homedir } from "node:os";
+
+import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
-import { ensureHostedAccessToken, hostArgument, type HostedAuthDeps } from "../hosted-auth/session.js";
+
+import { defaultHostedAuthDeps, ensureHostedAccessToken, hostArgument, requireHostedBundleHost, SignedOutError, workspaceForNamedHost, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import type { CheckoutBinding } from "./binding.js";
 import type { HostedIdentity, HostedWorkspace } from "@superbee/core/hosted-client";
@@ -70,6 +73,41 @@ export async function connectHostedAccount(target: HostedTarget, request: Hosted
     named?.tenantId ??
     (identity.tenantIds.length === 1 ? identity.tenantIds[0]! : remembered !== null && identity.tenantIds.includes(remembered) ? remembered : null);
   return { client, identity, workspace, namedSlug: named?.slug ?? null };
+}
+
+/** The signed-in account a command uses outside a checkout, with the host it reached. */
+export interface SignedInAccount extends HostedAccount {
+  readonly target: HostedTarget;
+  /** The host as `--host` takes it, for next-step commands. */
+  readonly hostArgument: string;
+}
+
+/**
+ * The person's own hosted sign-in, for a command that acts as the person rather than on a
+ * checkout (`notify`, `inbox` outside a checkout): `--host`, else the host of the last sign-in;
+ * the workspace as {@link connectHostedAccount} chooses it (`--workspace`, the only one, the
+ * default `setup hosted` recorded). It never starts a sign-in: a signed-out person is refused
+ * with the one command that signs in, and nothing is sent.
+ */
+export async function connectSignedInAccount(
+  request: { readonly host?: string; readonly workspace?: string; readonly resume: CommandText; readonly command: string },
+  deps?: HostedAccountDeps,
+): Promise<SignedInAccount> {
+  const accountDeps = deps ?? { auth: defaultHostedAuthDeps(homedir()) };
+  const named = await requireHostedBundleHost(request.host, accountDeps.auth);
+  const workspace = workspaceForNamedHost(named, request.workspace);
+  const { target } = named;
+  try {
+    const account = await connectHostedAccount(target, { ...(workspace !== undefined ? { workspace } : {}), resume: request.resume, signIn: false }, accountDeps);
+    return { ...account, target, hostArgument: hostArgument(target) };
+  } catch (error) {
+    if (!(error instanceof SignedOutError)) throw error;
+    const login = commandFragment`${cliInvocation()} login --host ${commandToken(hostArgument(target))}`;
+    throw new CliError("AUTH_REQUIRED", `not signed in to ${target.origin}: ${request.command} acts as your hosted sign-in`, {
+      details: { status: "not_signed_in", reason: "signed_out", host: target.origin, sign_in_command: login, resume: request.resume },
+      help: commandFragment`${login}` + ", then re-run: " + request.resume,
+    });
+  }
 }
 
 /**

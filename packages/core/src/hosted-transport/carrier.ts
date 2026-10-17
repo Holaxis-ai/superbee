@@ -46,6 +46,23 @@ export interface HostedRequestOptions {
    * identity.
    */
   acceptDeletes?: number;
+  /**
+   * The workspace (tenant id, such as `tenant:holaxis`) a workspace-scoped route acts in
+   * (`Superbee-Workspace`), for the attention routes, whose admission spans every workspace the
+   * person is in. Admission only. A value that is not a tenant id is refused before sending.
+   */
+  workspace?: string;
+}
+
+/** The header that carries {@link HostedRequestOptions.workspace}. */
+export const WORKSPACE_HEADER = "Superbee-Workspace";
+
+/** A namespaced tenant id (`tenant:holaxis`, `org:…`): the shape the host checks before admission. */
+const TENANT_ID = /^[a-z][a-z0-9-]{0,15}:[A-Za-z0-9._-]{1,128}$/;
+
+/** Whether `value` has the shape of a tenant id the workspace header may carry. */
+export function isWorkspaceTenantId(value: unknown): value is string {
+  return typeof value === "string" && TENANT_ID.test(value);
 }
 
 /** The header that carries {@link HostedRequestOptions.acceptDeletes}. */
@@ -247,25 +264,27 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
 
   const jsonBody = (input: unknown) => ({ type: "application/json", content: JSON.stringify(input) });
   // Headers the carrier sets itself, which a route's own fields never name.
-  const owned = new Set(["x-superbee-write-request", bindingHeader.toLowerCase(), RECREATE_HEADER.toLowerCase(), VIA_HEADER.toLowerCase(), ACCEPT_DELETES_HEADER.toLowerCase()]);
+  const owned = new Set(["x-superbee-write-request", bindingHeader.toLowerCase(), RECREATE_HEADER.toLowerCase(), VIA_HEADER.toLowerCase(), ACCEPT_DELETES_HEADER.toLowerCase(), WORKSPACE_HEADER.toLowerCase()]);
 
   /**
    * The headers the carrier owns for one request, each refused before sending when malformed. The
    * one place a JSON and a raw request derive their identity, binding, `recreate`, `via` and
    * deletion acknowledgment headers.
    */
-  function carrierHeaders(request: Pick<HostedRequestOptions, "writeRequest" | "binding" | "recreate" | "via" | "acceptDeletes">): Record<string, string> {
+  function carrierHeaders(request: Pick<HostedRequestOptions, "writeRequest" | "binding" | "recreate" | "via" | "acceptDeletes" | "workspace">): Record<string, string> {
     if (request.writeRequest !== undefined && !isWriteRequestId(request.writeRequest)) throw new HostedCarrierError("denied");
     if (request.binding !== undefined && !isWriteBinding(request.binding)) throw new HostedCarrierError("denied");
     if (request.recreate !== undefined && !isWriteBinding(request.recreate)) throw new HostedCarrierError("denied");
     if (request.via !== undefined && !isAgentLabelVia(request.via)) throw new HostedCarrierError("denied");
     if (request.acceptDeletes !== undefined && !isAcceptedDeletionCount(request.acceptDeletes)) throw new HostedCarrierError("denied");
+    if (request.workspace !== undefined && !isWorkspaceTenantId(request.workspace)) throw new HostedCarrierError("denied");
     const headers: Record<string, string> = {};
     if (request.writeRequest !== undefined) headers["X-Superbee-Write-Request"] = request.writeRequest;
     if (request.binding !== undefined) headers[bindingHeader] = request.binding;
     if (request.recreate !== undefined) headers[RECREATE_HEADER] = request.recreate;
     if (request.via !== undefined) headers[VIA_HEADER] = request.via;
     if (request.acceptDeletes !== undefined) headers[ACCEPT_DELETES_HEADER] = String(request.acceptDeletes);
+    if (request.workspace !== undefined) headers[WORKSPACE_HEADER] = request.workspace;
     return headers;
   }
 
