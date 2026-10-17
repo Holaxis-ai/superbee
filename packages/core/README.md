@@ -256,14 +256,18 @@ Each write has one request identity and carries the client's binding, a digest o
 client mints once (its `within` clients share it). When an answer is lost (a transport failure or
 a deadline after sending), the client looks the identity up on the host and reports what the host
 recorded. The host's outcome route tells a request it never received ("absent") from one still in
-progress ("pending"), but the shared transport reports both as "no outcome yet". On that answer
-`write` sends the same identity once more, which the host applies at most once. Absence counts as
+progress ("pending"), and the shared transport keeps the two apart. On either answer `write`
+sends the same identity once more, which the host applies at most once; after "pending", an
+earlier delivery is known to be held. Absence counts as
 evidence only within the retention window the host serves in its capabilities
 (`operationsRetentionMs`, less an hour's margin); past it, the result stays `unknown` and nothing
 is resent. The client measures an intent's age by its own clock against the host's window, so that
 margin holds only while the client's clock is within an hour of the host's. A resend refused before
-it reaches the host's execution (no credential, access withdrawn, a spent quota) leaves the result
-`unknown` too, since the first delivery may still commit. When the lookups themselves fail, or the caller's `signal` aborts after sending, the
+it reaches the host's execution (no credential, access withdrawn, a spent quota, a gateway's
+`400`) leaves the result `unknown` too, since the first delivery may still commit; the result's
+`refusal` (`{ code, message }`) names that refusal, so an app can say why the write is waiting
+(for example, access withdrawn) while it stays held. Absence alone never settles it: a delayed
+first delivery is authorized when it arrives, so it can still commit once access returns. When the lookups themselves fail, or the caller's `signal` aborts after sending, the
 result is `unknown`.
 
 An `unknown` write can be resolved later in two ways:
@@ -271,7 +275,7 @@ An `unknown` write can be resolved later in two ways:
 - `lookupWrite(requestId)` makes one outcome lookup and never sends the write. When the host holds
   no outcome yet (absent or pending), the answer stays `unknown`.
 - `settleWrite(requestId)` looks the identity up and, when the host never recorded it within its
-  retention window, sends the same identity once more, as `write` would have.
+  retention window or holds it pending, sends the same identity once more, as `write` would have.
 
 Both answer `{ status: "unrecorded", requestId }` when the intent store holds no write under that
 identity: it was never recorded there, or it already settled and left the store. Both return

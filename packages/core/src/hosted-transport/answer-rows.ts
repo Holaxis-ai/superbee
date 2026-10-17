@@ -113,7 +113,8 @@ export const UPDATE_ANSWER_ROWS: readonly UpdateAnswerRow[] = Object.freeze([
 
 /**
  * One outcome-lookup answer and what the shared primitive receives: `null` says the host never
- * recorded the identity (or holds a claim without a result), an outcome is the recorded evidence,
+ * recorded the identity, `pending` that it holds a claim without a result (a delivery was
+ * admitted and may still commit), an outcome is the recorded evidence,
  * and `throws` leaves the intent recoverable because the evidence was unavailable. `absent` past
  * the host's retention window, less the skew margin, is `unknown` rather than `null`: an expired
  * identity looks absent, and absence must never let an old intent be resubmitted as if never
@@ -121,13 +122,13 @@ export const UPDATE_ANSWER_ROWS: readonly UpdateAnswerRow[] = Object.freeze([
  */
 export type OutcomeAnswerRow = Readonly<{
   answer: string;
-  result: "null" | "committed" | "recorded" | "unknown" | "throws";
+  result: "null" | "pending" | "committed" | "recorded" | "unknown" | "throws";
 }>;
 
 export const OUTCOME_ANSWER_ROWS: readonly OutcomeAnswerRow[] = Object.freeze([
   { answer: "200 absent", result: "null" },
   { answer: "200 absent past retention", result: "unknown" },
-  { answer: "200 pending", result: "null" },
+  { answer: "200 pending", result: "pending" },
   { answer: "200 committed", result: "committed" },
   { answer: "200 refused", result: "recorded" },
   { answer: "200 committed contradiction", result: "throws" },
