@@ -1,3 +1,4 @@
+import { isAgentLabelVia, isWriteRequestId, isWriteBinding } from "../write-identity.js";
 /**
  * The carrier seam: how a hosted request leaves and what comes back, with the credential kept on
  * the carrier's side. The browser's carrier sends the session cookie and CSRF token; the CLI's
@@ -70,9 +71,7 @@ export const VIA_HEADER = "X-Superbee-Via";
  * the `/sync/v1` golden exchanges (`create-200-ok-via`, `write-400-invalid-via`) pin the header
  * and the host's refusal. A token the host refused would make every write a terminal 400.
  */
-export function isAgentLabelVia(value: unknown): value is string {
-  return typeof value === "string" && /^[a-z0-9._-]{1,32}$/.test(value) && !value.startsWith("superbee");
-}
+export { isAgentLabelVia } from "../write-identity.js";
 
 /**
  * A raw-bytes request ({@link HostedCarrier.bytes}), such as one blob of a staged bundle creation
@@ -129,8 +128,6 @@ export class HostedCarrierError extends Error {
   }
 }
 
-const WRITE_REQUEST = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const BINDING = /^sha256:[a-f0-9]{64}$/;
 const ROUTE_HEADER = /^x-superbee-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ROUTE_HEADER_VALUE = /^[\x20-\x7e]{0,1024}$/;
 
@@ -258,9 +255,9 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
    * deletion acknowledgment headers.
    */
   function carrierHeaders(request: Pick<HostedRequestOptions, "writeRequest" | "binding" | "recreate" | "via" | "acceptDeletes">): Record<string, string> {
-    if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
-    if (request.binding !== undefined && !BINDING.test(request.binding)) throw new HostedCarrierError("denied");
-    if (request.recreate !== undefined && !BINDING.test(request.recreate)) throw new HostedCarrierError("denied");
+    if (request.writeRequest !== undefined && !isWriteRequestId(request.writeRequest)) throw new HostedCarrierError("denied");
+    if (request.binding !== undefined && !isWriteBinding(request.binding)) throw new HostedCarrierError("denied");
+    if (request.recreate !== undefined && !isWriteBinding(request.recreate)) throw new HostedCarrierError("denied");
     if (request.via !== undefined && !isAgentLabelVia(request.via)) throw new HostedCarrierError("denied");
     if (request.acceptDeletes !== undefined && !isAcceptedDeletionCount(request.acceptDeletes)) throw new HostedCarrierError("denied");
     const headers: Record<string, string> = {};

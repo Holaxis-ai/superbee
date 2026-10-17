@@ -17,3 +17,6 @@ export const OPEN_LOG: unique symbol = Symbol("superbee.fileJournal.openLog");
 
 /** Method key: `(id, raw) => Promise<void>`, planting exact bytes as a document's stored serialization. */
 export const STORE_RAW: unique symbol = Symbol("superbee.fileJournal.storeRaw");
+
+/** Lower-only store payload limit, allowing exact budget boundaries without giant test fixtures. */
+export const STORE_BYTE_LIMIT: unique symbol = Symbol("superbee.fileJournal.byteLimit");
