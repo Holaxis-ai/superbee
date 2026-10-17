@@ -1,0 +1,25 @@
+{
+  "name": "blob-outcome-400-malformed",
+  "description": "blob outcome 400 invalid_input",
+  "route": "/sync/v1/outcome",
+  "rows": [
+    "blob outcome 400 invalid_input"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-00000000b10b",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"operationId\":\"blobs.delete.v1\",\"bundleId\":\"notes.a\",\"documentId\":\"notes/one\",\"expectedVersion\":\"sha256:fb329f8defe047af577e860c6a44adcd49c1f2106b41234d93cf69bda0c3ae33\"}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

@@ -10,12 +10,13 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   classifyWriteAnswer,
+  BLOB_OPERATION_IDS,
   createFetchCarrier,
   HostedCarrierError,
   isPageRestart,
@@ -99,7 +100,8 @@ function answerOf(exchange: Exchange): HostedAnswer {
 }
 
 test(`golden /sync/v1 exchanges (${index.source}) are indexed as recorded`, () => {
-  assert.equal(index.exchanges.length, 84);
+  assert.equal(exchanges.size, index.exchanges.length);
+  assert.deepEqual(index.exchanges.map(entry => entry.file).sort(), readdirSync(FIXTURES).filter(name => name.endsWith(".json") && name !== "index.json").sort());
   for (const entry of index.exchanges) {
     const exchange = fixture(entry.name);
     assert.equal(exchange.route, entry.route);
@@ -705,7 +707,7 @@ for (const entry of index.exchanges.filter((candidate) => OPERATION[candidate.ro
   });
 }
 
-for (const entry of index.exchanges.filter((candidate) => candidate.route === "/sync/v1/outcome")) {
+for (const entry of index.exchanges.filter((candidate) => candidate.route === "/sync/v1/outcome" && !BLOB_OPERATION_IDS.includes(JSON.parse(fixture(candidate.name).request.body).operationId))) {
   test(`outcome answer: ${entry.name} decodes as its row`, () => {
     const exchange = fixture(entry.name);
     const request = JSON.parse(exchange.request.body) as { bundleId: string; documentId: string; expectAbsent?: true; expectedVersion?: string; body?: string };

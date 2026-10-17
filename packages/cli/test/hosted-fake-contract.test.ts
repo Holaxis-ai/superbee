@@ -1,6 +1,6 @@
 // The CLI's fake hosted sync family (`support/fake-hosted-sync.ts`) against the `/sync/v1` golden
 // exchanges captured from the real hosted gateway (core's `test/fixtures/hosted-sync-v1/`). For
-// every exchange the fake is driven into the same situation and must answer with the same status,
+// every modeled exchange the fake is driven into the same situation and must answer with the same status,
 // the same grammar headers and the same body: the same keys at every level and the same value
 // types, and the same VALUES wherever a value selects a row or an outcome (every boolean, and the
 // discriminator strings in DISCRIMINATORS: operation, error code, write state, outcome status and
@@ -32,8 +32,34 @@ const isExport = (exchange: Exchange) => exchange.route === "/sync/v1/export";
 const index = JSON.parse(readFileSync(path.join(SYNC_FIXTURES, "index.json"), "utf8")) as { exchanges: { name: string; file: string }[] };
 const golden = new Map<string, Exchange>(index.exchanges.map((entry) => [entry.name, JSON.parse(readFileSync(path.join(SYNC_FIXTURES, entry.file), "utf8")) as Exchange]));
 
+/** This document-only fake does not implement ordinary-file routes. Name the exact unsupported
+ * inventory so a new or renamed exchange still requires an explicit owner decision. */
+const UNMODELED_BLOB_ROUTES: Readonly<Record<string, string>> = Object.freeze({
+  "blob-create-200-conflict": "/sync/v1/blob-create",
+  "blob-create-200-ok": "/sync/v1/blob-create",
+  "blob-create-200-read-grant": "/sync/v1/blob-create",
+  "blob-create-400-digest": "/sync/v1/blob-create",
+  "blob-delete-200-absent": "/sync/v1/blob-delete",
+  "blob-delete-200-ok": "/sync/v1/blob-delete",
+  "blob-delete-428-held": "/sync/v1/blob-delete",
+  "blob-heads-200-page": "/sync/v1/blob-heads",
+  "blob-heads-409-moved": "/sync/v1/blob-heads",
+  "blob-outcome-200-absent": "/sync/v1/outcome",
+  "blob-outcome-200-original": "/sync/v1/outcome",
+  "blob-outcome-200-refused": "/sync/v1/outcome",
+  "blob-outcome-400-malformed": "/sync/v1/outcome",
+  "blob-outcome-403-read-grant": "/sync/v1/outcome",
+  "blob-read-200-binary": "/sync/v1/blob-read",
+  "blob-read-400-view": "/sync/v1/blob-read",
+  "blob-read-409-stale-type": "/sync/v1/blob-read",
+  "blob-replace-200-noop": "/sync/v1/blob-replace",
+  "blob-replace-200-stale-type": "/sync/v1/blob-replace",
+  "blob-replace-200-type-only": "/sync/v1/blob-replace",
+});
+
 /** Exchanges the fake does not model, each with the reason; every other exchange must be driven below. */
 const NOT_MODELED: Readonly<Record<string, string>> = Object.freeze({
+  ...Object.fromEntries(Object.keys(UNMODELED_BLOB_ROUTES).map(name => [name, "the document-only fake has no blob family; public core blob decoder tests consume these exchanges"])),
   "create-429-request-capacity": "the fake has no sync quota; tests inject the capacity refusal through a write hook",
 });
 
@@ -60,8 +86,21 @@ function shape(value: unknown, key?: string): unknown {
   return typeof value;
 }
 
+/** Compare the document surface while the fake has no blob capability. Every other root and
+ * limits key remains part of the exact shape agreement. */
+function documentCapabilities(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const { blobReads: _reads, blobWrites: _writes, ...document } = value as Record<string, unknown>;
+  if (typeof document.limits === "object" && document.limits !== null && !Array.isArray(document.limits)) {
+    const { blobReadBytes: _readBytes, blobWriteBytes: _writeBytes, ...limits } = document.limits as Record<string, unknown>;
+    document.limits = limits;
+  }
+  return document;
+}
+
 /** A body's shape: one JSON value, NDJSON lines grouped by the set of line shapes, or empty. */
-function bodyShape(text: string): unknown {
+function bodyShape(text: string, capabilities = false): unknown {
+  if (capabilities) return shape(documentCapabilities(JSON.parse(text)));
   if (text === "") return "empty";
   const lines = text.split("\n").filter((line) => line !== "");
   if (lines.length > 1) return ["ndjson", ...[...new Set(lines.map((line) => JSON.stringify(shape(JSON.parse(line)))))].sort()];
@@ -77,12 +116,12 @@ function headerShape(get: (name: string) => string | null): string[] {
     .map((name) => (name === "x-superbee-root-version" ? `${name}=${get(name) === "none" ? "none" : shape(get(name))}` : name));
 }
 
-async function answerOf(response: Response) {
-  return { status: response.status, headers: headerShape((name) => response.headers.get(name)), body: bodyShape(await response.text()) };
+async function answerOf(response: Response, capabilities = false) {
+  return { status: response.status, headers: headerShape((name) => response.headers.get(name)), body: bodyShape(await response.text(), capabilities) };
 }
 
 function expectedOf(exchange: Exchange) {
-  return { status: exchange.response.status, headers: headerShape((name) => exchange.response.headers[name] ?? null), body: bodyShape(exchange.response.body) };
+  return { status: exchange.response.status, headers: headerShape((name) => exchange.response.headers[name] ?? null), body: bodyShape(exchange.response.body, exchange.route === "/sync/v1/capabilities") };
 }
 
 const identity = (n: number) => `4a2f9c1e-8b3d-4e6f-9a1b-${String(n).padStart(12, "0")}`;
@@ -112,7 +151,7 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
 
   const observed = new Map<string, Awaited<ReturnType<typeof answerOf>>>();
   const observe = async (name: string, response: Promise<Response>) => {
-    const answer = await answerOf(await response);
+    const answer = await answerOf(await response, golden.get(name)?.route === "/sync/v1/capabilities");
     observed.set(name, answer);
     return answer;
   };
@@ -250,6 +289,7 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   for (const [name, exchange] of golden) {
     if (isExport(exchange)) continue;
     if (NOT_MODELED[name]) {
+      if (UNMODELED_BLOB_ROUTES[name]) assert.equal(exchange.route, UNMODELED_BLOB_ROUTES[name], `${name}: unsupported route changed`);
       assert.ok(!observed.has(name), `${name} is marked not modeled but was driven`);
       continue;
     }

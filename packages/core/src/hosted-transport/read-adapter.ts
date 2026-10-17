@@ -68,6 +68,12 @@ export interface HostedCapabilities {
    * state one; a client then assumes 65,536, the bound of every host before it was stated.
    */
   readonly documentInputBytes: number | null;
+  /** Ordinary-file routes are admitted independently of document writes. Absent means refused. */
+  readonly blobReads?: "allowed" | "refused";
+  readonly blobWrites?: "allowed" | "refused";
+  /** Independent advertised byte bounds; absent or malformed statements read as null. */
+  readonly blobReadBytes?: number | null;
+  readonly blobWriteBytes?: number | null;
 }
 
 /** The retention window assumed for a host that states none: thirty days. */
@@ -215,6 +221,13 @@ export function statedDocumentInputBytes(limits: unknown): number | null {
   return positiveInteger(stated) ? stated : null;
 }
 
+/** A blob bound grants no permission; each flag must independently say allowed. */
+function statedBlobBytes(limits: unknown, key: "blobReadBytes" | "blobWriteBytes"): number | null {
+  if (typeof limits !== "object" || limits === null || Array.isArray(limits)) return null;
+  const value = (limits as Record<string, unknown>)[key];
+  return positiveInteger(value) ? value : null;
+}
+
 /** The capabilities route's answer, admitted or refused as one; fields the route may gain are ignored. */
 export function decodeHostedCapabilities(value: unknown): HostedCapabilities {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw malformed("capabilities answer is not a JSON object");
@@ -255,6 +268,10 @@ export function decodeHostedCapabilities(value: unknown): HostedCapabilities {
     definitionWrites: body.definitionWrites === undefined ? null : body.definitionWrites === "allowed" ? "allowed" : "refused",
     rootWrites: body.rootWrites === "allowed" ? "allowed" : "refused",
     documentInputBytes: statedDocumentInputBytes(body.limits),
+    blobReads: body.blobReads === "allowed" && statedBlobBytes(body.limits, "blobReadBytes") !== null ? "allowed" : "refused",
+    blobWrites: body.blobWrites === "allowed" && statedBlobBytes(body.limits, "blobWriteBytes") !== null ? "allowed" : "refused",
+    blobReadBytes: statedBlobBytes(body.limits, "blobReadBytes"),
+    blobWriteBytes: statedBlobBytes(body.limits, "blobWriteBytes"),
   });
 }
 

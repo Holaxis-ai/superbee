@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Golden /sync/v1 exchanges generated from the real hosted gateway app (createApp: real bearer admission, tenant selection, kernel operations, the write ledger and Miniflare D1/R2 storage; only the identity issuer is a fixture) at the fixed instant 2030-01-01T00:00:00.000Z. Each file is one request and the exact answer bytes; response headers are limited to content-type, etag, x-superbee-root-version and x-superbee-write-settled (and content-disposition on the export). The 200 export answer's zip is recorded as bodyBase64.",
-  "source": "Holaxis-ai/superbee-hosted 3e902de7578b89db512efbc9420c17566d07a5d1",
+  "source": "Holaxis-ai/superbee-hosted 5f8d47cbf00994d7cfb625204dd32e63cad759a3",
   "generator": "superbee-hosted test/support/sync-v1-exchanges.ts",
   "exchanges": [
     {
@@ -759,6 +759,186 @@
         "400"
       ],
       "status": 400
+    },
+    {
+      "name": "blob-create-200-ok",
+      "file": "blob-create-200-ok.json",
+      "route": "/sync/v1/blob-create",
+      "rows": [
+        "blob create 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-create-200-conflict",
+      "file": "blob-create-200-conflict.json",
+      "route": "/sync/v1/blob-create",
+      "rows": [
+        "blob create 200 version_conflict"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-read-200-binary",
+      "file": "blob-read-200-binary.json",
+      "route": "/sync/v1/blob-read",
+      "rows": [
+        "blob read 200 binary"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-replace-200-noop",
+      "file": "blob-replace-200-noop.json",
+      "route": "/sync/v1/blob-replace",
+      "rows": [
+        "blob replace 200 noop"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-replace-200-type-only",
+      "file": "blob-replace-200-type-only.json",
+      "route": "/sync/v1/blob-replace",
+      "rows": [
+        "blob replace 200 type-only"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-replace-200-stale-type",
+      "file": "blob-replace-200-stale-type.json",
+      "route": "/sync/v1/blob-replace",
+      "rows": [
+        "blob replace 200 stale-type conflict"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-outcome-200-original",
+      "file": "blob-outcome-200-original.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "blob outcome 200 committed"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-outcome-200-refused",
+      "file": "blob-outcome-200-refused.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "blob outcome 200 refused"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-outcome-200-absent",
+      "file": "blob-outcome-200-absent.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "blob outcome 200 absent"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-outcome-403-read-grant",
+      "file": "blob-outcome-403-read-grant.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "blob outcome 403 access_denied"
+      ],
+      "status": 403
+    },
+    {
+      "name": "blob-outcome-400-malformed",
+      "file": "blob-outcome-400-malformed.json",
+      "route": "/sync/v1/outcome",
+      "rows": [
+        "blob outcome 400 invalid_input"
+      ],
+      "status": 400
+    },
+    {
+      "name": "blob-read-409-stale-type",
+      "file": "blob-read-409-stale-type.json",
+      "route": "/sync/v1/blob-read",
+      "rows": [
+        "blob read 409 version_conflict"
+      ],
+      "status": 409
+    },
+    {
+      "name": "blob-read-400-view",
+      "file": "blob-read-400-view.json",
+      "route": "/sync/v1/blob-read",
+      "rows": [
+        "blob read 400 excluded"
+      ],
+      "status": 400
+    },
+    {
+      "name": "blob-create-200-read-grant",
+      "file": "blob-create-200-read-grant.json",
+      "route": "/sync/v1/blob-create",
+      "rows": [
+        "blob create 200 insufficient_scope"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-create-400-digest",
+      "file": "blob-create-400-digest.json",
+      "route": "/sync/v1/blob-create",
+      "rows": [
+        "blob create 400 invalid_input"
+      ],
+      "status": 400
+    },
+    {
+      "name": "blob-heads-200-page",
+      "file": "blob-heads-200-page.json",
+      "route": "/sync/v1/blob-heads",
+      "rows": [
+        "blob heads 200 page"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-delete-200-ok",
+      "file": "blob-delete-200-ok.json",
+      "route": "/sync/v1/blob-delete",
+      "rows": [
+        "blob delete 200 ok"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-delete-200-absent",
+      "file": "blob-delete-200-absent.json",
+      "route": "/sync/v1/blob-delete",
+      "rows": [
+        "blob delete 200 absent conflict"
+      ],
+      "status": 200
+    },
+    {
+      "name": "blob-heads-409-moved",
+      "file": "blob-heads-409-moved.json",
+      "route": "/sync/v1/blob-heads",
+      "rows": [
+        "blob heads 409 concurrent_change"
+      ],
+      "status": 409
+    },
+    {
+      "name": "blob-delete-428-held",
+      "file": "blob-delete-428-held.json",
+      "route": "/sync/v1/blob-delete",
+      "rows": [
+        "blob delete 428 deletions_held"
+      ],
+      "status": 428
     }
   ]
 }
