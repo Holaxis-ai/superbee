@@ -1,9 +1,9 @@
 /** One identified blob delivery or outcome lookup through the caller's carrier. This wire
  * adapter preserves typed evidence; it never resends, reads a current head, or interprets an
  * absent outcome as permission to deliver again. Client journaling and recovery live elsewhere. */
-import { assertSafeBlobKey } from "../paths.js";
+import { captureBlobWriteExpected, encodeBlobKey } from "../blob-contract.js";
+import { isWriteRequestId } from "../write-identity.js";
 import { isHostedBundleId } from "../dependencies.js";
-import { resolveContentType } from "../content-type.js";
 import { isContentVersion } from "../version-transport.js";
 import { sha256HexOfBytes } from "../sha256.js";
 import {
@@ -47,26 +47,16 @@ export interface HostedBlobWriteAdapter {
 }
 const MAXIMUM_BLOB_BYTES = 16 * 1024 * 1024;
 const ANSWER_BYTES = 64 * 1024;
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const only = (value: object, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key));
-const mime = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 1024 && /^[\x20-\x7e]+$/.test(value) && value === value.trim() && resolveContentType("blob", value) === value;
 function snapshot(intent: BlobWriteExpected, identity: HostedBlobWriteIdentity): { intent: BlobWriteExpected; identity: HostedBlobWriteIdentity; keyHeader: string } {
   if (!record(intent) || !record(identity)) throw new TypeError("blob intent and identity must be objects");
   const copied = { ...intent }, id = { ...identity };
   const deletion = copied.operationId === "blobs.delete.v1";
-  if (!["blobs.create.v1", "blobs.replace.v1", "blobs.delete.v1"].includes(copied.operationId) ||
-      !only(copied, deletion ? ["operationId", "key", "expectedVersion", "expectedContentType"] : ["operationId", "key", "expectedVersion", "expectedContentType", "version", "contentType"])) throw new TypeError("unsupported blob intent");
-  try { assertSafeBlobKey(copied.key); } catch { throw new TypeError("unsafe blob key"); }
-  const keyBytes = new TextEncoder().encode(copied.key);
-  if (keyBytes.length > 512 || new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(keyBytes) !== copied.key) throw new TypeError("unrepresentable blob key");
-  if (copied.operationId === "blobs.create.v1" ? copied.expectedVersion !== null || copied.expectedContentType !== null : !isContentVersion(copied.expectedVersion) || !mime(copied.expectedContentType)) throw new TypeError("blob preconditions are required");
-  if (copied.operationId !== "blobs.delete.v1" && (!isContentVersion(copied.version) || !mime(copied.contentType))) throw new TypeError("blob replacement pins are required");
-  if (!only(id, ["requestId", "binding", "via", "acceptDeletes"]) || typeof id.requestId !== "string" || !UUID_V4.test(id.requestId) || !isContentVersion(id.binding) ||
+  captureBlobWriteExpected(copied);
+  if (!only(id, ["requestId", "binding", "via", "acceptDeletes"]) || typeof id.requestId !== "string" || !isWriteRequestId(id.requestId) || !isContentVersion(id.binding) ||
       id.via !== undefined && !isAgentLabelVia(id.via) || id.acceptDeletes !== undefined && (!deletion || !isAcceptedDeletionCount(id.acceptDeletes))) throw new TypeError("invalid blob write identity");
-  let binaryKey = "";
-  for (const byte of keyBytes) binaryKey += String.fromCharCode(byte);
-  return { intent: Object.freeze(copied), identity: Object.freeze(id), keyHeader: btoa(binaryKey).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "") };
+  return { intent: Object.freeze(copied), identity: Object.freeze(id), keyHeader: encodeBlobKey(copied.key) };
 }
 function immutable<T extends BlobWriteResult>(result: T): T {
   Object.freeze(result.ok ? result.data : result.error);

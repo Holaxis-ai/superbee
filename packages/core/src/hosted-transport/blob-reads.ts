@@ -1,8 +1,8 @@
 /** Ordinary opaque-file reads over the supplied hosted carrier. Metadata is published only
  * after a whole consistent listing; bytes only after their length, digest and exact MIME pin
  * are verified. This adapter neither changes the document reader nor supplies credentials. */
-import { assertSafeBlobKey, compareStorageKeys } from "../paths.js";
-import { resolveContentType } from "../content-type.js";
+import { compareStorageKeys } from "../paths.js";
+import { captureBlobHead, type BlobHead } from "../blob-contract.js";
 import { sha256HexOfBytes, sha256HexOfUtf8 } from "../sha256.js";
 import { isContentVersion } from "../version-transport.js";
 import { malformed, onRoute, RemoteError } from "../remote-error.js";
@@ -10,11 +10,7 @@ import { HostedAnswerTooLarge, HostedCarrierError, type HostedCarrier } from "./
 import { HostedReadAdapterError, readRefusal, type HostedCapabilities } from "./read-adapter.js";
 import { HEADS_PAGE_ATTEMPTS, isPageRestart, pageRestartDelay, pause } from "./paged-reads.js";
 
-export interface HostedBlobHead {
-  readonly key: string;
-  readonly version: string;
-  readonly contentType: string;
-}
+export type HostedBlobHead = BlobHead;
 export interface HostedBlobHeads {
   readonly bundleId: string;
   readonly revision: number;
@@ -51,15 +47,10 @@ const record = (value: unknown): value is Record<string, unknown> => typeof valu
 const only = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key));
 const whole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 function head(value: unknown): HostedBlobHead {
-  if (!record(value) || !only(value, ["key", "version", "contentType"]) || typeof value.key !== "string" || !isContentVersion(value.version) ||
-      typeof value.contentType !== "string" || value.contentType.length === 0 || value.contentType.length > 1024 ||
-      !/^[\x20-\x7e]+$/.test(value.contentType) || value.contentType !== value.contentType.trim() ||
-      resolveContentType(value.key, value.contentType) !== value.contentType) throw malformed("malformed blob head");
-  try { assertSafeBlobKey(value.key); } catch { throw malformed("unsafe blob key"); }
-  const encoded = new TextEncoder().encode(value.key);
-  if (encoded.length > 512 || new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(encoded) !== value.key) throw malformed("unrepresentable blob key");
-  return Object.freeze({ key: value.key, version: value.version, contentType: value.contentType });
+  try { return captureBlobHead(value); }
+  catch (error) { throw malformed(error instanceof Error ? error.message : "malformed blob head"); }
 }
+
 function tooLarge(maximum: number): HostedCarrierError {
   return new HostedCarrierError("unavailable", { cause: new HostedAnswerTooLarge(maximum) });
 }
