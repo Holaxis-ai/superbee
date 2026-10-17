@@ -67,25 +67,23 @@ Your role is defined by the verbs you own, not by what a packet happens to reque
 | Builder | One coherent change, scoped smoke, commit, SHA report | Push, PR, CI dispatch, sync, publish, release assets |
 | Reviewer or QA | Exact-SHA evaluation and named probes | Modify the reviewed SHA, push, sync, publish, release assets |
 | Researcher | Read-only evidence and a durable finding | Repository or external mutations not explicitly authorized |
-| Orchestrator or solo agent | Claim, integrate, bundle sync, one branch push, CI dispatch; open or merge a named PR after explicit human delegation and green required checks | Infer PR, merge, release, deployment, or other external authority from general implementation approval |
+| Orchestrator or solo agent | Claim, integrate, bundle sync, one branch push, CI dispatch; open or merge an explicitly delegated named PR; merge only after green required reviews/checks | Infer PR, merge, release, deployment, or other external authority from general implementation approval |
 | CI | Authoritative shipping verdict on the pushed SHA | Substitute a result from another SHA |
 | Human | PR and merge gate; product, disclosure, and release decisions | None delegated by implication |
 
-A dispatched builder produces one claim's worth of change, runs:
-
-```sh
-npm run build
-npm run typecheck
-npm test -w <touched-package>
-```
+For code changes, a dispatched builder runs root `npm run build` and `npm run typecheck`, then the
+owning targeted tests named in its packet. Documentation-only and test-only policy corrections use
+the proportional checks in [CONTRIBUTING.md](CONTRIBUTING.md#checks-and-ci). Full repository or
+package suites are not the default local smoke. CONTRIBUTING owns the scope and exceptions; the
+packet names a supported runtime, required dependencies, and fixture permissions before long runs.
 
 It commits and reports the SHA plus the exit codes it observed. This is a pre-commit smoke, not the
-shipping gate. Reviews and research run only the evidence their packet names; they do not perform a
-ritual full gate.
+shipping gate. Reviews and research reuse that evidence and run only their named focused probes.
 
 The orchestrator verifies commit scope and provenance, integrates builders, pushes the feature
-branch once, and ensures CI is running on that exact SHA. If no PR exists, dispatch the `CI tests`
-workflow for the branch. Do not rerun valid builder evidence merely to duplicate it. If evidence is
+branch once, and ensures CI is running on that exact SHA. Open a named PR promptly when explicitly
+delegated; dispatch `CI tests` only when no PR will exist promptly. A branch dispatch is not a serial
+prerequisite to PR CI. Do not rerun valid builder evidence merely to duplicate it. If evidence is
 missing, stale, or from a changed tree, rerun the smallest relevant smoke.
 
 CI on the pushed SHA is the shipping verdict. A local lane or `npm run check` is never reported as
@@ -136,8 +134,8 @@ Apply these cross-cutting rules:
 - Recurring bug classes move into an owning primitive or shared row table, not one-off reminders.
 - Terms such as `canonical`, `parity`, `gate`, `verified`, and `proven` require executable or
   traceable evidence.
-- Build from the repository root. Fresh worktrees install their own dependencies before test
-  results are trusted.
+- Build from the repository root. Fresh worktrees install their own dependencies before
+  dependency-backed test results are trusted; CONTRIBUTING owns the documentation-only exception.
 - Verify a command by its own exit code. Do not infer success from a piped `tail` or `grep`.
 - Keep full verification output in temporary logs; inspect bounded failures and summaries.
 
@@ -214,8 +212,9 @@ Do not add AI attribution or `Co-Authored-By` lines to commits.
 The human owns the PR and merge gate. Without explicit delegation, agents do not open or merge pull
 requests and must instead provide a plain-ASCII, paste-ready PR title and description after pushing
 the feature branch. A human maintainer may explicitly delegate opening or merging a named branch or
-PR to the orchestrator. The orchestrator may act only after applicable review and required CI checks
-pass. That delegation does not imply release, publication, deployment, permission, or other
+PR to the orchestrator. Opening the explicitly delegated PR after the branch push starts PR CI;
+it does not declare the change ready. Merging requires all applicable reviews and required CI checks
+to pass. That delegation does not imply release, publication, deployment, permission, or other
 external authority.
 
 When a unit closes:
