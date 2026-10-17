@@ -84,6 +84,35 @@ export interface OperationTransport {
   lookup(requestId: string): Promise<Outcome | null>;
 }
 
+/** Minimal classification for recorded-only delivery. A commit need not invent a new-head
+ * version (for example, an identified blob delete can carry its complete absence receipt). */
+export type RecordedWriteOutcome =
+  | { kind: "committed" }
+  | { kind: "conflict" }
+  | { kind: "refused"; code: string; message: string }
+  | { kind: "unknown" };
+export type RecordedWriteIntent = Pick<OperationIntent, "requestId" | "kind" | "target" | "createdAt" | "attempts" | "state">;
+export interface RecordedWriteTransport<I extends RecordedWriteIntent, O extends RecordedWriteOutcome> {
+  submit(intent: I, options?: { signal?: AbortSignal }): Promise<O>;
+  /** Null/absence is inconclusive and NEVER grants this path permission to submit. */
+  lookup(requestId: string): Promise<O | null>;
+}
+/** Explicit starts are for callers that own persistence, not proof minted by this primitive.
+ * submit-claimed requires a freshly successful durable in_flight CAS, held under the checkout
+ * lock, immediately before this call; its counted attempt is sent at most once. After reopening,
+ * or when that freshness cannot be established, use lookup. Replaying a stored claim is NOT a
+ * fresh CAS. Nor does a new CAS prove an earlier unclear delivery cannot still commit: those
+ * identities must use lookup. This function creates no ticket or journal persistence itself. */
+export type RecordedWriteOptions = Omit<UncertainWriteOptions, "settlement" | "maxSubmissions" | "earlierDeliveryUnclear"> & {
+  settlement: "recorded-only";
+  start: "submit-claimed" | "lookup";
+};
+export interface RecordedWriteResult<I extends RecordedWriteIntent, O extends RecordedWriteOutcome> {
+  intent: Omit<I, "attempts" | "state"> & Pick<RecordedWriteIntent, "attempts" | "state">;
+  outcome: O | { kind: "unknown" };
+  lookups: number;
+}
+
 /** Wait `ms`, resolving early and harmlessly when `signal` aborts. Injected by tests. */
 export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
@@ -139,12 +168,12 @@ export const AUTHORIZATION_REFUSAL_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /** True when a refusal reports lost permission, which pauses further shared operations. */
-export function isAuthorizationRefusal(outcome: Outcome): boolean {
+export function isAuthorizationRefusal(outcome: Outcome | RecordedWriteOutcome): boolean {
   return outcome.kind === "refused" && AUTHORIZATION_REFUSAL_CODES.has(outcome.code);
 }
 
 /** The journal state an outcome settles an intent into. */
-export function stateForOutcome(outcome: Outcome): OperationState {
+export function stateForOutcome(outcome: Outcome | RecordedWriteOutcome): OperationState {
   switch (outcome.kind) {
     case "committed":
       return "acknowledged";
@@ -222,7 +251,7 @@ export function settleAgainstIntent(outcome: Outcome, intent: OperationIntent): 
  * One submission under a deadline. A transport rejection or a deadline overrun both yield
  * `unknown`: the request may have reached the authority, so nothing here decides otherwise.
  */
-async function submitOnce(transport: OperationTransport, intent: OperationIntent, deadlineMs: number | undefined, sleep: Sleep): Promise<Outcome> {
+async function submitOnce<I extends RecordedWriteIntent, O extends RecordedWriteOutcome>(transport: RecordedWriteTransport<I, O>, intent: I, deadlineMs: number | undefined, sleep: Sleep): Promise<O | typeof UNKNOWN> {
   const controller = new AbortController();
   const attempt = transport.submit(intent, { signal: controller.signal }).then(
     (outcome) => ({ settled: true as const, outcome }),
@@ -271,17 +300,35 @@ async function submitOnce(transport: OperationTransport, intent: OperationIntent
  * By default every outcome passes through {@link settleAgainstIntent}, so a conflict naming the
  * intent's own version is committed. `recorded-only` preserves the recorded outcome instead.
  */
+export function performUncertainWrite<I extends RecordedWriteIntent, O extends RecordedWriteOutcome>(
+  transport: RecordedWriteTransport<I, O>, intent: I, options: RecordedWriteOptions,
+): Promise<RecordedWriteResult<I, O>>;
+/** Compatibility path: a complete document intent, with the existing counters/resubmission
+ * defaults. Body delivery's recorded-only call without start remains on this path. */
+export function performUncertainWrite(
+  transport: OperationTransport, intent: OperationIntent, options?: UncertainWriteOptions,
+): Promise<UncertainWriteResult>;
 export async function performUncertainWrite(
-  transport: OperationTransport,
-  intent: OperationIntent,
-  options: UncertainWriteOptions = {},
-): Promise<UncertainWriteResult> {
+  transport: RecordedWriteTransport<RecordedWriteIntent, RecordedWriteOutcome>, intent: RecordedWriteIntent,
+  options: UncertainWriteOptions & { start?: "submit-claimed" | "lookup" } = {},
+): Promise<RecordedWriteResult<RecordedWriteIntent, RecordedWriteOutcome>> {
+  const explicitStart = "start" in options;
+  if (explicitStart) {
+    if (options.settlement !== "recorded-only" || (options.start !== "submit-claimed" && options.start !== "lookup") ||
+        !Number.isSafeInteger(intent.attempts) || intent.attempts < 0 ||
+        !["pending", "in_flight", "acknowledged", "conflict", "refused", "unknown"].includes(intent.state) ||
+        (options.start === "submit-claimed" && (intent.state !== "in_flight" || intent.attempts < 1))) throw new Error("Invalid recorded-only delivery start or durable claim.");
+    // Capture the descriptor before the first asynchronous boundary. Additional prepared data
+    // belongs to the typed caller; the primitive neither fabricates nor interprets its fields.
+    intent = { ...intent };
+    options = { ...options };
+  }
   if (options.settlement !== undefined && options.settlement !== "exact-content" && options.settlement !== "recorded-only") {
     throw new Error("Unknown uncertain-write settlement mode.");
   }
   const sleep = options.sleep ?? defaultSleep;
   const maxLookups = Math.max(1, options.maxLookups ?? 3);
-  const maxSubmissions = Math.max(1, options.maxSubmissions ?? 2);
+  const maxSubmissions = explicitStart ? 1 : Math.max(1, options.maxSubmissions ?? 2);
   const lookupDelayMs = options.lookupDelayMs ?? 250;
   const { signal } = options;
   // Whether a submission of this identity may still be held by the authority unanswered.
@@ -290,18 +337,20 @@ export async function performUncertainWrite(
   let attempts = intent.attempts;
   let submissions = 0;
   let lookups = 0;
-  const finish = (raw: Outcome): UncertainWriteResult => {
-    const outcome = options.settlement === "recorded-only" ? raw : settleAgainstIntent(raw, intent);
+  const finish = (raw: RecordedWriteOutcome): RecordedWriteResult<RecordedWriteIntent, RecordedWriteOutcome> => {
+    // Only the compatibility overload admits exact-content settlement and it requires the
+    // original full OperationIntent/Outcome contract. Explicit starts never use those fields.
+    const outcome = options.settlement === "recorded-only" ? raw : settleAgainstIntent(raw as Outcome, intent as OperationIntent);
     return { intent: { ...intent, attempts, state: stateForOutcome(outcome) }, outcome, lookups };
   };
 
   // A previously submitted intent starts at the lookup, never at a submission.
-  let needSubmission = attempts === 0;
+  let needSubmission = explicitStart ? options.start === "submit-claimed" : attempts === 0;
   for (;;) {
     if (needSubmission) {
-      if (submissions >= maxSubmissions || (submissions > 0 && signal?.aborted)) return finish(UNKNOWN);
+      if (submissions >= maxSubmissions || ((explicitStart || submissions > 0) && signal?.aborted)) return finish(UNKNOWN);
       submissions += 1;
-      attempts += 1;
+      if (!explicitStart) attempts += 1;
       const outcome = await submitOnce(transport, { ...intent, attempts, state: "in_flight" }, options.deadlineMs, sleep);
       // A resend refused before it reached execution (no credential, access withdrawn, a spent
       // quota) is evidence about that resend only: an earlier, unclear delivery may still be held
@@ -311,7 +360,7 @@ export async function performUncertainWrite(
       unclear = true;
     }
     needSubmission = false;
-    let recorded: Outcome | null | undefined;
+    let recorded: RecordedWriteOutcome | null | undefined;
     for (let round = 0; round < maxLookups; round++) {
       if (signal?.aborted) break;
       if (round > 0) await sleep(lookupDelayMs, signal);
@@ -327,6 +376,7 @@ export async function performUncertainWrite(
     }
     if (recorded === undefined) return finish(UNKNOWN);
     if (recorded !== null) return finish(recorded);
+    if (explicitStart) return finish(UNKNOWN);
     needSubmission = true;
   }
 }

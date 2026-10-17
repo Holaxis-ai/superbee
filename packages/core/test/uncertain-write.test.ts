@@ -234,3 +234,112 @@ test("mintRequestId returns distinct UUIDs", () => {
   assert.match(a, /^[0-9a-f-]{36}$/);
   assert.notEqual(a, b);
 });
+
+// The explicit recorded-only path carries typed evidence without pretending a delete writes a
+// document or a replacement version. Its caller owns the fresh durable claim and checkout lock.
+interface DeleteClaim {
+  requestId: string; kind: "blobs.delete.v1"; target: string; createdAt: string;
+  attempts: number; state: "pending" | "in_flight" | "unknown";
+}
+type DeleteEvidence = {
+  kind: "committed";
+  receipt: { scope: string; head: null; removed: { version: string; contentType: string } };
+};
+const deleteClaim = (attempts = 1): DeleteClaim => ({ requestId: "blob-delete", kind: "blobs.delete.v1", target: "opaque.bin", createdAt: "2026-10-17T00:00:00Z", attempts, state: "in_flight" });
+const deleteEvidence = (contentType = "application/original"): DeleteEvidence => ({ kind: "committed", receipt: { scope: "checkout", head: null, removed: { version: VERSION, contentType } } });
+
+test("submit-claimed sends the counted claim once and preserves a typed delete receipt without a version", async () => {
+  const original = deleteClaim(3), chosen = deleteEvidence();
+  let sends = 0;
+  const result = await performUncertainWrite({
+    async submit(claim: DeleteClaim) {
+      sends++;
+      assert.deepEqual(claim, original);
+      assert.equal("base" in claim || "local" in claim || "content" in claim, false);
+      return chosen;
+    },
+    async lookup() { assert.fail("no lookup for an immediate recorded commit"); },
+  }, original, { settlement: "recorded-only", start: "submit-claimed" });
+  assert.equal(sends, 1);
+  assert.equal(result.intent.attempts, 3);
+  assert.equal(result.intent.state, "acknowledged");
+  assert.equal(result.intent.kind, "blobs.delete.v1");
+  assert.equal(result.outcome, chosen);
+  if (result.outcome.kind !== "committed") assert.fail("typed commit expected");
+  assert.equal(result.outcome.receipt.head, null);
+  assert.equal(result.outcome.receipt.removed.contentType, "application/original");
+  assert.equal("version" in result.outcome, false);
+  assert.equal(original.state, "in_flight");
+});
+
+test("explicit starts reject unsafe counts, unclaimed submission states and conflicting modes before transport", async () => {
+  let calls = 0;
+  const transport = { async submit() { calls++; return deleteEvidence(); }, async lookup() { calls++; return null; } };
+  for (const count of [0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(performUncertainWrite(transport, deleteClaim(count), { settlement: "recorded-only", start: "submit-claimed" }), /durable claim/);
+  }
+  for (const state of ["pending", "unknown", "acknowledged", "invalid"]) {
+    await assert.rejects(performUncertainWrite(transport, { ...deleteClaim(), state } as DeleteClaim, { settlement: "recorded-only", start: "submit-claimed" }), /durable claim/);
+  }
+  for (const options of [{ settlement: "exact-content", start: "submit-claimed" }, { settlement: "recorded-only", start: "invalid" }, { settlement: "recorded-only", start: undefined }]) {
+    await assert.rejects(performUncertainWrite(transport, deleteClaim(), options as never), /delivery start/);
+  }
+  await assert.rejects(performUncertainWrite(transport, deleteClaim(-1), { settlement: "recorded-only", start: "lookup" }), /durable claim/);
+  assert.equal(calls, 0);
+});
+
+test("lookup starts never send after absent evidence or failed lookup, including a reopened counted claim", async () => {
+  for (const attempts of [0, 1, Number.MAX_SAFE_INTEGER]) {
+    for (const fails of [false, true]) {
+      let sends = 0, lookups = 0;
+      const result = await performUncertainWrite({
+        async submit() { sends++; return deleteEvidence(); },
+        async lookup(requestId: string) { assert.equal(requestId, "blob-delete"); lookups++; if (fails) throw new Error("offline"); return null; },
+      }, deleteClaim(attempts), { settlement: "recorded-only", start: "lookup", maxLookups: 2, sleep: immediate });
+      assert.equal(sends, 0);
+      assert.equal(lookups, fails ? 2 : 1);
+      assert.equal(result.intent.attempts, attempts);
+      assert.deepEqual(result.outcome, { kind: "unknown" });
+    }
+  }
+});
+
+test("a claimed unknown submission cannot resend after absence and an aborted claim is never sent", async () => {
+  let sends = 0, lookups = 0;
+  const transport = {
+    async submit() { sends++; return { kind: "unknown" as const }; },
+    async lookup() { lookups++; return null; },
+  };
+  const result = await performUncertainWrite(transport, deleteClaim(), { settlement: "recorded-only", start: "submit-claimed", maxSubmissions: 20 } as never);
+  assert.equal(sends, 1); assert.equal(lookups, 1);
+  assert.equal(result.intent.attempts, 1);
+  assert.deepEqual(result.outcome, { kind: "unknown" });
+  const controller = new AbortController(); controller.abort();
+  const stopped = await performUncertainWrite(transport, deleteClaim(), { settlement: "recorded-only", start: "submit-claimed", signal: controller.signal });
+  assert.equal(sends, 1); assert.equal(lookups, 1);
+  assert.equal(stopped.intent.attempts, 1);
+  assert.deepEqual(stopped.outcome, { kind: "unknown" });
+});
+
+test("a deadline-late candidate cannot replace the selected typed lookup receipt or selected unknown", async () => {
+  for (const found of [true, false]) {
+    let release!: (evidence: DeleteEvidence) => void;
+    const chosen = deleteEvidence("application/selected; exact=Yes");
+    let sends = 0;
+    const result = await performUncertainWrite({
+      submit() { sends++; return new Promise<DeleteEvidence>(resolve => { release = resolve; }); },
+      async lookup() { return found ? chosen : null; },
+    }, deleteClaim(), { settlement: "recorded-only", start: "submit-claimed", deadlineMs: 1, sleep: immediate });
+    assert.equal(sends, 1);
+    assert.equal(result.intent.attempts, 1);
+    if (found) assert.equal(result.outcome, chosen);
+    else assert.deepEqual(result.outcome, { kind: "unknown" });
+    release(deleteEvidence("application/late"));
+    await Promise.resolve(); await Promise.resolve();
+    if (found) {
+      assert.equal(result.outcome.kind, "committed");
+      if (result.outcome.kind !== "committed") assert.fail("selected receipt expected");
+      assert.equal(result.outcome.receipt.removed.contentType, "application/selected; exact=Yes");
+    } else assert.deepEqual(result.outcome, { kind: "unknown" });
+  }
+});
