@@ -107,8 +107,9 @@ export async function performHostedBlobDelivery(context: HostedBlobDeliveryConte
         const answer = await call(attempt?.signal, false, adapter => adapter.send(prepared.intent, { ...prepared.identity, ...(acceptDeletes === undefined ? {} : { acceptDeletes }) }, bytes));
         if (answer.status === 428 && answer.result !== undefined && !answer.result.ok && prepared.intent.operationId === "blobs.delete.v1") {
           const classified = classifyBlobWriteAnswer({ status: 428, body: { error: answer.result.error }, headers: new Headers() }, prepared.intent);
-          if (classified.result && equalJournalValue(classified.result, answer.result) && classified.row.answer === "428 deletions_held" && equalJournalValue(classified.row, answer.row) && answer.result.error.writeState === "not_applied" && (row.notAppliedThrough ?? 0) === row.attempts - 1) {
-            return freeze({ kind: "not-executed", attempts: row.attempts, details: captureBlobDeletionHold({ deletions: answer.result.error.deletions!, baseline: answer.result.error.baseline! }) });
+          const captured = classified.result;
+          if (captured && !captured.ok && equalJournalValue(captured, answer.result) && classified.row.answer === "428 deletions_held" && equalJournalValue(classified.row, answer.row) && captured.error.writeState === "not_applied" && (row.notAppliedThrough ?? 0) === row.attempts - 1) {
+            return freeze({ kind: "not-executed", attempts: row.attempts, details: captureBlobDeletionHold({ deletions: captured.error.deletions!, baseline: captured.error.baseline! }) });
           }
           return UNKNOWN;
         }

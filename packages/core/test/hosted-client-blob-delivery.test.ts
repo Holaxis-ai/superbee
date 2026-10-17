@@ -258,3 +258,16 @@ test("hold-shaped answers cannot fill uncertainty, lookup proof, wrong status or
   const controller = new AbortController();
   const cancelled = await performHostedBlobDelivery(stub({ send: async () => { controller.abort(); return { status: 428, row: updateRow("428 deletions_held"), result: result as never, settled: false }; }, lookup: unused }), row, { start: "submit-claimed", signal: controller.signal }); assert.equal(cancelled.outcome.kind, "unknown"); assert.equal(cancelled.patch.notAppliedThrough, undefined);
 });
+
+
+test("held proof retains classifier-captured counts when a supplied row getter mutates port evidence", async () => {
+  const { row, exchange } = retained("blob-delete-428-held");
+  const raw = JSON.parse(exchange.response.body), result = { ok: false, operationId: "blobs.delete.v1", error: raw.error };
+  let reads = 0;
+  const answer = { status: 428, result, settled: false, get row() { reads++; result.error.deletions = 99; return updateRow("428 deletions_held"); } };
+  const selected = await performHostedBlobDelivery(stub({ send: async () => answer as never, lookup: unused }), row, { start: "submit-claimed" });
+  assert.ok(reads > 0); assert.equal(result.error.deletions, 99);
+  assert.equal(selected.outcome.kind, "not-executed");
+  assert.deepEqual(selected.patch.deletionHold, { deletions: 3, baseline: 5 });
+  assert.equal(selected.patch.notAppliedThrough, 1); assert.equal(selected.patch.receipt, undefined);
+});
