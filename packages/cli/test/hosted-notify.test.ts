@@ -574,3 +574,34 @@ test("each verb's --help is focused and needs no folder", async () => {
   const unknown = await rejects(() => inbox(["done", "item-1"], { stdout: () => {} }));
   assert.equal(unknown.code, "USAGE");
 });
+
+test("every next step a notify --doc --bundle receipt prints runs as an inbox command", async () => {
+  const a = await account({ targetAuthorityKey: "orgs", tenants: ["tenant:a", "tenant:b"], workspaces: [{ tenantId: "tenant:a", slug: "north" }, { tenantId: "tenant:b", slug: "tenant-b" }], slug: "north" });
+  const cwd = await folder("local");
+  const id = [...a.host.docs.keys()][0]!;
+  const sent = await runAt(a, cwd, notify, ["self", "--kind", "review_requested", "--doc", id, "--bundle", `north/${BUNDLE}`]);
+  const steps = sent.help as string[];
+  assert.ok(steps.length > 0);
+  for (const line of steps) {
+    assert.ok(!line.includes("--bundle"), `inbox next steps take no --bundle: ${line}`);
+    const words = line.split(" ");
+    const from = words.indexOf("inbox") + 1;
+    const to = words.findIndex((w) => w === "reads" || w === "withdraws");
+    const args = words.slice(from, to).map((w) => w.replace(/^'|'$/g, ""));
+    await inbox([...args, "--json"], { stdout: () => undefined, cwd, hosted: { auth: a.auth, fetch: a.fetch } });
+  }
+});
+
+test("signed out with --host naming a host never signed in to: AUTH_REQUIRED and no request at all", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "sb-notify-signed-out-"));
+  const requests: string[] = [];
+  const spy = (async (input: string | URL | Request) => {
+    requests.push(String(input));
+    throw new TypeError("offline");
+  }) as typeof fetch;
+  const auth = defaultHostedAuthDeps(home, { env: {}, fetch: spy });
+  const cwd = await folder("none");
+  const error = await rejects(() => runAt({ auth, fetch: spy }, cwd, notify, ["self", "hi", "--host", "https://other.example"]));
+  assert.deepEqual(requests, [], "a signed-out notify sent nothing");
+  assert.equal(error.code, "AUTH_REQUIRED");
+});

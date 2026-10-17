@@ -59,6 +59,8 @@ export interface InboxSession {
   readonly resume: CommandText;
   /** The arguments a next-step command carries to reach the same inbox (` --dir <path>` or ` --host <url> [--workspace <w>]`). */
   readonly scopeArgs: CommandText;
+  /** The arguments a `notify` re-send needs: `scopeArgs` plus the `--bundle` a document send named. */
+  readonly notifyArgs: CommandText;
   /** The bundle a `--doc` names a document of: the checkout's, `--bundle`'s, or none. */
   readonly documents: InboxDocumentBundle | null;
 }
@@ -118,7 +120,7 @@ export async function openInboxSession(
         help: `${cliInvocation()} checkout --adopt ${commandToken(binding.path)} --workspace <id> binds it to its workspace again`,
       });
     }
-    return { inbox: inboxFor(client, tenantId), via: "checkout", binding, client, target, identity, tenantId, resume, scopeArgs, documents: { bundleId: binding.bundle_id, client } };
+    return { inbox: inboxFor(client, tenantId), via: "checkout", binding, client, target, identity, tenantId, resume, scopeArgs, notifyArgs: scopeArgs, documents: { bundleId: binding.bundle_id, client } };
   }
 
   // A document target names a hosted bundle: the checkout's, or one named with --bundle. Refused
@@ -135,10 +137,11 @@ export async function openInboxSession(
   if (scope.bundle !== undefined && typed === null) {
     throw new CliError("USAGE", `'${scope.bundle}' is not a hosted bundle id or <workspace>/<bundle-id>`, { help: helpFor(command) });
   }
+  // Inbox commands take no --bundle; only a notify re-send of a document send carries it.
+  const accountFlags = (host: string | undefined, workspace: string | undefined) =>
+    commandFragment`${host === undefined ? commandFragment`` : commandFragment` --host ${commandToken(host)}`}${workspace === undefined ? commandFragment`` : commandFragment` --workspace ${commandToken(workspace)}`}`;
   const flags = (host: string | undefined, workspace: string | undefined) =>
-    commandFragment`${host === undefined ? commandFragment`` : commandFragment` --host ${commandToken(host)}`}${workspace === undefined ? commandFragment`` : commandFragment` --workspace ${commandToken(workspace)}`}${
-      scope.bundle === undefined ? commandFragment`` : commandFragment` --bundle ${commandToken(scope.bundle)}`
-    }`;
+    commandFragment`${accountFlags(host, workspace)}${scope.bundle === undefined ? commandFragment`` : commandFragment` --bundle ${commandToken(scope.bundle)}`}`;
   const account = await connectSignedInAccount({ host: scope.host, workspace: scope.workspace, resume: resumeFor(flags(scope.host, scope.workspace)), command }, deps.hosted);
   const { client, target, identity } = account;
   const named = (tenantId: string) => identity.workspaces.find((w) => w.tenantId === tenantId)?.slug ?? tenantId;
@@ -159,8 +162,10 @@ export async function openInboxSession(
       help: `re-run with --workspace set to one of: ${names.join(", ")} (${cliInvocation()} setup hosted --workspace <id> records a default)`,
     });
   }
-  const scopeArgs = flags(account.hostArgument, identity.tenantIds.length > 1 ? named(tenantId) : undefined);
-  return { inbox: inboxFor(client, tenantId), via: "account", binding: null, client, target, identity, tenantId, resume: resumeFor(scopeArgs), scopeArgs, documents };
+  const shownWorkspace = identity.tenantIds.length > 1 ? named(tenantId) : undefined;
+  const scopeArgs = accountFlags(account.hostArgument, shownWorkspace);
+  const notifyArgs = flags(account.hostArgument, shownWorkspace);
+  return { inbox: inboxFor(client, tenantId), via: "account", binding: null, client, target, identity, tenantId, resume: resumeFor(notifyArgs), scopeArgs, notifyArgs, documents };
 }
 
 /** The tenant the checkout's bundle is in: the binding's, else its slug's, else the person's only one. */

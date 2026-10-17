@@ -198,7 +198,7 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
   try {
     receipt = await session.inbox.request(input);
   } catch (error) {
-    throw await inboxFailure(error, session, { ticketHelp: (ticket) => "re-run with the same ticket within 24 hours, which never makes a second item: " + resumeFor(session.scopeArgs, ticket) });
+    throw await inboxFailure(error, session, { ticketHelp: (ticket) => "re-run with the same ticket within 24 hours, which never makes a second item: " + resumeFor(session.notifyArgs, ticket) });
   }
   const toSelf = recipient.principalId === identity.principalId;
   stdout(
