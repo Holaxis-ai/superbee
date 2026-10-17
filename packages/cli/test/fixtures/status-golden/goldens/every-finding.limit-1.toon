@@ -1,0 +1,159 @@
+home: local
+sync: none (local only)
+docs: 40
+kinds: 7
+malformed: 1
+kind_warnings: 3
+unresolved_links: 1
+orphans: 9
+stale: 2
+invalid_stale_after: 1
+invalid_timestamps: 2
+invalid_legacy_timestamps: 1
+no_timestamp: 1
+registry_warnings: 3
+link_type_violations: 1
+missing_expected_links: 2
+cross_bundle_links: 8
+cross_bundle_unresolved: 2
+cross_bundle_unchecked: 6
+trust:
+  human_reviewed: 1
+  machine_confirmed: 1
+  unverified: 38
+terminal_skipped: 1
+conformance_debt: 2
+dangling_view_entries: 1
+invalid_view_registrations: 1
+malformed_docs:
+  shown: 1
+  total: 1
+  rows[1]{id,reason}:
+    notes/broken,"unexpected end of the stream within a flow collection at line 2, column 1:"
+kind_lint:
+  shown: 1
+  total: 3
+  rows[1]{id,field,code}:
+    widgets/bad-enum,priority,KIND_FIELD_VALUE
+conformance_debt_docs:
+  shown: 1
+  total: 2
+  rows[1]{id,type}:
+    widgets/bad-enum,Widget
+  help: npx --no-install superbee doc update <id> --<field> <value>  — fix a listed doc's missing/invalid field(s); see 'npx --no-install superbee kinds' for each governing kind's declared fields
+unresolved:
+  shown: 1
+  total: 1
+  rows[1]{from,href}:
+    notes/linker,../ghosts/nope.md
+orphan_docs:
+  shown: 1
+  total: 9
+  rows[1]{id,type}:
+    items/done-crate,Crate
+  help: "npx --no-install superbee link add <from> <id>  — link each listed doc into the graph, or 'npx --no-install superbee doc delete <id>' if it is unintended"
+stale_docs:
+  shown: 1
+  total: 2
+  rows[1]{id,stale_after}:
+    notes/expired,"2026-01-01T00:00:00Z"
+invalid_stale_after_docs:
+  shown: 1
+  total: 1
+  rows[1]{id,type,value}:
+    notes/date-only,Note,2026-12-01
+  reason: "The stale_after deadline cannot be evaluated: expected an ISO-8601 instant with Z or a UTC offset; date-only and malformed values remain stored unchanged."
+  help: npx --no-install superbee doc update <id> --stale-after <ISO-8601 instant with Z or UTC offset>
+invalid_timestamp_fields:
+  shown: 1
+  total: 2
+  rows[1]{id,type,field,value}:
+    notes/bad-generated,Note,generated.at,2026-09-08
+  reason: Standard OKF timestamps require an ISO-8601 date and time with Z or a UTC offset. Ambiguous or invalid stored values remain unchanged.
+  help: Choose the intended instant and repair each named field with an explicit UTC offset.
+invalid_legacy_timestamp_fields:
+  shown: 1
+  total: 1
+  rows[1]{id,type,field,value}:
+    notes/bad-legacy,Note,timestamp,2026-09-08
+  reason: The effective legacy timestamp is not a valid ISO-8601 date and time with an explicit UTC offset. Stored values remain unchanged.
+  help: "Use evidence of the intended instant to repair timestamp with Z or a numeric UTC offset in the document frontmatter, or remove the optional timestamp. No offset is inferred."
+no_timestamp_docs:
+  shown: 1
+  total: 1
+  rows[1]{id,type}:
+    widgets/no-ts,Widget
+link_type_violations_rows:
+  shown: 1
+  total: 1
+  rows[1]{from,to,text,expected}:
+    items/box-to-note,notes/target,contains,Box -> Crate
+missing_expected_links_rows:
+  shown: 1
+  total: 2
+  rows[1]:
+    - id: items/lonely-shelf
+      status: draft
+      missing[1]: holds
+dependencies:
+  shown: 1
+  total: 4
+  rows[1]{alias,bundle_id,state,bound,pin}:
+    beers,golden-beers,unbound,null,null
+dependency_problems:
+  shown: 1
+  total: 1
+  rows[1]{code,alias,detail}:
+    DEP_UNKNOWN_KEY,wines,unknown key 'note'
+cross_bundle_unresolved_rows:
+  shown: 1
+  total: 2
+  rows[1]{from,href,reason,detail}:
+    menus/whale,"okf://ciders/ciders/dry.md",unknown_alias,alias 'ciders' is not declared in docs/dependencies
+cross_bundle_link_type_violations_rows:
+  shown: 1
+  total: 2
+  rows[1]{from,href,text,expected}:
+    menus/whale,../notes/target.md,pours,"Menu Item -> beers:Beer"
+dangling_view_entries_rows:
+  shown: 1
+  total: 1
+  rows[1]{id,entry}:
+    views-registry/ghost,views/ghost.html
+invalid_view_registrations_rows:
+  shown: 1
+  total: 1
+  rows[1]{id,problem}:
+    notes/view-shaped,id
+registry_lint:
+  shown: 1
+  total: 3
+  rows[1]{code,message,field,severity}:
+    KIND_CONVENTION_MALFORMED,"skipped malformed kind convention 'conventions/broken': missing or empty 'governs' field",conventions/broken,warning
+legacy_naming:
+  note: "FINDING — the legacy View names are no longer accepted: a 'type: Page' doc does not register (the ui launcher ignores it), a legacy 'bridge:' field grants nothing (access resolves to none), and a Convention still governing the legacy 'Page' name scaffolds docs the runtime ignores. Legacy pages-registry//pages/ LOCATIONS remain recognized."
+  page_typed_docs: 1
+  bridge_field_docs: 1
+  page_convention_docs: 1
+  legacy_prefix_items: 2
+  help: "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` (in the Superbee repo) to rename the listed docs in place — types flip to View, bridge renames to access, and the shipped View convention is refreshed"
+  page_typed_rows:
+    shown: 1
+    total: 1
+    rows[1]{id}:
+      pages-registry/retired
+  bridge_field_rows:
+    shown: 1
+    total: 1
+    rows[1]{id}:
+      views-registry/bridged
+  page_convention_rows:
+    shown: 1
+    total: 1
+    rows[1]{id}:
+      conventions/page
+  legacy_prefix_rows:
+    shown: 1
+    total: 2
+    rows[1]{id,store}:
+      pages-registry/retired,doc
