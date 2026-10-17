@@ -42,6 +42,7 @@ import { CORE_VALUE_CODES, OverlayRefusal, REFUSAL_CODES, type RefusalCode } fro
 import { NEVER_OWNED, workStateFields } from "./policy.js";
 import { redactUrl } from "./redact.js";
 import { resolveAttentionKind, type AttentionResolution } from "./signal-kind.js";
+import { isPlannedObservation, isPlannedSignalBody, signalLinkTexts } from "./signal-text.js";
 import type {
   ApplyContext,
   ApplyOwnedFieldsStep,
@@ -158,11 +159,28 @@ function notOwned(message: string, details: Record<string, unknown> = {}): Overl
   return new OverlayRefusal(REFUSAL_CODES.FIELD_NOT_OWNED, message, details);
 }
 
+/** The run a Signal write is bound to: the caller's provider and target Kind, the plan's feed and observation. */
+interface SignalRun {
+  observedAt: string;
+  provider: string;
+  feed: string | null;
+  targetKind: string | undefined;
+  feedKind: string | undefined;
+}
+
+/**
+ * Signal text that is not this rendering of the Signal's own fields is held, not dropped: a plan
+ * the planner made always matches, and a mismatch is refused visibly and planned again next run.
+ */
+function textNotPlanned(): OverlayRefusal {
+  return new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "Signal text is not the planned rendering of its fields", { reason: "signal-text-not-planned", field: "(body)" });
+}
+
 /**
  * The Signal create guard: a new attention Kind document under its path, fixed keys, state `todo`.
  * Exported for this package's tests only; the subpath entry does not re-export it.
  */
-export function signalCreateGuard(attention: AttentionResolution, step: CreateSignalStep, run: { observedAt: string; provider: string }): AssertCandidate {
+export function signalCreateGuard(attention: AttentionResolution, step: CreateSignalStep, run: SignalRun): AssertCandidate {
   return (_existing, candidate) => {
     if (!attention.ok) throw notOwned(`record-overlay creates documents of an attention Kind only: ${attention.reason}`, { external_id: step.external_id });
     const { name, prefix, stateField } = attention.value;
@@ -178,30 +196,9 @@ export function signalCreateGuard(attention: AttentionResolution, step: CreateSi
     }
     if (fm.provider !== redactUrl(run.provider)) throw notOwned("create-signal must name the run's provider", { field: "provider", external_id: step.external_id });
     if (fm.external_id !== step.external_id) throw notOwned("create-signal must name the step's record", { field: "external_id", external_id: step.external_id });
-    if (!plannedSignalBody(candidate.body, run.observedAt)) throw notOwned("create-signal body is not a planned Signal body", { fields: ["(body)"], external_id: step.external_id });
+    const context = { target: step.target, feed: run.feed, targetKind: run.targetKind, links: signalLinkTexts(attention.value.kind, run.targetKind, run.feedKind) };
+    if (fm.observed_at !== run.observedAt || !isPlannedSignalBody(candidate.body, fm, step.content_digest, context)) throw textNotPlanned();
   };
-}
-
-const LINE_BREAK = /[\r\n\u0085\u2028\u2029]/;
-/** One observation line of this observation: no line break of any kind, the planner's prefix. */
-function observationLineOf(text: string, observedAt: string): boolean {
-  return !LINE_BREAK.test(text) && text.startsWith(`- ${observedAt} · `);
-}
-const PREAMBLE_LINES = [
-  /^\[[^\]]+\]\([^)\s]+\)$/,
-  /^Overlay document \(content bundle\): `[^`]+`$/,
-  /^Related document \(content bundle\): `[^`]+`(?: \(.*\))?$/,
-  /^To overlay this record, give a document of Kind "[^"]*" the source entry `resource: [^`]*`, `id: [^`]*`\.$/,
-];
-/**
- * The planner's Signal body: link and hint lines (at most eight), a `# Observations` heading and
- * exactly one observation line of this observation.
- */
-function plannedSignalBody(body: string, observedAt: string): boolean {
-  const match = /^([\s\S]*?)# Observations\n\n([^\n]*)\n$/.exec(body);
-  if (!match || !observationLineOf(match[2]!, observedAt)) return false;
-  const lines = match[1]!.split("\n").filter((text) => text !== "");
-  return lines.length <= 8 && lines.every((text) => !LINE_BREAK.test(text) && PREAMBLE_LINES.some((pattern) => pattern.test(text)));
 }
 
 const UPDATE_FIELDS = new Set(["change_kind", "priority", "observed_at", "diff_summary", "title", "external_id", "about_doc", "content_digest", "expires_at"]);
@@ -211,7 +208,7 @@ const UPDATE_FIELDS = new Set(["change_kind", "priority", "observed_at", "diff_s
  * and one appended observation line of this observation.
  * Exported for this package's tests only; the subpath entry does not re-export it.
  */
-export function signalUpdateGuard(attention: AttentionResolution, step: CollapseSignalStep, observation: { observedAt: string; provider: string }): AssertCandidate {
+export function signalUpdateGuard(attention: AttentionResolution, step: CollapseSignalStep, observation: Pick<SignalRun, "observedAt" | "provider">): AssertCandidate {
   return (existing, candidate) => {
     if (!attention.ok) throw notOwned(`record-overlay updates documents of an attention Kind only: ${attention.reason}`, { external_id: step.external_id });
     const { name, prefix } = attention.value;
@@ -220,15 +217,13 @@ export function signalUpdateGuard(attention: AttentionResolution, step: Collapse
     }
     const before = existing.frontmatter as unknown as Record<string, unknown>;
     if (before.provider !== redactUrl(observation.provider)) throw notOwned("collapse-signal target belongs to another provider", { field: "provider", external_id: step.external_id });
-    if (!observationLineOf(step.observation_line, observation.observedAt)) {
-      throw notOwned("collapse-signal observation line must be one line of this observation", { fields: ["(body)"], external_id: step.external_id });
-    }
     const after = candidate.frontmatter as unknown as Record<string, unknown>;
     const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !same(before[k], after[k]));
     const outside = changed.filter((k) => !UPDATE_FIELDS.has(k));
     const appended = existing.body.replace(/\n*$/, "\n") + step.observation_line + "\n";
     if (candidate.body !== existing.body && candidate.body !== appended) outside.push("(body)");
     if (outside.length) throw notOwned(`collapse-signal would change fields outside the attention update: ${outside.join(", ")}`, { fields: outside, external_id: step.external_id });
+    if (step.set.observed_at !== observation.observedAt || !isPlannedObservation(step.observation_line, step.set, step.content_digest)) throw textNotPlanned();
   };
 }
 
@@ -352,7 +347,7 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
   if (signalSteps && (typeof policy.provider !== "string" || policy.provider === "")) {
     throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, "Signal steps need the run's provider identity");
   }
-  const run = { observedAt: plan.observed_at, provider: policy.provider };
+  const run: SignalRun = { observedAt: plan.observed_at, provider: policy.provider, feed: plan.feed, targetKind: policy.target_kind, feedKind: ctx.signals?.feedKind };
   const attention: AttentionResolution = signalSteps
     ? resolveAttentionKind(ops.registry, opsEdition, ctx.signals?.kind ?? "Signal", policy.target_kind)
     : { ok: false, reason: "no Signal steps" };

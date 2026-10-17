@@ -11,13 +11,12 @@
  * `external_id` (default: the key) whose facts changed is updated in place, never duplicated.
  */
 import { queryHeads } from "../bundle-ops.js";
-import { relativeHref } from "../links.js";
 import { overlayCanonicalJson } from "./canonical.js";
 import { sha256, shortHash } from "./digest.js";
 import { OverlayRefusal, REFUSAL_CODES } from "./errors.js";
 import { maxPriority } from "./policy.js";
 import { redactUrl } from "./redact.js";
-import { signalLinkTexts } from "./plan.js";
+import { isConceptId, linkLine, observationLine, relatedLine, signalBody, signalLinkTexts } from "./signal-text.js";
 import { resolveAttentionKind } from "./signal-kind.js";
 import type { Finding, FindingsInput, OverlayStep } from "./types.js";
 
@@ -47,7 +46,7 @@ export async function planFindings({ ops, provider, feed, slug, findings, observ
     const externalId = f.external_id ?? f.key;
     const priority = f.priority !== undefined && PRIORITIES.has(f.priority) ? f.priority : "normal";
     const summary = clip(f.summary ?? f.title, 600);
-    const line = `- ${observedAt} · ${f.change_kind ?? FINDING_CHANGE_KIND} · ${digest} · ${summary}`;
+    const line = observationLine(observedAt, f.change_kind ?? FINDING_CHANGE_KIND, digest, summary);
     const dup = mine.find((h) => h.frontmatter.content_digest === digest && live(h));
     if (dup) { steps.push({ op: "signal-duplicate", target: dup.id, external_id: externalId, content_digest: digest, finding: f.key }); continue; }
     const open = mine.find((h) => h.frontmatter.external_id === externalId && h.frontmatter[progressField] === "todo" && !h.frontmatter[ownerField] && live(h));
@@ -64,8 +63,9 @@ export async function planFindings({ ops, provider, feed, slug, findings, observ
     // An expiring finding raised again after expiry is a new Signal, so its id names the expiry too.
     const id = `${prefix}${slug}-${f.expires_at ? shortHash(slug, f.key, digest, f.expires_at) : shortHash(slug, f.key, digest)}`;
     const linkLines: string[] = [];
-    if (fromFeed && feed) linkLines.push(`[${fromFeed}](${relativeHref(id, feed)})`);
-    for (const r of [...new Set([f.about_doc, ...(f.related ?? [])].filter(Boolean))]) linkLines.push(`Related document (content bundle): \`${r}\``);
+    if (fromFeed && feed) linkLines.push(linkLine(fromFeed, id, feed));
+    // Related documents are linked by id; a value that is not a document id has no line.
+    for (const r of [...new Set([f.about_doc, ...(f.related ?? [])].filter(isConceptId))]) linkLines.push(relatedLine(r));
     const frontmatter = {
       type: signalName, title: set.title, [progressField]: "todo", change_kind: set.change_kind, observed_at: observedAt,
       provider: providerOut, external_id: externalId, diff_summary: summary, priority, content_digest: digest,
@@ -73,7 +73,7 @@ export async function planFindings({ ops, provider, feed, slug, findings, observ
       sources: (f.sources?.length ? f.sources : [{ resource: providerOut }]).map((s) => ({ ...s, resource: redactUrl(s.resource) })),
     };
     steps.push({ op: "create-signal", target: id, external_id: externalId, content_digest: digest, finding: f.key, reasons: ["finding"],
-      candidate: { frontmatter, body: `${linkLines.join("\n")}\n\n# Observations\n\n${line}\n` } });
+      candidate: { frontmatter, body: signalBody(linkLines, undefined, line) } });
   }
   return steps;
 }

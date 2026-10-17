@@ -6,8 +6,6 @@
  * the same bundle.
  */
 import { queryHeads, readDocVersioned } from "../bundle-ops.js";
-import type { KindConvention } from "../kinds.js";
-import { relativeHref } from "../links.js";
 import type { Bundle, HeadResult } from "../types.js";
 import { parseIsoInstant } from "../verification.js";
 import { shortHash } from "./digest.js";
@@ -15,6 +13,7 @@ import { OverlayRefusal, REFUSAL_CODES } from "./errors.js";
 import { decideChange, isExcludedRecord, maxPriority, severity } from "./policy.js";
 import { redactUrl } from "./redact.js";
 import { resolveAttentionKind } from "./signal-kind.js";
+import { adoptionHint, linkLine, observationLine, oneLine, overlayLine, relatedLine, signalBody, signalLinkTexts } from "./signal-text.js";
 import { buildSourceIndex, type SourceIndex } from "./source-index.js";
 import type {
   ChangeDecision,
@@ -30,14 +29,6 @@ import type {
 
 const LABEL: Record<string, string> = { new: "New", changed: "Changed", canceled: "Canceled", disappeared: "Disappeared", "page-changed": "Page changed" };
 const PRIORITIES = new Set(["low", "normal", "urgent"]);
-
-/** The attention Kind's link vocabulary, derived from its convention, never hard-coded. */
-export function signalLinkTexts(signalKind: KindConvention | undefined, targetKind: string | undefined, feedKind = "Source Feed"): { fromFeed?: string; about?: string } {
-  const links = signalKind?.links ?? {};
-  const fromFeed = Object.keys(links).find((t) => links[t] === feedKind);
-  const about = targetKind ? Object.keys(links).find((t) => links[t] === targetKind) : undefined;
-  return { fromFeed, about };
-}
 
 const short = (v: unknown): string => {
   if (v === undefined) return "∅";
@@ -92,10 +83,6 @@ export function summarizeChange(
   for (const w of decision?.wording ?? []) parts.push(`not applied, needs a human-safe wording: ${w.field}: ${short(w.text)} (${[...new Set(w.tells.map((t) => `${t.code} "${t.match}"`))].join(", ")})`);
   const s = parts.join("; ");
   return s.length > 600 ? s.slice(0, 599) + "…" : s;
-}
-
-function observationLine(observedAt: string, change: RecordChange, summary: string): string {
-  return `- ${observedAt} · ${change.change_kind} · ${change.content_digest} · ${summary}`;
 }
 
 /** Scalar `sources` properties from the hook, refused when they would name the identity or hold a list. */
@@ -212,7 +199,7 @@ export async function planRecordOverlay(input: PlanInput): Promise<OverlayPlan> 
     const aboutDoc = links.length === 1 ? { about_doc: links[0]!.id } : {};
 
     const summary = withRelated(summarizeChange(change, decision, policy.owned_fields, { phase }), links);
-    const line = observationLine(observedAt, change, summary);
+    const line = observationLine(observedAt, change.change_kind, change.content_digest, summary);
     // Dedupe on (feed, external_id, change_kind, content_digest): any Signal whose observation log
     // names that change of that digest. The kind matters: a disappearance carries the digest of the
     // record's last presence, which a `new` Signal may already have logged.
@@ -245,12 +232,12 @@ export async function planRecordOverlay(input: PlanInput): Promise<OverlayPlan> 
     // A disappearance reuses the last digest, so its Signal id also names the kind.
     const id = `${signalPrefix}${feedSlug}-${change.change_kind === "disappeared" ? shortHash(policy.feed, change.external_id, change.content_digest, "disappeared") : shortHash(policy.feed, change.external_id, change.content_digest)}`;
     const linkLines: string[] = [];
-    if (fromFeed) linkLines.push(`[${fromFeed}](${relativeHref(id, policy.feed)})`);
-    if (overlay && about && sameBundle) linkLines.push(`[${about}](${relativeHref(id, overlay.id)})`);
-    else if (overlay) linkLines.push(`Overlay document (content bundle): \`${overlay.id}\``);
-    for (const r of links) linkLines.push(`Related document (content bundle): \`${r.id}\` (${r.reason})`);
+    if (fromFeed) linkLines.push(linkLine(fromFeed, id, policy.feed));
+    if (overlay && about && sameBundle) linkLines.push(linkLine(about, id, overlay.id));
+    else if (overlay) linkLines.push(overlayLine(overlay.id));
+    for (const r of links) linkLines.push(relatedLine(r.id, r.reason));
     // Record-only feeds have nothing to overlay; the claimant decides what to author from the record.
-    const adopt = overlay || !policy.target_kind ? "" : `\nTo overlay this record, give a document of Kind "${policy.target_kind}" the source entry \`resource: ${providerOut}\`, \`id: ${change.external_id}\`.\n`;
+    const hint = overlay || !policy.target_kind ? undefined : adoptionHint(policy.target_kind, providerOut, change.external_id);
     const frontmatter = {
       type: signalName,
       title: signalTitle(change.change_kind, recTitle, change.external_id),
@@ -265,7 +252,7 @@ export async function planRecordOverlay(input: PlanInput): Promise<OverlayPlan> 
       // A source entry's title is text on OKF v0.2; a numeric or boolean record title is written as its text.
       sources: [{ resource: providerOut, id: change.external_id, ...(recTitle ? { title: typeof recTitle === "number" || typeof recTitle === "boolean" ? String(recTitle) : recTitle } : {}) }],
     };
-    const body = `${linkLines.join("\n")}\n${adopt}\n# Observations\n\n${line}\n`;
+    const body = signalBody(linkLines, hint, line);
     steps.push({ op: "create-signal", target: id, external_id: change.external_id, content_digest: change.content_digest, reasons: signal.reasons, candidate: { frontmatter, body } });
   }
   return {
@@ -290,7 +277,8 @@ async function correlationIndex(contentBundle: Bundle, correlate: CorrelateHook 
     const out: Related[] = [];
     for (const h of heads) {
       const m = correlate.match(fields, h.frontmatter, externalId);
-      if (m && m.reason) out.push({ id: h.id, reason: String(m.reason).slice(0, 120), priority: m.priority });
+      // The reason sits on the related line of a Signal body, so it is kept to one line.
+      if (m && m.reason) out.push({ id: h.id, reason: oneLine(String(m.reason).slice(0, 120)), priority: m.priority });
     }
     return out.sort((a, b) => a.id.localeCompare(b.id)).slice(0, 5);
   };

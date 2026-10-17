@@ -49,8 +49,9 @@ const obsLine = (kind = "new", digest = DIGEST("9")) => `- ${AT} · ${kind} · $
 function createStep(target: string, frontmatter: Record<string, unknown>, body = `[from feed](../source-feeds/synthetic-library.md)\n\n# Observations\n\n${obsLine()}\n`, externalId = UID("009")): CreateSignalStep {
   return { op: "create-signal", target, external_id: externalId, content_digest: DIGEST("9"), reasons: ["test"], candidate: { frontmatter: frontmatter as OkfDocument["frontmatter"], body } };
 }
+/** A collapse as the planner renders it: the update carries its observation time and summary, and the line is rendered from them. */
 function collapseStep(target: string, version: Version, set: Record<string, unknown>, observation = `- ${AT} · changed · ${DIGEST("8")} · changed`): CollapseSignalStep {
-  return { op: "collapse-signal", target, expected_version: version, external_id: UID("009"), content_digest: DIGEST("8"), progress_field: "superbee_progress_status", observation_line: observation, set };
+  return { op: "collapse-signal", target, expected_version: version, external_id: UID("009"), content_digest: DIGEST("8"), progress_field: "superbee_progress_status", observation_line: observation, set: { observed_at: AT, diff_summary: "changed", ...set } };
 }
 function ownedStep(target: string, version: Version, fields: Record<string, { from?: unknown; to?: unknown }>, over: Record<string, unknown> = {}): OverlayStep {
   return { op: "apply-owned-fields", target, expected_version: version, external_id: UID("009"), change_kind: "changed", fields, ...over } as OverlayStep;
@@ -221,29 +222,36 @@ test("m1 written plan values must be JSON data with finite numbers and no protot
 
 // ------------------------------------------------------------------------------- m2 Signal text bounds
 
-test("m2 observation lines refuse every line break; create bodies keep the planner's shape", async () => {
+test("m2 forged Signal text is held: a collapse line that is not its update's rendering, and create bodies the planner cannot produce", async () => {
   const w = await overlayWorld();
-  for (const breaker of [" ", " ", "\u0085"]) {
+  const held = { reason: "signal-text-not-planned", field: "(body)" };
+  for (const breaker of ["\u2028", "\u2029", "\u0085", "\n"]) {
     const version = await w.put("signals/open", signalFm("0.2"), `# Observations\n\n${obsLine()}\n`, "ops");
-    const r = await applyRecordOverlay(planOf([collapseStep("signals/open", version, { title: "Changed: x" }, `- ${AT} · changed · d · one${breaker}two`)]), ctxOf(w));
-    assert.equal(r.results[0]!.code, "FIELD_NOT_OWNED", JSON.stringify(breaker));
+    const r = await applyRecordOverlay(planOf([collapseStep("signals/open", version, { title: "Changed: x" }, `- ${AT} · changed · ${DIGEST("8")} · changed${breaker}- injected`)]), ctxOf(w));
+    assert.deepEqual([r.results[0]!.code, r.results[0]!.details], ["INVALID_INPUT", held], JSON.stringify(breaker));
+    assert.ok(HOLD_STORE.has(r.results[0]!.code!));
     assert.equal((await w.read("signals/open", "ops")).version, version);
   }
   const free = "Free text an attacker wants every triager to read. ".repeat(100);
   const bodies = [
     `${free}\n\n# Observations\n\n${obsLine()}\n`,
-    `[from feed](../source-feeds/x.md)\n\n# Observations\n\n${obsLine()}\n- second line\n`,
-    `# Observations\n\n- 2020-01-01T00:00:00Z · new · d · old observation\n`,
+    `[from feed](../source-feeds/synthetic-library.md)\n\n# Observations\n\n${obsLine()}\n- second line\n`,
+    `\n\n# Observations\n\n- 2020-01-01T00:00:00Z · new · d · old observation\n`,
     `${Array.from({ length: 9 }, (_, i) => `[link ${i}](../tasks/t${i}.md)`).join("\n")}\n\n# Observations\n\n${obsLine()}\n`,
-    `[from feed](../source-feeds/x.md) injected\n\n# Observations\n\n${obsLine()}\n`,
-    `# Observations\n\n${obsLine()}`,
+    `[from feed](../source-feeds/synthetic-library.md)\u2028injected\n\n# Observations\n\n${obsLine()}\n`,
+    `[from feed](../source-feeds/other-feed.md)\n\n# Observations\n\n${obsLine()}\n`,
+    `Related document (content bundle): \`../escape\`\n\n# Observations\n\n${obsLine()}\n`,
+    `\nTo overlay this record, give a document of Kind "Event" the source entry \`resource: ${PROVIDER}\`, \`id: someone-else\`.\n\n# Observations\n\n${obsLine()}\n`,
+    `\n\n# Observations\n\n${obsLine()}`,
   ];
   for (const body of bodies) {
     const r = await applyRecordOverlay(planOf([createStep("signals/forged-body", signalFm("0.2"), body)]), ctxOf(w));
-    assert.deepEqual([r.results[0]!.code, r.results[0]!.details], ["FIELD_NOT_OWNED", { fields: ["(body)"], external_id: UID("009") }], body.slice(0, 60));
+    assert.deepEqual([r.results[0]!.code, r.results[0]!.details], ["INVALID_INPUT", held], body.slice(0, 60));
   }
+  assert.ok(!Object.keys(await w.snapshot("ops")).includes("signals/forged-body"));
   const planned = [
-    `[from feed](../source-feeds/synthetic-library.md)\nOverlay document (content bundle): \`events/x\`\nRelated document (content bundle): \`places/y\` (same street address)\n\nTo overlay this record, give a document of Kind "Event" the source entry \`resource: ${PROVIDER}\`, \`id: e-1\`.\n\n# Observations\n\n${obsLine()}\n`,
+    `[from feed](../source-feeds/synthetic-library.md)\nOverlay document (content bundle): \`events/x\`\nRelated document (content bundle): \`places/y\` (same street address)\n\nTo overlay this record, give a document of Kind "Event" the source entry \`resource: ${PROVIDER}\`, \`id: ${UID("009")}\`.\n\n# Observations\n\n${obsLine()}\n`,
+    `[about event](../events/story-time.md)\n\n# Observations\n\n${obsLine()}\n`,
     `\n\n# Observations\n\n${obsLine()}\n`,
   ];
   for (const [index, body] of planned.entries()) {

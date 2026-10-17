@@ -57,10 +57,11 @@ function ownedStep(version: Version, fields: Record<string, { from?: unknown; to
 }
 const startStep = (version: Version, over: Record<string, unknown> = {}) => ownedStep(version, { start: { from: STORY.start, to: LATER } }, over);
 function createStep(target: string, frontmatter: Record<string, unknown> = SIGNAL_FM): CreateSignalStep {
-  return { op: "create-signal", target, external_id: UID("009"), content_digest: DIGEST("9"), reasons: ["test"], candidate: { frontmatter: frontmatter as OkfDocument["frontmatter"], body: `# Observations\n\n- ${AT} · new · ${DIGEST("9")} · new record\n` } };
+  return { op: "create-signal", target, external_id: UID("009"), content_digest: DIGEST("9"), reasons: ["test"], candidate: { frontmatter: frontmatter as OkfDocument["frontmatter"], body: `\n\n# Observations\n\n- ${AT} · new · ${DIGEST("9")} · new record\n` } };
 }
+/** A collapse as the planner renders it: the update carries its observation time and summary, and the line is rendered from them. */
 function collapseStep(target: string, version: Version, set: Record<string, unknown>, observation = line(), over: Partial<CollapseSignalStep> = {}): CollapseSignalStep {
-  return { op: "collapse-signal", target, expected_version: version, external_id: UID("009"), content_digest: DIGEST("8"), progress_field: "superbee_progress_status", observation_line: observation, set, ...over };
+  return { op: "collapse-signal", target, expected_version: version, external_id: UID("009"), content_digest: DIGEST("8"), progress_field: "superbee_progress_status", observation_line: observation, set: { observed_at: AT, diff_summary: "changed", ...set }, ...over };
 }
 const typeViolation = () => new OverlayRefusal("FIELD_TYPE_VIOLATION", "candidate violates declared field types: start (datetime)", { kind: "Event", violations: [{ field: "start", type: "datetime", code: "KIND_FIELD_TYPE" }] });
 
@@ -256,18 +257,20 @@ test("m3 sourceIdentityOf is the one reading of an entry's identity, shared by m
 
 // ------------------------------------------------------------------------------- m4 the bounded Signal update
 
-test("m4 a collapse needs the plan's provider and one observation line of this observation", async () => {
+test("m4 a collapse needs the run's provider (refused) and an observation line rendered from its update (held otherwise)", async () => {
   const w = await overlayWorld();
-  for (const [name, fm, observation] of [
-    ["another provider", { ...SIGNAL_FM, provider: OTHER }, line()],
-    ["several lines", SIGNAL_FM, `${line()}\n- injected`],
-    ["a carriage return", SIGNAL_FM, `${line()}\r- injected`],
-    ["another observation", SIGNAL_FM, `- 2026-01-01T00:00:00Z · changed · d · old`],
-    ["no prefix", SIGNAL_FM, "free text"],
-  ] as Array<[string, Record<string, unknown>, string]>) {
+  for (const [name, fm, observation, code] of [
+    ["another provider", { ...SIGNAL_FM, provider: OTHER }, line(), "FIELD_NOT_OWNED"],
+    ["an injected line", SIGNAL_FM, `${line()}\n- injected`, "INVALID_INPUT"],
+    ["a carriage return", SIGNAL_FM, `${line()}\r- injected`, "INVALID_INPUT"],
+    ["another observation", SIGNAL_FM, `- 2026-01-01T00:00:00Z · changed · ${DIGEST("8")} · changed`, "INVALID_INPUT"],
+    ["another digest", SIGNAL_FM, `- ${AT} · changed · ${DIGEST("7")} · changed`, "INVALID_INPUT"],
+    ["no prefix", SIGNAL_FM, "free text", "INVALID_INPUT"],
+  ] as Array<[string, Record<string, unknown>, string, string]>) {
     const version = await w.put("signals/open", fm, "# Observations\n", "ops");
     const r = await applyRecordOverlay(planOf([collapseStep("signals/open", version, { title: "Changed: x" }, observation)]), ctxOf(w));
-    assert.equal(r.results[0]!.code, "FIELD_NOT_OWNED", name);
+    assert.equal(r.results[0]!.code, code, name);
+    if (code === "INVALID_INPUT") assert.deepEqual(r.results[0]!.details, { reason: "signal-text-not-planned", field: "(body)" }, name);
     assert.equal((await w.read("signals/open", "ops")).version, version, name);
   }
 });

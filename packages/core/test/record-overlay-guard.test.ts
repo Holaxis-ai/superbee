@@ -60,11 +60,13 @@ function ownedStep(version: Version, fields: Record<string, { from: unknown; to:
   return { op: "apply-owned-fields", target: "events/story-time", expected_version: version, external_id: UID("001"), change_kind: "changed", fields, ...over } as OverlayStep;
 }
 function createStep(target: string, frontmatter: Record<string, unknown>): CreateSignalStep {
-  return { op: "create-signal", target, external_id: UID("009"), content_digest: DIGEST("9"), reasons: ["test"], candidate: { frontmatter: frontmatter as OkfDocument["frontmatter"], body: `# Observations\n\n- ${AT} · new · ${DIGEST("9")} · new record\n` } };
+  return { op: "create-signal", target, external_id: UID("009"), content_digest: DIGEST("9"), reasons: ["test"], candidate: { frontmatter: frontmatter as OkfDocument["frontmatter"], body: `\n\n# Observations\n\n- ${AT} · new · ${DIGEST("9")} · new record\n` } };
 }
 const SIGNAL_FM = { type: "Signal", title: "New: x", superbee_progress_status: "todo", change_kind: "new", observed_at: AT, provider: PROVIDER, external_id: UID("009"), diff_summary: "new record", priority: "low", sources: [{ resource: PROVIDER, id: UID("009") }] };
-function collapseStep(target: string, version: Version, set: Record<string, unknown>, line = `- ${AT} · changed · ${DIGEST("8")} · changed`): CollapseSignalStep {
-  return { op: "collapse-signal", target, expected_version: version, external_id: UID("009"), content_digest: DIGEST("8"), progress_field: "superbee_progress_status", observation_line: line, set };
+/** A collapse as the planner renders it: the update carries its observation time and summary, and the line is rendered from them. */
+function collapseStep(target: string, version: Version, set: Record<string, unknown>, line?: string): CollapseSignalStep {
+  const update = { observed_at: AT, diff_summary: "changed", ...set };
+  return { op: "collapse-signal", target, expected_version: version, external_id: UID("009"), content_digest: DIGEST("8"), progress_field: "superbee_progress_status", observation_line: line ?? `- ${AT} · changed · ${DIGEST("8")} · ${update.diff_summary}`, set: update };
 }
 
 // ------------------------------------------------------------------------------- the ownership guard
@@ -226,9 +228,9 @@ test("G9 the update guard: a collapse may set only the attention update fields",
 test("G9 the update guard: the body may only gain the one observation line; a Signal outside the path is refused", async () => {
   const w = await overlayWorld();
   const attention = resolveAttentionKind(w.ops.registry, "0.2", "Signal", "Event");
-  const line = `- ${AT} · changed · d · one line`;
+  const line = `- ${AT} · changed · ${DIGEST("8")} · one line`;
   const observation = { observedAt: AT, provider: PROVIDER };
-  const step = collapseStep("signals/open", "v", {}, line);
+  const step = collapseStep("signals/open", "v", { diff_summary: "one line" }, line);
   const guard = signalUpdateGuard(attention, step, observation);
   const fresh: OkfDocument = { id: "signals/open", frontmatter: { ...SIGNAL_FM } as never, body: "# Observations\n\n- first\n\n" };
   guard(fresh, { frontmatter: fresh.frontmatter, body: fresh.body });

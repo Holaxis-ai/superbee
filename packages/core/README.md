@@ -202,9 +202,12 @@ editor's override is never overwritten. Each step carries the version it was pla
 runs on the fresh read: an owned-field write reaches documents of the policy's target Kind only,
 may change only owned and derived fields, never the body, and needs the record's `sources`
 identity; a Signal may be created only as a new, unclaimed document of the attention Kind under its
-path, with the planner's body shape, and updated only in a fixed set of fields plus one appended
-line of this observation. Signal writes are bound to the provider of the policy the caller passes,
-never to a field of the plan, and an id held by another provider's Signal is refused. Nothing of the
+path, and updated only in a fixed set of fields plus one appended observation line. Signal writes
+are bound to the provider of the policy the caller passes, never to a field of the plan, and an id
+held by another provider's Signal is refused. A Signal's text must be the planner's rendering of
+its own fields and the run (its observation line, links to the plan's feed and to documents, the
+adoption hint): every plan the planner makes passes, and other text is a held `INVALID_INPUT` row,
+so a mismatch is visible and planned again rather than dropped. Nothing of the
 target Kind is created and nothing is deleted. A feed never owns its target's work state: the
 progress storage fields and the target Kind's claim fields are refused like `status`. The
 attention Kind (default `Signal`) must declare a claim owner and state field and the fields

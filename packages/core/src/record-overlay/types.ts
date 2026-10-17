@@ -164,7 +164,8 @@ export interface ApplyContext {
   policy: Pick<OverlayPolicy, "owned_fields" | "provider" | "target_kind">;
   actor: string;
   overlays?: SourceIndex;
-  signals?: { kind?: string };
+  /** Attention and feed Kind names, as the plan was made with; default `Signal` and `Source Feed`. */
+  signals?: { kind?: string; feedKind?: string };
   hooks?: Pick<OverlayHooks, "assertCandidate" | "deriveFields">;
 }
 
