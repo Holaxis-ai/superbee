@@ -1,8 +1,9 @@
 /** Scoped ordinary-file baselines. Physical capture is bounded and leaf-only; callers own checkout locking. */
-import { captureBlobHead, isBlobContentType, isContentVersion, compareStorageKeys, blobReceipt, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobHead, type BlobTargetScope, type BlobIntentRecord, type BlobIntentPatch, type BlobJournaledBackend, isReservedFile, IntentHoldConflict, type JournaledBackend, type BlobJournalRead } from "@superbee/core/storage";
+import { captureBlobHead, isBlobContentType, isContentVersion, compareStorageKeys, blobReceipt, prepareBlobIntent, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobHead, type BlobTargetScope, type BlobIntentRecord, type BlobIntentPatch, type BlobJournaledBackend, isReservedFile, IntentHoldConflict, type JournaledBackend, type BlobJournalRead } from "@superbee/core/storage";
 import { captureJournalValue, equalJournalValue, JournalGuardConflict } from "@superbee/core/journaled-backend";
 
 import path from "node:path";
+import { mintRequestId } from "@superbee/core/uncertain-write";
 import { FileJournalUnavailableError } from "@superbee/core/file-journaled-backend";
 import { createHostedBlobReadAdapter, HostedCarrierError, HostedReadAdapterError, type HostedCarrier, type HostedCapabilities } from "@superbee/core/hosted-transport";
 import { RemoteError } from "@superbee/core";
@@ -154,4 +155,50 @@ function ordinarySeedKey(key: string): boolean {
   if (isReservedFile(key)) return false;
   const root = fold(key.split("/")[0]!);
   return ![PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX, "conventions/", "recipes/", "references/"].some(prefix => root === prefix.slice(0, -1));
+}
+
+export interface BlobCaptureContext {
+  store: BlobJournaledBackend & Pick<JournaledBackend, "readMeta">;
+  scope: BlobTargetScope;
+  binding: string;
+  via?: string;
+  createdAt: string;
+  allowed: boolean;
+}
+export interface BlobCaptureHold { key: string; reason: "not_sendable" | "unsafe_path"; message: string }
+/** Freeze under the caller's checkout lock; this function never claims, sends or retries. */
+export async function captureTrackedBlobChanges(folder: string, context: BlobCaptureContext, preview = false): Promise<{ keys: ReadonlySet<string>; held: BlobCaptureHold[] }> {
+  const { store } = context;
+  const captured = captureJournalValue({ scope: context.scope, binding: context.binding, ...(context.via === undefined ? {} : { via: context.via }), createdAt: context.createdAt, allowed: context.allowed });
+  const raw = await store.readMeta(BLOB_SYNC_META_KEY), map = decodeBlobSyncMap(raw, captured.scope);
+  const held: BlobCaptureHold[] = [];
+  const outstanding = new Set((await store.listBlobIntents()).filter(row => row.state !== "acknowledged").map(row => row.target));
+  for (const entry of map.entries) {
+    const hold = (message: string, reason: BlobCaptureHold["reason"] = "not_sendable") => held.push({ key: entry.key, reason, message });
+    if (!ordinarySeedKey(entry.key)) { hold(`${entry.key} is a protected namespace; ordinary-file sync does not change it`); continue; }
+    if (outstanding.has(entry.key)) { hold(`${entry.key} has a preserved ordinary-file intent; delivery is not yet enabled`); continue; }
+    const file = path.join(folder, ...entry.key.split("/"));
+    if (await parentUnsafe(folder, file)) { hold(`${entry.key} has an unsafe parent; no deletion or edit was captured`, "unsafe_path"); continue; }
+    const physical = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
+    if (physical.state === "unsafe" || await parentUnsafe(folder, file)) { hold(`${entry.key} is unsafe or exceeds the capture bound; no deletion or edit was captured`, "unsafe_path"); continue; }
+    const digest = physical.state === "missing" ? null : digestOf(physical.bytes);
+    if (!blobSyncDirty(entry, digest)) continue;
+    if (!entry.head) { hold(`${entry.key} has no observed present byte and MIME baseline; it remains local`); continue; }
+    if (!captured.allowed) { hold(`${entry.key} remains local because this host does not allow ordinary-file writes`); continue; }
+    if (!preview) {
+      const snapshot = await readBlobSyncState(store, entry.key, captured.scope);
+      if (!equalJournalValue(snapshot.map, map)) throw new JournalGuardConflict(entry.key);
+      if (snapshot.journal.intents.some(row => row.state !== "acknowledged")) { hold(`${entry.key} has a preserved ordinary-file intent; delivery is not yet enabled`); continue; }
+      const common = { key: entry.key, expectedVersion: entry.head.version, expectedContentType: entry.head.contentType };
+      const intent = physical.state === "missing" ? { operationId: "blobs.delete.v1" as const, ...common } : { operationId: "blobs.replace.v1" as const, ...common, version: digest!, contentType: entry.desiredContentType ?? entry.head.contentType };
+      const prepared = prepareBlobIntent({ scope: captured.scope, intent, identity: { requestId: mintRequestId(), binding: captured.binding, ...(captured.via === undefined ? {} : { via: captured.via }) }, createdAt: captured.createdAt }, physical.state === "present" ? physical.bytes : undefined);
+      try { await store.admitPreparedBlob(prepared, { guard: snapshot.journal.guard }); }
+      catch (error) {
+        if (error instanceof JournalGuardConflict || error instanceof IntentHoldConflict || error instanceof FileJournalUnavailableError || error instanceof RangeError && /exceeds the store's .* byte bound/.test(error.message)) { hold(`${entry.key} could not be captured under its journal guard or capacity; the file remains local`); continue; }
+        throw error;
+      }
+    }
+    hold(`${entry.key} ${preview ? "would be preserved" : "is preserved"} locally; ordinary-file delivery is not yet enabled`);
+  }
+  return { keys: new Set(map.entries.map(row => row.key)), held };
 }

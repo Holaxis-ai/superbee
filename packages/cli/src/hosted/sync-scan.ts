@@ -33,6 +33,8 @@ import { readUserStateFile, writeUserStateFileAtomic0600 } from "../user-state.j
 import { checkoutDir } from "./binding.js";
 import { digestOf, ensureParentInside, fold, parentUnsafe, placeNew, PLACEMENT_TEMP, replaceGuarded, ROOT_INDEX, UnsafePlacementError } from "./projection.js";
 
+import { captureTrackedBlobChanges, type BlobCaptureContext } from "./blob-sync.js";
+
 export const PROJECTION_FILE = "projection.json";
 const PROJECTION_SCHEMA = 2;
 const PROJECTION_BYTES = 8 * 1024 * 1024;
@@ -399,6 +401,8 @@ export interface DeletionHold {
 }
 
 export interface ScanReport {
+  /** Ordinary-file rows held without entering document counters or transport. */
+  blobHeld?: number;
   /** Documents whose edits were journaled by this scan. */
   readonly committed: string[];
   /** Set when this scan's deletions were held as a mass delete. */
@@ -579,6 +583,8 @@ function foldedPath(id: string): string {
 }
 
 export interface ScanContext {
+  /** Optional file-journal-only capture; never a generic backend requirement. */
+  readonly blobs?: BlobCaptureContext;
   readonly folder: string;
   readonly bundleId: string;
   readonly okfVersion: "0.1" | "0.2" | undefined;
@@ -706,9 +712,13 @@ export async function scanCheckout(context: ScanContext): Promise<ScanReport> {
   const { folder, local, projection } = context;
   const report: ScanReport = { committed: [], deleted: [], managedOnly: [], held: [], conflicted: [], pending: [] };
   const seen = new Set<string>();
+  const blobs = context.blobs ? await captureTrackedBlobChanges(folder, context.blobs, context.preview) : { keys: new Set<string>(), held: [] };
+  report.held.push(...blobs.held.map(row => held(row.key, row.key, row.reason, row.message)));
+  if (blobs.held.length > 0) report.blobHeld = blobs.held.length;
   // The baseline is what the checkout held before this scan: files new in it never dilute the hold.
   const baselineIds = Object.entries(projection.files).filter(([, entry]) => !entry.deleted).map(([id]) => id);
   for (const { rel, symlink } of await walk(folder)) {
+    if (blobs.keys.has(rel)) continue;
     const isMarkdown = rel.endsWith(".md");
     const id = isMarkdown ? conceptIdFromPath(rel) : rel;
     if (context.only && !context.only.has(id)) continue;

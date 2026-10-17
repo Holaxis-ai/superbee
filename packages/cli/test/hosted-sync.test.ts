@@ -14,6 +14,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { decode } from "@toon-format/toon";
+import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
+import { decodePreparedBlobIntent } from "@superbee/core/storage";
+import { BLOB_SYNC_META_KEY, encodeBlobSyncMap } from "../src/hosted/blob-sync.js";
+import { digestOf } from "../src/hosted/projection.js";
 import { parseMarkdown } from "@superbee/core";
 import { filesystemPushRoleLocks } from "@superbee/core/filesystem-push-role";
 
@@ -23,7 +27,7 @@ import { sync } from "../src/commands/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { CREDENTIAL_STORE_ENV } from "../src/hosted-auth/secret-store.js";
 import { FakeIssuer } from "./support/fake-issuer.js";
-import { bindingForPath, checkoutDir, checkoutLockName } from "../src/hosted/binding.js";
+import { bindingForPath, checkoutDir, checkoutLockName, checkoutStoreDir } from "../src/hosted/binding.js";
 import { hostedStatus } from "../src/hosted/status.js";
 import { hostedPull } from "../src/hosted/sync.js";
 import { recoverPlacements } from "../src/hosted/sync-scan.js";
@@ -1468,4 +1472,95 @@ test("a front-page write that did not land when re-read but lands late is settle
   assert.equal(rowFor(receipt, "index.md")?.state, "committed", JSON.stringify(receipt));
   assert.equal(h.host.rootCalls.at(-1)!.body.expectedVersion, versionOf(frontPage("Mine")));
   assert.equal(h.host.root()?.content, frontPage("Next"));
+});
+
+async function seedCaptureMap(h: Harness, key: string, bytes: Uint8Array, desiredContentType?: string) {
+  const binding = (await bindingForPath(h.home, h.folder))!;
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  const scope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
+  try { await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap({ schemaVersion: 1, scope, entries: [{ key, head: { key, version: digestOf(bytes), contentType: 'application/octet-stream; profile="old"' }, placedDigest: digestOf(bytes), ...(desiredContentType === undefined ? {} : { desiredContentType }) }] })); }
+  finally { await store.close(); }
+  return binding;
+}
+function captureFetch(h: Harness, beforeHeads?: () => Promise<void>, allowed = true): typeof fetch {
+  return (async (input, init) => {
+    const route = new URL(String(input)).pathname;
+    if (route.endsWith("/heads")) await beforeHeads?.();
+    const answer = await h.host.fetch(input, init);
+    if (route.endsWith("/capabilities") && answer.status === 200) {
+      const caps = await answer.json() as Record<string, unknown> & { limits?: Record<string, unknown> };
+      return Response.json({ ...caps, blobWrites: allowed ? "allowed" : "refused", limits: { ...caps.limits, blobWriteBytes: 16 * 1024 * 1024 } });
+    }
+    return answer;
+  }) as typeof fetch;
+}
+test("tracked blob capture precedes failed pull and survives restart, later edits and in-flight reopen without sending", async () => {
+  const h = await harness();
+  const key = "opaque.bin", file = path.join(h.folder, key), base = Buffer.from("base"), sent = Buffer.from([0, 255, 128, 1]);
+  await writeFile(file, base);
+  const binding = await seedCaptureMap(h, key, base, 'image/svg+xml; charset="utf-8"');
+  await writeFile(file, sent);
+  h.fetch = captureFetch(h, async () => { await writeFile(file, "later"); throw new Error("lost document pull"); });
+  await failingSync(h);
+  let store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  const rows = await store.listBlobIntents();
+  assert.equal(rows.length, 1);
+  const original = rows[0]!, payload = decodePreparedBlobIntent(original.prepared);
+  assert.equal(payload.intent.operationId, "blobs.replace.v1");
+  assert.equal(payload.intent.expectedContentType, 'application/octet-stream; profile="old"');
+  assert.equal(payload.intent.contentType, 'image/svg+xml; charset="utf-8"');
+  assert.deepEqual(Buffer.from(payload.bytesBase64!, "base64"), sent);
+  await store.updateBlobIntent(original.requestId, "pending", { state: "in_flight", attempts: 1 }, { guard: (await store.readBlobWithJournal(key)).guard });
+  await store.close();
+  await writeFile(file, base); // even a revert cannot rewrite the earlier frozen attempt
+  h.fetch = captureFetch(h);
+  const receipt = (await failingSync(h)).receipt!;
+  assert.equal(receipt.status, "incomplete");
+  assert.equal(rowFor(receipt, key)?.state, "held");
+  assert.equal((receipt.counts as Record<string, number>).committed, 0);
+  store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id), readOnly: true });
+  try { const after = await store.listBlobIntents(); assert.equal(after.length, 1); assert.equal(after[0]!.requestId, original.requestId); assert.equal(after[0]!.prepared, original.prepared); assert.equal(after[0]!.state, "in_flight"); assert.equal(after[0]!.attempts, 1); }
+  finally { await store.close(); }
+  assert.equal(h.host.writes.length, 0);
+  assert.ok(!h.host.requests.some(row => /blob-(?:create|replace|delete)|outcome/.test(row.path)));
+});
+test("pull-only captures legal opaque blobs and reports held without document writes", async () => {
+  const h = await harness();
+  const key = "data/opaque.bin", file = path.join(h.folder, key), base = Buffer.from("base");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, base);
+  const binding = await seedCaptureMap(h, key, base);
+  const opaque = Buffer.from([0, 255, 128]);
+  await writeFile(file, opaque);
+  h.host.put("notes/alpha", { type: "Note", title: "Changed remotely" }, "new remote representation\n");
+  h.fetch = captureFetch(h);
+  const result = await hostedPull(binding, { auth: h.auth, cwd: h.cwd, fetch: h.fetch, sleep: instant });
+  assert.equal(result.state, "pulled");
+  assert.ok(result.state === "pulled" && result.held! > 0);
+  assert.deepEqual(await readFile(file), opaque);
+  const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id), readOnly: true });
+  try { assert.equal((await store.listIntents()).length, 0); assert.equal((await store.listBlobIntents()).length, 1); }
+  finally { await store.close(); }
+  assert.equal(h.host.writes.length, 0);
+});
+test("unsupported and UNKNOWN blob baselines remain held with zero blob or document sends", async () => {
+  for (const unknown of [false, true]) {
+    const h = await harness(), key = "legacy.bin", file = path.join(h.folder, key), base = Buffer.from("old");
+    await writeFile(file, base);
+    const binding = await seedCaptureMap(h, key, base);
+    if (unknown) {
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+      try { const value = JSON.parse((await store.readMeta<string>(BLOB_SYNC_META_KEY))!) as { entries: { head?: unknown }[] }; delete value.entries[0]!.head; await store.writeMeta(BLOB_SYNC_META_KEY, JSON.stringify(value)); }
+      finally { await store.close(); }
+    }
+    await writeFile(file, "new local edit");
+    h.fetch = captureFetch(h, undefined, unknown);
+    const receipt = (await failingSync(h)).receipt!;
+    assert.equal(receipt.status, "incomplete");
+    assert.equal(rowFor(receipt, key)?.state, "held");
+    const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id), readOnly: true });
+    try { assert.equal((await store.listBlobIntents()).length, 0); assert.equal((await store.listIntents()).length, 0); }
+    finally { await store.close(); }
+    assert.equal(h.host.writes.length, 0);
+  }
 });

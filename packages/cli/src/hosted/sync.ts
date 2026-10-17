@@ -56,6 +56,7 @@ import { resolveLocalBundleTarget } from "../bundle.js";
 import { parseSyncArgs } from "../commands/sync/orchestrate.js";
 import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
+import { BLOB_SYNC_META_KEY, type BlobCaptureContext } from "./blob-sync.js";
 import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
@@ -937,6 +938,12 @@ function confirmAtTerminal(binding: CheckoutBinding, terminal: HostedTerminal) {
   };
 }
 
+async function blobCaptureContext(session: Session, deps: HostedSyncDeps): Promise<BlobCaptureContext | undefined> {
+  if (await session.store.readMeta(BLOB_SYNC_META_KEY) === undefined) return undefined;
+  const { binding } = session, via = resolveHostedVia(deps.auth.env).token;
+  return { store: session.store, scope: { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null }, binding: checkoutBindingDigest(binding.checkout_id), ...(via === undefined ? {} : { via }), createdAt: new Date(deps.auth.now()).toISOString(), allowed: session.capabilities.blobWrites === "allowed" };
+}
+
 async function runSync(binding: CheckoutBinding, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
   const limit = rowLimit(values.limit);
   const resumeCommand = syncCommand(binding, values.json ? commandLiteral(" --json") : commandFragment``);
@@ -955,6 +962,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
     // push is live, and each such change is looked up before it is ever sent again.
     await reclaimInFlight(local);
     const scan = await scanCheckout({
+      blobs: await blobCaptureContext(session, deps),
       folder: binding.path,
       bundleId: binding.bundle_id,
       okfVersion: session.okfVersion,
@@ -1156,7 +1164,7 @@ function hostedSyncEnvelope(receipt: Record<string, unknown>): SyncEnvelope {
 
 /** What a pull-only pass did, or why it did not run. */
 export type HostedPullResult =
-  | { readonly state: "pulled"; readonly refreshed: number; readonly removed: number; readonly kept: number }
+  | { readonly state: "pulled"; readonly refreshed: number; readonly removed: number; readonly kept: number; readonly held?: number }
   | { readonly state: "signed_out" }
   /** The checkout or session lock is held by another command; nothing was done. */
   | { readonly state: "busy" };
@@ -1208,7 +1216,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
     const { store, local, reader, projection } = session;
     // As in sync: an interrupted push's claims are looked up before anything could send them.
     await reclaimInFlight(local);
-    await scanCheckout({ folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, definitionWrites: session.capabilities.definitionWrites, documentInputBytes: session.capabilities.documentInputBytes, rootWrites: session.capabilities.rootWrites });
+    const scan = await scanCheckout({ blobs: await blobCaptureContext(session, deps), folder: binding.path, bundleId: binding.bundle_id, okfVersion: session.okfVersion, local, projection, definitionWrites: session.capabilities.definitionWrites, documentInputBytes: session.capabilities.documentInputBytes, rootWrites: session.capabilities.rootWrites });
     await session.persist();
     let report: PullReport;
     try {
@@ -1227,7 +1235,7 @@ async function pullOnly(binding: CheckoutBinding, session: Session, deps: Hosted
       throw await readFailure(error, session, resumeCommand, (await store.listIntents(UNSETTLED_STATES)).length);
     }
     await recordPulled(deps.auth.home, binding.checkout_id);
-    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length };
+    return { state: "pulled", refreshed: placed.placed.length + (root.refreshed ? 1 : 0), removed: placed.removed.length, kept: placed.kept.length, ...(scan.blobHeld !== undefined ? { held: scan.blobHeld } : {}) };
   }
 }
 

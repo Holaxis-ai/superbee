@@ -1,16 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, symlink, writeFile, truncate } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, symlink, writeFile, truncate, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
-import { prepareBlobIntent, blobReceipt, compareStorageKeys, type BlobTargetScope } from "@superbee/core/storage";
+import { prepareBlobIntent, decodePreparedBlobIntent, blobReceipt, compareStorageKeys, type BlobTargetScope } from "@superbee/core/storage";
 import { decodeHostedCapabilities, type HostedCarrier } from "@superbee/core/hosted-transport";
 import { createHash, randomUUID } from "node:crypto";
-import { BLOB_SYNC_META_KEY, captureBlobSyncMap, encodeBlobSyncMap, decodeBlobSyncMap, changeBlobSyncEntry, blobSyncDirty, seedBlobSyncEntry, readBlobSyncState, settleBlobSyncReceipt, seedInitialBlobBaselines } from "../src/hosted/blob-sync.js";
+import { BLOB_SYNC_META_KEY, captureBlobSyncMap, encodeBlobSyncMap, decodeBlobSyncMap, changeBlobSyncEntry, blobSyncDirty, seedBlobSyncEntry, readBlobSyncState, settleBlobSyncReceipt, seedInitialBlobBaselines, captureTrackedBlobChanges, type BlobSyncMap } from "../src/hosted/blob-sync.js";
 const digest = (s: string) => `sha256:${createHash("sha256").update(s).digest("hex")}`;
 const scope: BlobTargetScope = { origin: "https://example.test", prefix: "/sync/v1", bundleId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", workspaceSlug: "team" };
-const empty = () => ({ schemaVersion: 1 as const, scope, entries: [] });
+const empty = (): BlobSyncMap => ({ schemaVersion: 1 as const, scope, entries: [] });
 test("canonical scoped baselines preserve unknown versus absent and explicit offline MIME", () => {
   const map = changeBlobSyncEntry(empty(), { key: "a.bin", placedDigest: null, desiredContentType: "image/svg+xml" });
   const recovered = decodeBlobSyncMap(encodeBlobSyncMap(map), scope);
@@ -109,5 +109,62 @@ test("initial baselines refuse unsafe/oversize/protected files and retain existi
     assert.equal((await seedInitialBlobBaselines({ ...options, carrier: { ...carrier, json: async () => { throw new Error("retained map must not request heads"); } } })).state, "retained");
     assert.deepEqual(await backend.readMeta(BLOB_SYNC_META_KEY), saved);
     assert.deepEqual(await backend.readBlobIntent(row.requestId), row);
+  } finally { await backend.close(); await rm(dir, { recursive: true, force: true }); }
+});
+test("capture distinguishes absent, unsafe and UNKNOWN; whole-map races refuse fresh intent atomically", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "blob-capture-")), folder = path.join(dir, "files");
+  await mkdir(folder);
+  const backend = await FileJournaledBackend.open({ directory: path.join(dir, "store"), lock: { lockRoot: path.join(dir, "locks"), waitMs: 0 } });
+  try {
+    await writeFile(path.join(dir, "outside"), "secret");
+    await symlink(path.join(dir, "outside"), path.join(folder, "b.bin"));
+    let map = empty();
+    for (const key of ["a.bin", "b.bin"]) map = changeBlobSyncEntry(map, seedBlobSyncEntry({ key, version: digest("old"), contentType: "image/svg+xml" }, digest("old")));
+    map = changeBlobSyncEntry(map, { key: "c.bin", placedDigest: null, desiredContentType: "x/offline" });
+    await writeFile(path.join(folder, "c.bin"), "untracked");
+    await backend.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(map));
+    const context = { store: backend, scope, binding: digest("checkout"), via: "capture-owner", createdAt: new Date().toISOString(), allowed: true };
+    const first = await captureTrackedBlobChanges(folder, context);
+    assert.equal(first.held.length, 3);
+    const records = await backend.listBlobIntents();
+    assert.equal(records.length, 1);
+    const prepared = decodePreparedBlobIntent(records[0]!.prepared);
+    assert.equal(prepared.intent.operationId, "blobs.delete.v1");
+    assert.equal(prepared.intent.expectedContentType, "image/svg+xml");
+    assert.equal(prepared.bytesBase64, undefined);
+    assert.equal(prepared.identity.via, "capture-owner");
+    assert.deepEqual(await backend.readMeta(BLOB_SYNC_META_KEY), encodeBlobSyncMap(map));
+    await captureTrackedBlobChanges(folder, context);
+    assert.equal((await backend.listBlobIntents()).length, 1);
+    map = changeBlobSyncEntry(map, seedBlobSyncEntry({ key: "z.bin", version: digest("base"), contentType: "x/observed" }, digest("base")));
+    await backend.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(map));
+    await writeFile(path.join(folder, "z.bin"), "changed");
+    const racing = new Proxy(backend, { get(target, key) {
+      if (key === "admitPreparedBlob") return async (payload: string, options: Parameters<typeof backend.admitPreparedBlob>[1]) => {
+        await backend.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(changeBlobSyncEntry(map, { key: "other.bin", placedDigest: null })));
+        return target.admitPreparedBlob(payload, options);
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const refused = await captureTrackedBlobChanges(folder, { ...context, store: racing });
+    assert.match(refused.held.find(row => row.key === "z.bin")!.message, /could not be captured/);
+    assert.equal((await backend.listBlobIntents()).length, 1);
+    assert.equal((decodeBlobSyncMap(await backend.readMeta(BLOB_SYNC_META_KEY), scope)).entries.some(row => row.key === "other.bin"), true);
+    assert.equal(await readFile(path.join(folder, "z.bin"), "utf8"), "changed");
+  } finally { await backend.close(); await rm(dir, { recursive: true, force: true }); }
+});
+test("corrupt .md blob metadata is rejected by capture before any file or journal mutation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "blob-md-"));
+  const backend = await FileJournaledBackend.open({ directory: path.join(dir, "store"), lock: { lockRoot: path.join(dir, "locks"), waitMs: 0 } });
+  try {
+    const file = path.join(dir, "opaque.md");
+    await writeFile(file, "preserve me");
+    const corrupt = JSON.stringify({ schemaVersion: 1, scope, entries: [{ key: "opaque.md", head: { key: "opaque.md", version: digest("old"), contentType: "x/binary" }, placedDigest: digest("old") }] });
+    await backend.writeMeta(BLOB_SYNC_META_KEY, corrupt);
+    await assert.rejects(captureTrackedBlobChanges(dir, { store: backend, scope, binding: digest("checkout"), createdAt: new Date().toISOString(), allowed: true }), /unsafe blob key/);
+    assert.equal((await backend.listBlobIntents()).length, 0);
+    assert.equal(await readFile(file, "utf8"), "preserve me");
+    assert.equal(await backend.readMeta(BLOB_SYNC_META_KEY), corrupt);
   } finally { await backend.close(); await rm(dir, { recursive: true, force: true }); }
 });
