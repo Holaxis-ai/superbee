@@ -17,7 +17,7 @@ import {
   type Version,
 } from "@superbee/core";
 import { serve, type ServerHandle } from "@superbee/server";
-import { applyRecipe } from "../src/recipes.js";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
 import { kind } from "../src/commands/kind.js";
 import { list } from "../src/commands/list.js";
@@ -33,7 +33,7 @@ async function bootServerOverBundle(bundle: Bundle): Promise<{ url: string; clos
 async function seeded(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-kind-test-"));
   await initBundle(dir);
-  await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE); // declares the Context Note kind
+  await installRecipe({ root: dir }, CONTEXT_NOTES_RECIPE); // declares the Context Note kind
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
@@ -452,7 +452,7 @@ test("schema-evolution journey: kind field add --required makes status re-lint E
 test("kind field: a competing writer's field-add (a DIFFERENT field) lands between our read and write — Defect A: both fields survive, not just the last writer's", async () => {
   const backend = new MemoryBackend();
   const bundle: Bundle = { root: "mem://kind-field-merge-race", backend };
-  await applyRecipe(bundle, CONTEXT_NOTES_RECIPE); // declares the Context Note kind
+  await installRecipe(bundle, CONTEXT_NOTES_RECIPE); // declares the Context Note kind
   const registry = await loadKinds(bundle);
   const convId = registry.kinds.get("Context Note")!.id;
 
@@ -499,7 +499,7 @@ test("kind field: a competing writer's field-add (a DIFFERENT field) lands betwe
 test("kind field: a competing 'doc update'-style title edit lands between our read and write — never silently clobbered", async () => {
   const backend = new MemoryBackend();
   const bundle: Bundle = { root: "mem://kind-field-vs-title-race", backend };
-  await applyRecipe(bundle, CONTEXT_NOTES_RECIPE);
+  await installRecipe(bundle, CONTEXT_NOTES_RECIPE);
   const registry = await loadKinds(bundle);
   const convId = registry.kinds.get("Context Note")!.id;
 
@@ -552,7 +552,7 @@ test("kind field: a competing 'doc update'-style title edit lands between our re
 test("kind field: a competing writer renames the convention's 'governs' between attempts — refuses (STALE_HEAD) instead of editing the wrong kind's schema (P1 review fix)", async () => {
   const backend = new MemoryBackend();
   const bundle: Bundle = { root: "mem://kind-field-governs-rename-race", backend };
-  await applyRecipe(bundle, CONTEXT_NOTES_RECIPE);
+  await installRecipe(bundle, CONTEXT_NOTES_RECIPE);
   const registry = await loadKinds(bundle);
   const convId = registry.kinds.get("Context Note")!.id;
 

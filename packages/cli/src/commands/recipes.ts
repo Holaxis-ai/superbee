@@ -26,7 +26,13 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import type { OkfDocument, ConceptId } from "@superbee/core";
 import { readBundleOkfVersion } from "@superbee/core";
-import { appliedConventionDocs, isRecipeApplied, recipeDrifts } from "../recipes.js";
+import {
+  installedConventionDocs,
+  installedRecipes,
+  isRecipeApplied,
+  recipeDrifts,
+  type InstalledRecipeRow,
+} from "@superbee/core/recipe-lifecycle";
 import { builtinNames, resolveRecipe, type LoadedRecipe } from "../recipe-source.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandPrefix, type CommandText } from "../command-text.js";
 
@@ -46,6 +52,9 @@ passed. Without a discoverable bundle, this command still lists the offline inve
 commands for safely creating a new bundle ('init --create-only') or adding each recipe to an
 existing bundle. See 'superbee kinds' for the LIVE per-bundle registry a recipe's docs feed
 into.
+With a bundle, 'installed' reports each recipe whose stamp ('x_recipe') a convention carries:
+installed, partial, diverged or unknown, with the version it is at. 'unstamped' lists the
+conventions no recipe wrote, or that were written before stamps.
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
@@ -54,6 +63,22 @@ Options:
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
 `;
+
+/** Repeated `unstamped` rows shown before the list is capped (AXI rule 9). */
+const UNSTAMPED_CAP = 20;
+
+/**
+ * Descriptive, command-free: a declined Kind reads `partial` on purpose, and a diverged convention
+ * needs a person, so no single fixing command fits every row.
+ */
+const STAMP_HELP =
+  "partial: the recipe's conventions record different versions or fewer than it declares; a fresh 'recipe evolve <source>' plan (or 'recipe add' for an interrupted install) converges them, except a Kind declined with 'kind dismiss', which is deliberate, and a declared convention another recipe's stamp owns, which stays with that recipe; diverged: a convention changed since its recipe wrote it; an added declaration blocks the next evolve until the recipe adopts it or it is removed by hand, a removed optional one is put back, and a removed required field, section, terminal value or inbound expectation blocks until restored by hand; unknown: no stamp, or stamp rules this version does not read";
+
+/** One installed-recipe row as `recipes` renders it: the core row without its id list. */
+function installedRow(row: InstalledRecipeRow): Record<string, unknown> {
+  const { convention_ids: _ids, ...rendered } = row;
+  return rendered;
+}
 
 export interface RecipesCliDeps {
   stdout: (s: string) => void;
@@ -168,19 +193,21 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
   }
 
   const bundle = await optionalBundle(values, resolvedDeps);
-  const installed: Map<ConceptId, OkfDocument> | undefined = bundle ? await appliedConventionDocs(bundle) : undefined;
+  const installed: Map<ConceptId, OkfDocument> | undefined = bundle ? await installedConventionDocs(bundle) : undefined;
   const appliedIds = installed === undefined ? undefined : new Set(installed.keys());
   const okfVersion = bundle ? (await readBundleOkfVersion(bundle)) ?? "0.1" : undefined;
   const now = new Date().toISOString();
   const inv = cliInvocation();
 
   const rows: Record<string, unknown>[] = [];
+  const known: LoadedRecipe[] = [];
   let anyDrift = false;
   for (const name of builtinNames()) {
     const loaded = await resolveRecipe(name);
     // Every built-in name resolves by construction (parseRecipeFiles ran once already at module
     // load to build CONTEXT_NOTES_RECIPE) — but stay defensive rather than assume.
     if (!loaded.ok) continue;
+    known.push(loaded.recipe);
     const drift =
       installed !== undefined && okfVersion !== undefined
         ? recipeDrifts(loaded.recipe, installed, okfVersion, now)
@@ -209,6 +236,27 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
           addHelp,
         ];
 
+  // With a bundle: each recipe's state, read from the stamps its conventions carry.
+  const stamps: Record<string, unknown> = {};
+  if (installed !== undefined) {
+    const { rows: installedRows, unstamped } = installedRecipes(installed.values(), known);
+    stamps.installed_count = installedRows.length;
+    stamps.installed = installedRows.map(installedRow);
+    stamps.unstamped_count = unstamped.length;
+    if (unstamped.length > 0) {
+      const shown = unstamped.slice(0, UNSTAMPED_CAP);
+      stamps.unstamped = shown;
+      if (shown.length < unstamped.length) {
+        stamps.unstamped_shown = shown.length;
+        stamps.conventions_all = `${inv} list --type Convention --prefix conventions/ --limit 0${commandTargetSuffix({ dir: values.dir, remote: values.remote })}`;
+      }
+      stamps.unstamped_help =
+        "conventions no recipe wrote, or written before recipe stamps; a 'recipe evolve' apply stamps the ones its recipe declares" +
+        (shown.length < unstamped.length ? "; conventions_all lists every convention, and the unstamped ones carry no x_recipe" : "");
+    }
+    if (installedRows.some((row) => row.state !== "installed")) stamps.stamp_help = STAMP_HELP;
+  }
+
   stdout(
     render(
       {
@@ -220,6 +268,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
         ...(anyDrift
           ? { drift_help: "drift can be deliberate — read the installed convention before treating it as a defect" }
           : {}),
+        ...stamps,
         help,
       },
       resolveMode(values),

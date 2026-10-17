@@ -277,6 +277,10 @@ export {
   parseQualifiedKindTarget,
 } from "./qualified-links.js";
 export type { QualifiedRef, QualifiedLink, ParsedQualifiedHref } from "./qualified-links.js";
+// The typed-edge vocabulary: `link-type text -> declaring kind(s)` over a loaded registry, and the
+// qualified-target checks `link`, `status` and recipe evolution share.
+export { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "./link-types.js";
+export type { LinkTypeDeclaration } from "./link-types.js";
 export {
   isHostedBundleId,
   BUNDLE_NAME_DOC_ID,

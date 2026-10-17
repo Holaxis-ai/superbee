@@ -68,7 +68,7 @@ import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
-import { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "../link-types.js";
+import { collectLinkDeclarations, localEdgeQualifiedDeclaration, qualifiedEdgeViolation } from "@superbee/core";
 import {
   hasLegacyBridgeField,
   isLegacyPageConvention,
@@ -464,7 +464,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   }
 
   // The declared typed-edge vocabulary (`links` maps across every kind), flattened ONCE for the
-  // link-type-violation check below — shared with `link add`'s own write-time lint (link-types.ts),
+  // link-type-violation check below — shared with `link add`'s own write-time lint (core link-types.ts),
   // never a second implementation.
   const linkTypeDeclarations = collectLinkDeclarations(registry);
 

@@ -1577,11 +1577,12 @@ test("kindConventionDoc: sanitizes programmatic description metadata before it c
 
 // ── core never seeds (the kind-convention contract) ──────────────────────────────
 //
-// Context Note seeding moved OUT of core entirely into the CLI's recipe machinery
-// (`packages/cli/src/recipes.ts`'s `context-notes` recipe + `applyRecipe`). The engine keeps only
-// the generic `writeDocVersioned` expect-absent CAS primitive; it special-cases nothing about
-// conventions. Coverage for the (now CLI-side) seed/idempotency/does-not-disturb-hand-edited
-// behavior lives in `packages/cli/test/recipes.test.ts`.
+// Context Note content lives in the CLI's built-in `context-notes` recipe
+// (`packages/cli/src/recipes.ts`); core installs any recipe generically through
+// `@superbee/core/recipe-lifecycle`'s `installRecipe`, on the generic `writeDocVersioned`
+// expect-absent CAS primitive, and special-cases nothing about conventions. Coverage for the
+// seed, idempotency and does-not-disturb-hand-edited behavior lives in
+// `packages/cli/test/recipes.test.ts`.
 
 test("initBundle: core never seeds — a bare init carries no conventions/ doc", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-seed-off-"));

@@ -71,6 +71,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/kinds.d.ts"));
     assert.ok(paths.includes("dist/recipes.js"));
     assert.ok(paths.includes("dist/recipes.d.ts"));
+    assert.ok(paths.includes("dist/recipe-lifecycle/index.js"));
+    assert.ok(paths.includes("dist/recipe-lifecycle/index.d.ts"));
     assert.ok(paths.includes("dist/remote.js"));
     assert.ok(paths.includes("dist/remote.d.ts"));
     assert.ok(paths.includes("dist/storage.js"));
@@ -472,6 +474,7 @@ import {
 import { RemoteBackend, RemoteError } from "@superbee/core/remote";
 import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
+import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
 
 declare const backend: StorageBackend;
 declare const document: OkfDocument;
@@ -488,6 +491,16 @@ export async function exercisePortableCore(): Promise<void> {
   await queryHeads(backend, { type: String(document.frontmatter.type) });
 }
 export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBackend, RemoteError };
+declare const lifecycleBundle: Parameters<typeof installRecipe>[0];
+export async function exerciseRecipeLifecycle(): Promise<string | undefined> {
+  if (!recipe.ok) return undefined;
+  await installRecipe(lifecycleBundle, recipe.recipe, { now: "2026-10-17T00:00:00.000Z" });
+  return (await planRecipeEvolution(lifecycleBundle, recipe.recipe)).plan_token;
+}
+export function installStates(conventions: OkfDocument[]): RecipeInstallState[] {
+  return installedRecipes(conventions).rows.map((row) => row.state);
+}
+export const lifecycleRuntime = { RecipeLifecycleError };
 `,
     );
     await writeFile(
@@ -549,10 +562,13 @@ export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBacke
     assert.deepEqual(installedManifest.exports["./artifact-contract"], { types: "./dist/artifact-contract.d.ts", default: "./dist/artifact-contract.js" });
     assert.deepEqual(installedManifest.exports["./hosted-client"], { types: "./dist/hosted-client/index.d.ts", default: "./dist/hosted-client/index.js" });
     assert.deepEqual(installedManifest.exports["./hosted-client/node"], { types: "./dist/hosted-client/node.d.ts", default: "./dist/hosted-client/node.js" });
+    assert.deepEqual(installedManifest.exports["./recipe-lifecycle"], { types: "./dist/recipe-lifecycle/index.d.ts", default: "./dist/recipe-lifecycle/index.js" });
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
     assert.ok(installedFiles.includes("dist/hosted-client/index.js"), "the hosted client subpath is packed");
     assert.ok(installedFiles.includes("dist/hosted-client/node.js"), "the hosted client's Node-only subpath is packed");
+    assert.ok(installedFiles.includes("dist/recipe-lifecycle/index.js"), "the recipe lifecycle subpath is packed");
+    assert.ok(installedFiles.includes("dist/recipe-lifecycle/stamp.js"), "the recipe install stamps are packed");
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;
     for (const file of installedFiles.filter((name) => /\.(?:js|d\.ts)$/.test(name))) {

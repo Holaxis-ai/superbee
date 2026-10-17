@@ -81,7 +81,7 @@ import { mutateDoc } from "../src/mutate.js";
 import { DOC_READ_USAGE } from "../src/commands/doc/common.js";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
-import { applyRecipe } from "../src/recipes.js";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
 import { rendered } from "./support/rendered-command.js";
 
@@ -116,7 +116,7 @@ async function makeBundle(): Promise<{ dir: string; cleanup: () => Promise<void>
 async function makeSeededBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
   await initBundle(dir, { okfVersion: "0.1" });
-  await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
+  await installRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 

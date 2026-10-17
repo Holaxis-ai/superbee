@@ -2,7 +2,8 @@
 
 `@superbee/core/recipes` parses caller-supplied recipe files. It uses the same implementation
 as the CLI's built-in and filesystem recipe sources. It performs no file discovery, network
-access, installation, View execution, or bundle mutation.
+access, installation, View execution, or bundle mutation. To install or evolve a parsed recipe on a
+bundle, use `@superbee/core/recipe-lifecycle` (see "Recipe lifecycle" in the README).
 
 ```ts
 import { parseRecipeFiles, type RecipeFile } from "@superbee/core/recipes";

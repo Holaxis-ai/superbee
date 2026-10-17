@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { isConventionId } from "@superbee/core";
+import { CONVENTION_TYPE, isConventionId } from "@superbee/core";
 import type { LoadedRecipe } from "@superbee/core/recipes";
 
 import { resolveLocalBundleTarget } from "../bundle.js";
@@ -48,6 +48,9 @@ interface RefusalRow {
 }
 
 const KINDS_INSTEAD = "to design Kinds, work in a local or Git bundle and publish it";
+
+/** Kinds the host never lets a checkout change (a View or Convention governing convention). */
+const RESERVED_GOVERNS: ReadonlySet<string> = new Set(["View", CONVENTION_TYPE]);
 
 
 /** The `--doc-key` value in argv, in either spelling; the last one wins, as the parser takes it. */
@@ -189,7 +192,9 @@ export async function assertAllowedInHostedCheckout(command: string, args: reado
  * (designs/hosted-model-evolution.md section 8): every artifact a recipe installs must be an
  * {@link isConventionId} id. A recipe that also carries Views, their pages, References or any other
  * document is refused before anything is written, naming them; those are published with the
- * bundle. The up-front refusal has already let the command run only for a person the host allows.
+ * bundle. So is a recipe with a convention governing `View` or `Convention`: the host refuses
+ * every definition write to such a Kind, so its recipe stamp would land locally and fail at sync.
+ * The up-front refusal has already let the command run only for a person the host allows.
  * Resolves for any other target.
  */
 export async function assertKindOnlyRecipe(
@@ -200,9 +205,21 @@ export async function assertKindOnlyRecipe(
 ): Promise<void> {
   const artifacts = [...recipe.docs.map((doc) => doc.id), ...recipe.pages.flatMap((page) => [page.registry.id, page.entry]), ...recipe.references.map((reference) => reference.doc.id)];
   const outside = artifacts.filter((id) => !isConventionId(id));
-  if (outside.length === 0) return;
+  const reserved = recipe.docs.filter((doc) => {
+    const governs = doc.frontmatter?.governs;
+    return typeof governs === "string" && RESERVED_GOVERNS.has(governs.trim());
+  }).map((doc) => doc.id);
+  if (outside.length === 0 && reserved.length === 0) return;
   const binding = await checkoutFor("recipe", dir, context.home ?? homedir(), context.cwd ?? process.cwd());
   if (!binding) return;
+  if (outside.length === 0) {
+    throw hostedCheckoutRefusal(
+      { words: words.split(" "), reason: "not_syncable", why: `recipe '${recipe.id}' declares ${reserved.length} Kind(s) governing View or Convention, which the host does not let a checkout change`, instead: KINDS_INSTEAD },
+      words,
+      binding,
+      { recipe: recipe.id, conventions: reserved.slice(0, 20).join(", "), conventions_total: String(reserved.length) },
+    );
+  }
   throw hostedCheckoutRefusal(
     { words: words.split(" "), reason: "not_syncable", why: `recipe '${recipe.id}' installs ${outside.length} artifact(s) outside conventions/, such as Views and References, and a checkout sends Kind conventions only`, instead: KINDS_INSTEAD },
     words,

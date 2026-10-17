@@ -42,7 +42,7 @@ import {
 import { mutateDoc } from "../mutate.js";
 import { render, resolveMode, type OutputFlags } from "../output.js";
 import { builtinNames, resolveBuiltinSync } from "../recipe-source-builtin.js";
-import { materializeRecipeForEdition } from "../recipes.js";
+import { materializeRecipeForEdition } from "@superbee/core/recipe-lifecycle";
 
 export interface KindDraftFlags extends OutputFlags {
   dir?: string;

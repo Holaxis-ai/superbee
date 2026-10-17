@@ -7,21 +7,21 @@ import { renderUsage } from "../output.js";
 //
 // Mirrors `new.ts`'s create-only / expect-absent-CAS receipt shape, but at the RECIPE level: each
 // of the recipe's convention docs is written via the engine's expect-absent CAS create
-// (`recipes.ts`'s `applyRecipe`), so a doc that already exists is left untouched (idempotent
-// changed:false) rather than erroring or overwriting. A built-in and an external recipe both flow
-// through `resolveRecipe` -> `applyRecipe` — the SAME functions, no special-casing — which is what
-// makes recipe application generic rather than a one-off `init`-only special case.
+// (`installRecipe` from `@superbee/core/recipe-lifecycle`), so a doc that already exists is left
+// untouched (idempotent changed:false) rather than erroring or overwriting. A built-in and an
+// external recipe both flow through `resolveRecipe` -> `installRecipe` — the SAME functions, no
+// special-casing — which is what makes recipe application generic rather than a one-off
+// `init`-only special case.
 import { parseArgs } from "node:util";
 import { loadKinds } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { assertActorAcceptedByBundle } from "../actor.js";
-import { CliError } from "../errors.js";
+import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, exactCliInvocation } from "../invocation.js";
-import { applyRecipe } from "../recipes.js";
-import { applyRecipeEvolution, planRecipeEvolution } from "../recipe-evolution.js";
+import { applyRecipeEvolution, installRecipe, planRecipeEvolution } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe } from "../recipe-source.js";
 import { assertKindOnlyRecipe } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
@@ -55,6 +55,10 @@ by a postcondition check and reported with completed work. It never replaces exi
 active View assets, or artifacts omitted from the source. It may add a field type (fields.types) or
 an enum (fields.values) to a declared field only when every existing instance conforms; otherwise
 the plan names the violating documents. It never changes or removes a type or an enum.
+
+Every convention 'recipe add' creates or 'recipe evolve' writes carries an 'x_recipe' stamp naming
+the recipe version, in the same write. A plan with changed:false and writes above zero still has an
+apply command: it records stamps only, which is how a bundle from before stamps gets them.
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
@@ -142,18 +146,29 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     // Before apply: the evolution's own error wrapping would present a write-policy refusal as
     // CONFLICT; the actor rule is a usage error with a corrected spelling, decided up front.
     await assertActorAcceptedByBundle(bundle, values.actor?.trim());
-    const result = await applyRecipeEvolution(bundle, loaded.recipe, values.apply.trim(), values.actor?.trim());
+    let result: Awaited<ReturnType<typeof applyRecipeEvolution>>;
+    try {
+      result = await applyRecipeEvolution(bundle, loaded.recipe, values.apply.trim(), { actor: values.actor?.trim() });
+    } catch (error) {
+      throw classifyBundleError(error);
+    }
     stdout(render({ ...result, help: [planCommand, `${cliInvocation()} kinds`] }, resolveMode(values)));
     return;
   }
 
-  const plan = await planRecipeEvolution(bundle, loaded.recipe);
+  let plan: Awaited<ReturnType<typeof planRecipeEvolution>>;
+  try {
+    plan = await planRecipeEvolution(bundle, loaded.recipe);
+  } catch (error) {
+    throw classifyBundleError(error);
+  }
   const receipt: Record<string, unknown> = {
     ...plan,
     blockers: plan.blockers.slice(0, 20),
     blockers_shown: Math.min(plan.blockers.length, 20),
   };
-  if (plan.ready && plan.changed) {
+  // `changed` is content only; a ready plan with only stamps to record still has an apply command.
+  if (plan.ready && plan.writes > 0) {
     receipt.commands = {
       apply: `${exactPlanCommand} --apply ${commandToken(plan.plan_token)}${values.actor ? ` --actor ${commandQuoted(values.actor.trim())}` : ""}`,
     };
@@ -199,7 +214,14 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   const remote = await resolveRemoteFlag(values.remote, values.dir);
   if (remote === undefined) await assertKindOnlyRecipe("recipe add", values.dir, loaded.recipe);
   const bundle = await openBundle(values.dir, remote);
-  const result = await applyRecipe(bundle, loaded.recipe);
+  // Core's recipe lifecycle throws typed errors; classify them here, through the one CLI mapping,
+  // so this command throws a CliError like every other command.
+  let result: Awaited<ReturnType<typeof installRecipe>>;
+  try {
+    result = await installRecipe(bundle, loaded.recipe);
+  } catch (error) {
+    throw classifyBundleError(error);
+  }
 
   // Duplicate-`governs` against the TARGET bundle (approved §B decision 8(ii)) is surfaced via the
   // EXISTING `loadKinds` machinery, post-apply — no new conflict machinery. A doc that lost its
@@ -220,6 +242,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
     version: result.version,
     source: result.source,
     changed: result.changed,
+    stamp: result.stamp,
     docs: result.docs,
   };
   if (result.pages.length > 0) receipt.pages = result.pages;
@@ -229,7 +252,16 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   // by the migration script, never duplicated).
   receipt.counts = result.counts;
   if (warnings.length > 0) receipt.warnings = warnings;
-  if (sourceDiffers > 0) {
+  // Install never rewrites an existing convention, so a stale or missing stamp (or a differing
+  // source) is converged by the explicit evolve plan. A foreign stamp stays with its recipe, so no
+  // plan changes it; the receipt names those conventions instead.
+  if (result.foreign_ids.length > 0) {
+    receipt.foreign_ids = result.foreign_ids;
+    receipt.foreign_help =
+      "another recipe's stamp owns these conventions and keeps them; this recipe reads partial in 'recipes' while it does; an evolve plan takes one over only when it also changes that convention's content, which leaves the other recipe partial";
+  }
+  const migrationPending = result.docs.some((doc) => doc.migration_required !== undefined);
+  if (sourceDiffers > 0 || result.restamp_ids.length > 0 || migrationPending) {
     const target: CommandText = values.dir !== undefined
       ? commandFragment` --dir ${commandQuoted(values.dir)}`
       : remote !== undefined
