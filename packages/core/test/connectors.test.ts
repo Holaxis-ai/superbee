@@ -215,6 +215,46 @@ test("CONNECTOR_IDENTITY_UNSTABLE: resource template rules and id templates", ()
   assert.equal(parse(frontmatter).ok, true);
 });
 
+test("encoded dot segments, separators and malformed escapes in template literals are refused", () => {
+  for (const bad of [
+    "https://calendar.example.org/%2e%2e/{feed}.ics",
+    "https://calendar.example.org/%2E./{feed}.ics",
+    "https://calendar.example.org/.%2e/{feed}.ics",
+    "https://calendar.example.org/%2e/{feed}.ics",
+    "https://calendar.example.org/a%2Fb/{feed}.ics",
+    "https://calendar.example.org/a%5Cb/{feed}.ics",
+    "https://calendar.example.org/%2F{feed}.ics",
+    "https://calendar.example.org/{feed}%2f.ics",
+    "https://calendar.example.org/%zz/{feed}.ics",
+  ]) refuses((fm) => { source(fm).identity.resource = bad; }, "CONNECTOR_IDENTITY_UNSTABLE", "/sources/0/identity/resource");
+  const { frontmatter } = base();
+  source(frontmatter).identity.resource = "https://calendar.example.org/My%20Calendar/{feed}.ics";
+  assert.equal(parse(frontmatter).ok, true, "other escapes stay literal");
+});
+
+test("Kind fields named after Object.prototype members are read as own declarations only, never thrown on", () => {
+  const kinds = buildKindRegistry([{
+    id: "conventions/odd", body: "",
+    frontmatter: { type: "Convention", title: "Odd", governs: "Odd", fields: { required: ["title"], optional: ["valueOf", "toString", "hasOwnProperty"], values: { toString: ["a", "b"] } } },
+  }]);
+  const { frontmatter } = base();
+  source(frontmatter).target_kind = "Odd";
+  source(frontmatter).fields = {
+    valueOf: { from: "v", values: { A: "a" } },
+    toString: { from: "t", values: { A: "a", Z: "z" } },
+    hasOwnProperty: "h",
+  };
+  let result: ConnectorParseResult | undefined;
+  assert.doesNotThrow(() => { result = parse(frontmatter, { kinds }); });
+  assert.deepEqual(errorsOf(result!).map((e) => [e.code, e.path]), [["CONNECTOR_VALUES_INVALID", "/sources/0/fields/toString/values/Z"]], "only the declared enum is enforced");
+  const { frontmatter: ok } = base();
+  source(ok).target_kind = "Odd";
+  source(ok).fields = { valueOf: { from: "v", values: { A: "a" } }, hasOwnProperty: "h" };
+  const parsed = parse(ok);
+  assert.ok(parsed.ok);
+  assert.doesNotThrow(() => assert.deepEqual(checkConnectorAgainstKinds(parsed.connector, kinds), []));
+});
+
 test("CONNECTOR_FIELD_INVALID and CONNECTOR_FIELD_NEVER_OWNED: key grammar, path grammar and fields no source may own", () => {
   for (const key of ["1st", "event-status", "constructor"]) refuses((fm) => { source(fm).fields[key] = "x"; }, "CONNECTOR_FIELD_INVALID", `/sources/0/fields/${key}`);
   for (const from of ["a..b", "a b", "__proto__", "a.prototype", ""]) {
@@ -309,6 +349,46 @@ test("CONNECTOR_SECRET_PRESENT names a path and never the value; a secret-lookin
   }
 });
 
+test("a token anywhere in a frontmatter string or key is refused, as in the body, naming only a path", () => {
+  const bearer = "Bearer abcdef0123456789abcdef01";
+  const cases: Array<[(fm: Record<string, any>) => void, string]> = [
+    [(fm) => { fm.description = `Test with ${SECRET} locally`; }, "/description"],
+    [(fm) => { fm.title = `Calendar (${SECRET})`; }, "/title"],
+    [(fm) => { fm.version = `1 built with ${SECRET}`; }, "/version"],
+    [(fm) => { fm.x_note = `header Authorization: ${bearer}`; }, "/x_note"],
+    [(fm) => { fm.x_notes = ["fine", `call it with ${bearer} please`]; }, "/x_notes/1"],
+    [(fm) => { source(fm).fields.event_status.values.CONFIRMED = `scheduled ${SECRET}`; }, "/sources/0/fields/event_status/values/CONFIRMED"],
+    [(fm) => { source(fm).fields.event_status.values[`a ${SECRET}`] = "scheduled"; }, "/sources/0/fields/event_status/values"],
+    [(fm) => { fm.x_slack = "ping xoxb-12345678-abcdef here"; }, "/x_slack"],
+  ];
+  for (const [edit, path] of cases) {
+    const { frontmatter } = base();
+    edit(frontmatter);
+    const result = parse(frontmatter);
+    assert.deepEqual(errorsOf(result).map((e) => [e.code, e.path]), [["CONNECTOR_SECRET_PRESENT", path]], path);
+    const text = JSON.stringify(errorsOf(result));
+    for (const leak of [SECRET, "abcdef0123456789", "xoxb-12345678"]) assert.ok(!text.includes(leak), `${leak} echoed in ${text}`);
+  }
+  const { frontmatter } = base();
+  frontmatter.description = "Requests carry a Bearer token; GitHub tokens start with ghp_ and are never written here.";
+  assert.equal(parse(frontmatter).ok, true, "prose about tokens is not a token");
+});
+
+test("data names (mapping keys, values natives, input and permission names) are not credential slots", () => {
+  const { frontmatter } = base();
+  source(frontmatter).fields.event_status.values = { SECRET: "scheduled", Token: "canceled", PASSWORD: "scheduled" };
+  source(frontmatter).fields.token = "access.token";
+  frontmatter.actions = [{ name: "create", method: "POST", host: "calendar.example.org", input: { password: { type: "string" } } }];
+  const parsed = parse(frontmatter);
+  assert.ok(parsed.ok, JSON.stringify(errorsOf(parsed)));
+  const { frontmatter: app } = base();
+  app.auth = { kind: "github-app", permissions: { secrets: "read", authorization: "read" } };
+  assert.equal(parse(app).ok, true);
+  refuses((fm) => { fm.x_settings = { api_key: "x" }; }, "CONNECTOR_SECRET_PRESENT", "/x_settings");
+  refuses((fm) => { source(fm).identity.token = "x"; }, "CONNECTOR_SECRET_PRESENT", "/sources/0/identity");
+  refuses((fm) => { fm.actions = [{ name: "a", method: "GET", host: "calendar.example.org", input: { n: { type: "string", secret: true } } }]; }, "CONNECTOR_SECRET_PRESENT", "/actions/0/input/n");
+});
+
 test("the body is scanned for token shapes, not for words", () => {
   const body = (text: string) => parse(base().frontmatter, { body: text });
   assert.equal(body("Requests use a Bearer token issued per workspace; see the Bearer authentication note.\n").ok, true);
@@ -397,6 +477,33 @@ test("the pin digest changes when any accepted key of any closed block changes",
   const domain = structuredClone(FULL);
   domain.domains.push("more.example.org");
   assert.notEqual(connectorPinDigest(domain), digest, "every domain is pinned");
+});
+
+test("the pin fills the parser's defaults itself, so a Connector built without the parser pins the same", () => {
+  const bare = structuredClone(FULL) as any;
+  delete bare.sources[0].mode;
+  delete bare.sources[0].fields.event_status.unmapped;
+  delete bare.actions[0].confirm;
+  delete bare.actions[0].input.title.required;
+  const filled = structuredClone(FULL);
+  filled.actions[0]!.input.title!.required = false;
+  const bareFilled = structuredClone(bare);
+  bareFilled.actions[0].input.title.required = false;
+  assert.equal(connectorPinDigest(bareFilled), connectorPinDigest(filled));
+  delete bareFilled.actions[0].input;
+  const noInput = structuredClone(filled);
+  noInput.actions[0]!.input = {};
+  assert.equal(connectorPinDigest(bareFilled), connectorPinDigest(noInput));
+  const app = structuredClone(FULL);
+  app.auth = { kind: "github-app" };
+  const appFilled = structuredClone(FULL);
+  appFilled.auth = { kind: "github-app", permissions: {} };
+  assert.equal(connectorPinDigest(app), connectorPinDigest(appFilled));
+  const refs = structuredClone(FULL) as any;
+  delete refs.events[0].references;
+  const refsFilled = structuredClone(FULL);
+  refsFilled.events[0]!.references = [];
+  assert.equal(connectorPinDigest(refs), connectorPinDigest(refsFilled));
 });
 
 test("the pin digest is blind to presentation and order, and equal across spellings of one declaration", () => {
@@ -502,6 +609,21 @@ test("findingsFor keys per source, field, code and value; facts hold no record i
   assert.match(first.summary!, /2 records \(a, b\)/);
   assert.equal(findings.find((f) => f.facts && (f.facts as { code: string }).code === "RECORD_REFUSED")!.priority, "normal");
   assert.equal(findings.find((f) => f.key === "mapping:events:IDENTITY_MISSING")!.priority, "normal");
+  const shaped = findingsFor([
+    d("VALUE_NOT_SCALAR", "title", ["x0"], "a"),
+    d("VALUE_NOT_SCALAR", "title", ["x1", "y"], "b"),
+    d("VALUE_NOT_SCALAR", "title", [], "c"),
+    d("VALUE_NOT_SCALAR", "title", { text: "x" }, "d"),
+    d("VALUE_MISSING", "start", null, "a"),
+    d("VALUE_MISSING", "start", "", "b"),
+    d("VALUE_MISSING", "start", "  ", "c"),
+  ], { source: "events" });
+  assert.deepEqual(shaped.map((f) => [f.key, f.facts]), [
+    ["mapping:events:title:VALUE_NOT_SCALAR:list", { code: "VALUE_NOT_SCALAR", field: "title", shape: "list" }],
+    ["mapping:events:title:VALUE_NOT_SCALAR:mapping", { code: "VALUE_NOT_SCALAR", field: "title", shape: "mapping" }],
+    ["mapping:events:start:VALUE_MISSING:empty", { code: "VALUE_MISSING", field: "start", shape: "empty" }],
+  ], "distinct lists share one finding, and null, empty and blank share one");
+  assert.match(shaped[0]!.summary!, /3 records/);
   const long = findingsFor([d("VALUE_UNMAPPED", "title", "x".repeat(200), "a")], { source: "events" })[0]!;
   assert.equal(((long.facts as { native: string }).native).length, 80);
 });

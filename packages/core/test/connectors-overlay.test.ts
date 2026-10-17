@@ -233,6 +233,20 @@ test("bindSourceFeed refuses each widening feed value with POLICY_INVALID naming
       label,
     );
   }
+  const omit = (key: string) => Object.fromEntries(Object.entries(FEED).filter(([k]) => k !== key));
+  const policyCases: Array<[string, Record<string, unknown>, string]> = [
+    ["no owned_fields", omit("owned_fields"), "owned_fields"],
+    ["a never-owned field", { ...FEED, owned_fields: ["title", "sources"] }, "owned_fields"],
+    ["a bad missing_threshold", { ...FEED, missing_threshold: 0 }, "missing_threshold"],
+    ["a bad exclude_pattern", { ...FEED, exclude_pattern: "(" }, "exclude_pattern"],
+  ];
+  for (const [label, frontmatter, key] of policyCases) {
+    assert.throws(
+      () => bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: frontmatter as unknown as Frontmatter }, w.overlay.registry),
+      (e: unknown) => e instanceof OverlayRefusal && e.code === "POLICY_INVALID" && e.details.feed === FEED_ID && e.details.key === key,
+      label,
+    );
+  }
   const same = bindSourceFeed(w.connector, { id: FEED_ID, frontmatter: { ...FEED, target_kind: "Event", completeness: "complete", profile: "ics" } as unknown as Frontmatter }, w.overlay.registry);
   assert.equal(same.resource, FEED_URL, "equal values are admitted");
 });
@@ -372,6 +386,20 @@ test("table lookup coerces a number to its decimal string and a boolean to its w
   assert.ok(nested.kind === "mapped" && nested.unobserved.includes("title"), "an unmapped path holding a mapping is not scalar either");
 });
 
+test("values lookups read own rows only: prototype member names are unmapped, never an inherited member", async () => {
+  const w = await storyWorld();
+  for (const status of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf", "isPrototypeOf"]) {
+    const mapped = mapRecord(w.bound.source, { ...storyRecord, status }, w.bound.kind);
+    assert.ok(mapped.kind === "mapped", status);
+    assert.equal(Object.hasOwn(mapped.fields, "event_status"), false, status);
+    assert.ok(mapped.unobserved.includes("event_status"), status);
+    assert.deepEqual(mapped.diagnostics.map((d) => [d.code, d.native]), [["VALUE_UNMAPPED", status]]);
+  }
+  const strict = await storyWorld(STRICT_CONNECTOR_MD);
+  const refused = mapRecord(strict.bound.source, { ...storyRecord, status: "constructor" }, strict.bound.kind);
+  assert.equal(refused.kind, "refused");
+});
+
 // --------------------------------------------------------------------------------------- identity
 
 test("a record whose uid is empty or absent is IDENTITY_MISSING, not present, and raises one Signal", async () => {
@@ -464,6 +492,21 @@ test("null on a required field keeps the stored value with one VALUE_MISSING fin
 });
 
 // -------------------------------------------------------------------------------------- one finding
+
+test("distinct list values on one field raise one Signal, and null, empty and blank on one required field raise one", async () => {
+  const w = await storyWorld();
+  const findingSignals = async () => (await signals(w)).filter((s) => s.change_kind === "status-check");
+  const lists = await run(w, [["x0"], ["x1", "x2"], ["x3"]].map((summary) => ({ ...storyRecord, summary })));
+  assert.deepEqual(lists.diagnostics.map((d) => d.code), ["VALUE_NOT_SCALAR", "VALUE_NOT_SCALAR", "VALUE_NOT_SCALAR"]);
+  assert.equal((await findingSignals()).length, 1);
+  const empties = await run(w, [null, "", "  "].map((dtstart) => ({ ...storyRecord, dtstart })));
+  assert.deepEqual(empties.diagnostics.map((d) => d.code), ["VALUE_MISSING", "VALUE_MISSING", "VALUE_MISSING"]);
+  assert.equal((await findingSignals()).length, 2);
+  const replay = await run(w, [{ ...storyRecord, summary: ["x9"] }, { ...storyRecord, dtstart: "" }]);
+  assert.deepEqual(replay.findings.plan.steps.map((s) => s.op), ["signal-duplicate", "signal-duplicate"], "the next run's facts are the same");
+  assert.equal((await findingSignals()).length, 2);
+  assert.equal((await w.read("events/story")).frontmatter.start, storyFields.start);
+});
 
 test("the same unknown value across many records raises one Signal; another value raises a second", async () => {
   const w = await storyWorld();

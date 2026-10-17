@@ -21,7 +21,7 @@ import { overlayCanonicalJson, same } from "./record-overlay/canonical.js";
 import { OverlayRefusal, REFUSAL_CODES } from "./record-overlay/errors.js";
 import { NEVER_OWNED, readOverlayPolicy, workStateFields } from "./record-overlay/policy.js";
 import type { Finding, OverlayPolicy, RecordChange } from "./record-overlay/types.js";
-import { canonicalJson } from "./recipe-lifecycle/stamp.js";
+import { definitionCanonicalJson } from "./recipe-lifecycle/stamp.js";
 import type { ConceptId, Frontmatter, OkfDocument } from "./types.js";
 import type { ValidationWarning } from "./validation.js";
 import { sha256Hex } from "./versioning.js";
@@ -34,7 +34,9 @@ export const CONNECTOR_PIN_RULES = 1;
 /**
  * Credential providers: provider key to the exact hostnames a `token` or `oauth2` credential may be
  * sent to. A document names a row; it never states a host. Each row is added in its own reviewed
- * change, verified against the vendor's primary documentation.
+ * change, verified against the vendor's primary documentation. The pin records the provider, not its
+ * hosts, so adding a host to an existing row widens every pinned Connection on that provider: such a
+ * change bumps {@link CONNECTOR_PIN_RULES}.
  */
 export const AUTH_PROVIDERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   github: Object.freeze(["api.github.com"]),
@@ -226,6 +228,20 @@ function bodyHoldsSecret(body: string): boolean {
   return false;
 }
 
+const holdsSecret = (text: string): boolean => secretShaped(text) || bodyHoldsSecret(text);
+
+/**
+ * Maps whose keys are data names (target fields, provider natives, input and permission names), not
+ * credential slots: their keys get the token-shape rules only, never the key-name list.
+ */
+function keysAreDataNames(path: Path): boolean {
+  const n = path.length;
+  return (n === 3 && path[0] === "sources" && path[2] === "fields")
+    || (n === 5 && path[0] === "sources" && path[2] === "fields" && path[4] === "values")
+    || (n === 3 && path[0] === "actions" && path[2] === "input")
+    || (n === 2 && path[0] === "auth" && path[1] === "permissions");
+}
+
 /** Secret refusals name a path and never a value; a secret-looking key reports its parent. */
 function scanSecrets(value: unknown, path: Path, out: Map<string, ConnectorError>): void {
   const add = (at: Path, what: string): void => {
@@ -233,12 +249,13 @@ function scanSecrets(value: unknown, path: Path, out: Map<string, ConnectorError
     if (!out.has(p)) out.set(p, { code: "CONNECTOR_SECRET_PRESENT", path: p, message: `${what} at '${p || "/"}'; a declaration never carries a credential` });
   };
   if (typeof value === "string") {
-    if (secretShaped(value)) add(path, "a secret-shaped value");
+    if (holdsSecret(value)) add(path, "a secret-shaped value");
   } else if (Array.isArray(value)) {
     value.forEach((item, index) => scanSecrets(item, [...path, index], out));
   } else if (record(value)) {
+    const data = keysAreDataNames(path);
     for (const [key, item] of Object.entries(value)) {
-      if (SECRET_KEYS.has(key.toLowerCase()) || secretShaped(key)) add(path, "a secret-looking key");
+      if ((!data && SECRET_KEYS.has(key.toLowerCase())) || holdsSecret(key)) add(path, "a secret-looking key");
       else scanSecrets(item, [...path, key], out);
     }
   }
@@ -289,11 +306,18 @@ function parseResourceTemplate(template: unknown): { ok: true; value: ResourceTe
     parts.push({ name });
     return undefined;
   };
+  const decoded = (text: string): string | undefined => {
+    try { return decodeURIComponent(text); } catch { return undefined; }
+  };
   if (pathPart !== "") {
     for (const segment of pathPart.slice(1).split("/")) {
       parts.push({ literal: "/" });
-      if (segment === "." || segment === "..") return fail("may not carry a dot segment");
       const match = /^([^{}]*)\{([^{}]*)\}([^{}]*)$/.exec(segment);
+      const literals = match ? [match[1]!, match[3]!] : [segment];
+      const plain = literals.map(decoded);
+      if (plain.some((text) => text === undefined)) return fail("holds a malformed percent-encoding");
+      if (!match && (plain[0] === "." || plain[0] === "..")) return fail("may not carry a dot segment, plain or percent-encoded");
+      if (plain.some((text) => /[/\\]/.test(text!))) return fail("may not encode a path separator");
       if (match) {
         parts.push({ literal: match[1]! });
         const problem = placeholder(match[2]!);
@@ -582,10 +606,11 @@ function sourceKindErrors(source: ConnectorSource, index: number, kind: KindConv
     const at = ["sources", index, "fields", field];
     if (work.has(field)) { errors.add("CONNECTOR_FIELD_NEVER_OWNED", at, `'${field}' holds the work state of ${kind.governs} and can never be mapped`); continue; }
     if (!declared.has(field)) { errors.add("CONNECTOR_FIELD_UNDECLARED", at, `${kind.governs} does not declare '${field}'`); continue; }
-    const type = kind.fields.types?.[field];
+    const types = kind.fields.types;
+    const type = types && Object.hasOwn(types, field) ? types[field] : undefined;
     if (type === "string-list" || type === "https-url-list") { errors.add("CONNECTOR_LIST_FIELD_UNSUPPORTED", at, `'${field}' is a ${type}; list-valued fields cannot be mapped yet`); continue; }
-    const allowed = kind.fields.values[field];
-    if (!allowed) continue;
+    const allowed = Object.hasOwn(kind.fields.values, field) ? kind.fields.values[field] : undefined;
+    if (!Array.isArray(allowed)) continue;
     if (!mapping.values) { errors.add("CONNECTOR_VALUES_INVALID", at, `'${field}' is an enum of ${kind.governs}; map it through a values table`); continue; }
     for (const [native, target] of Object.entries(mapping.values)) {
       if (!allowed.includes(target)) errors.add("CONNECTOR_VALUES_INVALID", [...at, "values", native], `${kind.governs}.${field} does not allow '${target}'`);
@@ -682,8 +707,21 @@ function pinBlock(block: ConnectorBlock, value: object, nested: Partial<Record<s
 }
 
 const byName = <T extends { name: string }>(items: readonly T[]): T[] => [...items].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-const mapOf = (block: ConnectorBlock) => (value: unknown): Record<string, unknown> =>
-  Object.fromEntries(Object.entries(value as Record<string, object>).map(([key, item]) => [key, pinBlock(block, item)]));
+const mapOf = (block: ConnectorBlock, defaults: (item: object) => object = (item) => item) => (value: unknown): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(value as Record<string, object>).map(([key, item]) => [key, pinBlock(block, defaults(item))]));
+
+/** The parser's defaults, filled again here so a Connector built without the parser pins the same. */
+const PIN_DEFAULTS = {
+  auth: (a: ConnectorAuth): object => (a.kind === "github-app" && a.permissions === undefined ? { ...a, permissions: {} } : a),
+  source: (s: ConnectorSource): object => ({ ...s, mode: s.mode ?? "overlay" }),
+  mapping: (m: object): object => {
+    const mapping = m as ConnectorMapping;
+    return mapping.values !== undefined && mapping.unmapped === undefined ? { ...mapping, unmapped: "keep" } : mapping;
+  },
+  action: (a: ConnectorAction): object => ({ ...a, input: a.input ?? {}, confirm: a.confirm ?? "always" }),
+  input: (i: object): object => ({ ...i, required: (i as ConnectorInput).required ?? false }),
+  event: (e: ConnectorEvent): object => ({ ...e, references: e.references ?? [] }),
+};
 
 /**
  * The digest a Connection records at enable time: every key {@link CONNECTOR_KEYS} accepts, with
@@ -693,19 +731,19 @@ const mapOf = (block: ConnectorBlock) => (value: unknown): Record<string, unknow
 export function connectorPinDigest(connector: Connector): string {
   const pinned = {
     rules: CONNECTOR_PIN_RULES,
-    auth: pinBlock("auth", connector.auth),
+    auth: pinBlock("auth", PIN_DEFAULTS.auth(connector.auth)),
     domains: [...connector.domains].sort(),
-    sources: byName(connector.sources).map((source) => pinBlock("source", source, {
+    sources: byName(connector.sources).map((source) => pinBlock("source", PIN_DEFAULTS.source(source), {
       identity: (v) => pinBlock("identity", v as object),
-      fields: mapOf("mapping"),
+      fields: mapOf("mapping", PIN_DEFAULTS.mapping),
     })),
-    actions: byName(connector.actions).map((action) => pinBlock("action", action, { input: mapOf("input") })),
-    events: byName(connector.events).map((event) => pinBlock("event", event, {
+    actions: byName(connector.actions).map((action) => pinBlock("action", PIN_DEFAULTS.action(action), { input: mapOf("input", PIN_DEFAULTS.input) })),
+    events: byName(connector.events).map((event) => pinBlock("event", PIN_DEFAULTS.event(event), {
       signature: (v) => pinBlock("signature", v as object),
       references: (v) => [...(v as string[])].sort(),
     })),
   };
-  return `sha256:${sha256Hex(canonicalJson(pinned))}`;
+  return `sha256:${sha256Hex(definitionCanonicalJson(pinned))}`;
 }
 
 // ----------------------------------------------------------------------------------------- binding
@@ -917,24 +955,35 @@ const FINDING_TEXT: Record<MappingDiagnosticCode, (field: string, native: string
   IDENTITY_MISSING: () => "records without a value for the identity template were skipped",
 };
 
+/** A native that carries no value of its own, named by its shape: `list`, `mapping` or `empty`. */
+function nativeShape(native: unknown): string {
+  if (Array.isArray(native)) return "list";
+  if (record(native)) return "mapping";
+  return "empty";
+}
+
 /**
- * Findings for `planFindings`, one per source, field, code and native value (identity gaps one per
- * source), so one unknown value across many records raises one Signal. `facts` hold the code,
- * field and clipped native value only, so a dismissed finding stays dismissed until they change;
- * the summary names the count and a sample of record ids.
+ * Findings for `planFindings`, so one problem across many records raises one Signal: an unknown
+ * value one per source, field, code and native value; a list, mapping or empty value one per source,
+ * field, code and shape; identity gaps one per source. `facts` hold the code, field and the clipped
+ * native value or the shape, never a record id, so a dismissed finding stays dismissed until they
+ * change; the summary names the count and a sample of record ids.
  */
 export function findingsFor(diagnostics: readonly MappingDiagnostic[], scope: { source: string }): Finding[] {
   const groups = new Map<string, { diagnostic: MappingDiagnostic; ids: string[] }>();
   for (const d of diagnostics) {
     const key = d.code === "IDENTITY_MISSING"
       ? `mapping:${scope.source}:${d.code}`
-      : `mapping:${scope.source}:${d.field}:${d.code}:${sha256Hex(overlayCanonicalJson(d.native ?? null)!).slice(0, 16)}`;
+      : d.code === "VALUE_NOT_SCALAR" || d.code === "VALUE_MISSING"
+        ? `mapping:${scope.source}:${d.field}:${d.code}:${nativeShape(d.native)}`
+        : `mapping:${scope.source}:${d.field}:${d.code}:${sha256Hex(overlayCanonicalJson(d.native ?? null)!).slice(0, 16)}`;
     const group = groups.get(key) ?? { diagnostic: d, ids: [] };
     if (d.external_id !== null && !group.ids.includes(d.external_id)) group.ids.push(d.external_id);
     groups.set(key, group);
   }
   return [...groups].map(([key, { diagnostic: d, ids }]) => {
-    const native = d.code === "IDENTITY_MISSING" ? null : shown(d.native);
+    const byShape = d.code === "VALUE_NOT_SCALAR" || d.code === "VALUE_MISSING";
+    const native = d.code === "IDENTITY_MISSING" || byShape ? null : shown(d.native);
     const sample = ids.slice(0, 3).map((id) => clip(id, 60)).join(", ");
     const records = ids.length ? `${ids.length} record${ids.length === 1 ? "" : "s"} (${sample}${ids.length > 3 ? ", …" : ""})` : "records";
     return {
@@ -942,7 +991,7 @@ export function findingsFor(diagnostics: readonly MappingDiagnostic[], scope: { 
       title: clip(`Mapping ${d.code} on ${scope.source}.${d.field}`, 140),
       summary: clip(`${FINDING_TEXT[d.code](d.field, native)}: ${records}`, 600),
       priority: d.code === "RECORD_REFUSED" || d.code === "IDENTITY_MISSING" ? "normal" : "low",
-      facts: { code: d.code, field: d.field, native },
+      facts: byShape ? { code: d.code, field: d.field, shape: nativeShape(d.native) } : { code: d.code, field: d.field, native },
     };
   });
 }
