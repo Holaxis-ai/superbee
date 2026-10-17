@@ -7,6 +7,9 @@
  * client supplies identity, the bundle list, reads, history, workspace qualification, operations
  * by id and the one-call document write over `@superbee/core/hosted-transport`, and throws typed
  * errors only.
+ *
+ * Export download is Node-only (its verification needs Node), so it is the separate
+ * `@superbee/core/hosted-client/node`; nothing here imports it.
  */
 export {
   bearerCredentials,

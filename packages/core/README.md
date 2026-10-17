@@ -241,6 +241,44 @@ document (`invalid_input`). Calls on one client that name the same identity run 
 its capabilities read, or a failure of the intent store to record the write. Document deletion is
 not part of `write`.
 
+### Export download (Node only)
+
+`@superbee/core/hosted-client/node` downloads and verifies a hosted bundle's portable export. It
+is a supported public API under the same versioning. It is Node-only because verification
+(`@superbee/core/portable-export`) needs Node; `@superbee/core/hosted-client` never imports it,
+so the client itself stays browser-safe.
+
+```ts
+import { bearerCredentials, createHostedClient } from "@superbee/core/hosted-client";
+import { downloadExport, EXPORT_WINDOW_MS } from "@superbee/core/hosted-client/node";
+import { materializeExport } from "@superbee/core/portable-export";
+
+const client = createHostedClient({ target, credentials: bearerCredentials(getToken), deadlineMs: EXPORT_WINDOW_MS });
+const verified = await downloadExport(client, "team.notes", { signal });
+const folder = await materializeExport(verified, parentDirectory);
+```
+
+`downloadExport(client, bundleId, { signal })` returns a `VerifiedExport`: every document,
+reserved file and blob at the bundle's latest confirmed revision, read whole and checked against
+the host's digest manifests. It writes nothing. A stopped, tampered or oversized export never
+becomes a result; placing the files is the caller's (`materializeExport`, or its own staging). It
+reads a paged export one page at a time and joins the pages. On a host from before paging it reads
+the whole archive. A bundle that changes between pages is read again from its first page, up to
+three attempts, and a busy or stopped page is asked for once more. Create the client with
+`deadlineMs: EXPORT_WINDOW_MS` (60 s), the host's export window; the default 15 s can cut a large
+bundle. A `within(slug)` client names the bundle in that workspace.
+
+Failures are typed:
+
+- `HostedCarrierError`, `HostedRouteNotServed` (a host without the export route) and
+  `RemoteError` (the host's refusal: `bundle_not_found`, `result_too_large`, `validation_failed`,
+  an unauthenticated bearer and so on), as for the rest of the client.
+- `ExportArchiveError` (`problem`): the verifier refused the archive. `incomplete` means the host
+  stopped it, and the same request may succeed.
+- `HostedExportError` (`problem`): `stopped` (the answer's body failed part way), `too_large`
+  (past `MAX_EXPORT_BYTES`) or `source_changed` (the bundle kept changing between pages).
+- The signal's reason, once `signal` or the client's own signal aborts.
+
 ## Release compatibility
 
 This migration describes the source after the Windows extraction. Previously published versions
