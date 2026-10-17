@@ -251,7 +251,7 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
     if (physical.state === "unsafe" || !await blobPathSafe(folder, entry.key)) { hold(`${entry.key} is unsafe or exceeds the capture bound; no deletion or edit was captured`, "unsafe_path"); continue; }
     const digest = physical.state === "missing" ? null : digestOf(physical.bytes);
     if (!blobSyncDirty(entry, digest)) continue;
-    if (!entry.head) { hold(`${entry.key} has no observed present byte and MIME baseline; it remains local`); continue; }
+    if (!entry.head) { hold(`${entry.key} has no observed present byte and MIME baseline; it remains local${digest === null ? "" : ` (re-create it on the host with promote ${commandToken(path.join(folder, ...entry.key.split("/")))} --doc-key ${commandToken(entry.key)})`}`); continue; }
     if (!captured.allowed) { hold(`${entry.key} remains local because this host does not allow ordinary-file writes`); continue; }
     if (!preview) {
       const snapshot = await readBlobSyncState(store, entry.key, captured.scope);
@@ -534,6 +534,7 @@ export async function admitOfflineBlob(options: {
     if (physical.state === "unsafe" || !await blobPathSafe(binding.path, input.key)) throw refuse("this file is unsafe, changed during capture, or exceeds 16 MiB");
     const physicalDigest = physical.state === "missing" ? null : digestOf(physical.bytes);
     if (input.operation === "promote" && physical.state !== "present") throw refuse("promote requires the existing checkout target file");
+    let keptType: string | undefined;
     const conflict = snapshot.journal.intents.some(settledBlobConflict) ? await readBlobConflict(store, scope, input.key) : undefined;
     if (conflict?.state === "conflict" && (input.operation === "delete" || input.expectedVersion !== undefined)) {
       // A replacement over the host's recorded head is the explicit form of `sync --resolve keep`.
@@ -543,6 +544,7 @@ export async function admitOfflineBlob(options: {
       }
       await resolveBlobConflict({ folder: binding.path, store, scope, key: input.key, choice: "keep" });
       snapshot = await readBlobSyncState(store, input.key, scope); entry = snapshot.map.entries.find(row => row.key === input.key);
+      keptType = entry?.desiredContentType;
     } else if (conflict?.state === "conflict") {
       // An explicit create is a new CAS attempt; the settled conflict it supersedes stops holding the key.
       await store.retireBlobIntents(input.key, conflict.evidence.requestIds, { guard: snapshot.journal.guard });
@@ -574,7 +576,7 @@ export async function admitOfflineBlob(options: {
     if ((input.operation === "delete" || input.expectedVersion !== undefined) && (!entry?.head || input.expectedVersion !== undefined && input.expectedVersion !== entry.head.version)) throw refuse("replacement or deletion requires the preserved observed digest and MIME baseline matching --expected-version");
     if (input.operation === "delete" && blobSyncDirty(entry!, physicalDigest)) throw refuse("delete refuses locally changed bytes or an outstanding MIME choice");
     const { resolveContentType } = await import("@superbee/core");
-    const contentType = input.operation === "delete" ? undefined : input.contentType ?? (input.expectedVersion === undefined ? resolveContentType(input.key) : entry!.head!.contentType);
+    const contentType = input.operation === "delete" ? undefined : input.contentType ?? (input.expectedVersion === undefined ? resolveContentType(input.key) : keptType ?? entry!.head!.contentType);
     const intent = input.operation === "delete"
       ? { operationId: "blobs.delete.v1" as const, key: input.key, expectedVersion: entry!.head!.version, expectedContentType: entry!.head!.contentType }
       : input.expectedVersion === undefined
@@ -680,7 +682,7 @@ export async function resolveBlobConflict(options: {
   const resolveHelp = `sync --resolve keep|take --doc ${commandToken(key)} --dir ${commandToken(folder)}`;
   const found = await readBlobConflict(store, scope, key);
   if (found.state === "none") throw new CliError("NOT_FOUND", `'${key}' has no ordinary-file conflict to resolve in this checkout`, { details: { reason: "no_conflict", key }, help: `sync --dir ${commandToken(folder)}` });
-  if (found.state !== "conflict") throw new CliError("CONFLICT", `'${key}' has ${found.state === "placement" ? "unfinished placement evidence" : "a request still awaiting delivery or its answer"}; nothing was resolved`, { details: { reason: found.state === "placement" ? "blob_placement_recovery" : "blob_outstanding", key }, help: `run sync --dir ${commandToken(folder)} first; if it reports a conflict on ${key}, then ${resolveHelp}` });
+  if (found.state !== "conflict") throw new CliError("CONFLICT", `'${key}' has ${found.state === "placement" ? "unfinished placement evidence" : "an unfinished or refused request that is not a version conflict"}; nothing was resolved`, { details: { reason: found.state === "placement" ? "blob_placement_recovery" : "blob_outstanding", key }, help: `run sync --dir ${commandToken(folder)} first; if it reports a conflict on ${key}, then ${resolveHelp}` });
   const { snapshot, evidence } = found;
   const file = path.join(folder, ...key.split("/"));
   if (!await blobPathSafe(folder, key)) throw new CliError("CONFLICT", `${key} has an unsafe parent; nothing was resolved`, { details: { reason: "unsafe_path", key } });
@@ -691,16 +693,18 @@ export async function resolveBlobConflict(options: {
     await store.retireBlobIntents(key, evidence.requestIds, { guard: from.journal.guard, meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(changeBlobSyncEntry(from.map, next)) }] });
   };
   if (choice === "keep") {
+    // Only a MIME the person chose survives keep; the old head's type must not revert the host's.
+    const chosenType = snapshot.map.entries.find(row => row.key === key)?.desiredContentType;
     const frozenType = evidence.contentType ?? undefined;
     if (hostHead) {
       // The base moves: the host's version becomes what this checkout last saw.
-      await retire(snapshot, { key, head: hostHead, placedDigest: hostHead.version, ...(frozenType === undefined || frozenType === hostHead.contentType ? {} : { desiredContentType: frozenType }) });
-      return { key, choice, evidence, file: "unchanged", sends: physical.state === "present" ? digestOf(physical.bytes) !== hostHead.version || (frozenType ?? hostHead.contentType) !== hostHead.contentType : true };
+      await retire(snapshot, { key, head: hostHead, placedDigest: hostHead.version, ...(chosenType === undefined || chosenType === hostHead.contentType ? {} : { desiredContentType: chosenType }) });
+      return { key, choice, evidence, file: "unchanged", sends: physical.state === "present" ? digestOf(physical.bytes) !== hostHead.version || (chosenType ?? hostHead.contentType) !== hostHead.contentType : true };
     }
     await retire(snapshot, { key, head: null, placedDigest: null });
     if (physical.state !== "present" || !options.identity) return { key, choice, evidence, file: physical.state === "present" ? "unchanged" : "absent", sends: false };
     // The host deleted it: a create is the only send that can re-apply the local bytes.
-    const contentType = frozenType ?? evidence.expectedContentType!;
+    const contentType = chosenType ?? frozenType ?? evidence.expectedContentType!;
     const current = await readBlobSyncState(store, key, scope), entry = current.map.entries.find(row => row.key === key) ?? { key, placedDigest: null };
     const prepared = prepareBlobIntent({ scope, intent: { operationId: "blobs.create.v1", key, expectedVersion: null, expectedContentType: null, version: digestOf(physical.bytes), contentType }, identity: { requestId: mintRequestId(), binding: options.identity.binding, ...(options.identity.via === undefined ? {} : { via: options.identity.via }) }, createdAt: options.identity.createdAt }, physical.bytes);
     const record = await store.admitPreparedBlob(prepared, { guard: current.journal.guard, meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(changeBlobSyncEntry(current.map, { ...entry, desiredContentType: contentType })) }] });

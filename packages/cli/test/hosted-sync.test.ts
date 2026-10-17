@@ -2088,6 +2088,20 @@ test("blob keep preserves the person's MIME choice from the conflicted request",
   assert.equal(f.wire.objects.get(f.key)?.contentType, chosen);
 });
 
+test("blob keep without a MIME choice adopts the host's MIME change instead of reverting it", async () => {
+  const f = await blobConflict();
+  await runSync(f.h, ["--resolve", "take", "--doc", f.key]);
+  assert.equal((await blobMap(f.h)).entries.find(row => row.key === f.key)!.desiredContentType, undefined);
+  f.wire.objects.set(f.key, { bytes: Buffer.from("<svg>moved</svg>"), contentType: "image/svg+xml; profile=host" });
+  await writeFile(f.file, f.mine);
+  await assert.rejects(runSync(f.h), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
+  await runSync(f.h, ["--resolve", "keep", "--doc", f.key]);
+  assert.equal((await blobMap(f.h)).entries.find(row => row.key === f.key)!.desiredContentType, undefined);
+  await runSync(f.h);
+  assert.equal(f.wire.calls.at(-1)!.contentType, "image/svg+xml; profile=host"); assert.equal(f.wire.calls.at(-1)!.expectedType, "image/svg+xml; profile=host");
+  assert.deepEqual(f.wire.objects.get(f.key)?.bytes, Buffer.from(f.mine));
+});
+
 test("blob inspect reports the recorded conflict pins offline", async () => {
   const f = await blobConflict(), calls = f.wire.calls.length, requests = f.h.host.requests.length;
   const shown = await runSync(f.h, ["--inspect", "--doc", f.key]);
