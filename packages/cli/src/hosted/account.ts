@@ -11,7 +11,8 @@ import { cliInvocation } from "../invocation.js";
 import { ensureHostedAccessToken, hostArgument, type HostedAuthDeps } from "../hosted-auth/session.js";
 import { resolveHostedTarget, type HostedTarget } from "../hosted-auth/discovery.js";
 import type { CheckoutBinding } from "./binding.js";
-import { createHostedSyncClient, type HostedIdentity, type HostedSyncClient, type HostedWorkspace } from "./client.js";
+import type { HostedIdentity, HostedWorkspace } from "@superbee/core/hosted-client";
+import { createHostedSyncClient, type HostedSyncClient } from "./client.js";
 import { readDefaultWorkspace } from "./defaults.js";
 import { hostedBundleReferenceText, type HostedBundleReference } from "./reference.js";
 

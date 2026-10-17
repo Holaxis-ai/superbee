@@ -111,6 +111,10 @@
       "types": "./dist/hosted-transport/index.d.ts",
       "default": "./dist/hosted-transport/index.js"
     },
+    "./hosted-client": {
+      "types": "./dist/hosted-client/index.d.ts",
+      "default": "./dist/hosted-client/index.js"
+    },
     "./storage": {
       "types": "./dist/storage.d.ts",
       "default": "./dist/storage.js"

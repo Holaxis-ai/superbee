@@ -51,7 +51,8 @@ import {
   type CheckoutBinding,
 } from "../hosted/binding.js";
 import { relocateCatalogEntry } from "../catalog.js";
-import { readBundleListing, syncRoutePrefix } from "../hosted/client.js";
+import { readBundleListing } from "@superbee/core/hosted-client";
+import { syncRoutePrefix } from "../hosted/client.js";
 import { parseHostedBundleReference } from "../hosted/reference.js";
 import { recordPulled } from "../hosted/freshness.js";
 import { clearPublishedExtras, readPublishedExtras } from "../hosted/publish-state.js";
