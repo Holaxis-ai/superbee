@@ -144,7 +144,7 @@ await installRecipe(bundle, v1.recipe);
 const v2 = parseRecipeFiles(glossaryV2Files, "memory:glossary@2");
 if (!v2.ok) throw new Error(v2.error.message);
 const plan = await planRecipeEvolution(bundle, v2.recipe);
-if (plan.ready && plan.changed) {
+if (plan.ready && plan.writes > 0) {
   await applyRecipeEvolution(bundle, v2.recipe, plan.plan_token, { actor: "process:glossary-sync" });
 }
 ```
@@ -158,6 +158,14 @@ and a `plan_token` bound to everything it read. `applyRecipeEvolution` recompute
 refuses a different token, and writes each changed convention at exactly the version the plan
 saw. The bundle has no cross-document transaction, so a failure part way reports the definitions
 written and those still pending.
+
+Every convention either path writes carries an `x_recipe` stamp in the same write: the recipe's
+id, version, declared convention count (`of`), `recipeSourceDigest` of the recipe, the
+`definitionDigest` of the convention as written, and the `digest_rules` version. A plan's
+`changed` is about content only; its `writes` also counts conventions whose stamp is stale or
+missing, so a ready plan with `writes > 0` has work to apply. `installedRecipes(conventions,
+known?)` reads each recipe's state (`installed`, `partial`, `diverged`, `unknown`) from the stamps
+alone, without the recipe source.
 
 Failures are typed subclasses of `RecipeLifecycleError`: `RecipeInputError` (the recipe cannot
 target this bundle's edition), `RecipeAssetConflict` (`recipe`, `key`), `RecipeEditionChanged`,

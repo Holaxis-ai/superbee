@@ -8,6 +8,9 @@
  * convention. The caller acquires the recipe (`@superbee/core/recipes` parses files into a
  * `LoadedRecipe`) and presents results and typed errors. Storage-neutral: it runs in Node,
  * Workers and browsers over any `StorageBackend`.
+ *
+ * Every convention either path writes carries an `x_recipe` stamp in the same write;
+ * `installedRecipes` derives each recipe's install state from those stamps alone.
  */
 export {
   installRecipe,
@@ -41,3 +44,18 @@ export {
   RecipeLifecycleError,
 } from "./errors.js";
 export type { RecipeEvolutionCompletedDefinition, RecipeEvolutionInterruptionReason } from "./errors.js";
+export {
+  DEFINITION_DIGEST_RULES,
+  RECIPE_STAMP_KEY,
+  definitionDigest,
+  installedRecipes,
+  readRecipeStamp,
+  recipeSourceDigest,
+} from "./stamp.js";
+export type {
+  ConventionStampState,
+  InstalledRecipeRow,
+  RecipeInstallState,
+  RecipeStamp,
+  RecipeStampState,
+} from "./stamp.js";

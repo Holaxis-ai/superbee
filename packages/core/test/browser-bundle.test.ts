@@ -245,7 +245,7 @@ test("core/recipe-lifecycle installs a View recipe, plans and applies its evolut
   const result = await build({
     stdin: {
       contents: [
-        'export { applyRecipeEvolution, installRecipe, planRecipeEvolution } from "./recipe-lifecycle/index.js";',
+        'export { applyRecipeEvolution, installRecipe, installedRecipes, planRecipeEvolution } from "./recipe-lifecycle/index.js";',
         'export { MemoryBackend } from "./memory-backend.js";',
       ].join("\n"),
       resolveDir: path.resolve(here, "../dist"),
@@ -270,7 +270,7 @@ test("core/recipe-lifecycle installs a View recipe, plans and applies its evolut
   const html = "<!doctype html><p>\u00dcn\u00efc\u00f6d\u00e9 gallery \u{1F41D}</p>\n";
   const proof = (await runInNewContext(
     `(async () => {
-      const { applyRecipeEvolution, installRecipe, planRecipeEvolution, MemoryBackend } = SuperbeeRecipes;
+      const { applyRecipeEvolution, installRecipe, installedRecipes, planRecipeEvolution, MemoryBackend } = SuperbeeRecipes;
       const backend = new MemoryBackend();
       await backend.writeReserved("", "index.md", "---\\nokf_version: '0.2'\\n---\\n# Sandbox recipes\\n");
       const bundle = { root: "browser-recipes", backend };
@@ -291,11 +291,13 @@ test("core/recipe-lifecycle installs a View recipe, plans and applies its evolut
       const settled = await planRecipeEvolution(bundle, recipe("2", ["room"]));
       const blob = await backend.readBlob("views/gallery/index.html");
       const convention = await backend.read("conventions/exhibit");
+      const state = installedRecipes([convention.doc]).rows.map(({ id, state, version }) => ({ id, state, version }));
       return JSON.stringify({
         installed: installed.counts, reinstalled: reinstalled.counts,
         plan: { ready: plan.ready, changed: plan.changed, token: plan.plan_token, blockers: plan.blockers },
         applied: { recipe: applied.recipe, counts: applied.counts },
-        settled: { ready: settled.ready, changed: settled.changed },
+        settled: { ready: settled.ready, changed: settled.changed, writes: settled.writes },
+        stamp: convention.doc.frontmatter.x_recipe, state,
         blob: Array.from(blob.bytes), blobVersion: blob.version,
         optional: convention.doc.frontmatter.fields.optional,
       });
@@ -307,7 +309,9 @@ test("core/recipe-lifecycle installs a View recipe, plans and applies its evolut
     reinstalled: Record<string, number>;
     plan: { ready: boolean; changed: boolean; token: string; blockers: unknown[] };
     applied: { recipe: string; counts: Record<string, number> };
-    settled: { ready: boolean; changed: boolean };
+    settled: { ready: boolean; changed: boolean; writes: number };
+    stamp: Record<string, unknown>;
+    state: unknown[];
     blob: number[];
     blobVersion: string;
     optional: string[];
@@ -318,8 +322,11 @@ test("core/recipe-lifecycle installs a View recipe, plans and applies its evolut
   assert.equal(outcome.plan.ready, true);
   assert.equal(outcome.plan.changed, true);
   assert.match(outcome.plan.token, /^sha256:[0-9a-f]{64}$/);
-  assert.deepEqual(outcome.applied, { recipe: "evolved", counts: { updated: 1, unchanged: 0 } });
-  assert.deepEqual(outcome.settled, { ready: true, changed: false });
+  assert.deepEqual(outcome.applied, { recipe: "evolved", counts: { updated: 1, stamped: 0, unchanged: 0 } });
+  assert.deepEqual(outcome.settled, { ready: true, changed: false, writes: 0 });
+  assert.equal(outcome.stamp.version, "2");
+  assert.match(String(outcome.stamp.definition), /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(outcome.state, [{ id: "gallery", state: "installed", version: "2" }]);
   assert.deepEqual(outcome.optional, ["room"]);
   const nodeBytes = Buffer.from(html, "utf8");
   assert.deepEqual(outcome.blob, Array.from(nodeBytes), "the sandbox wrote the bytes Node's UTF-8 encoder produces");

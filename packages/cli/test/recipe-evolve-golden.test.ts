@@ -1,9 +1,10 @@
 /**
  * Byte-identity of `recipe evolve` plans, plan tokens included, for recipes that add no
- * `fields.types` entry and no `fields.values` entry to an installed field. The golden transcript was
- * captured from the parent commit's sources on the same scenarios under a fixed clock and a fixed
- * recipe source; a diff here is a contract change for those recipes (AXI-CONTRACT, "Recipe evolve
- * may add field types and enums"), not a fixture refresh.
+ * `fields.types` entry and no `fields.values` entry to an installed field. The golden transcript is
+ * captured on these scenarios under a fixed clock and a fixed recipe source; a diff here is a
+ * contract change (AXI-CONTRACT, "Recipe evolve may add field types and enums" and "Recipe install
+ * stamps", which added `writes`, each definition's `stamp` and `counts.stamp_writes`, and moved
+ * every token), not a fixture refresh.
  */
 import test from "node:test";
 import assert from "node:assert/strict";

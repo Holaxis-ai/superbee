@@ -56,6 +56,10 @@ active View assets, or artifacts omitted from the source. It may add a field typ
 an enum (fields.values) to a declared field only when every existing instance conforms; otherwise
 the plan names the violating documents. It never changes or removes a type or an enum.
 
+Every convention 'recipe add' creates or 'recipe evolve' writes carries an 'x_recipe' stamp naming
+the recipe version, in the same write. A plan with changed:false and writes above zero still has an
+apply command: it records stamps only, which is how a bundle from before stamps gets them.
+
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
@@ -163,7 +167,8 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
     blockers: plan.blockers.slice(0, 20),
     blockers_shown: Math.min(plan.blockers.length, 20),
   };
-  if (plan.ready && plan.changed) {
+  // `changed` is content only; a ready plan with only stamps to record still has an apply command.
+  if (plan.ready && plan.writes > 0) {
     receipt.commands = {
       apply: `${exactPlanCommand} --apply ${commandToken(plan.plan_token)}${values.actor ? ` --actor ${commandQuoted(values.actor.trim())}` : ""}`,
     };
@@ -237,6 +242,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
     version: result.version,
     source: result.source,
     changed: result.changed,
+    stamp: result.stamp,
     docs: result.docs,
   };
   if (result.pages.length > 0) receipt.pages = result.pages;
@@ -246,7 +252,16 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   // by the migration script, never duplicated).
   receipt.counts = result.counts;
   if (warnings.length > 0) receipt.warnings = warnings;
-  if (sourceDiffers > 0) {
+  // Install never rewrites an existing convention, so a stale or missing stamp (or a differing
+  // source) is converged by the explicit evolve plan. A foreign stamp stays with its recipe, so no
+  // plan changes it; the receipt names those conventions instead.
+  if (result.foreign_ids.length > 0) {
+    receipt.foreign_ids = result.foreign_ids;
+    receipt.foreign_help =
+      "another recipe's stamp owns these conventions and keeps them; this recipe reads partial in 'recipes' while it does; an evolve plan takes one over only when it also changes that convention's content, which leaves the other recipe partial";
+  }
+  const migrationPending = result.docs.some((doc) => doc.migration_required !== undefined);
+  if (sourceDiffers > 0 || result.restamp_ids.length > 0 || migrationPending) {
     const target: CommandText = values.dir !== undefined
       ? commandFragment` --dir ${commandQuoted(values.dir)}`
       : remote !== undefined

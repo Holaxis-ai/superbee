@@ -474,7 +474,7 @@ import {
 import { RemoteBackend, RemoteError } from "@superbee/core/remote";
 import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
-import { installRecipe, planRecipeEvolution, RecipeLifecycleError } from "@superbee/core/recipe-lifecycle";
+import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
 
 declare const backend: StorageBackend;
 declare const document: OkfDocument;
@@ -496,6 +496,9 @@ export async function exerciseRecipeLifecycle(): Promise<string | undefined> {
   if (!recipe.ok) return undefined;
   await installRecipe(lifecycleBundle, recipe.recipe, { now: "2026-10-17T00:00:00.000Z" });
   return (await planRecipeEvolution(lifecycleBundle, recipe.recipe)).plan_token;
+}
+export function installStates(conventions: OkfDocument[]): RecipeInstallState[] {
+  return installedRecipes(conventions).rows.map((row) => row.state);
 }
 export const lifecycleRuntime = { RecipeLifecycleError };
 `,
@@ -565,6 +568,7 @@ export const lifecycleRuntime = { RecipeLifecycleError };
     assert.ok(installedFiles.includes("dist/hosted-client/index.js"), "the hosted client subpath is packed");
     assert.ok(installedFiles.includes("dist/hosted-client/node.js"), "the hosted client's Node-only subpath is packed");
     assert.ok(installedFiles.includes("dist/recipe-lifecycle/index.js"), "the recipe lifecycle subpath is packed");
+    assert.ok(installedFiles.includes("dist/recipe-lifecycle/stamp.js"), "the recipe install stamps are packed");
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;
     for (const file of installedFiles.filter((name) => /\.(?:js|d\.ts)$/.test(name))) {
