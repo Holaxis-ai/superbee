@@ -301,8 +301,9 @@ const RECIPE_ERROR_BLOCKER_CAP = 20;
 
 /**
  * THE one RecipeLifecycleError→CliError mapping (the CLI command boundary for core's recipe
- * install and evolution): each typed failure keeps the code, message and details the CLI emitted
- * before the lifecycle moved to core. An interrupted evolution that failed for any other reason is
+ * install and evolution): each typed failure maps to a stable CLI code, message and details. An
+ * edition change maps by its operation: CONFLICT during installation, STALE_HEAD during
+ * evolution. An interrupted evolution that failed for any other reason is
  * classified by its cause, with the completed and pending definitions merged into the details.
  * Pinned row by row by `test/error-boundary.test.ts`.
  */
@@ -311,7 +312,9 @@ export function cliErrorFromRecipeLifecycle(err: RecipeLifecycleError): CliError
   if (err instanceof RecipeAssetConflict) {
     return new CliError("ALREADY_EXISTS", err.message, { details: { recipe: err.recipe, key: err.key } });
   }
-  if (err instanceof RecipeEditionChanged) return new CliError("CONFLICT", err.message);
+  if (err instanceof RecipeEditionChanged) {
+    return new CliError(err.operation === "evolution" ? "STALE_HEAD" : "CONFLICT", err.message);
+  }
   if (err instanceof RecipeEvolutionPlanChanged) {
     return new CliError("STALE_HEAD", err.message, {
       details: { expected_plan: err.expected, current_plan: err.current },

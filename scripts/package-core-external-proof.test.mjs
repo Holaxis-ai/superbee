@@ -474,6 +474,7 @@ import {
 import { RemoteBackend, RemoteError } from "@superbee/core/remote";
 import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
+import { installRecipe, planRecipeEvolution, RecipeLifecycleError } from "@superbee/core/recipe-lifecycle";
 
 declare const backend: StorageBackend;
 declare const document: OkfDocument;
@@ -490,6 +491,13 @@ export async function exercisePortableCore(): Promise<void> {
   await queryHeads(backend, { type: String(document.frontmatter.type) });
 }
 export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBackend, RemoteError };
+declare const lifecycleBundle: Parameters<typeof installRecipe>[0];
+export async function exerciseRecipeLifecycle(): Promise<string | undefined> {
+  if (!recipe.ok) return undefined;
+  await installRecipe(lifecycleBundle, recipe.recipe, { now: "2026-10-17T00:00:00.000Z" });
+  return (await planRecipeEvolution(lifecycleBundle, recipe.recipe)).plan_token;
+}
+export const lifecycleRuntime = { RecipeLifecycleError };
 `,
     );
     await writeFile(

@@ -63,7 +63,13 @@ export interface LoadedRecipe {
   warnings: ValidationWarning[];
 }
 
-export type RecipeErrorCode = "RECIPE_NOT_FOUND" | "RECIPE_MALFORMED" | "RECIPE_EMPTY" | "RECIPE_UNSAFE_PATH";
+/**
+ * The logical workflow-field token recipe convention bodies may carry; materialization replaces it
+ * with the target edition's storage field. Part of the recipe format, so every client reads it here.
+ */
+export const RECIPE_PROGRESS_STATUS_TOKEN = "{{superbee:progress_status}}";
+
+export type RecipeErrorCode ="RECIPE_NOT_FOUND" | "RECIPE_MALFORMED" | "RECIPE_EMPTY" | "RECIPE_UNSAFE_PATH";
 
 export interface RecipeError {
   code: RecipeErrorCode;

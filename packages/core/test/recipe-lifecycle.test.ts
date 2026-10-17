@@ -181,6 +181,16 @@ test("RecipeAssetConflict: a different existing View blob is refused before any 
   assert.deepEqual([...(await installedConventionDocs(bundle)).keys()], []);
 });
 
+test("RecipeAssetConflict: a same-length but different existing View blob is refused", async () => {
+  const bundle = await v02Bundle("asset-conflict-same-length");
+  const different = new TextEncoder().encode(VIEW_HTML);
+  different[different.length - 2] = different[different.length - 2]! ^ 0x01;
+  await writeBlob(bundle, "views/gallery/index.html", different);
+  await assert.rejects(installRecipe(bundle, galleryRecipe("1"), { now: NOW }), (error: unknown) =>
+    error instanceof RecipeAssetConflict && error.key === "views/gallery/index.html");
+  assert.deepEqual((await readBlob(bundle, "views/gallery/index.html"))?.bytes, different);
+});
+
 /** MemoryBackend whose bundle edition reads as 0.1 once `flipAfterReads` more reads have passed. */
 class EditionFlipBackend extends MemoryBackend {
   flipAfterReads: number | null = null;

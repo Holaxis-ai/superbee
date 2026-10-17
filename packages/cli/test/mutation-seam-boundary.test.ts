@@ -26,15 +26,6 @@ const DIRECT_MUTATION_WRITERS: Record<string, string> = {
   "mutate.ts": "THE seam — the one place the guards are applied.",
 };
 
-/**
- * Core writers the CLI reaches without `mutateDoc`, each with the invariant that keeps it safe.
- * `install.ts`: recipe installation writes conventions in create-only mode, so there is never a
- * stored body to lose. `evolution.ts`: additiveConventionCandidate keeps body = existing.body and
- * reports any difference as the RECIPE_EVOLUTION_BODY_REPLACEMENT_UNSUPPORTED blocker; the one
- * body-changing branch requires an EMPTY stored body. Relaxing that rule must route the write
- * through the CLI's mutateDoc.
- */
-
 function typeScriptFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true })
     .flatMap((entry) => {
@@ -65,6 +56,14 @@ test("every CLI writer reaches core's document store through mutateDoc, or is a 
   }
 });
 
+/**
+ * Core writers the CLI reaches without `mutateDoc`, each with the invariant that keeps it safe.
+ * `install.ts`: recipe installation writes conventions in create-only mode, so there is never a
+ * stored body to lose. `evolution.ts`: additiveConventionCandidate keeps body = existing.body and
+ * reports any difference as the RECIPE_EVOLUTION_BODY_REPLACEMENT_UNSUPPORTED blocker; the one
+ * body-changing branch requires an EMPTY stored body. Relaxing that rule must route the write
+ * through the CLI's mutateDoc.
+ */
 test("the recorded exemptions still hold the invariants they are excused by", () => {
   const install = readFileSync(join(CORE_RECIPE_LIFECYCLE, "install.ts"), "utf8");
   assert.match(install, /mode:\s*"create-only"/, "core recipe installation must write conventions create-only");

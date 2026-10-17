@@ -102,11 +102,12 @@ const MATRIX: MatrixRow[] = [
   { name: "EACCES -> RUNTIME", make: () => errnoError("EACCES", "EACCES: permission denied"), code: "RUNTIME", exit: 1 },
   { name: "arbitrary plain Error -> RUNTIME (the killed USAGE fallback)", make: () => new Error("something unexpected broke"), code: "RUNTIME", exit: 1 },
   { name: "non-Error throw -> RUNTIME", make: () => "string throw", code: "RUNTIME", exit: 1 },
-  // Core's recipe lifecycle (`@superbee/core/recipe-lifecycle`): each typed failure keeps the code
-  // the CLI emitted when the lifecycle lived in the CLI.
+  // Core's recipe lifecycle (`@superbee/core/recipe-lifecycle`): each typed failure maps to a
+  // stable CLI code and exit status.
   { name: "RecipeInputError -> USAGE", make: () => new RecipeInputError("recipe 'r' cannot target unsupported OKF mutation version '9'"), code: "USAGE", exit: 2 },
   { name: "RecipeAssetConflict -> ALREADY_EXISTS", make: () => new RecipeAssetConflict("r", "views/r.html"), code: "ALREADY_EXISTS", exit: 5 },
   { name: "RecipeEditionChanged -> CONFLICT", make: () => new RecipeEditionChanged("0.1", "0.2", "installation"), code: "CONFLICT", exit: 5 },
+  { name: "RecipeEditionChanged evolution -> STALE_HEAD", make: () => new RecipeEditionChanged("0.2", "0.1", "evolution"), code: "STALE_HEAD", exit: 5 },
   { name: "RecipeEvolutionPlanChanged -> STALE_HEAD", make: () => new RecipeEvolutionPlanChanged("sha256:aa", "sha256:bb"), code: "STALE_HEAD", exit: 5 },
   { name: "RecipeEvolutionBlocked -> CONFLICT", make: () => new RecipeEvolutionBlocked("r", [{ code: "X", id: "conventions/r", message: "m" }]), code: "CONFLICT", exit: 5 },
   { name: "RecipeEvolutionInterrupted race -> STALE_HEAD", make: () => new RecipeEvolutionInterrupted("race", "lost", [], ["conventions/r"], new VersionConflict("conventions/r", "sha256:aa", "sha256:bb")), code: "STALE_HEAD", exit: 5 },

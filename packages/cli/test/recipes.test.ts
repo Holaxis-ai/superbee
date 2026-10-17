@@ -920,7 +920,7 @@ test("conventions-free: init's default does NOT install roadmap — a bundle sta
 
 // ── Row 2: external loads+applies through the SAME path ───────────────────────────────────────
 
-test("recipe add <path>: an EXTERNAL recipe folder loads via filesRecipeSource -> parseRecipeFiles -> applyRecipe, the SAME functions as the built-in", async () => {
+test("recipe add <path>: an EXTERNAL recipe folder loads via filesRecipeSource -> parseRecipeFiles -> installRecipe, the SAME functions as the built-in", async () => {
   const dir = await tempDir();
   try {
     await initBundle(dir);
@@ -947,7 +947,7 @@ test("recipe add <path>: an EXTERNAL recipe folder loads via filesRecipeSource -
   }
 });
 
-test("applyRecipe carries serialized Claim lifecycle descriptions through the ordinary recipe path", async () => {
+test("installRecipe carries serialized Claim lifecycle descriptions through the ordinary recipe path", async () => {
   const dir = await tempDir();
   try {
     // This fixture intentionally exercises the legacy physical `status` coordinate.

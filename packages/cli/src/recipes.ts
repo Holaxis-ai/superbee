@@ -11,6 +11,7 @@
 // BODY, not just bare frontmatter — `CONTEXT_NOTE_SEED_BODY` is the in-bundle authoring reference
 // for kind conventions (see its own doc comment below).
 import { PROGRESS_STATUS_FIELD, type KindConvention } from "@superbee/core";
+import { RECIPE_PROGRESS_STATUS_TOKEN } from "@superbee/core/recipes";
 
 /** The `type` value the context-notes recipe governs; formerly a core export, localized when the
  * bespoke `note` command (and core's `noteToDoc`) was deleted — the recipe is exactly the thing
@@ -63,8 +64,6 @@ export const CONTEXT_NOTE_KIND: KindConvention = {
  * teach the physical workflow coordinate appropriate to the target OKF edition; `recipes.test.ts`
  * pins that an installed body equals `CONTEXT_NOTE_SEED_BODY` and carries no token.
  */
-const RECIPE_PROGRESS_STATUS_TOKEN = "{{superbee:progress_status}}";
-
 export const CONTEXT_NOTE_SEED_BODY_LOGICAL =
   "# Context Note\n\n" +
   "An agent's cross-session orientation note: what happened, what was decided, and what's " +

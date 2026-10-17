@@ -7,7 +7,7 @@ import { mutateDocument } from "../document-mutation.js";
 import { CONVENTIONS_PREFIX, PROGRESS_STATUS_FIELD, progressStatusStorageField, type KindRegistry } from "../kinds.js";
 import { okfValuesEqual } from "../okf-authored-values.js";
 import { PAGE_REGISTRY_PREFIX, parseRegistration, VIEW_REGISTRY_PREFIX } from "../page.js";
-import type { LoadedRecipe } from "../recipes.js";
+import { RECIPE_PROGRESS_STATUS_TOKEN, type LoadedRecipe } from "../recipes.js";
 import type { Bundle, ConceptId, OkfDocument } from "../types.js";
 import type { ValidationWarning } from "../validation.js";
 import { VersionConflict } from "../versioning.js";
@@ -19,12 +19,6 @@ import {
   legacyRegistryAlias,
   VIEW_KIND_NAME,
 } from "./legacy-aliases.js";
-
-/**
- * The logical workflow-field token recipe convention bodies may carry; materialization replaces it
- * with the target edition's storage field. The built-in recipe content authors it.
- */
-const RECIPE_PROGRESS_STATUS_TOKEN = "{{superbee:progress_status}}";
 
 function materializeRecipeBody(body: string, storageField: string): string {
   return body.replaceAll(RECIPE_PROGRESS_STATUS_TOKEN, storageField);
