@@ -876,9 +876,9 @@ test("the file store keeps the refresh token 0600 inside the private state root"
 });
 
 // ---------------------------------------------------------------------------------------------
-// Boundary: no existing command reaches hosted before the transport exists
+// Boundary: explicit hosted-session owners and binding-gated checkout consumers only
 
-test("only the sign-in commands, the hosted checkout, export, doc history, op, access, bundle retire and hosted sync import the hosted session module", async () => {
+test("only explicit hosted-session owners and binding-gated checkout consumers import the session module", async () => {
   const src = path.resolve(here, "../src");
   const offenders: string[] = [];
   async function walk(dir: string): Promise<void> {
@@ -898,6 +898,9 @@ test("only the sign-in commands, the hosted checkout, export, doc history, op, a
         path.join("commands", "publish.ts"),
         path.join("hosted", "client.ts"),
         path.join("hosted", "sync.ts"),
+        // Opaque-file commands construct session defaults only after durable admission returns a hosted binding.
+        path.join("commands", "promote.ts"),
+        path.join("commands", "delete.ts"),
         // Hosted-checkout triggers: each reaches the session only for a folder bound as a hosted checkout.
         "autopull.ts",
         // The local MCP app's reads of a checkout run that checkout's automatic pull.
