@@ -94,6 +94,8 @@ export function decodeBlobSyncMap(value: unknown, scope: BlobTargetScope): BlobS
 }
 export function changeBlobSyncEntry(map: BlobSyncMap, entry: BlobSyncEntry): BlobSyncMap {
   const captured = captureBlobSyncMap(map, map.scope), next = entryOf(entry);
+  const current = captured.entries.find(row => row.key === next.key);
+  if ((current?.placement || next.placement) && !equalJournalValue(current, next)) throw new TypeError("generic blob metadata changes cannot alter placement WAL");
   return captureBlobSyncMap({ ...captured, entries: [...captured.entries.filter(row => row.key !== next.key), next] }, captured.scope);
 }
 /** Physical bytes and MIME choices are independent dirty dimensions. Unknown is never absence. */
@@ -239,6 +241,17 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
   return { keys: new Set(map.entries.map(row => row.key)), held };
 }
 
+/** Sole lifecycle mutation path; generic entry updates cannot transition or retire WAL. */
+function changePlacementEntry(map: BlobSyncMap, key: string, next: BlobSyncEntry | null, expected: { id: string; state: "pending" | "committed" } | null): BlobSyncMap {
+  const captured = captureBlobSyncMap(map, map.scope), current = captured.entries.find(row => row.key === key), prior = current?.placement;
+  if (expected ? !prior || prior.id !== expected.id || prior.state !== expected.state : prior !== undefined) throw new TypeError("placement prior state mismatch");
+  if (next?.placement) {
+    const following = next.placement;
+    if (!prior) { if (following.state !== "pending" || !equalJournalValue(following.original, current ?? null)) throw new TypeError("invalid placement preparation"); }
+    else if (following.id !== prior.id || following.operation !== prior.operation || !equalJournalValue(following.original, prior.original) || !equalJournalValue(following.intended, prior.intended) || prior.state !== "pending" || prior.install && !equalJournalValue(prior.install, following.install) || prior.preimage && !equalJournalValue(prior.preimage, following.preimage)) throw new TypeError("invalid placement transition");
+  } else if (!prior || !equalJournalValue(next, prior.state === "pending" ? prior.original : placementBaseline(current!))) throw new TypeError("invalid placement retirement");
+  return captureBlobSyncMap({ ...captured, entries: [...captured.entries.filter(row => row.key !== key), ...(next ? [next] : [])] }, captured.scope);
+}
 function placementPlan(entry: BlobSyncEntry): BlobStagePlan {
   const p = entry.placement!;
   return { id: p.id, key: entry.key, operation: p.operation, beforeDigest: p.original?.placedDigest ?? null, afterDigest: p.intended.placedDigest, ...(p.install ? { install: p.install } : {}), ...(p.preimage ? { preimage: p.preimage } : {}) };
@@ -270,7 +283,7 @@ export async function recoverBlobPlacements(folder: string, store: BlobJournaled
     try {
       if (!await finishBlobStage(folder, placementPlan(current), current.placement.state)) { held.push({ key: entry.key, message: "ambiguous or changed blob placement evidence is preserved" }); continue; }
       const replacement = current.placement.state === "committed" ? placementBaseline(current) : current.placement.original;
-      const next = captureBlobSyncMap({ ...snapshot.map, entries: [...snapshot.map.entries.filter(row => row.key !== entry.key), ...(replacement ? [replacement] : [])] }, capturedScope);
+      const next = changePlacementEntry(snapshot.map, entry.key, replacement, { id: current.placement.id, state: current.placement.state });
       await writePlacementMap(store, snapshot, next, entry.key); // descriptor clears LAST, after directory sync
     } catch (error) {
       if (error instanceof UnsafePlacementError || error instanceof JournalGuardConflict || error instanceof FileJournalUnavailableError) held.push({ key: entry.key, message: "blob placement recovery refused; evidence is preserved" });
@@ -287,25 +300,25 @@ export async function stageBlobPlacement(folder: string, store: BlobJournaledBac
   const premise = guard.meta.find(row => row.key === BLOB_SYNC_META_KEY)?.expected;
   if (guard.key !== key || supplied.journal.key !== key || !premise || !equalJournalValue(map, decodeBlobSyncMap(premise.present ? premise.value : undefined, map.scope)) || guard.intents.some(row => row.state !== "acknowledged") || !ordinarySeedKey(key) || head && head.key !== key) throw new TypeError("invalid blob placement snapshot");
   const original = map.entries.find(row => row.key === key) ?? null;
-  if (original?.placement) return "held";
+  if (original?.placement || original?.desiredContentType !== undefined && original.desiredContentType !== original.head?.contentType) return "held";
   if (head === null ? bytes !== undefined : !bytes || bytes.length > 16 * 1024 * 1024 || digestOf(bytes) !== head.version) throw new TypeError("blob placement bytes mismatch");
   const operation = head === null ? "delete" : original?.head ? "replace" : "create";
   const pending: BlobPlacementDescriptor = { id: mintRequestId(), operation, state: "pending", original, intended: { head, placedDigest: head?.version ?? null } };
   const base: BlobSyncEntry = original ?? { key, placedDigest: null };
   const entry = entryOf({ ...base, placement: pending });
   const snapshot: BlobSyncSnapshot = { map, journal: { ...supplied.journal, guard } };
-  await writePlacementMap(store, snapshot, changeBlobSyncEntry(map, entry), key); // pending before ANY filesystem mutation
+  await writePlacementMap(store, snapshot, changePlacementEntry(map, key, entry, null), key); // pending before ANY filesystem mutation
   try {
     const identities = await prepareBlobStage(folder, placementPlan(entry), bytes);
     let current = await readBlobSyncState(store, key, map.scope), currentEntry = current.map.entries.find(row => row.key === key)!;
     if (!equalJournalValue(currentEntry.placement, pending) || current.journal.intents.some(row => row.state !== "acknowledged")) return "held";
     const identified = entryOf({ ...currentEntry, placement: { ...pending, ...identities } });
-    await writePlacementMap(store, current, changeBlobSyncEntry(current.map, identified), key); // identity durable before rename/link
+    await writePlacementMap(store, current, changePlacementEntry(current.map, key, identified, { id: pending.id, state: "pending" }), key); // identity durable before rename/link
     await installBlobStage(folder, placementPlan(identified));
     current = await readBlobSyncState(store, key, map.scope); currentEntry = current.map.entries.find(row => row.key === key)!;
     if (!equalJournalValue(currentEntry.placement, identified.placement) || current.journal.intents.some(row => row.state !== "acknowledged")) return "held";
     const committed = entryOf({ ...placementBaseline(currentEntry), placement: { ...currentEntry.placement!, state: "committed" } });
-    await writePlacementMap(store, current, changeBlobSyncEntry(current.map, committed), key);
+    await writePlacementMap(store, current, changePlacementEntry(current.map, key, committed, { id: pending.id, state: "pending" }), key);
     const recovered = await recoverBlobPlacements(folder, store, map.scope);
     return recovered.held.length === 0 ? "placed" : "held";
   } catch (error) {

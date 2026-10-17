@@ -180,7 +180,7 @@ async function placementFixture(operation: "create" | "replace" | "delete", key 
   let map = empty();
   if (operation !== "create") {
     await writeFile(path.join(folder, key), "old");
-    map = changeBlobSyncEntry(map, { ...seedBlobSyncEntry({ key, version: digest("old"), contentType: "x/old" }, digest("old")), desiredContentType: "x/later" });
+    map = changeBlobSyncEntry(map, { ...seedBlobSyncEntry({ key, version: digest("old"), contentType: "x/old" }, digest("old")), desiredContentType: "x/old" });
   }
   await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(map));
   await store.close();
@@ -228,7 +228,7 @@ test("placement WAL recovers create/replace/delete at finite durable cut points,
           const after = await readBlobSyncState(store, f.key, scope), entry = after.map.entries[0];
           assert.equal(entry?.placement, undefined);
           if (!committed) assert.deepEqual(after.map, f.map);
-          else { assert.equal(entry!.placedDigest, operation === "delete" ? null : digest("new")); assert.equal(entry!.desiredContentType, operation === "create" ? undefined : "x/later"); }
+          else { assert.equal(entry!.placedDigest, operation === "delete" ? null : digest("new")); assert.equal(entry!.desiredContentType, operation === "create" ? undefined : "x/old"); }
         } finally { await store.close(); }
       } finally { await f.cleanup(); }
     }
@@ -332,11 +332,46 @@ test("selected receipt cannot retire pending or committed placement WAL", async 
       const original = f.map.entries[0]!, head = { key: f.key, version: digest("new"), contentType: "x/new" };
       const identity = { dev: "1", ino: "2", mtimeNs: "3" };
       const entry = { ...(state === "pending" ? original : { key: f.key, head, placedDigest: head.version, desiredContentType: original.desiredContentType }), placement: { id: randomUUID(), operation: "replace" as const, state, original, intended: { head, placedDigest: head.version }, ...(state === "committed" ? { install: identity, preimage: identity } : {}) } };
-      const map = changeBlobSyncEntry(f.map, entry);
+      const map = captureBlobSyncMap({ ...f.map, entries: [entry] }, scope);
       await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(map));
       await assert.rejects(settleBlobSyncReceipt(store, await readBlobSyncState(store, f.key, scope), terminal, { state: "acknowledged", receipt }), /waits for placement recovery/);
       assert.equal(await store.readMeta(BLOB_SYNC_META_KEY), encodeBlobSyncMap(map));
       assert.deepEqual(await store.readBlobIntent(row.requestId), terminal);
     }
+  } finally { await store.close(); await f.cleanup(); }
+});
+test("generic entry updates cannot drop or rewrite real pending/committed placement authority", async () => {
+  for (const cut of ["installed", "committed"] as const) {
+    const f = await placementFixture("replace");
+    try {
+      placementCrash(f, "replace", cut);
+      const store = await FileJournaledBackend.open(f.options);
+      try {
+        const snapshot = await readBlobSyncState(store, f.key, scope), current = snapshot.map.entries[0]!;
+        const { placement: _placement, ...ordinary } = current;
+        assert.throws(() => changeBlobSyncEntry(snapshot.map, ordinary), /cannot alter placement WAL/);
+        assert.throws(() => changeBlobSyncEntry(snapshot.map, { ...current, placement: { ...current.placement!, id: randomUUID() } }), /cannot alter placement WAL/);
+        const next = changeBlobSyncEntry(snapshot.map, { key: "other.bin", placedDigest: null });
+        await store.writeBlobMeta(f.key, { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(next) }] }, { guard: snapshot.journal.guard });
+        assert.deepEqual((await readBlobSyncState(store, f.key, scope)).map.entries.find(row => row.key === f.key)!.placement, current.placement);
+        assert.deepEqual((await recoverBlobPlacements(f.folder, store, scope)).held, []);
+        assert.equal((await readBlobSyncState(store, f.key, scope)).map.entries.some(row => row.key === "other.bin"), true);
+      } finally { await store.close(); }
+    } finally { await f.cleanup(); }
+  }
+});
+test("unapplied explicit MIME refuses placement before WAL or filesystem work and preserves its old CAS", async () => {
+  const f = await placementFixture("replace"), store = await FileJournaledBackend.open(f.options);
+  try {
+    const map = changeBlobSyncEntry(f.map, { ...f.map.entries[0]!, desiredContentType: "x/local-choice" });
+    const original = encodeBlobSyncMap(map);
+    await store.writeMeta(BLOB_SYNC_META_KEY, original);
+    const snapshot = await readBlobSyncState(store, f.key, scope);
+    assert.equal(await stageBlobPlacement(f.folder, store, snapshot, { key: f.key, head: { key: f.key, version: digest("new"), contentType: "x/remote" }, bytes: Buffer.from("new") }), "held");
+    assert.equal(await store.readMeta(BLOB_SYNC_META_KEY), original);
+    assert.deepEqual(await readdir(f.folder), [f.key]);
+    assert.equal(await readFile(path.join(f.folder, f.key), "utf8"), "old");
+    assert.equal(snapshot.map.entries[0]!.head!.version, digest("old"));
+    assert.equal(snapshot.map.entries[0]!.head!.contentType, "x/old");
   } finally { await store.close(); await f.cleanup(); }
 });
