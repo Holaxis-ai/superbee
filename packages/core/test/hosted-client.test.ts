@@ -126,6 +126,55 @@ test("qualifyingCarrier: a raw body to a bundle-scoped route is refused; an unsc
   assert.deepEqual(sent, ["/sync/v1/bundle-create-blob"]);
 });
 
+test("qualifyingCarrier: only exact blob upload routes qualify one bare bundle header and preserve every other request option", async () => {
+  for (const prefix of ["/sync/v1", "/agents/0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1e/sync/v1"]) {
+    const signal = new AbortController().signal, body = new Uint8Array([0, 255, 128, 13, 10]);
+    const seen: {route: string; bytes: Uint8Array; signal: AbortSignal; options: any}[] = [];
+    const inner = {json: async () => assert.fail("json"), stream: async () => assert.fail("stream"), bytes: async (route: string, bytes: Uint8Array, signal: AbortSignal, options: any) => {
+      seen.push({route, bytes, signal, options});
+      return {status: 200, headers: new Headers(), body: {ok: true}};
+    }};
+    for (const slug of ["south", "north"]) for (const route of ["blob-create", "blob-replace"]) {
+      const headers = {"x-SuPeRbEe-BuNdLe": BUNDLE, "X-Superbee-Content-Type": "image/svg+xml; charset=utf-8", "X-Superbee-Blob-Key": "ZGlhZ3JhbXMvY2Fmw6kuc3Zn", "X-Superbee-Blob-Version": `sha256:${"a".repeat(64)}`, ...(route === "blob-replace" ? {"X-Superbee-Expected-Version": `sha256:${"b".repeat(64)}`, "X-Superbee-Expected-Content-Type": "application/octet-stream"} : {})};
+      const options = {maximum: 4096, writeRequest: "11111111-1111-4111-8111-111111111111", binding: `sha256:${"c".repeat(64)}`, via: "codex", headers};
+      await qualifyingCarrier(inner, prefix, slug).bytes!(`${prefix}/${route}`, body, signal, options);
+      const sent = seen.at(-1)!;
+      assert.equal(sent.route, `${prefix}/${route}`); assert.equal(sent.bytes, body); assert.equal(sent.signal, signal);
+      assert.deepEqual(sent.options, {...options, headers: {...headers, "x-SuPeRbEe-BuNdLe": `${slug}/${BUNDLE}`}});
+      assert.equal(headers["x-SuPeRbEe-BuNdLe"], BUNDLE, "qualification never mutates the caller's reusable header record");
+    }
+    const carrier = qualifyingCarrier(inner, prefix, "south"), before = seen.length;
+    for (const headers of [undefined, {}, {"X-Superbee-Bundle": ""}, {"X-Superbee-Bundle": " notes.a"}, {"X-Superbee-Bundle": "notes.a "}, {"X-Superbee-Bundle": "north/notes.a"}, {"X-Superbee-Bundle": "south/notes.a"}, {"X-Superbee-Bundle": "../notes.a"}, {"X-Superbee-Bundle": "notes.a\r\nX-Other: bad"}, {"X-Superbee-Bundle": BUNDLE, "x-superbee-bundle": BUNDLE}]) {
+      for (const route of ["blob-create", "blob-replace"]) await assert.rejects(carrier.bytes!(`${prefix}/${route}`, body, signal, {maximum: 1024, headers}), TypeError);
+    }
+    for (const route of ["blob-delete", "outcome", "write", "blob-create/extra", "blob-replace?override=1"])
+      await assert.rejects(carrier.bytes!(`${prefix}/${route}`, body, signal, {maximum: 1024, headers: {"X-Superbee-Bundle": BUNDLE}}), TypeError);
+    assert.equal(seen.length, before, "invalid and unrelated scoped raw calls never dispatch");
+    const withoutBytes = qualifyingCarrier({json: inner.json, stream: inner.stream}, prefix, "south");
+    assert.equal(withoutBytes.bytes, undefined, "qualification never fabricates a missing binary port");
+    let credentials = 0;
+    const requests: Request[] = [];
+    const client = createHostedClient({target: {origin: ORIGIN, syncPrefix: prefix}, credentials: async () => ({Authorization: `Bearer current-${++credentials}`}), fetch: async (input, init) => {
+      const request = new Request(input, init); requests.push(request);
+      assert.deepEqual(new Uint8Array(await request.arrayBuffer()), body);
+      return Response.json({ok: true});
+    }});
+    for (const slug of ["south", "north"]) await client.within(slug).carrier.bytes!(`${prefix}/blob-create`, body, signal, {
+      maximum: 1024, writeRequest: "11111111-1111-4111-8111-111111111111", binding: `sha256:${"c".repeat(64)}`, via: "codex", headers: {"X-Superbee-Bundle": BUNDLE},
+    });
+    assert.equal(credentials, 2);
+    for (const [index, slug] of ["south", "north"].entries()) {
+      const request = requests[index]!;
+      assert.equal(new URL(request.url).pathname, `${prefix}/blob-create`);
+      assert.equal(request.headers.get("x-superbee-bundle"), `${slug}/${BUNDLE}`);
+      assert.equal(request.headers.get("authorization"), `Bearer current-${index + 1}`);
+      assert.equal(request.headers.get("x-superbee-write-request"), "11111111-1111-4111-8111-111111111111");
+      assert.equal(request.headers.get("x-superbee-checkout"), `sha256:${"c".repeat(64)}`);
+      assert.equal(request.headers.get("x-superbee-via"), "codex");
+    }
+  }
+});
+
 test("an agent-connection prefix routes every request under it", async () => {
   const prefix = "/agents/0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1e/sync/v1";
   const { fetch, sent } = serving({ whoami: "whoami-200" });

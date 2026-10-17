@@ -33,7 +33,7 @@ import {
 import { MalformedAnswer, RemoteError } from "../remote-error.js";
 import type { HostedBundleRow } from "./bundle-listing.js";
 import { HostedRouteNotServed } from "./errors.js";
-import { hostedBundleReferenceText, isWorkspaceSlug } from "./reference.js";
+import { hostedBundleReferenceText, isWorkspaceSlug, parseHostedBundleReference } from "./reference.js";
 import { checkoutBindingDigest } from "./binding.js";
 import { mintRequestId } from "../uncertain-write.js";
 import {
@@ -243,10 +243,11 @@ const UNSCOPED_ROUTES = Object.freeze([
  * The carrier with a workspace: every bundle-scoped request names its bundle as
  * `<slug>/<bundle-id>`, so the host selects that workspace's bundle. The host's answers still
  * name the bare id. An id that already names a workspace is a caller's mistake (a `TypeError`),
- * as is a raw body sent to a bundle-scoped route.
+ * as is a raw body sent to a bundle-scoped route other than an ordinary blob create/replace.
  */
 export function qualifyingCarrier(carrier: HostedCarrier, prefix: string, slug: string): HostedCarrier {
   const unscoped = new Set(UNSCOPED_ROUTES.map((route) => `${prefix}/${route}`));
+  const blobUploads = new Set([`${prefix}/blob-create`, `${prefix}/blob-replace`]);
   const scoped = (route: string) => route.startsWith(`${prefix}/`) && !unscoped.has(route);
   const qualify = (route: string, input: unknown): unknown => {
     if (!scoped(route) || input === null || typeof input !== "object" || Array.isArray(input)) return input;
@@ -259,10 +260,18 @@ export function qualifyingCarrier(carrier: HostedCarrier, prefix: string, slug: 
   return {
     json: async (route, input, signal, options) => carrier.json(route, qualify(route, input), signal, options),
     stream: async (route, input, signal) => carrier.stream(route, qualify(route, input), signal),
-    // A raw body names no bundle in a body; only unscoped routes carry one.
+    // Ordinary blob uploads name their bundle in one route header, not in the binary body.
     ...(bytes
       ? {
           bytes: async (route: string, body: Uint8Array, signal: AbortSignal, options: Parameters<NonNullable<HostedCarrier["bytes"]>>[3]) => {
+            if (blobUploads.has(route)) {
+              const entries = Object.entries(options.headers ?? {}).filter(([name]) => name.toLowerCase() === "x-superbee-bundle");
+              if (entries.length !== 1) throw new TypeError("a blob upload must name exactly one bundle header");
+              const [name, value] = entries[0]!;
+              const reference = typeof value === "string" ? parseHostedBundleReference(value) : null;
+              if (reference === null || reference.slug !== null) throw new TypeError("a blob upload through a qualifying client must name a bare hosted bundle id");
+              return bytes(route, body, signal, { ...options, headers: { ...options.headers, [name]: hostedBundleReferenceText({ slug, bundleId: reference.bundleId }) } });
+            }
             if (scoped(route)) throw new TypeError(`a raw body sent to the bundle-scoped route ${route} through a qualifying client`);
             return bytes(route, body, signal, options);
           },
