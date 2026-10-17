@@ -139,9 +139,9 @@ export interface HostedIdentity {
   readonly email: string | null;
   /**
    * The deployment's document target authority key (`targetAuthorityKey`), the `authorityKey` a
-   * hosted document target names; null when the host states none or states one no target can carry.
+   * hosted document target names. Absent when the host states none or states one no target can carry.
    */
-  readonly targetAuthorityKey: string | null;
+  readonly targetAuthorityKey?: string;
 }
 
 export interface HostedWorkspace {
@@ -396,7 +396,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
         workspaces: tenantIds.map((tenantId) => ({ tenantId, slug: slugs.get(tenantId) ?? null })),
         documentInputBytes: statedDocumentInputBytes(body.limits),
         email: typeof body.email === "string" && /^[^\s\p{Cc}\p{Cf}]{3,320}$/u.test(body.email) ? body.email : null,
-        targetAuthorityKey: isAuthorityKey(body.targetAuthorityKey) ? body.targetAuthorityKey : null,
+        ...(isAuthorityKey(body.targetAuthorityKey) ? { targetAuthorityKey: body.targetAuthorityKey } : {}),
       };
     },
     async bundles() {

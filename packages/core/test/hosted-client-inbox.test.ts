@@ -205,6 +205,24 @@ test("a send that stays unclear throws its ticket, and sending again with it sen
   assert.equal(sent.at(-1)!.body.ticket, error.ticket);
 });
 
+test("after an unclear attempt, a later outright refusal still reports the outcome as unknown with the ticket", async () => {
+  for (const later of [
+    () => Response.json({ error: { code: "unauthenticated" } }, { status: 401 }),
+    () => Response.json({ ok: false, code: "workspace_not_available", retryable: false }, { status: 403 }),
+    () => refusal("attention.request.v1", "quota_exceeded", 429),
+  ]) {
+    const { fetch, sent } = host((_path, _body, attempt) => {
+      if (attempt === 1) throw new TypeError("socket hang up");
+      return later();
+    });
+    const error = await inboxOf(fetch).request({ recipient: { kind: "principal", principalId: "p:x" }, kind: "needs_input" }).catch((caught: unknown) => caught);
+    assert.ok(error instanceof HostedAttentionOutcomeUnknown, String(error));
+    assert.equal(sent.length, 2, "the refusal ends the retries");
+    assert.equal(error.ticket, sent[0]!.body.ticket);
+    assert.ok(error.cause instanceof RemoteError, "the refusal that ended it is the cause");
+  }
+});
+
 test("a send the host refused outright is never retried", async () => {
   for (const [code, status] of [
     ["invalid_input", 400],

@@ -131,9 +131,15 @@ export async function inboxFailure(error: unknown, session: Pick<InboxSession, "
   const { hostedFailure } = await import("./client.js");
   const host = session.target.origin;
   if (core.isAttentionOutcomeUnknown(error)) {
+    // The answer that ended the retries, when there was one: a sign-in that ended needs a login
+    // before the resend, and the resend still carries the ticket.
+    const cause = error.cause;
+    const after = cause instanceof core.RemoteError ? cause.code : cause instanceof core.HostedCarrierError ? cause.code : undefined;
+    const signIn = cause instanceof core.RemoteError && (cause.status === 401 || cause.code === "unauthenticated");
+    const resend = extra.ticketHelp ? extra.ticketHelp(error.ticket) : "retry the same command";
     return new CliError("TRANSIENT", `${host} did not answer the send: it may or may not have arrived`, {
-      details: { host, code: error.code, ticket: error.ticket, retryable: true },
-      help: extra.ticketHelp ? extra.ticketHelp(error.ticket) : "retry the same command",
+      details: { host, code: error.code, ticket: error.ticket, retryable: true, ...(after === undefined ? {} : { after }) },
+      help: signIn ? `sign in again (${cliInvocation()} login --host ${commandToken(host)}), then ` + resend : resend,
     });
   }
   if (core.isRouteNotServed(error)) {

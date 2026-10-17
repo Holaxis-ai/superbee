@@ -152,8 +152,8 @@ export interface FakeHostOptions {
   origin?: string;
   capabilities?: string;
   tenants?: string[];
-  /** The document target authority key whoami states (default the golden exchange's); null states none. */
-  targetAuthorityKey?: string | null;
+  /** The document target authority key whoami states; absent (as the golden exchange) states none. */
+  targetAuthorityKey?: string;
   bundles?: string[];
   principal?: string;
   /** Serve heads and snapshot this many documents to a page (the host's page size is 1,000). */
@@ -419,7 +419,7 @@ export class FakeHost {
           ...(this.workspaces() ? { workspaces: this.workspaces() } : {}),
           surface: "sync",
           ...this.limits(),
-          ...(this.options.targetAuthorityKey === null ? {} : { targetAuthorityKey: this.options.targetAuthorityKey ?? "orgs" }),
+          ...(this.options.targetAuthorityKey === undefined ? {} : { targetAuthorityKey: this.options.targetAuthorityKey }),
         });
       case "bundles":
         return Response.json({

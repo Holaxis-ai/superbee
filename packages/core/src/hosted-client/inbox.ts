@@ -453,6 +453,10 @@ export function createHostedInbox(client: Pick<HostedClient, "prefix" | "carrier
           const data = await call(ATTENTION_OPERATION_IDS.request, body, options.via);
           return { ...decodeReceipt(data, route), ticket };
         } catch (error) {
+          // Once an attempt may have landed, no later answer settles the send: a retry refused
+          // before the host reads its ticket (a session ended, a quota spent, a removed member)
+          // says nothing about the first delivery, so the ticket must survive for a resend.
+          if (unclear !== undefined && !sendMayHaveLanded(error)) throw new HostedAttentionOutcomeUnknown(ticket, error);
           // Nothing left: the credential was refused before sending, or the caller aborted.
           if (error instanceof HostedCarrierError && error.code === "denied") throw error;
           if (!sendMayHaveLanded(error)) throw error;

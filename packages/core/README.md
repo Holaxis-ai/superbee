@@ -425,7 +425,7 @@ The methods are `list`, `threads`, `summary`, `get` (does not mark read), `open`
 open contract's shapes (`InboxEntry`, `InboxThread`, `AttentionReceipt` and the inputs). A
 recipient is a principal id; to notify yourself, use `whoami().principalId`. A document target
 names `whoami().targetAuthorityKey` as its `authorityKey` and the document's current version; a
-host that states no key (`null`) cannot resolve one yet.
+host that reports no key (the field is absent, as on every `/sync/v1` host today) cannot take one yet.
 
 `request` mints one UUIDv7 ticket per send (or takes the one you pass). When an answer is lost or
 the host marks its refusal retryable, it sends the same body under the same ticket again

@@ -89,7 +89,12 @@ export async function inbox(argv: string[], deps: Partial<InboxDeps> = {}): Prom
 
 type Deps = Partial<InboxDeps> & Pick<InboxDeps, "stdout">;
 
-const iso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
+/** A host timestamp as ISO text; one outside the Date range (a defective host) reads as unknown. */
+export function iso(ms: number | null): string | null {
+  if (ms === null) return null;
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? "unknown" : date.toISOString();
+}
 const json = (flag: boolean | undefined) => (flag ? commandFragment` --json` : commandFragment``);
 
 function limitOf(value: string | undefined, sub: string): number {
@@ -384,13 +389,25 @@ async function inboxOpen(argv: string[], deps: Deps): Promise<void> {
           ...(open && entry.recipient.principalId === you
             ? [commandFragment`${cliInvocation()} inbox ack ${commandToken(entry.itemId)} --revision ${commandToken(String(entry.revision))} --dir ${s.dirArgument}` + " marks it handled"]
             : []),
-          commandFragment`${cliInvocation()} notify self ${commandLiteral("<reply>")} --kind reply --thread ${commandToken(entry.threadId)} --dir ${s.dirArgument}` +
-            " replies on its thread (name its other participant in place of self)",
+          ...replyHint(entry, you, s.dirArgument),
         ],
       },
       mode,
     ),
   );
+}
+
+/**
+ * How to reply on an item's thread: the thread fixes the recipient as its other participant, so the
+ * hint names that principal (self on a thread with yourself). A host job's thread has no principal
+ * to reply to, and gets no hint.
+ */
+function replyHint(entry: InboxEntry, you: string, dir: CommandText): string[] {
+  const sender = entry.producer.principalId;
+  if (sender === undefined || entry.producer.surface === "host_job") return [];
+  const other = sender === you ? entry.recipient.principalId : sender;
+  const recipient = other === you ? "self" : other;
+  return [commandFragment`${cliInvocation()} notify ${commandToken(recipient)} ${commandLiteral("<reply>")} --kind reply --thread ${commandToken(entry.threadId)} --dir ${dir}` + " replies on its thread"];
 }
 
 async function inboxAck(argv: string[], deps: Deps): Promise<void> {

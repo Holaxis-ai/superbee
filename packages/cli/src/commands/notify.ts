@@ -134,10 +134,10 @@ export async function notify(argv: string[], deps: Partial<NotifyDeps> = {}): Pr
 
   let target: AttentionRequestInput["target"];
   if (values.doc !== undefined) {
-    if (identity.targetAuthorityKey === null) {
-      throw new CliError("NOT_IMPLEMENTED", `${binding.origin} does not state its document target key yet, so notify cannot point at a document`, {
+    if (identity.targetAuthorityKey === undefined) {
+      throw new CliError("NOT_IMPLEMENTED", `${binding.origin} does not report its document authority yet, so notify cannot point at a document`, {
         details: { reason: "target_authority_unknown", host: binding.origin },
-        help: "send without --doc and name the document in the note; a later release of the host states the key",
+        help: "send without --doc and name the document in the note; a later release of the host reports it",
       });
     }
     let version: string;

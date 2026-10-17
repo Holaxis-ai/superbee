@@ -52,10 +52,13 @@ class AttentionFake {
   readonly scripted: Array<() => Response> = [];
   private seq = 0;
 
+  /** Producers other than the signed-in person's CLI, by item id. */
+  readonly producers = new Map<string, Record<string, unknown>>();
+
   entry(item: Item) {
     return {
       ...item,
-      producer: { tenantId: TENANT, principalId: PRINCIPAL, surface: "sync", credentialId: "cli", via: "claude-code" },
+      producer: this.producers.get(item.itemId) ?? { tenantId: TENANT, principalId: PRINCIPAL, surface: "sync", credentialId: "cli", via: "claude-code" },
       producerDisplay: { personName: "Pat", firstPartyName: "Superbee command line" },
       alert: "default",
       withdrawReason: item.state === "withdrawn" ? "sender_cancelled" : null,
@@ -212,7 +215,7 @@ test("notify self sends one item to the signed-in person in the checkout's works
 });
 
 test("notify --doc points at the document at the version the host holds, under the host's authority key", async () => {
-  const h = await harness();
+  const h = await harness({ targetAuthorityKey: "orgs" });
   await run(h, notify, ["self", "please look", "--kind", "review_requested", "--doc", h.id, "--label-namespace", "com.anthropic.claude-code", "--label", "run 7"]);
   const version = h.host.docs.get(h.id)!.version;
   assert.deepEqual(h.attention.calls[0]!.body.target, {
@@ -223,11 +226,12 @@ test("notify --doc points at the document at the version the host holds, under t
   assert.deepEqual(h.host.requests.map((request) => request.path), ["/sync/v1/whoami", "/sync/v1/read"]);
 });
 
-test("notify --doc on a host that states no authority key is refused before anything is sent", async () => {
-  const h = await harness({ targetAuthorityKey: null });
+test("notify --doc on a host that does not report its document authority (every /sync/v1 host today) is refused before anything is sent", async () => {
+  const h = await harness();
   const error = await rejects(() => run(h, notify, ["self", "--kind", "ready", "--doc", h.id]));
   assert.equal(error.code, "NOT_IMPLEMENTED");
   assert.equal(error.details?.reason, "target_authority_unknown");
+  assert.match(error.message, /does not report its document authority yet/);
   assert.match(error.help ?? "", /send without --doc/);
   assert.equal(h.attention.calls.length, 0);
   // Without --doc the same host sends.
@@ -273,6 +277,47 @@ test("a send with no answer is retried with its ticket, reported with it, and re
   const record = await json(h, notify, ["self", "are you there", "--ticket", ticket]);
   assert.equal(record.ticket, ticket);
   assert.equal(h.attention.calls.at(-1)!.body.ticket, ticket);
+});
+
+test("a send whose retry meets an ended sign-in keeps its ticket: sign in, then re-run with --ticket", async () => {
+  const h = await harness();
+  h.attention.scripted.push(
+    () => {
+      throw new TypeError("socket hang up");
+    },
+    () => Response.json({ error: { code: "unauthenticated" } }, { status: 401 }),
+  );
+  const error = await rejects(() => run(h, notify, ["self", "landed?"]));
+  assert.equal(error.code, "TRANSIENT");
+  const ticket = String(error.details?.ticket);
+  assert.equal(ticket, h.attention.calls[0]!.body.ticket);
+  assert.equal(error.details?.after, "unauthenticated");
+  assert.match(error.help ?? "", /^sign in again \(.*login --host /);
+  assert.match(error.help ?? "", new RegExp(`--ticket ${ticket} --dir `));
+});
+
+test("the reply hint names the thread's other participant: the sender, or self on your own thread", async () => {
+  const h = await harness();
+  const mine = h.attention.add();
+  const theirs = h.attention.add();
+  h.attention.producers.set(theirs.itemId, { tenantId: TENANT, principalId: "person:sam" });
+  const own = await json(h, inbox, ["open", mine.itemId, "--peek"]);
+  assert.match((own.help as string[]).at(-1)!, /notify self <reply> --kind reply --thread /);
+  const other = await json(h, inbox, ["open", theirs.itemId, "--peek"]);
+  assert.match((other.help as string[]).at(-1)!, /notify person:sam <reply> --kind reply --thread /);
+  // The hint runs: a reply to the sender names the recipient the thread fixes.
+  await run(h, notify, ["person:sam", "on it", "--kind", "reply", "--thread", theirs.threadId]);
+  assert.deepEqual(h.attention.calls.at(-1)!.body.recipient, { kind: "principal", principalId: "person:sam" });
+  assert.equal(h.attention.calls.at(-1)!.body.threadId, theirs.threadId);
+});
+
+test("a host timestamp outside the Date range reads as unknown, never a crash", async () => {
+  const h = await harness();
+  h.attention.add({ createdAt: 9_000_000_000_000_000 });
+  const record = await json(h, inbox, ["list"]);
+  assert.equal((record.items as Record<string, unknown>[])[0]!.created, "unknown");
+  const item = [...h.attention.items.values()][0]!;
+  assert.equal((await json(h, inbox, ["open", item.itemId, "--peek"])).created, "unknown");
 });
 
 test("attention refusals are typed CLI errors in this CLI's words", async () => {
