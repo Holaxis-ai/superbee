@@ -136,7 +136,7 @@ export function captureJournalValue<T>(value: T): T {
   return structuredClone(value);
 }
 
-function equalJournalValue(a: unknown, b: unknown): boolean {
+export function equalJournalValue(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
   if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
   if (Array.isArray(a) && a.length !== (b as unknown[]).length) return false;
@@ -144,7 +144,7 @@ function equalJournalValue(a: unknown, b: unknown): boolean {
   return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && equalJournalValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
 }
 
-function assertMetaExpectation(value: MetaExpectation): void {
+export function assertMetaExpectation(value: MetaExpectation): void {
   if (!value || typeof value !== "object" || typeof value.present !== "boolean" ||
       !equalJournalValue(Object.keys(value).sort(), (value.present ? ["present", "value"] : ["present"]).sort())) throw new JournalGuardConflict("meta");
 }
@@ -159,7 +159,7 @@ export function captureJournalGuard(value: JournalGuard, target?: ConceptId): Jo
       (guard.document !== null && (!guard.document || typeof guard.document.version !== "string" || typeof guard.document.raw !== "string"))) throw new JournalGuardConflict(target);
   const requests = new Set<string>(), sequences = new Set<number>(), keys = new Set<string>();
   for (const row of guard.intents) {
-    if (!row || row.target !== target || typeof row.requestId !== "string" || requests.has(row.requestId) || !Number.isSafeInteger(row.sequence) || sequences.has(row.sequence)) throw new JournalGuardConflict(target);
+    if (!row || "recordFamily" in row || row.target !== target || typeof row.requestId !== "string" || requests.has(row.requestId) || !Number.isSafeInteger(row.sequence) || sequences.has(row.sequence)) throw new JournalGuardConflict(target);
     requests.add(row.requestId); sequences.add(row.sequence);
   }
   for (const row of guard.meta) {
@@ -223,7 +223,7 @@ export function captureMetaWrite(options: MetaWriteOptions): MetaWriteOptions {
   return result;
 }
 
-export function assertMetaWrite(key: string, options: MetaWriteOptions, actual: MetaExpectation, intents: readonly IntentRecord[]): void {
+export function assertMetaWrite(key: string, options: MetaWriteOptions, actual: MetaExpectation, intents: readonly { requestId: string }[]): void {
   if (options.expected !== undefined && !equalJournalValue(captureJournalValue(options.expected), captureJournalValue(actual))) throw new JournalGuardConflict(key);
   if (options.requireEmptyJournal && intents.length !== 0) throw new JournalGuardConflict(key);
 }
@@ -240,7 +240,7 @@ export function assertJournalMetaChanges(guard: JournalGuard | undefined, puts: 
 }
 
 /** A guarded write owns one target and creates a globally fresh journal identity. */
-export function assertJournalIntentChanges(guard: JournalGuard | undefined, existingIdentity: IntentRecord | undefined, superseded: IntentRecord | undefined): void {
+export function assertJournalIntentChanges(guard: JournalGuard | undefined, existingIdentity: { target: string } | undefined, superseded: { target: string } | undefined): void {
   if (guard && (existingIdentity !== undefined || (superseded !== undefined && superseded.target !== guard.target))) throw new JournalGuardConflict(guard.target);
 }
 
