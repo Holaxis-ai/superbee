@@ -13,3 +13,4 @@ export * from "./whole-document-transport.js";
 export * from "./history-pages.js";
 export * from "./operations.js";
 export * from "./root-write.js";
+export * from "./blob-reads.js";
