@@ -1,0 +1,25 @@
+{
+  "name": "blob-delete-428-held",
+  "description": "blob delete 428 deletions_held",
+  "route": "/sync/v1/blob-delete",
+  "rows": [
+    "blob delete 428 deletions_held"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-00000000b114",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"operationId\":\"blobs.delete.v1\",\"bundleId\":\"notes.a\",\"key\":\"held-2.bin\",\"expectedVersion\":\"sha256:fb329f8defe047af577e860c6a44adcd49c1f2106b41234d93cf69bda0c3ae33\",\"expectedContentType\":\"image/svg+xml; charset=utf-8\"}"
+  },
+  "response": {
+    "status": 428,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"deletions_held\",\"deletions\":3,\"baseline\":5,\"message\":\"This would make 3 file deletions in 24 hours of the 5 files this bundle held. Nothing was deleted; a person must confirm this mass delete.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

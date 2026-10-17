@@ -1,0 +1,25 @@
+{
+  "name": "blob-read-400-view",
+  "description": "blob read 400 excluded",
+  "route": "/sync/v1/blob-read",
+  "rows": [
+    "blob read 400 excluded"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-00000000b10d",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"bundleId\":\"notes.a\",\"key\":\"views/private.html\",\"version\":\"sha256:fb329f8defe047af577e860c6a44adcd49c1f2106b41234d93cf69bda0c3ae33\",\"contentType\":\"image/svg+xml; charset=utf-8\"}"
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"error\":{\"code\":\"invalid_input\"}}",
+    "truncated": false
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "blob-create-200-read-grant",
+  "description": "blob create 200 insufficient_scope",
+  "route": "/sync/v1/blob-create",
+  "rows": [
+    "blob create 200 insufficient_scope"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/octet-stream",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-00000000b10e",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "content-length": "7",
+      "x-superbee-bundle": "notes.a",
+      "x-superbee-blob-key": "cmVhZGVyLnN2Zw",
+      "x-superbee-blob-version": "sha256:fb329f8defe047af577e860c6a44adcd49c1f2106b41234d93cf69bda0c3ae33",
+      "x-superbee-content-type": "image/svg+xml; charset=utf-8"
+    },
+    "body": "",
+    "bodyBase64": "AP+ADQoAAQ=="
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"ok\":false,\"operationId\":\"blobs.create.v1\",\"error\":{\"code\":\"insufficient_scope\",\"message\":\"Your access to this bundle does not allow this write. Nothing was written.\",\"retryable\":false,\"writeState\":\"not_applied\"}}",
+    "truncated": false
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "blob-outcome-200-refused",
+  "description": "blob outcome 200 refused",
+  "route": "/sync/v1/outcome",
+  "rows": [
+    "blob outcome 200 refused"
+  ],
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/json",
+      "x-superbee-write-request": "4a2f9c1e-8b3d-4e6f-9a1b-00000000b106",
+      "x-superbee-checkout": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "body": "{\"operationId\":\"blobs.replace.v1\",\"bundleId\":\"notes.a\",\"key\":\"diagrams/café.svg\",\"expectedVersion\":\"sha256:fb329f8defe047af577e860c6a44adcd49c1f2106b41234d93cf69bda0c3ae33\",\"expectedContentType\":\"image/svg+xml; charset=utf-8\",\"version\":\"sha256:fb329f8defe047af577e860c6a44adcd49c1f2106b41234d93cf69bda0c3ae33\",\"contentType\":\"image/svg+xml; charset=utf-8\"}"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": "{\"schemaVersion\":1,\"requestId\":\"4a2f9c1e-8b3d-4e6f-9a1b-00000000b106\",\"binding\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"status\":\"refused\",\"result\":{\"ok\":false,\"operationId\":\"blobs.replace.v1\",\"error\":{\"code\":\"version_conflict\",\"message\":\"The file changed since it was read. Nothing was written.\",\"retryable\":false,\"writeState\":\"not_applied\",\"expected\":\"sha256:fb329f8defe047af577e860c6a44adcd49c1f2106b41234d93cf69bda0c3ae33\",\"actual\":\"sha256:fb329f8defe047af577e860c6a44adcd49c1f2106b41234d93cf69bda0c3ae33\",\"expectedContentType\":\"image/svg+xml; charset=utf-8\",\"actualContentType\":\"application/octet-stream\"}}}",
+    "truncated": false
+  }
+}
