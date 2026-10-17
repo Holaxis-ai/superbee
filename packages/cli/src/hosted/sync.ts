@@ -41,7 +41,7 @@ import {
 import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
 import { decodePreparedBlobIntent, type BlobIntentRecord, type BlobTargetScope } from "@superbee/core/storage";
 import { performHostedBlobDelivery } from "@superbee/core/hosted-client";
-import { createHostedBlobWriteAdapter } from "@superbee/core/hosted-transport";
+import { createHostedBlobReadAdapter, createHostedBlobWriteAdapter } from "@superbee/core/hosted-transport";
 import { FileJournaledBackend, FileJournalUnavailableError } from "@superbee/core/file-journaled-backend";
 import { filesystemPushRoleLocks, PushRoleStaleOwnerError } from "@superbee/core/filesystem-push-role";
 import {
@@ -59,7 +59,7 @@ import { resolveLocalBundleTarget } from "../bundle.js";
 import { parseSyncArgs } from "../commands/sync/orchestrate.js";
 import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
-import { BLOB_SYNC_META_KEY, recoverBlobPlacements, refreshBlobCheckout, blobHostDeletionsToken, readBlobSyncState, settleBlobSyncReceipt, projectBlobSyncReceipt, blobFrozenPhysicalMatches, ordinarySeedKey, type BlobSyncSnapshot, type OfflineBlobAdmission, type BlobRefreshReport, type BlobCaptureContext } from "./blob-sync.js";
+import { BLOB_SYNC_META_KEY, recoverBlobPlacements, refreshBlobCheckout, blobHostDeletionsToken, readBlobSyncState, settleBlobSyncReceipt, projectBlobSyncReceipt, blobFrozenPhysicalMatches, ordinarySeedKey, decodeBlobSyncMap, readBlobConflict, resolveBlobConflict, settledBlobConflict, blobConflictMessage, type BlobConflictResolution, type BlobSyncSnapshot, type OfflineBlobAdmission, type BlobRefreshReport, type BlobCaptureContext } from "./blob-sync.js";
 import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
@@ -111,7 +111,7 @@ Usage:
 Edited documents are sent whole under your own access. Tracked ordinary files send frozen
 opaque bytes with exact version and MIME pins, up to 16 MiB or a smaller advertised host bound;
 new local files require explicit promote. Documents changed on the host are refreshed in the folder.
-Document-only conflict inspection and resolution: A change to one document and a
+Conflict inspection and resolution: A change to one document and a
 change on the host to another both land. A document changed on both sides is never merged: it
 comes back as a conflict row, and nothing is sent for it until you resolve it:
   --inspect --doc <id>
@@ -124,6 +124,11 @@ comes back as a conflict row, and nothing is sent for it until you resolve it:
 A resolution is recorded in the checkout; keep and revise are sent by the next plain sync, and
 take sends nothing. keep and revise send over the host's version, so they need an --inspect
 first, and are refused (stale_review) if the host's version changed after it; take needs none.
+A tracked ordinary file in a version conflict uses the same flags with --doc <file path>:
+--inspect shows the recorded versions and MIME; keep (revise is the same) moves the base to the
+host's version, and the next sync sends the file as it is under a new request; take removes the
+conflicted bytes and places the host's version (refused if the file changed since the conflict).
+Neither resends the conflicted request; promote --expected-version <host version> is keep plus send.
 Document-only deletion recovery: a deleted document file (or 'doc delete') is sent as a delete of the version you had; the host keeps the
 document's history. A mass delete is held: when the deletes of the last day (sent, unsent and
 new) are more than half the checkout and at least 3 (or every document of a smaller one), the new
@@ -155,8 +160,8 @@ sync quota for this bundle). The exit is 0 only when every row is committed: 5 w
 your decision, 2 when the host refuses writes to the bundle, 1 for a pause or a lost answer, and
 4 (AUTH_REQUIRED, with the sign-in link) when you must sign in.
 An uncertain blob request is looked up by its original identity. Absence alone does not
-authorize resubmission; it can remain unknown. Blob conflicts and unknown outcomes do not use
-document --inspect/--resolve/--restore-deletes. Artifact commands remain refused in hosted checkouts.
+authorize resubmission; it can remain unknown. Unknown ordinary-file outcomes do not use
+--inspect/--resolve/--restore-deletes. Artifact commands remain refused in hosted checkouts.
 The blobs: token for --accept-deletes authorizes only its exact held outgoing write set, after
 person confirmation; this targeted delivery does not run unrelated sync work. The separate
 blobs: token for --take-host-deletions authorizes only a recorded refused incoming deletion set;
@@ -997,7 +1002,9 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
   if (requested && selected.length !== requested.size) throw new CliError("CONFLICT", "an exact ordinary-file request no longer exists; nothing was submitted");
   const out: BlobDriveReport = { rows: [], counts: { committed: 0, conflict: 0, refused: 0, unknown: 0, held: 0 } };
   const report = (row: BlobIntentRecord, message?: string, state?: BlobDriveRow["state"]) => {
-    out.rows.push({ request_id: row.requestId, key: row.target, state: state ?? (row.state === "acknowledged" ? "committed" : row.state === "conflict" || row.state === "refused" ? row.state : prefixHeld(row) || row.attempts === 0 ? "held" : "unknown"), attempts: row.attempts, ...(message ? { message } : {}), ...(row.receipt ? { result: row.receipt.result } : {}) });
+    const shown = state ?? (row.state === "acknowledged" ? "committed" : row.state === "conflict" || row.state === "refused" ? row.state : prefixHeld(row) || row.attempts === 0 ? "held" : "unknown");
+    const note = message ?? (shown === "conflict" && settledBlobConflict(row) ? blobConflictMessage(row.target) : undefined);
+    out.rows.push({ request_id: row.requestId, key: row.target, state: shown, attempts: row.attempts, ...(note ? { message: note } : {}), ...(row.receipt ? { result: row.receipt.result } : {}) });
   };
   const initial = new Map<string, BlobIntentRecord[]>();
   let expectedMap: BlobSyncSnapshot["map"] | undefined;
@@ -1124,9 +1131,17 @@ export async function finishAdmittedBlob(admitted: OfflineBlobAdmission, operati
     throw error;
   }
   const failure = blobDeliveryFailure(report), { submitted: _submitted, ...receipt } = admitted.receipt;
-  const result = { ...receipt, [operation]: failure ? "incomplete" : "committed", status: failure ? "incomplete" : "synced", resumed: admitted.resumed, blobs: report, help: report.deletions_held ? [String(report.deletions_held.command)] : failure ? [String(resume)] : [] };
+  const conflicted = report.rows.filter(row => row.state === "conflict").map(row => row.key);
+  const result = { ...receipt, [operation]: failure ? "incomplete" : "committed", status: failure ? "incomplete" : "synced", resumed: admitted.resumed, blobs: report, help: report.deletions_held ? [String(report.deletions_held.command)] : conflicted.length ? blobConflictHelp(admitted.binding, conflicted) : failure ? [String(resume)] : [] };
   deps.stdout(render(result, mode));
   if (failure) throw receiptFailure(failure, result);
+}
+
+/** The resolve commands for the first conflicted ordinary file. */
+export function blobConflictHelp(binding: CheckoutBinding, keys: readonly string[]): string[] {
+  const key = keys[0];
+  if (key === undefined) return [];
+  return (["keep", "take"] as const).map(choice => `${cliInvocation()} sync --resolve ${choice} --doc ${commandToken(key)} --dir ${commandToken(binding.path)}`);
 }
 
 export function blobDeliveryFailure(report: BlobDriveReport): { code: "CONFLICT" | "TRANSIENT"; message: string } | null {
@@ -1325,6 +1340,7 @@ async function runSync(binding: CheckoutBinding, values: HostedValues, deps: Hos
       rows: shown,
       ...(shown.length < rows.length ? { rows_shown: shown.length, rows_total: rows.length, rows_all: syncCommand(binding, commandFragment` --limit ${commandToken(String(rows.length))}`) } : {}),
       help: [
+        ...blobConflictHelp(binding, [...new Set((await store.listBlobIntents("conflict")).filter(settledBlobConflict).map(row => row.target))]),
         ...rowHelp(rows, binding),
         ...(blobOutcome.deletions_held ? [String(blobOutcome.deletions_held.command)] : []),
         ...(blobs?.refused ? [`only if the ordinary-file set really shrank: ${syncCommand(binding, commandFragment` --take-host-deletions ${commandToken(blobHostDeletionsToken(blobs.refused))}`)}`] : []),
@@ -2106,8 +2122,88 @@ export async function hostedSync(argv: string[], binding: CheckoutBinding, parti
   const deps = hostedDeps(partial);
   const values = parseHosted(argv);
   const mode = resolveMode(values);
+  const named = values.inspect ?? values.doc;
+  const blobKey = named !== undefined && (values.inspect !== undefined || values.resolve !== undefined) ? await trackedBlobKey(binding, deps, named) : undefined;
+  if (blobKey !== undefined && values.inspect !== undefined) return runInspectBlob(binding, blobKey, values, deps, mode);
+  if (blobKey !== undefined && values.resolve !== undefined) return runResolveBlob(binding, blobKey, values.resolve as "keep" | "take" | "revise", deps, mode);
   if (values.inspect !== undefined) return runInspect(binding, values, deps, mode);
   if (values.resolve !== undefined) return runResolve(binding, values, deps, mode);
   if (values["restore-deletes"]) return runRestore(binding, deps, mode);
   return runSync(binding, values, deps, mode);
+}
+
+function bindingBlobScope(binding: CheckoutBinding): BlobTargetScope {
+  return { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
+}
+/** The private store under the checkout lock (waited for, as sync waits), with no sign-in and no request. */
+function withLocalStore<T>(binding: CheckoutBinding, deps: HostedSyncDeps, body: (store: FileJournaledBackend) => Promise<T>, readOnly = true): Promise<T> {
+  return filesystemPushRoleLocks(deps.lockWaitMs !== undefined ? { waitMs: deps.lockWaitMs } : {})
+    .request(checkoutLockName(binding.path), {}, async () => {
+      const store = await FileJournaledBackend.open({ directory: checkoutStoreDir(deps.auth.home, binding.checkout_id), readOnly });
+      try { return await body(store); } finally { await store.close(); }
+    })
+    .catch((error: unknown) => { throw lockFailure(error, binding.path); });
+}
+
+/** The ordinary-file key `input` names when this checkout tracks it (a baseline or a journal row); read offline. */
+async function trackedBlobKey(binding: CheckoutBinding, deps: HostedSyncDeps, input: string): Promise<string | undefined> {
+  const key = input.trim();
+  if (key.endsWith(".md") || !ordinarySeedKey(key)) return undefined;
+  const tracked = await withLocalStore(binding, deps, async store =>
+    decodeBlobSyncMap(await store.readMeta(BLOB_SYNC_META_KEY), bindingBlobScope(binding)).entries.some(entry => entry.key === key) || (await store.listBlobIntents()).some(row => row.target === key));
+  return tracked ? key : undefined;
+}
+
+/** `--inspect --doc <file>` for an ordinary file: the recorded conflict's pins, read offline. */
+async function runInspectBlob(binding: CheckoutBinding, key: string, values: HostedValues, deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
+  if (values.out !== undefined) throw new CliError("USAGE", "--out writes a document's host version; an ordinary-file inspection reports versions and MIME only", { help: `${cliInvocation()} sync --inspect --doc ${commandToken(key)} --dir ${commandToken(binding.path)}` });
+  const found = await withLocalStore(binding, deps, store => readBlobConflict(store, bindingBlobScope(binding), key));
+  if (found.state !== "conflict") throw new CliError(found.state === "none" ? "NOT_FOUND" : "CONFLICT", found.state === "none" ? `'${key}' has no ordinary-file conflict to inspect in this checkout` : `'${key}' has ${found.state === "placement" ? "unfinished placement evidence" : "a request still awaiting delivery or its answer"}`, { details: { reason: found.state === "none" ? "no_conflict" : found.state === "placement" ? "blob_placement_recovery" : "blob_outstanding", key }, help: String(syncCommand(binding)) });
+  const e = found.evidence, file = path.join(binding.path, ...key.split("/"));
+  const bytes = await readIfPresent(file);
+  const [keep, take] = blobConflictHelp(binding, [key]);
+  deps.stdout(render({
+    conflict: key, route: "blob", file, reason: e.actual === null ? "deleted_remotely" : "changed_remotely", request_id: e.requestId, operation: e.operation,
+    base: { version: e.expected, content_type: e.expectedContentType },
+    local: e.version === null ? { deleted: true } : { version: e.version, content_type: e.contentType },
+    remote: e.actual === null ? { deleted: true } : { version: e.actual, content_type: e.actualContentType },
+    file_now: bytes === null ? "missing" : e.version !== null && digestOf(bytes) === e.version ? "as_conflicted" : "edited_since_conflict",
+    choices: {
+      keep: e.actual === null ? "re-create the file on the host from your copy (a new create request), or keep your deletion" : bytes === null && e.operation !== "blobs.delete.v1" ? "refused while the file is missing: put it back first (keep would delete the host's version)" : "keep your file: the next sync sends it as it is then over the host's version",
+      take: e.actual === null ? "accept the deletion: the file is removed" : "replace your file with the host's version",
+    },
+    help: [keep, take],
+  }, mode));
+}
+
+/** `--resolve keep|take|revise --doc <file>` for an ordinary file; revise is keep (the next sync sends the file as it is). */
+async function runResolveBlob(binding: CheckoutBinding, key: string, requested: "keep" | "take" | "revise", deps: HostedSyncDeps, mode: OutputMode): Promise<void> {
+  const choice = requested === "take" ? "take" : "keep";
+  const resumeCommand = commandFragment`${cliInvocation()} sync --resolve ${commandToken(requested)} --doc ${commandToken(key)} --dir ${commandToken(binding.path)}`;
+  const scope = bindingBlobScope(binding);
+  let resolution: BlobConflictResolution;
+  if (choice === "keep") {
+    const via = resolveHostedVia(deps.auth.env).token;
+    const identity = { binding: checkoutBindingDigest(binding.checkout_id), ...(via === undefined ? {} : { via }), createdAt: new Date(deps.auth.now()).toISOString() };
+    resolution = await withLocalStore(binding, deps, store => resolveBlobConflict({ folder: binding.path, store, scope, key, choice, identity }), false);
+  } else {
+    // A refusal needs no sign-in: settle it from local state first.
+    const found = await withLocalStore(binding, deps, store => readBlobConflict(store, scope, key));
+    if (found.state !== "conflict") await withLocalStore(binding, deps, store => resolveBlobConflict({ folder: binding.path, store, scope, key, choice }));
+    resolution = await withSession(binding, deps, resumeCommand, session => resolveBlobConflict({ folder: binding.path, store: session.store, scope, key, choice, read: async head => {
+      const controller = new AbortController();
+      try { return (await createHostedBlobReadAdapter({ carrier: session.carrier, bundleId: scope.bundleId, prefix: scope.prefix, signal: controller.signal, capabilities: async () => session.capabilities }).read(head)).bytes; }
+      finally { controller.abort(); }
+    } }));
+  }
+  const r = resolution, sync = String(syncCommand(binding));
+  const next = r.choice === "take"
+    ? r.file === "placed" ? "resolved: the host's version is in the folder; nothing is sent" : r.placementDeferred ? `resolved: the conflicted bytes are discarded and ${sync} places the host's version` : "resolved: the host deleted it, and the file is removed; nothing is sent"
+    : r.admitted ? `resolved, not sent yet: the host deleted it, so a create of your file is admitted; ${sync} sends it` : r.sends ? `resolved, not sent yet: ${sync} sends the file as it is then over the host's version` : "resolved: nothing to send for this file";
+  deps.stdout(render({
+    resolved: key, route: "blob", choice: r.choice, ...(requested !== r.choice ? { requested } : {}), retired_request_ids: r.evidence.requestIds,
+    host: r.evidence.actual === null ? { deleted: true } : { version: r.evidence.actual, content_type: r.evidence.actualContentType },
+    file: path.join(binding.path, ...key.split("/")), file_state: r.file, ...(r.admitted ? { request_id: r.admitted } : {}),
+    next, help: r.sends || r.placementDeferred ? [sync] : [],
+  }, mode));
 }

@@ -1690,7 +1690,7 @@ test("offline opaque delete uses preserved clean pins; failed admission leaves t
 /** Stateful read/write wire seam only; authority and journal selection remain the production owners. */
 function blobAuthority(h: Harness, options: { priorDeletes?: number; baseline?: number; beforeWrite?: (key: string) => Promise<void>; lostAck?: boolean; rehold?: boolean; slug?: string; holdDiagnostics?: Record<string, { deletions: number; baseline: number }> } = {}) {
   const objects = new Map<string, { bytes: Buffer; contentType: string }>(), outcomes = new Map<string, { binding: string; result: any }>();
-  const calls: { key: string; requestId: string; operationId: string; allowance: number | null; bundle: string; via: string | null }[] = [];
+  const calls: { key: string; requestId: string; operationId: string; allowance: number | null; bundle: string; via: string | null; expectedVersion?: string | null; expectedType?: string | null; contentType?: string | null }[] = [];
   let deletes = options.priorDeletes ?? 0, dropped = false;
   const fetcher: typeof fetch = (async (input, init) => {
     const request = new Request(input, init), route = new URL(request.url).pathname;
@@ -1707,7 +1707,7 @@ function blobAuthority(h: Harness, options: { priorDeletes?: number; baseline?: 
       const bundle = deletion ? body.bundleId : request.headers.get("x-superbee-bundle")!;
       assert.equal(bundle, options.slug ? `${options.slug}/${BUNDLE}` : BUNDLE);
       const allowance = request.headers.has("x-superbee-accept-deletes") ? Number(request.headers.get("x-superbee-accept-deletes")) : null;
-      calls.push({ key, requestId, operationId, allowance, bundle, via: request.headers.get("x-superbee-via") });
+      calls.push({ key, requestId, operationId, allowance, bundle, via: request.headers.get("x-superbee-via"), expectedVersion, expectedType, contentType: deletion ? null : request.headers.get("x-superbee-content-type") });
       await options.beforeWrite?.(key);
       if (deletion && (options.rehold || (deletes + 1 > (options.baseline ?? 10) / 2 && (allowance === null || allowance < deletes + 1)))) return Response.json({ error: { code: "deletions_held", message: "person confirmation required", retryable: false, writeState: "not_applied", deletions: options.holdDiagnostics?.[key]?.deletions ?? deletes + 1, baseline: options.holdDiagnostics?.[key]?.baseline ?? options.baseline ?? 10 } }, { status: 428 });
       const existing = objects.get(key), actual = existing ? digestOf(existing.bytes) : null;
@@ -1947,4 +1947,238 @@ test("native spelling aliases refuse ordinary-file admission before journal/map 
   const untrackedLower = path.join(h.folder, "untracked.svg"), untrackedUpper = path.join(h.folder, "UNTRACKED.svg"); await writeFile(untrackedLower, "local");
   await assert.rejects(admitOfflineBlob({ operation: "promote", key: "UNTRACKED.svg", source: untrackedUpper, contentType: "image/svg+xml", dir: h.folder, cwd: h.cwd, home: h.home }), /unsafe parent/);
   assert.equal(await readFile(untrackedLower, "utf8"), "local"); assert.equal((await retainedBlobRows(h)).length, 0);
+});
+
+// Blob version conflicts. Checkout B is simulated by writing the shared wire's objects directly:
+// the harness builds each checkout's blob baseline from its own promote, and a second checkout of
+// the same fake host would not carry one.
+async function blobMap(h: Harness) {
+  const binding = (await bindingForPath(h.home, h.folder))!, store = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { return JSON.parse((await store.readMeta<string>(BLOB_SYNC_META_KEY))!) as { entries: { key: string; head?: { version: string; contentType: string } | null; placedDigest: string | null; desiredContentType?: string }[] }; }
+  finally { await store.close(); }
+}
+async function blobConflict(local: "edit" | "delete" = "edit") {
+  const h = await harness(), key = "images/diagram.svg", file = path.join(h.folder, key);
+  await mkdir(path.dirname(file), { recursive: true });
+  const wire = blobAuthority(h); h.fetch = wire.fetch;
+  const base = Buffer.from("<svg>base</svg>"), theirs = Buffer.from("<svg>theirs</svg>"), mine = Buffer.from("<svg>mine</svg>");
+  await writeFile(file, base);
+  await promote([file, "--doc-key", key, "--dir", h.folder, "--content-type", "image/svg+xml"], commandDeps(h, wire));
+  wire.objects.set(key, { bytes: theirs, contentType: "image/svg+xml" });
+  if (local === "edit") await writeFile(file, mine); else await unlink(file);
+  const { error } = await failingSync(h);
+  assert.equal(error.code, "CONFLICT");
+  const conflict = (await retainedBlobRows(h)).find(row => row.state === "conflict")!;
+  assert.ok(conflict, "the sync recorded a version conflict");
+  return { h, wire, key, file, base, theirs, mine, conflictId: conflict.requestId };
+}
+const outstandingBlobRows = async (h: Harness) => (await retainedBlobRows(h)).filter(row => row.state !== "acknowledged");
+
+test("a blob conflict holds its file: a later sync names the resolve command and sends nothing", async () => {
+  const f = await blobConflict(), calls = f.wire.calls.length;
+  const again = await failingSync(f.h);
+  assert.equal(f.wire.calls.length, calls);
+  assert.ok((again.receipt?.help as string[]).some(line => line.includes("--resolve keep") && line.includes(f.key)));
+  assert.ok(rowsOf(again.receipt).some(row => row.id === f.key && /--resolve keep or take/.test(row.message)));
+});
+
+test("blob conflict take places the host's bytes, leaves no intent, and the key syncs normally after", async () => {
+  const f = await blobConflict();
+  const resolved = await runSync(f.h, ["--resolve", "take", "--doc", f.key]);
+  assert.equal(resolved.route, "blob"); assert.equal(resolved.file_state, "placed");
+  assert.deepEqual(await readFile(f.file), f.theirs);
+  const entry = (await blobMap(f.h)).entries.find(row => row.key === f.key)!;
+  assert.equal(entry.head?.version, digestOf(f.theirs)); assert.equal(entry.placedDigest, digestOf(f.theirs)); assert.equal(entry.desiredContentType, undefined);
+  assert.equal((await outstandingBlobRows(f.h)).length, 0);
+  const calls = f.wire.calls.length;
+  const quiet = await runSync(f.h); assert.equal(quiet.status, "up_to_date"); assert.equal(f.wire.calls.length, calls);
+  await writeFile(f.file, "<svg>later</svg>");
+  const later = await runSync(f.h); assert.equal((later.blobs as { counts: { committed: number } }).counts.committed, 1);
+  assert.equal(f.wire.objects.get(f.key)?.bytes.toString(), "<svg>later</svg>");
+  assert.equal(f.wire.calls.at(-1)!.expectedVersion, digestOf(f.theirs));
+});
+
+test("blob conflict keep sends a new request pinned to the host's version and never resends the conflicted one", async () => {
+  const f = await blobConflict(), calls = f.wire.calls.length;
+  const resolved = await runSync(f.h, ["--resolve", "keep", "--doc", f.key]);
+  assert.equal(resolved.choice, "keep"); assert.equal(f.wire.calls.length, calls, "resolve sends nothing");
+  assert.deepEqual(await readFile(f.file), f.mine);
+  const synced = await runSync(f.h); assert.equal((synced.blobs as { counts: { committed: number } }).counts.committed, 1);
+  const sent = f.wire.calls.at(-1)!;
+  assert.notEqual(sent.requestId, f.conflictId); assert.equal(sent.operationId, "blobs.replace.v1");
+  assert.equal(sent.expectedVersion, digestOf(f.theirs)); assert.equal(sent.expectedType, "image/svg+xml");
+  assert.deepEqual(f.wire.objects.get(f.key)?.bytes, f.mine);
+  assert.equal(f.wire.calls.filter(call => call.requestId === f.conflictId).length, 1);
+  assert.equal((await outstandingBlobRows(f.h)).length, 0);
+});
+
+test("blob conflict revise is keep", async () => {
+  const f = await blobConflict();
+  const resolved = await runSync(f.h, ["--resolve", "revise", "--doc", f.key]);
+  assert.equal(resolved.choice, "keep"); assert.equal(resolved.requested, "revise");
+  await runSync(f.h); assert.deepEqual(f.wire.objects.get(f.key)?.bytes, f.mine);
+});
+
+test("blob keep after the host moved again conflicts again, overwrites nothing, and resolves again", async () => {
+  const f = await blobConflict();
+  await runSync(f.h, ["--resolve", "keep", "--doc", f.key]);
+  const third = Buffer.from("<svg>third</svg>"); f.wire.objects.set(f.key, { bytes: third, contentType: "image/svg+xml" });
+  const { error } = await failingSync(f.h); assert.equal(error.code, "CONFLICT");
+  assert.deepEqual(f.wire.objects.get(f.key)?.bytes, third);
+  const second = (await outstandingBlobRows(f.h)).find(row => row.state === "conflict")!;
+  assert.notEqual(second.requestId, f.conflictId);
+  await runSync(f.h, ["--resolve", "keep", "--doc", f.key]);
+  await runSync(f.h);
+  assert.deepEqual(f.wire.objects.get(f.key)?.bytes, f.mine);
+  assert.equal(f.wire.calls.at(-1)!.expectedVersion, digestOf(third));
+  assert.equal(new Set(f.wire.calls.map(call => call.requestId)).size, f.wire.calls.length, "no request id is sent twice");
+});
+
+test("promote --expected-version of the recorded host version resolves keep and commits under a new id; a stale one is refused", async () => {
+  const f = await blobConflict(), calls = f.wire.calls.length;
+  await assert.rejects(promote([f.file, "--doc-key", f.key, "--dir", f.h.folder, "--expected-version", digestOf(f.base)], commandDeps(f.h, f.wire)),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT" && error.details?.reason === "blob_conflict" && String(error.message).includes(digestOf(f.theirs)));
+  assert.equal(f.wire.calls.length, calls);
+  assert.equal((await outstandingBlobRows(f.h)).filter(row => row.state === "conflict").length, 1);
+  const output: string[] = [];
+  await promote([f.file, "--doc-key", f.key, "--dir", f.h.folder, "--expected-version", digestOf(f.theirs), "--json"], commandDeps(f.h, f.wire, output));
+  assert.equal(JSON.parse(output.at(-1)!).promote, "committed");
+  assert.deepEqual(f.wire.objects.get(f.key)?.bytes, f.mine);
+  assert.notEqual(f.wire.calls.at(-1)!.requestId, f.conflictId); assert.equal(f.wire.calls.at(-1)!.expectedVersion, digestOf(f.theirs));
+  assert.equal((await outstandingBlobRows(f.h)).length, 0);
+});
+
+test("blob take is refused when the file changed after the conflict, and nothing is removed", async () => {
+  const f = await blobConflict();
+  await writeFile(f.file, "<svg>edited after</svg>");
+  const { error } = await failingSync(f.h, ["--resolve", "take", "--doc", f.key]);
+  assert.equal(error.code, "CONFLICT"); assert.equal(error.details?.reason, "edited_since_conflict");
+  assert.equal(await readFile(f.file, "utf8"), "<svg>edited after</svg>");
+  assert.equal((await outstandingBlobRows(f.h)).filter(row => row.requestId === f.conflictId).length, 1);
+  // Removing the file is the way to discard those edits.
+  await unlink(f.file);
+  await runSync(f.h, ["--resolve", "take", "--doc", f.key]);
+  assert.deepEqual(await readFile(f.file), f.theirs);
+});
+
+test("a blob delete conflict: take brings the host's version back; keep sends a delete pinned to it", async () => {
+  const taken = await blobConflict("delete");
+  await runSync(taken.h, ["--resolve", "take", "--doc", taken.key]);
+  assert.deepEqual(await readFile(taken.file), taken.theirs);
+  assert.equal((await outstandingBlobRows(taken.h)).length, 0);
+
+  const kept = await blobConflict("delete");
+  await runSync(kept.h, ["--resolve", "keep", "--doc", kept.key]);
+  await runSync(kept.h);
+  const sent = kept.wire.calls.at(-1)!;
+  assert.equal(sent.operationId, "blobs.delete.v1"); assert.equal(sent.expectedVersion, digestOf(kept.theirs)); assert.notEqual(sent.requestId, kept.conflictId);
+  assert.equal(kept.wire.objects.has(kept.key), false);
+});
+
+test("blob keep preserves the person's MIME choice from the conflicted request", async () => {
+  const f = await blobConflict(), chosen = "image/svg+xml; profile=mine";
+  await runSync(f.h, ["--resolve", "take", "--doc", f.key]);
+  f.wire.objects.set(f.key, { bytes: Buffer.from("<svg>moved</svg>"), contentType: "image/svg+xml; profile=host" });
+  await writeFile(f.file, f.mine);
+  await assert.rejects(promote([f.file, "--doc-key", f.key, "--dir", f.h.folder, "--expected-version", digestOf(f.theirs), "--content-type", chosen], commandDeps(f.h, f.wire)), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
+  await runSync(f.h, ["--resolve", "keep", "--doc", f.key]);
+  assert.equal((await blobMap(f.h)).entries.find(row => row.key === f.key)!.desiredContentType, chosen);
+  await runSync(f.h);
+  assert.equal(f.wire.calls.at(-1)!.contentType, chosen); assert.equal(f.wire.calls.at(-1)!.expectedType, "image/svg+xml; profile=host");
+  assert.equal(f.wire.objects.get(f.key)?.contentType, chosen);
+});
+
+test("blob keep without a MIME choice adopts the host's MIME change instead of reverting it", async () => {
+  const f = await blobConflict();
+  await runSync(f.h, ["--resolve", "take", "--doc", f.key]);
+  assert.equal((await blobMap(f.h)).entries.find(row => row.key === f.key)!.desiredContentType, undefined);
+  f.wire.objects.set(f.key, { bytes: Buffer.from("<svg>moved</svg>"), contentType: "image/svg+xml; profile=host" });
+  await writeFile(f.file, f.mine);
+  await assert.rejects(runSync(f.h), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
+  await runSync(f.h, ["--resolve", "keep", "--doc", f.key]);
+  assert.equal((await blobMap(f.h)).entries.find(row => row.key === f.key)!.desiredContentType, undefined);
+  await runSync(f.h);
+  assert.equal(f.wire.calls.at(-1)!.contentType, "image/svg+xml; profile=host"); assert.equal(f.wire.calls.at(-1)!.expectedType, "image/svg+xml; profile=host");
+  assert.deepEqual(f.wire.objects.get(f.key)?.bytes, Buffer.from(f.mine));
+});
+
+test("blob keep is refused when the edited file went missing, so it never becomes a host deletion", async () => {
+  const f = await blobConflict(), calls = f.wire.calls.length;
+  await unlink(f.file);
+  await assert.rejects(runSync(f.h, ["--resolve", "keep", "--doc", f.key]), (error: unknown) => error instanceof CliError && error.code === "CONFLICT" && error.details?.reason === "missing_since_conflict");
+  assert.equal((await retainedBlobRows(f.h)).find(row => row.requestId === f.conflictId)?.state, "conflict");
+  assert.equal((await failingSync(f.h)).error.code, "CONFLICT");
+  assert.equal(f.wire.calls.length, calls); assert.deepEqual(f.wire.objects.get(f.key)?.bytes, f.theirs);
+});
+
+test("blob take on a file with no conflict refuses before signing in or making a request", async () => {
+  const f = await blobConflict();
+  await runSync(f.h, ["--resolve", "take", "--doc", f.key]);
+  const calls = f.wire.calls.length, requests = f.h.host.requests.length;
+  await assert.rejects(runSync(f.h, ["--resolve", "take", "--doc", f.key]), (error: unknown) => error instanceof CliError && error.code === "NOT_FOUND");
+  assert.equal(f.wire.calls.length, calls); assert.equal(f.h.host.requests.length, requests);
+});
+
+test("blob inspect reports the recorded conflict pins offline", async () => {
+  const f = await blobConflict(), calls = f.wire.calls.length, requests = f.h.host.requests.length;
+  const shown = await runSync(f.h, ["--inspect", "--doc", f.key]);
+  assert.equal(shown.route, "blob"); assert.equal(shown.request_id, f.conflictId);
+  assert.deepEqual(shown.base, { version: digestOf(f.base), content_type: "image/svg+xml" });
+  assert.deepEqual(shown.remote, { version: digestOf(f.theirs), content_type: "image/svg+xml" });
+  assert.equal(shown.file_now, "as_conflicted");
+  assert.equal(f.wire.calls.length, calls); assert.equal(f.h.host.requests.length, requests);
+});
+
+test("status reports tracked ordinary files as blobs with their state and sends nothing", async () => {
+  const statusOf = async (h: Harness) => (await hostedStatus((await bindingForPath(h.home, h.folder))!, h.home)).sync as Record<string, any>;
+  const f = await blobConflict();
+  // conflict
+  let before = [f.wire.calls.length, f.h.host.requests.length];
+  let block = await statusOf(f.h);
+  assert.deepEqual([f.wire.calls.length, f.h.host.requests.length], before);
+  assert.equal(block.state, "needs_decision"); assert.equal(block.blobs.conflict, 1);
+  assert.deepEqual(block.blob_rows, [{ key: f.key, state: "conflict" }]);
+  assert.ok(!(block.held_rows ?? []).some((row: { id: string }) => row.id === f.key));
+  // clean
+  await runSync(f.h, ["--resolve", "take", "--doc", f.key]);
+  block = await statusOf(f.h);
+  assert.equal(block.state, "clean"); assert.deepEqual(block.blobs, { clean: 1 }); assert.equal(block.held_files, 0); assert.equal(block.blob_rows, undefined);
+  // pending
+  await writeFile(f.file, "<svg>unsent</svg>");
+  block = await statusOf(f.h);
+  assert.equal(block.state, "unsent_changes"); assert.deepEqual(block.blob_rows, [{ key: f.key, state: "pending" }]); assert.equal(block.held_files, 0);
+  // unknown: the write lands, its answer is lost, and the lookup cannot reach the host
+  const lost = blobAuthority(f.h, { lostAck: true }); lost.objects.set(f.key, { bytes: f.theirs, contentType: "image/svg+xml" });
+  f.h.fetch = (async (input, init) => {
+    if (new URL(new Request(input, init).url).pathname.endsWith("/outcome")) throw new Error("lookup unreachable");
+    return lost.fetch(input, init);
+  }) as typeof fetch;
+  await assert.rejects(sync(["--dir", f.h.folder], { stdout: () => {}, auth: f.h.auth, cwd: f.h.cwd, fetch: f.h.fetch, write: { sleep: instant, lookupDelayMs: 0, maxLookups: 1 }, sleep: instant }));
+  assert.equal((await outstandingBlobRows(f.h))[0]!.state, "unknown");
+  before = [lost.calls.length, f.h.host.requests.length];
+  block = await statusOf(f.h);
+  assert.deepEqual([lost.calls.length, f.h.host.requests.length], before);
+  assert.equal(block.state, "unsent_changes"); assert.deepEqual(block.blob_rows, [{ key: f.key, state: "unknown" }]);
+});
+
+test("a blob conflict with a host deletion: keep admits a new create of the file, take removes it", async () => {
+  for (const choice of ["keep", "take"] as const) {
+    const h = await harness(), key = "gone.svg", file = path.join(h.folder, key), wire = blobAuthority(h); h.fetch = wire.fetch;
+    await writeFile(file, "<svg>base</svg>");
+    await promote([file, "--doc-key", key, "--dir", h.folder, "--content-type", "image/svg+xml"], commandDeps(h, wire));
+    wire.objects.delete(key); await writeFile(file, "<svg>mine</svg>");
+    await failingSync(h);
+    const conflictId = (await retainedBlobRows(h)).find(row => row.state === "conflict")!.requestId;
+    const resolved = await runSync(h, ["--resolve", choice, "--doc", key]);
+    if (choice === "keep") {
+      assert.ok(typeof resolved.request_id === "string" && resolved.request_id !== conflictId);
+      await runSync(h);
+      assert.equal(wire.calls.at(-1)!.operationId, "blobs.create.v1"); assert.equal(wire.calls.at(-1)!.contentType, "image/svg+xml");
+      assert.equal(wire.objects.get(key)?.bytes.toString(), "<svg>mine</svg>");
+    } else {
+      await assert.rejects(readFile(file), { code: "ENOENT" });
+      const calls = wire.calls.length; await runSync(h); assert.equal(wire.calls.length, calls);
+    }
+    assert.equal((await outstandingBlobRows(h)).length, 0);
+  }
 });

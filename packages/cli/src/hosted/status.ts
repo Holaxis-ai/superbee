@@ -2,15 +2,16 @@
 //
 // Nothing here sends a request, takes a sign-in, or writes the store, the projection record or the
 // folder. It answers what the next `sync` would find: documents with an unsent change, conflicts,
-// held files and held deletions, and how long ago the last pull completed. The folder is
-// classified by the sync scan itself (`scanCheckout` in preview), so status and sync never
-// disagree about what a file is.
+// held files and held deletions, each tracked ordinary file's state, and how long ago the last
+// pull completed. The folder is classified by the sync scan itself (`scanCheckout` in preview), so
+// status and sync never disagree about what a file is.
 import { UNSETTLED_STATES, openLocalBundle } from "@superbee/browser-local";
-import type { JournaledBackend } from "@superbee/core";
+import type { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 
 import { commandFragment, commandToken, type CommandText } from "../command-text.js";
 import { cliInvocation } from "../invocation.js";
-import type { CheckoutBinding } from "./binding.js";
+import { checkoutBindingDigest, type CheckoutBinding } from "./binding.js";
+import { BLOB_SYNC_META_KEY, blobCheckoutStates, type BlobFileState } from "./blob-sync.js";
 import { storeOkfVersion, withIdleCheckoutStore } from "./checkout-store.js";
 import { ageMs, describeAge, HOSTED_STALE_WARNING_MS, readFreshness } from "./freshness.js";
 import { readProjection, scanCheckout, type HeldReason } from "./sync-scan.js";
@@ -23,14 +24,16 @@ export interface Classified {
   readonly conflicts: Set<string>;
   readonly held: Map<string, HeldReason>;
   readonly heldDeletions: Set<string>;
+  /** Every tracked ordinary file and its state; never counted as a held document. */
+  readonly blobs: { key: string; state: BlobFileState }[];
 }
 
 /**
  * Every document with local state the host does not have, by category, read from the store and a
  * preview scan. The caller holds the checkout lock (or accepts a racing sync).
  */
-export async function classifyCheckout(binding: CheckoutBinding, home: string, store: JournaledBackend): Promise<Classified> {
-  const result: Classified = { unsent: new Set(), conflicts: new Set(), held: new Map(), heldDeletions: new Set() };
+export async function classifyCheckout(binding: CheckoutBinding, home: string, store: FileJournaledBackend): Promise<Classified> {
+  const result: Classified = { unsent: new Set(), conflicts: new Set(), held: new Map(), heldDeletions: new Set(), blobs: [] };
 
   // Changes already journaled: the first unsettled intent per document says what it is (as sync's rows do).
   const firstIntent = new Map<string, string>();
@@ -39,7 +42,11 @@ export async function classifyCheckout(binding: CheckoutBinding, home: string, s
 
   // Files that differ from what the last sync or pull placed: what the next scan would find.
   const projection = await readProjection(home, binding.checkout_id, store);
+  const scope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
+  const tracked = (await store.readMeta(BLOB_SYNC_META_KEY)) !== undefined;
   const report = await scanCheckout({
+    // As sync passes it, so a tracked ordinary file is never classified as a document; preview never admits.
+    ...(tracked ? { blobs: { store, scope, binding: checkoutBindingDigest(binding.checkout_id), createdAt: new Date().toISOString(), allowed: true } } : {}),
     folder: binding.path,
     bundleId: binding.bundle_id,
     okfVersion: await storeOkfVersion(store),
@@ -51,9 +58,12 @@ export async function classifyCheckout(binding: CheckoutBinding, home: string, s
     rootWrites: projection.rootWrites ?? "refused",
     documentInputBytes: binding.document_input_bytes ?? null,
   });
+  if (tracked) result.blobs.push(...await blobCheckoutStates(binding.path, store, scope));
+  const blobKeys = new Set(result.blobs.map(row => row.key));
   for (const id of report.pending) result.unsent.add(id);
   for (const id of report.conflicted) result.conflicts.add(id);
   for (const row of report.held) {
+    if (blobKeys.has(row.id) && row.path === row.id) continue;
     if (row.reason === "bulk_deletion") result.heldDeletions.add(row.id);
     else result.held.set(row.id, row.reason);
   }
@@ -99,8 +109,10 @@ export async function hostedStatus(binding: CheckoutBinding, home: string, now: 
   if (classified === null) {
     sync.state = "busy";
   } else {
-    const { unsent, conflicts, held, heldDeletions } = classified;
-    sync.state = conflicts.size > 0 || held.size > 0 || heldDeletions.size > 0 ? "needs_decision" : unsent.size > 0 ? "unsent_changes" : "clean";
+    const { unsent, conflicts, held, heldDeletions, blobs } = classified;
+    const blobCount = (state: BlobFileState) => blobs.filter(row => row.state === state).length;
+    const blobDecision = blobCount("conflict") + blobCount("refused") + blobCount("held"), blobUnsent = blobCount("pending") + blobCount("unknown");
+    sync.state = conflicts.size > 0 || held.size > 0 || heldDeletions.size > 0 || blobDecision > 0 ? "needs_decision" : unsent.size > 0 || blobUnsent > 0 ? "unsent_changes" : "clean";
     sync.unsent = unsent.size;
     if (unsent.size > 0) sync.unsent_ids = firstIds(unsent);
     sync.conflicts = conflicts.size;
@@ -109,9 +121,16 @@ export async function hostedStatus(binding: CheckoutBinding, home: string, now: 
     if (held.size > 0) sync.held_rows = firstIds(held.keys()).map((id) => ({ id, reason: held.get(id)! }));
     sync.held_deletions = heldDeletions.size;
     if (heldDeletions.size > 0) sync.held_deletion_ids = firstIds(heldDeletions);
+    if (blobs.length > 0) {
+      sync.blobs = Object.fromEntries((["clean", "pending", "conflict", "unknown", "refused", "held"] as const).filter(state => state === "clean" || blobCount(state) > 0).map(state => [state, blobCount(state)]));
+      const shown = blobs.filter(row => row.state !== "clean").slice(0, STATUS_IDS_SHOWN);
+      if (shown.length > 0) sync.blob_rows = shown;
+    }
     const first = firstIds(conflicts)[0];
     if (first !== undefined) help.push(commandFragment`${cliInvocation()} sync --inspect --doc ${commandToken(first)} --dir ${commandToken(binding.path)}`);
-    if (unsent.size > 0 || conflicts.size > 0 || held.size > 0 || heldDeletions.size > 0) help.push(syncCommand);
+    const blobConflict = blobs.find(row => row.state === "conflict")?.key;
+    if (blobConflict !== undefined) for (const choice of ["keep", "take"]) help.push(commandFragment`${cliInvocation()} sync --resolve ${commandToken(choice)} --doc ${commandToken(blobConflict)} --dir ${commandToken(binding.path)}`);
+    if (unsent.size > 0 || conflicts.size > 0 || held.size > 0 || heldDeletions.size > 0 || blobDecision > 0 || blobUnsent > 0) help.push(syncCommand);
   }
   sync.last_pull = freshness.pulled_at;
   sync.since_pull = age === null ? "never" : describeAge(age);

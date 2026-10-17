@@ -237,11 +237,13 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
   const captured = captureJournalValue({ scope: context.scope, binding: context.binding, ...(context.via === undefined ? {} : { via: context.via }), createdAt: context.createdAt, allowed: context.allowed });
   const raw = await store.readMeta(BLOB_SYNC_META_KEY), map = decodeBlobSyncMap(raw, captured.scope);
   const held: BlobCaptureHold[] = [];
-  const outstanding = new Set((await store.listBlobIntents()).filter(row => row.state !== "acknowledged").map(row => row.target));
+  const intents = (await store.listBlobIntents()).filter(row => row.state !== "acknowledged");
+  const outstanding = new Set(intents.map(row => row.target)), conflicted = new Set(intents.filter(settledBlobConflict).map(row => row.target));
   for (const entry of map.entries) {
     const hold = (message: string, reason: BlobCaptureHold["reason"] = "not_sendable") => held.push({ key: entry.key, reason, message });
     if (entry.placement) { hold(`${entry.key} has unresolved local placement evidence; capture waits for recovery`); continue; }
     if (!ordinarySeedKey(entry.key)) { hold(`${entry.key} is a protected namespace; ordinary-file sync does not change it`); continue; }
+    if (conflicted.has(entry.key)) { hold(blobConflictMessage(entry.key)); continue; }
     if (outstanding.has(entry.key)) { hold(`${entry.key} has a preserved ordinary-file intent awaiting delivery or recovery`); continue; }
     const file = path.join(folder, ...entry.key.split("/"));
     if (!await blobPathSafe(folder, entry.key)) { hold(`${entry.key} has an unsafe parent; no deletion or edit was captured`, "unsafe_path"); continue; }
@@ -249,7 +251,7 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
     if (physical.state === "unsafe" || !await blobPathSafe(folder, entry.key)) { hold(`${entry.key} is unsafe or exceeds the capture bound; no deletion or edit was captured`, "unsafe_path"); continue; }
     const digest = physical.state === "missing" ? null : digestOf(physical.bytes);
     if (!blobSyncDirty(entry, digest)) continue;
-    if (!entry.head) { hold(`${entry.key} has no observed present byte and MIME baseline; it remains local`); continue; }
+    if (!entry.head) { hold(`${entry.key} has no observed present byte and MIME baseline; it remains local${digest === null ? "" : ` (re-create it on the host with promote ${commandToken(path.join(folder, ...entry.key.split("/")))} --doc-key ${commandToken(entry.key)})`}`); continue; }
     if (!captured.allowed) { hold(`${entry.key} remains local because this host does not allow ordinary-file writes`); continue; }
     if (!preview) {
       const snapshot = await readBlobSyncState(store, entry.key, captured.scope);
@@ -524,7 +526,7 @@ export async function admitOfflineBlob(options: {
     const scope: BlobTargetScope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
     const recovery = await recoverBlobPlacements(binding.path, store, scope);
     if (recovery.held.some(row => row.key === null || row.key === input.key)) throw refuse("ordinary-file placement evidence must be recovered before admission");
-    const snapshot = await readBlobSyncState(store, input.key, scope), entry = snapshot.map.entries.find(row => row.key === input.key);
+    let snapshot = await readBlobSyncState(store, input.key, scope), entry = snapshot.map.entries.find(row => row.key === input.key);
     if (entry?.placement) throw refuse("this file has unresolved placement evidence");
     if (findFilePathCollision([...snapshot.map.entries.map(row => row.key), input.key])) throw refuse("this key aliases another ordinary-file projection owner");
     if (!await blobPathSafe(binding.path, input.key)) throw refuse("this file has an unsafe parent");
@@ -532,6 +534,22 @@ export async function admitOfflineBlob(options: {
     if (physical.state === "unsafe" || !await blobPathSafe(binding.path, input.key)) throw refuse("this file is unsafe, changed during capture, or exceeds 16 MiB");
     const physicalDigest = physical.state === "missing" ? null : digestOf(physical.bytes);
     if (input.operation === "promote" && physical.state !== "present") throw refuse("promote requires the existing checkout target file");
+    let keptType: string | undefined;
+    const conflict = snapshot.journal.intents.some(settledBlobConflict) ? await readBlobConflict(store, scope, input.key) : undefined;
+    if (conflict?.state === "conflict" && (input.operation === "delete" || input.expectedVersion !== undefined)) {
+      // A replacement over the host's recorded head is the explicit form of `sync --resolve keep`.
+      const recorded = conflict.evidence.actual;
+      if (input.operation === "delete" || recorded === null || input.expectedVersion !== recorded) {
+        throw new CliError("CONFLICT", `${input.key} has a version conflict: the host recorded ${recorded === null ? "a deletion" : `version ${recorded} (${conflict.evidence.actualContentType})`}; nothing was admitted`, { details: { reason: "blob_conflict", key: input.key, request_id: conflict.evidence.requestId, expected: conflict.evidence.expected, actual: recorded, actual_content_type: conflict.evidence.actualContentType, submitted: false }, help: input.operation === "promote" && recorded !== null ? `promote with --expected-version ${commandToken(recorded)}, or run sync --resolve keep|take --doc ${commandToken(input.key)} --dir ${commandToken(binding.path)}` : `sync --resolve keep|take --doc ${commandToken(input.key)} --dir ${commandToken(binding.path)}` });
+      }
+      await resolveBlobConflict({ folder: binding.path, store, scope, key: input.key, choice: "keep" });
+      snapshot = await readBlobSyncState(store, input.key, scope); entry = snapshot.map.entries.find(row => row.key === input.key);
+      keptType = entry?.desiredContentType;
+    } else if (conflict?.state === "conflict") {
+      // An explicit create is a new CAS attempt; the settled conflict it supersedes stops holding the key.
+      await store.retireBlobIntents(input.key, conflict.evidence.requestIds, { guard: snapshot.journal.guard });
+      snapshot = await readBlobSyncState(store, input.key, scope); entry = snapshot.map.entries.find(row => row.key === input.key);
+    }
     const outstanding = snapshot.journal.intents.filter(row => row.receipt === undefined);
     const latest = snapshot.journal.intents.at(-1);
     const acknowledged = latest?.state === "acknowledged" && latest.receipt?.result.ok ? latest : undefined;
@@ -558,7 +576,7 @@ export async function admitOfflineBlob(options: {
     if ((input.operation === "delete" || input.expectedVersion !== undefined) && (!entry?.head || input.expectedVersion !== undefined && input.expectedVersion !== entry.head.version)) throw refuse("replacement or deletion requires the preserved observed digest and MIME baseline matching --expected-version");
     if (input.operation === "delete" && blobSyncDirty(entry!, physicalDigest)) throw refuse("delete refuses locally changed bytes or an outstanding MIME choice");
     const { resolveContentType } = await import("@superbee/core");
-    const contentType = input.operation === "delete" ? undefined : input.contentType ?? (input.expectedVersion === undefined ? resolveContentType(input.key) : entry!.head!.contentType);
+    const contentType = input.operation === "delete" ? undefined : input.contentType ?? (input.expectedVersion === undefined ? resolveContentType(input.key) : keptType ?? entry!.head!.contentType);
     const intent = input.operation === "delete"
       ? { operationId: "blobs.delete.v1" as const, key: input.key, expectedVersion: entry!.head!.version, expectedContentType: entry!.head!.contentType }
       : input.expectedVersion === undefined
@@ -587,4 +605,167 @@ export async function admitOfflineBlob(options: {
   }, { readOnly: false });
   if (result === null) throw refuse("checkout is busy; nothing was admitted", "sync_busy");
   return result;
+}
+
+/** A terminal version conflict: proven not applied, so its identity is never sent again. */
+export function settledBlobConflict(row: BlobIntentRecord): boolean {
+  const result = row.receipt?.result;
+  return row.state === "conflict" && result !== undefined && !result.ok && result.error.code === "version_conflict" && result.error.writeState === "not_applied";
+}
+export function blobConflictMessage(key: string): string {
+  return `${key} conflicts with a newer host version; nothing is sent for it until you resolve it with sync --resolve keep or take --doc ${commandToken(key)}`;
+}
+export interface BlobConflictEvidence {
+  key: string;
+  /** The latest conflicted request; every settled conflict row on the key is retired together. */
+  requestId: string;
+  requestIds: string[];
+  operation: "blobs.create.v1" | "blobs.replace.v1" | "blobs.delete.v1";
+  expected: string | null; expectedContentType: string | null;
+  actual: string | null; actualContentType: string | null;
+  /** The conflicted local representation; null for a deletion. */
+  version: string | null; contentType: string | null;
+}
+export type BlobConflictLookup =
+  | { state: "conflict"; snapshot: BlobSyncSnapshot; evidence: BlobConflictEvidence }
+  | { state: "none" | "outstanding" | "placement" };
+/** Caller holds the checkout lock. Reads only. */
+export async function readBlobConflict(store: BlobJournaledBackend, scope: BlobTargetScope, key: string): Promise<BlobConflictLookup> {
+  const captured = scopeOf(scope), snapshot = await readBlobSyncState(store, key, captured);
+  const conflicts = snapshot.journal.intents.filter(settledBlobConflict).sort((a, b) => a.sequence - b.sequence);
+  if (conflicts.length === 0) return { state: "none" };
+  if (snapshot.map.entries.find(row => row.key === key)?.placement) return { state: "placement" };
+  if (snapshot.journal.intents.some(row => row.state !== "acknowledged" && !settledBlobConflict(row))) return { state: "outstanding" };
+  const latest = conflicts.at(-1)!, prepared = decodePreparedBlobIntent(latest.prepared), intent = prepared.intent;
+  if (!equalJournalValue(prepared.scope, captured)) throw new TypeError("blob conflict scope mismatch");
+  const result = latest.receipt!.result;
+  if (result.ok) throw new TypeError("blob conflict receipt mismatch");
+  const error = result.error;
+  return { state: "conflict", snapshot, evidence: {
+    key, requestId: latest.requestId, requestIds: conflicts.map(row => row.requestId), operation: intent.operationId,
+    expected: intent.expectedVersion, expectedContentType: intent.expectedContentType,
+    actual: error.actual ?? null, actualContentType: error.actualContentType ?? null,
+    version: intent.operationId === "blobs.delete.v1" ? null : intent.version, contentType: intent.operationId === "blobs.delete.v1" ? null : intent.contentType,
+  } };
+}
+export interface BlobConflictResolution {
+  key: string;
+  choice: "keep" | "take";
+  evidence: BlobConflictEvidence;
+  /** What happened to the checkout file. */
+  file: "unchanged" | "removed" | "placed" | "absent";
+  /** keep: the next plain sync sends a new request for this key. */
+  sends: boolean;
+  /** keep after a host deletion: the create admitted under a new request id. */
+  admitted?: string;
+  /** take: the host's bytes could not be placed now; the next sync places them. */
+  placementDeferred?: boolean;
+}
+/**
+ * The one owner of blob conflict resolution; the caller holds the checkout lock. It acts only on a
+ * settled version conflict with no other outstanding row and no placement WAL, and never resends
+ * the conflicted identity: its rows are retired under the same-key journal guard together with the
+ * new baseline, and any later send is a new request with explicit version and MIME pins.
+ * keep moves the base to the host's recorded head, so the next sync sends the file as it is then
+ * (the host CAS still refuses it if the host moved again). take discards the conflicted bytes,
+ * records observed absence, and places the host's current bytes when a pinned read succeeds.
+ */
+export async function resolveBlobConflict(options: {
+  folder: string; store: BlobJournaledBackend & Pick<JournaledBackend, "readMeta">; scope: BlobTargetScope; key: string; choice: "keep" | "take";
+  /** keep after a host deletion with the file present admits a create under this identity. */
+  identity?: { binding: string; via?: string; createdAt: string };
+  /** take: a pinned read of the host head; omitted, or failing, leaves the placement to the next sync. */
+  read?: (head: BlobHead) => Promise<Uint8Array>;
+}): Promise<BlobConflictResolution> {
+  const { CliError } = await import("../errors.js");
+  const { folder, store, key, choice } = options, scope = scopeOf(options.scope);
+  const resolveHelp = `sync --resolve keep|take --doc ${commandToken(key)} --dir ${commandToken(folder)}`;
+  const found = await readBlobConflict(store, scope, key);
+  if (found.state === "none") throw new CliError("NOT_FOUND", `'${key}' has no ordinary-file conflict to resolve in this checkout`, { details: { reason: "no_conflict", key }, help: `sync --dir ${commandToken(folder)}` });
+  if (found.state !== "conflict") throw new CliError("CONFLICT", `'${key}' has ${found.state === "placement" ? "unfinished placement evidence" : "an unfinished or refused request that is not a version conflict"}; nothing was resolved`, { details: { reason: found.state === "placement" ? "blob_placement_recovery" : "blob_outstanding", key }, help: `run sync --dir ${commandToken(folder)} first; if it reports a conflict on ${key}, then ${resolveHelp}` });
+  const { snapshot, evidence } = found;
+  const file = path.join(folder, ...key.split("/"));
+  if (!await blobPathSafe(folder, key)) throw new CliError("CONFLICT", `${key} has an unsafe parent; nothing was resolved`, { details: { reason: "unsafe_path", key } });
+  const physical = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
+  if (physical.state === "unsafe" || !await blobPathSafe(folder, key)) throw new CliError("CONFLICT", `${key} is unsafe or exceeds 16 MiB; nothing was resolved`, { details: { reason: "unsafe_path", key } });
+  const hostHead: BlobHead | null = evidence.actual === null ? null : captureBlobHead({ key, version: evidence.actual, contentType: evidence.actualContentType! });
+  const retire = async (from: BlobSyncSnapshot, next: BlobSyncEntry) => {
+    await store.retireBlobIntents(key, evidence.requestIds, { guard: from.journal.guard, meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(changeBlobSyncEntry(from.map, next)) }] });
+  };
+  if (choice === "keep") {
+    // Only a MIME the person chose survives keep; the old head's type must not revert the host's.
+    const chosenType = snapshot.map.entries.find(row => row.key === key)?.desiredContentType;
+    const frozenType = evidence.contentType ?? undefined;
+    if (hostHead && physical.state === "missing" && evidence.operation !== "blobs.delete.v1") {
+      // keep means "send my edit"; a file gone since the conflict would turn it into a host deletion nobody chose.
+      throw new CliError("CONFLICT", `${file} is missing, so keep would delete the host's version; nothing was resolved`, { details: { reason: "missing_since_conflict", key, file }, help: `put the file back to keep it, or take the host's version: ${resolveHelp.replace("keep|take", "take")}` });
+    }
+    if (hostHead) {
+      // The base moves: the host's version becomes what this checkout last saw.
+      await retire(snapshot, { key, head: hostHead, placedDigest: hostHead.version, ...(chosenType === undefined || chosenType === hostHead.contentType ? {} : { desiredContentType: chosenType }) });
+      return { key, choice, evidence, file: "unchanged", sends: physical.state === "present" ? digestOf(physical.bytes) !== hostHead.version || (chosenType ?? hostHead.contentType) !== hostHead.contentType : true };
+    }
+    await retire(snapshot, { key, head: null, placedDigest: null });
+    if (physical.state !== "present" || !options.identity) return { key, choice, evidence, file: physical.state === "present" ? "unchanged" : "absent", sends: false };
+    // The host deleted it: a create is the only send that can re-apply the local bytes.
+    const contentType = chosenType ?? frozenType ?? evidence.expectedContentType!;
+    const current = await readBlobSyncState(store, key, scope), entry = current.map.entries.find(row => row.key === key) ?? { key, placedDigest: null };
+    const prepared = prepareBlobIntent({ scope, intent: { operationId: "blobs.create.v1", key, expectedVersion: null, expectedContentType: null, version: digestOf(physical.bytes), contentType }, identity: { requestId: mintRequestId(), binding: options.identity.binding, ...(options.identity.via === undefined ? {} : { via: options.identity.via }) }, createdAt: options.identity.createdAt }, physical.bytes);
+    const record = await store.admitPreparedBlob(prepared, { guard: current.journal.guard, meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(changeBlobSyncEntry(current.map, { ...entry, desiredContentType: contentType })) }] });
+    return { key, choice, evidence, file: "unchanged", sends: true, admitted: record.requestId };
+  }
+  // take: only the conflicted bytes (or their absence) may be discarded, never a later edit.
+  const discardable = physical.state === "missing" || evidence.operation !== "blobs.delete.v1" && digestOf(physical.bytes) === evidence.version;
+  if (!discardable) throw new CliError("CONFLICT", `${file} has edits made since the conflict, which take would discard`, { details: { reason: "edited_since_conflict", key, file }, help: `remove the file first to discard edits made since the conflict, or keep them: sync --resolve keep --doc ${commandToken(key)} --dir ${commandToken(folder)}` });
+  let removed = false;
+  if (physical.state === "present") {
+    const { removeGuarded } = await import("./sync-scan.js");
+    if (!await blobPathSafe(folder, key) || !await removeGuarded(file, physical.bytes)) throw new CliError("CONFLICT", `${file} changed while resolving it; nothing was resolved`, { details: { reason: "edited_since_conflict", key, file } });
+    removed = true;
+  }
+  // Crash between the removal and this write: a rerun finds the file missing and continues.
+  await retire(snapshot, { key, head: null, placedDigest: null });
+  if (!hostHead) return { key, choice, evidence, file: removed ? "removed" : "absent", sends: false };
+  let bytes: Uint8Array | undefined;
+  if (options.read) {
+    try { bytes = await options.read(hostHead); }
+    catch (error) { if (!(error instanceof HostedReadAdapterError || error instanceof HostedCarrierError || error instanceof RemoteError)) throw error; }
+  }
+  if (bytes === undefined || digestOf(bytes) !== hostHead.version) return { key, choice, evidence, file: removed ? "removed" : "absent", sends: false, placementDeferred: true };
+  const placed = await stageBlobPlacement(folder, store, await readBlobSyncState(store, key, scope), { key, head: hostHead, bytes });
+  return { key, choice, evidence, file: placed === "placed" ? "placed" : removed ? "removed" : "absent", sends: false, ...(placed === "placed" ? {} : { placementDeferred: true }) };
+}
+
+export type BlobFileState = "clean" | "pending" | "conflict" | "unknown" | "refused" | "held";
+/**
+ * Local-only classification of every tracked ordinary file for status: no request, no store or
+ * folder write. pending is admitted or changed and not yet sent; unknown was sent and its answer
+ * was lost; held needs the person (placement evidence, an unsafe path, no baseline, or a proven
+ * host deletion hold).
+ */
+export async function blobCheckoutStates(folder: string, store: BlobJournaledBackend & Pick<JournaledBackend, "readMeta">, scope: BlobTargetScope): Promise<{ key: string; state: BlobFileState }[]> {
+  const map = decodeBlobSyncMap(await store.readMeta(BLOB_SYNC_META_KEY), scopeOf(scope));
+  const rows = (await store.listBlobIntents()).filter(row => row.state !== "acknowledged");
+  const keys = [...new Set([...map.entries.map(entry => entry.key), ...rows.map(row => row.target)])].sort(compareStorageKeys);
+  const out: { key: string; state: BlobFileState }[] = [];
+  for (const key of keys) {
+    const mine = rows.filter(row => row.target === key), entry = map.entries.find(row => row.key === key);
+    const deletionHeld = (row: BlobIntentRecord) => !row.receipt && row.attempts > 0 && row.notAppliedThrough === row.attempts && row.deletionHold !== undefined;
+    let state: BlobFileState;
+    if (mine.some(settledBlobConflict)) state = "conflict";
+    else if (mine.some(row => row.receipt)) state = "refused";
+    else if (mine.some(deletionHeld)) state = "held";
+    else if (mine.some(row => row.attempts > 0)) state = "unknown";
+    else if (mine.length) state = "pending";
+    else if (!entry) continue;
+    else if (entry.placement || !ordinarySeedKey(key) || !await blobPathSafe(folder, key)) state = "held";
+    else {
+      const found = readRegularFileNoFollowSync(path.join(folder, ...key.split("/")), { maximumBytes: 16 * 1024 * 1024 });
+      if (found.state === "unsafe") state = "held";
+      else if (!blobSyncDirty(entry, found.state === "missing" ? null : digestOf(found.bytes))) state = "clean";
+      else state = entry.head ? "pending" : "held";
+    }
+    out.push({ key, state });
+  }
+  return out;
 }

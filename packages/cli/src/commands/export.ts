@@ -813,7 +813,7 @@ async function exportInPlace(dirArg: string | undefined, git: boolean, keepUnsen
       let pending: Set<string>;
       try {
         const classified = await classifyCheckout(binding, deps.auth.home, store);
-        pending = new Set([...classified.unsent, ...classified.conflicts, ...classified.held.keys(), ...classified.heldDeletions]);
+        pending = new Set([...classified.unsent, ...classified.conflicts, ...classified.held.keys(), ...classified.heldDeletions, ...classified.blobs.filter(row => row.state !== "clean").map(row => row.key)]);
       } finally {
         await store.close();
       }
