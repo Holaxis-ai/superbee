@@ -20,6 +20,7 @@ import {
   type HostedClientOptions,
   type HostedIntentStore,
   type HostedWriteIntent,
+  type HostedRequestTiming,
   HostedIntentsNotListable,
   INTENTS_NOT_LISTABLE,
 } from "../src/hosted-client/index.js";
@@ -591,6 +592,35 @@ test("heldWrites: the store's unsettled writes, for a service that restarts; a s
 
   const unlistable: HostedIntentStore = { put: () => {}, get: () => undefined, delete: () => {} };
   await assert.rejects(clientOf(host.fetch, { intentStore: unlistable }).heldWrites(), (error) => error instanceof HostedIntentsNotListable && (error as HostedIntentsNotListable).code === INTENTS_NOT_LISTABLE);
+});
+
+test("timing: every request of a write, its lost answer and its outcome lookups included, is reported once in the order sent", async () => {
+  const host = fakeHost();
+  host.fault("create", "lost-answer");
+  host.fault("outcome", "lost-request");
+  const seen: HostedRequestTiming[] = [];
+  const client = clientOf(host.fetch, { onRequestTiming: (timing) => seen.push(timing) });
+  const result = await client.within("south").write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true });
+  assert.equal(result.status, "committed");
+  const later = await client.within("south").lookupWrite(result.requestId);
+  assert.equal(later.status, "unrecorded");
+  await client.write(BUNDLE, { id: "notes/root", document: doc("root"), expectAbsent: true });
+  assert.deepEqual(
+    seen.map((t) => t.route),
+    host.sent.map((row) => row.route),
+  );
+  assert.deepEqual(routes(host.sent), ["capabilities", "create", "outcome", "outcome", "capabilities", "create"]);
+  assert.deepEqual(
+    seen.map((t) => [t.status, t.failure]),
+    [
+      [200, null],
+      [null, "unavailable"],
+      [null, "unavailable"],
+      [200, null],
+      [200, null],
+      [200, null],
+    ],
+  );
 });
 
 test("workspace: a held identity confirmed from a client naming another workspace is refused, and the message says so", async () => {

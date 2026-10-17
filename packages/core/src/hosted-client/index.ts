@@ -62,3 +62,13 @@ export {
   type HostedBlobDeliveryOutcome,
   type HostedBlobDeliveryResult,
 } from "./blob-delivery.js";
+// Request timing (`onRequestTiming`), re-exported so a caller reads the host's phases from this subpath.
+export {
+  parseServerTiming,
+  SERVER_TIMING_MAX_LENGTH,
+  SERVER_TIMING_MAX_METRICS,
+  type HostedRequestKind,
+  type HostedRequestObserver,
+  type HostedRequestTiming,
+  type ServerTimingMetric,
+} from "../hosted-transport/request-timing.js";
