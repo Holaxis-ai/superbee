@@ -495,7 +495,7 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
     ["artifact", ["create", "x.pdf", "--title", "x", "--dir", folder]],
     // Both succeeded locally and were then held by sync forever: refuse them up front instead.
     ["index", ["generate", "--dir", folder]],
-    ["delete", ["--doc-key", "assets/logo.png", "--dir", folder]],
+    ["delete", ["--doc-key", "References/logo.png", "--dir", folder]],
     ["delete", ["--doc-key=views/board/index.html", "--dir", folder]],
   ];
   for (const [command, args] of refused) {
@@ -534,9 +534,11 @@ test("up-front refusals: every command sync cannot send is refused in a checkout
   const elsewhere = await mkdtemp(path.join(tmpdir(), "sb-local-"));
   await writeFile(path.join(elsewhere, "index.md"), '---\nokf_version: "0.2"\n---\n');
   await assertAllowedInHostedCheckout("doc", ["delete", "x", "--dir", elsewhere], context);
-  // promote to a blob key and serve are refused; promote of a .md document key is not.
-  const blob = await rejects(assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "files/x.pdf", "--dir", folder], context));
-  assert.equal(blob.details?.do_this_in, "app");
+  // Ordinary keys enter offline admission; protected keys and serving still refuse up front.
+  await assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "files/x.pdf", "--dir", folder], context);
+  await assertAllowedInHostedCheckout("delete", ["--doc-key", "assets/logo.png", "--dir", folder], context);
+  const protectedBlob = await rejects(assertAllowedInHostedCheckout("promote", ["x.pdf", "--doc-key", "Views/x.pdf", "--dir", folder], context));
+  assert.equal(protectedBlob.details?.do_this_in, "app");
   const serve = await rejects(assertAllowedInHostedCheckout("serve", ["--dir", folder, "--port", "0"], context));
   assert.equal(serve.details?.do_this_in, "app");
   await assertAllowedInHostedCheckout("promote", ["x.md", "--doc-key", "notes/x.md", "--dir", folder], context);

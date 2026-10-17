@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { admitOfflineBlob } from "../hosted/blob-sync.js";
 import { renderUsage } from "../output.js";
 // `superbee promote <file> --doc-key <key>` — the out-of-band byte-IN channel: move a local
 // file's bytes into the store WITHOUT the content ever entering the model context window (the
@@ -118,6 +120,8 @@ Options:
 `;
 
 export interface PromoteCliDeps {
+  home?: string;
+  cwd?: string;
   stdout: (s: string) => void;
 }
 
@@ -191,7 +195,12 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
     }
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  if (!remote && !isDocRouteKey(key)) {
+    const pending = await admitOfflineBlob({ operation: "promote", key, ...(values.dir === undefined ? {} : { dir: values.dir }), source: file, ...(values["expected-version"] === undefined ? {} : { expectedVersion: values["expected-version"] }), ...(values["content-type"] === undefined ? {} : { contentType: values["content-type"] }), home: deps.home ?? homedir(), cwd: deps.cwd ?? process.cwd() });
+    if (pending) { stdout(render(pending, resolveMode(values))); return; }
+  }
+  const bundle = await openBundle(values.dir, remote);
   const mode = resolveMode(values);
   // I9: promote v1 supports token-CAS only via --expected-version; omitting it means EXPECT-ABSENT
   // create (null), never an unconditional last-writer-wins overwrite.

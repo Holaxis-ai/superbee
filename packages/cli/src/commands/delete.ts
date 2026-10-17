@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { admitOfflineBlob } from "../hosted/blob-sync.js";
 import { renderUsage } from "../output.js";
 // `superbee delete --doc-key <key>` — hard-delete a doc or blob by its key, symmetric with
 // `promote`/`pull` (the DELETE-operation pass, binding plan item 9 — resolved decision).
@@ -59,6 +61,8 @@ Options:
 `;
 
 export interface DeleteCliDeps {
+  home?: string;
+  cwd?: string;
   stdout: (s: string) => void;
 }
 
@@ -111,7 +115,12 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
     );
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  if (!remote && !isDocRouteKey(key)) {
+    const pending = await admitOfflineBlob({ operation: "delete", key, ...(values.dir === undefined ? {} : { dir: values.dir }), ...(rawExpected === undefined ? {} : { expectedVersion: rawExpected.trim() }), home: deps.home ?? homedir(), cwd: deps.cwd ?? process.cwd() });
+    if (pending) { stdout(render(pending, resolveMode(values))); return; }
+  }
+  const bundle = await openBundle(values.dir, remote);
   const mode: OutputMode = resolveMode(values);
   const expectedVersion = rawExpected?.trim();
   const docRoute = isDocRouteKey(key);

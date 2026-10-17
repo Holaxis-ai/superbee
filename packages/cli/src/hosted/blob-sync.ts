@@ -191,7 +191,8 @@ export async function seedInitialBlobBaselines(options: {
   }
   return { state: "seeded", count: map.entries.length };
 }
-function ordinarySeedKey(key: string): boolean {
+export function ordinarySeedKey(key: string): boolean {
+  try { captureBlobHead({ key, version: `sha256:${"0".repeat(64)}`, contentType: "application/octet-stream" }); } catch { return false; }
   if (isReservedFile(key)) return false;
   const root = fold(key.split("/")[0]!);
   return ![PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX, "conventions/", "recipes/", "references/"].some(prefix => root === prefix.slice(0, -1));
@@ -457,4 +458,76 @@ export async function refreshBlobCheckout(options: {
     }
     return out;
   } finally { controller.abort(); }
+}
+
+
+/** Offline explicit command admission. This never authenticates, discovers a host head, or sends. */
+export async function admitOfflineBlob(options: {
+  operation: "promote" | "delete"; key: string; dir?: string; source?: string;
+  expectedVersion?: string; contentType?: string; home: string; cwd: string;
+}): Promise<Record<string, unknown> | null> {
+  const { resolveLocalBundleTarget } = await import("../bundle.js");
+  const { bindingForPath, checkoutBindingDigest } = await import("./binding.js");
+  const { readCheckoutMarker } = await import("./marker.js");
+  const { withIdleCheckoutStore } = await import("./checkout-store.js");
+  const { CliError } = await import("../errors.js");
+  const input = captureJournalValue(options);
+  const target = await resolveLocalBundleTarget(input.dir, input.cwd);
+  const binding = await bindingForPath(input.home, target.canonicalRoot);
+  if (!binding) {
+    const marker = readCheckoutMarker(target.canonicalRoot);
+    if (marker) {
+      const { unboundCopyRefusal } = await import("./refusals.js");
+      throw unboundCopyRefusal({ folder: target.canonicalRoot, marker }, "FORBIDDEN", "this copied or moved checkout must be adopted before ordinary-file admission");
+    }
+    return null;
+  }
+  const refuse = (message: string, reason = "blob_admission_held") => new CliError("CONFLICT", message, { details: { reason, key: input.key, submitted: false }, help: "preserve the file and resolve its checkout state before promoting or deleting it" });
+  if (!ordinarySeedKey(input.key)) throw refuse("ordinary-file admission refuses this reserved, document, model, View or publisher-owned key");
+  const file = path.join(binding.path, ...input.key.split("/"));
+  if (input.operation === "promote" && (!input.source || path.resolve(input.cwd, input.source) !== file)) throw new CliError("USAGE", "hosted promote requires the source to be the checkout target pathname", { help: `copy the source into ${file}, then promote that target with --doc-key ${input.key}` });
+  const result = await withIdleCheckoutStore(binding, input.home, async store => {
+    if (!equalJournalValue(await bindingForPath(input.home, binding.path), binding)) throw refuse("checkout binding or folder changed before admission");
+    const scope: BlobTargetScope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
+    const recovery = await recoverBlobPlacements(binding.path, store, scope);
+    if (recovery.held.some(row => row.key === null || row.key === input.key)) throw refuse("ordinary-file placement evidence must be recovered before admission");
+    const snapshot = await readBlobSyncState(store, input.key, scope), entry = snapshot.map.entries.find(row => row.key === input.key);
+    if (entry?.placement || snapshot.journal.intents.some(row => row.state !== "acknowledged")) throw refuse("this file has an outstanding intent or placement; no duplicate was admitted");
+    if (await parentUnsafe(binding.path, file)) throw refuse("this file has an unsafe parent");
+    const physical = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
+    if (physical.state === "unsafe" || await parentUnsafe(binding.path, file)) throw refuse("this file is unsafe, changed during capture, or exceeds 16 MiB");
+    const physicalDigest = physical.state === "missing" ? null : digestOf(physical.bytes);
+    if (input.operation === "promote" && physical.state !== "present") throw refuse("promote requires the existing checkout target file");
+    if ((input.operation === "delete" || input.expectedVersion !== undefined) && (!entry?.head || input.expectedVersion !== undefined && input.expectedVersion !== entry.head.version)) throw refuse("replacement or deletion requires the preserved observed digest and MIME baseline matching --expected-version");
+    if (input.operation === "delete" && blobSyncDirty(entry!, physicalDigest)) throw refuse("delete refuses locally changed bytes or an outstanding MIME choice");
+    const { resolveContentType } = await import("@superbee/core");
+    const contentType = input.operation === "delete" ? undefined : input.contentType ?? (input.expectedVersion === undefined ? resolveContentType(input.key) : entry!.head!.contentType);
+    const intent = input.operation === "delete"
+      ? { operationId: "blobs.delete.v1" as const, key: input.key, expectedVersion: entry!.head!.version, expectedContentType: entry!.head!.contentType }
+      : input.expectedVersion === undefined
+        ? { operationId: "blobs.create.v1" as const, key: input.key, expectedVersion: null, expectedContentType: null, version: physicalDigest!, contentType: contentType! }
+        : { operationId: "blobs.replace.v1" as const, key: input.key, expectedVersion: entry!.head!.version, expectedContentType: entry!.head!.contentType, version: physicalDigest!, contentType: contentType! };
+    const { resolveHostedVia } = await import("./via.js");
+    const via = resolveHostedVia(process.env).token;
+    const prepared = prepareBlobIntent({ scope, intent, identity: { requestId: mintRequestId(), binding: checkoutBindingDigest(binding.checkout_id), ...(via === undefined ? {} : { via }) }, createdAt: new Date().toISOString() }, input.operation === "promote" && physical.state === "present" ? physical.bytes : undefined);
+    const next = input.operation === "delete" ? snapshot.map : changeBlobSyncEntry(snapshot.map, { ...(entry ?? { key: input.key, placedDigest: null }), desiredContentType: contentType! });
+    let removed = false;
+    if (input.operation === "delete" && physical.state === "present") {
+      if (!equalJournalValue(await bindingForPath(input.home, binding.path), binding)) throw refuse("checkout binding or folder changed before local deletion");
+      const { removeGuarded } = await import("./sync-scan.js");
+      if (await parentUnsafe(binding.path, file) || !await removeGuarded(file, physical.bytes)) throw refuse("the file changed before local deletion; no intent was admitted");
+      removed = true;
+    }
+    let record: BlobIntentRecord;
+    try {
+      if (!equalJournalValue(await bindingForPath(input.home, binding.path), binding)) throw refuse("checkout binding or folder changed before durable admission");
+      record = await store.admitPreparedBlob(prepared, { guard: snapshot.journal.guard, ...(input.operation === "promote" ? { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(next) }] } : {}) }); }
+    catch (error) {
+      if (removed) throw Object.assign(new CliError("TRANSIENT", "the file was removed locally but its deletion was not submitted or durably admitted; sync can capture its genuine absence", { details: { reason: "blob_delete_local_unsubmitted", key: input.key, local_removed: true, submitted: false }, help: "keep the preserved baseline and run sync to capture the local deletion" }), { cause: error });
+      throw error;
+    }
+    return { [input.operation]: "pending", status: "incomplete", route: "blob", key: input.key, request_id: record.requestId, submitted: false, ...(contentType === undefined ? { local_removed: removed } : { content_type: contentType, version: physicalDigest }), help: ["ordinary-file intent is preserved locally; delivery is not yet enabled"] };
+  }, { readOnly: false });
+  if (result === null) throw refuse("checkout is busy; nothing was admitted", "sync_busy");
+  return result;
 }
