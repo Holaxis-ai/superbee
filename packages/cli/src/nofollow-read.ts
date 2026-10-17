@@ -19,7 +19,7 @@
 //
 // Those two sites still own their own copy; this module owns the leaf reads whose contents settle
 // ownership or trigger a destructive write, and absorbing the other two is a separate unit.
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 
 /** `missing`: nothing at the path. `unsafe`: a link, a non-regular leaf, or an unreadable one. */
 export type NoFollowRead =
@@ -45,8 +45,8 @@ function leafIdentity(filePath: string): { dev: number; ino: number } | "missing
 }
 
 /** Reads a regular file's bytes, refusing a symlink at the leaf. Never throws for filesystem state. */
-export function readRegularFileNoFollowSync(filePath: string): NoFollowRead {
-  return readLeafSync(filePath, READ_FLAGS, HAS_NOFOLLOW);
+export function readRegularFileNoFollowSync(filePath: string, options?: { maximumBytes: number }): NoFollowRead {
+  return readLeafSync(filePath, READ_FLAGS, HAS_NOFOLLOW, options);
 }
 
 /**
@@ -57,7 +57,9 @@ export function readRegularFileNoFollowSync(filePath: string): NoFollowRead {
  *
  * @internal
  */
-export function readLeafSync(filePath: string, flags: number, hasNoFollow: boolean): NoFollowRead {
+export function readLeafSync(filePath: string, flags: number, hasNoFollow: boolean, options?: { maximumBytes: number }): NoFollowRead {
+  const maximum = options?.maximumBytes;
+  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 0 || maximum > 16 * 1024 * 1024)) throw new RangeError("invalid leaf read bound");
   let expected: { dev: number; ino: number } | null = null;
   if (!hasNoFollow) {
     const identity = leafIdentity(filePath);
@@ -75,7 +77,22 @@ export function readLeafSync(filePath: string, flags: number, hasNoFollow: boole
     const opened = fstatSync(descriptor);
     if (!opened.isFile()) return { state: "unsafe" };
     if (expected && (opened.dev !== expected.dev || opened.ino !== expected.ino)) return { state: "unsafe" };
-    return { state: "present", bytes: readFileSync(descriptor) };
+    if (maximum === undefined) return { state: "present", bytes: readFileSync(descriptor) };
+    if (!Number.isSafeInteger(opened.size) || opened.size < 0 || opened.size > maximum) return { state: "unsafe" };
+    const before = fstatSync(descriptor, { bigint: true });
+    const bytes = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, null);
+      if (count === 0) return { state: "unsafe" };
+      offset += count;
+    }
+    // Probe EOF even at the bound: growth must be refused, never silently truncated.
+    if (readSync(descriptor, Buffer.alloc(1), 0, 1, null) !== 0) return { state: "unsafe" };
+    const after = fstatSync(descriptor, { bigint: true });
+    const leaf = lstatSync(filePath, { bigint: true });
+    if (after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs || !leaf.isFile() || leaf.dev !== after.dev || leaf.ino !== after.ino) return { state: "unsafe" };
+    return { state: "present", bytes };
   } catch {
     return { state: "unsafe" };
   } finally {

@@ -61,3 +61,6 @@ export type { DocumentHead } from "./heads-digest.js";
 
 // Optional file-only frozen ordinary-file journal; no broader backend requirement.
 export * from "./blob-journal.js";
+
+export { captureBlobHead, isBlobContentType } from "./blob-contract.js";
+export type { BlobHead } from "./blob-contract.js";
