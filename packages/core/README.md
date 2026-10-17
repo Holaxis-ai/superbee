@@ -173,6 +173,62 @@ target this bundle's edition), `RecipeAssetConflict` (`recipe`, `key`), `RecipeE
 `RecipeEvolutionInterrupted` (`reason`, `completed`, `pending`, `cause`) and
 `RecipeEvolutionPostcondition` (`reason`, `completed`).
 
+## Record overlay
+
+`@superbee/core/record-overlay` is the write half of binding documents to external records. A
+Source Feed policy names the fields a feed owns; the caller fetches and diffs its records and hands
+the changes to the planner. It uses no Node globals or builtins, so it runs in Node, a browser or a
+Worker over any storage backend.
+
+```ts
+import { MemoryBackend } from "@superbee/core/memory-backend";
+import { buildKindRegistry } from "@superbee/core/kinds";
+import { applyRecordOverlay, buildSourceIndex, planRecordOverlay, readOverlayPolicy } from "@superbee/core/record-overlay";
+
+const bundle = { root: "memory://guide", backend: new MemoryBackend() };
+const registry = buildKindRegistry(conventionDocs);
+const guide = { bundle, registry, okfVersion: "0.2" as const };
+const policy = readOverlayPolicy(sourceFeedDoc, { targetKind: registry.kinds.get("Event") });
+const overlays = await buildSourceIndex(bundle, { type: policy.target_kind });
+const plan = await planRecordOverlay({ content: guide, ops: guide, policy, changes, observedAt, overlays });
+const receipt = await applyRecordOverlay(plan, { content: guide, ops: guide, policy, actor: "process:calendar-sync", overlays });
+```
+
+For each owned field the plan compares the last accepted feed value, the new feed value and the
+document's value: a document that already says the new value is left alone, one that still says
+the old value is written, and anything else is an `OVERLAY_DOC_CONFLICT` with a Signal, so an
+editor's override is never overwritten. Each step carries the version it was planned against.
+`applyRecordOverlay` writes every step through `mutateDocument` with a guard core builds itself and
+runs on the fresh read: an owned-field write reaches documents of the policy's target Kind only,
+may change only owned and derived fields, never the body, and needs the record's `sources`
+identity; a Signal may be created only as a new, unclaimed document of the attention Kind under its
+path, and updated only in a fixed set of fields plus one appended observation line. Signal writes
+are bound to the provider of the policy the caller passes, never to a field of the plan, and an id
+held by another provider's Signal is refused. A Signal's text must be the planner's rendering of
+its own fields and the run (its observation line, links to the plan's feed and to documents, the
+adoption hint): every plan the planner makes passes, and other text is a held `INVALID_INPUT` row,
+so a mismatch is visible and planned again rather than dropped. Nothing of the
+target Kind is created and nothing is deleted. A feed never owns its target's work state: the
+progress storage fields and the target Kind's claim fields are refused like `status`. The
+attention Kind (default `Signal`) must declare a claim owner and state field and the fields
+`change_kind`, `observed_at`, `provider`, `external_id` and `diff_summary`.
+
+Site rules are hooks with safe defaults: `textGate` (identity), `interval` (none, so a disappeared
+record is always raised), `correlate`, `sourceProperties` (an upsert of the record's `sources`
+entry in the same write, OKF v0.2 only), `assertCandidate` (site candidate checks after the core
+guards) and `deriveFields` (fields such as `updated_at` written in the same version). Refusals are
+receipt rows with a `REFUSAL_CODES` code; `RETRYABLE` and `HOLD_STORE` say which leave a record to be
+planned again. A value core's write policy refuses (an OKF v0.2 field type, for example) is a held
+`INVALID_INPUT` row, so one bad record never stops the rest of a run. A malformed plan (an unknown
+step, a non-canonical target, written values that are not JSON data with finite numbers, prototype
+keys, non-scalar or identity `sources` properties), actor or bundle edition throws `OverlayRefusal`
+before any write, and so does a plan with owned-field steps whose policy names no declared target
+Kind or whose owned or derived list names a field a feed can never own.
+
+`SourceIndex` holds one head read for a whole run. It is bounded to that run: an edited or deleted
+overlay is still caught at write time, but a second document given an identity during the run is
+only refused as ambiguous on the next run.
+
 ## Hosted client
 
 `@superbee/core/hosted-client` is the headless client of a hosted Superbee's sync routes
