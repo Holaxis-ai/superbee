@@ -628,7 +628,8 @@ test("whole-document transport: a 400 or an unrecorded invalid_input is a termin
   assert.equal(four.requests.length, 1);
   const invalid = (): HostedAnswer => ({ status: 200, headers: new Headers(), body: { ok: false, operationId: "documents.replace.v1", error: { code: "invalid_input", message: "too many fields", retryable: false, writeState: "not_applied" } } });
   const unsettled = transportOver({ "/sync/v1/replace": [invalid] }, intent);
-  assert.deepEqual((await unsettled.deliver()).outcome, { kind: "refused", code: "invalid_input", message: "too many fields" });
+  // Still terminal on a first send; marked so it never settles an identity a lookup says is held.
+  assert.deepEqual((await unsettled.deliver()).outcome, { kind: "refused", code: "invalid_input", message: "too many fields", executed: "unknown" });
   assert.deepEqual(unsettled.requests.map((request) => request.path), ["/sync/v1/replace"]);
 });
 

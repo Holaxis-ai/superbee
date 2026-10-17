@@ -382,7 +382,8 @@ export async function performUncertainWrite(
   const { signal } = options;
   // Whether a submission of this identity may still be held by the authority unanswered.
   let unclear = options.earlierDeliveryUnclear === true && intent.attempts > 0;
-  // Whether a lookup in this call answered pending: a delivery of this identity is held.
+  // Whether any lookup in this call answered pending: a delivery of this identity was held, so
+  // a later absent answer in the same call does not undo it.
   let held = false;
 
   let attempts = intent.attempts;

@@ -437,8 +437,8 @@ async function deliver(
   });
   if (storeFailure) throw storeFailure.cause;
   // A refusal after the caller aborted is the abort's (the carrier sends nothing once it has),
-  // never the host's verdict: the identity stays unknown and its record is kept.
-  const answer: Outcome = callerSignal.aborted && outcome.kind === "refused" ? { kind: "unknown" } : outcome;
+  // never the host's verdict: the identity stays unknown and its record is kept, with no reason.
+  const answer: Outcome = callerSignal.aborted && (outcome.kind === "refused" || outcome.kind === "unknown") ? { kind: "unknown" } : outcome;
   await recordOutcome(context, intent, answer, settled.attempts);
   return resultOf(intent, answer);
 }

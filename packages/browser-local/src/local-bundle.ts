@@ -1590,9 +1590,21 @@ export async function settleIntent(
         authorization ? { meta: [{ key: SYNC_KEY, value: control }] } : {},
       );
     }
-    case "unknown":
-      return backend.updateIntent(requestId, "in_flight", { state: "pending", attempts });
+    case "unknown": {
+      // A resend refused for lost authorization while an earlier delivery may still commit: the
+      // intent stays pending, and the store pauses as it does for a settled authorization refusal.
+      const refusal = outcome.refusal;
+      if (!refusal || !pausesOn(outcome)) return backend.updateIntent(requestId, "in_flight", { state: "pending", attempts });
+      const control: SyncControl = { paused: true, reason: `${refusal.code}: ${refusal.message}`, since: new Date().toISOString() };
+      return backend.updateIntent(requestId, "in_flight", { state: "pending", attempts }, { meta: [{ key: SYNC_KEY, value: control }] });
+    }
   }
+}
+
+/** True when an outcome pauses the store: an authorization refusal, settled or carried by an unknown outcome. */
+function pausesOn(outcome: Outcome): boolean {
+  if (outcome.kind === "unknown") return outcome.refusal !== undefined && isAuthorizationRefusal({ kind: "refused", ...outcome.refusal });
+  return isAuthorizationRefusal(outcome);
 }
 
 async function pushBodyIntent(backend: JournaledBackend, mode: BodyMode, requestId: string, options: PushOptions): Promise<IntentRecord | null> {
@@ -1807,7 +1819,7 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
       throw error;
     }
     report.settled.push({ requestId: settled.requestId, target: settled.target, state: settled.state });
-    if (isAuthorizationRefusal(outcome)) {
+    if (pausesOn(outcome)) {
       report.paused = true;
       break;
     }

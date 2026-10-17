@@ -479,7 +479,9 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
       const code = (answer.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
       return { kind: "refused", code: typeof code?.code === "string" ? code.code : "invalid_input", message: typeof code?.message === "string" ? code.message : "The host refused the request as malformed; nothing was written.", executed: false };
     }
-    if (result && !result.ok && result.error.code === "invalid_input") return { kind: "refused", code: "invalid_input", message: result.error.message };
+    // Unrecorded here (the settled header is not read): the host also answers it before reserving,
+    // for an identity another request or principal holds, so it may be about this attempt only.
+    if (result && !result.ok && result.error.code === "invalid_input") return { kind: "refused", code: "invalid_input", message: result.error.message, executed: "unknown" };
     const settled = answer.headers.get("X-Superbee-Write-Settled") === intent.requestId;
     const lookupRecorded = async (): Promise<Outcome> => {
       try {

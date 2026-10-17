@@ -34,7 +34,7 @@ import { RemoteBackend, type ConceptId, type OkfDocument, type StorageBackend } 
 import { IntentStateConflict } from "@superbee/core/journaled-backend";
 import { RemoteError, SNAPSHOT_TRUNCATED, headsDigest, sortHeads, type DocumentHead, type RemoteSnapshot } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
-import { performUncertainWrite, type OperationTransport } from "@superbee/core/uncertain-write";
+import { LOOKUP_PENDING, performUncertainWrite, type OperationTransport } from "@superbee/core/uncertain-write";
 
 import {
   baseKey,
@@ -2389,6 +2389,45 @@ test("acceptRefusedDeletions: the recorded refusal passed back against the same 
     const idle = await pull(local, fixture.remote, { acceptRefusedDeletions: mismatch.refused! });
     assert.equal(idle.refused, undefined);
     assert.deepEqual(idle.deleted, []);
+  } finally {
+    local.close();
+  }
+});
+
+test("revocation while a delivery is held: a resend refused for lost authorization after a pending lookup keeps the intent and pauses; resume settles the held delivery", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory);
+  try {
+    await bootstrap(fixture.remote, local);
+    const first = await commitLocal(local, "notes/alpha", edit("alpha held\n"));
+    let held: Parameters<OperationTransport["submit"]>[0] | undefined;
+    let sends = 0;
+    const transport: OperationTransport = {
+      async submit(intent, options) {
+        sends += 1;
+        if (!held) {
+          held = intent;
+          throw new Error("the answer was lost while the host held the request");
+        }
+        if (sends === 2) return { kind: "refused", code: "AUTH_REQUIRED", message: "signed out", executed: false };
+        return fixture.transport.submit(intent, options);
+      },
+      lookup: async (requestId) => (held && sends < 3 && requestId === held.requestId ? LOOKUP_PENDING : fixture.transport.lookup(requestId)),
+    };
+    const report = await push(local, transport, { write: immediate });
+    assert.equal(report.paused, true);
+    const kept = await local.backend.readIntent(first.intent!.requestId);
+    assert.equal(kept?.state, "pending", "the held delivery may still commit: nothing settled");
+    const status = await syncStatus(local);
+    assert.equal(status.paused, true);
+    assert.match(status.pausedReason ?? "", /AUTH_REQUIRED/);
+    // The host finishes the held delivery; after resume the lookup finds it.
+    await fixture.transport.submit(held!);
+    await resume(local);
+    const resumed = await push(local, transport, { write: immediate });
+    assert.deepEqual(resumed.settled.map((row) => row.state), ["acknowledged"]);
+    assert.equal((await fixture.authority.read("notes/alpha")).doc.body, "alpha held\n");
   } finally {
     local.close();
   }
