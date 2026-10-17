@@ -229,6 +229,47 @@ Kind or whose owned or derived list names a field a feed can never own.
 overlay is still caught at write time, but a second document given an identity during the run is
 only refused as ambiguous on the next run.
 
+## Bundle health
+
+`@superbee/core/bundle-health` computes the health report behind `superbee status` from a core
+`Bundle` on any backend: malformed documents, Kind lint and conformance debt, registry warnings,
+unresolved links, orphans, freshness and invalid timestamps, trust tiers, the two graph lints, the
+View surface, cross-bundle links, the OKF v0.1 upgrade finding and legacy naming. It uses no Node
+globals or builtins, so it runs in Node, a browser or a Worker. The caller presents the report;
+the CLI adds row caps, help text and its home and sync blocks.
+
+```ts
+import { MemoryBackend } from "@superbee/core/memory-backend";
+import { bundleHealth } from "@superbee/core/bundle-health";
+
+const bundle = { root: "memory://guide", backend: new MemoryBackend() };
+const report = await bundleHealth(bundle, { now: new Date() });
+const gate = { malformed: report.malformed.length, kind_warnings: report.kindLint.length, unresolved_links: report.unresolvedLinks.length };
+```
+
+The report reads only: one Kind registry load, one lenient query, two prefix-scoped blob listings
+and one root-index read, with every finding derived in memory. A document whose frontmatter does
+not parse is a `malformed` row (the root index first), never a thrown error. Top-level keys are
+camelCase; rows keep snake_case keys (`age_ms`, `bundle_id`, `incompatible_values`) and arrive
+whole, in report order, for the caller to cap. Sections whose presence depends on the bundle are
+null when absent: `conformanceDebt` without any declared Kind, `trust` outside a non-empty v0.2
+bundle, `crossBundle` without `docs/dependencies` or any `okf:` link, `okfUpgrade` outside a v0.1
+bundle with a workflow-status collision. `crossLinkTypeViolations` is always an array, because a
+local edge under a qualified declaration needs no dependencies. The stored values in
+`invalidStaleAfter`, `invalidTimestamps` and `invalidLegacyTimestamps` are made JSON-safe;
+`missingExpectedLinks[].status` is the raw stored value.
+
+Nothing outside the bundle is read unless the caller binds it. `bindings` is a map of bound copies
+by alias, or a hook core calls exactly once, after every read and with its own parse of
+`docs/dependencies` (a self alias already dropped as `DEP_SELF`, using `selfBundleId` when
+`docs/bundle` declares no id). Whatever the hook throws propagates unchanged. Each binding's
+verdict comes from core's resolver, and `dependencies[].bound` is the binding's `label`.
+
+`bundleKindFindings(documents, okfVersion, { actor, producer })` answers a different question:
+which Kind problems a strict host write would refuse, preparing each document as its first edit,
+so a timestamp or actor the write supplies is no finding. The CLI's publish preview runs it; the
+report's `kindLint` stays advisory. Both use core's one validator, `validateAgainstKind`.
+
 ## Hosted client
 
 `@superbee/core/hosted-client` is the headless client of a hosted Superbee's sync routes

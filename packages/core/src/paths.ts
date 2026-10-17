@@ -104,6 +104,33 @@ export function assertSafeConceptId(id: ConceptId): void {
   }
 }
 
+/** Why a new document id is outside its one canonical spelling (see {@link nonCanonicalDocumentId}). */
+export type NonCanonicalDocumentId = "segment_whitespace" | "format_character" | "not_nfc";
+
+const FORMAT_AT_EDGE = /^\p{Cf}|\p{Cf}$/u;
+const FORMAT_INSIDE = /(?![‌‍])\p{Cf}/u;
+
+/**
+ * Why a NEW document id is outside its one canonical spelling, or null when it is in it. This
+ * governs the spelling a document may be created under; storage keeps reading, updating and
+ * deleting ids that predate the rule, and nothing is renamed.
+ *
+ * - No path segment starts or ends with whitespace as `String.prototype.trim` defines it (every
+ *   Unicode space separator, line terminators and U+FEFF); this is checked first.
+ * - No path segment starts or ends with a format character (Unicode Cf, such as U+200B), and no
+ *   segment holds one inside except ZERO WIDTH NON-JOINER and ZERO WIDTH JOINER, which scripts and
+ *   emoji sequences need between visible characters.
+ * - The id is in Unicode NFC: normalizing filesystems treat the NFC and NFD spellings as one name,
+ *   while storage keys them as two.
+ */
+export function nonCanonicalDocumentId(id: string): NonCanonicalDocumentId | null {
+  const segments = id.split("/");
+  if (segments.some((segment) => segment !== segment.trim())) return "segment_whitespace";
+  if (segments.some((segment) => FORMAT_AT_EDGE.test(segment) || FORMAT_INSIDE.test(segment))) return "format_character";
+  if (id !== id.normalize("NFC")) return "not_nfc";
+  return null;
+}
+
 /**
  * Guard a blob key before it is joined onto the bundle root for a filesystem read or
  * write. Same traversal/absolute-escape shape as {@link assertSafeConceptId}, PLUS

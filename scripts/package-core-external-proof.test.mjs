@@ -75,6 +75,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/recipe-lifecycle/index.d.ts"));
     assert.ok(paths.includes("dist/record-overlay/index.js"));
     assert.ok(paths.includes("dist/record-overlay/index.d.ts"));
+    assert.ok(paths.includes("dist/bundle-health/index.js"));
+    assert.ok(paths.includes("dist/bundle-health/index.d.ts"));
     assert.ok(paths.includes("dist/remote.js"));
     assert.ok(paths.includes("dist/remote.d.ts"));
     assert.ok(paths.includes("dist/storage.js"));
@@ -478,6 +480,8 @@ import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/co
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
 import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
 import { applyRecordOverlay, buildSourceIndex, OverlayRefusal, planRecordOverlay, type OverlayBundle, type OverlayPolicy, type OverlayReceipt, type RecordChange } from "@superbee/core/record-overlay";
+import { bundleHealth, bundleKindFindings, type BindDependencies, type BundleHealthReport } from "@superbee/core/bundle-health";
+import type { BundleBinding } from "@superbee/core/cross-bundle";
 
 declare const backend: StorageBackend;
 declare const document: OkfDocument;
@@ -513,6 +517,13 @@ export async function exerciseRecordOverlay(): Promise<OverlayReceipt> {
   return applyRecordOverlay(plan, { content: overlayBundle, ops: overlayBundle, policy: overlayPolicy, actor: "process:worker", overlays });
 }
 export const overlayRuntime = { OverlayRefusal };
+declare const healthBundle: Parameters<typeof bundleHealth>[0];
+export async function exerciseBundleHealth(): Promise<number> {
+  const bind: BindDependencies = async (declared) => new Map([...declared.dependencies.keys()].map((alias): [string, BundleBinding] => [alias, { backend, label: alias }]));
+  const report: BundleHealthReport = await bundleHealth(healthBundle, { now: new Date(0), bindings: bind, selfBundleId: "worker" });
+  const findings = bundleKindFindings([document], "0.2", { actor: "process:worker" });
+  return report.malformed.length + report.kindLint.length + (report.crossBundle?.unchecked ?? 0) + findings.documents.length;
+}
 `,
     );
     await writeFile(
@@ -576,6 +587,7 @@ export const overlayRuntime = { OverlayRefusal };
     assert.deepEqual(installedManifest.exports["./hosted-client/node"], { types: "./dist/hosted-client/node.d.ts", default: "./dist/hosted-client/node.js" });
     assert.deepEqual(installedManifest.exports["./recipe-lifecycle"], { types: "./dist/recipe-lifecycle/index.d.ts", default: "./dist/recipe-lifecycle/index.js" });
     assert.deepEqual(installedManifest.exports["./record-overlay"], { types: "./dist/record-overlay/index.d.ts", default: "./dist/record-overlay/index.js" });
+    assert.deepEqual(installedManifest.exports["./bundle-health"], { types: "./dist/bundle-health/index.d.ts", default: "./dist/bundle-health/index.js" });
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
     assert.ok(installedFiles.includes("dist/hosted-client/index.js"), "the hosted client subpath is packed");
@@ -584,6 +596,9 @@ export const overlayRuntime = { OverlayRefusal };
     assert.ok(installedFiles.includes("dist/recipe-lifecycle/stamp.js"), "the recipe install stamps are packed");
     assert.ok(installedFiles.includes("dist/record-overlay/index.js"), "the record overlay subpath is packed");
     assert.ok(installedFiles.includes("dist/record-overlay/apply.js"), "the record overlay guards are packed");
+    assert.ok(installedFiles.includes("dist/bundle-health/index.js"), "the bundle health subpath is packed");
+    assert.ok(installedFiles.includes("dist/bundle-health/report.js"), "the bundle health report is packed");
+    assert.ok(installedFiles.includes("dist/bundle-health/kind-findings.js"), "the Kind findings rule is packed");
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;
     for (const file of installedFiles.filter((name) => /\.(?:js|d\.ts)$/.test(name))) {

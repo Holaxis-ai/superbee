@@ -254,7 +254,9 @@ export {
   compareStorageKeys,
   assertSafeBlobKey,
   toPosix,
+  nonCanonicalDocumentId,
 } from "./paths.js";
+export type { NonCanonicalDocumentId } from "./paths.js";
 
 export {
   extractMarkdownLinks,

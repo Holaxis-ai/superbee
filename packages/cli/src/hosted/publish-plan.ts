@@ -25,23 +25,20 @@ import {
   assertSafeBlobKey,
   blobVersion,
   assertSafeConceptId,
-  buildKindRegistry,
   conceptIdFromPath,
   CONVENTION_TYPE,
   CONVENTIONS_PREFIX,
-  InvalidInputError,
   isReservedFile,
-  KindConformanceError,
   MalformedDocumentError,
   matchesFilter,
   MemoryBackend,
-  OkfActorError,
+  nonCanonicalDocumentId,
   parseMarkdown,
-  prepareDocumentMutationCandidate,
   readBundleOkfVersion,
   stringifyDoc,
   type OkfDocument,
 } from "@superbee/core";
+import { bundleKindFindings } from "@superbee/core/bundle-health";
 import { IMPORT_CARRIED_FIELDS, IMPORT_DROPPED_FIELDS, wholeDocumentRequest, WholeDocumentInputError } from "@superbee/core/hosted-transport";
 import { versionOfBytes } from "@superbee/core/versioning";
 
@@ -191,8 +188,8 @@ async function walkAll(folder: string, prefix = "", out: { rel: string; kind: "f
   return out;
 }
 
-/** How a hosted write prepares a candidate against its Kind (superbee-hosted `HOSTED_KIND_WRITE`). */
-const HOSTED_KIND_WRITE = Object.freeze({ strict: true, persistActor: true, producer: "process:superbee-hosted" } as const);
+/** The producer a hosted write records (superbee-hosted `HOSTED_KIND_WRITE.producer`). */
+const HOSTED_PRODUCER = "process:superbee-hosted";
 
 /** The host refuses control and format characters (bidi overrides, zero-width) in an author. */
 function cleanAuthor(author: string): string {
@@ -285,65 +282,30 @@ async function okfVersionOf(rootIndex: string | null): Promise<"0.1" | "0.2" | "
   return version === "0.1" || version === "0.2" ? version : "unsupported";
 }
 
-const FORMAT_AT_EDGE = /^\p{Cf}|\p{Cf}$/u;
-const FORMAT_INSIDE = /(?![\u200c\u200d])\p{Cf}/u;
-
 /**
- * The host's canonical spelling for a new document id (superbee-hosted
- * `packages/agent-operations/src/document-ids.ts`), mirrored so a folder the host would refuse
- * blocks before any request: no segment starts or ends with whitespace or a format character
- * (Unicode Cf, such as U+200B), no segment holds a format character other than ZERO WIDTH
- * NON-JOINER or ZERO WIDTH JOINER, and the id is NFC.
- */
-function isHostCanonicalId(id: string): boolean {
-  return (
-    id.split("/").every((segment) => segment === segment.trim() && !FORMAT_AT_EDGE.test(segment) && !FORMAT_INSIDE.test(segment)) &&
-    id === id.normalize("NFC")
-  );
-}
-
-/**
- * Kind problems that would make the created bundle refuse edits, found with the rules of
- * superbee-hosted `packages/agent-operations/src/kind-conformance.ts` (`bundleKindFindings`), which
- * `bundles.create.v1` also applies: every hosted write refuses while the Kind registry has a
- * warning, and prepares its candidate strictly against the document's Kind. The registry is built
- * as `loadKinds` builds it, and each document is prepared as its first hosted edit, so a timestamp
- * or actor the write supplies is not a problem. Mirrored here because the host pins a released
- * core.
+ * Kind problems that would make the created bundle refuse edits, found with core's one rule for
+ * what a strict host write refuses (`bundleKindFindings`), which `bundles.create.v1` also applies:
+ * every hosted write refuses while the Kind registry has a warning, and each document is prepared
+ * as its first hosted edit, so a timestamp or actor the write supplies is not a problem.
  */
 function kindBlockers(documents: readonly CreateDocument[], okfVersion: "0.1" | "0.2" | undefined): PublishBlocker[] {
   // As the host will store them: serialized, then parsed back.
   const docs: OkfDocument[] = documents.map((doc) => ({ id: doc.id, ...parseMarkdown(stringifyDoc(doc.frontmatter as OkfDocument["frontmatter"], doc.body), doc.id) }));
   const ids = new Set(docs.map((doc) => doc.id));
-  const registry = buildKindRegistry(docs.filter((doc) => matchesFilter(doc, { prefix: CONVENTIONS_PREFIX, type: CONVENTION_TYPE })), [], { okfVersion });
-  const blockers: PublishBlocker[] = registry.warnings.map((warning) => ({
-    path: warning.field !== undefined && ids.has(warning.field) ? `${warning.field}.md` : CONVENTIONS_PREFIX,
-    reason: "kind_convention",
-    message: `${warning.message}; the host refuses every write while a Kind convention has a problem`,
-  }));
-  for (const doc of docs) {
-    try {
-      // Its first edit: the stored document as the existing one and a body one line longer, so
-      // unchanged values keep the leniency an edit gives them.
-      prepareDocumentMutationCandidate(doc, { frontmatter: doc.frontmatter, body: `${doc.body ?? ""}\n` }, {
-        ...HOSTED_KIND_WRITE,
-        id: doc.id,
-        registry,
-        okfVersion: okfVersion ?? "0.1",
-        // Stands in for the creating person, whom the preview does not know; only its presence matters.
-        actor: "person:publish-preview",
-      });
-    } catch (error) {
-      if (error instanceof KindConformanceError) {
-        blockers.push({ path: `${doc.id}.md`, reason: "kind_conformance", message: `${error.message}; the host refuses edits to it until it does` });
-        continue;
-      }
-      // Other input errors are not Kind problems; the checks above and the host own them.
-      if (error instanceof InvalidInputError && !(error instanceof OkfActorError)) continue;
-      throw error;
-    }
-  }
-  return blockers;
+  // The actor stands in for the creating person, whom the preview does not know; only its presence matters.
+  const findings = bundleKindFindings(docs, okfVersion ?? "0.1", { actor: "person:publish-preview", producer: HOSTED_PRODUCER });
+  return [
+    ...findings.conventions.map((warning) => ({
+      path: warning.field !== undefined && ids.has(warning.field) ? `${warning.field}.md` : CONVENTIONS_PREFIX,
+      reason: "kind_convention",
+      message: `${warning.message}; the host refuses every write while a Kind convention has a problem`,
+    })),
+    ...findings.documents.map((finding) => ({
+      path: `${finding.id}.md`,
+      reason: "kind_conformance",
+      message: `${finding.message}; the host refuses edits to it until it does`,
+    })),
+  ];
 }
 
 /**
@@ -433,7 +395,7 @@ export async function planPublish(
       blockers.push({ path: entry.rel, reason: "unsafe_id", message: `${entry.rel} cannot be a document id (${(error as Error).message})` });
       continue;
     }
-    if (!isHostCanonicalId(id)) {
+    if (nonCanonicalDocumentId(id) !== null) {
       blockers.push({ path: entry.rel, reason: "document_id_not_canonical", message: `${entry.rel} is not in its canonical spelling (a segment starts or ends with a space or an invisible format character, holds a format character other than a joiner, or is not NFC); rename it` });
       continue;
     }
