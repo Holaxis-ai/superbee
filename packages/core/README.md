@@ -263,11 +263,13 @@ evidence only within the retention window the host serves in its capabilities
 (`operationsRetentionMs`, less an hour's margin); past it, the result stays `unknown` and nothing
 is resent. The client measures an intent's age by its own clock against the host's window, so that
 margin holds only while the client's clock is within an hour of the host's. A resend refused before
-it reaches the host's execution (no credential, access withdrawn, a spent quota, a gateway's
-`400`) leaves the result `unknown` too, since the first delivery may still commit; the result's
-`refusal` (`{ code, message }`) names that refusal, so an app can say why the write is waiting
-(for example, access withdrawn) while it stays held. Absence alone never settles it: a delayed
-first delivery is authorized when it arrives, so it can still commit once access returns. When the lookups themselves fail, or the caller's `signal` aborts after sending, the
+it reaches the host's execution (no credential, access withdrawn, a spent quota) leaves the result
+`unknown` too, since the first delivery may still commit; after a "pending" lookup, so does any
+refusal before execution, a gateway's `400` included. The result's `refusal` (`{ code, message }`)
+names that refusal, so an app can say why the write is waiting (for example, access withdrawn)
+while it stays held; only the call that met the refusal reports it. Absence alone never settles
+such a write: a delayed first delivery is authorized when it arrives, so it can still commit once
+access returns. When the lookups themselves fail, or the caller's `signal` aborts after sending, the
 result is `unknown`.
 
 An `unknown` write can be resolved later in two ways:

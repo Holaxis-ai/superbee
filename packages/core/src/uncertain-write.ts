@@ -204,13 +204,15 @@ export function isAuthorizationRefusal(outcome: Outcome | RecordedWriteOutcome):
 }
 
 /**
- * True when a refusal is evidence about one attempt only, not the identity's recorded answer: it
- * carries `executed` (the transport says so), or, from a transport that marks nothing, it is an
- * {@link isAuthorizationRefusal}. Such a refusal of a resend never settles an identity whose
- * earlier delivery may still be held.
+ * True when a resend's refusal cannot settle an identity whose earlier delivery is unclear. An
+ * authorization refusal never can: access lost now says nothing about a delivery authorized
+ * earlier. Once a lookup answered {@link LookupPending}, an earlier delivery is known to be held,
+ * so no refusal the transport marks as attempt-only (`executed`) can either. Without that
+ * answer, a marked refusal of the same bytes (a schema `400`, the mass-delete hold) settles, as
+ * it would refuse a delayed first delivery too.
  */
-export function isAttemptOnlyRefusal(outcome: Outcome | RecordedWriteOutcome): boolean {
-  return outcome.kind === "refused" && ((outcome as { executed?: unknown }).executed !== undefined || isAuthorizationRefusal(outcome));
+function refusalLeavesUnknown(outcome: RecordedWriteOutcome, held: boolean): outcome is Extract<RecordedWriteOutcome, { kind: "refused" }> {
+  return outcome.kind === "refused" && (isAuthorizationRefusal(outcome) || (held && (outcome as { executed?: unknown }).executed !== undefined));
 }
 
 /** The journal state an outcome settles an intent into. */
@@ -335,11 +337,12 @@ async function submitOnce<I extends RecordedWriteIntent, O extends RecordedWrite
  * transport never answers `null` for an absent record once the intent is older than the host's
  * stated retention window, less a skew margin, so it does not resubmit there.
  *
- * An attempt-only refusal ({@link isAttemptOnlyRefusal}) of a resubmission that follows an unclear
- * submission (in this call, or an earlier one per `earlierDeliveryUnclear`) or a
- * {@link LookupPending} answer is `unknown`, carrying that refusal, not settled: the held
- * delivery can still commit. A `null` lookup is not proof either that an earlier delivery can no
- * longer arrive, so the same holds after one. A pending lookup still permits the resubmission.
+ * A refusal before execution ({@link isAuthorizationRefusal}) of a resubmission that follows an
+ * unclear submission (in this call, or an earlier one per `earlierDeliveryUnclear`) is `unknown`,
+ * carrying that refusal, not settled: a `null` lookup cannot prove an earlier delivery will not
+ * still arrive, and the delivery can still commit. After a {@link LookupPending} answer, which
+ * says a delivery is held, the same holds for every refusal the transport marks `executed`
+ * (a gateway's `400` included). A pending lookup still permits the resubmission.
  *
  * By default every outcome passes through {@link settleAgainstIntent}, so a conflict naming the
  * intent's own version is committed. `recorded-only` preserves the recorded outcome instead.
@@ -379,6 +382,8 @@ export async function performUncertainWrite(
   const { signal } = options;
   // Whether a submission of this identity may still be held by the authority unanswered.
   let unclear = options.earlierDeliveryUnclear === true && intent.attempts > 0;
+  // Whether a lookup in this call answered pending: a delivery of this identity is held.
+  let held = false;
 
   let attempts = intent.attempts;
   let submissions = 0;
@@ -405,8 +410,8 @@ export async function performUncertainWrite(
       // A resend refused before it reached execution (no credential, access withdrawn, a spent
       // quota, a gateway's schema check) is evidence about that resend only: an earlier, unclear delivery may still be held
       // by the authority and commit, so the identity stays unknown and the intent is kept.
-      if (unclear && isAttemptOnlyRefusal(outcome) && outcome.kind === "refused")
-        return finish(explicitStart ? UNKNOWN : { kind: "unknown", refusal: { code: outcome.code, message: outcome.message } } as Outcome);
+      if (unclear && refusalLeavesUnknown(outcome, held))
+        return finish(explicitStart ? UNKNOWN : ({ kind: "unknown", refusal: { code: outcome.code, message: outcome.message } } satisfies Outcome));
       if (outcome.kind !== "unknown") return finish(outcome);
       unclear = true;
     }
@@ -429,6 +434,7 @@ export async function performUncertainWrite(
     if (recorded !== null && recorded.kind === "pending") {
       // Held unanswered: a delivery of this identity was admitted and may still commit.
       unclear = true;
+      held = true;
       recorded = null;
     }
     if (recorded !== null) return finish(recorded.kind === "not-executed" ? UNKNOWN : recorded);

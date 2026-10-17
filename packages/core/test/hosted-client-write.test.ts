@@ -1147,3 +1147,15 @@ test("abort: a lookupWrite or settleWrite queued behind another call under the i
     assert.equal(host.sent.length, sent, `${call}: nothing sent after the abort`);
   }
 });
+
+test("a gateway 400 refusing the resend after a lost first send and an absent lookup settles as refused, as before: the same bytes would refuse a delayed first send too", async () => {
+  const host = fakeHost();
+  host.fault("create", "lost-request");
+  host.fault("create", "gateway-400");
+  const store = createMemoryIntentStore();
+  const client = clientOf(host.fetch, { intentStore: store });
+  const result = await client.write(BUNDLE, { id: "notes/new", document: doc("new"), expectAbsent: true });
+  assert.equal(result.status, "refused");
+  assert.equal(result.status === "refused" && result.code, "invalid_input");
+  assert.equal(await store.get(result.requestId), undefined);
+});

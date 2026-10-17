@@ -324,11 +324,11 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
   }
 
   /** The sync quota, as the pausing refusal its scope names. */
-  function capacity(error: WriteFailure["error"]): Outcome {
+  function capacity(error: WriteFailure["error"], executed?: false): Outcome {
     const scope = error.scope ?? "bundle";
     const reset = error.resetAt ? ` It resets at ${error.resetAt}.` : "";
     const whose = scope === "principal" ? "Your sync quota for this bundle is used up." : "This bundle's sync capacity is used up.";
-    return { kind: "refused", code: CAPACITY_REFUSAL_CODES[scope], message: `${whose}${reset} Nothing was written; sync resumes when it resets.` };
+    return { kind: "refused", code: CAPACITY_REFUSAL_CODES[scope], message: `${whose}${reset} Nothing was written; sync resumes when it resets.`, ...(executed === false ? { executed } : {}) };
   }
 
   /** A definitive recorded refusal, from the write answer or from the stored result a lookup returns. */
@@ -458,7 +458,7 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     // version is the tombstone. One naming another base is not evidence about this request.
     if (result?.ok && request.kind === "delete" && result.data.deletedVersion !== intent.base) return UNKNOWN;
     if (result?.ok) return { kind: "committed", version: result.data.version };
-    if (result && !result.ok && result.error.code === "request_capacity") return { ...capacity(result.error), executed: false } as Outcome;
+    if (result && !result.ok && result.error.code === "request_capacity") return capacity(result.error, false);
     if (result && !result.ok && result.error.code === "deletions_held") {
       const { deletions = 0, baseline = 0 } = result.error;
       try {
@@ -473,7 +473,8 @@ export function createWholeDocumentTransport(options: WholeDocumentTransportOpti
     // via grammar ever to drift from the host's, every write would land here: the golden
     // exchanges pin it). That is deterministic:
     // resending or looking it up again can only repeat it, so it is a terminal refusal. It was
-    // refused before dispatch, so it says nothing about an earlier delivery of the identity.
+    // refused before dispatch, so it settles nothing once a lookup says an earlier delivery is
+    // held (pending), which only a host that changed its verdict could have admitted.
     if (row.answer === "400") {
       const code = (answer.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
       return { kind: "refused", code: typeof code?.code === "string" ? code.code : "invalid_input", message: typeof code?.message === "string" ? code.message : "The host refused the request as malformed; nothing was written.", executed: false };
