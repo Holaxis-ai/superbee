@@ -55,3 +55,11 @@ export { HostedRouteNotServed, isRouteNotServed, ROUTE_NOT_SERVED } from "./erro
 // this one subpath.
 export { MALFORMED_ANSWER, MalformedAnswer, RemoteError, isMalformedAnswer } from "../remote-error.js";
 export { HostedAnswerTooLarge, HostedCarrierError, isAnswerTooLarge } from "../hosted-transport/carrier.js";
+// Request timing (`onRequestTiming`), re-exported so a caller reads the host's phases from this subpath.
+export {
+  parseServerTiming,
+  type HostedRequestKind,
+  type HostedRequestObserver,
+  type HostedRequestTiming,
+  type ServerTimingMetric,
+} from "../hosted-transport/request-timing.js";

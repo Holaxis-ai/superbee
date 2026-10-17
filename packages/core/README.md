@@ -250,6 +250,37 @@ document (`invalid_input`). Calls on one client that name the same identity run 
 its capabilities read, or a failure of the intent store to record the write. Document deletion is
 not part of `write`.
 
+### Request timing
+
+Pass `onRequestTiming` to `createHostedClient` to receive the timing of every request the client
+and its `within` clients send, reads, writes, outcome lookups and operations alike:
+
+```ts
+const client = createHostedClient({
+  target,
+  credentials,
+  onRequestTiming: ({ route, status, failure, wallMs, server }) => {
+    const total = server.find((metric) => metric.name === "total")?.durationMs;
+    console.error(route, status ?? failure, Math.round(wallMs), total);
+  },
+});
+```
+
+Each report names the route as sent, the carrier method (`json`, `bytes` or `stream`), the answer's
+status (or why there is none: `denied`, `unavailable` or `error`), the client's wall time in
+milliseconds and the host's own accounting from its `Server-Timing` header. A hosted Superbee
+states the phases it spent (`session`, `authority`, `membership`, `content`, `total`) with each
+phase's call count as `desc="n=<count>"`, which arrives as `count`. Wall time minus the host's
+`total` is roughly the network and client share. For a stream, wall time ends at the answer's
+headers. The observer runs synchronously as each request settles, so keep it cheap; one that
+throws is ignored and never changes a result. Nothing is sent anywhere: the timing stays with the
+caller.
+
+`parseServerTiming(value)` reads a `Server-Timing` value on its own. It is lenient as browsers are
+(a malformed metric is skipped) and bounded (`SERVER_TIMING_MAX_LENGTH`, `SERVER_TIMING_MAX_METRICS`).
+`observedCarrier(carrier, observe)` from `@superbee/core/hosted-transport` gives the same reports
+for any carrier, such as a browser's.
+
 ### Export download (Node only)
 
 `@superbee/core/hosted-client/node` downloads and verifies a hosted bundle's portable export. It

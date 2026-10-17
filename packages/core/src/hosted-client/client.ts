@@ -16,6 +16,7 @@ import {
   familyRefusal,
   historyInput,
   HOSTED_READ_BOUNDS,
+  observedCarrier,
   operationRunBody,
   readRefusal,
   statedDocumentInputBytes,
@@ -28,6 +29,7 @@ import {
   type HostedReadAdapter,
   type FetchCarrierOptions,
   type HostedReadRoutes,
+  type HostedRequestObserver,
   type JsonObject,
 } from "../hosted-transport/index.js";
 import { MalformedAnswer, RemoteError } from "../remote-error.js";
@@ -114,6 +116,12 @@ export interface HostedClientOptions {
   readonly capabilitiesTtlMs?: number;
   /** The clock the capabilities answers age by, in epoch milliseconds. Default `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Receives the timing of every request this client and its `within` clients send: the route,
+   * the status or failure, the client's wall time and the host's `Server-Timing` phases
+   * (`HostedRequestTiming`). Called synchronously as each request settles; a throw is ignored.
+   */
+  readonly onRequestTiming?: HostedRequestObserver;
 }
 
 /** One operation run's options. */
@@ -301,12 +309,14 @@ interface ClientWrites {
 function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: string | undefined, writes: ClientWrites): HostedClient {
   const { target } = options;
   const prefix = target.syncPrefix;
-  const fetchCarrier = createFetchCarrier({
+  const sending = createFetchCarrier({
     baseUrl: target.origin,
     credentials: options.credentials,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.deadlineMs ? { deadlineMs: options.deadlineMs } : {}),
   });
+  // Timed beneath workspace qualification, so the observer sees every request exactly as sent.
+  const fetchCarrier = options.onRequestTiming ? observedCarrier(sending, options.onRequestTiming) : sending;
   const carrier = slug === undefined ? fetchCarrier : qualifyingCarrier(fetchCarrier, prefix, slug);
   const writeContext: HostedWriteContext = {
     ...writes,
