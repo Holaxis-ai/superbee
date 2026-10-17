@@ -24,6 +24,8 @@ import {
   INTENTS_NOT_LISTABLE,
 } from "../src/hosted-client/index.js";
 import { performUncertainWrite, type OperationIntent, type OperationTransport } from "../src/uncertain-write.js";
+import { createCapabilitiesCache, hostedWrite, type HostedWriteContext } from "../src/hosted-client/write.js";
+import { createFetchCarrier } from "../src/hosted-transport/index.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, "fixtures", "hosted-sync-v1");
@@ -980,30 +982,95 @@ test("capabilities cache: concurrent writes to one bundle share one capabilities
   assert.equal(writes(host.sent).length, 5);
 });
 
-test("capabilities cache: a settle uses the held answer's retention window, read once with the client's writes", async () => {
+/** A held create three hours old, sent once: inside the thirty-day default, past a two-hour window. */
+const threeHoursOld = (): HostedWriteIntent => ({
+  requestId: "0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1f",
+  binding: checkoutBindingDigest("persisted-checkout"),
+  bundleId: BUNDLE,
+  workspace: null,
+  operation: "create",
+  documentId: "notes/old",
+  document: doc("old"),
+  digest: sha256(doc("old")),
+  expectedVersion: null,
+  okfVersion: "0.2",
+  createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+  attempts: 1,
+  state: "unknown",
+});
+
+/**
+ * A host now serving a two-hour window, behind a client whose held answer (read before the host
+ * shortened it) still says thirty days. Absence past the window the host serves now is no evidence.
+ */
+async function shortenedWindow() {
   const host = fakeHost({ retentionMs: 2 * 60 * 60 * 1000 });
+  const store = createMemoryIntentStore();
+  const fetch = overriding(host, { capabilities: [capabilitiesWith({ operationsRetentionMs: 30 * 24 * 60 * 60 * 1000 })] });
+  const client = clientOf(fetch, { intentStore: store, now: manualClock().now });
+  await created(client, BUNDLE, "notes/fresh");
+  await store.put(threeHoursOld());
+  return { host, client };
+}
+
+test("capabilities cache: settleWrite decides a resend by the window the host serves now, never a held answer's", async () => {
+  const { host, client } = await shortenedWindow();
+  const settled = await client.settleWrite(threeHoursOld().requestId);
+  assert.equal(settled.status, "unknown");
+  assert.equal(writes(host.sent).length, 1, "an identity past the window served now is never resent");
+  assert.equal(capabilityReads(host.sent).length, 2, "the window was read again for the decision");
+});
+
+test("capabilities cache: write recovery decides a resend by the window the host serves now, never a held answer's", async () => {
+  const { host, client } = await shortenedWindow();
+  const old = threeHoursOld();
+  const confirmed = await client.write(BUNDLE, { id: old.documentId, document: old.document, expectAbsent: true }, { requestId: old.requestId });
+  assert.equal(confirmed.status, "unknown");
+  assert.equal(writes(host.sent).length, 1, "an identity past the window served now is never resent");
+  assert.equal(capabilityReads(host.sent).length, 2, "the window was read again for the decision");
+});
+
+test("capabilities cache: within the window served now, absence still resends the held identity once", async () => {
+  const host = fakeHost();
   const store = createMemoryIntentStore();
   const client = clientOf(host.fetch, { intentStore: store, now: manualClock().now });
   await created(client, BUNDLE, "notes/fresh");
-  const old: HostedWriteIntent = {
-    requestId: "0b5c8a2e-1f3d-4c6b-9a7e-2d4f6b8a0c1f",
-    binding: checkoutBindingDigest("persisted-checkout"),
-    bundleId: BUNDLE,
+  await store.put(threeHoursOld());
+  const settled = await client.settleWrite(threeHoursOld().requestId);
+  assert.equal(settled.status, "committed");
+  assert.equal(writes(host.sent).length, 2);
+  // The fresh read refreshed the held answer: the next write reads nothing more.
+  await created(client, BUNDLE, "notes/after");
+  assert.equal(capabilityReads(host.sent).length, 2);
+});
+
+test("capabilities cache: an expired entry is removed when another bundle's answer is read, and replaced when its own is", async () => {
+  const host = fakeHost();
+  const clock = manualClock();
+  const cache = createCapabilitiesCache(1_000, clock.now);
+  const carrier = createFetchCarrier({ baseUrl: ORIGIN, credentials: bearerCredentials(() => "token-1"), fetch: host.fetch });
+  const context: HostedWriteContext = {
+    binding: checkoutBindingDigest("cache-eviction"),
+    store: createMemoryIntentStore(),
+    inFlight: new Map(),
+    prefix: "/sync/v1",
     workspace: null,
-    operation: "create",
-    documentId: "notes/old",
-    document: doc("old"),
-    digest: sha256(doc("old")),
-    expectedVersion: null,
-    okfVersion: "0.2",
-    // Three hours old: inside the thirty-day default, past the two-hour window this host serves.
-    createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-    attempts: 1,
-    state: "unknown",
+    signal: new AbortController().signal,
+    lookupDelayMs: 0,
+    capabilities: cache,
+    carrierFor: () => carrier,
+    readRoutes: { capabilities: "/sync/v1/capabilities", heads: "/sync/v1/heads", snapshot: "/sync/v1/snapshot", read: "/sync/v1/read" },
   };
-  await store.put(old);
-  const settled = await client.settleWrite(old.requestId);
-  assert.equal(settled.status, "unknown");
-  assert.equal(writes(host.sent).length, 1, "an identity past the served window is never resent");
-  assert.equal(capabilityReads(host.sent).length, 1, "the write's held answer served the settle");
+  const write = async (bundleId: string, id: string) => assert.equal((await hostedWrite(context, bundleId, { id, document: doc(id), expectAbsent: true })).status, "committed");
+  const keys = () => [...cache.entries.keys()];
+  await write(BUNDLE, "notes/a1");
+  await write("notes.b", "notes/b1");
+  assert.deepEqual(keys(), [JSON.stringify([null, BUNDLE]), JSON.stringify([null, "notes.b"])]);
+  clock.advance(1_000);
+  await write("notes.c", "notes/c1");
+  assert.deepEqual(keys(), [JSON.stringify([null, "notes.c"])], "both expired entries left when notes.c was read");
+  clock.advance(1_000);
+  await write("notes.c", "notes/c2");
+  assert.deepEqual(keys(), [JSON.stringify([null, "notes.c"])], "an expired entry is replaced by its own re-read");
+  assert.equal(cache.entries.get(JSON.stringify([null, "notes.c"]))!.answeredAt, clock.now());
 });

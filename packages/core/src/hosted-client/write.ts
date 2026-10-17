@@ -213,14 +213,17 @@ export function createCapabilitiesCache(ttlMs: number = DEFAULT_CAPABILITIES_TTL
 
 /**
  * The write side of a bundle named in `workspace`: the held one while its answer is in flight or
- * fresh, so concurrent writes share one read, else a new reader and read. A read that fails is
- * never held.
+ * fresh, so concurrent writes share one read, else (or when `fresh`) a new reader and read, which
+ * replaces the held one. A read that fails is never held. Each new read also removes every
+ * expired entry, so a long-lived client holds only bundles written within the TTL.
  */
-function writeSide(context: HostedWriteContext, workspace: string | null, bundleId: string): WriteSide {
+function writeSide(context: HostedWriteContext, workspace: string | null, bundleId: string, fresh = false): WriteSide {
   const cache = context.capabilities;
   const key = JSON.stringify([workspace, bundleId]);
+  const live = (side: WriteSide) => side.answeredAt === undefined || cache.now() - side.answeredAt < cache.ttlMs;
   const held = cache.entries.get(key);
-  if (held && (held.answeredAt === undefined || cache.now() - held.answeredAt < cache.ttlMs)) return held;
+  if (held && !fresh && live(held)) return held;
+  for (const [other, side] of cache.entries) if (!live(side)) cache.entries.delete(other);
   const reader = createHostedReadAdapter({ carrier: context.carrierFor(workspace), bundleId, routes: context.readRoutes });
   const answer = reader.hostedCapabilities().then(async (capabilities): Promise<WriteSideAnswer> => {
     // The edition from this same answer's root; the editions core parses, any other reads as
@@ -260,9 +263,18 @@ function settleWriteSide(context: HostedWriteContext, workspace: string | null, 
   return result;
 }
 
-/** The reader a transport needs, answering the retention window from the write's own capabilities answer. */
-function writeRemote(reader: HostedReadAdapter, capabilities: HostedCapabilities): Pick<HostedReadAdapter, "read" | "operationsRetentionMs"> {
-  return { read: (id) => reader.read(id), operationsRetentionMs: async () => capabilities.operationsRetentionMs };
+/**
+ * The reader a transport needs. The retention window decides whether an `absent` lookup lets an
+ * intent be resent, so it always comes from a capabilities read made now, never a held answer: a
+ * window the host has since shortened must not resend an identity it may already have expired.
+ * That read refreshes the held entry. It runs only after an `absent` lookup; a failure leaves the
+ * outcome unknown.
+ */
+function writeRemote(context: HostedWriteContext, intent: HostedWriteIntent, reader: HostedReadAdapter): Pick<HostedReadAdapter, "read" | "operationsRetentionMs"> {
+  return {
+    read: (id) => reader.read(id),
+    operationsRetentionMs: async () => (await writeSide(context, intent.workspace, intent.bundleId, true).answer).capabilities.operationsRetentionMs,
+  };
 }
 
 /**
@@ -352,7 +364,7 @@ function transportFor(context: HostedWriteContext, intent: HostedWriteIntent, re
       const stored = await store.get(requestId);
       return stored ? operationIntent(stored) : undefined;
     },
-    remote: writeRemote(reader, capabilities),
+    remote: writeRemote(context, intent, reader),
     routes: writeRoutes(context.prefix),
     ...(intent.okfVersion !== null ? { okfVersion: intent.okfVersion } : {}),
     documentInputBytes: capabilities.documentInputBytes,

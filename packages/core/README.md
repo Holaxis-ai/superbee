@@ -200,7 +200,8 @@ and two when they are read first; concurrent writes to one bundle share one read
 `read_only`, `invalid_input`, `validation_failed` or `PERMISSION_DENIED` (which is how a
 `bundle_not_found` write answer arrives), or whose result is `unknown`, drops the held answer, and
 a capabilities read that fails is never held, so the next write reads them again. Set
-`capabilitiesTtlMs: 0` to read them before every write.
+`capabilitiesTtlMs: 0` to read them before every write. The retention window that decides a
+resend after an `absent` lookup (below) is never taken from a held answer: it is read again then.
 
 Each write has one request identity and carries the client's binding, a digest of a random id the
 client mints once (its `within` clients share it). When an answer is lost (a transport failure or
