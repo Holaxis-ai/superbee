@@ -34,8 +34,8 @@ export interface HostedRequestOptions {
   /**
    * The agent the client runs under, such as `claude-code` (`X-Superbee-Via`): the unverified
    * `;via=` part of the host's agent label for this write. Attribution only, never authority, and
-   * not part of the request identity. Only the whole-document transport's write and outcome
-   * requests carry it, and only a token {@link isAgentLabelVia} admits is ever sent.
+   * not part of the request identity. Only an identified write and its outcome lookup carry it,
+   * and only a token {@link isAgentLabelVia} admits is ever sent.
    */
   via?: string;
   /**
@@ -77,13 +77,12 @@ export function isAgentLabelVia(value: unknown): value is string {
 /**
  * A raw-bytes request ({@link HostedCarrier.bytes}), such as one blob of a staged bundle creation
  * (`bundle-create-blob`): the body travels as `application/octet-stream` with its exact
- * `Content-Length`, and the route's own fields travel as headers.
+ * `Content-Length`, and the route's own fields travel as headers. The request identity, the
+ * binding and `via` are a JSON request's own ({@link HostedRequestOptions}): the same headers,
+ * refused before sending by the same rules, so an identified raw write is identified as a document
+ * write is.
  */
-export interface HostedBytesRequestOptions {
-  /** Largest answer body admitted, in bytes; a larger or undecodable body is `unavailable`. */
-  maximum: number;
-  /** The request identity of the identified write the bytes belong to. */
-  writeRequest?: string;
+export interface HostedBytesRequestOptions extends Pick<HostedRequestOptions, "maximum" | "writeRequest" | "binding" | "via"> {
   /**
    * The route's own fields (`X-Superbee-Workspace`, say): `X-Superbee-` names only, and never a
    * header the carrier owns (the request identity, the binding, `recreate`, `via`, the deletion
@@ -248,6 +247,26 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
   // Headers the carrier sets itself, which a route's own fields never name.
   const owned = new Set(["x-superbee-write-request", bindingHeader.toLowerCase(), RECREATE_HEADER.toLowerCase(), VIA_HEADER.toLowerCase(), ACCEPT_DELETES_HEADER.toLowerCase()]);
 
+  /**
+   * The headers the carrier owns for one request, each refused before sending when malformed. The
+   * one place a JSON and a raw request derive their identity, binding, `recreate`, `via` and
+   * deletion acknowledgment headers.
+   */
+  function carrierHeaders(request: Pick<HostedRequestOptions, "writeRequest" | "binding" | "recreate" | "via" | "acceptDeletes">): Record<string, string> {
+    if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
+    if (request.binding !== undefined && !BINDING.test(request.binding)) throw new HostedCarrierError("denied");
+    if (request.recreate !== undefined && !BINDING.test(request.recreate)) throw new HostedCarrierError("denied");
+    if (request.via !== undefined && !isAgentLabelVia(request.via)) throw new HostedCarrierError("denied");
+    if (request.acceptDeletes !== undefined && !isAcceptedDeletionCount(request.acceptDeletes)) throw new HostedCarrierError("denied");
+    const headers: Record<string, string> = {};
+    if (request.writeRequest !== undefined) headers["X-Superbee-Write-Request"] = request.writeRequest;
+    if (request.binding !== undefined) headers[bindingHeader] = request.binding;
+    if (request.recreate !== undefined) headers[RECREATE_HEADER] = request.recreate;
+    if (request.via !== undefined) headers[VIA_HEADER] = request.via;
+    if (request.acceptDeletes !== undefined) headers[ACCEPT_DELETES_HEADER] = String(request.acceptDeletes);
+    return headers;
+  }
+
   async function answer(path: string, body: { readonly type: string; readonly content: string | Uint8Array }, signal: AbortSignal, extra: Record<string, string>, maximum: number): Promise<HostedAnswer> {
     // An answer is always read within a bound: an unset or nonsensical maximum refuses before sending.
     if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new HostedCarrierError("denied");
@@ -267,29 +286,19 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
 
   return {
     async json(path, input, signal, request) {
-      if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
-      if (request.binding !== undefined && !BINDING.test(request.binding)) throw new HostedCarrierError("denied");
-      if (request.recreate !== undefined && !BINDING.test(request.recreate)) throw new HostedCarrierError("denied");
-      if (request.via !== undefined && !isAgentLabelVia(request.via)) throw new HostedCarrierError("denied");
-      if (request.acceptDeletes !== undefined && !isAcceptedDeletionCount(request.acceptDeletes)) throw new HostedCarrierError("denied");
-      const extra: Record<string, string> = {};
-      if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
-      if (request.binding !== undefined) extra[bindingHeader] = request.binding;
-      if (request.recreate !== undefined) extra[RECREATE_HEADER] = request.recreate;
-      if (request.via !== undefined) extra[VIA_HEADER] = request.via;
-      if (request.acceptDeletes !== undefined) extra[ACCEPT_DELETES_HEADER] = String(request.acceptDeletes);
-      return answer(path, jsonBody(input), signal, extra, request.maximum);
+      return answer(path, jsonBody(input), signal, carrierHeaders(request), request.maximum);
     },
     async bytes(path, body, signal, request) {
       if (!(body instanceof Uint8Array)) throw new HostedCarrierError("denied");
-      if (request.writeRequest !== undefined && !WRITE_REQUEST.test(request.writeRequest)) throw new HostedCarrierError("denied");
+      // Named, not spread: a raw request carries no `recreate` or deletion acknowledgment.
+      const own = carrierHeaders({ writeRequest: request.writeRequest, binding: request.binding, via: request.via });
       const extra: Record<string, string> = {};
       for (const [name, value] of Object.entries(request.headers ?? {})) {
         const lower = name.toLowerCase();
         if (!ROUTE_HEADER.test(lower) || owned.has(lower) || lower in extra || typeof value !== "string" || !ROUTE_HEADER_VALUE.test(value)) throw new HostedCarrierError("denied");
         extra[lower] = value;
       }
-      if (request.writeRequest !== undefined) extra["X-Superbee-Write-Request"] = request.writeRequest;
+      Object.assign(extra, own);
       // The body is sent as given; `fetch` derives its exact Content-Length from the bytes.
       return answer(path, { type: "application/octet-stream", content: body }, signal, extra, request.maximum);
     },
