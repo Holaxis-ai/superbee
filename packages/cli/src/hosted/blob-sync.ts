@@ -11,6 +11,7 @@ import { RemoteError } from "@superbee/core";
 import { PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "@superbee/core/page";
 import { digestOf, projectionPathExact as blobPathSafe, findFilePathCollision, fold, prepareBlobStage, installBlobStage, finishBlobStage, orphanBlobStages, type BlobFileIdentity, type BlobStagePlan, UnsafePlacementError } from "./projection.js";
 import { readRegularFileNoFollowSync } from "../nofollow-read.js";
+import { commandToken } from "../command-text.js";
 
 export const BLOB_SYNC_META_KEY = "hosted.blob-sync.v1";
 export interface BlobSyncEntry {
@@ -517,7 +518,7 @@ export async function admitOfflineBlob(options: {
   const refuse = (message: string, reason = "blob_admission_held") => new CliError("CONFLICT", message, { details: { reason, key: input.key, submitted: false }, help: "preserve the file and resolve its checkout state before promoting or deleting it" });
   if (!ordinarySeedKey(input.key)) throw refuse("ordinary-file admission refuses this reserved, document, model, View or publisher-owned key");
   const file = path.join(binding.path, ...input.key.split("/"));
-  if (input.operation === "promote" && (!input.source || path.resolve(input.cwd, input.source) !== file)) throw new CliError("USAGE", "hosted promote requires the source to be the checkout target pathname", { help: `copy the source into ${file}, then promote that target with --doc-key ${input.key}` });
+  if (input.operation === "promote" && (!input.source || path.resolve(input.cwd, input.source) !== file)) throw new CliError("USAGE", "hosted promote requires the source to be the checkout target pathname", { help: `copy the source into ${commandToken(file)}, then promote that target with --doc-key ${commandToken(input.key)}` });
   const result = await withIdleCheckoutStore(binding, input.home, async store => {
     if (!equalJournalValue(await bindingForPath(input.home, binding.path), binding)) throw refuse("checkout binding or folder changed before admission");
     const scope: BlobTargetScope = { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null };
