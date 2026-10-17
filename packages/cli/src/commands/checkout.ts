@@ -128,8 +128,9 @@ its marker is removed, and the folder's other files are left as they are. Releas
 is not a checkout is a no-op.
 
 'superbee sync --dir <folder>' sends your edits and brings in the host's. Commands whose effect
-sync cannot send (doc verify, kind, recipe add/evolve, artifact, promote or delete of a non-.md
-key, index generate, serve, ui) are refused in it with "do this in the app". Deleting a
+sync cannot send (doc verify, kind, recipe add/evolve, artifact, index generate, serve, ui) are
+refused in it with "do this in the app". A non-.md file is an ordinary file: promote <file>
+--doc-key <key> adds it, and delete --doc-key <key> removes a tracked one. Deleting a
 document file, by hand or with doc delete or delete --doc-key <id>.md, syncs as a delete. Bundles over ${CHECKOUT_DOCUMENT_LIMIT} documents, bundles the host does not
 serve to a checkout (such as one with a Git source), and a bare id in two of your workspaces are refused.
 

@@ -125,7 +125,8 @@ test("hosted ordinary-file help distinguishes frozen delivery from document reco
   assert.match(HOSTED_SYNC_USAGE, /Edited documents are sent whole/);
   assert.match(HOSTED_SYNC_USAGE, /opaque bytes with exact version and MIME pins, up to 16 MiB/);
   assert.match(HOSTED_SYNC_USAGE, /new local files require explicit promote/);
-  assert.match(HOSTED_SYNC_USAGE, /Document-only conflict inspection and resolution/);
+  assert.match(HOSTED_SYNC_USAGE, /Conflict inspection and resolution/);
+  assert.match(HOSTED_SYNC_USAGE, /tracked ordinary file in a version conflict/);
   assert.match(HOSTED_SYNC_USAGE, /deleted document files back/);
   assert.match(HOSTED_SYNC_USAGE, /Absence alone does not\s+authorize resubmission/);
   assert.match(HOSTED_SYNC_USAGE, /two token families are not interchangeable/);

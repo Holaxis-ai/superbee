@@ -321,18 +321,22 @@ bundle for everyone.
   `superbee sync --take-host-deletions blobs:<count>:<digest>` with its token only once the
   bundle really shrank.
 - **Deleting:** removing a tracked file, or `superbee delete --doc-key <key>` (which needs the file
-  unchanged since the last sync), deletes it from the hosted bundle. A deletion the host holds
+  present and unchanged since the last sync, and removes it; a file you already removed is sent by
+  sync), deletes it from the hosted bundle. A deletion the host holds
   appears under `blobs.deletions_held`; only the person may accept it, in their own terminal, with
   the `superbee sync --accept-deletes blobs:<count>:<digest>` command it names.
 - **Receipt:** `blobs.rows` has one row per request, keyed by file and request id: `committed`,
   `conflict`, `refused`, `unknown` or `held`. `blobs.counts` totals them. An `unknown` row is
   looked up by the same request on the next sync; it is never sent twice.
-- **Conflicts:** `--inspect`, `--resolve` and `--restore-deletes` do not apply to ordinary files,
-  and there is no ordinary-file conflict resolution yet. After a `conflict` row (the host's version
-  changed) or a `refused` row, that file stays held: sync neither sends it nor refreshes it again.
-  The only way out today is to copy any unsent document edits out of the folder, run
-  `superbee checkout --release <folder>` (it forgets unsent edits), and check the bundle out again
-  into a new folder. Tell the person before you do this.
+- **Conflicts:** after a `conflict` row (the host's version changed), the file is held until it is
+  resolved. `superbee sync --inspect --doc <key>` shows the recorded versions and MIME types.
+  `superbee sync --resolve keep --doc <key>` keeps your file: the next sync sends it as it is over
+  the host's version, under a new request (if the host moved again, that is a new conflict).
+  `--resolve take --doc <key>` replaces your file with the host's version; it is refused when the
+  file changed since the conflict (remove the file first to discard those edits). `revise` is the
+  same as keep. `superbee promote <file> --doc-key <key> --expected-version <host version>` is keep
+  plus an immediate send. The conflicted request itself is never sent again. A `refused` row still
+  holds its file; there is no resolution for it yet.
 - **Artifacts:** `artifact` commands are refused in a checkout; Artifact publication is not
   available from one.
 
