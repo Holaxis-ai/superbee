@@ -122,6 +122,11 @@ function textOf(node: Node): string {
   return children.map((child) => textOf(child)).join("");
 }
 
+/** Keep flattened AST semantics opaque to downstream text decorators. */
+function renderTextFallback(node: Node, index: number): ReactNode {
+  return <span key={index} className="doc-markdown-fallback">{textOf(node)}</span>;
+}
+
 /** A paragraph child with no visible content — inter-link whitespace or a soft/hard line break. */
 function isBlankInline(node: Node): boolean {
   if (node.type === "break") return true;
@@ -291,7 +296,7 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
   state.count++;
   if (depth > MAX_DEPTH) {
     state.bounded = true;
-    return textOf(node);
+    return renderTextFallback(node, index);
   }
 
   switch (node.type) {
@@ -432,7 +437,7 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
       );
     default:
       // Unknown/unmapped node type (footnotes, definitions, future extensions): inert text.
-      return textOf(node);
+      return renderTextFallback(node, index);
   }
 }
 
@@ -462,7 +467,7 @@ function renderEdgeList(links: Node[], state: WalkState, index: number): ReactNo
     if (state.options.profile === "inert") {
       rows.push(
         <span key={i} className="doc-edge-row" data-aslite-doc-id={to}>
-          <span className="doc-edge-verb">{verb}</span>
+          <span className="doc-edge-verb doc-markdown-fallback">{verb}</span>
           <span className="doc-edge-arrow" aria-hidden="true">→</span>
           <span className="doc-edge-target">{target}</span>
         </span>,
@@ -476,7 +481,7 @@ function renderEdgeList(links: Node[], state: WalkState, index: number): ReactNo
         href={documentHref(to, state.options)}
         onClick={(event) => navigateDoc(event, to, state.options)}
       >
-        <span className="doc-edge-verb">{verb}</span>
+        <span className="doc-edge-verb doc-markdown-fallback">{verb}</span>
         <span className="doc-edge-arrow" aria-hidden="true">→</span>
         <span className="doc-edge-target">{target}</span>
       </a>,

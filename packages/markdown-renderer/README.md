@@ -58,6 +58,12 @@ React 19 and React DOM 19. Restricted packages require registry access. The
 repository's external-consumer test installs actual tarballs outside the workspace
 and checks browser bundling, TypeScript declarations and static rendering.
 
+Flattened AST text is wrapped in a noninteractive `doc-markdown-fallback` span.
+This marks unknown/unmapped constructs, depth-limited subtrees and relationship
+verbs whose code/link semantics were flattened. Visible fallback text is retained;
+downstream text decorators should skip this marker instead of treating it as
+ordinary prose. Normally mapped prose, code, quotes and links keep their structure.
+
 The renderer has its own version. It is not part of the synchronized core/server
 `libraries/v*` release workflow or the CLI `v*` workflow. Preparing or packing this
 package does not publish it. Its first registry publication and subsequent release
