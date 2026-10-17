@@ -63,7 +63,7 @@ export async function performHostedBlobDelivery(context: HostedBlobDeliveryConte
   }
   if (sleep !== undefined && typeof sleep !== "function") throw new TypeError("invalid blob delivery timer");
   if (acceptDeletes !== undefined && (start !== "submit-claimed" || prepared.intent.operationId !== "blobs.delete.v1" || !isAcceptedDeletionCount(acceptDeletes))) throw new TypeError("acceptDeletes belongs only to this delete submission");
-  if (start === "submit-claimed" && (row.notAppliedThrough ?? 0) > 0 && acceptDeletes !== row.deletionHold?.deletions) throw new TypeError("held deletion continuation requires current invocation acceptance of its held count");
+  if (start === "submit-claimed" && (row.notAppliedThrough ?? 0) > 0 && (acceptDeletes === undefined || acceptDeletes < row.deletionHold!.deletions)) throw new TypeError("held deletion continuation requires current invocation acceptance of its held count");
   const bytes = prepared.bytesBase64 === undefined ? undefined : Uint8Array.from(atob(prepared.bytesBase64), c => c.charCodeAt(0));
 
   // Each adapter receives one combined lifetime. Race cancellation even if a caller-supplied
@@ -117,7 +117,7 @@ export async function performHostedBlobDelivery(context: HostedBlobDeliveryConte
         const classified = classifyBlobWriteAnswer({ status: 200, body: answer.result, headers: new Headers() }, prepared.intent);
         if (classified.row.answer !== answer.row.answer || classified.row.recorded !== answer.row.recorded || classified.row.outcome !== answer.row.outcome ||
             !(answer.row.recorded === "yes" || answer.row.recorded === "settled-only" && answer.settled === true)) return UNKNOWN;
-        return candidate(answer.result);
+        return candidate(classified.result!);
       } catch { return UNKNOWN; }
     },
     async lookup(): Promise<HostedBlobDeliveryOutcome> {

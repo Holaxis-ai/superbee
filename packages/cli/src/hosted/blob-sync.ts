@@ -131,6 +131,17 @@ export async function settleBlobSyncReceipt(backend: BlobJournaledBackend, snaps
   if (!equalJournalValue(map.scope, prepared.scope) || captured.journal.key !== record.target || !captured.journal.intents.some(row => equalJournalValue(row, record))) throw new TypeError("blob settlement snapshot mismatch");
   const witness = update.receipt === undefined ? undefined : blobReceipt(record.prepared, update.receipt.result);
   if (!witness || !equalJournalValue(witness, update.receipt)) throw new TypeError("blob settlement requires a validated receipt");
+  const next = projectBlobSyncReceipt(map, record, update);
+  const encoded = encodeBlobSyncMap(next);
+  return backend.updateBlobIntent(record.requestId, record.state, update, { guard: captured.journal.guard, meta: [{ key: BLOB_SYNC_META_KEY, value: encoded }] });
+}
+
+/** The same pure projection is used to track only our own guarded map effects across a batch. */
+export function projectBlobSyncReceipt(map: BlobSyncMap, record: BlobIntentRecord, update: BlobIntentPatch): BlobSyncMap {
+  const prepared = decodePreparedBlobIntent(record.prepared);
+  if (!equalJournalValue(prepared.scope, map.scope)) throw new TypeError("blob projection scope mismatch");
+  const witness = update.receipt === undefined ? undefined : blobReceipt(record.prepared, update.receipt.result);
+  if (!witness || !equalJournalValue(witness, update.receipt)) throw new TypeError("blob projection requires a validated receipt");
   let next = map;
   if ("head" in witness) {
     const previous = map.entries.find(row => row.key === record.target);
@@ -139,8 +150,19 @@ export async function settleBlobSyncReceipt(backend: BlobJournaledBackend, snaps
     next = changeBlobSyncEntry(map, { key: record.target, head: witness.head, placedDigest: prepared.intent.operationId === "blobs.delete.v1" ? null : prepared.intent.version,
       ...(desired === undefined || desired === sentType ? {} : { desiredContentType: desired }) });
   }
-  const encoded = encodeBlobSyncMap(next);
-  return backend.updateBlobIntent(record.requestId, record.state, update, { guard: captured.journal.guard, meta: [{ key: BLOB_SYNC_META_KEY, value: encoded }] });
+  return next;
+}
+/** A declared gate and explicit held-delete acceptance judge the frozen representation, not newer bytes. */
+export async function blobFrozenPhysicalMatches(folder: string, snapshot: BlobSyncSnapshot, record: BlobIntentRecord): Promise<boolean> {
+  const prepared = decodePreparedBlobIntent(record.prepared), intent = prepared.intent;
+  if (!ordinarySeedKey(record.target) || !equalJournalValue(prepared.scope, snapshot.map.scope) || snapshot.map.entries.find(row => row.key === record.target)?.placement) return false;
+  const entry = snapshot.map.entries.find(row => row.key === record.target), file = path.join(folder, ...record.target.split("/"));
+  if (await parentUnsafe(folder, file)) return false;
+  const found = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
+  if (found.state === "unsafe" || await parentUnsafe(folder, file)) return false;
+  if (record.receipt?.result.ok) return entry !== undefined && !blobSyncDirty(entry, found.state === "missing" ? null : digestOf(found.bytes));
+  if (intent.operationId === "blobs.delete.v1") return found.state === "missing" && !!entry?.head && entry.head.version === intent.expectedVersion && entry.head.contentType === intent.expectedContentType && (entry.desiredContentType === undefined || entry.desiredContentType === intent.expectedContentType);
+  return found.state === "present" && digestOf(found.bytes) === intent.version && (entry?.desiredContentType ?? entry?.head?.contentType) === intent.contentType;
 }
 
 /** Optional initial seeding, never a refresh or an inference from old projection extras. */
@@ -218,7 +240,7 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
     const hold = (message: string, reason: BlobCaptureHold["reason"] = "not_sendable") => held.push({ key: entry.key, reason, message });
     if (entry.placement) { hold(`${entry.key} has unresolved local placement evidence; capture waits for recovery`); continue; }
     if (!ordinarySeedKey(entry.key)) { hold(`${entry.key} is a protected namespace; ordinary-file sync does not change it`); continue; }
-    if (outstanding.has(entry.key)) { hold(`${entry.key} has a preserved ordinary-file intent; delivery is not yet enabled`); continue; }
+    if (outstanding.has(entry.key)) { hold(`${entry.key} has a preserved ordinary-file intent awaiting delivery or recovery`); continue; }
     const file = path.join(folder, ...entry.key.split("/"));
     if (await parentUnsafe(folder, file)) { hold(`${entry.key} has an unsafe parent; no deletion or edit was captured`, "unsafe_path"); continue; }
     const physical = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
@@ -230,7 +252,7 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
     if (!preview) {
       const snapshot = await readBlobSyncState(store, entry.key, captured.scope);
       if (!equalJournalValue(snapshot.map, map)) throw new JournalGuardConflict(entry.key);
-      if (snapshot.journal.intents.some(row => row.state !== "acknowledged")) { hold(`${entry.key} has a preserved ordinary-file intent; delivery is not yet enabled`); continue; }
+      if (snapshot.journal.intents.some(row => row.state !== "acknowledged")) { hold(`${entry.key} has a preserved ordinary-file intent awaiting delivery or recovery`); continue; }
       const common = { key: entry.key, expectedVersion: entry.head.version, expectedContentType: entry.head.contentType };
       const intent = physical.state === "missing" ? { operationId: "blobs.delete.v1" as const, ...common } : { operationId: "blobs.replace.v1" as const, ...common, version: digest!, contentType: entry.desiredContentType ?? entry.head.contentType };
       const prepared = prepareBlobIntent({ scope: captured.scope, intent, identity: { requestId: mintRequestId(), binding: captured.binding, ...(captured.via === undefined ? {} : { via: captured.via }) }, createdAt: captured.createdAt }, physical.state === "present" ? physical.bytes : undefined);
@@ -240,7 +262,7 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
         throw error;
       }
     }
-    hold(`${entry.key} ${preview ? "would be preserved" : "is preserved"} locally; ordinary-file delivery is not yet enabled`);
+    hold(`${entry.key} ${preview ? "would be preserved" : "is preserved"} locally; this capture does not submit it`);
   }
   return { keys: new Set(map.entries.map(row => row.key)), held };
 }
@@ -461,11 +483,17 @@ export async function refreshBlobCheckout(options: {
 }
 
 
+export interface OfflineBlobAdmission {
+  binding: import("./binding.js").CheckoutBinding;
+  requestIds: string[];
+  resumed: boolean;
+  receipt: Record<string, unknown>;
+}
 /** Offline explicit command admission. This never authenticates, discovers a host head, or sends. */
 export async function admitOfflineBlob(options: {
   operation: "promote" | "delete"; key: string; dir?: string; source?: string;
   expectedVersion?: string; contentType?: string; home: string; cwd: string;
-}): Promise<Record<string, unknown> | null> {
+}): Promise<OfflineBlobAdmission | null> {
   const { resolveLocalBundleTarget } = await import("../bundle.js");
   const { bindingForPath, checkoutBindingDigest } = await import("./binding.js");
   const { readCheckoutMarker } = await import("./marker.js");
@@ -492,12 +520,28 @@ export async function admitOfflineBlob(options: {
     const recovery = await recoverBlobPlacements(binding.path, store, scope);
     if (recovery.held.some(row => row.key === null || row.key === input.key)) throw refuse("ordinary-file placement evidence must be recovered before admission");
     const snapshot = await readBlobSyncState(store, input.key, scope), entry = snapshot.map.entries.find(row => row.key === input.key);
-    if (entry?.placement || snapshot.journal.intents.some(row => row.state !== "acknowledged")) throw refuse("this file has an outstanding intent or placement; no duplicate was admitted");
+    if (entry?.placement) throw refuse("this file has unresolved placement evidence");
     if (await parentUnsafe(binding.path, file)) throw refuse("this file has an unsafe parent");
     const physical = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
     if (physical.state === "unsafe" || await parentUnsafe(binding.path, file)) throw refuse("this file is unsafe, changed during capture, or exceeds 16 MiB");
     const physicalDigest = physical.state === "missing" ? null : digestOf(physical.bytes);
     if (input.operation === "promote" && physical.state !== "present") throw refuse("promote requires the existing checkout target file");
+    const outstanding = snapshot.journal.intents.filter(row => row.receipt === undefined);
+    const retained = outstanding.length ? outstanding : snapshot.journal.intents.slice(-1);
+    if (retained.length) {
+      const row = retained[0]!, frozen = decodePreparedBlobIntent(row.prepared), intent = frozen.intent;
+      const effectiveType = input.contentType ?? (input.expectedVersion === undefined ? (await import("@superbee/core")).resolveContentType(input.key) : entry?.desiredContentType ?? entry?.head?.contentType ?? (intent.operationId === "blobs.delete.v1" ? intent.expectedContentType : intent.contentType));
+      const differences: string[] = [];
+      if (retained.length !== 1) differences.push("multiple outstanding requests");
+      if (!equalJournalValue(frozen.scope, scope)) differences.push("target scope");
+      if (input.operation === "delete" ? intent.operationId !== "blobs.delete.v1" : intent.operationId !== (input.expectedVersion === undefined ? "blobs.create.v1" : "blobs.replace.v1")) differences.push("operation");
+      if (input.operation === "promote" ? intent.expectedVersion !== (input.expectedVersion ?? null) : input.expectedVersion !== undefined && intent.expectedVersion !== input.expectedVersion) differences.push("CAS premise");
+      if (input.operation === "promote" && intent.operationId !== "blobs.delete.v1" && (physicalDigest !== intent.version || effectiveType !== intent.contentType)) differences.push("bytes or MIME");
+      if (input.operation === "delete" && (physical.state !== "missing" || entry?.desiredContentType !== undefined && entry.desiredContentType !== intent.expectedContentType)) differences.push("recreated bytes or MIME choice");
+      if (outstanding.length && intent.expectedVersion !== null && (!entry?.head || entry.head.version !== intent.expectedVersion || entry.head.contentType !== intent.expectedContentType)) differences.push("observed MIME baseline");
+      if (differences.length && outstanding.length) throw new CliError("CONFLICT", `preserved request ${row.requestId} differs in ${differences.join(", ")}; nothing was submitted`, { details: { reason: "blob_resume_mismatch", request_id: row.requestId, differences, frozen: { operation: intent.operationId, expectedVersion: intent.expectedVersion, expectedContentType: intent.expectedContentType, ...(intent.operationId === "blobs.delete.v1" ? {} : { version: intent.version, contentType: intent.contentType }) }, submitted: false }, help: "preserve this intent and resolve the differing representation before retrying" });
+      if (differences.length === 0) return { binding, requestIds: [row.requestId], resumed: true, receipt: { [input.operation]: "pending", status: "incomplete", route: "blob", key: input.key, request_id: row.requestId, submitted: false } };
+    }
     if ((input.operation === "delete" || input.expectedVersion !== undefined) && (!entry?.head || input.expectedVersion !== undefined && input.expectedVersion !== entry.head.version)) throw refuse("replacement or deletion requires the preserved observed digest and MIME baseline matching --expected-version");
     if (input.operation === "delete" && blobSyncDirty(entry!, physicalDigest)) throw refuse("delete refuses locally changed bytes or an outstanding MIME choice");
     const { resolveContentType } = await import("@superbee/core");
@@ -526,7 +570,7 @@ export async function admitOfflineBlob(options: {
       if (removed) throw Object.assign(new CliError("TRANSIENT", "the file was removed locally but its deletion was not submitted or durably admitted; sync can capture its genuine absence", { details: { reason: "blob_delete_local_unsubmitted", key: input.key, local_removed: true, submitted: false }, help: "keep the preserved baseline and run sync to capture the local deletion" }), { cause: error });
       throw error;
     }
-    return { [input.operation]: "pending", status: "incomplete", route: "blob", key: input.key, request_id: record.requestId, submitted: false, ...(contentType === undefined ? { local_removed: removed } : { content_type: contentType, version: physicalDigest }), help: ["ordinary-file intent is preserved locally; delivery is not yet enabled"] };
+    return { binding, requestIds: [record.requestId], resumed: false, receipt: { [input.operation]: "pending", status: "incomplete", route: "blob", key: input.key, request_id: record.requestId, submitted: false, ...(contentType === undefined ? { local_removed: removed } : { content_type: contentType, version: physicalDigest }) } };
   }, { readOnly: false });
   if (result === null) throw refuse("checkout is busy; nothing was admitted", "sync_busy");
   return result;

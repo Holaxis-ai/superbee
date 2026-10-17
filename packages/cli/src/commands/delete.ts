@@ -1,3 +1,5 @@
+import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
+import type { HostedSyncDeps } from "../hosted/sync.js";
 import { homedir } from "node:os";
 import { admitOfflineBlob } from "../hosted/blob-sync.js";
 import { renderUsage } from "../output.js";
@@ -29,7 +31,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
-import { commandLiteral, commandToken } from "../command-text.js";
+import { commandFragment, commandLiteral, commandToken } from "../command-text.js";
 
 export const DELETE_USAGE = `superbee delete — hard-delete a doc or blob by its key (symmetric with promote/pull)
 
@@ -61,6 +63,7 @@ Options:
 `;
 
 export interface DeleteCliDeps {
+  hosted?: Partial<HostedSyncDeps>;
   home?: string;
   cwd?: string;
   stdout: (s: string) => void;
@@ -116,9 +119,16 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
   }
 
   const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const home = deps.hosted?.auth?.home ?? deps.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
+  if (deps.home !== undefined && deps.hosted?.auth !== undefined && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "offline admission and hosted delivery must use the same private-state home");
   if (!remote && !isDocRouteKey(key)) {
-    const pending = await admitOfflineBlob({ operation: "delete", key, ...(values.dir === undefined ? {} : { dir: values.dir }), ...(rawExpected === undefined ? {} : { expectedVersion: rawExpected.trim() }), home: deps.home ?? homedir(), cwd: deps.cwd ?? process.cwd() });
-    if (pending) { stdout(render(pending, resolveMode(values))); return; }
+    const pending = await admitOfflineBlob({ operation: "delete", key, ...(values.dir === undefined ? {} : { dir: values.dir }), ...(rawExpected === undefined ? {} : { expectedVersion: rawExpected.trim() }), home, cwd });
+    if (pending) {
+      const { finishAdmittedBlob } = await import("../hosted/sync.js");
+      const resume = commandFragment`${cliInvocation()} delete --doc-key ${commandToken(key)} --dir ${commandToken(pending.binding.path)}${rawExpected === undefined ? commandFragment`` : commandFragment` --expected-version ${commandToken(rawExpected.trim())}`}`;
+      await finishAdmittedBlob(pending, "delete", { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resolveMode(values), resume);
+      return;
+    }
   }
   const bundle = await openBundle(values.dir, remote);
   const mode: OutputMode = resolveMode(values);

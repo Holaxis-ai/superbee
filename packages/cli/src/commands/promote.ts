@@ -1,3 +1,5 @@
+import { defaultHostedAuthDeps } from "../hosted-auth/session.js";
+import type { HostedSyncDeps } from "../hosted/sync.js";
 import { homedir } from "node:os";
 import { admitOfflineBlob } from "../hosted/blob-sync.js";
 import { renderUsage } from "../output.js";
@@ -58,7 +60,7 @@ import { cliInvocation } from "../invocation.js";
 import { readExternalFileBytes, readExternalTextFile } from "../external-file.js";
 import { mutateDoc } from "../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
-import { commandLiteral, commandToken } from "../command-text.js";
+import { commandFragment, commandLiteral, commandToken } from "../command-text.js";
 
 export const PROMOTE_USAGE = `superbee promote — move a local file's bytes into the store (the reverse of 'doc read --out')
 
@@ -120,6 +122,7 @@ Options:
 `;
 
 export interface PromoteCliDeps {
+  hosted?: Partial<HostedSyncDeps>;
   home?: string;
   cwd?: string;
   stdout: (s: string) => void;
@@ -196,9 +199,16 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
   }
 
   const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const home = deps.hosted?.auth?.home ?? deps.home ?? homedir(), cwd = deps.cwd ?? deps.hosted?.cwd ?? process.cwd();
+  if (deps.home !== undefined && deps.hosted?.auth !== undefined && deps.home !== deps.hosted.auth.home) throw new CliError("USAGE", "offline admission and hosted delivery must use the same private-state home");
   if (!remote && !isDocRouteKey(key)) {
-    const pending = await admitOfflineBlob({ operation: "promote", key, ...(values.dir === undefined ? {} : { dir: values.dir }), source: file, ...(values["expected-version"] === undefined ? {} : { expectedVersion: values["expected-version"] }), ...(values["content-type"] === undefined ? {} : { contentType: values["content-type"] }), home: deps.home ?? homedir(), cwd: deps.cwd ?? process.cwd() });
-    if (pending) { stdout(render(pending, resolveMode(values))); return; }
+    const pending = await admitOfflineBlob({ operation: "promote", key, ...(values.dir === undefined ? {} : { dir: values.dir }), source: file, ...(values["expected-version"] === undefined ? {} : { expectedVersion: values["expected-version"] }), ...(values["content-type"] === undefined ? {} : { contentType: values["content-type"] }), home, cwd });
+    if (pending) {
+      const { finishAdmittedBlob } = await import("../hosted/sync.js");
+      const resume = commandFragment`${cliInvocation()} promote ${commandToken(file)} --doc-key ${commandToken(key)} --dir ${commandToken(pending.binding.path)}${values["expected-version"] === undefined ? commandFragment`` : commandFragment` --expected-version ${commandToken(values["expected-version"])}`}${values["content-type"] === undefined ? commandFragment`` : commandFragment` --content-type ${commandToken(values["content-type"])}`}`;
+      await finishAdmittedBlob(pending, "promote", { ...deps.hosted, auth: deps.hosted?.auth ?? defaultHostedAuthDeps(home), cwd, stdout }, resolveMode(values), resume);
+      return;
+    }
   }
   const bundle = await openBundle(values.dir, remote);
   const mode = resolveMode(values);

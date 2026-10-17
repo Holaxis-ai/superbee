@@ -227,9 +227,10 @@ test("strict held delete persists a complete prefix across restart then one conf
     const absent = await performHostedBlobDelivery(stub({ send: unused, lookup: async () => ({ status: "absent" }) }), persisted, { start: "lookup" }); assert.equal(absent.outcome.kind, "unknown"); assert.equal(absent.patch.notAppliedThrough, undefined);
     claimed = await backend.updateBlobIntent(row.requestId, "pending", { state: "in_flight", attempts: 2 }, { guard: (await backend.readBlobWithJournal(row.target)).guard });
     await assert.rejects(performHostedBlobDelivery(contextFor(holdCarrier), claimed, { start: "submit-claimed" }), /acceptance/);
+    await assert.rejects(performHostedBlobDelivery(contextFor(holdCarrier), claimed, { start: "submit-claimed", acceptDeletes: 2 }), /acceptance/);
     const terminal = { ok: true as const, operationId: "blobs.delete.v1" as const, data: { key: value.intent.key, version: value.intent.expectedVersion!, contentType: value.intent.expectedContentType!, deleted: true as const } };
-    const successCarrier: HostedCarrier = { stream: unused, json: async (_route, body, _signal, headers) => { sends++; assert.deepEqual(body, { bundleId: scope.bundleId, ...value.intent }); assert.equal(headers?.acceptDeletes, 3); return { status: 200, body: terminal, headers: new Headers() }; } };
-    const sent = await performHostedBlobDelivery(contextFor(successCarrier), claimed, { start: "submit-claimed", acceptDeletes: 3 }); assert.equal(sent.state, "acknowledged"); assert.equal(sent.attempts, 2); assert.equal(sends, 2);
+    const successCarrier: HostedCarrier = { stream: unused, json: async (_route, body, _signal, headers) => { sends++; assert.deepEqual(body, { bundleId: scope.bundleId, ...value.intent }); assert.equal(headers?.acceptDeletes, 4); return { status: 200, body: terminal, headers: new Headers() }; } };
+    const sent = await performHostedBlobDelivery(contextFor(successCarrier), claimed, { start: "submit-claimed", acceptDeletes: 4 }); assert.equal(sent.state, "acknowledged"); assert.equal(sent.attempts, 2); assert.equal(sends, 2);
     await backend.updateBlobIntent(row.requestId, "in_flight", sent.patch, { guard: (await backend.readBlobWithJournal(row.target)).guard });
     const saved = (await backend.readBlobIntent(row.requestId))!; assert.equal(saved.prepared, row.prepared); assert.equal("head" in saved.receipt! && saved.receipt.head, null); assert.equal(saved.receipt?.result.ok && saved.receipt.result.data.contentType, value.intent.expectedContentType);
     assert.equal(Object.hasOwn(saved, "acceptDeletes"), false);
@@ -270,4 +271,15 @@ test("held proof retains classifier-captured counts when a supplied row getter m
   assert.equal(selected.outcome.kind, "not-executed");
   assert.deepEqual(selected.patch.deletionHold, { deletions: 3, baseline: 5 });
   assert.equal(selected.patch.notAppliedThrough, 1); assert.equal(selected.patch.receipt, undefined);
+});
+
+
+test("terminal send selects captured classifier evidence despite mutable row accessor", async () => {
+  const { row } = retained("blob-replace-200-type-only");
+  const result = { ok: false, operationId: "blobs.replace.v1", error: { code: "backend_unavailable", message: "captured", retryable: false, writeState: "not_applied" } };
+  const answer = { status: 200, result, settled: true, get row() { result.error.message = "changed later"; return updateRow("200 backend_unavailable"); } };
+  const selected = await performHostedBlobDelivery(stub({ send: async () => answer as never, lookup: unused }), row, { start: "submit-claimed" });
+  assert.equal(result.error.message, "changed later"); assert.equal(selected.outcome.kind, "refused");
+  if (selected.outcome.kind !== "refused") assert.fail("refusal expected");
+  assert.equal(selected.outcome.message, "captured");
 });
