@@ -6,14 +6,15 @@
  * lives in `scripts/package-core-external-proof.test.mjs`.
  */
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-import { FilesystemBackend } from "../src/backend.js";
+import { FilesystemBackend, probeFilesystemPath } from "../src/backend.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE_ROOT = path.resolve(here, "..", "src");
@@ -146,7 +147,7 @@ test("N1: index.ts exports exactly the allowlisted names from the storage module
     values: [...(bucket?.values ?? [])].sort(),
     types: [...(bucket?.types ?? [])].sort(),
   });
-  assert.deepEqual(sorted(exported.get("./backend.js")), { values: ["FilesystemBackend"], types: [] });
+  assert.deepEqual(sorted(exported.get("./backend.js")), { values: ["FilesystemBackend", "probeFilesystemPath"], types: [] });
   assert.deepEqual(sorted(exported.get("./filesystem-lock.js")), {
     values: ["FilesystemMutationLockError", "filesystemMutationLockPath", "withFilesystemMutationLock"],
     types: ["FilesystemMutationLockOptions", "FilesystemMutationLockOwner"],
@@ -428,9 +429,10 @@ test("N4: every protocol call uses the backend port or its private publication c
   // entry point to the backend under a name this scan never sees.
   // The publication-only exact document and reserved-object reads add two observation calls while
   // retaining the same production port and without widening the StorageBackend prototype.
-  assert.equal(passed.length, 13, `expected the backend's protocol call sites, found ${passed.length}`);
+  // The metadata-only projection probe adds one probeExact call under that same private context.
+  assert.equal(passed.length, 14, `expected the backend's protocol call sites, found ${passed.length}`);
   assert.deepEqual([...new Set(passed)].sort(), ["port", "this.#port"], "a protocol call bypasses the instance/publication context");
-  assert.equal(passed.filter((name) => name === "port").length, 2, "only the two raw publication readers use their captured context port");
+  assert.equal(passed.filter((name) => name === "port").length, 3, "only the raw publication readers and metadata-only projection probe use their captured context port");
 });
 
 test("N4: the boundary scanner recognizes every ambient-input import form", () => {
@@ -459,4 +461,19 @@ test("N4: the boundary scanner recognizes every process.env access form", () => 
     ts.ScriptKind.TS,
   );
   assert.deepEqual(processEnvAccesses(source), [1, 2, 3]);
+});
+
+
+test("N1: metadata-only projection probe preserves absence, rejects unsafe keys and creates no paths", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "projection-probe-")), root = path.join(directory, "absent");
+  try {
+    const backend = new FilesystemBackend(root);
+    assert.equal(await probeFilesystemPath(backend, "nested/a.bin"), "absent");
+    await assert.rejects(probeFilesystemPath(backend, "../escape.bin"));
+    assert.deepEqual(await readdir(directory), []);
+    await mkdir(root); await writeFile(path.join(root, "a.bin"), "opaque bytes");
+    assert.equal(await probeFilesystemPath(backend, "a.bin"), "exact");
+    assert.equal(await readFile(path.join(root, "a.bin"), "utf8"), "opaque bytes");
+    assert.deepEqual(await readdir(root), ["a.bin"]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -9,7 +9,7 @@ import { FileJournalUnavailableError } from "@superbee/core/file-journaled-backe
 import { createHostedBlobReadAdapter, HostedCarrierError, HostedReadAdapterError, type HostedCarrier, type HostedCapabilities } from "@superbee/core/hosted-transport";
 import { RemoteError } from "@superbee/core";
 import { PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "@superbee/core/page";
-import { digestOf, parentUnsafe, fold, prepareBlobStage, installBlobStage, finishBlobStage, orphanBlobStages, type BlobFileIdentity, type BlobStagePlan, UnsafePlacementError } from "./projection.js";
+import { digestOf, projectionPathExact as blobPathSafe, findFilePathCollision, fold, prepareBlobStage, installBlobStage, finishBlobStage, orphanBlobStages, type BlobFileIdentity, type BlobStagePlan, UnsafePlacementError } from "./projection.js";
 import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 
 export const BLOB_SYNC_META_KEY = "hosted.blob-sync.v1";
@@ -79,6 +79,7 @@ export function captureBlobSyncMap(value: BlobSyncMap, expectedScope: BlobTarget
   if (!equalJournalValue(scope, scopeOf(expectedScope))) throw new TypeError("blob sync scope mismatch");
   const entries = input.entries.map(entryOf).sort((a, b) => compareStorageKeys(a.key, b.key));
   if (entries.some((entry, index) => index > 0 && entries[index - 1]!.key === entry.key)) throw new TypeError("duplicate blob sync key");
+  if (findFilePathCollision(entries.map(entry => entry.key))) throw new TypeError("aliased blob projection ownership");
   const ids = entries.flatMap(entry => entry.placement ? [entry.placement.id] : []);
   if (new Set(ids).size !== ids.length) throw new TypeError("duplicate placement id");
   const refusal = input.refusal;
@@ -157,9 +158,9 @@ export async function blobFrozenPhysicalMatches(folder: string, snapshot: Pick<B
   const prepared = decodePreparedBlobIntent(record.prepared), intent = prepared.intent;
   if (!ordinarySeedKey(record.target) || !equalJournalValue(prepared.scope, snapshot.map.scope) || snapshot.map.entries.find(row => row.key === record.target)?.placement) return false;
   const entry = snapshot.map.entries.find(row => row.key === record.target), file = path.join(folder, ...record.target.split("/"));
-  if (await parentUnsafe(folder, file)) return false;
+  if (!await blobPathSafe(folder, record.target)) return false;
   const found = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
-  if (found.state === "unsafe" || await parentUnsafe(folder, file)) return false;
+  if (found.state === "unsafe" || !await blobPathSafe(folder, record.target)) return false;
   if (record.receipt?.result.ok) return entry !== undefined && !blobSyncDirty(entry, found.state === "missing" ? null : digestOf(found.bytes));
   if (intent.operationId === "blobs.delete.v1") return found.state === "missing" && !!entry?.head && entry.head.version === intent.expectedVersion && entry.head.contentType === intent.expectedContentType && (entry.desiredContentType === undefined || entry.desiredContentType === intent.expectedContentType);
   return found.state === "present" && digestOf(found.bytes) === intent.version && (entry?.desiredContentType ?? entry?.head?.contentType) === intent.contentType;
@@ -193,11 +194,11 @@ export async function seedInitialBlobBaselines(options: {
   }
   let map: BlobSyncMap = { schemaVersion: 1, scope, entries: [] };
   for (const head of heads) {
-    if (!ordinarySeedKey(head.key) || exported[head.key] !== head.version) continue;
+    if (!ordinarySeedKey(head.key) || exported[head.key] !== head.version || findFilePathCollision([...map.entries.map(row => row.key), head.key])) continue;
     const file = path.join(folder, ...head.key.split("/"));
-    if (await parentUnsafe(folder, file)) continue;
+    if (!await blobPathSafe(folder, head.key)) continue;
     const actual = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
-    if (actual.state !== "present" || digestOf(actual.bytes) !== head.version || await parentUnsafe(folder, file)) continue;
+    if (actual.state !== "present" || digestOf(actual.bytes) !== head.version || !await blobPathSafe(folder, head.key)) continue;
     map.entries.push(seedBlobSyncEntry(head, head.version));
   }
   if (map.entries.length === 0) return { state: "seeded", count: 0 };
@@ -242,9 +243,9 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
     if (!ordinarySeedKey(entry.key)) { hold(`${entry.key} is a protected namespace; ordinary-file sync does not change it`); continue; }
     if (outstanding.has(entry.key)) { hold(`${entry.key} has a preserved ordinary-file intent awaiting delivery or recovery`); continue; }
     const file = path.join(folder, ...entry.key.split("/"));
-    if (await parentUnsafe(folder, file)) { hold(`${entry.key} has an unsafe parent; no deletion or edit was captured`, "unsafe_path"); continue; }
+    if (!await blobPathSafe(folder, entry.key)) { hold(`${entry.key} has an unsafe parent; no deletion or edit was captured`, "unsafe_path"); continue; }
     const physical = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
-    if (physical.state === "unsafe" || await parentUnsafe(folder, file)) { hold(`${entry.key} is unsafe or exceeds the capture bound; no deletion or edit was captured`, "unsafe_path"); continue; }
+    if (physical.state === "unsafe" || !await blobPathSafe(folder, entry.key)) { hold(`${entry.key} is unsafe or exceeds the capture bound; no deletion or edit was captured`, "unsafe_path"); continue; }
     const digest = physical.state === "missing" ? null : digestOf(physical.bytes);
     if (!blobSyncDirty(entry, digest)) continue;
     if (!entry.head) { hold(`${entry.key} has no observed present byte and MIME baseline; it remains local`); continue; }
@@ -325,6 +326,7 @@ export async function stageBlobPlacement(folder: string, store: BlobJournaledBac
   const guard = captureJournalValue(supplied.journal.guard);
   const premise = guard.meta.find(row => row.key === BLOB_SYNC_META_KEY)?.expected;
   if (guard.key !== key || supplied.journal.key !== key || !premise || !equalJournalValue(map, decodeBlobSyncMap(premise.present ? premise.value : undefined, map.scope)) || guard.intents.some(row => row.state !== "acknowledged") || !ordinarySeedKey(key) || head && head.key !== key) throw new TypeError("invalid blob placement snapshot");
+  if (findFilePathCollision([...map.entries.map(row => row.key), key]) || !await blobPathSafe(folder, key)) return "held";
   const original = map.entries.find(row => row.key === key) ?? null;
   if (original?.placement || original?.desiredContentType !== undefined && original.desiredContentType !== original.head?.contentType) return "held";
   if (head === null ? bytes !== undefined : !bytes || bytes.length > 16 * 1024 * 1024 || digestOf(bytes) !== head.version) throw new TypeError("blob placement bytes mismatch");
@@ -379,9 +381,9 @@ export async function refreshBlobCheckout(options: {
   const guardedFailure = (error: unknown) => error instanceof JournalGuardConflict || error instanceof IntentHoldConflict || error instanceof FileJournalUnavailableError || error instanceof RangeError && /exceeds the store's .* byte bound/.test(error.message);
   const physical = async (key: string): Promise<string | null | undefined> => {
     const file = path.join(folder, ...key.split("/"));
-    if (await parentUnsafe(folder, file)) return undefined;
+    if (!await blobPathSafe(folder, key)) return undefined;
     const found = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
-    if (found.state === "unsafe" || await parentUnsafe(folder, file)) return undefined;
+    if (found.state === "unsafe" || !await blobPathSafe(folder, key)) return undefined;
     return found.state === "missing" ? null : digestOf(found.bytes);
   };
   const snapshotFor = async (key: string) => {
@@ -392,6 +394,7 @@ export async function refreshBlobCheckout(options: {
   const eligible = async (key: string): Promise<BlobSyncSnapshot | undefined> => {
     const entry = map.entries.find(row => row.key === key);
     if (!ordinarySeedKey(key)) { hold(key, `${key} is a protected namespace`); return; }
+    if (findFilePathCollision([...map.entries.map(row => row.key), key])) { hold(key, `${key} aliases another ordinary-file projection owner`); return; }
     const snapshot = await snapshotFor(key);
     if (entry?.placement || snapshot.journal.intents.some(row => row.state !== "acknowledged")) { hold(key, `${key} has preserved intent or placement evidence`); return; }
     const actual = await physical(key);
@@ -416,6 +419,7 @@ export async function refreshBlobCheckout(options: {
     let readsComplete = true;
     // No absence is applied until all required pinned reads finish. Only one body is retained at a time.
     for (const head of listing.heads) {
+      if (findFilePathCollision([...map.entries.map(entry => entry.key), head.key])) { hold(head.key, `${head.key} aliases another ordinary-file projection owner`); readsComplete = false; continue; }
       const prior = map.entries.find(entry => entry.key === head.key);
       try {
         let snapshot = await eligible(head.key);
@@ -521,9 +525,10 @@ export async function admitOfflineBlob(options: {
     if (recovery.held.some(row => row.key === null || row.key === input.key)) throw refuse("ordinary-file placement evidence must be recovered before admission");
     const snapshot = await readBlobSyncState(store, input.key, scope), entry = snapshot.map.entries.find(row => row.key === input.key);
     if (entry?.placement) throw refuse("this file has unresolved placement evidence");
-    if (await parentUnsafe(binding.path, file)) throw refuse("this file has an unsafe parent");
+    if (findFilePathCollision([...snapshot.map.entries.map(row => row.key), input.key])) throw refuse("this key aliases another ordinary-file projection owner");
+    if (!await blobPathSafe(binding.path, input.key)) throw refuse("this file has an unsafe parent");
     const physical = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
-    if (physical.state === "unsafe" || await parentUnsafe(binding.path, file)) throw refuse("this file is unsafe, changed during capture, or exceeds 16 MiB");
+    if (physical.state === "unsafe" || !await blobPathSafe(binding.path, input.key)) throw refuse("this file is unsafe, changed during capture, or exceeds 16 MiB");
     const physicalDigest = physical.state === "missing" ? null : digestOf(physical.bytes);
     if (input.operation === "promote" && physical.state !== "present") throw refuse("promote requires the existing checkout target file");
     const outstanding = snapshot.journal.intents.filter(row => row.receipt === undefined);
@@ -566,7 +571,7 @@ export async function admitOfflineBlob(options: {
     if (input.operation === "delete" && physical.state === "present") {
       if (!equalJournalValue(await bindingForPath(input.home, binding.path), binding)) throw refuse("checkout binding or folder changed before local deletion");
       const { removeGuarded } = await import("./sync-scan.js");
-      if (await parentUnsafe(binding.path, file) || !await removeGuarded(file, physical.bytes)) throw refuse("the file changed before local deletion; no intent was admitted");
+      if (!await blobPathSafe(binding.path, input.key) || !await removeGuarded(file, physical.bytes)) throw refuse("the file changed before local deletion; no intent was admitted");
       removed = true;
     }
     let record: BlobIntentRecord;

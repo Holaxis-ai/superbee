@@ -1929,3 +1929,22 @@ test("a multi-request blob batch reloads full guards and preserves every origina
   const after = await retainedBlobRows(h); assert.deepEqual(after.map(row => row.prepared), before.map(row => row.prepared)); assert.deepEqual(after.map(row => row.attempts), [1, 0, 0]); assert.ok(after.every(row => !row.receipt));
   const recovered = await deliverHostedBlobRequests(binding, ids, { auth: h.auth, fetch: wire.fetch }); assert.equal(recovered.counts.committed, 3); assert.equal(wire.calls.length, 3); assert.deepEqual((await retainedBlobRows(h)).map(row => row.attempts), [1, 1, 1]);
 });
+
+test("native spelling aliases refuse ordinary-file admission before journal/map mutation", async t => {
+  const h = await harness(), lower = path.join(h.folder, "a.svg"), upper = path.join(h.folder, "A.svg"); await writeFile(lower, "old");
+  let upperStat; try { upperStat = await stat(upper); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const lowerStat = await stat(lower), names = await readdir(h.folder);
+  if (!upperStat || lowerStat.dev !== upperStat.dev || lowerStat.ino !== upperStat.ino || names.includes("A.svg")) { t.skip("native filesystem does not alias a.svg/A.svg; portable ownership remains covered separately"); return; }
+  t.diagnostic("native a.svg/A.svg resolve to one inode and only lower spelling is listed");
+  const binding = await seedCaptureMap(h, "a.svg", Buffer.from("old"));
+  const beforeStore = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) }); let before;
+  try { before = await beforeStore.readMeta(BLOB_SYNC_META_KEY); } finally { await beforeStore.close(); }
+  await assert.rejects(admitOfflineBlob({ operation: "promote", key: "A.svg", source: upper, contentType: "image/svg+xml", dir: h.folder, cwd: h.cwd, home: h.home }), /aliases another/);
+  const afterStore = await FileJournaledBackend.open({ directory: checkoutStoreDir(h.home, binding.checkout_id) });
+  try { assert.equal(await afterStore.readMeta(BLOB_SYNC_META_KEY), before); assert.equal((await afterStore.listBlobIntents()).length, 0); } finally { await afterStore.close(); }
+  assert.equal(await readFile(lower, "utf8"), "old"); assert.equal(await readFile(upper, "utf8"), "old");
+  // Even without another tracked owner, an existing native alias may not be treated as an exact target.
+  const untrackedLower = path.join(h.folder, "untracked.svg"), untrackedUpper = path.join(h.folder, "UNTRACKED.svg"); await writeFile(untrackedLower, "local");
+  await assert.rejects(admitOfflineBlob({ operation: "promote", key: "UNTRACKED.svg", source: untrackedUpper, contentType: "image/svg+xml", dir: h.folder, cwd: h.cwd, home: h.home }), /unsafe parent/);
+  assert.equal(await readFile(untrackedLower, "utf8"), "local"); assert.equal((await retainedBlobRows(h)).length, 0);
+});

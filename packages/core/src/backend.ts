@@ -434,6 +434,14 @@ function publicationContext(backend: FilesystemBackend): { root: string; port: F
   return context;
 }
 
+/** Read-only exact-spelling metadata observation for a safe blob pathname. Reads no body and
+ * creates no directories; alias/unsafe observations retain the identity owner's typed refusal. */
+export async function probeFilesystemPath(backend: FilesystemBackend, key: string): Promise<"exact" | "absent"> {
+  assertSafeBlobKey(key);
+  const { root, port } = publicationContext(backend);
+  return (await probeExact(port, root, key)).state;
+}
+
 /** Internal exact-byte authority for the publication adapter; not part of StorageBackend. */
 export async function readRawFilesystemDocument(
   backend: FilesystemBackend,

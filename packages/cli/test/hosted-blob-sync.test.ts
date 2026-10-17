@@ -502,3 +502,42 @@ test("explicit stale blob token holds all seven remaining candidates; no-token s
     assert.equal(decodeBlobSyncMap(await f.backend.readMeta(BLOB_SYNC_META_KEY), scope).refusal, undefined);
   } finally { await f.close(); }
 });
+
+
+test("portable ordinary-file ownership rejects aliased leaves, ancestors and file-directory claims before capture or receipt", async () => {
+  const { findFilePathCollision } = await import("../src/hosted/projection.js");
+  for (const keys of [["a.svg", "A.svg"], ["é.bin", "É.bin"], ["dir/a.bin", "DIR/b.bin"], ["a.svg", "a.svg/b.bin"]]) {
+    assert.ok(findFilePathCollision(keys));
+    assert.throws(() => captureBlobSyncMap({ ...empty(), entries: keys.map(key => ({ key, placedDigest: null })) }, scope), /aliased blob projection/);
+  }
+  const f = await refreshFixture([seedBlobSyncEntry({ key: "a.svg", version: digest("old"), contentType: "image/svg+xml" }, digest("old"))]);
+  try {
+    await writeFile(path.join(f.folder, "a.svg"), "old");
+    const prepared = prepareBlobIntent({ scope, intent: { operationId: "blobs.create.v1", key: "A.svg", expectedVersion: null, expectedContentType: null, version: digest("old"), contentType: "image/svg+xml" }, identity: { requestId: randomUUID(), binding: digest("checkout") }, createdAt: new Date().toISOString() }, Buffer.from("old"));
+    const row = await f.backend.admitPreparedBlob(prepared, { guard: (await f.backend.readBlobWithJournal("A.svg")).guard });
+    const original = await f.backend.readMeta(BLOB_SYNC_META_KEY);
+    const receipt = blobReceipt(prepared, { ok: true, operationId: "blobs.create.v1", data: { key: "A.svg", version: digest("old"), contentType: "image/svg+xml", changed: true } });
+    await assert.rejects(settleBlobSyncReceipt(f.backend, await readBlobSyncState(f.backend, "A.svg", scope), row, { state: "acknowledged", receipt }), /aliased blob projection/);
+    assert.equal(await f.backend.readMeta(BLOB_SYNC_META_KEY), original); assert.equal((await f.backend.readBlobIntent(row.requestId))?.receipt, undefined);
+    const corrupt = JSON.stringify({ ...empty(), entries: ["A.svg", "a.svg"].map(key => ({ key, head: { key, version: digest("old"), contentType: "image/svg+xml" }, placedDigest: digest("old") })) });
+    await f.backend.writeMeta(BLOB_SYNC_META_KEY, corrupt);
+    await assert.rejects(captureTrackedBlobChanges(f.folder, { store: f.backend, scope, binding: digest("checkout"), createdAt: new Date().toISOString(), allowed: true }), /aliased blob projection/);
+    assert.equal(await f.backend.readMeta(BLOB_SYNC_META_KEY), corrupt); assert.equal((await f.backend.listBlobIntents()).length, 1); assert.equal(await readFile(path.join(f.folder, "a.svg"), "utf8"), "old");
+  } finally { await f.close(); }
+});
+test("seeding and refresh share ordinary-file ownership; an aliased remote replacement cannot delete the original projection", async () => {
+  const f = await refreshFixture();
+  try {
+    await f.backend.writeBlobMeta("a.svg", { removeMeta: [BLOB_SYNC_META_KEY] }, { guard: (await f.backend.readBlobWithJournal("a.svg", { meta: [BLOB_SYNC_META_KEY] })).guard });
+    await writeFile(path.join(f.folder, "a.svg"), "old");
+    const host = refreshHost(["A.svg", "a.svg"].map(key => ({ key, bytes: Buffer.from("old"), contentType: "image/svg+xml" })));
+    await seedInitialBlobBaselines({ folder: f.folder, store: f.backend, scope, carrier: host.carrier, capabilities: readCaps, exported: { "A.svg": digest("old"), "a.svg": digest("old") } });
+    const before = await f.backend.readMeta(BLOB_SYNC_META_KEY); assert.deepEqual(decodeBlobSyncMap(before, scope).entries.map(row => row.key), ["a.svg"]);
+    const replacement = refreshHost([{ key: "A.svg", bytes: Buffer.from("remote upper"), contentType: "image/svg+xml" }]);
+    const report = await refreshBlobCheckout({ folder: f.folder, store: f.backend, scope, carrier: replacement.carrier, capabilities: readCaps });
+    assert.deepEqual(report?.refreshed, []); assert.deepEqual(report?.removed, []); assert.equal(replacement.counts().reads, 0);
+    assert.equal(await f.backend.readMeta(BLOB_SYNC_META_KEY), before); assert.equal(await readFile(path.join(f.folder, "a.svg"), "utf8"), "old");
+    assert.equal(await stageBlobPlacement(f.folder, f.backend, await readBlobSyncState(f.backend, "A.svg", scope), { key: "A.svg", head: { key: "A.svg", version: digest("remote upper"), contentType: "image/svg+xml" }, bytes: Buffer.from("remote upper") }), "held");
+    assert.equal(await f.backend.readMeta(BLOB_SYNC_META_KEY), before); assert.deepEqual(await readdir(f.folder), ["a.svg"]);
+  } finally { await f.close(); }
+});
