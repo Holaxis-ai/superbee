@@ -70,6 +70,19 @@ test("parseServerTiming: a malformed metric is skipped and its neighbours kept",
   ]);
 });
 
+test("parseServerTiming: optional whitespace is space and tab only, and a quoted string holds no control character", () => {
+  assert.deepEqual(parseServerTiming("\ttotal\t;\tdur\t=\t5\t"), [{ name: "total", durationMs: 5 }]);
+  // HTTP optional whitespace is SP and HTAB; a no-break space or a line separator is part of the name.
+  assert.deepEqual(parseServerTiming("\u00a0total;dur=1, \u2028late;dur=2, kept;dur=3"), [{ name: "kept", durationMs: 3 }]);
+  assert.deepEqual(parseServerTiming('a;desc="x\u0001y", b;desc="x\\\u0001y", c;desc="del\u007f", d;desc="tab\there"'), [
+    { name: "a" },
+    { name: "b" },
+    { name: "c" },
+    { name: "d", description: "tab\there" },
+  ]);
+  assert.deepEqual(parseServerTiming('e;desc="caf\u00e9", f;desc="\u0100"'), [{ name: "e", description: "caf\u00e9" }, { name: "f" }]);
+});
+
 test("parseServerTiming: only a plain non-negative decimal is a duration", () => {
   for (const dur of ["-1", "1e3", "0x1F", "Infinity", "NaN", "", "1.", ".5", "1.2345678", "1234567890123456"]) {
     assert.deepEqual(parseServerTiming(`total;dur=${dur}`), [{ name: "total" }], dur);
@@ -177,6 +190,51 @@ test("observedCarrier: an observer that throws changes neither an answer nor a f
   assert.equal(await observedCarrier(answering(answer), throwing).json("/r", {}, signal, { maximum: 1 }), answer);
   const failure = new HostedCarrierError("unavailable");
   await assert.rejects(observedCarrier(answering(failure), throwing).json("/r", {}, signal, { maximum: 1 }), (thrown) => thrown === failure);
+});
+
+test("observedCarrier: an async observer that rejects leaves no unhandled rejection behind", async () => {
+  const escaped: unknown[] = [];
+  const listener = (reason: unknown) => escaped.push(reason);
+  process.on("unhandledRejection", listener);
+  try {
+    const answer: HostedAnswer = { status: 200, headers: new Headers(), body: {} };
+    const rejecting = async () => {
+      throw new Error("metrics sink down");
+    };
+    assert.equal(await observedCarrier(answering(answer), rejecting).json("/r", {}, signal, { maximum: 1 }), answer);
+    const failure = new HostedCarrierError("unavailable");
+    await assert.rejects(observedCarrier(answering(failure), rejecting).json("/r", {}, signal, { maximum: 1 }), (thrown) => thrown === failure);
+    // Unhandled rejections are reported after the microtask queue drains.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    process.off("unhandledRejection", listener);
+  }
+  assert.deepEqual(escaped, []);
+});
+
+test("observedCarrier: a clock that throws or reads no number drops the report and changes nothing else", async () => {
+  const answer: HostedAnswer = { status: 200, headers: new Headers(), body: {} };
+  const failure = new HostedCarrierError("denied");
+  let reads = 0;
+  const failsOnSecondRead = () => {
+    reads += 1;
+    if (reads % 2 === 0) throw new Error("clock failed");
+    return 0;
+  };
+  for (const clockOf of [() => failsOnSecondRead, () => () => { throw new Error("no clock"); }, () => () => Number.NaN]) {
+    const seen: HostedRequestTiming[] = [];
+    assert.equal(await observedCarrier(answering(answer), (t) => seen.push(t), clockOf()).json("/r", {}, signal, { maximum: 1 }), answer);
+    await assert.rejects(observedCarrier(answering(failure), (t) => seen.push(t), clockOf()).json("/r", {}, signal, { maximum: 1 }), (thrown) => thrown === failure);
+    assert.deepEqual(seen, []);
+  }
+});
+
+test("observedCarrier: an answer outside the carrier contract is returned as it came", async () => {
+  const odd = undefined as unknown as HostedAnswer;
+  const seen: HostedRequestTiming[] = [];
+  assert.equal(await observedCarrier(answering(odd), (t) => seen.push(t)).json("/r", {}, signal, { maximum: 1 }), undefined);
+  assert.deepEqual(seen, []);
 });
 
 test("observedCarrier: headers that cannot be read lose only the host's phases", async () => {

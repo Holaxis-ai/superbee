@@ -58,6 +58,8 @@ export { HostedAnswerTooLarge, HostedCarrierError, isAnswerTooLarge } from "../h
 // Request timing (`onRequestTiming`), re-exported so a caller reads the host's phases from this subpath.
 export {
   parseServerTiming,
+  SERVER_TIMING_MAX_LENGTH,
+  SERVER_TIMING_MAX_METRICS,
   type HostedRequestKind,
   type HostedRequestObserver,
   type HostedRequestTiming,

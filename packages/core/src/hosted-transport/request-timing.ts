@@ -56,22 +56,31 @@ function splitOutsideQuotes(text: string, separator: string): string[] | null {
   return parts;
 }
 
+/** HTTP optional whitespace (space and horizontal tab) removed from both ends. */
+const trimOws = (text: string) => text.replace(/^[ \t]+|[ \t]+$/g, "");
+
+/** Whether `c` may stand in a quoted string, plain or escaped: tab, space, visible ASCII or obs-text. */
+function quotable(c: string): boolean {
+  const code = c.charCodeAt(0);
+  return code === 0x09 || (code >= 0x20 && code !== 0x7f && code <= 0xff);
+}
+
 /** A parameter value: a token, or a quoted string with its escapes removed. Null when it is neither. */
 function paramValue(raw: string): string | null {
   if (TOKEN.test(raw)) return raw;
   if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return null;
   let out = "";
   for (let i = 1; i < raw.length - 1; i++) {
-    const c = raw[i]!;
+    let c = raw[i]!;
     if (c === "\\") {
       i++;
       if (i >= raw.length - 1) return null;
-      out += raw[i];
+      c = raw[i]!;
     } else if (c === '"') {
       return null;
-    } else {
-      out += c;
     }
+    if (!quotable(c)) return null;
+    out += c;
   }
   return out;
 }
@@ -93,7 +102,7 @@ export function parseServerTiming(value: string | null | undefined): ServerTimin
     if (metrics.length === SERVER_TIMING_MAX_METRICS) break;
     const parts = splitOutsideQuotes(entry, ";");
     if (parts === null) continue;
-    const name = parts[0]!.trim();
+    const name = trimOws(parts[0]!);
     if (!TOKEN.test(name)) continue;
     let durationMs: number | undefined;
     let description: string | undefined;
@@ -101,10 +110,10 @@ export function parseServerTiming(value: string | null | undefined): ServerTimin
     for (const part of parts.slice(1)) {
       const equals = part.indexOf("=");
       if (equals < 0) continue;
-      const key = part.slice(0, equals).trim().toLowerCase();
+      const key = trimOws(part.slice(0, equals)).toLowerCase();
       if (!TOKEN.test(key) || seen.has(key)) continue;
       seen.add(key);
-      const parsed = paramValue(part.slice(equals + 1).trim());
+      const parsed = paramValue(trimOws(part.slice(equals + 1)));
       if (parsed === null) continue;
       if (key === "dur" && DURATION.test(parsed)) durationMs = Number(parsed);
       else if (key === "desc") description = parsed;
@@ -136,49 +145,71 @@ export interface HostedRequestTiming {
    */
   readonly failure: "denied" | "unavailable" | "error" | null;
   /**
-   * Milliseconds from asking the carrier to its answer. For `json` and `bytes` that includes the
-   * whole bounded body; for a `stream` it ends at the answer's headers, before the body is read.
+   * Milliseconds from asking the carrier until it returned. For `json` and `bytes` that includes
+   * the whole bounded body. For a `stream` it ends at the headers of a `2xx`, before the body is
+   * read, and after the bounded refusal body otherwise.
    */
   readonly wallMs: number;
   /** The host's accounting from the answer's `Server-Timing` header; empty when it sent none. */
   readonly server: readonly ServerTimingMetric[];
 }
 
-/** Receives each request's timing. Called synchronously as the request settles, so keep it cheap. */
+/**
+ * Receives each request's timing. Called synchronously as the request settles, so keep it cheap.
+ * Its result is ignored: a throw changes nothing, and neither does a returned promise (an async
+ * observer) that rejects.
+ */
 export type HostedRequestObserver = (timing: HostedRequestTiming) => void;
 
 /**
  * `carrier`, reporting each request's {@link HostedRequestTiming} to `observe`. Requests, answers
- * and failures pass through unchanged; an observer that throws is ignored. `now` is a
- * monotonic millisecond clock (default `performance.now`).
+ * and failures pass through unchanged. Every observation step (the clock, reading the answer,
+ * the observer and any promise it returns) is guarded: a step that fails drops that report and
+ * nothing else. `now` is a monotonic millisecond clock (default `performance.now`).
  */
 export function observedCarrier(carrier: HostedCarrier, observe: HostedRequestObserver, now: () => number = () => performance.now()): HostedCarrier {
-  const report = (timing: HostedRequestTiming) => {
+  /** Build one report and hand it over; nothing that fails here reaches the request. */
+  const report = (build: () => HostedRequestTiming) => {
     try {
-      observe(timing);
+      const result: unknown = observe(build());
+      if (typeof (result as PromiseLike<unknown> | undefined)?.then === "function") Promise.resolve(result).catch(() => {});
     } catch {
       // Observation never changes the request it describes.
     }
   };
+  const read = (): number | undefined => {
+    try {
+      const time = now();
+      return Number.isFinite(time) ? time : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const since = (started: number | undefined): number => {
+    const ended = read();
+    if (started === undefined || ended === undefined) throw new Error("no clock reading");
+    return Math.max(0, ended - started);
+  };
 
   async function timed<T extends { status: number; headers: Headers }>(route: string, kind: HostedRequestKind, send: () => Promise<T>): Promise<T> {
-    const started = now();
+    const started = read();
     let answer: T;
     try {
       answer = await send();
     } catch (error) {
-      const failure = error instanceof HostedCarrierError ? error.code : "error";
-      report({ route, kind, status: null, failure, wallMs: Math.max(0, now() - started), server: [] });
+      report(() => ({ route, kind, status: null, failure: error instanceof HostedCarrierError ? error.code : "error", wallMs: since(started), server: [] }));
       throw error;
     }
-    const wallMs = Math.max(0, now() - started);
-    let server: ServerTimingMetric[] = [];
-    try {
-      server = parseServerTiming(answer.headers.get("server-timing"));
-    } catch {
-      // A carrier whose headers cannot be read still answered; only the host's accounting is lost.
-    }
-    report({ route, kind, status: answer.status, failure: null, wallMs, server });
+    report(() => {
+      const wallMs = since(started);
+      let server: ServerTimingMetric[] = [];
+      try {
+        server = parseServerTiming(answer.headers.get("server-timing"));
+      } catch {
+        // Headers that cannot be read lose only the host's accounting.
+      }
+      return { route, kind, status: answer.status, failure: null, wallMs, server };
+    });
     return answer;
   }
 

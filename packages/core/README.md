@@ -271,10 +271,10 @@ status (or why there is none: `denied`, `unavailable` or `error`), the client's 
 milliseconds and the host's own accounting from its `Server-Timing` header. A hosted Superbee
 states the phases it spent (`session`, `authority`, `membership`, `content`, `total`) with each
 phase's call count as `desc="n=<count>"`, which arrives as `count`. Wall time minus the host's
-`total` is roughly the network and client share. For a stream, wall time ends at the answer's
-headers. The observer runs synchronously as each request settles, so keep it cheap; one that
-throws is ignored and never changes a result. Nothing is sent anywhere: the timing stays with the
-caller.
+`total` is roughly the network and client share. For a stream, wall time ends at the headers of a
+`2xx` answer and after the bounded refusal body otherwise. The observer runs synchronously as each
+request settles, so keep it cheap. One that throws, or an async one that rejects, is ignored and
+never changes a result. Nothing is sent anywhere: the timing stays with the caller.
 
 `parseServerTiming(value)` reads a `Server-Timing` value on its own. It is lenient as browsers are
 (a malformed metric is skipped) and bounded (`SERVER_TIMING_MAX_LENGTH`, `SERVER_TIMING_MAX_METRICS`).
