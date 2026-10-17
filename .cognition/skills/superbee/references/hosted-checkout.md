@@ -130,9 +130,9 @@ lists for that workspace.
 ## Sync at the end of a batch of edits
 
 Edit files as usual, then run `superbee sync` once when a batch of related edits is done, not after
-every file. Sync always pulls before it sends. Its receipt has one row per document:
-`committed`, `conflict`, `held`, `refused`, `unknown` or `paused`. It exits 0 only when every row is
-committed.
+every file. Sync always pulls before it sends. Its receipt has one row per document under `rows`:
+`committed`, `conflict`, `held`, `refused`, `unknown` or `paused`. Tracked ordinary files have their
+own rows under `blobs` (see "Ordinary files" below). It exits 0 only when every row is committed.
 
 Reads keep the folder current on their own:
 - `list`, `doc read`, `status`, `home`, `link show` and `view list` pull first when the last pull
@@ -289,11 +289,52 @@ superbee sync --resolve keep --doc index.md     # the next sync sends yours over
 - A root `index.md` that is a symbolic link (`symlink`) or a folder (`unsafe_path`) is held: sync
   never reads, sends or replaces through it.
 - A subdirectory `index.md` and every `log.md` are always held (`reserved_file`). A checkout
-  places the host's copies of them, and of files other than documents (such as `data/*.json`), as
-  `superbee export` would; sync leaves those be while they are unchanged, and holds them once
-  edited. Sync does not refresh them: a later host change to one reaches a new checkout or an
-  export, not this folder. When the export could not be read (an older host, a bundle too large to
-  export), the checkout receipt's `other_files` says they stayed on the host.
+  places the host's copies of them as `superbee export` would; sync leaves those be while they are
+  unchanged, and holds them once edited. Sync does not refresh them: a later host change to one
+  reaches a new checkout or an export, not this folder. When the export could not be read (an older
+  host, a bundle too large to export), the checkout receipt's `other_files` says they and the
+  ordinary files stayed on the host.
+
+## Ordinary files (SVGs, images, `data/*.json`)
+
+Files other than `.md` documents are ordinary files. Sync sends and refreshes only **tracked**
+ones. Treat an edit to a tracked file as a publish: the next `superbee sync` sends it to the hosted
+bundle for everyone.
+
+- **Tracked:** a file `checkout` or `checkout --adopt` placed from the host, where the host serves
+  ordinary files and the placed bytes match it, or a file added with `promote`. Files under
+  `conventions/`, `recipes/`, `references/`, `views/`, `views-registry/`, `pages/` and
+  `pages-registry/`, and reserved files, are never tracked.
+- **Untracked:** a new non-`.md` file is held (`not_a_document`) and nothing is sent. To add it,
+  put it at its place in the checkout and promote that exact path:
+  `superbee promote <folder>/<key> --doc-key <key> [--content-type <mime>]`. The MIME type defaults
+  from the extension. promote records the bytes and type before sign-in, then sends only that
+  request; re-running it unchanged resumes the same request.
+- **Edits:** where the host allows ordinary-file writes, sync sends a tracked file's exact bytes and
+  content type against the version and type the folder last had. A file over 16 MiB, or over a
+  smaller host limit, is not sent. Where the host does not allow them, an edited tracked file is
+  held (`not_sendable`) and stays local.
+- **Host changes:** sync's pull, and the pulls of read commands, replace a tracked file that is
+  unchanged in the folder, place new host files where the folder has none, and remove files the
+  host deleted. A file you edited is kept (`pulled.blobs.kept_local_edits`). When the host removed
+  an unusually large set, none are removed (`pulled.blobs.refused_deletions`); run
+  `superbee sync --take-host-deletions blobs:<count>:<digest>` with its token only once the
+  bundle really shrank.
+- **Deleting:** removing a tracked file, or `superbee delete --doc-key <key>` (which needs the file
+  unchanged since the last sync), deletes it from the hosted bundle. A deletion the host holds
+  appears under `blobs.deletions_held`; only the person may accept it, in their own terminal, with
+  the `superbee sync --accept-deletes blobs:<count>:<digest>` command it names.
+- **Receipt:** `blobs.rows` has one row per request, keyed by file and request id: `committed`,
+  `conflict`, `refused`, `unknown` or `held`. `blobs.counts` totals them. An `unknown` row is
+  looked up by the same request on the next sync; it is never sent twice.
+- **Conflicts:** `--inspect`, `--resolve` and `--restore-deletes` do not apply to ordinary files,
+  and there is no ordinary-file conflict resolution yet. After a `conflict` row (the host's version
+  changed) or a `refused` row, that file stays held: sync neither sends it nor refreshes it again.
+  The only way out today is to copy any unsent document edits out of the folder, run
+  `superbee checkout --release <folder>` (it forgets unsent edits), and check the bundle out again
+  into a new folder. Tell the person before you do this.
+- **Artifacts:** `artifact` commands are refused in a checkout; Artifact publication is not
+  available from one.
 
 ## Refusals that belong to the person
 
