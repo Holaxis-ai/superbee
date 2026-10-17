@@ -2,8 +2,9 @@
 //
 // Recipe installation is create-only and intentionally never overwrites bundle-authored content.
 // This module owns the distinct upgrade authority: a read-only compatibility plan followed by an
-// exact-token preflight and exact-version CAS apply over each changed target. Since the bundle has
-// no cross-document transaction, a postcondition reports concurrent non-target changes honestly.
+// exact-token preflight and exact-version CAS apply over each target whose content or recipe stamp
+// needs a write. The stamp travels in the same write as the convention's content. Since the bundle
+// has no cross-document transaction, a postcondition reports concurrent non-target changes honestly.
 import { query, readBlob, readBundleOkfVersion, readDocVersioned } from "../bundle-ops.js";
 import { resolveContentType } from "../content-type.js";
 import { DocumentNotFoundError, mutateDocument } from "../document-mutation.js";
@@ -30,12 +31,20 @@ import {
   RecipeEvolutionInterrupted,
   RecipeEvolutionPlanChanged,
   RecipeEvolutionPostcondition,
+  type RecipeEvolutionCompletedDefinition,
 } from "./errors.js";
 import {
   materializeRecipeForEdition,
   recipeDocumentForApply,
   sameInstalledDoc,
 } from "./install.js";
+import {
+  RECIPE_STAMP_KEY,
+  recipeStampIdentity,
+  recipeStampState,
+  withRecipeStamp,
+  type RecipeStampState,
+} from "./stamp.js";
 
 const RECIPE_EVOLUTION_WRITE_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
@@ -48,7 +57,10 @@ function plainRecord(value: unknown): Record<string, unknown> | undefined {
 export interface RecipeEvolutionDefinition {
   id: ConceptId;
   governs: string;
+  /** Content only: whether the convention's declarations change. */
   action: "missing" | "unchanged" | "update";
+  /** The installed convention's recipe stamp relative to this recipe. */
+  stamp: RecipeStampState;
   expected_version: Version | null;
   desired_version: Version;
   /** Exact additive semantic paths this automatic plan will introduce. */
@@ -70,12 +82,17 @@ export interface RecipeEvolutionPlan {
   source: string;
   okf_version: string;
   ready: boolean;
+  /** Content only: whether any convention's declarations change. */
   changed: boolean;
+  /** How many conventions the apply writes: every content update and every stale or missing stamp. */
+  writes: number;
   plan_token: string;
   definitions: RecipeEvolutionDefinition[];
   counts: {
     definitions: number;
     updates: number;
+    /** Writes that only record the stamp: write-set members whose action is not `update`. */
+    stamp_writes: number;
     unchanged: number;
     missing: number;
     instances_checked: number;
@@ -85,19 +102,22 @@ export interface RecipeEvolutionPlan {
 }
 
 export interface RecipeEvolutionApplyResult {
-  recipe: "evolved" | "already current";
+  /** `evolved`: a content update was written; `stamped`: only stamps were; `already current`: nothing. */
+  recipe: "evolved" | "stamped" | "already current";
   id: string;
   version: string;
   source: string;
+  /** True whenever anything was written. */
   changed: boolean;
   plan_token: string;
-  definitions: Array<{ id: ConceptId; changed: boolean; version: Version }>;
-  counts: { updated: number; unchanged: number };
+  definitions: RecipeEvolutionCompletedDefinition[];
+  counts: { updated: number; stamped: number; unchanged: number };
 }
 
 interface PreparedRecipeEvolution {
   plan: RecipeEvolutionPlan;
-  desired: Map<ConceptId, OkfDocument>;
+  /** The write set: each member's exact candidate, its new stamp included. */
+  writes: Map<ConceptId, OkfDocument>;
 }
 
 interface EvolutionProof {
@@ -108,7 +128,7 @@ interface EvolutionProof {
 }
 
 function comparableRecipeDoc(doc: OkfDocument, okfVersion: string): OkfDocument {
-  const { timestamp: _timestamp, ...frontmatter } = doc.frontmatter;
+  const { timestamp: _timestamp, [RECIPE_STAMP_KEY]: _stamp, ...frontmatter } = doc.frontmatter;
   const generated = plainRecord(frontmatter.generated);
   if (okfVersion === "0.2" && generated) {
     const { at: _at, ...rest } = generated;
@@ -118,7 +138,8 @@ function comparableRecipeDoc(doc: OkfDocument, okfVersion: string): OkfDocument 
   return { id: doc.id, frontmatter, body: doc.body };
 }
 
-const PRESERVED_ROOT_METADATA = new Set(["timestamp", "actor", "generated", "verified", "superbee_updated_by"]);
+/** Root keys kept from the installed document, never read from the source; the stamp is one. */
+const PRESERVED_ROOT_METADATA = new Set(["timestamp", "actor", "generated", "verified", "superbee_updated_by", RECIPE_STAMP_KEY]);
 /**
  * Bundle-local placement: a reading-order `order` an author put on an installed convention is the
  * bundle's, not the recipe's. Evolution keeps it when the recipe declares none, so ordering the
@@ -460,6 +481,7 @@ function evolutionPlanToken(input: unknown): string {
 async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe): Promise<PreparedRecipeEvolution> {
   const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
   const recipe = materializeRecipeForEdition(sourceRecipe, okfVersion);
+  const identity = recipeStampIdentity(sourceRecipe, recipe);
   const blockers: RecipeEvolutionBlocker[] = recipe.warnings.map((warning) => ({
     code: warning.code,
     id: recipe.id,
@@ -467,7 +489,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     ...(warning.field ? { field: warning.field } : {}),
   }));
   const definitions: RecipeEvolutionDefinition[] = [];
-  const desired = new Map<ConceptId, OkfDocument>();
+  const writes = new Map<ConceptId, OkfDocument>();
   const proofs: EvolutionProof[] = [];
   const desiredKinds = new Map<string, KindConvention>();
 
@@ -532,7 +554,6 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
 
     const existing = await readRecipeDocIfPresent(bundle, target.id);
     if (!existing) {
-      desired.set(target.id, target);
       prospectiveById.set(target.id, target);
       desiredKinds.set(parsedDesired.kind.governs, parsedDesired.kind);
       const desiredVersion = contentVersion(comparableRecipeDoc(target, okfVersion));
@@ -540,6 +561,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
         id: target.id,
         governs: parsedDesired.kind.governs,
         action: "missing",
+        stamp: "missing",
         expected_version: null,
         desired_version: desiredVersion,
         added_paths: [],
@@ -594,7 +616,6 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
         );
       }
     }
-    desired.set(target.id, candidate);
     prospectiveById.set(target.id, candidate);
     const parsedCandidate = parseConventionDoc(candidate, { okfVersion });
     if (!parsedCandidate.ok) {
@@ -615,14 +636,20 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
 
     const desiredVersion = contentVersion(comparableRecipeDoc(candidate, okfVersion));
     const unchanged = sameInstalledDoc(existing.doc, candidate, okfVersion);
+    const stamp = recipeStampState(existing.doc, identity);
     definitions.push({
       id: target.id,
       governs: parsedDesired.kind.governs,
       action: unchanged ? "unchanged" : "update",
+      stamp,
       expected_version: existing.version,
       desired_version: desiredVersion,
       added_paths: unchanged ? [] : merged.addedPaths,
     });
+    // The write set: a content update (which takes ownership of a foreign stamp), or a stale or
+    // missing stamp on unchanged content. A foreign stamp alone is another recipe's to keep.
+    if (!unchanged) writes.set(target.id, withRecipeStamp(candidate, identity));
+    else if (stamp === "stale" || stamp === "missing") writes.set(target.id, withRecipeStamp(existing.doc, identity));
     proofs.push({
       kind: "definition",
       id: target.id,
@@ -802,8 +829,10 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   definitions.sort((a, b) => a.id.localeCompare(b.id));
   proofs.sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));
   blockers.sort((a, b) => `${a.code}:${a.id}:${a.field ?? ""}`.localeCompare(`${b.code}:${b.id}:${b.field ?? ""}`));
+  // Each definition's stamp state and the stamp the apply writes (the recipe's source digest)
+  // are bound into the token, so a stamp that changes after the plan invalidates it.
   const token = evolutionPlanToken({
-    recipe: { id: recipe.id, version: recipe.version, source: recipe.source },
+    recipe: { id: recipe.id, version: recipe.version, source: recipe.source, source_digest: identity.source_digest },
     okfVersion,
     definitions,
     proofs,
@@ -812,6 +841,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   const updates = definitions.filter((definition) => definition.action === "update").length;
   const unchanged = definitions.filter((definition) => definition.action === "unchanged").length;
   const missing = definitions.filter((definition) => definition.action === "missing").length;
+  const stampWrites = definitions.filter((definition) => writes.has(definition.id) && definition.action !== "update").length;
   return {
     plan: {
       recipe: "evolution plan",
@@ -821,11 +851,13 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       okf_version: okfVersion,
       ready: blockers.length === 0,
       changed: updates > 0,
+      writes: writes.size,
       plan_token: token,
       definitions,
       counts: {
         definitions: definitions.length,
         updates,
+        stamp_writes: stampWrites,
         unchanged,
         missing,
         instances_checked: instancesChecked,
@@ -833,7 +865,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       },
       blockers,
     },
-    desired,
+    writes,
   };
 }
 
@@ -862,16 +894,16 @@ export async function applyRecipeEvolution(
     throw new RecipeEvolutionBlocked(plan.id, plan.blockers);
   }
 
-  const completed: Array<{ id: ConceptId; changed: boolean; version: Version }> = [];
-  const pending = plan.definitions.filter((definition) => definition.action === "update").map((definition) => definition.id);
+  const completed: RecipeEvolutionCompletedDefinition[] = [];
+  const pending = plan.definitions.filter((definition) => prepared.writes.has(definition.id)).map((definition) => definition.id);
   for (const definition of plan.definitions) {
-    if (definition.action !== "update") {
-      completed.push({ id: definition.id, changed: false, version: definition.expected_version! });
+    const planned = prepared.writes.get(definition.id);
+    if (planned === undefined) {
+      completed.push({ id: definition.id, changed: false, stamped: false, version: definition.expected_version! });
       continue;
     }
-    const plannedDesired = prepared.desired.get(definition.id)!;
     const now = new Date().toISOString();
-    const desired = recipeDocumentForApply(plannedDesired, plan.okf_version, now);
+    const desired = recipeDocumentForApply(planned, plan.okf_version, now);
     try {
       const result = await mutateDocument({
         bundle,
@@ -896,7 +928,12 @@ export async function applyRecipeEvolution(
           return { frontmatter: { ...desired.frontmatter }, body: desired.body };
         },
       });
-      completed.push({ id: definition.id, changed: result.changed, version: result.version });
+      completed.push({
+        id: definition.id,
+        changed: definition.action === "update" && result.changed,
+        stamped: true,
+        version: result.version,
+      });
       pending.shift();
     } catch (error) {
       if (error instanceof RecipeEditionChanged) {
@@ -933,33 +970,35 @@ export async function applyRecipeEvolution(
   }
 
   const updated = completed.filter((definition) => definition.changed).length;
+  const stamped = completed.filter((definition) => definition.stamped && !definition.changed).length;
+  const written = updated + stamped;
   let postcondition: PreparedRecipeEvolution;
   try {
     postcondition = await prepareRecipeEvolution(bundle, recipe);
   } catch (error) {
     throw new RecipeEvolutionPostcondition(
       "unverifiable",
-      `recipe evolution wrote ${updated} definition(s), but its postcondition could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+      `recipe evolution wrote ${written} definition(s), but its postcondition could not be verified: ${error instanceof Error ? error.message : String(error)}`,
       completed,
       { cause: error },
     );
   }
-  if (!postcondition.plan.ready || postcondition.plan.changed) {
+  if (!postcondition.plan.ready || postcondition.plan.changed || postcondition.plan.writes > 0) {
     throw new RecipeEvolutionPostcondition(
       "changed",
-      `recipe evolution wrote ${updated} definition(s), but the prospective registry changed before the postcondition check`,
+      `recipe evolution wrote ${written} definition(s), but the prospective registry changed before the postcondition check`,
       completed,
       { blockers: postcondition.plan.blockers, postcondition_plan: postcondition.plan.plan_token },
     );
   }
   return {
-    recipe: updated > 0 ? "evolved" : "already current",
+    recipe: updated > 0 ? "evolved" : stamped > 0 ? "stamped" : "already current",
     id: plan.id,
     version: plan.version,
     source: plan.source,
-    changed: updated > 0,
+    changed: written > 0,
     plan_token: plan.plan_token,
     definitions: completed,
-    counts: { updated, unchanged: completed.length - updated },
+    counts: { updated, stamped, unchanged: completed.length - written },
   };
 }

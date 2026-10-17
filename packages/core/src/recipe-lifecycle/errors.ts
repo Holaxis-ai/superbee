@@ -4,10 +4,14 @@
 import type { ConceptId, Version } from "../types.js";
 import type { RecipeEvolutionBlocker } from "./evolution.js";
 
-/** One definition the evolution apply has handled, in plan order. */
+/**
+ * One definition the evolution apply has handled, in plan order: `changed` when its content was
+ * updated, `stamped` when this apply wrote it (a content update or a stamp alone).
+ */
 export interface RecipeEvolutionCompletedDefinition {
   id: ConceptId;
   changed: boolean;
+  stamped: boolean;
   version: Version;
 }
 

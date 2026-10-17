@@ -156,7 +156,7 @@ test("error matrix: recipe lifecycle errors keep their messages and details verb
   assert.deepEqual(blocked.details, { blocker_count: 25, blockers: blockers.slice(0, 20) });
   assert.equal(classifyBundleError(new RecipeEvolutionBlocked("r", blockers.slice(0, 1))).message, "recipe 'r' cannot evolve automatically (1 blocker)");
 
-  const completed = [{ id: "conventions/a", changed: true, version: "sha256:01" }];
+  const completed = [{ id: "conventions/a", changed: true, stamped: true, version: "sha256:01" }];
   const edited = classifyBundleError(new RecipeEvolutionInterrupted(
     "edition_changed",
     new RecipeEditionChanged("0.2", "0.1", "evolution").message,

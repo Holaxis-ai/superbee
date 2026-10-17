@@ -125,9 +125,49 @@ on an undeclared field stays `RECIPE_EVOLUTION_NON_MONOTONIC`; its message now s
 field in `fields.required` or `fields.optional` first, so that plan's text and token change too. Apply recomputes the plan and
 refuses a stale token, but it does not bind instance versions into the convention write, so a
 document written after that recomputation becomes conformance debt that `status` reports. Plans
-for recipes that add neither entry are byte-identical, tokens included. Evidence:
-`packages/cli/test/recipe-evolve-golden.test.ts` and the `recipe evolve` tests in
-`packages/cli/test/recipes.test.ts`.
+for recipes that add neither entry were byte-identical, tokens included, until the recipe install
+stamps below changed every plan. Evidence: `packages/cli/test/recipe-evolve-golden.test.ts` and
+the `recipe evolve` tests in `packages/cli/test/recipes.test.ts`.
+
+## Recipe install stamps
+
+This is an intentional contract change for every recipe. Every convention `recipe add` creates or
+`recipe evolve` writes carries an `x_recipe` stamp, written in the same compare-and-swap write as
+the convention: the recipe `id` and `version`, `of` (how many conventions the recipe declares),
+`source_digest`, `definition` (a digest of the convention as written) and `digest_rules`. It
+records no actor, time or plan token. The recipe lifecycle's comparisons ignore the key; every
+other reader treats it as an unknown `x_` key, so `kinds` output is unchanged.
+
+`recipe evolve` plans gain a top-level `writes` after `changed`, each definition row gains `stamp`
+(`current`, `stale`, `foreign` or `missing`), and `counts` gains `stamp_writes`. `action` and
+`changed` keep their content-only meaning; the write set is every content update plus every
+convention whose stamp is `stale` or `missing`, and a `foreign` stamp alone is never rewritten. A
+ready plan with `changed: false` and `writes` above zero has an apply command: it records stamps
+only, which is how a bundle from before stamps gets them. Plan tokens change for every recipe,
+because each definition's `stamp` and the recipe's source digest enter the token input. The apply
+reports `recipe: evolved | stamped | already current`, `changed: true` whenever anything was
+written, `definitions[]` rows of `id`, `changed` (a content update), `stamped` (this apply wrote
+the row) and `version`, and `counts` of `updated`, `stamped` and `unchanged`; interrupted and
+postcondition errors carry the same rows. A repeated apply after success writes nothing.
+
+Evolve puts back a locally removed declaration only when restoring it widens the Kind (an optional
+field, an enum value, a description, a link type, or a type that passes the instance scan). A
+locally removed required field, section, terminal value or inbound expectation blocks the plan
+(`RECIPE_EVOLUTION_NON_MONOTONIC`, `RECIPE_EVOLUTION_TERMINAL_CHANGE` or
+`RECIPE_EVOLUTION_RELATIONSHIP_CHANGE`) until restored by hand, and a locally added declaration
+blocks it (`RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED`) until the recipe adopts it or it is removed by
+hand.
+
+`recipe add` gains a top-level `stamp` after `changed`: the worst of its conventions' stamps, and
+`commands.plan_evolution` whenever it is not `current`. With a bundle, `recipes` adds
+`installed_count`, `installed` (one row per stamped recipe: `state` of `installed`, `partial`,
+`diverged` or `unknown`, `version`, `source_digest`, `conventions`, `of`, and `records`,
+`missing`, `missing_ids`, `diverged` or `unknown_rules` when they apply), `unstamped_count`, a
+capped `unstamped` list with `unstamped_shown` and `unstamped_help`, and a descriptive
+`stamp_help` when any row is not `installed`; the built-in rows and every existing key are
+unchanged. Exit codes are unchanged. Evidence: `packages/core/test/recipe-lifecycle.test.ts`,
+`packages/cli/test/recipe-evolve-golden.test.ts`, the stamp tests in
+`packages/cli/test/recipes.test.ts` and `packages/cli/test/hosted-definition-writes.test.ts`.
 
 ## Evidence map
 

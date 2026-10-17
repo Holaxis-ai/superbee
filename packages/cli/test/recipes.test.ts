@@ -38,6 +38,7 @@ import {
   parseMarkdown,
   loadKinds,
   kindConventionDoc,
+  stringifyDoc,
   CONVENTION_TYPE,
   type Bundle,
   type ConceptId,
@@ -59,8 +60,13 @@ import { list } from "../src/commands/list.js";
 import { pull } from "../src/commands/pull.js";
 import { promote } from "../src/commands/promote.js";
 import { link } from "../src/commands/link.js";
+import { kind } from "../src/commands/kind.js";
+import { kinds } from "../src/commands/kinds.js";
+import { render } from "../src/output.js";
 import { CliError, classifyBundleError } from "../src/errors.js";
 import {
+  CONTEXT_NOTE_KIND,
+  CONTEXT_NOTE_SEED_BODY_LOGICAL,
   CONTEXT_NOTE_SEED_BODY,
   TASK_SEED_BODY,
   ROADMAP_SEED_BODY,
@@ -71,12 +77,14 @@ import {
   applyRecipeEvolution,
   installRecipe,
   planRecipeEvolution,
+  recipeSourceDigest,
   RecipeLifecycleError,
 } from "@superbee/core/recipe-lifecycle";
 import {
   CONTEXT_NOTES_RECIPE,
   filesRecipeSource,
   parseRecipeFiles,
+  resolveRecipe,
   type RecipeFile,
   type LoadedRecipe,
 } from "../src/recipe-source.js";
@@ -148,6 +156,20 @@ async function runJson(
   return JSON.parse(out) as Record<string, unknown>;
 }
 
+/**
+ * Installed frontmatter minus its recipe stamp, after checking the stamp names `recipe` at its
+ * version: the stamp is install metadata, never definition content, so source comparisons drop it.
+ */
+function unstamped(frontmatter: Record<string, unknown>, recipe: { id: string; version: string }): Record<string, unknown> {
+  const { x_recipe: stamp, ...rest } = frontmatter;
+  assert.deepEqual(
+    { id: (stamp as Record<string, unknown> | undefined)?.id, version: (stamp as Record<string, unknown> | undefined)?.version },
+    recipe,
+    "the installed convention carries its recipe's stamp",
+  );
+  return rest;
+}
+
 /** The expected `conventions/context-note.md` frontmatter, minus the always-dynamic `timestamp`. */
 const EXPECTED_CONTEXT_NOTE_FRONTMATTER = {
   type: CONVENTION_TYPE,
@@ -170,7 +192,7 @@ test("explicit v0.1 init materializes the legacy context-notes guide and frontma
     const { frontmatter, body } = parseMarkdown(raw);
     assert.equal(body, CONTEXT_NOTE_SEED_BODY);
     const { timestamp, ...rest } = frontmatter;
-    assert.deepEqual(rest, EXPECTED_CONTEXT_NOTE_FRONTMATTER);
+    assert.deepEqual(unstamped(rest, { id: "context-notes", version: "1" }), EXPECTED_CONTEXT_NOTE_FRONTMATTER);
     assert.equal(typeof timestamp, "string");
     assert.ok(!Number.isNaN(Date.parse(timestamp as string)), `expected a valid ISO timestamp, got ${timestamp}`);
   } finally {
@@ -451,7 +473,7 @@ test("recipe add work-tracking: applies the current built-in Task convention wit
 
     const raw = await readFile(path.join(dir, "conventions", "task.md"), "utf8");
     const { frontmatter, body } = parseMarkdown(raw);
-    assert.deepEqual(frontmatter, {
+    assert.deepEqual(unstamped(frontmatter, { id: "work-tracking", version: "1" }), {
       type: CONVENTION_TYPE,
       title: "Task",
       governs: "Task",
@@ -621,7 +643,7 @@ test("recipe add roadmap: applies conventions/roadmap.md AND conventions/roadmap
 
     const roadmapRaw = await readFile(path.join(dir, "conventions", "roadmap.md"), "utf8");
     const roadmapParsed = parseMarkdown(roadmapRaw);
-    assert.deepEqual(roadmapParsed.frontmatter, {
+    assert.deepEqual(unstamped(roadmapParsed.frontmatter, { id: "roadmap", version: "1" }), {
       type: CONVENTION_TYPE,
       title: "Roadmap",
       governs: "Roadmap",
@@ -632,7 +654,7 @@ test("recipe add roadmap: applies conventions/roadmap.md AND conventions/roadmap
 
     const itemRaw = await readFile(path.join(dir, "conventions", "roadmap-item.md"), "utf8");
     const itemParsed = parseMarkdown(itemRaw);
-    assert.deepEqual(itemParsed.frontmatter, {
+    assert.deepEqual(unstamped(itemParsed.frontmatter, { id: "roadmap", version: "1" }), {
       type: CONVENTION_TYPE,
       title: "Roadmap Item",
       governs: "Roadmap Item",
@@ -3121,4 +3143,173 @@ test("recipe evolve: retained local status enums are diagnosed on the prospectiv
   assert.equal(warnings[0]!.id, "conventions/widget");
   assert.equal(warnings[0]!.field, "fields.values.status");
   assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")!.fields.optional, ["status"]);
+});
+
+// ── Recipe install stamps through the CLI (T10 built-in case, T12, T13) ──────────────────────────
+
+/** Rewrite one convention file as a hand edit would, through the shared serializer. */
+async function editConventionFile(dir: string, id: string, change: (frontmatter: Record<string, unknown>) => void): Promise<void> {
+  const file = path.join(dir, `${id}.md`);
+  const parsed = parseMarkdown(await readFile(file, "utf8"));
+  const frontmatter = { ...(parsed.frontmatter as Record<string, unknown>) };
+  change(frontmatter);
+  await writeFile(file, stringifyDoc(frontmatter as OkfDocument["frontmatter"], parsed.body));
+}
+
+async function runText(cmd: (argv: string[], deps: { stdout: (s: string) => void }) => Promise<void>, argv: string[]): Promise<string> {
+  let out = "";
+  await cmd(argv, { stdout: (s) => (out += s) });
+  return out;
+}
+
+test("T10: a built-in parsed from its serialized bytes has the source digest of the same recipe built from its constants", () => {
+  const { timestamp: _timestamp, ...frontmatter } = kindConventionDoc(CONTEXT_NOTE_KIND, CONTEXT_NOTE_SEED_BODY_LOGICAL, T).frontmatter;
+  const fromConstants: LoadedRecipe = {
+    ...CONTEXT_NOTES_RECIPE,
+    docs: [{ id: "conventions/context-note", frontmatter: frontmatter as OkfDocument["frontmatter"], body: CONTEXT_NOTE_SEED_BODY_LOGICAL }],
+  };
+  assert.equal(recipeSourceDigest(fromConstants), recipeSourceDigest(CONTEXT_NOTES_RECIPE));
+});
+
+test("T12: recipes reports each recipe's stamp state: installed, partial, diverged, unknown, with records, missing ids and the capped unstamped list", async () => {
+  const dir = await tempDir();
+  try {
+    await init(["--dir", dir], { stdout: () => {} });
+    const fresh = await runJson(recipes, ["--dir", dir]);
+    const contextNotes = CONTEXT_NOTES_RECIPE;
+    assert.deepEqual(fresh.installed, [{
+      id: "context-notes", state: "installed", version: "1", source_digest: recipeSourceDigest(contextNotes), conventions: 1, of: 1,
+    }]);
+    assert.equal(fresh.installed_count, 1);
+    assert.equal(fresh.unstamped_count, 0);
+    assert.equal(fresh.unstamped, undefined);
+    assert.equal(fresh.stamp_help, undefined);
+    // The built-in rows render byte for byte as before: the new keys only follow them.
+    const toon = await runText(recipes, ["--dir", dir]);
+    const before = render({ count: fresh.count, recipes: fresh.recipes }, "default").trimEnd();
+    assert.ok(toon.startsWith(`${before}\ninstalled_count: 1\n`), toon);
+
+    await recipe(["add", "work-tracking", "--dir", dir], { stdout: () => {} });
+    await recipe(["add", "roadmap", "--dir", dir], { stdout: () => {} });
+    // diverged: a hand edit to the installed Context Note.
+    await editConventionFile(dir, "conventions/context-note", (frontmatter) => {
+      frontmatter.fields = { required: ["title", "superbee_progress_status"], optional: ["description", "tags", "mood"] };
+    });
+    // unknown: a stamp written under digest rules this version does not read.
+    await editConventionFile(dir, "conventions/task", (frontmatter) => {
+      frontmatter.x_recipe = { ...(frontmatter.x_recipe as Record<string, unknown>), digest_rules: 2 };
+    });
+    // partial: one of Roadmap's two conventions loses its stamp.
+    await editConventionFile(dir, "conventions/roadmap-item", (frontmatter) => void delete frontmatter.x_recipe);
+    // 21 hand-authored Kinds: unstamped, capped at 20.
+    for (let index = 0; index < 21; index += 1) {
+      const name = `Hand${String(index).padStart(2, "0")}`;
+      await writeDoc({ root: dir }, { id: `conventions/hand-${String(index).padStart(2, "0")}`, frontmatter: { type: CONVENTION_TYPE, title: name, governs: name, fields: { required: ["title"] } }, body: `# ${name}\n` });
+    }
+    const listed = await runJson(recipes, ["--dir", dir]);
+    const rows = listed.installed as Array<Record<string, unknown>>;
+    assert.deepEqual(rows.map((row) => row.id), ["context-notes", "roadmap", "work-tracking"]);
+    const [notes, roadmap, work] = rows as [Record<string, unknown>, Record<string, unknown>, Record<string, unknown>];
+    assert.deepEqual(notes, {
+      id: "context-notes", state: "diverged", version: "1", source_digest: recipeSourceDigest(contextNotes), conventions: 1, of: 1,
+      diverged: ["conventions/context-note"],
+    });
+    const roadmapRecipe = await resolveBuiltin("roadmap");
+    assert.deepEqual(roadmap, {
+      id: "roadmap", state: "partial", version: null, source_digest: null, conventions: 1, of: 2,
+      records: [{ version: "1", source_digest: recipeSourceDigest(roadmapRecipe), conventions: 1 }],
+      missing: 1, missing_ids: ["conventions/roadmap-item"],
+    });
+    assert.deepEqual(work, {
+      id: "work-tracking", state: "unknown", version: null, source_digest: null, conventions: 1, of: 1,
+      unknown_rules: ["conventions/task"],
+    });
+    assert.equal(listed.unstamped_count, 22);
+    assert.equal((listed.unstamped as string[]).length, 20);
+    assert.equal(listed.unstamped_shown, 20);
+    assert.equal((listed.unstamped as string[])[0], "conventions/hand-00");
+    assert.equal(listed.unstamped_all, `${cliInvocation()} list --type Convention --prefix conventions/ --limit 0 --dir ${shellArg(dir)}`);
+    assert.match(String(listed.unstamped_help), /conventions no recipe wrote, or written before recipe stamps/);
+    assert.match(String(listed.stamp_help), /^partial: .*; diverged: .*; unknown: no stamp, or stamp rules this version does not read$/);
+    assert.match(String(listed.stamp_help), /except a Kind declined with 'kind dismiss', which is deliberate/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function resolveBuiltin(name: string): Promise<LoadedRecipe> {
+  const loaded = await resolveRecipe(name);
+  assert.ok(loaded.ok);
+  return loaded.recipe;
+}
+
+test("T12: a Kind declined with kind dismiss reads partial with its id missing and is not unstamped; a legacy bundle reads unknown", async () => {
+  const dir = await tempDir();
+  try {
+    await init(["--dir", dir, "--recipe", "none"], { stdout: () => {} });
+    await kind(["dismiss", "Roadmap Item", "--dir", dir], { stdout: () => {} });
+    await recipe(["add", "roadmap", "--dir", dir], { stdout: () => {} });
+    const declined = await runJson(recipes, ["--dir", dir]);
+    const row = (declined.installed as Array<Record<string, unknown>>).find((candidate) => candidate.id === "roadmap")!;
+    assert.deepEqual([row.state, row.conventions, row.of, row.missing, row.missing_ids], ["partial", 1, 2, 1, ["conventions/roadmap-item"]]);
+    assert.equal(declined.unstamped_count, 0, "a declaration-free record declares nothing a recipe would own");
+
+    // Legacy: written before stamps, every declared convention present, none stamped.
+    await editConventionFile(dir, "conventions/roadmap", (frontmatter) => void delete frontmatter.x_recipe);
+    await recipe(["add", "context-notes", "--dir", dir], { stdout: () => {} });
+    await editConventionFile(dir, "conventions/context-note", (frontmatter) => void delete frontmatter.x_recipe);
+    const legacy = await runJson(recipes, ["--dir", dir]);
+    const legacyRows = legacy.installed as Array<Record<string, unknown>>;
+    assert.deepEqual(legacyRows.find((candidate) => candidate.id === "context-notes"), {
+      id: "context-notes", state: "unknown", version: null, source_digest: null, conventions: 0, of: 1,
+    });
+    assert.deepEqual(legacy.unstamped, ["conventions/context-note", "conventions/roadmap"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("T13: evolve plans and applies a stamp-only backfill, recipe add reports the stamp, and kinds is unchanged", async () => {
+  const dir = await tempDir();
+  try {
+    await init(["--dir", dir], { stdout: () => {} });
+    const kindsStamped = await runText(kinds, ["--dir", dir]);
+    await editConventionFile(dir, "conventions/context-note", (frontmatter) => void delete frontmatter.x_recipe);
+    assert.equal(await runText(kinds, ["--dir", dir]), kindsStamped, "kinds output does not depend on the stamp");
+
+    const add = await runJson(recipe, ["add", "context-notes", "--dir", dir]);
+    assert.deepEqual(Object.keys(add).slice(0, 6), ["recipe", "id", "version", "source", "changed", "stamp"]);
+    assert.equal(add.recipe, "already applied");
+    assert.equal(add.stamp, "missing");
+    assert.deepEqual(add.commands, { plan_evolution: `${cliInvocation()} recipe evolve 'context-notes' --dir ${shellArg(dir)}` });
+
+    const plan = await runJson(recipe, ["evolve", "context-notes", "--dir", dir]);
+    assert.equal(plan.ready, true);
+    assert.equal(plan.changed, false);
+    assert.equal(plan.writes, 1);
+    assert.deepEqual(Object.keys(plan).slice(5, 9), ["ready", "changed", "writes", "plan_token"]);
+    const definitions = plan.definitions as Array<Record<string, unknown>>;
+    assert.deepEqual([definitions[0]!.action, definitions[0]!.stamp], ["unchanged", "missing"]);
+    assert.equal((plan.counts as Record<string, number>).stamp_writes, 1);
+    const apply = (plan.commands as Record<string, string>).apply;
+    assert.match(apply, /recipe evolve 'context-notes' --dir .* --apply sha256:[0-9a-f]{64}$/);
+
+    const applied = await runJson(recipe, ["evolve", "context-notes", "--dir", dir, "--apply", String(plan.plan_token)]);
+    assert.equal(applied.recipe, "stamped");
+    assert.equal(applied.changed, true);
+    assert.deepEqual(applied.counts, { updated: 0, stamped: 1, unchanged: 0 });
+    const row = (applied.definitions as Array<Record<string, unknown>>)[0]!;
+    assert.deepEqual(Object.keys(row), ["id", "changed", "stamped", "version"]);
+    assert.deepEqual([row.changed, row.stamped], [false, true]);
+
+    const settled = await runJson(recipe, ["evolve", "context-notes", "--dir", dir]);
+    assert.equal(settled.writes, 0);
+    assert.equal(settled.commands, undefined, "nothing to apply, no command");
+    const readd = await runJson(recipe, ["add", "context-notes", "--dir", dir]);
+    assert.equal(readd.stamp, "current");
+    assert.equal(readd.commands, undefined);
+    assert.equal(await runText(kinds, ["--dir", dir]), kindsStamped);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

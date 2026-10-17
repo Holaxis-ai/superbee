@@ -13,6 +13,15 @@ import type { ValidationWarning } from "../validation.js";
 import { VersionConflict } from "../versioning.js";
 import { RecipeAssetConflict, RecipeEditionChanged, RecipeInputError } from "./errors.js";
 import {
+  RECIPE_STAMP_KEY,
+  recipeStampIdentity,
+  recipeStampState,
+  withRecipeStamp,
+  worstRecipeStampState,
+  type RecipeStampIdentity,
+  type RecipeStampState,
+} from "./stamp.js";
+import {
   findLegacyViewConvention,
   governsKind,
   legacyEntryAlias,
@@ -69,9 +78,10 @@ export interface RecipeInstallCounts {
 }
 
 /** The receipt `installRecipe` returns: identity, per-doc outcomes, an overall `changed` (any doc
- * changed), and any non-fatal warnings collected at LOAD time (recipe.md reserved keys, skipped
- * malformed convention docs). Duplicate-`governs` against the TARGET bundle is a separate, POST-
- * install check (`loadKinds(bundle)`) — the caller's job, not this function's. */
+ * changed), the worst stamp state among the recipe's conventions, and any non-fatal warnings
+ * collected at LOAD time (recipe.md reserved keys, skipped malformed convention docs).
+ * Duplicate-`governs` against the TARGET bundle is a separate, POST-install check
+ * (`loadKinds(bundle)`) — the caller's job, not this function's. */
 export interface RecipeInstallResult {
   id: string;
   version: string;
@@ -81,6 +91,12 @@ export interface RecipeInstallResult {
   references: RecipeReferenceResult[];
   counts: RecipeInstallCounts;
   changed: boolean;
+  /**
+   * The worst stamp among the recipe's conventions after the install, in the order current,
+   * stale, foreign, missing: a created convention is `current`; an existing one keeps its stamp,
+   * since install never rewrites it. Anything but `current` is converged by `recipe evolve`.
+   */
+  stamp: RecipeStampState;
   warnings: ValidationWarning[];
 }
 
@@ -210,7 +226,9 @@ export async function installRecipe(
 ): Promise<RecipeInstallResult> {
   const now = options.now ?? new Date().toISOString();
   const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
+  const source = recipe;
   recipe = materializeRecipeForEdition(recipe, okfVersion);
+  const identity: RecipeStampIdentity = recipeStampIdentity(source, recipe);
   await assertPortableTargetsCompatible(bundle, recipe, now, okfVersion);
 
   // Legacy-alias probes (see the module comment above the alias helpers): resolved lazily, once.
@@ -229,12 +247,14 @@ export async function installRecipe(
     "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` from the Superbee repository root to migrate it in place";
 
   const docs: RecipeDocResult[] = [];
+  const stamps: RecipeStampState[] = [];
   for (const d of recipe.docs) {
     if (legacyConventionId !== null && governsKind(d, VIEW_KIND_NAME)) {
       // A convention still governing the RETIRED legacy name is unmigrated state: skip creating
       // the current-name convention (never two conventions for one kind), but as an explicit
       // NON-SUCCESS — not a satisfied-looking skip.
       docs.push({ id: d.id, changed: false, migration_required: legacyConventionId });
+      stamps.push("missing");
       migrationWarnings.push({
         code: "MIGRATION_REQUIRED",
         message:
@@ -244,14 +264,17 @@ export async function installRecipe(
       });
       continue;
     }
-    let doc = recipeDocumentForApply(d, okfVersion, now);
+    // The stamp lands in the convention's own create: it exists exactly when the convention does.
+    let doc = withRecipeStamp(recipeDocumentForApply(d, okfVersion, now), identity);
     let changed = true;
     let sourceDiffers = false;
     try {
       doc = await createRecipeDocument(bundle, doc, okfVersion, now);
+      stamps.push("current");
     } catch (err) {
       if (err instanceof VersionConflict) {
         const existing = await readDoc(bundle, doc.id);
+        stamps.push(recipeStampState(existing, identity));
         if (!sameInstalledDoc(existing, doc, okfVersion)) {
           sourceDiffers = true;
           migrationWarnings.push({
@@ -394,6 +417,7 @@ export async function installRecipe(
       docs.some((d) => d.changed) ||
       pages.some((page) => page.changed) ||
       references.some((reference) => reference.changed),
+    stamp: worstRecipeStampState(stamps),
     warnings: [...recipe.warnings, ...migrationWarnings],
   };
 }
@@ -456,8 +480,9 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 export function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, okfVersion: string): boolean {
-  const { timestamp: _existingTimestamp, ...existingFrontmatter } = existing.frontmatter;
-  const { timestamp: _desiredTimestamp, ...desiredFrontmatter } = desired.frontmatter;
+  // The recipe stamp is install metadata, never definition content.
+  const { timestamp: _existingTimestamp, [RECIPE_STAMP_KEY]: _existingStamp, ...existingFrontmatter } = existing.frontmatter;
+  const { timestamp: _desiredTimestamp, [RECIPE_STAMP_KEY]: _desiredStamp, ...desiredFrontmatter } = desired.frontmatter;
   // A reading-order placement the bundle added to an installed convention is not drift: the
   // recipe declares none, and evolution keeps it (BUNDLE_LOCAL_PLACEMENT in evolution.ts).
   if (desiredFrontmatter.order === undefined) delete existingFrontmatter.order;
