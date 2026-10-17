@@ -363,3 +363,32 @@ test("an exact-capacity store can claim attempts across a transaction digit boun
     await exact.updateBlobIntent(value.identity.requestId, "in_flight", { state: "acknowledged", receipt }, { guard: (await exact.readBlobWithJournal(key)).guard });
   } finally { await exact?.close(); await second?.cleanup(); await b.close(); await f.cleanup(); }
 });
+
+test("guarded blob metadata is same-key atomic, named, bounded, and independent of unrelated retained rows", async () => {
+  const f = await fixture();
+  try {
+    const value = input(), frozen = prepared(value);
+    const other = await f.backend.admitPreparedBlob(frozen, { guard: (await f.backend.readBlobWithJournal(value.intent.key)).guard });
+    await f.backend.updateBlobIntent(other.requestId, "pending", { state: "acknowledged", receipt: blobReceipt(frozen, success(value)) }, { guard: (await f.backend.readBlobWithJournal(value.intent.key)).guard });
+    const key = "placement.bin", snapshot = await f.backend.readBlobWithJournal(key, { meta: ["map"] });
+    const changes = { meta: [{ key: "map", value: { phase: "pending" } }] };
+    const write = f.backend.writeBlobMeta(key, changes, { guard: snapshot.guard });
+    changes.meta[0]!.value.phase = "caller-mutated";
+    await write;
+    assert.deepEqual(await f.backend.readMeta("map"), { phase: "pending" });
+    await assert.rejects(f.backend.writeBlobMeta(key, { meta: [{ key: "map", value: "stale" }] }, { guard: snapshot.guard }), JournalGuardConflict);
+    const current = await f.backend.readBlobWithJournal(key, { meta: ["map"] });
+    await assert.rejects(f.backend.writeBlobMeta(key, { meta: [{ key: "unnamed", value: true }] }, { guard: current.guard }), JournalGuardConflict);
+    const competing = input("delete", key);
+    await f.backend.admitPreparedBlob(prepared(competing), { guard: current.guard });
+    await assert.rejects(f.backend.writeBlobMeta(key, { removeMeta: ["map"] }, { guard: current.guard }), JournalGuardConflict);
+    assert.deepEqual(await f.backend.readMeta("map"), { phase: "pending" });
+  } finally { await f.cleanup(); }
+  const small = await fixture(5000);
+  try {
+    const snap = await small.backend.readBlobWithJournal("small.bin", { meta: ["map"] });
+    await assert.rejects(small.backend.writeBlobMeta("small.bin", { meta: [{ key: "map", value: "x".repeat(6000) }] }, { guard: snap.guard }), RangeError);
+    assert.equal(await small.backend.readMeta("map"), undefined);
+    assert.equal((await small.backend.readBlobWithJournal("small.bin")).intents.length, 0);
+  } finally { await small.cleanup(); }
+});

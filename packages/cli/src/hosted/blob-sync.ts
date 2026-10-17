@@ -1,5 +1,5 @@
 /** Scoped ordinary-file baselines. Physical capture is bounded and leaf-only; callers own checkout locking. */
-import { captureBlobHead, isBlobContentType, isContentVersion, compareStorageKeys, blobReceipt, prepareBlobIntent, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobHead, type BlobTargetScope, type BlobIntentRecord, type BlobIntentPatch, type BlobJournaledBackend, isReservedFile, IntentHoldConflict, type JournaledBackend, type BlobJournalRead } from "@superbee/core/storage";
+import { captureBlobHead, isBlobContentType, isContentVersion, compareStorageKeys, isWriteRequestId, blobReceipt, prepareBlobIntent, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobHead, type BlobTargetScope, type BlobIntentRecord, type BlobIntentPatch, type BlobJournaledBackend, isReservedFile, IntentHoldConflict, type JournaledBackend, type BlobJournalRead } from "@superbee/core/storage";
 import { captureJournalValue, equalJournalValue, JournalGuardConflict } from "@superbee/core/journaled-backend";
 
 import path from "node:path";
@@ -8,7 +8,7 @@ import { FileJournalUnavailableError } from "@superbee/core/file-journaled-backe
 import { createHostedBlobReadAdapter, HostedCarrierError, HostedReadAdapterError, type HostedCarrier, type HostedCapabilities } from "@superbee/core/hosted-transport";
 import { RemoteError } from "@superbee/core";
 import { PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "@superbee/core/page";
-import { digestOf, parentUnsafe, fold } from "./projection.js";
+import { digestOf, parentUnsafe, fold, prepareBlobStage, installBlobStage, finishBlobStage, orphanBlobStages, type BlobFileIdentity, type BlobStagePlan, UnsafePlacementError } from "./projection.js";
 import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 
 export const BLOB_SYNC_META_KEY = "hosted.blob-sync.v1";
@@ -18,6 +18,16 @@ export interface BlobSyncEntry {
   head?: BlobHead | null;
   placedDigest: string | null;
   desiredContentType?: string;
+  placement?: BlobPlacementDescriptor;
+}
+export interface BlobPlacementDescriptor {
+  id: string;
+  operation: "create" | "replace" | "delete";
+  state: "pending" | "committed";
+  original: Omit<BlobSyncEntry, "placement"> | null;
+  intended: { head: BlobHead | null; placedDigest: string | null };
+  install?: BlobFileIdentity;
+  preimage?: BlobFileIdentity;
 }
 export interface BlobSyncMap { schemaVersion: 1; scope: BlobTargetScope; entries: BlobSyncEntry[] }
 export interface BlobSyncSnapshot { map: BlobSyncMap; journal: BlobJournalRead }
@@ -31,12 +41,34 @@ function scopeOf(value: BlobTargetScope): BlobTargetScope {
 }
 function entryOf(value: BlobSyncEntry): BlobSyncEntry {
   const row = captureJournalValue(value);
-  if (!object(row) || !only(row, ["key", "head", "placedDigest", "desiredContentType"]) || typeof row.key !== "string" || !(row.placedDigest === null || isContentVersion(row.placedDigest)) || row.desiredContentType !== undefined && !isBlobContentType(row.desiredContentType)) throw new TypeError("invalid blob sync entry");
+  if (!object(row) || !only(row, ["key", "head", "placedDigest", "desiredContentType", "placement"]) || typeof row.key !== "string" || !(row.placedDigest === null || isContentVersion(row.placedDigest)) || row.desiredContentType !== undefined && !isBlobContentType(row.desiredContentType)) throw new TypeError("invalid blob sync entry");
   // Reuse the neutral key grammar even when no head has been observed.
   captureBlobHead({ key: row.key, version: `sha256:${"0".repeat(64)}`, contentType: "application/octet-stream" });
   const head = row.head === undefined ? undefined : row.head === null ? null : captureBlobHead(row.head);
   if (head && head.key !== row.key) throw new TypeError("blob sync head key mismatch");
-  return { key: row.key, ...(head === undefined ? {} : { head }), placedDigest: row.placedDigest, ...(row.desiredContentType === undefined ? {} : { desiredContentType: row.desiredContentType }) };
+  const base = { key: row.key, ...(head === undefined ? {} : { head }), placedDigest: row.placedDigest, ...(row.desiredContentType === undefined ? {} : { desiredContentType: row.desiredContentType }) };
+  return { ...base, ...(row.placement === undefined ? {} : { placement: placementOf(row.placement, base) }) };
+}
+function identityOf(value: BlobFileIdentity): BlobFileIdentity {
+  if (!object(value) || !only(value, ["dev", "ino", "mtimeNs"]) || ![value.dev, value.ino].every(v => typeof v === "string" && /^[1-9][0-9]{0,31}$/.test(v)) || typeof value.mtimeNs !== "string" || !/^-?[0-9]{1,32}$/.test(value.mtimeNs)) throw new TypeError("invalid placement identity");
+  return { dev: value.dev, ino: value.ino, mtimeNs: value.mtimeNs };
+}
+function placementOf(value: BlobPlacementDescriptor, base: Omit<BlobSyncEntry, "placement">): BlobPlacementDescriptor {
+  const v = captureJournalValue(value);
+  if (!object(v) || !only(v, ["id", "operation", "state", "original", "intended", "install", "preimage"]) || typeof v.id !== "string" || !isWriteRequestId(v.id) || !["create", "replace", "delete"].includes(v.operation) || !["pending", "committed"].includes(v.state) || !object(v.intended) || !only(v.intended, ["head", "placedDigest"])) throw new TypeError("invalid placement descriptor");
+  if (v.original !== null && (!object(v.original) || Object.hasOwn(v.original, "placement"))) throw new TypeError("recursive placement original");
+  const original = v.original === null ? null : entryOf(v.original);
+  const head = v.intended.head === null ? null : captureBlobHead(v.intended.head);
+  if (head ? head.key !== base.key || v.intended.placedDigest !== head.version : v.intended.placedDigest !== null) throw new TypeError("placement intended pins mismatch");
+  if (original && original.key !== base.key) throw new TypeError("placement original key mismatch");
+  if (v.operation === "create" ? head === null || original !== null && (original.head !== null || original.placedDigest !== null) : !original?.head || original.placedDigest !== original.head.version || (v.operation === "delete" ? head !== null : head === null || head.version === original.placedDigest)) throw new TypeError("placement operation mismatch");
+  const expected = v.state === "pending" ? original ?? { key: base.key, placedDigest: null } : { key: base.key, head, placedDigest: v.intended.placedDigest, ...(original?.desiredContentType === undefined ? {} : { desiredContentType: original.desiredContentType }) };
+  if (!equalJournalValue(base, expected)) throw new TypeError("placement baseline mismatch");
+  const install = v.install === undefined ? undefined : identityOf(v.install), preimage = v.preimage === undefined ? undefined : identityOf(v.preimage);
+  if (v.operation === "delete" && install || v.operation === "create" && preimage || v.state === "committed" && (v.operation !== "delete" && !install || v.operation !== "create" && !preimage)) throw new TypeError("placement identity mismatch");
+  const descriptor: BlobPlacementDescriptor = { id: v.id, operation: v.operation, state: v.state, original, intended: { head, placedDigest: v.intended.placedDigest }, ...(install === undefined ? {} : { install }), ...(preimage === undefined ? {} : { preimage }) };
+  if (Buffer.byteLength(JSON.stringify(descriptor), "utf8") > 16 * 1024) throw new RangeError("placement descriptor exceeds byte bound");
+  return descriptor;
 }
 /** Canonicalizes order and rejects duplicate keys, unknown fields and oversized metadata. */
 export function captureBlobSyncMap(value: BlobSyncMap, expectedScope: BlobTargetScope): BlobSyncMap {
@@ -46,6 +78,8 @@ export function captureBlobSyncMap(value: BlobSyncMap, expectedScope: BlobTarget
   if (!equalJournalValue(scope, scopeOf(expectedScope))) throw new TypeError("blob sync scope mismatch");
   const entries = input.entries.map(entryOf).sort((a, b) => compareStorageKeys(a.key, b.key));
   if (entries.some((entry, index) => index > 0 && entries[index - 1]!.key === entry.key)) throw new TypeError("duplicate blob sync key");
+  const ids = entries.flatMap(entry => entry.placement ? [entry.placement.id] : []);
+  if (new Set(ids).size !== ids.length) throw new TypeError("duplicate placement id");
   const map: BlobSyncMap = { schemaVersion: 1, scope, entries };
   if (Buffer.byteLength(JSON.stringify(map), "utf8") > 32 * 1024 * 1024) throw new RangeError("blob sync metadata exceeds byte bound");
   return map;
@@ -87,6 +121,7 @@ export async function settleBlobSyncReceipt(backend: BlobJournaledBackend, snaps
   const expected = captured.journal.guard.meta.find(row => row.key === BLOB_SYNC_META_KEY)?.expected;
   const stored = captured.journal.meta.get(BLOB_SYNC_META_KEY);
   if (!expected || !equalJournalValue(expected, stored === undefined ? { present: false } : { present: true, value: stored })) throw new TypeError("blob settlement metadata guard mismatch");
+  if (map.entries.find(entry => entry.key === record.target)?.placement) throw new TypeError("blob receipt settlement waits for placement recovery");
   const prepared = decodePreparedBlobIntent(record.prepared);
   if (!equalJournalValue(map.scope, prepared.scope) || captured.journal.key !== record.target || !captured.journal.intents.some(row => equalJournalValue(row, record))) throw new TypeError("blob settlement snapshot mismatch");
   const witness = update.receipt === undefined ? undefined : blobReceipt(record.prepared, update.receipt.result);
@@ -175,6 +210,7 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
   const outstanding = new Set((await store.listBlobIntents()).filter(row => row.state !== "acknowledged").map(row => row.target));
   for (const entry of map.entries) {
     const hold = (message: string, reason: BlobCaptureHold["reason"] = "not_sendable") => held.push({ key: entry.key, reason, message });
+    if (entry.placement) { hold(`${entry.key} has unresolved local placement evidence; capture waits for recovery`); continue; }
     if (!ordinarySeedKey(entry.key)) { hold(`${entry.key} is a protected namespace; ordinary-file sync does not change it`); continue; }
     if (outstanding.has(entry.key)) { hold(`${entry.key} has a preserved ordinary-file intent; delivery is not yet enabled`); continue; }
     const file = path.join(folder, ...entry.key.split("/"));
@@ -201,4 +237,79 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
     hold(`${entry.key} ${preview ? "would be preserved" : "is preserved"} locally; ordinary-file delivery is not yet enabled`);
   }
   return { keys: new Set(map.entries.map(row => row.key)), held };
+}
+
+function placementPlan(entry: BlobSyncEntry): BlobStagePlan {
+  const p = entry.placement!;
+  return { id: p.id, key: entry.key, operation: p.operation, beforeDigest: p.original?.placedDigest ?? null, afterDigest: p.intended.placedDigest, ...(p.install ? { install: p.install } : {}), ...(p.preimage ? { preimage: p.preimage } : {}) };
+}
+/** A failed acknowledgment is resolved only by the exact durable entry/UUID/state, not bytes. */
+async function writePlacementMap(store: BlobJournaledBackend, snapshot: BlobSyncSnapshot, next: BlobSyncMap, key: string): Promise<void> {
+  if (!store.writeBlobMeta) throw new TypeError("file journal does not support guarded blob metadata");
+  const desired = next.entries.find(entry => entry.key === key);
+  try { await store.writeBlobMeta(key, { meta: [{ key: BLOB_SYNC_META_KEY, value: encodeBlobSyncMap(next) }] }, { guard: snapshot.journal.guard }); }
+  catch (error) {
+    const actual = await readBlobSyncState(store, key, next.scope);
+    if (!equalJournalValue(actual.map.entries.find(entry => entry.key === key), desired)) throw error;
+  }
+}
+function placementBaseline(entry: BlobSyncEntry): BlobSyncEntry {
+  const p = entry.placement!;
+  return { key: entry.key, ...p.intended, ...(p.original?.desiredContentType === undefined ? {} : { desiredContentType: p.original.desiredContentType }) };
+}
+export interface BlobPlacementRecovery { held: { key: string | null; message: string }[] }
+/** Existing map is the sole WAL; no target authority is inferred from raw temporary files. */
+export async function recoverBlobPlacements(folder: string, store: BlobJournaledBackend & Pick<JournaledBackend, "readMeta">, scope: BlobTargetScope): Promise<BlobPlacementRecovery> {
+  const capturedScope = scopeOf(scope), raw = await store.readMeta(BLOB_SYNC_META_KEY), map = decodeBlobSyncMap(raw, capturedScope);
+  const descriptors = map.entries.filter(entry => entry.placement);
+  const held: BlobPlacementRecovery["held"] = [];
+  if ((await orphanBlobStages(folder, new Set(descriptors.map(entry => entry.placement!.id)))).length > 0) return { held: [{ key: null, message: "unreferenced blob placement files are preserved; resolve them before capture" }] };
+  for (const entry of descriptors) {
+    const snapshot = await readBlobSyncState(store, entry.key, capturedScope), current = snapshot.map.entries.find(row => row.key === entry.key);
+    if (!current?.placement || !equalJournalValue(current.placement, entry.placement) || snapshot.journal.intents.some(row => row.state !== "acknowledged")) { held.push({ key: entry.key, message: "blob placement state or journal changed; evidence is preserved" }); continue; }
+    try {
+      if (!await finishBlobStage(folder, placementPlan(current), current.placement.state)) { held.push({ key: entry.key, message: "ambiguous or changed blob placement evidence is preserved" }); continue; }
+      const replacement = current.placement.state === "committed" ? placementBaseline(current) : current.placement.original;
+      const next = captureBlobSyncMap({ ...snapshot.map, entries: [...snapshot.map.entries.filter(row => row.key !== entry.key), ...(replacement ? [replacement] : [])] }, capturedScope);
+      await writePlacementMap(store, snapshot, next, entry.key); // descriptor clears LAST, after directory sync
+    } catch (error) {
+      if (error instanceof UnsafePlacementError || error instanceof JournalGuardConflict || error instanceof FileJournalUnavailableError) held.push({ key: entry.key, message: "blob placement recovery refused; evidence is preserved" });
+      else throw error;
+    }
+  }
+  return { held };
+}
+/** Caller owns the checkout lock and a pinned authoritative read. This API does not fetch. */
+export async function stageBlobPlacement(folder: string, store: BlobJournaledBackend & Pick<JournaledBackend, "readMeta">, supplied: BlobSyncSnapshot, input: { key: string; head: BlobHead | null; bytes?: Uint8Array }): Promise<"placed" | "held"> {
+  if (!store.writeBlobMeta) throw new TypeError("file journal does not support guarded blob metadata");
+  const map = captureBlobSyncMap(supplied.map, supplied.map.scope), key = input.key, head = input.head === null ? null : captureBlobHead(input.head), bytes = input.bytes === undefined ? undefined : new Uint8Array(input.bytes);
+  const guard = captureJournalValue(supplied.journal.guard);
+  const premise = guard.meta.find(row => row.key === BLOB_SYNC_META_KEY)?.expected;
+  if (guard.key !== key || supplied.journal.key !== key || !premise || !equalJournalValue(map, decodeBlobSyncMap(premise.present ? premise.value : undefined, map.scope)) || guard.intents.some(row => row.state !== "acknowledged") || !ordinarySeedKey(key) || head && head.key !== key) throw new TypeError("invalid blob placement snapshot");
+  const original = map.entries.find(row => row.key === key) ?? null;
+  if (original?.placement) return "held";
+  if (head === null ? bytes !== undefined : !bytes || bytes.length > 16 * 1024 * 1024 || digestOf(bytes) !== head.version) throw new TypeError("blob placement bytes mismatch");
+  const operation = head === null ? "delete" : original?.head ? "replace" : "create";
+  const pending: BlobPlacementDescriptor = { id: mintRequestId(), operation, state: "pending", original, intended: { head, placedDigest: head?.version ?? null } };
+  const base: BlobSyncEntry = original ?? { key, placedDigest: null };
+  const entry = entryOf({ ...base, placement: pending });
+  const snapshot: BlobSyncSnapshot = { map, journal: { ...supplied.journal, guard } };
+  await writePlacementMap(store, snapshot, changeBlobSyncEntry(map, entry), key); // pending before ANY filesystem mutation
+  try {
+    const identities = await prepareBlobStage(folder, placementPlan(entry), bytes);
+    let current = await readBlobSyncState(store, key, map.scope), currentEntry = current.map.entries.find(row => row.key === key)!;
+    if (!equalJournalValue(currentEntry.placement, pending) || current.journal.intents.some(row => row.state !== "acknowledged")) return "held";
+    const identified = entryOf({ ...currentEntry, placement: { ...pending, ...identities } });
+    await writePlacementMap(store, current, changeBlobSyncEntry(current.map, identified), key); // identity durable before rename/link
+    await installBlobStage(folder, placementPlan(identified));
+    current = await readBlobSyncState(store, key, map.scope); currentEntry = current.map.entries.find(row => row.key === key)!;
+    if (!equalJournalValue(currentEntry.placement, identified.placement) || current.journal.intents.some(row => row.state !== "acknowledged")) return "held";
+    const committed = entryOf({ ...placementBaseline(currentEntry), placement: { ...currentEntry.placement!, state: "committed" } });
+    await writePlacementMap(store, current, changeBlobSyncEntry(current.map, committed), key);
+    const recovered = await recoverBlobPlacements(folder, store, map.scope);
+    return recovered.held.length === 0 ? "placed" : "held";
+  } catch (error) {
+    if (error instanceof UnsafePlacementError || error instanceof JournalGuardConflict || error instanceof FileJournalUnavailableError || error instanceof RangeError && /exceeds the store's .* byte bound/.test(error.message)) return "held";
+    throw error;
+  }
 }

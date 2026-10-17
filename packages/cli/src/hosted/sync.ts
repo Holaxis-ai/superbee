@@ -56,7 +56,7 @@ import { resolveLocalBundleTarget } from "../bundle.js";
 import { parseSyncArgs } from "../commands/sync/orchestrate.js";
 import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
-import { BLOB_SYNC_META_KEY, type BlobCaptureContext } from "./blob-sync.js";
+import { BLOB_SYNC_META_KEY, recoverBlobPlacements, type BlobCaptureContext } from "./blob-sync.js";
 import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
@@ -481,6 +481,8 @@ async function withSession<T>(
         // anything changes the store, so a crash from here on never leaves it describing a store
         // that moved.
         await recoverPlacements(binding.path, projection);
+        const blobRecovery = await recoverBlobPlacements(binding.path, store, { origin: binding.origin, prefix: binding.routes, bundleId: binding.bundle_id, workspaceSlug: binding.workspace_slug ?? null });
+        if (blobRecovery.held.some(row => row.key === null)) throw new CliError("CONFLICT", "unreferenced blob placement evidence needs attention before capture", { details: { reason: "blob_placement_recovery", folder: binding.path }, help: "preserve the staged files and inspect the checkout before syncing" });
         const record = projection;
         const persist = () => writeProjection(deps.auth.home, binding.checkout_id, record);
         await persist();

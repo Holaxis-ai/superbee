@@ -7,6 +7,8 @@ import { sha256HexOfBytes } from "./sha256.js";
 import { captureJournalValue, equalJournalValue, assertMetaExpectation, JournalGuardConflict, type MetaExpectation, type MetaRecord } from "./journaled-backend.js";
 import type { OperationState } from "./uncertain-write.js";
 
+export { isWriteRequestId } from "./write-identity.js";
+
 export const BLOB_JOURNAL_BOUNDS = Object.freeze({ rawBytes: 16 * 1024 * 1024, preparedBytes: 24 * 1024 * 1024,
   /** The file codec checks the actual tagged encoding, not an estimate of JSON text. */
   terminalReceiptBytes: 128 * 1024,
@@ -46,6 +48,8 @@ export interface BlobJournalRead { key: string; intents: BlobIntentRecord[]; met
 export interface BlobJournalMutationOptions { guard: BlobJournalGuard; meta?: MetaRecord[]; removeMeta?: string[] }
 export interface BlobIntentPatch { state?: OperationState; attempts?: number; receipt?: BlobReceipt }
 export interface BlobJournaledBackend {
+  /** Optional file-only atomic metadata mutation under the complete same-key/named-meta guard. */
+  writeBlobMeta?(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): Promise<void>;
   readBlobWithJournal(key: string, options?: { meta?: readonly string[] }): Promise<BlobJournalRead>;
   admitPreparedBlob(prepared: string, options: BlobJournalMutationOptions): Promise<BlobIntentRecord>;
   listBlobIntents(state?: OperationState | readonly OperationState[]): Promise<BlobIntentRecord[]>;

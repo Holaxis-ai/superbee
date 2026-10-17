@@ -1300,6 +1300,16 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
     return { key, intents, meta, guard: { key, intents: structuredClone(intents), meta: premises } };
   }
 
+  async writeBlobMeta(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): Promise<void> {
+    assertBlobKey(key);
+    const captured = captureBlobMutationOptions({ ...captureJournalValue(changes), guard: options.guard });
+    if (captured.guard.key !== key) throw new JournalGuardConflict(key);
+    await this.#mutate(state => {
+      this.#blobGuard(state, captured.guard);
+      return { changes: FileJournaledBackend.#metaChanges(captured.meta ?? [], captured.removeMeta ?? []), result: undefined };
+    });
+  }
+
   async admitPreparedBlob(prepared: string, options: BlobJournalMutationOptions): Promise<BlobIntentRecord> {
     const captured = decodePreparedBlobIntent(prepared);
     options = captureBlobMutationOptions(options);

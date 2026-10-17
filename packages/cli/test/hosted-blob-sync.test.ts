@@ -1,13 +1,16 @@
 import test from "node:test";
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, symlink, writeFile, truncate, readFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, symlink, writeFile, truncate, readFile, unlink, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+// Existing lower-only test seam; use built module to share the package backend's symbol.
+import { STORE_BYTE_LIMIT } from "../../core/dist/file-journaled-backend-internal.js";
 import { FileJournaledBackend } from "@superbee/core/file-journaled-backend";
 import { prepareBlobIntent, decodePreparedBlobIntent, blobReceipt, compareStorageKeys, type BlobTargetScope } from "@superbee/core/storage";
 import { decodeHostedCapabilities, type HostedCarrier } from "@superbee/core/hosted-transport";
 import { createHash, randomUUID } from "node:crypto";
-import { BLOB_SYNC_META_KEY, captureBlobSyncMap, encodeBlobSyncMap, decodeBlobSyncMap, changeBlobSyncEntry, blobSyncDirty, seedBlobSyncEntry, readBlobSyncState, settleBlobSyncReceipt, seedInitialBlobBaselines, captureTrackedBlobChanges, type BlobSyncMap } from "../src/hosted/blob-sync.js";
+import { BLOB_SYNC_META_KEY, captureBlobSyncMap, encodeBlobSyncMap, decodeBlobSyncMap, changeBlobSyncEntry, blobSyncDirty, seedBlobSyncEntry, readBlobSyncState, settleBlobSyncReceipt, seedInitialBlobBaselines, captureTrackedBlobChanges, stageBlobPlacement, recoverBlobPlacements, type BlobSyncMap } from "../src/hosted/blob-sync.js";
 const digest = (s: string) => `sha256:${createHash("sha256").update(s).digest("hex")}`;
 const scope: BlobTargetScope = { origin: "https://example.test", prefix: "/sync/v1", bundleId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", workspaceSlug: "team" };
 const empty = (): BlobSyncMap => ({ schemaVersion: 1 as const, scope, entries: [] });
@@ -167,4 +170,173 @@ test("corrupt .md blob metadata is rejected by capture before any file or journa
     assert.equal(await readFile(file, "utf8"), "preserve me");
     assert.equal(await backend.readMeta(BLOB_SYNC_META_KEY), corrupt);
   } finally { await backend.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+async function placementFixture(operation: "create" | "replace" | "delete", key = "opaque.bin") {
+  const dir = await mkdtemp(path.join(tmpdir(), "blob-placement-")), folder = path.join(dir, "files");
+  await mkdir(folder);
+  const options = { directory: path.join(dir, "store"), lock: { lockRoot: path.join(dir, "locks"), waitMs: 2000 } };
+  const store = await FileJournaledBackend.open(options);
+  let map = empty();
+  if (operation !== "create") {
+    await writeFile(path.join(folder, key), "old");
+    map = changeBlobSyncEntry(map, { ...seedBlobSyncEntry({ key, version: digest("old"), contentType: "x/old" }, digest("old")), desiredContentType: "x/later" });
+  }
+  await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(map));
+  await store.close();
+  return { dir, folder, options, key, map, async cleanup() { await rm(dir, { recursive: true, force: true }); } };
+}
+function placementCrash(f: Awaited<ReturnType<typeof placementFixture>>, operation: "create" | "replace" | "delete", cut: "prepare" | "installed" | "committed" | "cleanup") {
+  const script = `
+    import { promises as fs } from 'node:fs';
+import { FileJournaledBackend } from '@superbee/core/file-journaled-backend';
+    const m = await import(${JSON.stringify(new URL("../src/hosted/blob-sync.ts", import.meta.url).href)});
+    const store = await FileJournaledBackend.open(${JSON.stringify(f.options)});
+    const original = store.writeBlobMeta.bind(store); let calls = 0, committed = false;
+    const stop = () => process.kill(process.pid, 'SIGKILL');
+    store.writeBlobMeta = async (...args) => {
+      calls++;
+      if (${JSON.stringify(cut)} === 'installed' && calls === 3) stop();
+      await original(...args);
+      if (calls === 3) committed = true;
+      if (${JSON.stringify(cut)} === 'prepare' && calls === 1 || ${JSON.stringify(cut)} === 'committed' && calls === 3) stop();
+    };
+    const unlink = fs.unlink;
+    fs.unlink = async file => { await unlink(file); if (${JSON.stringify(cut)} === 'cleanup' && committed && String(file).includes('.superbee-bp-')) stop(); };
+    const head = ${operation === "delete" ? "null" : JSON.stringify({ key: f.key, version: digest("new"), contentType: "x/new" })};
+    await m.stageBlobPlacement(${JSON.stringify(f.folder)}, store, await m.readBlobSyncState(store, ${JSON.stringify(f.key)}, ${JSON.stringify(scope)}), { key: ${JSON.stringify(f.key)}, head, ...(head ? { bytes: Buffer.from('new') } : {}) });
+    process.exit(99);
+  `;
+  try { execFileSync(process.execPath, ["--import", new URL("./ts-loader.mjs", import.meta.url).pathname, "--input-type=module", "-e", script], { cwd: process.cwd(), timeout: 15_000, stdio: "pipe" }); assert.fail("child did not stop"); }
+  catch (error) { assert.equal((error as { signal?: string }).signal, "SIGKILL", error instanceof Error ? error.message : String(error)); }
+}
+test("placement WAL recovers create/replace/delete at finite durable cut points, twice", async () => {
+  for (const operation of ["create", "replace", "delete"] as const) {
+    for (const cut of ["prepare", "installed", "committed", "cleanup"] as const) {
+      const f = await placementFixture(operation);
+      try {
+        placementCrash(f, operation, cut);
+        const store = await FileJournaledBackend.open(f.options);
+        try {
+          const before = await readBlobSyncState(store, f.key, scope);
+          assert.equal(before.map.entries[0]!.placement!.state, cut === "prepare" || cut === "installed" ? "pending" : "committed");
+          assert.deepEqual((await recoverBlobPlacements(f.folder, store, scope)).held, [], `${operation}/${cut}`);
+          assert.deepEqual((await recoverBlobPlacements(f.folder, store, scope)).held, [], "idempotent recovery");
+          const committed = cut === "committed" || cut === "cleanup", absent = committed ? operation === "delete" : operation === "create";
+          if (absent) await assert.rejects(readFile(path.join(f.folder, f.key)), { code: "ENOENT" });
+          else assert.equal(await readFile(path.join(f.folder, f.key), "utf8"), committed ? "new" : "old");
+          const after = await readBlobSyncState(store, f.key, scope), entry = after.map.entries[0];
+          assert.equal(entry?.placement, undefined);
+          if (!committed) assert.deepEqual(after.map, f.map);
+          else { assert.equal(entry!.placedDigest, operation === "delete" ? null : digest("new")); assert.equal(entry!.desiredContentType, operation === "create" ? undefined : "x/later"); }
+        } finally { await store.close(); }
+      } finally { await f.cleanup(); }
+    }
+  }
+});
+test("placement preserves independent new bytes, user edits/recreation and changed preimage evidence", async () => {
+  for (const mutation of ["installed-edit", "recreated", "preimage", "committed-edit"] as const) {
+    const f = await placementFixture("replace");
+    try {
+      placementCrash(f, "replace", mutation === "committed-edit" ? "committed" : "installed");
+      const store = await FileJournaledBackend.open(f.options);
+      try {
+        const snapshot = await readBlobSyncState(store, f.key, scope), id = snapshot.map.entries[0]!.placement!.id;
+        const stage = (role: string) => path.join(f.folder, `.superbee-bp-${id}-${role}.tmp`);
+        if (mutation === "recreated") { await unlink(path.join(f.folder, f.key)); await writeFile(path.join(f.folder, f.key), "new"); }
+        else await writeFile(mutation === "preimage" ? stage("pre") : path.join(f.folder, f.key), "user edit");
+        assert.equal(await readFile(stage("new"), "utf8"), "new", "immutable new bytes do not share installed inode");
+        const result = await recoverBlobPlacements(f.folder, store, scope);
+        if (mutation === "committed-edit") {
+          assert.deepEqual(result.held, []);
+          const entry = (await readBlobSyncState(store, f.key, scope)).map.entries[0]!;
+          assert.equal(entry.placement, undefined);
+          assert.equal(blobSyncDirty(entry, digest("user edit")), true);
+        } else { assert.equal(result.held.length, 1); assert.ok((await readBlobSyncState(store, f.key, scope)).map.entries[0]!.placement); }
+        if (mutation === "preimage") assert.equal(await readFile(stage("pre"), "utf8"), "user edit");
+        else assert.equal(await readFile(path.join(f.folder, f.key), "utf8"), mutation === "recreated" ? "new" : "user edit");
+      } finally { await store.close(); }
+    } finally { await f.cleanup(); }
+  }
+});
+test("normal staged placement resolves lost metadata acknowledgments and supports a 255-byte leaf", async () => {
+  const f = await placementFixture("replace", "x".repeat(255));
+  const store = await FileJournaledBackend.open(f.options);
+  try {
+    const proxy = new Proxy(store, { get(target, key) { if (key === "writeBlobMeta") return async (...args: Parameters<typeof store.writeBlobMeta>) => { await target.writeBlobMeta(...args); throw new Error("lost durable acknowledgment"); }; const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value; } });
+    const snapshot = await readBlobSyncState(store, f.key, scope);
+    assert.equal(await stageBlobPlacement(f.folder, proxy, snapshot, { key: f.key, head: { key: f.key, version: digest("new"), contentType: "x/new" }, bytes: Buffer.from("new") }), "placed");
+    assert.equal(await readFile(path.join(f.folder, f.key), "utf8"), "new");
+    assert.equal((await readBlobSyncState(store, f.key, scope)).map.entries[0]!.placement, undefined);
+    assert.deepEqual((await readdir(f.folder)).filter(name => name.startsWith(".superbee-bp-")), []);
+  } finally { await store.close(); await f.cleanup(); }
+});
+test("placement metadata capacity refusal after installation leaves WAL and recovers original bytes", async () => {
+  const f = await placementFixture("replace");
+  const limitedOptions = { ...f.options, [STORE_BYTE_LIMIT]: 5000 };
+  const store = await FileJournaledBackend.open(limitedOptions);
+  let calls = 0, refused = false;
+  try {
+    const proxy = new Proxy(store, { get(target, key) {
+      if (key === "writeBlobMeta") return async (...args: Parameters<typeof store.writeBlobMeta>) => {
+        if (++calls === 3) {
+          let low = 0, high = 5000;
+          while (low < high) {
+            const middle = Math.ceil((low + high) / 2);
+            try { await target.writeMeta("padding", "x".repeat(middle)); low = middle; }
+            catch (error) { if (!(error instanceof RangeError)) throw error; high = middle - 1; }
+          }
+          for (;;) { try { await target.writeMeta("padding", "x".repeat(low)); break; } catch (error) { if (!(error instanceof RangeError) || low === 0) throw error; low--; } }
+        }
+        try { await target.writeBlobMeta(...args); } catch (error) { if (calls === 3 && error instanceof RangeError) refused = true; throw error; }
+      };
+      const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const result = await stageBlobPlacement(f.folder, proxy, await readBlobSyncState(store, f.key, scope), { key: f.key, head: { key: f.key, version: digest("new"), contentType: "x/new" }, bytes: Buffer.from("new") });
+    assert.equal(refused, true, "actual projected store budget refuses committed map growth");
+    assert.equal(result, "held");
+    assert.equal((await readBlobSyncState(store, f.key, scope)).map.entries[0]!.placement!.state, "pending");
+    assert.equal(await readFile(path.join(f.folder, f.key), "utf8"), "new");
+    assert.deepEqual((await recoverBlobPlacements(f.folder, store, scope)).held, []);
+    assert.equal(await readFile(path.join(f.folder, f.key), "utf8"), "old");
+    assert.deepEqual((await readBlobSyncState(store, f.key, scope)).map, f.map);
+  } finally { await store.close(); await f.cleanup(); }
+});
+test("staged placement refuses stale maps, same-byte physical replace and malformed descriptors before mutation", async () => {
+  const f = await placementFixture("replace"), store = await FileJournaledBackend.open(f.options);
+  try {
+    const snapshot = await readBlobSyncState(store, f.key, scope);
+    await assert.rejects(stageBlobPlacement(f.folder, store, snapshot, { key: f.key, head: { key: f.key, version: digest("old"), contentType: "x/metadata-only" }, bytes: Buffer.from("old") }), /operation mismatch/);
+    const other = changeBlobSyncEntry(f.map, { key: "other.bin", placedDigest: null });
+    await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(other));
+    await assert.rejects(stageBlobPlacement(f.folder, store, snapshot, { key: f.key, head: { key: f.key, version: digest("new"), contentType: "x/new" }, bytes: Buffer.from("new") }));
+    assert.equal(await readFile(path.join(f.folder, f.key), "utf8"), "old");
+    assert.deepEqual((await readdir(f.folder)).filter(name => name.startsWith(".superbee-bp-")), []);
+    const malformed = structuredClone(other);
+    malformed.entries[0]!.placement = { id: "not-a-uuid", operation: "replace", state: "pending", original: f.map.entries[0]!, intended: { head: { key: f.key, version: digest("new"), contentType: "x/new" }, placedDigest: digest("new") } };
+    assert.throws(() => captureBlobSyncMap(malformed, scope), /invalid placement descriptor/);
+    malformed.entries[0]!.placement!.id = randomUUID();
+    assert.throws(() => captureBlobSyncMap({ ...malformed, entries: [{ ...malformed.entries[0]!, placement: { ...malformed.entries[0]!.placement!, extra: "x".repeat(20000) } }] } as unknown as BlobSyncMap, scope), /invalid placement descriptor/);
+    assert.throws(() => captureBlobSyncMap({ ...malformed, entries: [{ ...malformed.entries[0]!, placement: { ...malformed.entries[0]!.placement!, install: { dev: "1".repeat(33), ino: "1", mtimeNs: "1" } } }] }, scope), /invalid placement identity/);
+    assert.throws(() => captureBlobSyncMap({ ...malformed, entries: [{ ...malformed.entries[0]!, placement: { ...malformed.entries[0]!.placement!, original: { ...malformed.entries[0]!, placement: malformed.entries[0]!.placement! } } }] } as unknown as BlobSyncMap, scope), /recursive placement original/);
+  } finally { await store.close(); await f.cleanup(); }
+});
+test("selected receipt cannot retire pending or committed placement WAL", async () => {
+  const f = await placementFixture("replace"), store = await FileJournaledBackend.open(f.options);
+  try {
+    const frozen = prepareBlobIntent({ scope, intent: { operationId: "blobs.create.v1", key: f.key, expectedVersion: null, expectedContentType: null, version: digest("old"), contentType: "x/old" }, identity: { requestId: randomUUID(), binding: digest("checkout") }, createdAt: new Date().toISOString() }, Buffer.from("old"));
+    const row = await store.admitPreparedBlob(frozen, { guard: (await store.readBlobWithJournal(f.key)).guard });
+    const receipt = blobReceipt(frozen, { ok: true, operationId: "blobs.create.v1", data: { key: f.key, version: digest("old"), contentType: "x/old", changed: true } });
+    const terminal = await store.updateBlobIntent(row.requestId, "pending", { state: "acknowledged", receipt }, { guard: (await store.readBlobWithJournal(f.key)).guard });
+    for (const state of ["pending", "committed"] as const) {
+      const original = f.map.entries[0]!, head = { key: f.key, version: digest("new"), contentType: "x/new" };
+      const identity = { dev: "1", ino: "2", mtimeNs: "3" };
+      const entry = { ...(state === "pending" ? original : { key: f.key, head, placedDigest: head.version, desiredContentType: original.desiredContentType }), placement: { id: randomUUID(), operation: "replace" as const, state, original, intended: { head, placedDigest: head.version }, ...(state === "committed" ? { install: identity, preimage: identity } : {}) } };
+      const map = changeBlobSyncEntry(f.map, entry);
+      await store.writeMeta(BLOB_SYNC_META_KEY, encodeBlobSyncMap(map));
+      await assert.rejects(settleBlobSyncReceipt(store, await readBlobSyncState(store, f.key, scope), terminal, { state: "acknowledged", receipt }), /waits for placement recovery/);
+      assert.equal(await store.readMeta(BLOB_SYNC_META_KEY), encodeBlobSyncMap(map));
+      assert.deepEqual(await store.readBlobIntent(row.requestId), terminal);
+    }
+  } finally { await store.close(); await f.cleanup(); }
 });
