@@ -8,28 +8,28 @@ is the durable process for every browser-local prerelease.
 
 | Package | Version | Access / channel |
 | --- | --- | --- |
-| @superbee/core | 0.2.0-pre.16 | public / next |
-| @superbee/server | 0.2.0-pre.16 | public / next |
-| @superbee/browser-local | 0.1.0-pre.13 | public / next |
-| @superbee/markdown-renderer | 0.1.13 | existing restricted access / latest |
+| @superbee/core | 0.2.0-pre.17 | public / next |
+| @superbee/server | 0.2.0-pre.17 | public / next |
+| @superbee/browser-local | 0.1.0-pre.14 | public / next |
+| @superbee/markdown-renderer | 0.1.14 | existing restricted access / latest |
 
-This candidate adds core's hosted client and recipe lifecycle (superbee#467 to #481). New
-public core subpaths: `@superbee/core/hosted-client` (browser-safe client with a one-call
-document write and a per-bundle capabilities cache), `@superbee/core/hosted-client/node`
-(Node-only verified export download) and `@superbee/core/recipe-lifecycle` (storage-neutral
-recipe install and evolve, with `x_recipe` install receipts on installed conventions).
-`@superbee/core/hosted-transport` gains blob read and write transports and blob result
-decoding, and the file journal can persist guarded blob intents (it promotes lazily to a
-sticky format 2 on the first blob admission; older readers refuse it). The shared
-`performUncertainWrite` gains optional `signal`, `earlierDeliveryUnclear` and a recorded-only
-start; defaults are unchanged. Server moves with core with no source change.
+This candidate carries core write recovery that tells a pending outcome from an absent one
+(superbee#486): a lookup may answer `LOOKUP_PENDING`, and after it any refusal of the resend
+made before execution (a gateway `400` included) leaves the write unknown instead of settling
+it while the earlier delivery is held. The unknown result carries that `refusal`. After an
+absent lookup, a non-authorization refusal still settles as before. It also adds two public core subpaths: `@superbee/core/record-overlay` (superbee#484,
+guarded plan and apply of an owned-field record overlay and its Signals) and
+`@superbee/core/bundle-health` (superbee#488, the findings of `superbee status` and the Kind
+conformance findings as a browser-safe report). `nonCanonicalDocumentId` is exported from the
+root and `@superbee/core/storage`. Server moves with core with no source change.
 
-Browser-local 0.1.0-pre.13 moves its exact pin to core pre.16 with no browser-local source
-change since 0.1.0-pre.12. Renderer 0.1.13 extends its core peer allowance through pre.16
-and also carries the renderer source change of superbee#475 (`doc-markdown-fallback`
-marker). Each is a new version because a version is never reused for different bytes, and
-each is included so consumers can align their root core without overriding peer checks.
-Hand publication of either is optional.
+Browser-local 0.1.0-pre.14 moves its exact pin to core pre.17 and carries the browser-local
+source change of superbee#486: push pauses, and persists the pause, when an unknown outcome
+carries an authorization refusal, as it does for a settled one; the intent stays pending.
+Renderer 0.1.14 extends its core peer allowance through pre.17 with no source change since
+0.1.13. Each is a new version because a version is never reused for different bytes, and each
+is included so consumers can align their root core without overriding peer checks. Hand
+publication of either is optional.
 
 ## Before release
 
