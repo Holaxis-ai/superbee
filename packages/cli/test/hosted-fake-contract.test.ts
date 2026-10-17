@@ -157,7 +157,9 @@ test("the fake answers every golden /sync/v1 exchange in the host's shape", asyn
   };
   const json = async (response: Promise<Response>) => (await (await response).clone().json()) as { data: { version: string; digest?: string }; digest: string };
 
-  await observe("whoami-200", send("whoami", {}));
+  // The host states its document target authority key; the fake states none unless a test opts
+  // in, so this answer is driven against one that states it.
+  await observe("whoami-200", sendTo(new FakeHost({ targetAuthorityKey: "orgs" }), "whoami", {}));
   await observe("bundles-200", send("bundles", {}));
   // The host's capabilities answer states the front-page capability; the fake's default is a host
   // from before it, so this answer is driven against one that states it.

@@ -194,7 +194,7 @@ test("a malformed sync prefix or a missing credential provider is refused at con
 
 // ── happy paths ────────────────────────────────────────────────────────────────────────────
 
-test("whoami: the golden identity, its workspaces' slugs and the stated write bound", async () => {
+test("whoami: the golden identity, its workspaces' slugs, the stated write bound and the target authority key", async () => {
   const { fetch, sent } = serving({ whoami: "whoami-200" });
   const identity = await clientOf(fetch).whoami();
   assert.deepEqual(identity, {
@@ -203,6 +203,8 @@ test("whoami: the golden identity, its workspaces' slugs and the stated write bo
     workspaces: [{ tenantId: "tenant:a", slug: "tenant-a" }],
     documentInputBytes: 983040,
     email: null,
+    // The fixture deployment's data host application id.
+    targetAuthorityKey: "orgs",
   });
   assert.deepEqual(sent, [{ path: "/sync/v1/whoami", body: {}, authorization: "Bearer token-1" }]);
 });
