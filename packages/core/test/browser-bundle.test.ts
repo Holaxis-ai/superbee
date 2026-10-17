@@ -66,6 +66,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "hosted-transport/index.js", symbol: "createHostedReadAdapter" },
   { module: "hosted-client/index.js", symbol: "createHostedClient" },
   { module: "recipe-lifecycle/index.js", symbol: "planRecipeEvolution" },
+  { module: "record-overlay/index.js", symbol: "planRecordOverlay" },
 ];
 
 for (const { module, symbol } of BROWSER_SUBPATHS) {
@@ -331,6 +332,76 @@ test("core/recipe-lifecycle installs a View recipe, plans and applies its evolut
   const nodeBytes = Buffer.from(html, "utf8");
   assert.deepEqual(outcome.blob, Array.from(nodeBytes), "the sandbox wrote the bytes Node's UTF-8 encoder produces");
   assert.equal(outcome.blobVersion, `sha256:${createHash("sha256").update(nodeBytes).digest("hex")}`);
+});
+
+test("core/record-overlay plans and applies over MemoryBackend in a sandbox with only TextEncoder, URL and structuredClone, matching Node's plan", async () => {
+  const result = await build({
+    stdin: {
+      contents: [
+        'export { applyRecordOverlay, planRecordOverlay, readOverlayPolicy } from "./record-overlay/index.js";',
+        'export { MemoryBackend } from "./memory-backend.js";',
+        'export { buildKindRegistry } from "./kinds.js";',
+      ].join("\n"),
+      resolveDir: path.resolve(here, "../dist"),
+      loader: "js",
+    },
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    globalName: "SuperbeeOverlay",
+    write: false,
+    logLevel: "silent",
+  });
+  assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 2));
+  const sandbox: Record<string, unknown> = { TextEncoder, URL };
+  assert.equal(runInNewContext("typeof process", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof Buffer", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof require", sandbox), "undefined");
+  runInNewContext("globalThis.structuredClone = (value) => JSON.parse(JSON.stringify(value));", sandbox);
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+
+  // The same scenario runs in Node from source; the plans must agree byte for byte.
+  const scenario = `async (api) => {
+    const { applyRecordOverlay, planRecordOverlay, readOverlayPolicy, MemoryBackend, buildKindRegistry } = api;
+    const provider = "https://calendar.example.org/feed.ics?token=sandbox-secret";
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", "---\\nokf_version: '0.2'\\n---\\n# Sandbox overlay\\n");
+    const bundle = { root: "browser-overlay", backend };
+    const conventions = [
+      { id: "conventions/event", body: "", frontmatter: { type: "Convention", title: "Event", governs: "Event", fields: { required: ["title", "start"], optional: ["event_status"] } } },
+      { id: "conventions/signal", body: "", frontmatter: { type: "Convention", title: "Signal", governs: "Signal", path: "signals/", links: { "from feed": "Source Feed" },
+        claim: { owner_field: "assignee", state_field: "progress_status" },
+        fields: { required: ["title", "superbee_progress_status", "change_kind", "observed_at"], optional: ["provider", "external_id", "diff_summary", "priority", "assignee", "about_doc"] } } },
+    ];
+    for (const doc of conventions) await backend.write(doc.id, doc);
+    await backend.write("events/story", { id: "events/story", body: "Editor text.\\n", frontmatter: { type: "Event", title: "Story", start: "2026-10-10T10:00:00-04:00", event_status: "scheduled", sources: [{ resource: provider, id: "rec-1" }] } });
+    const registry = buildKindRegistry(conventions, [], { okfVersion: "0.2" });
+    const overlay = { bundle, registry, okfVersion: "0.2" };
+    const policy = readOverlayPolicy({ id: "source-feeds/sandbox", frontmatter: { url: provider, target_kind: "Event", owned_fields: ["start", "event_status"], auto_apply: ["changed", "canceled"] } }, { targetKind: registry.kinds.get("Event") });
+    const plan = await planRecordOverlay({ content: overlay, ops: overlay, policy, sameBundle: true, observedAt: "2026-10-03T14:00:00Z", changes: [
+      { external_id: "rec-1", change_kind: "canceled", changed_fields: ["event_status"], before: { title: "Story", event_status: "scheduled" }, after: { title: "Story", event_status: "canceled" }, content_digest: "sha256:aa" },
+      { external_id: "rec-2", change_kind: "new", changed_fields: ["title"], before: null, after: { title: "Ünïcödé 🐝" }, content_digest: "sha256:bb" },
+    ] });
+    const receipt = await applyRecordOverlay(plan, { content: overlay, ops: overlay, policy, actor: "process:sandbox" });
+    const story = await backend.read("events/story");
+    const signals = (await backend.list("signals/")).length;
+    return JSON.stringify({ plan, outcomes: receipt.results.map((r) => r.outcome), status: story.doc.frontmatter.event_status, signals });
+  }`;
+  const inSandbox = JSON.parse(await (runInNewContext(`(${scenario})(SuperbeeOverlay)`, sandbox) as Promise<string>)) as {
+    plan: { steps: Array<{ op: string; target: string; candidate?: { frontmatter: Record<string, unknown> } }> };
+    outcomes: string[];
+    status: string;
+    signals: number;
+  };
+  const overlayApi = await import("../src/record-overlay/index.js");
+  const { MemoryBackend } = await import("../src/memory-backend.js");
+  const { buildKindRegistry } = await import("../src/kinds.js");
+  const inNode = JSON.parse(await (new Function("api", `return (${scenario})(api)`)({ ...overlayApi, MemoryBackend, buildKindRegistry }) as Promise<string>)) as typeof inSandbox;
+  assert.deepEqual(inSandbox.outcomes, ["applied", "applied", "applied"]);
+  assert.equal(inSandbox.status, "canceled");
+  assert.equal(inSandbox.signals, 2);
+  assert.deepEqual(inSandbox.plan, inNode.plan, "the sandbox plan equals Node's: ids, digests, versions and redaction");
+  assert.ok(!JSON.stringify(inSandbox.plan.steps.filter((s) => s.op === "create-signal")).includes("sandbox-secret"));
 });
 
 test("artifact contract imports and decodes without storage, network or DOM globals", async () => {

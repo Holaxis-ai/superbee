@@ -51,6 +51,10 @@
       "types": "./dist/recipe-lifecycle/index.d.ts",
       "default": "./dist/recipe-lifecycle/index.js"
     },
+    "./record-overlay": {
+      "types": "./dist/record-overlay/index.d.ts",
+      "default": "./dist/record-overlay/index.js"
+    },
     "./kinds": {
       "types": "./dist/kinds.d.ts",
       "default": "./dist/kinds.js"

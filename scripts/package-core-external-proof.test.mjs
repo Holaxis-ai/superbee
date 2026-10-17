@@ -73,6 +73,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/recipes.d.ts"));
     assert.ok(paths.includes("dist/recipe-lifecycle/index.js"));
     assert.ok(paths.includes("dist/recipe-lifecycle/index.d.ts"));
+    assert.ok(paths.includes("dist/record-overlay/index.js"));
+    assert.ok(paths.includes("dist/record-overlay/index.d.ts"));
     assert.ok(paths.includes("dist/remote.js"));
     assert.ok(paths.includes("dist/remote.d.ts"));
     assert.ok(paths.includes("dist/storage.js"));
@@ -475,6 +477,7 @@ import { RemoteBackend, RemoteError } from "@superbee/core/remote";
 import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
 import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
+import { applyRecordOverlay, buildSourceIndex, OverlayRefusal, planRecordOverlay, type OverlayBundle, type OverlayPolicy, type OverlayReceipt, type RecordChange } from "@superbee/core/record-overlay";
 
 declare const backend: StorageBackend;
 declare const document: OkfDocument;
@@ -501,6 +504,15 @@ export function installStates(conventions: OkfDocument[]): RecipeInstallState[] 
   return installedRecipes(conventions).rows.map((row) => row.state);
 }
 export const lifecycleRuntime = { RecipeLifecycleError };
+declare const overlayBundle: OverlayBundle;
+declare const overlayPolicy: OverlayPolicy;
+declare const overlayChanges: RecordChange[];
+export async function exerciseRecordOverlay(): Promise<OverlayReceipt> {
+  const overlays = await buildSourceIndex(overlayBundle.bundle, { type: overlayPolicy.target_kind });
+  const plan = await planRecordOverlay({ content: overlayBundle, ops: overlayBundle, policy: overlayPolicy, changes: overlayChanges, observedAt: "2026-10-17T00:00:00Z", overlays });
+  return applyRecordOverlay(plan, { content: overlayBundle, ops: overlayBundle, policy: overlayPolicy, actor: "process:worker", overlays });
+}
+export const overlayRuntime = { OverlayRefusal };
 `,
     );
     await writeFile(
@@ -563,12 +575,15 @@ export const lifecycleRuntime = { RecipeLifecycleError };
     assert.deepEqual(installedManifest.exports["./hosted-client"], { types: "./dist/hosted-client/index.d.ts", default: "./dist/hosted-client/index.js" });
     assert.deepEqual(installedManifest.exports["./hosted-client/node"], { types: "./dist/hosted-client/node.d.ts", default: "./dist/hosted-client/node.js" });
     assert.deepEqual(installedManifest.exports["./recipe-lifecycle"], { types: "./dist/recipe-lifecycle/index.d.ts", default: "./dist/recipe-lifecycle/index.js" });
+    assert.deepEqual(installedManifest.exports["./record-overlay"], { types: "./dist/record-overlay/index.d.ts", default: "./dist/record-overlay/index.js" });
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
     assert.ok(installedFiles.includes("dist/hosted-client/index.js"), "the hosted client subpath is packed");
     assert.ok(installedFiles.includes("dist/hosted-client/node.js"), "the hosted client's Node-only subpath is packed");
     assert.ok(installedFiles.includes("dist/recipe-lifecycle/index.js"), "the recipe lifecycle subpath is packed");
     assert.ok(installedFiles.includes("dist/recipe-lifecycle/stamp.js"), "the recipe install stamps are packed");
+    assert.ok(installedFiles.includes("dist/record-overlay/index.js"), "the record overlay subpath is packed");
+    assert.ok(installedFiles.includes("dist/record-overlay/apply.js"), "the record overlay guards are packed");
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;
     for (const file of installedFiles.filter((name) => /\.(?:js|d\.ts)$/.test(name))) {
