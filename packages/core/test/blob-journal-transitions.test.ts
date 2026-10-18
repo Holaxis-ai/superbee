@@ -20,9 +20,11 @@ import {
   type BlobIntentPatch,
   type BlobIntentRecord,
   type BlobJournaledBackend,
+  nextBlobIntentRecord,
   type BlobPreparedInput,
+  type MemoryBlobJournal,
 } from "../src/blob-journal.js";
-import { FileJournaledBackend } from "../src/file-journaled-backend.js";
+import { FileJournaledBackend, FileJournalCorruptError, FileJournalFormatError, FILE_JOURNAL_FORMAT_VERSION, FILE_JOURNAL_LOG, FILE_JOURNAL_SNAPSHOT } from "../src/file-journaled-backend.js";
 import type { OperationState } from "../src/uncertain-write.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -43,12 +45,25 @@ function input(n: number, operation: Op, key: string, bundleId = "notes.a"): Blo
 const prepared = (value: BlobPreparedInput) => prepareBlobIntent(value, value.intent.operationId === "blobs.delete.v1" ? undefined : bytes);
 const success = (value: BlobPreparedInput) => ({ ok: true, operationId: value.intent.operationId, data: value.intent.operationId === "blobs.delete.v1" ? { key: value.intent.key, version: old, contentType: "application/old", deleted: true } : { key: value.intent.key, version: value.intent.version, contentType: value.intent.contentType, changed: true } });
 
-interface Journal { backend: BlobJournaledBackend; close(): Promise<void> }
-async function memoryJournal(): Promise<Journal> { return { backend: createMemoryBlobJournal(), async close() {} }; }
+/** A journal and a way to drop its handle and open the same committed rows as a fresh process would. */
+interface Journal { backend: BlobJournaledBackend; reopen(): Promise<BlobJournaledBackend>; close(): Promise<void> }
+async function memoryJournal(): Promise<Journal> {
+  const journal: Journal = {
+    backend: createMemoryBlobJournal(),
+    async reopen() { journal.backend = createMemoryBlobJournal((journal.backend as MemoryBlobJournal).exportState()); return journal.backend; },
+    async close() {},
+  };
+  return journal;
+}
 async function fileJournal(): Promise<Journal> {
   const directory = await fs.mkdtemp(path.join(tmpdir(), "superbee-blob-parity-"));
-  const backend = await FileJournaledBackend.open({ directory, lock: { lockRoot: path.join(directory, "locks"), waitMs: 0 }, compactAfterBytes: Infinity });
-  return { backend, async close() { await backend.close(); await fs.rm(directory, { recursive: true, force: true }); } };
+  const options = { directory, lock: { lockRoot: path.join(directory, "locks"), waitMs: 0 }, compactAfterBytes: Infinity };
+  const journal: Journal = {
+    backend: await FileJournaledBackend.open(options),
+    async reopen() { await (journal.backend as FileJournaledBackend).close(); journal.backend = await FileJournaledBackend.open(options); return journal.backend; },
+    async close() { await (journal.backend as FileJournaledBackend).close(); await fs.rm(directory, { recursive: true, force: true }); },
+  };
+  return journal;
 }
 
 /** One step's answer, stripped of wall-clock time: a record's durable fields, or the refusal's class and message. */
@@ -62,7 +77,7 @@ async function answer(work: Promise<unknown>): Promise<Answer> {
 }
 
 /** A row drives one journal and returns every step's answer plus the final listing. */
-type Row = { name: string; expect: ("ok" | string)[]; run(j: BlobJournaledBackend, step: (work: Promise<unknown>) => Promise<Answer>): Promise<void> };
+type Row = { name: string; expect: ("ok" | string)[]; run(j: BlobJournaledBackend, step: (work: Promise<unknown>) => Promise<Answer>, reopen: () => Promise<BlobJournaledBackend>): Promise<void> };
 const guard = async (j: BlobJournaledBackend, key: string, meta?: string[]) => (await j.readBlobWithJournal(key, meta ? { meta } : {})).guard;
 const update = async (j: BlobJournaledBackend, n: number, key: string, expected: OperationState, patch: BlobIntentPatch | ((row: BlobIntentRecord) => BlobIntentPatch)) => {
   const row = (await j.readBlobIntent(rid(n)))!;
@@ -74,6 +89,57 @@ const notDispatched = (code: "credentials_unavailable" | "credentials_denied" | 
 
 const K = "media/a.bin";
 const ROWS: Row[] = [
+  {
+    name: "a claim found after reopen is lookup-only: not_dispatched is refused for a claim this handle did not make",
+    expect: ["ok", "ok", "JournalGuardConflict", "JournalGuardConflict", "ok", "JournalGuardConflict", "ok", "ok", "ok", "ok", "JournalGuardConflict"],
+    async run(j, step, reopen) {
+      await step(admit(j, input(40, "create", K)));
+      await step(claim(j, 40, K));
+      // The process that claimed is gone; whether its attempt left is unknowable here.
+      j = await reopen();
+      await step(update(j, 40, K, "in_flight", notDispatched("credentials_denied")));
+      await step(update(j, 40, K, "in_flight", { state: "pending", attempts: 1, notAppliedThrough: 1, notDispatched: { code: "aborted" } }));
+      await step(update(j, 40, K, "in_flight", { state: "unknown" }));
+      await step(claim(j, 40, K, "unknown"));
+      // A claim this handle makes is its own: roll back, reopen, claim again, and only then is it eligible.
+      await step(admit(j, input(41, "replace", "media/b.bin")));
+      await step(claim(j, 41, "media/b.bin"));
+      await step(update(j, 41, "media/b.bin", "in_flight", notDispatched("aborted")));
+      j = await reopen();
+      await step(claim(j, 41, "media/b.bin"));
+      j = await reopen();
+      await step(update(j, 41, "media/b.bin", "in_flight", notDispatched("aborted")));
+    },
+  },
+  {
+    name: "undefined-valued patch keys are refused and nothing is persisted",
+    expect: ["ok", "ok", "JournalGuardConflict", "JournalGuardConflict", "JournalGuardConflict", "ok"],
+    async run(j, step, reopen) {
+      await step(admit(j, input(42, "create", K)));
+      await step(claim(j, 42, K));
+      await step(update(j, 42, K, "in_flight", { state: "unknown", notDispatched: undefined }));
+      await step(update(j, 42, K, "in_flight", { state: "unknown", deletionHold: undefined }));
+      await step(update(j, 42, K, "in_flight", { state: undefined } as never));
+      j = await reopen();
+      await step(Promise.resolve((await j.readBlobIntent(rid(42)))).then(row => ({ state: row?.state, keys: Object.keys(row ?? {}).sort() })));
+    },
+  },
+  {
+    name: "evidence is fixed outside its own extension: a not_dispatched patch may not drop a hold, a claim may not rewrite not_dispatched",
+    expect: ["ok", "ok", "ok", "ok", "JournalGuardConflict", "ok", "ok", "JournalGuardConflict", "JournalGuardConflict", "ok"],
+    async run(j, step) {
+      await step(admit(j, input(43, "delete", K)));
+      await step(claim(j, 43, K));
+      await step(update(j, 43, K, "in_flight", row => blobNonExecutionPatch(row, { kind: "deletion_hold", deletions: 3, baseline: 5 })));
+      await step(claim(j, 43, K));
+      await step(update(j, 43, K, "in_flight", { state: "pending", attempts: 2, notAppliedThrough: 2, notDispatched: { code: "aborted" }, deletionHold: undefined }));
+      await step(update(j, 43, K, "in_flight", notDispatched("aborted")));
+      await step(Promise.resolve((await j.readBlobIntent(rid(43)))!.deletionHold));
+      await step(update(j, 43, K, "pending", { state: "in_flight", attempts: 3, notDispatched: { code: "credentials_denied" } }));
+      await step(update(j, 43, K, "pending", { state: "in_flight", attempts: 3, notDispatched: undefined }));
+      await step(claim(j, 43, K));
+    },
+  },
   {
     name: "claim consumes exactly one eligibility; settle; retire",
     expect: ["ok", "JournalGuardConflict", "ok", "ok", "JournalGuardConflict", "ok"],
@@ -222,7 +288,7 @@ for (const row of ROWS) {
       const journal = await open();
       try {
         const answers: Answer[] = [];
-        await row.run(journal.backend, async work => { const a = await answer(work); answers.push(a); return a; });
+        await row.run(journal.backend, async work => { const a = await answer(work); answers.push(a); return a; }, () => journal.reopen());
         results.push({ answers, listing: (await journal.backend.listBlobIntents()).map(project) });
       } finally { await journal.close(); }
     }
@@ -330,4 +396,117 @@ test("@superbee/core/storage carries createMemoryBlobJournal into a browser bund
   const result = await build({ entryPoints: [path.resolve(here, "../dist/storage.js")], bundle: true, platform: "browser", write: false, logLevel: "silent" });
   assert.equal(result.errors.length, 0);
   assert.ok(result.outputFiles[0]!.text.includes("createMemoryBlobJournal"));
+});
+
+test("nextBlobIntentRecord keeps each evidence fixed outside its own extension, and gates not_dispatched on this handle's claim", async () => {
+  const j = createMemoryBlobJournal();
+  await admit(j, input(50, "delete", K));
+  await claim(j, 50, K);
+  await update(j, 50, K, "in_flight", row => blobNonExecutionPatch(row, { kind: "deletion_hold", deletions: 3, baseline: 5 }));
+  const held = await claim(j, 50, K);
+  const ndPatch = { state: "pending" as const, attempts: 2, notAppliedThrough: 2, notDispatched: { code: "aborted" as const } };
+  // Directly, past the capture that refuses undefined-valued keys: dropping the hold is still refused.
+  assert.throws(() => nextBlobIntentRecord(held, { requestId: rid(50), expectedState: "in_flight", patch: { ...ndPatch, deletionHold: undefined } }, K, now, { claimedHere: true }), /journal guard/);
+  assert.throws(() => nextBlobIntentRecord(held, { requestId: rid(50), expectedState: "in_flight", patch: ndPatch }, K, now), /journal guard/);
+  assert.throws(() => nextBlobIntentRecord(held, { requestId: rid(50), expectedState: "in_flight", patch: ndPatch }, K, now, { claimedHere: false }), /journal guard/);
+  const rolled = nextBlobIntentRecord(held, { requestId: rid(50), expectedState: "in_flight", patch: ndPatch }, K, now, { claimedHere: true });
+  assert.deepEqual([rolled.state, rolled.notAppliedThrough, rolled.deletionHold, rolled.notDispatched], ["pending", 2, { deletions: 3, baseline: 5 }, { code: "aborted" }]);
+  for (const notDispatched of [{ code: "credentials_denied" as const }, undefined]) {
+    assert.throws(() => nextBlobIntentRecord(rolled, { requestId: rid(50), expectedState: "pending", patch: { state: "in_flight", attempts: 3, notDispatched } }, K, now));
+  }
+});
+
+test("a restored memory journal refuses malformed state and keeps no session claims", async () => {
+  const j = createMemoryBlobJournal();
+  await admit(j, input(51, "create", K));
+  await claim(j, 51, K);
+  const state = j.exportState();
+  assert.throws(() => createMemoryBlobJournal({ ...state, sequence: 0 }), /invalid memory blob journal state/);
+  assert.throws(() => createMemoryBlobJournal({ ...state, intents: [state.intents[0]!, state.intents[0]!] }), /invalid memory blob journal state/);
+  assert.throws(() => createMemoryBlobJournal({ ...state, extra: 1 } as never), /invalid memory blob journal state/);
+  const restored = createMemoryBlobJournal(state);
+  assert.deepEqual(await restored.listBlobIntents(), await j.listBlobIntents());
+  await assert.rejects(update(restored, 51, K, "in_flight", notDispatched("aborted")));
+  assert.equal((await update(j, 51, K, "in_flight", notDispatched("aborted"))).state, "pending");
+});
+
+// ── file journal format 3 ──────────────────────────────────────────────────────────────────
+
+function frames(log: Buffer): { at: number; end: number; format: number }[] {
+  const out = [];
+  for (let at = 0; at < log.length;) { const end = at + 44 + log.readUInt32BE(at + 8); out.push({ at, end, format: log.readUInt32BE(at + 4) }); at = end; }
+  return out;
+}
+function reframe(log: Buffer, frame: { at: number; end: number }, format: number): Buffer {
+  const raw = JSON.parse(log.subarray(frame.at + 44, frame.end).toString("utf8"));
+  raw[raw.indexOf("format") + 1] = format;
+  const payload = Buffer.from(JSON.stringify(raw));
+  const header = Buffer.alloc(44); header.writeUInt32BE(0x53424a52, 0); header.writeUInt32BE(format, 4); header.writeUInt32BE(payload.length, 8); createHash("sha256").update(payload).digest().copy(header, 12);
+  return Buffer.concat([log.subarray(0, frame.at), header, payload, log.subarray(frame.end)]);
+}
+async function store() {
+  const directory = await fs.mkdtemp(path.join(tmpdir(), "superbee-blob-format-"));
+  const options = { directory, lock: { lockRoot: path.join(directory, "locks"), waitMs: 0 }, compactAfterBytes: Infinity };
+  return { directory, options, log: path.join(directory, FILE_JOURNAL_LOG), snapshot: path.join(directory, FILE_JOURNAL_SNAPSHOT), cleanup: () => fs.rm(directory, { recursive: true, force: true }) };
+}
+
+test("not_dispatched evidence promotes the store to format 3, which stays sticky across compaction and reopen", async () => {
+  const s = await store();
+  let b = await FileJournaledBackend.open(s.options);
+  try {
+    assert.equal(FILE_JOURNAL_FORMAT_VERSION, 3);
+    await b.writeMeta("legacy", true);
+    await admit(b, input(60, "create", K));
+    await claim(b, 60, K);
+    assert.deepEqual(frames(await fs.readFile(s.log)).map(f => f.format), [1, 2, 2]);
+    await update(b, 60, K, "in_flight", notDispatched("credentials_unavailable"));
+    await b.writeMeta("after", true);
+    assert.deepEqual(frames(await fs.readFile(s.log)).map(f => f.format), [1, 2, 2, 3, 3]);
+    await b.close(); b = await FileJournaledBackend.open(s.options);
+    assert.deepEqual((await b.readBlobIntent(rid(60)))?.notDispatched, { code: "credentials_unavailable" });
+    await b.compact();
+    assert.equal((await fs.readFile(s.snapshot)).readUInt32BE(4), 3);
+    await b.close(); b = await FileJournaledBackend.open(s.options);
+    // Settling and retiring the evidence does not lower the format.
+    const v = input(60, "create", K);
+    await claim(b, 60, K);
+    await update(b, 60, K, "in_flight", { state: "acknowledged", receipt: blobReceipt(prepared(v), success(v)) });
+    await b.retireBlobIntents(K, [rid(60)], { guard: await guard(b, K) });
+    await b.writeMeta("later", true);
+    assert.equal(frames(await fs.readFile(s.log)).at(-1)!.format, 3);
+  } finally { await b.close(); await s.cleanup(); }
+});
+
+test("a format-2 frame carrying not_dispatched is corrupt; a format above 3 is a typed format error; formats 1 and 2 still open", async () => {
+  const s = await store();
+  let b = await FileJournaledBackend.open(s.options);
+  try {
+    await admit(b, input(61, "create", K));
+    await claim(b, 61, K);
+    await update(b, 61, K, "in_flight", notDispatched("aborted"));
+    await b.close();
+    const original = await fs.readFile(s.log), all = frames(original), last = all.at(-1)!;
+    assert.equal(last.format, 3);
+    // The pre-format-3 reader (15903109/64d67f9c) accepts only frames 1 and 2, so this header is
+    // what turns its refusal into FileJournalFormatError. Here, a downgraded header is corruption.
+    const downgraded = reframe(original, last, 2);
+    await fs.writeFile(s.log, downgraded);
+    await assert.rejects(FileJournaledBackend.open(s.options), (error: unknown) => error instanceof FileJournalCorruptError && !(error instanceof FileJournalFormatError) && /not-dispatched/.test(String(error)));
+    assert.deepEqual(await fs.readFile(s.log), downgraded);
+    await fs.writeFile(s.log, reframe(original, last, 4));
+    await assert.rejects(FileJournaledBackend.open(s.options), (error: unknown) => error instanceof FileJournalFormatError && error.format === 4 && /formats 1 to 3/.test(error.message));
+    await fs.writeFile(s.log, original);
+    b = await FileJournaledBackend.open(s.options);
+    assert.equal((await b.readBlobIntent(rid(61)))?.state, "pending");
+  } finally { await b.close(); await s.cleanup(); }
+  const one = await store();
+  try {
+    const first = await FileJournaledBackend.open(one.options);
+    await first.writeMeta("only", true); await first.compact(); await first.writeMeta("more", true); await first.close();
+    assert.equal((await fs.readFile(one.snapshot)).readUInt32BE(4), 1);
+    assert.deepEqual(frames(await fs.readFile(one.log)).map(f => f.format), [1]);
+    const reopened = await FileJournaledBackend.open(one.options);
+    assert.equal(await reopened.readMeta("more"), true);
+    await reopened.close();
+  } finally { await one.cleanup(); }
 });

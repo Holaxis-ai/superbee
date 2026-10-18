@@ -513,8 +513,9 @@ await journal.close();
 ```
 
 The journal is a `FileJournaledBackend` directory: an fsynced, checksummed log with snapshot
-compaction. Its on-disk format is a supported compatibility promise; a format change ships a reader
-for the older layout. Each unsettled write is one metadata row, `hosted-client.write.<requestId>`,
+compaction. Its on-disk format is a supported compatibility promise: a format bump ships a reader
+for every earlier layout, and an older reader refuses a newer store with `FileJournalFormatError`
+rather than misreading it. The current format is 3 (see `JOURNALED-BACKENDS.md`). Each unsettled write is one metadata row, `hosted-client.write.<requestId>`,
 holding the whole document and the binding it was sent under, so a new process with a new token
 looks it up exactly as the first would have. A settled write is removed.
 

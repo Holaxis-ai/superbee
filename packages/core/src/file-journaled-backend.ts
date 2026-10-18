@@ -129,8 +129,13 @@ import type {
 
 // ── on-disk format ─────────────────────────────────────────────────────────────────────────
 
-/** Bumping this requires a reader for the older layout; open refuses any other format. */
-export const FILE_JOURNAL_FORMAT_VERSION = 2;
+/**
+ * The newest layout this adapter writes and reads; it reads every earlier one too. A store stays
+ * at format 1 until it holds a blob intent (format 2), and at 2 until a blob intent carries
+ * not-dispatched evidence (format 3); the store keeps the highest format it has written. Bumping
+ * this requires a reader for the older layouts; open refuses any newer format.
+ */
+export const FILE_JOURNAL_FORMAT_VERSION = 3;
 
 export const FILE_JOURNAL_LOG = "store.log";
 export const FILE_JOURNAL_SNAPSHOT = "store.snapshot";
@@ -258,7 +263,7 @@ export class FileJournalFormatError extends FileJournalCorruptError {
   override readonly name = "FileJournalFormatError";
   readonly format: number;
   constructor(file: string, format: number, offset?: number) {
-    super(file, `written in store format ${format}; this adapter reads formats 1 and ${FILE_JOURNAL_FORMAT_VERSION}`, offset);
+    super(file, `written in store format ${format}; this adapter reads formats 1 to ${FILE_JOURNAL_FORMAT_VERSION}`, offset);
     this.format = format;
   }
 }
@@ -478,7 +483,7 @@ function scanLog(bytes: Buffer, file: string): ScannedLog {
       if (wholeRecordFrom(bytes, at + 1)) throw new FileJournalCorruptError(file, "a damaged record is followed by a whole one", at);
       return { records, validBytes: at, totalBytes: bytes.byteLength };
     }
-    if (found.format !== 1 && found.format !== 2) throw new FileJournalFormatError(file, found.format, at);
+    if (!readableFormat(found.format)) throw new FileJournalFormatError(file, found.format, at);
     let record: LogRecord;
     try {
       record = decodePayload(found.payload) as LogRecord;
@@ -487,7 +492,7 @@ function scanLog(bytes: Buffer, file: string): ScannedLog {
     }
     if (!record || !Number.isSafeInteger(record.txn) || !Array.isArray(record.changes))
       throw new FileJournalCorruptError(file, "record has no transaction number or changes", at);
-    if ((found.format === 2 ? record.format !== 2 : record.format !== undefined && record.format !== 1)) throw new FileJournalCorruptError(file, "record format does not match its frame", at);
+    if ((found.format >= 2 ? record.format !== found.format : record.format !== undefined && record.format !== 1)) throw new FileJournalCorruptError(file, "record format does not match its frame", at);
     validateIntentChanges(record.changes, found.format, file);
     record.format = found.format;
     records.push(record);
@@ -500,7 +505,7 @@ function decodeSnapshot(bytes: Buffer, file: string): SnapshotPayload {
   if (bytes.byteLength < HEADER || bytes.readUInt32BE(0) !== SNAPSHOT_MAGIC) throw new FileJournalCorruptError(file, "not a store snapshot");
   const found = frameAt(bytes, 0, SNAPSHOT_MAGIC);
   if (!found || found.end !== bytes.byteLength) throw new FileJournalCorruptError(file, "snapshot checksum or length does not match");
-  if (found.format !== 1 && found.format !== 2) throw new FileJournalFormatError(file, found.format);
+  if (!readableFormat(found.format)) throw new FileJournalFormatError(file, found.format);
   let decoded: SnapshotPayload;
   try {
     decoded = decodePayload(found.payload) as SnapshotPayload;
@@ -514,12 +519,18 @@ function decodeSnapshot(bytes: Buffer, file: string): SnapshotPayload {
   return decoded;
 }
 
+const readableFormat = (format: number): boolean => Number.isSafeInteger(format) && format >= 1 && format <= FILE_JOURNAL_FORMAT_VERSION;
+
+/** The layout a blob intent needs: not-dispatched evidence first appeared in format 3. */
+const blobIntentFormat = (row: BlobIntentRecord): 2 | 3 => ("notDispatched" in row ? 3 : 2);
+
 function validateIntentChanges(changes: readonly Change[], format: number, file: string): void {
   for (const change of changes) {
     if (change.family !== "intent" || change.value === null) continue;
     const row = change.value;
     if ("recordFamily" in row) {
-      if (row.recordFamily !== "blob" || format !== 2) throw new FileJournalCorruptError(file, "blob intent is not allowed in this format");
+      if (row.recordFamily !== "blob" || format < 2) throw new FileJournalCorruptError(file, "blob intent is not allowed in this format");
+      if (blobIntentFormat(row) > format) throw new FileJournalCorruptError(file, "blob not-dispatched evidence is not allowed in this format");
       try { captureBlobIntentRecord(row); assertReceiptBound(row); } catch { throw new FileJournalCorruptError(file, "invalid blob intent payload"); }
       if (row.requestId !== change.key) throw new FileJournalCorruptError(file, "blob identity index mismatch");
     }
@@ -689,7 +700,10 @@ async function writeAll(handle: FileJournalHandle, bytes: Uint8Array, position: 
 interface Decision<T> {
   changes: Change[];
   result: T;
-  format?: 2;
+  /** The lowest store format the changes need; the store keeps the highest it has written. */
+  format?: 2 | 3;
+  /** Runs once the record is durable and applied, before the next mutation decides. */
+  afterCommit?: () => void;
 }
 
 /** The log handle of a read-only open: nothing is opened, so closing it is all it does. */
@@ -718,6 +732,9 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
   #maximumBytes = MAXIMUM_RECORD_BYTES;
   #logBytes: number;
   #queue: Promise<unknown> = Promise.resolve();
+  /** Blob claims this handle made, by request id, at their attempt count. The exclusive lock means
+   * any `in_flight` row found at open was claimed by a process that has since died. */
+  readonly #claims = new Map<string, number>();
   #unavailable: Error | null = null;
   #closing: Promise<void> | null = null;
   #readOnly = false;
@@ -902,17 +919,17 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
    */
   #mutate<T>(decide: (state: State) => Decision<T>): Promise<T> {
     return this.#serial(async () => {
-      const { changes, result, format } = decide(this.#state);
-      if (changes.length === 0) return result;
+      const { changes, result, format, afterCommit } = decide(this.#state);
+      if (changes.length === 0) { afterCommit?.(); return result; }
       const nextFormat = Math.max(this.#state.format, format ?? 1);
-      const record: LogRecord = { ...(nextFormat === 2 ? { format: 2 } : {}), txn: this.#txn + 1, changes };
+      const record: LogRecord = { ...(nextFormat >= 2 ? { format: nextFormat } : {}), txn: this.#txn + 1, changes };
       const payload = encodePayload(record);
       assertByteBound(payload, this.#maximumBytes, "transaction");
       const projected: State = { ...this.#state, format: nextFormat, documents: new Map(this.#state.documents), reserved: new Map(this.#state.reserved), blobs: new Map(this.#state.blobs), intents: new Map(this.#state.intents), meta: new Map(this.#state.meta) };
       applyChanges(projected, changes);
       const snapshotBytes = encodePayload(snapshotPayload(projected, record.txn));
       assertByteBound(snapshotBytes, this.#maximumBytes, "projected snapshot");
-      if (nextFormat === 2) {
+      if (nextFormat >= 2) {
         const reserved = settlementReserve(projected, record.txn);
         if (snapshotBytes.byteLength + reserved > this.#maximumBytes) throw new RangeError(`a projected snapshot of ${snapshotBytes.byteLength} bytes plus ${reserved} bytes of blob settlement reserve exceeds the store's ${this.#maximumBytes} byte bound`);
       }
@@ -937,6 +954,7 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
       this.#txn = record.txn;
       this.#state.format = nextFormat;
       applyChanges(this.#state, changes);
+      afterCommit?.();
       return result;
     });
   }
@@ -1298,13 +1316,32 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
   // ── optional ordinary-file journal (no filesystem/body mirror) ─────────────────────────
 
   /** The committed index as the pure blob transition owner reads it. */
-  static #blobView(state: State): BlobJournalView {
+  #blobView(state: State): BlobJournalView {
     return {
       blobIntentsFor: key => [...state.intents.values()].filter((row): row is BlobIntentRecord => !isDocumentIntent(row) && row.target === key),
       blobIntent: id => { const row = state.intents.get(id); return row && !isDocumentIntent(row) ? row : undefined; },
       intentState: id => state.intents.get(id)?.state ?? null,
       meta: key => state.meta.has(key) ? { present: true, value: state.meta.get(key) } : { present: false },
       sequence: state.sequence,
+      claimedInThisSession: (id, attempts) => this.#claims.get(id) === attempts,
+    };
+  }
+
+  /** A decided blob verb as one mutation: its changes, the format they need, and the session claims. */
+  #blobDecision<T>(decision: BlobJournalDecision<T>): Decision<T> {
+    const formats = decision.intents.flatMap(({ value }) => (value === null ? [] : [blobIntentFormat(value)]));
+    const format = formats.length === 0 ? undefined : (Math.max(...formats) as 2 | 3);
+    return {
+      changes: FileJournaledBackend.#blobChanges(decision),
+      result: decision.result,
+      ...(format === undefined ? {} : { format }),
+      afterCommit: () => {
+        if (decision.session) {
+          if (decision.session.claimed === null) this.#claims.delete(decision.session.requestId);
+          else this.#claims.set(decision.session.requestId, decision.session.claimed);
+        }
+        for (const { requestId, value } of decision.intents) if (value === null) this.#claims.delete(requestId);
+      },
     };
   }
 
@@ -1320,21 +1357,18 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
   async readBlobWithJournal(key: string, options: { meta?: readonly string[] } = {}): Promise<BlobJournalRead> {
     assertBlobKey(key);
     this.#assertOpen();
-    return readBlobJournal(FileJournaledBackend.#blobView(this.#state), key, options);
+    return readBlobJournal(this.#blobView(this.#state), key, options);
   }
 
   async writeBlobMeta(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): Promise<void> {
     const captured = captureBlobMetaWrite(key, changes, options);
-    await this.#mutate(state => ({ changes: FileJournaledBackend.#blobChanges(decideBlobMetaWrite(FileJournaledBackend.#blobView(state), captured)), result: undefined }));
+    await this.#mutate(state => this.#blobDecision(decideBlobMetaWrite(this.#blobView(state), captured)));
   }
 
   async admitPreparedBlob(prepared: string, options: BlobAdmitOptions): Promise<BlobIntentRecord> {
     const captured = captureBlobAdmission(prepared, options);
     const now = new Date().toISOString();
-    return this.#mutate(state => {
-      const decision = decideBlobAdmission(FileJournaledBackend.#blobView(state), captured, now);
-      return { format: 2, changes: FileJournaledBackend.#blobChanges(decision), result: decision.result };
-    });
+    return this.#mutate(state => this.#blobDecision(decideBlobAdmission(this.#blobView(state), captured, now)));
   }
 
   async listBlobIntents(state?: OperationState | readonly OperationState[]): Promise<BlobIntentRecord[]> {
@@ -1352,15 +1386,12 @@ export class FileJournaledBackend implements JournaledBackend, BlobJournaledBack
   async updateBlobIntent(requestId: string, expectedState: OperationState, patch: BlobIntentPatch, options: BlobJournalMutationOptions): Promise<BlobIntentRecord> {
     const captured = captureBlobUpdate(requestId, expectedState, patch, options);
     const now = new Date().toISOString();
-    return this.#mutate(state => {
-      const decision = decideBlobUpdate(FileJournaledBackend.#blobView(state), captured, now, assertReceiptBound);
-      return { changes: FileJournaledBackend.#blobChanges(decision), result: decision.result };
-    });
+    return this.#mutate(state => this.#blobDecision(decideBlobUpdate(this.#blobView(state), captured, now, assertReceiptBound)));
   }
 
   async retireBlobIntents(key: string, requestIds: readonly string[], options: BlobJournalMutationOptions): Promise<void> {
     const captured = captureBlobRetirement(key, requestIds, options);
-    await this.#mutate(state => ({ changes: FileJournaledBackend.#blobChanges(decideBlobRetirement(FileJournaledBackend.#blobView(state), captured)), result: undefined }));
+    await this.#mutate(state => this.#blobDecision(decideBlobRetirement(this.#blobView(state), captured)));
   }
 
   async readMeta<T = unknown>(key: string): Promise<T | undefined> {

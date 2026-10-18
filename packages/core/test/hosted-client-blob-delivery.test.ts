@@ -283,3 +283,26 @@ test("terminal send selects captured classifier evidence despite mutable row acc
   if (selected.outcome.kind !== "refused") assert.fail("refusal expected");
   assert.equal(selected.outcome.message, "captured");
 });
+
+test("a not_dispatched prefix without a deletion hold resends on submit-claimed; acceptance belongs only to a held delete", async () => {
+  for (const [name, acceptDeletes] of [["blob-create-200-ok", undefined], ["blob-replace-200-type-only", undefined], ["blob-delete-200-ok", undefined], ["blob-delete-200-ok", 100000]] as const) {
+    const { row: base, exchange } = retained(name, 2);
+    const row: BlobIntentRecord = { ...base, notAppliedThrough: 1, notDispatched: { code: "credentials_denied" } };
+    let sent = 0, accepted: string | null = null;
+    const carrier = createFetchCarrier({ baseUrl: scope.origin, credentials: async () => ({ Authorization: "Bearer fresh" }), fetch: async (input, init) => {
+      sent++; accepted = new Request(input, init).headers.get("x-superbee-accept-deletes");
+      return new Response(exchange.response.body, { status: exchange.response.status, headers: exchange.response.headers });
+    }});
+    const result = await performHostedBlobDelivery(contextFor(carrier), row, { start: "submit-claimed", ...(acceptDeletes === undefined ? {} : { acceptDeletes }) });
+    assert.equal(sent, 1, name);
+    assert.equal(result.outcome.kind, "committed", name);
+    assert.equal(result.attempts, 2);
+    assert.equal(accepted, acceptDeletes === undefined ? null : String(acceptDeletes));
+  }
+  // A held delete still needs this invocation's acceptance of at least its held count, sending nothing otherwise.
+  const { row: base } = retained("blob-delete-200-ok", 2);
+  const held: BlobIntentRecord = { ...base, notAppliedThrough: 1, deletionHold: { deletions: 3, baseline: 5 } };
+  for (const acceptDeletes of [undefined, 2]) {
+    await assert.rejects(performHostedBlobDelivery(stub({ send: unused, lookup: unused }), held, { start: "submit-claimed", ...(acceptDeletes === undefined ? {} : { acceptDeletes }) }), /held deletion continuation/);
+  }
+});

@@ -34,7 +34,12 @@ export function captureBlobDeletionHold(value: BlobDeletionHold): BlobDeletionHo
   if (!object(hold) || !only(hold, ["deletions", "baseline"]) || ![hold.deletions, hold.baseline].every(n => Number.isSafeInteger(n) && n >= 1)) throw new TypeError("invalid blob deletion hold");
   return hold;
 }
-/** Why a claimed attempt is proven never to have left the process. */
+/**
+ * Why a claimed attempt is proven never to have left the process. Only for this invocation's own
+ * claim, made through the same open journal, and only for a failure before the carrier is invoked
+ * (credentials, an already-aborted signal, a malformed identity, a local precondition). Any carrier
+ * or transport failure, and any claim found at open, may have been sent: that is `unknown`.
+ */
 export const BLOB_NOT_DISPATCHED_CODES = Object.freeze(["credentials_unavailable", "credentials_denied", "aborted", "invalid_identity", "precondition_failed"] as const);
 export type BlobNotDispatchedCode = (typeof BLOB_NOT_DISPATCHED_CODES)[number];
 export interface BlobNotDispatched { code: BlobNotDispatchedCode }
@@ -221,6 +226,9 @@ export interface BlobJournalView {
   intentState(requestId: string): OperationState | null;
   meta(key: string): MetaExpectation;
   readonly sequence: number;
+  /** Whether this open journal handle itself made the claim that brought `requestId` to exactly
+   * `attempts`. A claim found at open belongs to a process that may have sent it. */
+  claimedInThisSession(requestId: string, attempts: number): boolean;
 }
 /** What a backend persists atomically for one decided verb. */
 export interface BlobJournalDecision<T> {
@@ -230,6 +238,8 @@ export interface BlobJournalDecision<T> {
   sequence?: number;
   meta: MetaRecord[];
   removeMeta: string[];
+  /** After the decision commits: record this handle's claim at `claimed` attempts, or clear it (null). */
+  session?: { requestId: string; claimed: number | null };
 }
 
 export interface CapturedBlobAdmission { prepared: string; decoded: PreparedBlobIntent; options: BlobJournalMutationOptions; unsettled?: BlobIntentRecord[] }
@@ -299,7 +309,8 @@ const PATCH_KEYS = ["state", "attempts", "receipt", "notAppliedThrough", "deleti
 export function captureBlobUpdate(requestId: string, expectedState: OperationState, patch: BlobIntentPatch, options: BlobJournalMutationOptions): CapturedBlobUpdate {
   const captured = captureJournalValue(patch);
   const mutation = captureBlobMutationOptions(options);
-  if (!captured || typeof captured !== "object" || Array.isArray(captured) || Object.keys(captured).some(key => !PATCH_KEYS.includes(key))) throw new JournalGuardConflict(mutation.guard.key);
+  // An undefined-valued key would merge into the record as a present key; a patch names only values.
+  if (!captured || typeof captured !== "object" || Array.isArray(captured) || Object.entries(captured).some(([key, value]) => !PATCH_KEYS.includes(key) || value === undefined)) throw new JournalGuardConflict(mutation.guard.key);
   return { requestId, expectedState, patch: captured, options: mutation };
 }
 
@@ -307,11 +318,13 @@ export function captureBlobUpdate(requestId: string, expectedState: OperationSta
  * The single claim/settle/non-execution rule. A claim consumes exactly one eligibility (`pending` or
  * `unknown`, every earlier attempt proven not applied) before any wire operation. Proof of
  * non-execution extends the prefix by exactly the claimed attempt and returns the record to
- * `pending`: a deletion hold from `in_flight` or `unknown`, not-dispatched only from `in_flight`.
+ * `pending`: a deletion hold from `in_flight` or `unknown`, not-dispatched only from an `in_flight`
+ * claim this journal handle made at exactly the current attempt (`claimedHere`).
  * A receipt freezes the record. Anything else may not touch the counters or the evidence.
  */
-export function nextBlobIntentRecord(current: BlobIntentRecord | undefined, update: Pick<CapturedBlobUpdate, "requestId" | "expectedState" | "patch">, guardKey: string, now: string, checkRecord?: (next: BlobIntentRecord) => void): BlobIntentRecord {
+export function nextBlobIntentRecord(current: BlobIntentRecord | undefined, update: Pick<CapturedBlobUpdate, "requestId" | "expectedState" | "patch">, guardKey: string, now: string, options: { checkRecord?: (next: BlobIntentRecord) => void; claimedHere?: boolean } = {}): BlobIntentRecord {
   const { requestId, expectedState, patch } = update;
+  const { checkRecord, claimedHere = false } = options;
   if (!current || current.state !== expectedState) throw new IntentStateConflict(requestId, expectedState, current?.state ?? null);
   if (current.target !== guardKey) throw new JournalGuardConflict(guardKey);
   const next = captureBlobIntentRecord({ ...current, ...patch, updatedAt: now });
@@ -327,7 +340,7 @@ export function nextBlobIntentRecord(current: BlobIntentRecord | undefined, upda
     // Typed evidence belongs to this exact claimed count and must extend the complete prefix.
     const held = patch.deletionHold !== undefined, notDispatched = patch.notDispatched !== undefined;
     if (current.receipt || next.state !== "pending" || patch.attempts !== current.attempts || beforePrefix !== current.attempts - 1 || afterPrefix !== current.attempts || next.receipt !== undefined || held === notDispatched) throw refuse();
-    if (held ? !["in_flight", "unknown"].includes(current.state) : current.state !== "in_flight" || !sameHold) throw refuse();
+    if (held ? !["in_flight", "unknown"].includes(current.state) : current.state !== "in_flight" || !sameHold || !claimedHere) throw refuse();
   } else if (!sameHold || !sameNotDispatched || patch.state === "in_flight") throw refuse();
   return next;
 }
@@ -336,11 +349,15 @@ export function decideBlobUpdate(view: BlobJournalView, update: CapturedBlobUpda
   assertBlobGuardMatches(view, guard);
   const current = view.blobIntent(update.requestId);
   if (!current && view.intentState(update.requestId) !== null) throw new IntentStateConflict(update.requestId, update.expectedState, view.intentState(update.requestId));
-  const next = nextBlobIntentRecord(current, update, guard.key, now, checkRecord);
-  return { result: next, intents: [{ requestId: update.requestId, value: next }], meta, removeMeta };
+  const claimedHere = current !== undefined && view.claimedInThisSession(update.requestId, current.attempts);
+  const next = nextBlobIntentRecord(current, update, guard.key, now, { ...(checkRecord ? { checkRecord } : {}), claimedHere });
+  const claimed = next.attempts !== current!.attempts ? next.attempts : next.state !== "in_flight" ? null : undefined;
+  return { result: next, intents: [{ requestId: update.requestId, value: next }], meta, removeMeta, ...(claimed === undefined ? {} : { session: { requestId: update.requestId, claimed } }) };
 }
 
-/** The patch that records typed non-execution of the latest claimed attempt. */
+/** The patch that records typed non-execution of the latest claimed attempt. `not_dispatched` is
+ * only for this invocation's own claim, before the carrier is invoked; the journal refuses it for a
+ * claim it did not make in this session. A carrier or transport failure is `unknown`, never this. */
 export function blobNonExecutionPatch(current: BlobIntentRecord, reason: BlobNonExecution): BlobIntentPatch {
   const { kind, ...evidence } = reason;
   const base = { state: "pending" as const, attempts: current.attempts, notAppliedThrough: current.attempts };
@@ -405,24 +422,44 @@ export function readBlobJournal(view: BlobJournalView, key: string, options: { m
 export interface MemoryBlobJournal extends BlobJournaledBackend {
   writeBlobMeta(key: string, changes: Pick<BlobJournalMutationOptions, "meta" | "removeMeta">, options: { guard: BlobJournalGuard }): Promise<void>;
   readMeta<T = unknown>(key: string): Promise<T | undefined>;
+  /** A copy of the committed rows, for a caller that persists them; session claims are not state. */
+  exportState(): MemoryBlobJournalState;
 }
+export interface MemoryBlobJournalState { intents: BlobIntentRecord[]; meta: [string, unknown][]; sequence: number }
 
 /**
  * A {@link BlobJournaledBackend} held in memory, for a browser or a test: the same pure transition
  * functions as the file journal, nothing durable. Each verb decides and applies with no await in
  * between, so verbs never interleave. A terminal receipt is bounded by its JSON size here, where
- * the file journal measures its own tagged encoding.
+ * the file journal measures its own tagged encoding. `state` restores exported rows as a new
+ * handle would find them: an `in_flight` claim among them is not this handle's.
  */
-export function createMemoryBlobJournal(): MemoryBlobJournal {
+export function createMemoryBlobJournal(state?: MemoryBlobJournalState): MemoryBlobJournal {
   const intents = new Map<string, BlobIntentRecord>();
   const meta = new Map<string, unknown>();
+  const claims = new Map<string, number>();
   let sequence = 0;
+  if (state !== undefined) {
+    const restored = captureJournalValue(state);
+    if (!object(restored) || !only(restored, ["intents", "meta", "sequence"]) || !Array.isArray(restored.intents) || !Array.isArray(restored.meta) || !Number.isSafeInteger(restored.sequence) || restored.sequence < 0) throw new TypeError("invalid memory blob journal state");
+    for (const row of restored.intents) {
+      const captured = captureBlobIntentRecord(row);
+      if (intents.has(captured.requestId) || captured.sequence > restored.sequence) throw new TypeError("invalid memory blob journal state");
+      intents.set(captured.requestId, captured);
+    }
+    for (const entry of restored.meta) {
+      if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || meta.has(entry[0])) throw new TypeError("invalid memory blob journal state");
+      meta.set(entry[0], entry[1]);
+    }
+    sequence = restored.sequence;
+  }
   const view: BlobJournalView = {
     blobIntentsFor: key => [...intents.values()].filter(row => row.target === key),
     blobIntent: id => intents.get(id),
     intentState: id => intents.get(id)?.state ?? null,
     meta: key => meta.has(key) ? { present: true, value: meta.get(key) } : { present: false },
     get sequence() { return sequence; },
+    claimedInThisSession: (id, attempts) => claims.get(id) === attempts,
   };
   const apply = <T>(decision: BlobJournalDecision<T>): T => {
     for (const { requestId, value } of decision.intents) {
@@ -431,6 +468,10 @@ export function createMemoryBlobJournal(): MemoryBlobJournal {
     if (decision.sequence !== undefined) sequence = decision.sequence;
     for (const row of decision.meta) meta.set(row.key, structuredClone(row.value));
     for (const key of decision.removeMeta) meta.delete(key);
+    if (decision.session) {
+      if (decision.session.claimed === null) claims.delete(decision.session.requestId); else claims.set(decision.session.requestId, decision.session.claimed);
+    }
+    for (const { requestId, value } of decision.intents) if (value === null) claims.delete(requestId);
     return decision.result;
   };
   const checkReceipt = (row: BlobIntentRecord) => {
@@ -448,5 +489,6 @@ export function createMemoryBlobJournal(): MemoryBlobJournal {
     async updateBlobIntent(requestId, expectedState, patch, options) { return structuredClone(apply(decideBlobUpdate(view, captureBlobUpdate(requestId, expectedState, patch, options), new Date().toISOString(), checkReceipt))); },
     async retireBlobIntents(key, requestIds, options) { apply(decideBlobRetirement(view, captureBlobRetirement(key, requestIds, options))); },
     async readMeta<T>(key: string) { return meta.has(key) ? structuredClone(meta.get(key)) as T : undefined; },
+    exportState: () => ({ intents: [...intents.values()].sort((a, b) => a.sequence - b.sequence).map(row => structuredClone(row)), meta: [...meta].map(([key, value]) => [key, structuredClone(value)]), sequence }),
   };
 }
