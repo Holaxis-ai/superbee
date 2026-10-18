@@ -160,6 +160,9 @@ test("a required list field: empty or null is VALUE_MISSING and unobserved", () 
     assert.ok(mapped.kind === "mapped");
     assert.deepEqual([mapped.unobserved, mapped.diagnostics.map((d) => d.code)], [["labels"], ["VALUE_MISSING"]], JSON.stringify(labels));
   }
+  const filled = mapRecord(connector.sources[0]!, issue({ labels: ["bug", "bu", "bug"] }), kind);
+  assert.ok(filled.kind === "mapped");
+  assert.deepEqual([filled.fields.labels, filled.unobserved.includes("labels"), filled.diagnostics], [["bu", "bug"], false, []], "a required list with members is written, a prefix first");
 });
 
 test("a list field maps whole: a values table or a Kind's allowed values on it is CONNECTOR_LIST_FIELD_UNSUPPORTED", () => {
@@ -173,6 +176,13 @@ test("a list field maps whole: a values table or a Kind's allowed values on it i
   refused(CONNECTOR.replace("      labels: labels\n", "      labels:\n        from: labels\n        values: { Bug: bug }\n"), "/sources/0/fields/labels");
   refused(CONNECTOR.replace("      labels: labels\n", "      labels: labels\n      topics: topics\n"), "/sources/0/fields/topics");
   assert.ok(connectorOf(CONNECTOR, kinds).sources[0]!.fields.labels, "a plain list mapping parses");
+});
+
+test("a Kind typing an OKF standard field as a list cannot have it owned as a list: CONNECTOR_LIST_FIELD_UNSUPPORTED", () => {
+  const kinds = buildKindRegistry([{ id: "conventions/work-item", body: "", frontmatter: { ...WORK_ITEM, fields: { ...WORK_ITEM.fields, optional: [...WORK_ITEM.fields.optional, "description"], types: { ...WORK_ITEM.fields.types, description: "string-list" } } } as unknown as Frontmatter }]);
+  const { frontmatter, body } = parseMarkdown(CONNECTOR.replace("      labels: labels\n", "      labels: labels\n      description: summary\n"));
+  const parsed = parseConnectorDoc({ id: "connectors/tracker", frontmatter, body } as OkfDocument, { kinds });
+  assert.deepEqual(parsed.ok ? [] : parsed.errors.map((e) => [e.code, e.path]), [["CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/description"]]);
 });
 
 // ------------------------------------------------------------------------------------- end to end

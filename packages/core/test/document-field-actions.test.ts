@@ -291,3 +291,25 @@ test("unset refuses required fields with the Kind's KIND_FIELD_MISSING, and ever
   });
   assert.throws(() => onItem({}, { action: "set", field: "labels", value: undefined }), /unset/, "a missing value names unset");
 });
+
+test("unset of a required field reports only its KIND_FIELD_MISSING, beside an unrelated type violation", () => {
+  assert.throws(() => onItem({ due_on: "not a date", labels: "not a list" }, { action: "unset", field: "state" }), (error: unknown) => {
+    assert.ok(error instanceof KindConformanceError, String(error));
+    assert.deepEqual(error.violations.map((v) => [v.code, v.field]), [["KIND_FIELD_MISSING", "state"]]);
+    return true;
+  });
+});
+
+test("v0.1 unset of an absent field is a no-op that leaves timestamp as it was", () => {
+  const absent = onItem({ timestamp: "2020-01-01T00:00:00Z" }, { action: "unset", field: "note" }, "0.1");
+  assert.deepEqual([absent.scope.outcome, absent.candidate.frontmatter.timestamp], ["unchanged", "2020-01-01T00:00:00Z"]);
+});
+
+test("replace-all refuses a standard or managed field even when the Kind types it as a list", () => {
+  const listy = { ...ITEM_KIND, fields: { ...ITEM_KIND.fields, optional: [...ITEM_KIND.fields.optional, "status", "resource", "generated"], types: { ...ITEM_KIND.fields.types, description: "string-list", status: "string-list", resource: "string-list", generated: "string-list" } } };
+  const context = { registry: { kinds: new Map([["Item", listy]]), warnings: [] } as never, okfVersion: "0.2" as const };
+  for (const field of ["description", "status", "resource", "generated"]) {
+    assert.throws(() => prepareDocumentFieldAction(item(), { action: "replace-all", field, value: ["x"] }, context), /replace-all supports tags, sources/, field);
+  }
+  assert.deepEqual(prepareDocumentFieldAction(item(), { action: "replace-all", field: "labels", value: ["x"] }, context).candidate.frontmatter.labels, ["x"], "a declared non-standard list still replaces");
+});

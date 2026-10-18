@@ -16,6 +16,7 @@
  * Storage-neutral: no Node globals or builtins.
  */
 import { compareCodePoints } from "./code-point-order.js";
+import { isStandardDocumentSetField } from "./document-field-actions.js";
 import { PROGRESS_STATUS_FIELD, isKindListField, isPresent, type KindConvention, type KindRegistry } from "./kinds.js";
 import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { overlayCanonicalJson, same } from "./record-overlay/canonical.js";
@@ -639,6 +640,11 @@ function sourceKindErrors(source: ConnectorSource, index: number, kind: KindConv
     if (!declared.has(field)) { errors.add("CONNECTOR_FIELD_UNDECLARED", at, `${kind.governs} does not declare '${field}'`); continue; }
     const allowed = Object.hasOwn(kind.fields.values, field) ? kind.fields.values[field] : undefined;
     if (isKindListField(kind, field)) {
+      // Core's replace-all refuses an OKF standard or managed field whatever the Kind types it as.
+      if (isManagedDocumentMetadataField(field) || isStandardDocumentSetField(field, "0.1") || isStandardDocumentSetField(field, "0.2")) {
+        errors.add("CONNECTOR_LIST_FIELD_UNSUPPORTED", at, `'${field}' is an OKF standard or managed field; a connector cannot own it as a list`);
+        continue;
+      }
       // A list maps whole: the profile flattens it, and there is no per-item value table yet.
       if (mapping.values || Array.isArray(allowed)) errors.add("CONNECTOR_LIST_FIELD_UNSUPPORTED", at, `'${field}' is a ${kind.fields.types![field]}; a list field maps whole lists, without a values table or allowed values`);
       continue;

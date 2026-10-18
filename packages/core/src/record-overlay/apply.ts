@@ -33,7 +33,7 @@ import {
 } from "../document-mutation.js";
 import { PreconditionFailed } from "../document-precondition.js";
 import { InvalidInputError } from "../errors.js";
-import type { KindRegistry } from "../kinds.js";
+import { isPresent, type KindRegistry } from "../kinds.js";
 import { isManagedDocumentMetadataField } from "../managed-document-metadata.js";
 import { okfValuesEqual } from "../okf-authored-values.js";
 import { assertSafeConceptId } from "../paths.js";
@@ -387,11 +387,11 @@ export async function applyRecordOverlay(plan: OverlayPlan, ctx: ApplyContext): 
       }
     };
     const entries = (): Array<[string, unknown]> => Object.entries(step.fields).map(([f, v]) => [f, v.to]);
-    // A declared list field is always replaced whole, and only in its normalized form: strings in
-    // code point order without repeats, which is what a connector's mapping emits. Core keeps a list
+    // A declared list field is always replaced whole, and only in its normalized form: nonblank strings
+    // in code point order without repeats, which is what a connector's mapping emits. Core keeps a list
     // in the order given, so a list in any other order or with repeats is held here, value-free.
     const assertNormalizedList = (f: string, to: unknown): void => {
-      if (Array.isArray(to) && to.every((member, i) => typeof member === "string" && (i === 0 || compareCodePoints(to[i - 1] as string, member) < 0))) return;
+      if (Array.isArray(to) && to.every((member, i) => typeof member === "string" && isPresent(member) && (i === 0 || compareCodePoints(to[i - 1] as string, member) < 0))) return;
       throw new OverlayRefusal(REFUSAL_CODES.INVALID_INPUT, "an owned list field must be a list of strings in code point order without repeats", { reason: "list-not-normalized", field: f });
     };
     const writesList = Object.keys(step.fields).some((f) => listFields.has(f));

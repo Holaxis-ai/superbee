@@ -20,8 +20,10 @@ import {
   type OverlayStep,
   type RecordChange,
 } from "../src/record-overlay/index.js";
+import type { FieldAction } from "../src/document-field-actions.js";
+import { mutateDocument } from "../src/document-mutation.js";
 import type { Frontmatter, Version } from "../src/types.js";
-import { ACTOR, DIGEST, EVENT_CONVENTION, FEED, overlayWorld, PROVIDER, UID, type World } from "./record-overlay-helpers.js";
+import { ACTOR, DIGEST, EDITOR, EVENT_CONVENTION, FEED, overlayWorld, PROVIDER, UID, type World } from "./record-overlay-helpers.js";
 
 const WORK_ITEM = {
   type: "Convention", title: "Work Item", governs: "Work Item", path: "work-items/",
@@ -76,6 +78,7 @@ test("compareCodePoints orders by code point, not UTF-16 code unit", () => {
   assert.equal(compareCodePoints("a", "a"), 0);
   assert.equal(compareCodePoints("\uD800", "\uD800"), 0, "a lone surrogate equals itself");
   assert.equal(compareCodePoints("\uD800", "\u{10000}"), -1, "a lone surrogate orders by its own value");
+  assert.deepEqual([compareCodePoints("bug", "bu"), compareCodePoints("bu", "bug")], [1, -1], "a string orders after its own prefix");
 });
 
 test("readOverlayPolicy names the target Kind's list fields; a Kind without one adds no key", async () => {
@@ -151,7 +154,7 @@ test("with entry properties the upsert rides in the same write as the list", asy
 test("an owned list must arrive normalized: out of order, repeated or non-text is held INVALID_INPUT, value-free", async () => {
   const { w, policy } = await itemWorld();
   const version = await w.put(ITEM, itemDoc({ labels: ["a"] }));
-  for (const to of [["b", "a"], ["a", "a"], ["a", 1], "a", ["secret-label-9", "a"]]) {
+  for (const to of [["b", "a"], ["a", "a"], ["a", 1], "a", ["secret-label-9", "a"], [" "], ["", "a"]]) {
     const r = await applyRecordOverlay(planOf([ownedStep(version, { labels: { from: ["a"], to } })]), ctxOf(w, policy));
     assert.deepEqual([r.results[0]!.code, r.results[0]!.details], ["INVALID_INPUT", { reason: "list-not-normalized", field: "labels" }], JSON.stringify(to));
     assert.doesNotMatch(JSON.stringify(r), /secret-label-9/);
@@ -200,4 +203,51 @@ test("a list step on an OKF v0.1 bundle is held: field actions there restamp tim
   const scalar = await applyRecordOverlay(planOf([ownedStep(version, { due_on: { to: "2026-11-01" } })]), ctxOf(w, policy));
   assert.equal(scalar.results[0]!.outcome, "applied", "a step without a list keeps the patch shape on v0.1");
   assert.deepEqual((await w.read(ITEM)).doc.frontmatter.labels, ["a"]);
+});
+
+// ---------------------------------------------------------------------------- CAS and removal
+
+test("a person's replace-all between plan and apply is never overwritten: STALE_VERSION, with and without the upsert", async () => {
+  for (const withProps of [false, true]) {
+    const { w, policy } = await itemWorld();
+    await w.put(ITEM, itemDoc({ labels: ["a"] }));
+    const plan = await planRecordOverlay({
+      content: w.content, ops: w.ops, policy, observedAt: AT, sameBundle: true,
+      changes: [changed({ labels: ["a"] }, { labels: ["a", "b"] }, ["labels"])],
+      ...(withProps ? { hooks: { sourceProperties: () => ({ number: 42 }) } } : {}),
+    });
+    assert.deepEqual(plan.steps.map((s) => s.op), ["apply-owned-fields"]);
+    const actions: FieldAction[] = [{ action: "replace-all", field: "labels", value: ["mine", "a"] }];
+    await mutateDocument({
+      bundle: w.content.bundle, id: ITEM, mode: "patch", registry: w.content.registry, strict: true, actor: EDITOR,
+      expectedVersion: (await w.read(ITEM)).version, input: { kind: "field-actions", actions },
+    });
+    const personVersion = (await w.read(ITEM)).version;
+    w.contentBackend.writes = [];
+    const r = await applyRecordOverlay(plan, ctxOf(w, policy));
+    assert.equal(r.results[0]!.code, "STALE_VERSION", JSON.stringify(r.results[0]));
+    assert.deepEqual(w.contentBackend.writes, []);
+    const { doc, version } = await w.read(ITEM);
+    assert.deepEqual([version, doc.frontmatter.labels], [personVersion, ["mine", "a"]], `withProps=${withProps}`);
+  }
+});
+
+test("the guard compares whole values: a fresh version whose list differs from the planned from conflicts, reordered included", async () => {
+  const { w, policy } = await itemWorld();
+  const version = await w.put(ITEM, itemDoc({ labels: ["a", "mine"] }));
+  w.contentBackend.writes = [];
+  for (const from of [["a"], ["mine", "a"]]) {
+    const r = await applyRecordOverlay(planOf([ownedStep(version, { labels: { from, to: ["a", "b"] } })]), ctxOf(w, policy));
+    assert.equal(r.results[0]!.code, "OVERLAY_DOC_CONFLICT", JSON.stringify(from));
+  }
+  assert.deepEqual(w.contentBackend.writes, []);
+});
+
+test("a v0.2 step removing an optional owned list writes unset and the key is gone", async () => {
+  const { w, policy } = await itemWorld();
+  const version = await w.put(ITEM, itemDoc({ labels: ["a"], assignees: ["sam"] }));
+  const r = await applyRecordOverlay(planOf([ownedStep(version, { labels: { from: ["a"], to: undefined }, assignees: { from: ["sam"], to: ["kai", "sam"] } })]), ctxOf(w, policy));
+  assert.equal(r.results[0]!.outcome, "applied", JSON.stringify(r.results[0]));
+  const fm = (await w.read(ITEM)).doc.frontmatter as Record<string, unknown>;
+  assert.deepEqual([Object.hasOwn(fm, "labels"), fm.assignees], [false, ["kai", "sam"]]);
 });
