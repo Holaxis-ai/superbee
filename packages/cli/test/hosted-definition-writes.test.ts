@@ -6,14 +6,14 @@
 // refusal, conventions held), or `allowed` (the Kind commands run and sync sends `conventions/`).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm, unlink, writeFile, mkdir } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, realpath, rm, unlink, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { decode } from "@toon-format/toon";
 import { deleteDoc, parseMarkdown, writeDoc } from "@superbee/core";
 
-import { CliError } from "../src/errors.js";
+import { CliError, toExit } from "../src/errors.js";
 import { checkout } from "../src/commands/checkout.js";
 import { kind } from "../src/commands/kind.js";
 import { recipe } from "../src/commands/recipe.js";
@@ -21,9 +21,10 @@ import { sync } from "../src/commands/sync.js";
 import { defaultHostedAuthDeps, type HostedAuthDeps } from "../src/hosted-auth/session.js";
 import { bindingForPath } from "../src/hosted/binding.js";
 import { openBundle } from "../src/bundle.js";
-import { assertAllowedInHostedCheckout, assertKindOnlyRecipe } from "../src/hosted/refusals.js";
+import { assertAllowedInHostedCheckout, assertRecipeAllowedInHostedCheckout } from "../src/hosted/refusals.js";
 import { servedBundle } from "../src/hosted/served-bundle.js";
 import { heldPathReason, unsendable } from "../src/hosted/sync-scan.js";
+import { renderErrorEnvelope } from "../src/output.js";
 import { BUNDLE, FakeHost, HOST, TOKEN } from "./support/fake-hosted-sync.js";
 
 interface Harness {
@@ -166,9 +167,15 @@ test("allowed: a convention delete goes after the deletes of its last documents,
 test("refused: the Kind commands name the missing permission neutrally, and conventions stay held", async () => {
   const h = await harness("refused");
   assert.equal((await bindingForPath(h.home, h.folder))?.definition_writes, "refused");
-  for (const [command, args] of [["kind", ["field", "Note", "add", "stage"]], ["recipe", ["add", "context-notes"]], ["recipe", ["evolve", "context-notes"]]] as const) {
-    const error = await assertAllowedInHostedCheckout(command, [...args, "--dir", h.folder], { home: h.home, cwd: h.cwd }).then(
-      () => assert.fail(`${command} ${args[0]} was not refused`),
+  // The recipe commands refuse once they have read the recipe; the result is the same.
+  const attempts: Array<[string, () => Promise<unknown>]> = [
+    ["kind field", () => assertAllowedInHostedCheckout("kind", ["field", "Note", "add", "stage", "--dir", h.folder], { home: h.home, cwd: h.cwd })],
+    ["recipe add", () => runRecipe(h, ["add", "context-notes"])],
+    ["recipe evolve", () => runRecipe(h, ["evolve", "context-notes"])],
+  ];
+  for (const [name, attempt] of attempts) {
+    const error = await attempt().then(
+      () => assert.fail(`${name} was not refused`),
       (caught: unknown) => caught as CliError,
     );
     assert.equal(error.code, "FORBIDDEN");
@@ -237,9 +244,9 @@ test("allowed: a recipe that installs anything but Kind conventions is refused b
     pages: [],
     references: [],
     ...extra,
-  }) as unknown as Parameters<typeof assertKindOnlyRecipe>[2];
-  await assertKindOnlyRecipe("recipe add", h.folder, recipe({}), { home: h.home, cwd: h.cwd });
-  const error = await assertKindOnlyRecipe("recipe add", h.folder, recipe({ pages: [{ registry: { id: "views-registry/board" }, entry: "views/board.html" }], references: [{ doc: { id: "references/guide" } }] }), { home: h.home, cwd: h.cwd }).then(
+  }) as unknown as Parameters<typeof assertRecipeAllowedInHostedCheckout>[2];
+  await assertRecipeAllowedInHostedCheckout("recipe add", h.folder, recipe({}), { home: h.home, cwd: h.cwd });
+  const error = await assertRecipeAllowedInHostedCheckout("recipe add", h.folder, recipe({ pages: [{ registry: { id: "views-registry/board" }, entry: "views/board.html" }], references: [{ doc: { id: "references/guide" } }] }), { home: h.home, cwd: h.cwd }).then(
     () => assert.fail("the recipe was not refused"),
     (caught: unknown) => caught as CliError,
   );
@@ -248,7 +255,7 @@ test("allowed: a recipe that installs anything but Kind conventions is refused b
   assert.match(error.message, /installs 3 artifact\(s\) outside conventions\//);
   // Outside a checkout it is not a hosted refusal at all.
   const plain = await realpath(await mkdtemp(path.join(tmpdir(), "sb-defs-plain-")));
-  await assertKindOnlyRecipe("recipe add", plain, recipe({ references: [{ doc: { id: "references/guide" } }] }), { home: h.home, cwd: h.cwd });
+  await assertRecipeAllowedInHostedCheckout("recipe add", plain, recipe({ references: [{ doc: { id: "references/guide" } }] }), { home: h.home, cwd: h.cwd });
   await rm(h.home, { recursive: true, force: true });
 });
 
@@ -467,9 +474,9 @@ test("T11: a conventions-only recipe governing View or Convention is refused in 
     docs: docs.map(({ id, governs }) => ({ id, frontmatter: { type: "Convention", title: governs, governs }, body: "" })),
     pages: [],
     references: [],
-  }) as unknown as Parameters<typeof assertKindOnlyRecipe>[2];
+  }) as unknown as Parameters<typeof assertRecipeAllowedInHostedCheckout>[2];
   for (const governs of ["View", "Convention"]) {
-    const error = await assertKindOnlyRecipe("recipe evolve", h.folder, recipeOf([{ id: "conventions/idea", governs: "Idea" }, { id: `conventions/${governs.toLowerCase()}`, governs }]), { home: h.home, cwd: h.cwd }).then(
+    const error = await assertRecipeAllowedInHostedCheckout("recipe evolve", h.folder, recipeOf([{ id: "conventions/idea", governs: "Idea" }, { id: `conventions/${governs.toLowerCase()}`, governs }]), { home: h.home, cwd: h.cwd }).then(
       () => assert.fail(`a recipe governing ${governs} was not refused`),
       (caught: unknown) => caught as CliError,
     );
@@ -483,7 +490,7 @@ test("T11: a conventions-only recipe governing View or Convention is refused in 
   await assert.rejects(readFile(path.join(h.folder, "conventions/view.md"), "utf8"), "nothing was written");
   // Outside a checkout it is not a hosted refusal at all.
   const plain = await realpath(await mkdtemp(path.join(tmpdir(), "sb-defs-plain-")));
-  await assertKindOnlyRecipe("recipe add", plain, recipeOf([{ id: "conventions/view", governs: "View" }]), { home: h.home, cwd: h.cwd });
+  await assertRecipeAllowedInHostedCheckout("recipe add", plain, recipeOf([{ id: "conventions/view", governs: "View" }]), { home: h.home, cwd: h.cwd });
   await rm(source, { recursive: true, force: true });
   await rm(h.home, { recursive: true, force: true });
 });
@@ -522,13 +529,13 @@ test("allowed: a recipe carrying a Connector is refused with its own reason, ahe
     pages: [],
     references: [],
     ...extra,
-  }) as unknown as Parameters<typeof assertKindOnlyRecipe>[2];
-  const refusal = (words: string, recipe: Parameters<typeof assertKindOnlyRecipe>[2]) => assertKindOnlyRecipe(words, h.folder, recipe, context).then(
+  }) as unknown as Parameters<typeof assertRecipeAllowedInHostedCheckout>[2];
+  const refusal = (words: string, recipe: Parameters<typeof assertRecipeAllowedInHostedCheckout>[2]) => assertRecipeAllowedInHostedCheckout(words, h.folder, recipe, context).then(
     () => assert.fail("the recipe was not refused"),
     (caught: unknown) => caught as CliError,
   );
-  await assertKindOnlyRecipe("recipe add", h.folder, recipeOf({}), context);
-  await assertKindOnlyRecipe("recipe add", h.folder, recipeOf({ connectors: [] }), context);
+  await assertRecipeAllowedInHostedCheckout("recipe add", h.folder, recipeOf({}), context);
+  await assertRecipeAllowedInHostedCheckout("recipe add", h.folder, recipeOf({ connectors: [] }), context);
   const view = { pages: [{ registry: { id: "views-registry/board" }, entry: "views/board.html" }] };
   for (const extra of [{ connectors: [connector("connectors/calendar")] }, { ...view, connectors: [connector("connectors/calendar")] }]) {
     for (const words of ["recipe add", "recipe evolve"]) {
@@ -548,18 +555,24 @@ test("allowed: a recipe carrying a Connector is refused with its own reason, ahe
   assert.deepEqual([viewOnly.details?.reason, viewOnly.help], ["not_syncable", "to design Kinds, work in a local or Git bundle and publish it"]);
   // Outside a checkout it is not a hosted refusal at all.
   const plain = await realpath(await mkdtemp(path.join(tmpdir(), "sb-defs-plain-")));
-  await assertKindOnlyRecipe("recipe add", plain, recipeOf({ connectors: [connector("connectors/calendar")] }), context);
+  await assertRecipeAllowedInHostedCheckout("recipe add", plain, recipeOf({ connectors: [connector("connectors/calendar")] }), context);
   await rm(h.home, { recursive: true, force: true });
 });
 
-test("allowed: recipe add refuses a connector recipe end to end, before any write, and the checkout holds no connectors/ document", async () => {
-  const h = await harness("allowed");
+/** A recipe folder with an Event Kind and a Connector onto it. */
+async function connectorRecipeFolder(): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), "sb-defs-connector-recipe-"));
   await mkdir(path.join(dir, "conventions"), { recursive: true });
   await mkdir(path.join(dir, "connectors"), { recursive: true });
   await writeFile(path.join(dir, "recipe.md"), '---\ntype: Recipe\nid: feeds\ntitle: Feeds\nversion: "1"\nsummary: An Event Kind and a connector.\ncontent_policy: definitions-only\nconnectors:\n  - connectors/calendar.md\n---\n');
   await writeFile(path.join(dir, "conventions/event.md"), "---\ntype: Convention\ntitle: Event\ngoverns: Event\n---\n# Event\n");
   await writeFile(path.join(dir, "connectors/calendar.md"), CONNECTOR_MD);
+  return dir;
+}
+
+test("allowed: recipe add refuses a connector recipe end to end, before any write, and the checkout holds no connectors/ document", async () => {
+  const h = await harness("allowed");
+  const dir = await connectorRecipeFolder();
   for (const sub of ["add", "evolve"]) {
     await assert.rejects(runRecipe(h, [sub, dir]), (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN" && error.details?.reason === "connectors" && error.details?.connectors === "connectors/calendar");
   }
@@ -570,3 +583,73 @@ test("allowed: recipe add refuses a connector recipe end to end, before any writ
   await rm(dir, { recursive: true, force: true });
   await rm(h.home, { recursive: true, force: true });
 });
+
+/**
+ * The refusal a Kind-only recipe got before connector recipes had their own, byte for byte as the
+ * CLI prints it, with the checkout path as `<checkout>`; captured at 6bb0af79. Exit code 2.
+ */
+const KIND_ONLY_REFUSAL: Record<"unstated" | "refused", Record<"add" | "evolve", string>> = {
+  unstated: {
+    add: "error:\n  code: FORBIDDEN\n  message: \"'recipe add' cannot sync from a hosted checkout (recipes change a hosted bundle's Kinds, which cannot be changed from a checkout): to design Kinds, work in a local or Git bundle and publish it\"\n  details:\n    reason: not_syncable\n    command: recipe add\n    bundle_id: team.knowledge\n    host: \"https://hosted.example\"\n    checkout: <checkout>\n  help: \"to design Kinds, work in a local or Git bundle and publish it\"\n",
+    evolve: "error:\n  code: FORBIDDEN\n  message: \"'recipe evolve' cannot sync from a hosted checkout (recipes change a hosted bundle's Kinds, which cannot be changed from a checkout): to design Kinds, work in a local or Git bundle and publish it\"\n  details:\n    reason: not_syncable\n    command: recipe evolve\n    bundle_id: team.knowledge\n    host: \"https://hosted.example\"\n    checkout: <checkout>\n  help: \"to design Kinds, work in a local or Git bundle and publish it\"\n",
+  },
+  refused: {
+    add: "error:\n  code: FORBIDDEN\n  message: \"'recipe add' refused: you don't have permission to change this bundle's model (bundle team.knowledge on https://hosted.example); ask whoever manages access to it\"\n  details:\n    reason: definitions_refused\n    command: recipe add\n    bundle_id: team.knowledge\n    host: \"https://hosted.example\"\n    checkout: <checkout>\n  help: ask whoever manages access to it\n",
+    evolve: "error:\n  code: FORBIDDEN\n  message: \"'recipe evolve' refused: you don't have permission to change this bundle's model (bundle team.knowledge on https://hosted.example); ask whoever manages access to it\"\n  details:\n    reason: definitions_refused\n    command: recipe evolve\n    bundle_id: team.knowledge\n    host: \"https://hosted.example\"\n    checkout: <checkout>\n  help: ask whoever manages access to it\n",
+  },
+};
+
+/** Every file under `folder` with its bytes. */
+async function snapshot(folder: string): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const entry of await readdir(folder, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const full = path.join(entry.parentPath, entry.name);
+    out[path.relative(folder, full)] = await readFile(full, "utf8");
+  }
+  return out;
+}
+
+for (const rights of [undefined, "refused", "allowed"] as const) {
+  const state = rights ?? "unstated";
+  test(`${state} rights: a connector recipe is refused as such before the bundle is read, and a Kind-only recipe exactly as before`, async () => {
+    const h = await harness(rights);
+    const connectorSource = await connectorRecipeFolder();
+    const kindSource = await noteRecipeFolder("1");
+    const before = await snapshot(h.folder);
+    // The checkout's documents are unreadable while the connector recipe runs: a command that read
+    // the bundle before refusing would fail on them instead.
+    const conventions = path.join(h.folder, "conventions");
+    await chmod(conventions, 0o000);
+    try {
+      for (const sub of ["add", "evolve"]) {
+        const error = await runRecipe(h, [sub, connectorSource]).then(() => assert.fail(`recipe ${sub} was not refused`), (caught: unknown) => caught as CliError);
+        const exit = toExit(error);
+        assert.equal(exit.exitCode, 2);
+        assert.deepEqual([error.code, error.details?.reason, error.details?.connectors, error.details?.connectors_total], ["FORBIDDEN", "connectors", "connectors/calendar", "1"]);
+        assert.equal(error.message, `'recipe ${sub}' refused in a hosted checkout: recipe 'feeds' declares 1 Connector(s), which need a Connection, and hosted workspaces cannot enable one yet; ${CONNECTORS_INSTEAD}`);
+        assert.equal(error.help, CONNECTORS_INSTEAD);
+        assert.doesNotMatch(renderErrorEnvelope(exit.envelope), /publish/);
+      }
+    } finally {
+      await chmod(conventions, 0o755);
+    }
+    assert.deepEqual(await snapshot(h.folder), before, "nothing was written");
+    assert.deepEqual(sentOrder(h), []);
+
+    for (const sub of ["evolve", "add"] as const) {
+      if (rights === "allowed") {
+        const receipt = await runRecipe(h, [sub, kindSource]);
+        assert.equal(receipt.id, "notes", `a person the host allows runs recipe ${sub}`);
+        continue;
+      }
+      const error = await runRecipe(h, [sub, kindSource]).then(() => assert.fail(`recipe ${sub} was not refused`), (caught: unknown) => caught as CliError);
+      const exit = toExit(error);
+      assert.equal(exit.exitCode, 2);
+      assert.equal(renderErrorEnvelope(exit.envelope).replaceAll(h.folder, "<checkout>"), KIND_ONLY_REFUSAL[rights ?? "unstated"][sub]);
+    }
+    await rm(connectorSource, { recursive: true, force: true });
+    await rm(kindSource, { recursive: true, force: true });
+    await rm(h.home, { recursive: true, force: true });
+  });
+}

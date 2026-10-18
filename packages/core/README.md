@@ -152,8 +152,9 @@ if (plan.ready && plan.writes > 0) {
 `installRecipe` is create-only: each convention, Connector, View pair and Reference is written with
 an expect-absent compare-and-swap, an existing convention or Connector is left untouched (its row
 reports `source_differs` when it differs from the recipe), and a differing View or Reference target
-is refused before anything is written. Before any write it checks each Connector's sources against
-the Kinds the bundle will hold (its conventions plus the recipe's own) and throws
+is refused before anything is written. Before any write it checks each Connector against the
+authoring rules of the bundle's edition (`RecipeInputError` when OKF v0.2 would refuse it) and its
+sources against the Kinds the bundle will hold (its conventions plus the recipe's own), throwing
 `ConnectorTargetUnsatisfied` when one does not fit. `planRecipeEvolution` is read-only: it merges each recipe
 convention into the installed one additively, rechecks existing instances, and returns blockers
 and a `plan_token` bound to everything it read. `applyRecipeEvolution` recomputes the plan,

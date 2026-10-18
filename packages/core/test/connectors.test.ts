@@ -808,3 +808,19 @@ test("no top-level key a Connector adds is an OKF field, so the engine writes th
     assert.equal(connectorPinDigest(reparsed.connector), connectorPinDigest(parseExampleConnector()), okfVersion);
   }
 });
+
+test("the parser reads no top-level key beyond type, title, description and CONNECTOR_DOCUMENT_KEYS", () => {
+  const touched = new Set<string>();
+  const note = (key: string | symbol): void => { if (typeof key === "string") touched.add(key); };
+  const { frontmatter, body } = base();
+  const watched = new Proxy(frontmatter, {
+    get: (target, key, receiver) => (note(key), Reflect.get(target, key, receiver)),
+    has: (target, key) => (note(key), Reflect.has(target, key)),
+    getOwnPropertyDescriptor: (target, key) => (note(key), Reflect.getOwnPropertyDescriptor(target, key)),
+  });
+  const parsed = parseConnectorDoc({ id: CONNECTOR_ID, frontmatter: watched, body } as OkfDocument);
+  assert.ok(parsed.ok, JSON.stringify(parsed.ok ? [] : parsed.errors));
+  const declared = new Set<string>(["type", "title", "description", ...CONNECTOR_DOCUMENT_KEYS]);
+  assert.deepEqual([...touched].filter((key) => !declared.has(key)), []);
+  assert.ok([...declared].every((key) => touched.has(key)), "every declared key is read");
+});

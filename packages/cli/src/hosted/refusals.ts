@@ -45,6 +45,11 @@ interface RefusalRow {
    * when the host said they may not, and is refused as the row says when the host did not say.
    */
   readonly definitions?: true;
+  /**
+   * The command applies this row itself, once it has read the recipe it was given, so a refusal
+   * about that recipe (one carrying a Connector) comes first; the up-front check passes it.
+   */
+  readonly deferred?: true;
 }
 
 const KINDS_INSTEAD = "to design Kinds, work in a local or Git bundle and publish it";
@@ -78,8 +83,8 @@ function heldKey(key: string): boolean {
 export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
   { words: ["doc", "verify"], reason: "not_syncable", why: "verification is a managed field the host records" },
   { words: ["kind", "*"], reason: "not_syncable", why: "a hosted bundle's Kinds cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
-  { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
-  { words: ["recipe", "evolve"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true },
+  { words: ["recipe", "add"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true, deferred: true },
+  { words: ["recipe", "evolve"], reason: "not_syncable", why: "recipes change a hosted bundle's Kinds, which cannot be changed from a checkout", instead: KINDS_INSTEAD, definitions: true, deferred: true },
   { words: ["artifact", "*"], reason: "not_syncable", why: "hosted Artifact publication is not supported yet; use ordinary files until the Artifact publication sequence is available" },
   {
     words: ["promote"],
@@ -181,46 +186,38 @@ export interface RefusalContext {
  */
 export async function assertAllowedInHostedCheckout(command: string, args: readonly string[], context: RefusalContext = {}): Promise<void> {
   const row = matchRow(command, args);
-  if (!row) return;
+  if (!row || row.deferred) return;
   const { dir, skip } = scan(args);
   if (skip) return;
   const binding = await checkoutFor(command, dir, context.home ?? homedir(), context.cwd ?? process.cwd());
   if (!binding) return;
-  // A model change by a person the host allows: the command runs, and sync sends the conventions
-  // (a recipe carrying more than Kind conventions is refused by the command, `assertKindOnlyRecipe`).
+  // A model change by a person the host allows: the command runs, and sync sends the conventions.
   if (row.definitions && binding.definition_writes === "allowed") return;
   const sub = row.words.length > 1 ? args.find((token) => !token.startsWith("-")) : undefined;
   throw hostedCheckoutRefusal(row, sub ? `${command} ${sub}` : command, binding);
 }
 
 /**
- * In a hosted checkout, `recipe add` and `recipe evolve` may write only Kind conventions
- * (designs/hosted-model-evolution.md section 8): every artifact a recipe installs must be an
- * {@link isConventionId} id. A recipe that also carries Views, their pages, References or any other
- * document is refused before anything is written, naming them; those are published with the
- * bundle. So is a recipe with a convention governing `View` or `Convention`: the host refuses
- * every definition write to such a Kind, so its recipe stamp would land locally and fail at sync.
- * A recipe carrying Connectors gets its own refusal, ahead of the others: a Connector needs a
- * Connection, which no hosted workspace can enable yet, and no hosted component reads one before
- * then. The up-front refusal has already let the command run only for a person the host allows.
- * Resolves for any other target.
+ * The hosted-checkout refusal of `recipe add` and `recipe evolve`, run by the command once it has
+ * read the recipe and before it touches the bundle. In order: a recipe carrying Connectors is
+ * refused whatever the host says about model changes, since a Connector needs a Connection, which
+ * no hosted workspace can enable yet, and no hosted component reads one before then; then the
+ * model-change refusal the up-front check deferred, exactly as that row reads; then, for a person
+ * the host allows, a recipe that installs anything but Kind conventions
+ * (designs/hosted-model-evolution.md section 8: Views, their pages, References or any other
+ * document, which are published with the bundle), or a convention governing `View` or
+ * `Convention`, whose definition write the host refuses, so its recipe stamp would land locally
+ * and fail at sync. Resolves for any other target.
  */
-export async function assertKindOnlyRecipe(
+export async function assertRecipeAllowedInHostedCheckout(
   words: string,
   dir: string | undefined,
   recipe: Pick<LoadedRecipe, "id" | "docs" | "pages" | "references" | "connectors">,
   context: RefusalContext = {},
 ): Promise<void> {
-  const connectors = (recipe.connectors ?? []).map((connector) => connector.doc.id);
-  const artifacts = [...recipe.docs.map((doc) => doc.id), ...recipe.pages.flatMap((page) => [page.registry.id, page.entry]), ...recipe.references.map((reference) => reference.doc.id), ...connectors];
-  const outside = artifacts.filter((id) => !isConventionId(id));
-  const reserved = recipe.docs.filter((doc) => {
-    const governs = doc.frontmatter?.governs;
-    return typeof governs === "string" && RESERVED_GOVERNS.has(governs.trim());
-  }).map((doc) => doc.id);
-  if (outside.length === 0 && reserved.length === 0) return;
   const binding = await checkoutFor("recipe", dir, context.home ?? homedir(), context.cwd ?? process.cwd());
   if (!binding) return;
+  const connectors = (recipe.connectors ?? []).map((connector) => connector.doc.id);
   if (connectors.length > 0) {
     throw hostedCheckoutRefusal(
       { words: words.split(" "), reason: "connectors", why: `recipe '${recipe.id}' declares ${connectors.length} Connector(s), which need a Connection, and hosted workspaces cannot enable one yet`, instead: CONNECTORS_INSTEAD },
@@ -229,6 +226,15 @@ export async function assertKindOnlyRecipe(
       { recipe: recipe.id, connectors: connectors.slice(0, 20).join(", "), connectors_total: String(connectors.length) },
     );
   }
+  const deferred = HOSTED_CHECKOUT_REFUSALS.find((row) => row.deferred && row.words.join(" ") === words);
+  if (deferred && binding.definition_writes !== "allowed") throw hostedCheckoutRefusal(deferred, words, binding);
+  const artifacts = [...recipe.docs.map((doc) => doc.id), ...recipe.pages.flatMap((page) => [page.registry.id, page.entry]), ...recipe.references.map((reference) => reference.doc.id)];
+  const outside = artifacts.filter((id) => !isConventionId(id));
+  const reserved = recipe.docs.filter((doc) => {
+    const governs = doc.frontmatter?.governs;
+    return typeof governs === "string" && RESERVED_GOVERNS.has(governs.trim());
+  }).map((doc) => doc.id);
+  if (outside.length === 0 && reserved.length === 0) return;
   if (outside.length === 0) {
     throw hostedCheckoutRefusal(
       { words: words.split(" "), reason: "not_syncable", why: `recipe '${recipe.id}' declares ${reserved.length} Kind(s) governing View or Convention, which the host does not let a checkout change`, instead: KINDS_INSTEAD },

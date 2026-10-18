@@ -216,12 +216,18 @@ stamp) and `connectors_of` (how many it declares) after `of`, its `records` coun
 unstamped Connector is listed in `unstamped`, and `stamp_help` gains a Connector sentence when such
 a row is not `installed`.
 
-In a hosted checkout whose host allows model changes, `recipe add` and `recipe evolve` refuse a
-recipe carrying a Connector before anything is written, with `FORBIDDEN`, `details.reason:
-"connectors"`, `connectors` and `connectors_total`, and `help` "keep this recipe for local and Git
-bundles until hosted workspaces can enable Connections", never publish advice. This refusal wins
-over the View, Reference and reserved-Kind ones for a recipe that also carries those; every other
-refusal is unchanged. Exit codes are unchanged. Evidence:
+In a hosted checkout, `recipe add` and `recipe evolve` read the recipe first and refuse a recipe
+carrying a Connector before the bundle is read or written, whatever the host says about model
+changes (unstated, refused or allowed), with `FORBIDDEN`, `details.reason: "connectors"`,
+`connectors` and `connectors_total`, and `help` "keep this recipe for local and Git bundles until
+hosted workspaces can enable Connections", never publish advice. The precedence is: the connector
+refusal; then the model-change refusal (`not_syncable` with the publish advice when the host has
+not said, `definitions_refused` when it refused); then, for a person the host allows, the View,
+Reference and reserved-Kind refusals. A recipe without connectors gets the refusal it always got
+in each state, byte for byte; because the command now reads the recipe before refusing, a recipe
+that cannot be read reports that first. `recipe add` also adds a Connector sentence to
+`foreign_help` when another recipe's stamp owns one of its Connectors. Exit codes are unchanged.
+Evidence:
 `packages/core/test/recipe-connectors.test.ts`, `packages/cli/test/recipe-connectors.test.ts`, the
 Connector rows in `packages/cli/test/hosted-definition-writes.test.ts` and
 `packages/cli/test/error-boundary.test.ts`, and the unchanged

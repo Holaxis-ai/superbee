@@ -238,6 +238,35 @@ test("a malformed Connector fails the recipe before any bundle is touched, namin
   }
 });
 
+test("recipe add names a Connector another recipe owns, and says evolve never takes it over", async () => {
+  const dir = await tempDir("foreign");
+  const first = await recipeFolder("1");
+  const second = await recipeFolder("1");
+  try {
+    await writeFile(path.join(second, "recipe.md"), (await readFile(path.join(second, "recipe.md"), "utf8")).replace("id: example-calendar", "id: other-calendar"));
+    await init(["--dir", dir, "--recipe", "none"], { stdout: () => {} });
+    await runJson(recipe, ["add", first, "--dir", dir]);
+    const added = await runJson(recipe, ["add", second, "--dir", dir]);
+    assert.deepEqual(added.foreign_ids, [CONNECTOR_ID, "conventions/event"]);
+    assert.match(String(added.foreign_help), /a Connector another recipe's stamp owns is never taken over/);
+    // A conventions-only overlap keeps the help it always had.
+    const kindOnly = await tempDir("foreign-kind");
+    try {
+      await init(["--dir", kindOnly, "--recipe", "none"], { stdout: () => {} });
+      await runJson(recipe, ["add", first, "--dir", kindOnly]);
+      await rm(path.join(second, "connectors"), { recursive: true, force: true });
+      await writeFile(path.join(second, "recipe.md"), (await readFile(path.join(second, "recipe.md"), "utf8")).replace("connectors:\n  - connectors/example-calendar.md\n", ""));
+      const conventionOnly = await runJson(recipe, ["add", second, "--dir", kindOnly]);
+      assert.deepEqual(conventionOnly.foreign_ids, ["conventions/event"]);
+      assert.doesNotMatch(String(conventionOnly.foreign_help), /Connector/);
+    } finally {
+      await rm(kindOnly, { recursive: true, force: true });
+    }
+  } finally {
+    await Promise.all([dir, first, second].map((folder) => rm(folder, { recursive: true, force: true })));
+  }
+});
+
 test("help names Connectors for recipe and recipes", () => {
   assert.match(RECIPE_USAGE, /'type: Connector' declarations under\n'connectors\/'/);
   assert.match(RECIPE_USAGE, /A Connector\nhas no additive merge/);

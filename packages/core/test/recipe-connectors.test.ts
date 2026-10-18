@@ -27,6 +27,7 @@ import {
   readRecipeStamp,
   RECIPE_STAMP_KEY,
   RecipeEvolutionBlocked,
+  RecipeInputError,
   recipeSourceDigest,
 } from "../src/recipe-lifecycle/index.js";
 import * as oldReader from "./fixtures/recipe-stamp-reader-b0ab4fcf.js";
@@ -78,9 +79,9 @@ class CountingBackend extends MemoryBackend {
   }
 }
 
-async function memoryBundle(name: string): Promise<{ bundle: Bundle; backend: CountingBackend }> {
+async function memoryBundle(name: string, okfVersion: "0.1" | "0.2" = "0.2"): Promise<{ bundle: Bundle; backend: CountingBackend }> {
   const backend = new CountingBackend();
-  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Recipe connectors\n");
+  await backend.writeReserved("", "index.md", `---\nokf_version: '${okfVersion}'\n---\n# Recipe connectors\n`);
   return { bundle: { root: `mem://${name}`, backend }, backend };
 }
 
@@ -378,6 +379,21 @@ test("install is create-only for a Connector: a re-add is a no-op, and an edited
   assert.equal((await backend.read(CONNECTOR_ID)).version, before.version);
 });
 
+test("install refuses a Connector the bundle's edition would refuse at its create, before any write attempt", async () => {
+  const cases: Array<[string, string]> = [["tags: 7", "tags: 7\n"], ["verified: yes", "verified: yes\n"], ["a leftover sources list", "sources:\n  - name: events\n"]];
+  for (const [name, extra] of cases) {
+    const connector = CONNECTOR_MD.replace("auth:\n  kind: none\n", `auth:\n  kind: none\n${extra}`);
+    const { bundle, backend } = await memoryBundle(`authoring-${name}`);
+    const error = await installRecipe(bundle, calendar("1", connector), { now: NOW }).then(() => assert.fail(`${name} installed`), (caught: unknown) => caught);
+    assert.ok(error instanceof RecipeInputError, name);
+    assert.match(error.message, /^recipe 'example-calendar' cannot install Connector 'connectors\/example-calendar': OKF v0\.2 .*; nothing was written$/, name);
+    assert.equal(backend.attempts, 0, `${name}: not even the convention`);
+    // OKF v0.1 has no such rule, and its engine writes the same Connector.
+    const legacy = await memoryBundle(`authoring-${name}-v01`, "0.1");
+    assert.equal((await installRecipe(legacy.bundle, calendar("1", connector, "0.1"), { now: NOW })).changed, true, name);
+  }
+});
+
 // ----------------------------------------------------------------------------------------- evolve
 
 for (const okfVersion of ["0.1", "0.2"] as const) {
@@ -406,6 +422,24 @@ for (const okfVersion of ["0.1", "0.2"] as const) {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+}
+
+for (const okfVersion of ["0.1", "0.2"] as const) {
+  test(`evolve (${okfVersion}): a replacement keeps the installed document's metadata and its bundle-local order`, async () => {
+    const { bundle, backend } = await memoryBundle(`metadata-${okfVersion}`, okfVersion);
+    await installRecipe(bundle, calendar("1", CONNECTOR_MD, okfVersion), { now: NOW });
+    const verified = [{ by: "human:mike", at: "2026-10-18T10:00:00Z" }];
+    // None of these is part of the definition, so the Connector is still the one this recipe wrote.
+    await edit(backend, CONNECTOR_ID, (doc) => ({ ...doc, frontmatter: { ...doc.frontmatter, actor: "human:mike", order: 3, verified } }));
+    const v2 = calendar("2", TWO_SOURCES_MD, okfVersion);
+    const plan = await planRecipeEvolution(bundle, v2);
+    assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
+    assert.equal(plan.definitions.find((definition) => definition.id === CONNECTOR_ID)?.action, "update");
+    await applyRecipeEvolution(bundle, v2, plan.plan_token);
+    const after = await readDoc(bundle, CONNECTOR_ID);
+    assert.equal((after.frontmatter.record_sources as unknown[]).length, 2, "the content was replaced");
+    assert.deepEqual([after.frontmatter.actor, after.frontmatter.order, after.frontmatter.verified], ["human:mike", 3, verified]);
   });
 }
 

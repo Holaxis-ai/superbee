@@ -5,6 +5,7 @@ import { query, readBlob, readBundleOkfVersion, readDoc, writeBlob } from "../bu
 import { checkConnectorAgainstKinds, CONNECTORS_PREFIX } from "../connectors.js";
 import { resolveContentType } from "../content-type.js";
 import { mutateDocument } from "../document-mutation.js";
+import { InvalidInputError } from "../errors.js";
 import {
   CONVENTION_TYPE,
   CONVENTIONS_PREFIX,
@@ -13,7 +14,8 @@ import {
   progressStatusStorageField,
   type KindRegistry,
 } from "../kinds.js";
-import { okfValuesEqual } from "../okf-authored-values.js";
+import { okfValuesEqual, type OkfRecord } from "../okf-authored-values.js";
+import { assertAuthoredOkfStandardFields } from "../okf-standard-fields.js";
 import { PAGE_REGISTRY_PREFIX, parseRegistration, VIEW_REGISTRY_PREFIX } from "../page.js";
 import { RECIPE_PROGRESS_STATUS_TOKEN, type LoadedRecipe } from "../recipes.js";
 import type { Bundle, ConceptId, OkfDocument } from "../types.js";
@@ -252,6 +254,7 @@ export async function installRecipe(
   const source = recipe;
   recipe = materializeRecipeForEdition(recipe, okfVersion);
   const identity: RecipeStampIdentity = recipeStampIdentity(source, recipe);
+  assertConnectorsWritable(recipe, identity, okfVersion, now);
   await assertConnectorTargets(bundle, recipe, okfVersion);
   await assertPortableTargetsCompatible(bundle, recipe, now, okfVersion);
 
@@ -485,6 +488,24 @@ export async function installRecipe(
     foreign_ids: foreignIds.sort(),
     warnings: [...recipe.warnings, ...migrationWarnings],
   };
+}
+
+/**
+ * Every Connector as install will write it, against the authoring rules the engine applies on this
+ * edition. The parser tolerates unknown top-level keys, so one OKF v0.2 owns (a `tags` that is not
+ * a list, say) would otherwise be refused at the Connector's create, after the conventions.
+ */
+function assertConnectorsWritable(recipe: LoadedRecipe, identity: RecipeStampIdentity, okfVersion: string, now: string): void {
+  if (okfVersion !== "0.2") return;
+  for (const { doc } of recipe.connectors ?? []) {
+    const candidate = withRecipeStamp(recipeDocumentForApply(doc, okfVersion, now), identity);
+    try {
+      assertAuthoredOkfStandardFields(candidate.frontmatter as unknown as OkfRecord, undefined, { phase: "input" });
+    } catch (error) {
+      if (!(error instanceof InvalidInputError)) throw error;
+      throw new RecipeInputError(`recipe '${recipe.id}' cannot install Connector '${doc.id}': ${error.message}; nothing was written`);
+    }
+  }
 }
 
 /**

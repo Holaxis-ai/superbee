@@ -23,7 +23,7 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation, exactCliInvocation } from "../invocation.js";
 import { applyRecipeEvolution, installRecipe, planRecipeEvolution } from "@superbee/core/recipe-lifecycle";
 import { resolveRecipe } from "../recipe-source.js";
-import { assertKindOnlyRecipe } from "../hosted/refusals.js";
+import { assertRecipeAllowedInHostedCheckout } from "../hosted/refusals.js";
 import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
 
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
@@ -140,8 +140,9 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
       ...(loaded.error.connector ? { details: { connector: loaded.error.connector } } : {}),
     });
   }
+  // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
+  if (values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe evolve", values.dir, loaded.recipe);
   const remote = await resolveRemoteFlag(values.remote, values.dir);
-  if (remote === undefined) await assertKindOnlyRecipe("recipe evolve", values.dir, loaded.recipe);
   const bundle = await openBundle(values.dir, remote);
   const target: CommandText = values.dir !== undefined
     ? commandFragment` --dir ${commandQuoted(values.dir)}`
@@ -223,8 +224,9 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
     });
   }
 
+  // Before anything reads the bundle: in a hosted checkout, the recipe decides which refusal applies.
+  if (values.remote === undefined) await assertRecipeAllowedInHostedCheckout("recipe add", values.dir, loaded.recipe);
   const remote = await resolveRemoteFlag(values.remote, values.dir);
-  if (remote === undefined) await assertKindOnlyRecipe("recipe add", values.dir, loaded.recipe);
   const bundle = await openBundle(values.dir, remote);
   // Core's recipe lifecycle throws typed errors; classify them here, through the one CLI mapping,
   // so this command throws a CliError like every other command.
@@ -271,7 +273,10 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   if (result.foreign_ids.length > 0) {
     receipt.foreign_ids = result.foreign_ids;
     receipt.foreign_help =
-      "another recipe's stamp owns these conventions and keeps them; this recipe reads partial in 'recipes' while it does; an evolve plan takes one over only when it also changes that convention's content, which leaves the other recipe partial";
+      "another recipe's stamp owns these conventions and keeps them; this recipe reads partial in 'recipes' while it does; an evolve plan takes one over only when it also changes that convention's content, which leaves the other recipe partial" +
+      (result.connectors.some((connector) => result.foreign_ids.includes(connector.id))
+        ? "; a Connector another recipe's stamp owns is never taken over: this recipe's evolve plan blocks on it until it is removed by hand"
+        : "");
   }
   const migrationPending = result.docs.some((doc) => doc.migration_required !== undefined);
   if (sourceDiffers > 0 || result.restamp_ids.length > 0 || migrationPending) {
