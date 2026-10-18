@@ -1,4 +1,4 @@
-import { ordinarySeedKey } from "./blob-sync.js";
+import { isOrdinaryBlobKey } from "@superbee/core/storage";
 // Up-front refusals in a hosted checkout (Mike's decision, September 22, 2026: refuse at the
 // command, with "do this in the app"; Kind and recipe commands, which the app cannot do either, say
 // what to do instead). A hosted checkout syncs whole documents only, through
@@ -82,7 +82,7 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     words: ["promote"],
     reason: "not_syncable",
     why: "a key that is not a .md document is stored as a blob; blobs, reserved files and View files do not sync, and conventions change only through the kind and recipe commands",
-    when: (args) => heldKey(docKey(args) ?? "") && !ordinarySeedKey(docKey(args) ?? ""),
+    when: (args) => heldKey(docKey(args) ?? "") && !isOrdinaryBlobKey(docKey(args) ?? ""),
   },
   {
     words: ["delete"],
@@ -90,7 +90,7 @@ export const HOSTED_CHECKOUT_REFUSALS: readonly RefusalRow[] = Object.freeze(([
     why: "a key that is not a .md document is a blob; blobs, reserved files and View files do not sync, and conventions change only through the kind and recipe commands (delete a document with doc delete)",
     when: (args) => {
       const key = docKey(args);
-      return key !== undefined && heldKey(key) && !ordinarySeedKey(key);
+      return key !== undefined && heldKey(key) && !isOrdinaryBlobKey(key);
     },
   },
   {

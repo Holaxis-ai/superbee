@@ -5,10 +5,11 @@
  * `@superbee/core/hosted-client/node`.
  *
  * The directory holds the backend's own log and snapshot, in its supported on-disk format. Each
- * held document write is one meta row, `hosted-client.write.<requestId>`, and a marker row,
+ * held document write is one meta row, `hosted-client.write.<requestId>`, each held blob write
+ * one row of the backend's own blob intent family (`blobs`), and a marker row,
  * `hosted-client.journal = { schemaVersion: 1 }`, names the directory as this store. The store's
- * document, reserved-file and blob families stay empty: open refuses a directory holding any of
- * them, so a CLI checkout store is never adopted.
+ * document, reserved-file and blob-file families stay empty: open refuses a directory holding any
+ * of them, or a checkout's blob-sync state, so a CLI checkout store is never adopted.
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -21,6 +22,7 @@ import {
 } from "../file-journaled-backend.js";
 import type { HostedIntentStore, HostedWriteIntent } from "./write.js";
 import { captureJournalValue, JournalGuardConflict } from "../journaled-backend.js";
+import { decodePreparedBlobIntent, type BlobJournaledBackend, type BlobJournalMutationOptions } from "../blob-journal.js";
 
 /** The marker row's key. */
 export const HOSTED_CLIENT_JOURNAL_MARKER = "hosted-client.journal";
@@ -96,6 +98,12 @@ export interface HostedClientJournal extends HostedIntentStore {
   delete(requestId: string): Promise<void>;
   /** Every held write, oldest first (by `createdAt`, then request identity). */
   list(): AsyncIterable<HostedWriteIntent>;
+  /**
+   * The journal's blob writes: pass it as `createHostedClient({ blobJournal })`. The backend's own
+   * blob intent family and transition rules; metadata it carries may not name this journal's
+   * own rows (`hosted-client.*`) or a checkout's blob-sync state.
+   */
+  readonly blobs: BlobJournaledBackend;
   /** Let pending calls finish, then release the directory. */
   close(): Promise<void>;
 }
@@ -352,8 +360,17 @@ function keyOf(requestId: unknown): string {
   return `${HOSTED_CLIENT_WRITE_PREFIX}${requestId}`;
 }
 
+/** A blob mutation's metadata may never write this journal's own rows or a checkout's state. */
+function assertClientBlobMeta(options: Partial<BlobJournalMutationOptions> | undefined): void {
+  const keys = [...(options?.meta ?? []).map((row) => row?.key), ...(options?.removeMeta ?? [])];
+  if (keys.some((key) => typeof key === "string" && (key.startsWith("hosted-client.") || key === CHECKOUT_BLOB_SYNC_KEY))) {
+    throw new TypeError("a blob write's metadata may not name the hosted client journal's own rows or a checkout's blob-sync state");
+  }
+}
+
 class FileHostedClientJournal implements HostedClientJournal {
   readonly directory: string;
+  readonly blobs: BlobJournaledBackend;
   readonly #backend: FileJournaledBackend;
   #snapshotBytes: number;
   #compacting: Promise<void> | null = null;
@@ -362,6 +379,58 @@ class FileHostedClientJournal implements HostedClientJournal {
     this.#backend = backend;
     this.directory = backend.directory;
     this.#snapshotBytes = snapshotBytes;
+    this.blobs = this.#blobFacade();
+  }
+
+  /**
+   * The backend's blob verbs, with compaction after each mutation. A blob intent carries its
+   * bytes in every record of its life, so removing one that does (a retire or a forget of a
+   * create or replace) leaves those bytes dead in the snapshot and log: compact then whenever
+   * either is past the floor, rather than waiting for the log to outgrow twice the snapshot.
+   */
+  #blobFacade(): BlobJournaledBackend {
+    const backend = this.#backend;
+    const carriesBytes = async (requestIds: readonly string[]): Promise<boolean> => {
+      for (const id of requestIds) {
+        const row = typeof id === "string" ? await backend.readBlobIntent(id).catch(() => undefined) : undefined;
+        if (row && decodePreparedBlobIntent(row.prepared).bytesBase64 !== undefined) return true;
+      }
+      return false;
+    };
+    return Object.freeze({
+      readBlobWithJournal: (key, options) => backend.readBlobWithJournal(key, options),
+      listBlobIntents: (state) => backend.listBlobIntents(state),
+      readBlobIntent: (requestId) => backend.readBlobIntent(requestId),
+      writeBlobMeta: async (key, changes, options) => {
+        assertClientBlobMeta(changes);
+        await backend.writeBlobMeta(key, changes, options);
+        await this.compactIfDue();
+      },
+      admitPreparedBlob: async (prepared, options) => {
+        assertClientBlobMeta(options);
+        const row = await backend.admitPreparedBlob(prepared, options);
+        await this.compactIfDue();
+        return row;
+      },
+      updateBlobIntent: async (requestId, expectedState, patch, options) => {
+        assertClientBlobMeta(options);
+        const row = await backend.updateBlobIntent(requestId, expectedState, patch, options);
+        await this.compactIfDue();
+        return row;
+      },
+      retireBlobIntents: async (key, requestIds, options) => {
+        assertClientBlobMeta(options);
+        const reclaim = await carriesBytes(requestIds);
+        await backend.retireBlobIntents(key, requestIds, options);
+        await this.compactIfDue(reclaim);
+      },
+      forgetBlobIntent: async (requestId, options) => {
+        assertClientBlobMeta(options);
+        const reclaim = await carriesBytes([requestId]);
+        await backend.forgetBlobIntent(requestId, options);
+        await this.compactIfDue(reclaim);
+      },
+    } satisfies BlobJournaledBackend);
   }
 
   async put(intent: HostedWriteIntent): Promise<void> {
@@ -413,16 +482,21 @@ class FileHostedClientJournal implements HostedClientJournal {
 
   /**
    * Compact when the log has outgrown the live state (see
-   * {@link HOSTED_CLIENT_JOURNAL_COMPACT_FLOOR_BYTES}). The mutation before it is already durable,
+   * {@link HOSTED_CLIENT_JOURNAL_COMPACT_FLOOR_BYTES}), or, with `reclaim` (a removal that freed
+   * blob bytes), when the log or the snapshot is past the floor. The mutation before it is already durable,
    * so a failed compaction only leaves the log longer: it is not the caller's failure, and the
    * next mutation tries again.
    */
-  async compactIfDue(): Promise<void> {
-    if (this.#compacting) return;
+  async compactIfDue(reclaim = false): Promise<void> {
+    if (this.#compacting && !reclaim) return;
+    // A reclaim must not be lost to a compaction that began before its removal committed.
+    while (this.#compacting) await this.#compacting;
     this.#compacting = (async () => {
       try {
         const logBytes = await fileSize(path.join(this.directory, FILE_JOURNAL_LOG));
-        if (logBytes <= Math.max(HOSTED_CLIENT_JOURNAL_COMPACT_FLOOR_BYTES, 2 * this.#snapshotBytes)) return;
+        const floor = HOSTED_CLIENT_JOURNAL_COMPACT_FLOOR_BYTES;
+        const due = logBytes > Math.max(floor, 2 * this.#snapshotBytes) || (reclaim && (logBytes > floor || this.#snapshotBytes > floor));
+        if (!due) return;
         await this.#backend.compact();
         this.#snapshotBytes = await fileSize(path.join(this.directory, FILE_JOURNAL_SNAPSHOT));
       } catch {

@@ -23,6 +23,7 @@ import {
   nextBlobIntentRecord,
   type BlobPreparedInput,
   type MemoryBlobJournal,
+  decodePreparedBlobIntent,
 } from "../src/blob-journal.js";
 import { FileJournaledBackend, FileJournalCorruptError, FileJournalFormatError, FILE_JOURNAL_FORMAT_VERSION, FILE_JOURNAL_LOG, FILE_JOURNAL_SNAPSHOT } from "../src/file-journaled-backend.js";
 import type { OperationState } from "../src/uncertain-write.js";
@@ -279,6 +280,26 @@ const ROWS: Row[] = [
       await step(j.retireBlobIntents(K, [rid(14)], { guard: await guard(j, K, ["map"]), removeMeta: ["map"] }));
     },
   },
+  {
+    name: "forget removes only a receipt-less unknown record under a current guard, and frees its (bundle, key)",
+    expect: ["ok", "IntentStateConflict", "ok", "IntentStateConflict", "ok", "ok", "JournalGuardConflict", "ok", "ok", "IntentStateConflict"],
+    async run(j, step, reopen) {
+      const forget = async (n: number, key: string, stale?: Awaited<ReturnType<typeof guard>>) => j.forgetBlobIntent!(rid(n), { guard: stale ?? (await guard(j, key)) });
+      await step(admit(j, input(60, "create", K)));
+      await step(forget(60, K));
+      await step(claim(j, 60, K));
+      await step(forget(60, K));
+      await step(update(j, 60, K, "in_flight", { state: "unknown" }));
+      const stale = await guard(j, K);
+      await step(admit(j, input(61, "create", K, "notes.b")));
+      // The key's guard moved (another bundle's admission): a stale guard refuses, a current one forgets.
+      await step(forget(60, K, stale));
+      await step(forget(60, K));
+      j = await reopen();
+      await step(admit(j, input(62, "create", K)));
+      await step(forget(62, K));
+    },
+  },
 ];
 
 for (const row of ROWS) {
@@ -386,7 +407,7 @@ test("BlobAdmissionConflict is a JournalGuardConflict, so existing guard-conflic
 
 test("one owner: file-journaled-backend.ts calls the pure blob transition functions and keeps no copy of their conditionals", async () => {
   const source = await fs.readFile(path.join(here, "..", "src", "file-journaled-backend.ts"), "utf8");
-  for (const call of ["captureBlobAdmission(", "decideBlobAdmission(", "captureBlobUpdate(", "decideBlobUpdate(", "captureBlobRetirement(", "decideBlobRetirement(", "captureBlobMetaWrite(", "decideBlobMetaWrite(", "readBlobJournal("]) assert.ok(source.includes(call), `calls ${call}`);
+  for (const call of ["captureBlobForget(", "decideBlobForget(", "captureBlobAdmission(", "decideBlobAdmission(", "captureBlobUpdate(", "decideBlobUpdate(", "captureBlobRetirement(", "decideBlobRetirement(", "captureBlobMetaWrite(", "decideBlobMetaWrite(", "readBlobJournal("]) assert.ok(source.includes(call), `calls ${call}`);
   for (const copy of [/attempts \+ 1/, /beforePrefix|afterPrefix|sameHold/, /"in_flight"/, /\["pending", "unknown"\]/, /\["in_flight", "unknown"\]/, /patch\.(?:state|attempts|deletionHold|notDispatched)/, /current\.(?:attempts|receipt|notAppliedThrough|deletionHold)/, /\.receipt \|\|/, /assertBlobJournalGuard/, /#blobGuard/, /"state", "attempts", "receipt"/]) {
     assert.doesNotMatch(source, copy, `file-journaled-backend.ts must not restate ${copy}`);
   }
@@ -510,3 +531,21 @@ test("a format-2 frame carrying not_dispatched is corrupt; a format above 3 is a
     await reopened.close();
   } finally { await one.cleanup(); }
 });
+
+test("a repeated decode of one payload is served from the cache as a fresh copy no caller can change", () => {
+  const payload = prepared(input(70, "replace", K));
+  const first = decodePreparedBlobIntent(payload);
+  (first.scope as { bundleId: string }).bundleId = "changed";
+  (first.intent as { key: string }).key = "changed";
+  (first.identity as { requestId: string }).requestId = "changed";
+  const second = decodePreparedBlobIntent(payload);
+  assert.deepEqual(second, decodePreparedBlobIntent(payload));
+  assert.equal(second.scope.bundleId, "notes.a");
+  assert.equal(second.intent.key, K);
+  assert.equal(second.identity.requestId, rid(70));
+  assert.notEqual(second.scope, decodePreparedBlobIntent(payload).scope);
+  // A malformed payload is refused every time, never cached.
+  assert.throws(() => decodePreparedBlobIntent(payload.replace(`"${K}"`, `"../x"`)));
+  assert.throws(() => decodePreparedBlobIntent(payload.replace(`"${K}"`, `"../x"`)));
+});
+

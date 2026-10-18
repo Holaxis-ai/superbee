@@ -69,7 +69,7 @@ memory adapter. IndexedDB-specific tests additionally exercise transaction abort
 
 The optional `BlobJournaledBackend` holds frozen ordinary-file intents. One owner decides every
 blob transition: the pure functions in `blob-journal.ts` (`decideBlobAdmission`, `decideBlobUpdate`
-with `nextBlobIntentRecord`, `decideBlobRetirement`, `decideBlobMetaWrite`). A backend only reads
+with `nextBlobIntentRecord`, `decideBlobRetirement`, `decideBlobForget`, `decideBlobMetaWrite`). A backend only reads
 its committed state through `BlobJournalView` and persists the decision. `FileJournaledBackend` and
 the browser-safe `createMemoryBlobJournal()` (from `@superbee/core/storage`) both do this, and one
 parity table runs every transition row, refusals included, against both.
@@ -84,9 +84,13 @@ parity table runs every transition row, refusals included, against both.
   record to `pending`, with one kind of typed evidence. A `deletionHold` (the host's
   `428 deletions_held`) is accepted from `in_flight` or `unknown`. `notDispatched { code }` is
   accepted only from an `in_flight` claim this open journal handle made at that attempt, for a
-  failure before the carrier was invoked. A claim found at open belongs to a process that may have
+  failure before the carrier was invoked or one the carrier refused as `denied` (by the carrier
+  contract, nothing left). A claim found at open belongs to a process that may have
   sent it, so it stays lookup-only, as does any carrier or transport failure.
 - **Settlement.** A receipt freezes the record; only terminal records retire.
+- **Forgetting.** The optional `forgetBlobIntent` removes one receipt-less `unknown` record whose
+  latest attempt is not proven unapplied, under the key's guard, on the caller's own evidence (the
+  hosted client's: one fresh `absent` lookup). It is not a receipt: that delivery may still commit.
 
 Patch keys with an `undefined` value are refused.
 

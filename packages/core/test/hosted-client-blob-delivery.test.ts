@@ -90,13 +90,13 @@ test("all trusted scope pins and caller-owned options are captured before any fa
   assert.equal(selected.state, "acknowledged"); assert.equal(originalFactoryCalls, 1);
 });
 
-test("only validated recorded sends settle; missing marker, unrecorded refusal and malformed evidence stay unknown", async () => {
+test("only validated recorded sends settle; missing marker, a mislabelled unrecorded refusal and malformed evidence stay unknown", async () => {
   const { row, exchange } = retained("blob-replace-200-type-only");
   const raw = JSON.parse(exchange.response.body);
   const backendFailure = { ok: false, operationId: "blobs.replace.v1", error: { code: "backend_unavailable", message: "unavailable", retryable: false, writeState: "not_applied" } };
   for (const answer of [
     { status: 200, row: updateRow("200 backend_unavailable"), result: backendFailure, settled: false },
-    { status: 200, row: updateRow("200 insufficient_scope"), result: { ...backendFailure, error: { ...backendFailure.error, code: "insufficient_scope" } }, settled: true },
+    { status: 200, row: updateRow("200 other"), result: { ...backendFailure, error: { ...backendFailure.error, code: "insufficient_scope" } }, settled: true },
     { status: 200, row: updateRow("200 ok"), result: { ...raw, data: { ...raw.data, contentType: "wrong/type" } }, settled: true },
     { status: 200, row: updateRow("200 other"), result: raw, settled: true },
     { status: 503, row: updateRow("200 ok"), result: raw, settled: true },
@@ -107,6 +107,28 @@ test("only validated recorded sends settle; missing marker, unrecorded refusal a
   }
   const accepted = await performHostedBlobDelivery(stub({ send: async () => ({ status: 200, row: updateRow("200 backend_unavailable"), result: backendFailure as never, settled: true }), lookup: unused }), row, { start: "submit-claimed" });
   assert.equal(accepted.state, "refused");
+});
+
+test("a refusal the host never records proves this attempt did not execute: refused with a receipt when every earlier attempt is proven", async () => {
+  const backendFailure = { ok: false, operationId: "blobs.replace.v1", error: { code: "insufficient_scope", message: "no grant", retryable: false, writeState: "not_applied" } };
+  const rows: [number, string, Record<string, unknown>][] = [
+    [200, "200 insufficient_scope", backendFailure],
+    [200, "200 bundle_not_found", { ...backendFailure, error: { ...backendFailure.error, code: "bundle_not_found" } }],
+    [200, "200 request_capacity", { ...backendFailure, error: { ...backendFailure.error, code: "request_capacity", scope: "bundle" } }],
+    [429, "429 request_capacity", { ...backendFailure, error: { ...backendFailure.error, code: "request_capacity", scope: "principal", resetAt: "2026-10-18T00:00:00Z" } }],
+  ];
+  for (const [status, answerRow, result] of rows) {
+    // First attempt, and a resend after a proven not-dispatched prefix: every earlier attempt proven.
+    for (const proven of [retained("blob-replace-200-type-only").row, { ...retained("blob-replace-200-type-only", 2).row, notAppliedThrough: 1, notDispatched: { code: "credentials_denied" as const } }]) {
+      const selected = await performHostedBlobDelivery(stub({ send: async () => ({ status, row: updateRow(answerRow), result: result as never, settled: false }), lookup: unused }), proven, { start: "submit-claimed" });
+      assert.equal(selected.state, "refused", answerRow);
+      assert.equal(selected.outcome.kind === "refused" && selected.outcome.code, (result.error as { code: string }).code);
+      assert.deepEqual(selected.patch.receipt, blobReceipt(proven.prepared, result));
+    }
+  }
+  // A claim whose earlier attempt is unclear is never submitted at all: it is lookup-only.
+  const unclear: BlobIntentRecord = { ...retained("blob-replace-200-type-only", 2).row };
+  await assert.rejects(performHostedBlobDelivery(stub({ send: unused, lookup: unused }), unclear, { start: "submit-claimed" }), /non-execution prefix/);
 });
 
 test("lost ACK selects immutable lookup evidence; absent, failed or contradictory lookup never sends", async () => {

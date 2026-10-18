@@ -39,7 +39,7 @@ import {
   type SharedBase,
 } from "@superbee/browser-local";
 import { assertSafeConceptId, conceptIdFromPath, FilesystemMutationLockError, isConventionId, InvalidInputError, parseMarkdown, RemoteError, type JournaledBackend } from "@superbee/core";
-import { decodePreparedBlobIntent, type BlobIntentRecord, type BlobTargetScope } from "@superbee/core/storage";
+import { decodePreparedBlobIntent, isOrdinaryBlobKey, type BlobIntentRecord, type BlobTargetScope } from "@superbee/core/storage";
 import { performHostedBlobDelivery } from "@superbee/core/hosted-client";
 import { createHostedBlobReadAdapter, createHostedBlobWriteAdapter } from "@superbee/core/hosted-transport";
 import { FileJournaledBackend, FileJournalUnavailableError } from "@superbee/core/file-journaled-backend";
@@ -59,7 +59,8 @@ import { resolveLocalBundleTarget } from "../bundle.js";
 import { parseSyncArgs } from "../commands/sync/orchestrate.js";
 import { commandFragment, commandLiteral, commandToken, type CommandText } from "../command-text.js";
 import { CliError } from "../errors.js";
-import { BLOB_SYNC_META_KEY, recoverBlobPlacements, refreshBlobCheckout, blobHostDeletionsToken, readBlobSyncState, settleBlobSyncReceipt, projectBlobSyncReceipt, blobFrozenPhysicalMatches, ordinarySeedKey, decodeBlobSyncMap, readBlobConflict, resolveBlobConflict, settledBlobConflict, blobConflictMessage, type BlobConflictResolution, type BlobSyncSnapshot, type OfflineBlobAdmission, type BlobRefreshReport, type BlobCaptureContext } from "./blob-sync.js";
+import { BLOB_UNRECORDED_REFUSAL_CODES } from "@superbee/core/hosted-client";
+import { retirableBlobRefusal, retireBlobRefusals, BLOB_SYNC_META_KEY, recoverBlobPlacements, refreshBlobCheckout, blobHostDeletionsToken, readBlobSyncState, settleBlobSyncReceipt, projectBlobSyncReceipt, blobFrozenPhysicalMatches, decodeBlobSyncMap, readBlobConflict, resolveBlobConflict, settledBlobConflict, blobConflictMessage, type BlobConflictResolution, type BlobSyncSnapshot, type OfflineBlobAdmission, type BlobRefreshReport, type BlobCaptureContext } from "./blob-sync.js";
 import { resolveHostedVia } from "./via.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
@@ -1009,7 +1010,7 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
   const initial = new Map<string, BlobIntentRecord[]>();
   let expectedMap: BlobSyncSnapshot["map"] | undefined;
   for (const row of selected) {
-    if (!equalJournalValue(decodePreparedBlobIntent(row.prepared).scope, scope) || !ordinarySeedKey(row.target)) throw new CliError("CONFLICT", `request ${row.requestId} does not match this checkout's ordinary-file scope`);
+    if (!equalJournalValue(decodePreparedBlobIntent(row.prepared).scope, scope) || !isOrdinaryBlobKey(row.target)) throw new CliError("CONFLICT", `request ${row.requestId} does not match this checkout's ordinary-file scope`);
     const snapshot = await readBlobSyncState(store, row.target, scope);
     if (expectedMap && !equalJournalValue(expectedMap, snapshot.map)) throw new JournalGuardConflict(row.target);
     expectedMap ??= snapshot.map; initial.set(row.target, snapshot.journal.intents);
@@ -1093,7 +1094,9 @@ async function driveBlobRequests(session: Session, deps: HostedSyncDeps, options
         const projected = projectBlobSyncReceipt(after.map, claimed, selectedResult.patch);
         saved = await settleBlobSyncReceipt(store, after, claimed, selectedResult.patch); expectedMap = projected;
       } else saved = await store.updateBlobIntent(claimed.requestId, claimed.state, selectedResult.patch, { guard: after.journal.guard });
-      report(saved);
+      report(saved, blobRefusalNote(saved));
+      // Reported once: a settled refusal no longer holds its file, which the next sync captures anew.
+      if (retirableBlobRefusal(saved)) await retireBlobRefusals(store, scope, [saved.target]);
       if (saved.receipt?.result.ok && !await blobFrozenPhysicalMatches(session.binding.path, { ...after, map: expectedMap! }, saved)) (out.kept_local_edits ??= []).push(saved.target);
     } catch (error) {
       if (!(error instanceof JournalGuardConflict || error instanceof FileJournalUnavailableError || error instanceof RangeError || error instanceof CliError)) throw error;
@@ -1144,9 +1147,34 @@ export function blobConflictHelp(binding: CheckoutBinding, keys: readonly string
   return (["keep", "take"] as const).map(choice => `${cliInvocation()} sync --resolve ${choice} --doc ${commandToken(key)} --dir ${commandToken(binding.path)}`);
 }
 
-export function blobDeliveryFailure(report: BlobDriveReport): { code: "CONFLICT" | "TRANSIENT"; message: string } | null {
+/** The code of a blob row's refusal, when its receipt names one. */
+function blobRefusalCode(row: BlobDriveRow): string | undefined {
+  const result = row.result as { ok?: unknown; error?: { code?: unknown } } | undefined;
+  return row.state === "refused" && result?.ok === false && typeof result.error?.code === "string" ? result.error.code : undefined;
+}
+/** Refusals of the host's own access (as a document write's PERMISSION_DENIED reads): the bundle is not writable to this person. */
+const BLOB_ACCESS_REFUSALS: ReadonlySet<string> = new Set(["insufficient_scope", "bundle_not_found"]);
+const BLOB_UNRECORDED: ReadonlySet<string> = new Set(BLOB_UNRECORDED_REFUSAL_CODES);
+/** What a refusal the host never recorded means for the person; the file is captured anew on the next sync. */
+function blobRefusalNote(row: BlobIntentRecord): string | undefined {
+  const result = row.receipt?.result;
+  if (row.state !== "refused" || !result || result.ok || !BLOB_UNRECORDED.has(result.error.code)) return undefined;
+  return result.error.code === "request_capacity"
+    ? `${row.target} was not sent: the sync quota is used up. Nothing was lost; run sync again later and it is sent again.`
+    : `${row.target} was not sent: the host refused writes to this bundle for this sign-in. Nothing was lost; it is sent again on a sync once access returns.`;
+}
+
+/**
+ * The exit for a blob delivery, classed as document writes are: a held file, a conflict or a
+ * content refusal needs the person (CONFLICT); a refusal of access to the bundle is FORBIDDEN, as
+ * a document write's PERMISSION_DENIED is; the sync quota and lost answers are TRANSIENT.
+ */
+export function blobDeliveryFailure(report: BlobDriveReport): { code: "CONFLICT" | "FORBIDDEN" | "TRANSIENT"; message: string } | null {
   if (report.rows.every(row => row.state === "committed") && !report.kept_local_edits?.length) return null;
-  return { code: report.rows.some(row => row.state === "held" || row.state === "conflict" || row.state === "refused") ? "CONFLICT" : "TRANSIENT", message: "ordinary-file delivery is incomplete; preserved requests remain available for recovery" };
+  const message = "ordinary-file delivery is incomplete; preserved requests remain available for recovery";
+  if (report.rows.some(row => row.state === "held" || row.state === "conflict" || (row.state === "refused" && !BLOB_UNRECORDED.has(blobRefusalCode(row) ?? "")))) return { code: "CONFLICT", message };
+  if (report.rows.some(row => BLOB_ACCESS_REFUSALS.has(blobRefusalCode(row) ?? ""))) return { code: "FORBIDDEN", message: "ordinary-file delivery is incomplete: the host refused writes to this bundle" };
+  return { code: "TRANSIENT", message };
 }
 
 async function blobCaptureContext(session: Session, deps: HostedSyncDeps): Promise<BlobCaptureContext | undefined> {
@@ -2148,7 +2176,7 @@ function withLocalStore<T>(binding: CheckoutBinding, deps: HostedSyncDeps, body:
 /** The ordinary-file key `input` names when this checkout tracks it (a baseline or a journal row); read offline. */
 async function trackedBlobKey(binding: CheckoutBinding, deps: HostedSyncDeps, input: string): Promise<string | undefined> {
   const key = input.trim();
-  if (key.endsWith(".md") || !ordinarySeedKey(key)) return undefined;
+  if (key.endsWith(".md") || !isOrdinaryBlobKey(key)) return undefined;
   const tracked = await withLocalStore(binding, deps, async store =>
     decodeBlobSyncMap(await store.readMeta(BLOB_SYNC_META_KEY), bindingBlobScope(binding)).entries.some(entry => entry.key === key) || (await store.listBlobIntents()).some(row => row.target === key));
   return tracked ? key : undefined;

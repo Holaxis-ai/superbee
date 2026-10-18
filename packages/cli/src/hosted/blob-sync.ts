@@ -1,5 +1,5 @@
 /** Scoped ordinary-file baselines. Physical capture is bounded and leaf-only; callers own checkout locking. */
-import { captureBlobHead, isBlobContentType, isContentVersion, compareStorageKeys, isWriteRequestId, blobReceipt, prepareBlobIntent, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobHead, type BlobTargetScope, type BlobIntentRecord, type BlobIntentPatch, type BlobJournaledBackend, isReservedFile, IntentHoldConflict, type JournaledBackend, type BlobJournalRead } from "@superbee/core/storage";
+import { isOrdinaryBlobKey, captureBlobHead, isBlobContentType, isContentVersion, compareStorageKeys, isWriteRequestId, blobReceipt, prepareBlobIntent, captureBlobIntentRecord, decodePreparedBlobIntent, type BlobHead, type BlobTargetScope, type BlobIntentRecord, type BlobIntentPatch, type BlobJournaledBackend, IntentHoldConflict, type JournaledBackend, type BlobJournalRead } from "@superbee/core/storage";
 import { captureJournalValue, equalJournalValue, JournalGuardConflict } from "@superbee/core/journaled-backend";
 
 import path from "node:path";
@@ -8,8 +8,7 @@ import { mintRequestId } from "@superbee/core/uncertain-write";
 import { FileJournalUnavailableError } from "@superbee/core/file-journaled-backend";
 import { createHostedBlobReadAdapter, HostedCarrierError, HostedReadAdapterError, type HostedCarrier, type HostedCapabilities } from "@superbee/core/hosted-transport";
 import { RemoteError } from "@superbee/core";
-import { PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "@superbee/core/page";
-import { digestOf, projectionPathExact as blobPathSafe, findFilePathCollision, fold, prepareBlobStage, installBlobStage, finishBlobStage, orphanBlobStages, type BlobFileIdentity, type BlobStagePlan, UnsafePlacementError } from "./projection.js";
+import { digestOf, projectionPathExact as blobPathSafe, findFilePathCollision, prepareBlobStage, installBlobStage, finishBlobStage, orphanBlobStages, type BlobFileIdentity, type BlobStagePlan, UnsafePlacementError } from "./projection.js";
 import { readRegularFileNoFollowSync } from "../nofollow-read.js";
 import { commandToken } from "../command-text.js";
 
@@ -157,7 +156,7 @@ export function projectBlobSyncReceipt(map: BlobSyncMap, record: BlobIntentRecor
 /** A declared gate and explicit held-delete acceptance judge the frozen representation, not newer bytes. */
 export async function blobFrozenPhysicalMatches(folder: string, snapshot: Pick<BlobSyncSnapshot, "map">, record: BlobIntentRecord): Promise<boolean> {
   const prepared = decodePreparedBlobIntent(record.prepared), intent = prepared.intent;
-  if (!ordinarySeedKey(record.target) || !equalJournalValue(prepared.scope, snapshot.map.scope) || snapshot.map.entries.find(row => row.key === record.target)?.placement) return false;
+  if (!isOrdinaryBlobKey(record.target) || !equalJournalValue(prepared.scope, snapshot.map.scope) || snapshot.map.entries.find(row => row.key === record.target)?.placement) return false;
   const entry = snapshot.map.entries.find(row => row.key === record.target), file = path.join(folder, ...record.target.split("/"));
   if (!await blobPathSafe(folder, record.target)) return false;
   const found = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
@@ -195,7 +194,7 @@ export async function seedInitialBlobBaselines(options: {
   }
   let map: BlobSyncMap = { schemaVersion: 1, scope, entries: [] };
   for (const head of heads) {
-    if (!ordinarySeedKey(head.key) || exported[head.key] !== head.version || findFilePathCollision([...map.entries.map(row => row.key), head.key])) continue;
+    if (!isOrdinaryBlobKey(head.key) || exported[head.key] !== head.version || findFilePathCollision([...map.entries.map(row => row.key), head.key])) continue;
     const file = path.join(folder, ...head.key.split("/"));
     if (!await blobPathSafe(folder, head.key)) continue;
     const actual = readRegularFileNoFollowSync(file, { maximumBytes: 16 * 1024 * 1024 });
@@ -215,12 +214,6 @@ export async function seedInitialBlobBaselines(options: {
   }
   return { state: "seeded", count: map.entries.length };
 }
-export function ordinarySeedKey(key: string): boolean {
-  try { captureBlobHead({ key, version: `sha256:${"0".repeat(64)}`, contentType: "application/octet-stream" }); } catch { return false; }
-  if (isReservedFile(key)) return false;
-  const root = fold(key.split("/")[0]!);
-  return ![PAGE_ENTRY_PREFIX, PAGE_REGISTRY_PREFIX, VIEW_ENTRY_PREFIX, VIEW_REGISTRY_PREFIX, "conventions/", "recipes/", "references/"].some(prefix => root === prefix.slice(0, -1));
-}
 
 export interface BlobCaptureContext {
   store: BlobJournaledBackend & Pick<JournaledBackend, "readMeta">;
@@ -237,12 +230,14 @@ export async function captureTrackedBlobChanges(folder: string, context: BlobCap
   const captured = captureJournalValue({ scope: context.scope, binding: context.binding, ...(context.via === undefined ? {} : { via: context.via }), createdAt: context.createdAt, allowed: context.allowed });
   const raw = await store.readMeta(BLOB_SYNC_META_KEY), map = decodeBlobSyncMap(raw, captured.scope);
   const held: BlobCaptureHold[] = [];
-  const intents = (await store.listBlobIntents()).filter(row => row.state !== "acknowledged");
+  // A refusal an earlier run reported (or settled just before it stopped) no longer holds its file.
+  if (!preview) await retireBlobRefusals(store, captured.scope, (await store.listBlobIntents("refused")).filter(retirableBlobRefusal).map(row => row.target));
+  const intents = (await store.listBlobIntents()).filter(row => row.state !== "acknowledged" && !(preview && retirableBlobRefusal(row)));
   const outstanding = new Set(intents.map(row => row.target)), conflicted = new Set(intents.filter(settledBlobConflict).map(row => row.target));
   for (const entry of map.entries) {
     const hold = (message: string, reason: BlobCaptureHold["reason"] = "not_sendable") => held.push({ key: entry.key, reason, message });
     if (entry.placement) { hold(`${entry.key} has unresolved local placement evidence; capture waits for recovery`); continue; }
-    if (!ordinarySeedKey(entry.key)) { hold(`${entry.key} is a protected namespace; ordinary-file sync does not change it`); continue; }
+    if (!isOrdinaryBlobKey(entry.key)) { hold(`${entry.key} is a protected namespace; ordinary-file sync does not change it`); continue; }
     if (conflicted.has(entry.key)) { hold(blobConflictMessage(entry.key)); continue; }
     if (outstanding.has(entry.key)) { hold(`${entry.key} has a preserved ordinary-file intent awaiting delivery or recovery`); continue; }
     const file = path.join(folder, ...entry.key.split("/"));
@@ -328,7 +323,7 @@ export async function stageBlobPlacement(folder: string, store: BlobJournaledBac
   const map = captureBlobSyncMap(supplied.map, supplied.map.scope), key = input.key, head = input.head === null ? null : captureBlobHead(input.head), bytes = input.bytes === undefined ? undefined : new Uint8Array(input.bytes);
   const guard = captureJournalValue(supplied.journal.guard);
   const premise = guard.meta.find(row => row.key === BLOB_SYNC_META_KEY)?.expected;
-  if (guard.key !== key || supplied.journal.key !== key || !premise || !equalJournalValue(map, decodeBlobSyncMap(premise.present ? premise.value : undefined, map.scope)) || guard.intents.some(row => row.state !== "acknowledged") || !ordinarySeedKey(key) || head && head.key !== key) throw new TypeError("invalid blob placement snapshot");
+  if (guard.key !== key || supplied.journal.key !== key || !premise || !equalJournalValue(map, decodeBlobSyncMap(premise.present ? premise.value : undefined, map.scope)) || guard.intents.some(row => row.state !== "acknowledged") || !isOrdinaryBlobKey(key) || head && head.key !== key) throw new TypeError("invalid blob placement snapshot");
   if (findFilePathCollision([...map.entries.map(row => row.key), key]) || !await blobPathSafe(folder, key)) return "held";
   const original = map.entries.find(row => row.key === key) ?? null;
   if (original?.placement || original?.desiredContentType !== undefined && original.desiredContentType !== original.head?.contentType) return "held";
@@ -396,7 +391,7 @@ export async function refreshBlobCheckout(options: {
   };
   const eligible = async (key: string): Promise<BlobSyncSnapshot | undefined> => {
     const entry = map.entries.find(row => row.key === key);
-    if (!ordinarySeedKey(key)) { hold(key, `${key} is a protected namespace`); return; }
+    if (!isOrdinaryBlobKey(key)) { hold(key, `${key} is a protected namespace`); return; }
     if (findFilePathCollision([...map.entries.map(row => row.key), key])) { hold(key, `${key} aliases another ordinary-file projection owner`); return; }
     const snapshot = await snapshotFor(key);
     if (entry?.placement || snapshot.journal.intents.some(row => row.state !== "acknowledged")) { hold(key, `${key} has preserved intent or placement evidence`); return; }
@@ -518,7 +513,7 @@ export async function admitOfflineBlob(options: {
     return null;
   }
   const refuse = (message: string, reason = "blob_admission_held") => new CliError("CONFLICT", message, { details: { reason, key: input.key, submitted: false }, help: "preserve the file and resolve its checkout state before promoting or deleting it" });
-  if (!ordinarySeedKey(input.key)) throw refuse("ordinary-file admission refuses this reserved, document, model, View or publisher-owned key");
+  if (!isOrdinaryBlobKey(input.key)) throw refuse("ordinary-file admission refuses this reserved, document, model, View or publisher-owned key");
   const file = path.join(binding.path, ...input.key.split("/"));
   if (input.operation === "promote" && (!input.source || path.resolve(input.cwd, input.source) !== file)) throw new CliError("USAGE", "hosted promote requires the source to be the checkout target pathname", { help: `copy the source into ${commandToken(file)}, then promote that target with --doc-key ${commandToken(input.key)}` });
   const result = await withIdleCheckoutStore(binding, input.home, async store => {
@@ -607,6 +602,26 @@ export async function admitOfflineBlob(options: {
   return result;
 }
 
+/**
+ * A host refusal settled with its receipt (anything but a version conflict, which waits for
+ * --resolve): final for its identity, which is never sent again. Sync reports it once and then
+ * retires it, so the file is captured anew on the next run, as an edited document would be.
+ */
+export function retirableBlobRefusal(row: BlobIntentRecord): boolean {
+  return row.state === "refused" && row.receipt !== undefined && !row.receipt.result.ok && !settledBlobConflict(row);
+}
+/** Caller holds the checkout lock. Retires each key's settled refusals under its map and journal guard; a key whose guard moved keeps them for the next run. */
+export async function retireBlobRefusals(store: BlobJournaledBackend, scope: BlobTargetScope, keys: Iterable<string>): Promise<void> {
+  for (const key of new Set(keys)) {
+    try {
+      const snapshot = await readBlobSyncState(store, key, scope);
+      const ids = snapshot.journal.intents.filter(retirableBlobRefusal).map(row => row.requestId);
+      if (ids.length) await store.retireBlobIntents(key, ids, { guard: snapshot.journal.guard });
+    } catch (error) {
+      if (!(error instanceof JournalGuardConflict || error instanceof FileJournalUnavailableError)) throw error;
+    }
+  }
+}
 /** A terminal version conflict: proven not applied, so its identity is never sent again. */
 export function settledBlobConflict(row: BlobIntentRecord): boolean {
   const result = row.receipt?.result;
@@ -758,7 +773,7 @@ export async function blobCheckoutStates(folder: string, store: BlobJournaledBac
     else if (mine.some(row => row.attempts > 0)) state = "unknown";
     else if (mine.length) state = "pending";
     else if (!entry) continue;
-    else if (entry.placement || !ordinarySeedKey(key) || !await blobPathSafe(folder, key)) state = "held";
+    else if (entry.placement || !isOrdinaryBlobKey(key) || !await blobPathSafe(folder, key)) state = "held";
     else {
       const found = readRegularFileNoFollowSync(path.join(folder, ...key.split("/")), { maximumBytes: 16 * 1024 * 1024 });
       if (found.state === "unsafe") state = "held";

@@ -33,6 +33,13 @@ export interface HostedBlobDeliveryResult {
   patch: BlobIntentPatch;
 }
 const UNKNOWN = Object.freeze({ kind: "unknown" as const });
+/**
+ * Refusals the host answers before dispatch and records under no identity (`recorded: "no"`): a
+ * grant without blob writes, a bundle the person cannot reach, and the sync quota. One of them on
+ * an attempt whose earlier attempts are all proven not applied settles the write as refused.
+ */
+export const BLOB_UNRECORDED_REFUSAL_CODES = Object.freeze(["insufficient_scope", "bundle_not_found", "request_capacity"] as const);
+const UNRECORDED_REFUSALS: ReadonlySet<string> = new Set(BLOB_UNRECORDED_REFUSAL_CODES);
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") { for (const nested of Object.values(value)) freeze(nested); Object.freeze(value); }
   return value;
@@ -113,6 +120,19 @@ export async function performHostedBlobDelivery(context: HostedBlobDeliveryConte
             return freeze({ kind: "not-executed", attempts: row.attempts, details: captureBlobDeletionHold({ deletions: captured.error.deletions!, baseline: captured.error.baseline! }) });
           }
           return UNKNOWN;
+        }
+        // A refusal the host answers before dispatch and never records (no grant, no bundle, the
+        // sync quota) proves this attempt did not execute. It settles the identity as refused only
+        // when every earlier attempt is proven not applied; otherwise an earlier delivery may still
+        // commit, and the identity stays unknown.
+        if (answer.status !== null && answer.result !== undefined && !answer.result.ok && UNRECORDED_REFUSALS.has(answer.result.error.code)) {
+          // Capture the evidence before reading the row, as the recorded path below does.
+          const classified = classifyBlobWriteAnswer({ status: answer.status, body: answer.status === 200 ? answer.result : { error: answer.result.error }, headers: new Headers() }, prepared.intent);
+          const captured = classified.result;
+          if (classified.row.recorded === "no") {
+            if (captured && !captured.ok && classified.row.answer === answer.row.answer && answer.row.recorded === "no" && captured.error.writeState === "not_applied" && (row.notAppliedThrough ?? 0) === row.attempts - 1) return candidate(captured);
+            return UNKNOWN;
+          }
         }
         if (answer.status !== 200 || answer.result === undefined) return UNKNOWN;
         const classified = classifyBlobWriteAnswer({ status: 200, body: answer.result, headers: new Headers() }, prepared.intent);

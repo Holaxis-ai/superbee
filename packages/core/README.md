@@ -603,6 +603,151 @@ document (`invalid_input`). Calls on one client that name the same identity run 
 its capabilities read, or a failure of the intent store to record the write. Document deletion is
 not part of `write`.
 
+### Writing a blob
+
+`writeBlob` and `deleteBlob` write one ordinary file (a blob: an image, a diagram, any bytes) to a
+hosted bundle. A create names an absent key; a replace and a delete name the head they expect,
+its version **and** content type (a `BlobPin`), so a type-only change is a replace too.
+
+```ts
+const svg = new TextEncoder().encode("<svg xmlns='http://www.w3.org/2000/svg'/>");
+const created = await client.writeBlob("notes", { key: "diagrams/flow.svg", bytes: svg, contentType: "image/svg+xml", expectAbsent: true });
+if (created.status !== "committed") throw new Error(created.status);
+let pin = created.head!; // { key, version, contentType }
+
+const replaced = await client.writeBlob("notes", { key: pin.key, bytes: edited, contentType: "image/svg+xml", expected: pin });
+if (replaced.status === "committed") pin = replaced.head!;
+
+const read = await client.readBlob("notes", pin.key, { pin }); // bytes verified, or null if no longer at the pin
+const deleted = await client.deleteBlob("notes", { key: pin.key, expected: pin });
+```
+
+Each call returns one of:
+
+- `{ status: "committed", head, changed? }`: applied. `head` is the new head (null after a
+  delete); `changed` is false for a replace the head already matched.
+- `{ status: "conflict", reason: "version_conflict", actual }`: the head is not at the expected pin
+  (for a create: the key exists). `actual` is the head now, or null when there is none (a delete of
+  an absent key). Final for that identity.
+- `{ status: "conflict", reason: "concurrent_change", message }`: another write overlapped this one
+  past the host's own retries. Nothing was applied.
+- `{ status: "refused", code, message }`: the host's own refusal, or one the client names. The
+  host's codes are those it records under the identity (`backend_unavailable`, ...) and those it
+  answers before dispatch and never records (`insufficient_scope` for a grant without blob writes,
+  `bundle_not_found`, and `request_capacity` in a `200` or a `429`). A refusal of the second kind
+  proves only that this attempt did not run, so it is final only when every earlier attempt of the
+  write is proven not applied, which is always so for a write the client sends; a write whose
+  earlier attempt was unclear is never sent again, only looked up, and stays `unknown`.
+  `insufficient_scope`, `bundle_not_found` and `invalid_input` also drop the held capabilities
+  answer, so the next write reads them again. The client's own codes are `invalid_input` (an
+  unsafe key, a key under one of Superbee's own record folders or a reserved file, an invalid content type, a body over the host's `blobWriteBytes` or 16 MiB, or a held
+  identity reused for another write), `scope_mismatch` (a held write, or a reused `requestId`, recorded
+  for another origin or sync prefix) or `unsettled_write` (an earlier write of the same key in the bundle is still
+  unsettled: settle or forget it first). Nothing was sent for a client-named refusal.
+- `{ status: "held", deletions, baseline }`: the host holds this mass delete (`428
+  deletions_held`). Nothing was applied. A person confirms the count, and
+  `settleBlobWrite(requestId, { acceptDeletes })` with at least `deletions` sends it again; without
+  `acceptDeletes` it stays held and nothing is sent, and with fewer it throws
+  `HostedBlobDeletionsNotAccepted`, sending nothing. `deleteBlob(..., { acceptDeletes })` sends the
+  confirmation with the first attempt.
+- `{ status: "unknown" }`: the host may or may not hold the write.
+
+Every result names its `requestId`, `key` and `operation`.
+
+**The capability gate.** A blob write needs the bundle's `blobWrites: "allowed"` and its
+`blobWriteBytes` bound, from the same held capabilities answer `write` uses. When the host serves
+the bundle no blob writes (an older host's answer reads as refused), `writeBlob` and `deleteBlob`
+throw `HostedBlobWritesNotServed`, a `HostedRouteNotServed` (`isRouteNotServed` is true), before
+anything is journaled or sent. This differs from `write()`, which answers a bundle without writes
+with the result `refused: read_only`: the blob routes are a newer capability a caller probes for, as
+it probes for any route a host may lack. The checks a send would otherwise fail (the capability, the
+byte bound, the key and the content type) all run against that one answer before the write is
+journaled, and the delivery is handed the same answer, so the two cannot disagree.
+
+**Exactly once, never resent after it may have left.** Each blob write is journaled under one
+request identity (with the client's binding, the bundle and workspace and the bytes), durably
+claimed, then sent once. After an unclear answer the client looks the identity up on the host
+(`/outcome`, under the binding recorded with the write) and reports what the host recorded. Unlike a
+document write, an `absent` lookup is never permission to send again: once an attempt may have left,
+a blob write is only ever looked up. A send proven never to have left (the credential provider
+failed or was denied, the signal was already aborted, the identity was malformed, a local check
+failed) is rolled back instead: `writeBlob` throws `HostedBlobWriteNotSent` with its `requestId` and
+`reason`, and the write stays held and resendable (`held: true`), so `settleBlobWrite` or the same
+`writeBlob` call (same `requestId`, same input) sends it. A transport failure after the request was
+handed to the carrier is `unknown`.
+
+**Recovery.** `heldBlobWrites()` lists every unsettled blob write (`requestId`, `bundleId`,
+`workspace`, `key`, `operation`, `state`, `attempts`, `resendable`, `hold`, `createdAt`) and sweeps any
+settled one a crash left behind.
+
+- `lookupBlobWrite(requestId)` makes one outcome lookup and never sends. A write never sent (or
+  proven not applied) answers `{ status: "pending" }` without a request, and a held delete `held`.
+- `settleBlobWrite(requestId, { acceptDeletes? })` submits the write when its state is pending or
+  unknown and every attempt is proven not applied (`attempts === notAppliedThrough`); otherwise it
+  only looks it up, and an absent lookup is `unknown`.
+- `forgetBlobWrite(requestId)` drops an `unknown` write once one fresh lookup answers `absent`,
+  returning `{ status: "forgotten" }`. **The earlier delivery may still commit**; the host's
+  compare-and-swap is what keeps a later write from losing that update. Any other record is
+  `{ status: "kept", reason: "not_unknown" }` (settle an `in_flight` one first), a lookup that fails,
+  is refused or is malformed is `kept` with `lookup_unavailable`, and a lookup that finds the outcome
+  settles the write instead. A forgotten identity is no longer held, so `writeBlob` with that same
+  `requestId` journals and uploads it again under that identity. That is safe: the host answers a
+  delivery it recorded under the identity with the recorded result, and one it did not record is
+  checked against the expected pin like any write.
+
+All three answer `{ status: "unrecorded", requestId }` when the journal holds no blob write under the
+identity. A reused `requestId` with the same input resumes (settles) the held write; with different
+input it is `refused: invalid_input` and nothing is admitted. Calls are serialized per request
+identity and per key (the journal's guard covers a key across bundles), so concurrent calls of one
+client never trip each other.
+
+```ts
+// A service restarting after a crash: settle what it held, forgetting only proven-absent unknowns.
+for (const held of await client.heldBlobWrites()) {
+  const settled = await client.settleBlobWrite(held.requestId);
+  if (settled.status === "unknown") console.warn(`blob write ${held.requestId} is still unknown`); // forgetBlobWrite once you choose to move on
+}
+```
+
+**Reads.** `readBlob(bundleId, key, { pin })` requires the pin: it reads exactly that version and
+content type, verifies length, digest and type, and answers null when the key is no longer at the pin
+(the host's `409`). `blobHead(bundleId, key)` is the explicit lookup of one head (or null), and
+`blobHeads(bundleId)` the whole listing; both read the full verified listing (up to 10,000 heads in
+4 MiB pages), since the host has no single-key head route yet.
+
+**Keys.** `isOrdinaryBlobKey` is the one key policy every blob writer uses, this client and the
+CLI's checkout sync alike: a safe key that is not a reserved file (`index.md`, `log.md`) and does not
+sit under Superbee's own record folders (`views/`, `pages/`, their registries, `conventions/`,
+`recipes/`, `references/`, compared case-insensitively). Any other key is refused `invalid_input`
+before any request.
+
+**Aborts.** A `signal` aborted before the write is admitted throws its reason and journals nothing;
+that includes an abort while the capabilities are still being read, so a hung credential provider
+never holds the call (or its key) past the caller's abort. Once admitted, a write is held until it
+settles, and an abort before its send leaves it resendable (`HostedBlobWriteNotSent`).
+
+**Journal.** The default blob journal is in memory (`createMemoryBlobJournal`), owned by the client.
+Give a blob journal to one client (its `within` clients share it). Two clients over one journal
+coordinate only through its per-key guard: concurrent writes of different identities still settle,
+but two calls on the same request identity from both clients can fail with a raw journal conflict.
+Pass `blobJournal` to keep blob writes across restarts: in Node, `openHostedClientJournal(...).blobs`
+(below). `driveJournaledBlob(journal, context, requestId, mode)` is the owner of the journaled
+sequence (admit, claim, deliver, persist, retire) for a caller with its own journal and premises; its
+`premises.snapshot(key, step)` returns each transaction's guard plus the caller's own metadata
+changes, checked atomically with it.
+
+**Limitations.**
+
+- Lookups currently need `blobWrites`: a grant downgraded to read-only cannot settle its earlier
+  blob writes until the host authorizes the outcome route on its own (a hosted follow-up).
+- A lookup across principals is unverified: a new token of the same principal finds its outcomes
+  (the binding travels in the journal), but what another principal's lookup gets is not yet proven.
+- Every journal record of a write carries its bytes, and each transaction validates the record.
+  Validation is cached per payload, so a write costs about 0.17 s per MiB in Node (3 MiB about
+  0.5 s, 16 MiB about 2.6 s, measured with the in-memory journal); without the cache it was about
+  1.7 s per MiB (16 MiB about 28 s). The first validation of a payload still runs on the caller's
+  thread in one slice, about 1.2 s for 16 MiB.
+
 ### Inbox
 
 `createHostedInbox(client, { tenantId })` is a person's hosted inbox in one workspace, over the
@@ -640,16 +785,18 @@ item. A send still unclear after that throws `HostedAttentionOutcomeUnknown` wit
 
 ### Durable intent store (Node only)
 
-`openHostedClientJournal` from `@superbee/core/hosted-client/node` is a durable `intentStore`, so a
-short-lived process that exits with a write `unknown` can recover it after a restart.
+`openHostedClientJournal` from `@superbee/core/hosted-client/node` is a durable `intentStore`, and its
+`blobs` a durable `blobJournal`, so a short-lived process that exits with a write `unknown` can recover
+it after a restart.
 
 ```ts
 import { createHostedClient } from "@superbee/core/hosted-client";
 import { openHostedClientJournal } from "@superbee/core/hosted-client/node";
 
 const journal = await openHostedClientJournal({ directory: path.join(stateDir, "superbee-writes") });
-const client = createHostedClient({ target, credentials, intentStore: journal });
+const client = createHostedClient({ target, credentials, intentStore: journal, blobJournal: journal.blobs });
 for (const held of await client.heldWrites()) await client.settleWrite(held.requestId);
+for (const held of await client.heldBlobWrites()) await client.settleBlobWrite(held.requestId);
 // ... writes ...
 await journal.close();
 ```
@@ -659,7 +806,12 @@ compaction. Its on-disk format is a supported compatibility promise: a format bu
 for every earlier layout, and an older reader refuses a newer store with `FileJournalFormatError`
 rather than misreading it. The current format is 3 (see `JOURNALED-BACKENDS.md`). Each unsettled write is one metadata row, `hosted-client.write.<requestId>`,
 holding the whole document and the binding it was sent under, so a new process with a new token
-looks it up exactly as the first would have. A settled write is removed.
+looks it up exactly as the first would have. A settled write is removed. Each unsettled blob write is
+one row of the backend's own blob intent family, with its bytes, under the same transition rules as
+the in-memory journal; a settled one is retired, and since every record of a blob write carries its
+bytes, retiring or forgetting one compacts the store once its log or snapshot is past 1 MiB. Metadata
+a blob write carries may not name the journal's own rows (`hosted-client.*`) or a checkout's
+blob-sync state.
 
 - **Ownership.** Open takes an exclusive same-user lock on the directory until `close()`. Another
   process waits `lock.waitMs` (default 5,000 ms) and then gets `FilesystemMutationLockError`. A
@@ -681,8 +833,8 @@ looks it up exactly as the first would have. A settled write is removed.
   foreign log tail.
 - **Marker.** A new journal records `hosted-client.journal = { schemaVersion: 1 }` in its first
   transaction. Open refuses, as `JOURNAL_NOT_HOSTED_CLIENT`, a store with rows but no marker or one
-  holding documents, blobs or a checkout's blob-sync state, so it is never pointed at a CLI checkout
-  store. A marker of another schema is `JOURNAL_SCHEMA_UNSUPPORTED`. Open decides on a read-only
+  holding documents, blob files or a checkout's blob-sync state, so it is never pointed at a CLI
+  checkout store. A marked journal holding blob write intents is its own and reopens. A marker of another schema is `JOURNAL_SCHEMA_UNSUPPORTED`. Open decides on a read-only
   pass first, so a refused directory's files are left byte for byte. A crash before the marker
   lands leaves an empty store, which the next open marks.
 - **Size.** Once the store is adopted, the log is compacted into the snapshot whenever it grows past the greater of 1 MiB

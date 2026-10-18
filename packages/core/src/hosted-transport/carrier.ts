@@ -249,11 +249,18 @@ export function createFetchCarrier(options: FetchCarrierOptions): HostedCarrier 
       throw new HostedCarrierError("denied", { cause });
     }
     if (signal.aborted) throw new HostedCarrierError("denied");
+    // A credential header `fetch` cannot carry is no credential: nothing is sent.
+    let headers: Headers;
+    try {
+      headers = requestHeaders(credentials, extra, body.type);
+    } catch (cause) {
+      throw new HostedCarrierError("denied", { cause });
+    }
     try {
       return await fetcher(new URL(path, base), {
         method: "POST",
         redirect: "error",
-        headers: requestHeaders(credentials, extra, body.type),
+        headers,
         body: body.content,
         signal: AbortSignal.any([signal, deadline]),
       });

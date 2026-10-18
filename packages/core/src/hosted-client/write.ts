@@ -191,7 +191,7 @@ interface WriteSideAnswer {
  * One bundle's write side: a reader of its own (never the public `reader()`, whose held answer
  * is checked against heads answers) and its one capabilities answer, in flight or arrived.
  */
-interface WriteSide {
+export interface WriteSide {
   readonly reader: HostedReadAdapter;
   readonly answer: Promise<WriteSideAnswer>;
   /** When the answer arrived, by the cache's clock; undefined while it is in flight. */
@@ -222,7 +222,7 @@ export function createCapabilitiesCache(ttlMs: number = DEFAULT_CAPABILITIES_TTL
  * replaces the held one. A read that fails is never held. Each new read also removes every
  * expired entry, so a long-lived client holds only bundles written within the TTL.
  */
-function writeSide(context: HostedWriteContext, workspace: string | null, bundleId: string, fresh = false): WriteSide {
+export function writeSide(context: HostedWriteContext, workspace: string | null, bundleId: string, fresh = false): WriteSide {
   const cache = context.capabilities;
   const key = JSON.stringify([workspace, bundleId]);
   const live = (side: WriteSide) => side.answeredAt === undefined || cache.now() - side.answeredAt < cache.ttlMs;
@@ -259,12 +259,15 @@ function writeSide(context: HostedWriteContext, workspace: string | null, bundle
  */
 const DROPPING_REFUSALS: ReadonlySet<string> = new Set(["read_only", "invalid_input", "validation_failed", "bundle_not_found", "PERMISSION_DENIED"]);
 
+/** Forget `side` as the bundle's held write side, so the next write reads its capabilities again. */
+export function dropWriteSide(context: HostedWriteContext, workspace: string | null, bundleId: string, side: WriteSide): void {
+  const key = JSON.stringify([workspace, bundleId]);
+  if (context.capabilities.entries.get(key) === side) context.capabilities.entries.delete(key);
+}
+
 /** Drop a write side after a result that may say its capabilities are stale: such a refusal, or any `unknown`. */
 function settleWriteSide(context: HostedWriteContext, workspace: string | null, bundleId: string, side: WriteSide, result: HostedWriteResult): HostedWriteResult {
-  if (result.status === "unknown" || (result.status === "refused" && DROPPING_REFUSALS.has(result.code))) {
-    const key = JSON.stringify([workspace, bundleId]);
-    if (context.capabilities.entries.get(key) === side) context.capabilities.entries.delete(key);
-  }
+  if (result.status === "unknown" || (result.status === "refused" && DROPPING_REFUSALS.has(result.code))) dropWriteSide(context, workspace, bundleId, side);
   return result;
 }
 
@@ -354,8 +357,22 @@ function resultOf(intent: HostedWriteIntent, outcome: Outcome): HostedWriteResul
   }
 }
 
+/**
+ * `work`, or the abort's reason as soon as `signal` aborts, whichever comes first. For a read made
+ * before anything is sent (the capabilities answer), so a hung credential provider never holds a
+ * caller past its own abort; the read itself goes on for any other caller sharing it.
+ */
+export function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
 /** The signal a write's requests run under: the client's, and the caller's when given. */
-function writeSignal(context: HostedWriteContext, signal: AbortSignal | undefined): AbortSignal {
+export function writeSignal(context: HostedWriteContext, signal: AbortSignal | undefined): AbortSignal {
   return signal ? AbortSignal.any([context.signal, signal]) : context.signal;
 }
 
