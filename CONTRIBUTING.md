@@ -378,7 +378,8 @@ Across both editions:
   `order` iterates and lists exactly as before. A non-numeric `order` is a registry warning and the
   convention keeps no order. It is a convention field only, never a reserved instance field.
 - A Kind convention a recipe installs or evolves carries `x_recipe`: recipe id, version, declared
-  convention count, a digest of the recipe's parsed content, a digest of the convention as written,
+  convention count (and, only for a recipe that carries Connectors, the declared Connector count),
+  a digest of the recipe's parsed content, a digest of the convention as written,
   and the integer version of the digest rules. The recipe lifecycle writes it in the same
   compare-and-swap write as the convention and ignores it when comparing a convention to its
   source; every other reader treats it as an unknown key that survives round trips. Evolve puts
@@ -387,6 +388,10 @@ Across both editions:
   required field, section, terminal value or inbound expectation blocks it until restored by hand,
   and a locally added declaration blocks it until the recipe adopts it. A change to `order` never
   shows as `diverged`.
+- `connectors/` holds `type: Connector` declarations, parsed by core, installed and evolved by
+  recipes as definitions with the same stamp, never instances. Their sources live under
+  `record_sources` because OKF v0.2 reserves `sources`; no top-level Connector key may be an OKF
+  field. Evolve replaces a Connector only when its recipe wrote it and nobody changed it since.
 - Generated internal links use relative bundle-relative Markdown hrefs. External URLs pass through;
   concept IDs remain canonical and bundle-relative.
 - YAML timestamp scalars retain their source strings in v0.2, including the legacy `timestamp`

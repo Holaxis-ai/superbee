@@ -523,9 +523,9 @@ import {
 } from "@superbee/core/storage";
 import { RemoteBackend, RemoteError } from "@superbee/core/remote";
 import { memorySearchSource, searchDocuments, searchRowText, SearchInputError, textVersion, type SearchDocumentV1, type SearchResultV1, type SearchRowTextV1, type SearchSource } from "@superbee/core/search";
-import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
+import { parseRecipeFiles, recipeConnectors, type RecipeConnector, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
-import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
+import { ConnectorTargetUnsatisfied, installRecipe, installedConnectorDocs, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
 import { applyRecordOverlay, buildSourceIndex, OverlayRefusal, planRecordOverlay, type OverlayBundle, type OverlayPolicy, type OverlayReceipt, type RecordChange } from "@superbee/core/record-overlay";
 import { bundleHealth, bundleKindFindings, type BindDependencies, type BundleHealthReport } from "@superbee/core/bundle-health";
 import { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapRecord, parseConnectorDoc, type Connector, type ConnectorError } from "@superbee/core/connectors";
@@ -557,7 +557,13 @@ export async function exerciseRecipeLifecycle(): Promise<string | undefined> {
 export function installStates(conventions: OkfDocument[]): RecipeInstallState[] {
   return installedRecipes(conventions).rows.map((row) => row.state);
 }
-export const lifecycleRuntime = { RecipeLifecycleError };
+export async function connectorCarriage(): Promise<number> {
+  if (!recipe.ok) return 0;
+  const carried: readonly RecipeConnector[] = recipeConnectors(recipe.recipe);
+  const installed = [...(await installedConnectorDocs(lifecycleBundle)).values()];
+  return carried.length + installedRecipes(installed).rows.reduce((count, row) => count + (row.connectors ?? 0), 0);
+}
+export const lifecycleRuntime = { RecipeLifecycleError, ConnectorTargetUnsatisfied };
 declare const overlayBundle: OverlayBundle;
 declare const overlayPolicy: OverlayPolicy;
 declare const overlayChanges: RecordChange[];

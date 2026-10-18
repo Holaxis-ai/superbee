@@ -1,6 +1,7 @@
 // Typed failures of recipe installation and evolution. Each carries the facts a presenting
 // boundary needs (the CLI maps them to its codes and exits in `classifyBundleError`) without
 // prose matching; messages are the user-facing wording.
+import type { ConnectorErrorCode } from "../connectors.js";
 import type { ConceptId, Version } from "../types.js";
 import type { RecipeEvolutionBlocker } from "./evolution.js";
 
@@ -44,6 +45,36 @@ export class RecipeAssetConflict extends RecipeLifecycleError {
     this.name = "RecipeAssetConflict";
     this.recipe = recipe;
     this.key = key;
+  }
+}
+
+/**
+ * A Connector the recipe carries maps onto a Kind this bundle (with the recipe's own conventions)
+ * does not declare, or onto fields that Kind does not allow. Install checks every connector before
+ * its first write, so nothing has been written.
+ */
+export class ConnectorTargetUnsatisfied extends RecipeLifecycleError {
+  readonly recipe: string;
+  readonly connector: ConceptId;
+  /** The source whose target Kind refused it. */
+  readonly source: string;
+  readonly kind: string;
+  readonly code: ConnectorErrorCode;
+  /** The mapped fields the Kind refused; empty when the Kind itself is not declared. */
+  readonly fields: readonly string[];
+
+  constructor(recipe: string, connector: ConceptId, source: string, kind: string, code: ConnectorErrorCode, fields: readonly string[], detail: string) {
+    super(
+      `recipe '${recipe}' cannot install Connector '${connector}': source '${source}' maps onto ${kind}, and ${detail}; ` +
+        "nothing was written",
+    );
+    this.name = "ConnectorTargetUnsatisfied";
+    this.recipe = recipe;
+    this.connector = connector;
+    this.source = source;
+    this.kind = kind;
+    this.code = code;
+    this.fields = fields;
   }
 }
 
