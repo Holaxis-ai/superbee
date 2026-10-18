@@ -34,7 +34,8 @@ const list = (v: unknown): string[] | undefined => (
 const identityGate: TextGate = (text) => ({ text, ok: true, tells: [], changed: false });
 
 /**
- * Read the generic keys of a Source Feed document. Every refusal is `POLICY_INVALID`. A
+ * Read the generic keys of a Source Feed document. Every refusal is `POLICY_INVALID`, its details
+ * naming the feed and, for a feed key, that `key`. A
  * presentation-only feed never writes documents, so names a document could never own (a
  * Condition's `status`) are plain record fields there, and its policy carries no `target_kind`.
  */
@@ -46,28 +47,28 @@ export function readOverlayPolicy(doc: { id: ConceptId; frontmatter: Frontmatter
   if (ctx.targetKind !== undefined && ctx.presentationFields !== undefined) refuse("a target Kind and presentation fields are mutually exclusive");
   const presentation = ctx.presentationFields !== undefined;
   const owned = list(fm.owned_fields);
-  if (!owned || owned.length === 0) refuse("owned_fields is required");
+  if (!owned || owned.length === 0) refuse("owned_fields is required", { key: "owned_fields" });
   const ownedFields = owned!;
   const bad = presentation ? [] : ownedFields.filter((f) => NEVER_OWNED.has(f));
-  if (bad.length) refuse(`fields can never be feed-owned: ${bad.join(", ")}`, { fields: bad });
+  if (bad.length) refuse(`fields can never be feed-owned: ${bad.join(", ")}`, { key: "owned_fields", fields: bad });
   if (ctx.targetKind) {
     const work = workStateFields(ctx.targetKind, ["0.1", "0.2"]);
     const claimed = ownedFields.filter((f) => work.has(f));
-    if (claimed.length) refuse(`fields hold the work state of ${ctx.targetKind.governs} and can never be feed-owned: ${claimed.join(", ")}`, { fields: claimed });
+    if (claimed.length) refuse(`fields hold the work state of ${ctx.targetKind.governs} and can never be feed-owned: ${claimed.join(", ")}`, { key: "owned_fields", fields: claimed });
   }
   if (ctx.targetKind) {
     const declared = new Set([...ctx.targetKind.fields.required, ...ctx.targetKind.fields.optional, "title"]);
     const undeclared = ownedFields.filter((f) => !declared.has(f));
-    if (undeclared.length) refuse(`owned_fields not declared by ${ctx.targetKind.governs}: ${undeclared.join(", ")}`, { fields: undeclared });
+    if (undeclared.length) refuse(`owned_fields not declared by ${ctx.targetKind.governs}: ${undeclared.join(", ")}`, { key: "owned_fields", fields: undeclared });
   }
   if (presentation) {
     const allowed = new Set(ctx.presentationFields);
     const undeclared = ownedFields.filter((f) => !allowed.has(f));
-    if (undeclared.length) refuse(`owned_fields not part of the presentation kind: ${undeclared.join(", ")}`, { fields: undeclared });
+    if (undeclared.length) refuse(`owned_fields not part of the presentation kind: ${undeclared.join(", ")}`, { key: "owned_fields", fields: undeclared });
   }
   const threshold = fm.missing_threshold === undefined || fm.missing_threshold === null ? undefined : Number(fm.missing_threshold);
-  if (threshold !== undefined && !(Number.isInteger(threshold) && threshold >= 1)) refuse("missing_threshold must be a whole number >= 1");
-  if (typeof fm.url !== "string" || !fm.url) refuse("url (provider identity) is required");
+  if (threshold !== undefined && !(Number.isInteger(threshold) && threshold >= 1)) refuse("missing_threshold must be a whole number >= 1", { key: "missing_threshold" });
+  if (typeof fm.url !== "string" || !fm.url) refuse("url (provider identity) is required", { key: "url" });
   const zone = fm.wall_time_zone === undefined || fm.wall_time_zone === null ? undefined : String(fm.wall_time_zone).trim();
   const targetKind = !presentation && typeof fm.target_kind === "string" && fm.target_kind ? fm.target_kind : undefined;
   return {
@@ -88,7 +89,7 @@ export function readOverlayPolicy(doc: { id: ConceptId; frontmatter: Frontmatter
 function excludeOf(feed: ConceptId, pattern: unknown): RegExp | null {
   if (pattern === undefined || pattern === null || pattern === "") return null;
   try { return new RegExp(String(pattern), "i"); }
-  catch { throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, `${feed}: exclude_pattern is not a valid pattern`, { feed }); }
+  catch { throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, `${feed}: exclude_pattern is not a valid pattern`, { feed, key: "exclude_pattern" }); }
 }
 
 /**
