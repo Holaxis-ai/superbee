@@ -78,7 +78,7 @@ interface Tracker { w: World; bound: BoundFeed; store: Map<string, Record<string
 async function tracker(): Promise<Tracker> {
   const w = await overlayWorld({ conventions: { "conventions/work-item": WORK_ITEM } });
   const connector = connectorOf(CONNECTOR, w.content.registry);
-  const bound = bindSourceFeed(connector, { id: FEED_ID, frontmatter: FEED as unknown as Frontmatter }, w.content.registry);
+  const bound = bindSourceFeed(connector, { id: FEED_ID, frontmatter: FEED as unknown as Frontmatter }, w.content.registry, { okfVersion: "0.2" });
   return { w, bound, store: new Map() };
 }
 

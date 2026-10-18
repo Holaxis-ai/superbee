@@ -242,7 +242,7 @@ import { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapReco
 const parsed = parseConnectorDoc(connectorDoc, { kinds: registry });
 if (!parsed.ok) throw new Error(parsed.errors.map((e) => `${e.code} ${e.path}`).join("; "));
 const pin = connectorPinDigest(parsed.connector);
-const bound = bindSourceFeed(parsed.connector, sourceFeedDoc, registry);
+const bound = bindSourceFeed(parsed.connector, sourceFeedDoc, registry, { okfVersion: "0.2" });
 const mapped = mapRecord(bound.source, normalizedRecord, bound.kind);
 if (mapped.kind === "mapped") {
   const change = changeBetween(lastAcceptedAfter, mapped, { external_id: mapped.external_id, change_kind: "changed" });
@@ -273,7 +273,9 @@ unknown top-level keys. `CONNECTOR_PIN_RULES` changes whenever a default or sort
 `bindSourceFeed` binds a Source Feed (`connector`, `source`, `url`, `owned_fields`) to one source:
 the `url` must equal the identity template rendered from parameters of `[A-Za-z0-9._~-]+` byte for
 byte, `owned_fields` must be mapping keys, and the source's `target_kind`, `completeness` and
-`profile` win. Each refusal is an `OverlayRefusal` with `POLICY_INVALID`, the feed and the key.
+`profile` win. `okfVersion` is the content bundle's edition (absent means v0.1); a feed owning a
+Kind-declared list field binds only on v0.2. Each refusal is an `OverlayRefusal` with
+`POLICY_INVALID`, the feed and the key.
 `mapRecord` never lets a mapping gap erase a stored value: an absent path is unobserved, an
 unmapped native is kept (`unmapped: keep`, the default) or refuses the record while it still counts
 as present (`refuse`), and only an empty value (`null` or blank text) clears an optional field; on a

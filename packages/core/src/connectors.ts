@@ -797,9 +797,16 @@ export interface BoundFeed {
 /**
  * Bind a Source Feed to one source of a Connector. The feed chooses only among the resources the
  * identity template admits, within the mapping keys, under the source's own completeness and
- * profile. Every refusal is `POLICY_INVALID` naming the feed and the key.
+ * profile. Every refusal is `POLICY_INVALID` naming the feed and the key. `okfVersion` is the content
+ * bundle's edition; absent means v0.1, as an undeclared edition does, and an owned list field needs
+ * v0.2 because only field actions write lists.
  */
-export function bindSourceFeed(connector: Connector, feed: { id: ConceptId; frontmatter: Frontmatter }, kinds: KindRegistry): BoundFeed {
+export function bindSourceFeed(
+  connector: Connector,
+  feed: { id: ConceptId; frontmatter: Frontmatter },
+  kinds: KindRegistry,
+  options: { okfVersion?: "0.1" | "0.2" } = {},
+): BoundFeed {
   const fm = (feed.frontmatter ?? {}) as unknown as Record<string, unknown>;
   const refuse = (key: string, message: string, details: Record<string, unknown> = {}): never => {
     throw new OverlayRefusal(REFUSAL_CODES.POLICY_INVALID, `${feed.id}: ${message}`, { feed: feed.id, key, ...details });
@@ -845,6 +852,11 @@ export function bindSourceFeed(connector: Connector, feed: { id: ConceptId; fron
   const kindErrors = sourceKindErrors(bound, connector.sources.indexOf(bound), kind!);
   if (kindErrors.length) refuse("connector", `the source does not fit ${bound.target_kind}: ${kindErrors.map((e) => e.code).join(", ")}`, { codes: kindErrors.map((e) => e.code) });
   const policy = readOverlayPolicy(feed, { targetKind: kind! });
+  const ownedLists = policy.owned_fields.filter((field) => policy.list_fields?.includes(field));
+  const edition = options.okfVersion ?? "0.1";
+  if (ownedLists.length && edition !== "0.2") {
+    refuse("owned_fields", `owned list fields need an OKF v0.2 bundle, and this bundle is v${edition}: ${ownedLists.join(", ")}`, { fields: ownedLists, okf_version: edition });
+  }
   return { policy: { ...policy, target_kind: bound.target_kind, completeness: bound.completeness }, source: bound, kind: kind!, parameters, resource };
 }
 
