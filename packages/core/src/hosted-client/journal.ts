@@ -20,7 +20,7 @@ import {
   type FileJournaledBackendOptions,
 } from "../file-journaled-backend.js";
 import type { HostedIntentStore, HostedWriteIntent } from "./write.js";
-import { JournalGuardConflict } from "../journaled-backend.js";
+import { captureJournalValue, JournalGuardConflict } from "../journaled-backend.js";
 
 /** The marker row's key. */
 export const HOSTED_CLIENT_JOURNAL_MARKER = "hosted-client.journal";
@@ -28,6 +28,8 @@ export const HOSTED_CLIENT_JOURNAL_MARKER = "hosted-client.journal";
 export const HOSTED_CLIENT_JOURNAL_SCHEMA_VERSION = 1;
 /** The prefix of every held document write's meta row; the request identity follows it. */
 export const HOSTED_CLIENT_WRITE_PREFIX = "hosted-client.write.";
+/** How many times `delete` reads a row again after a concurrent put to it, before refusing. */
+const DELETE_ATTEMPTS = 8;
 /** The CLI's blob-sync map: a store holding it is a checkout store. */
 const CHECKOUT_BLOB_SYNC_KEY = "hosted.blob-sync.v1";
 
@@ -96,12 +98,18 @@ export interface HostedClientJournal extends HostedIntentStore {
 /**
  * Open (or create) the hosted client's durable intent store in `directory`.
  *
- * Refusals change nothing in the directory:
- * - {@link HostedClientJournalError} — the directory is not private, is not this client's store,
- *   or names a newer schema;
+ * Refusals change no file in an existing directory:
+ * - {@link HostedClientJournalError} — the directory is not private (a symbolic link, another
+ *   owner, group or other permission bits), holds files but no store, is not this client's
+ *   store, or names a newer schema;
  * - `FilesystemMutationLockError` — another process holds the directory past `lock.waitMs`;
  * - `FileJournalCorruptError` / `FileJournalFormatError` — the log or snapshot is damaged or in a
  *   newer format. Nothing is repaired: moving the directory aside loses the writes it holds.
+ *
+ * The decision is made on a read-only open, which changes nothing, and made again under the
+ * writable open's lock before the marker is written. Only when the directory changes between the
+ * two (another process replacing it) can the writable open, before refusing, have truncated a
+ * torn log tail or created an empty log.
  */
 export function openHostedClientJournal(options: HostedClientJournalOptions): Promise<HostedClientJournal> {
   return openHostedClientJournalWith(options);
@@ -113,53 +121,92 @@ export interface JournalTestSeam {
   readonly openBackend?: (options: FileJournaledBackendOptions) => Promise<FileJournaledBackend>;
 }
 
+/** The files a `FileJournaledBackend` keeps in its directory. */
+const STORE_FILES = new Set([FILE_JOURNAL_LOG, FILE_JOURNAL_SNAPSHOT, "store.snapshot.tmp"]);
+
 /** @internal {@link openHostedClientJournal} with its test seam. Not in the package's exports. */
 export async function openHostedClientJournalWith(options: HostedClientJournalOptions, seam: JournalTestSeam = {}): Promise<HostedClientJournal> {
   if (!options || typeof options.directory !== "string" || options.directory.trim() === "") throw new TypeError("a hosted client journal names its directory");
   const waitMs = options.lock?.waitMs;
   if (waitMs !== undefined && !(typeof waitMs === "number" && Number.isFinite(waitMs) && waitMs >= 0)) throw new TypeError("lock.waitMs is a finite number of milliseconds, 0 or more");
   const directory = path.resolve(options.directory);
-  await assertPrivateDirectory(directory);
   const open = seam.openBackend ?? ((backendOptions) => FileJournaledBackend.open(backendOptions));
-  const backend = await open({
+  const backendOptions = (readOnly: boolean): FileJournaledBackendOptions => ({
     directory,
-    compactAfterBytes: HOSTED_CLIENT_JOURNAL_COMPACT_FLOOR_BYTES,
+    // Never compact before the store is adopted: a refused store keeps its files as they were.
+    compactAfterBytes: Number.POSITIVE_INFINITY,
     lock: { ...(waitMs !== undefined ? { waitMs } : {}), ...(seam.lockRoot !== undefined ? { lockRoot: seam.lockRoot } : {}) },
+    ...(readOnly ? { readOnly } : {}),
   });
+
+  const existing = await privateDirectory(directory, { mayBeAbsent: true });
+  if (existing) {
+    const names = await fs.readdir(directory);
+    if (names.length > 0 && !names.some((name) => STORE_FILES.has(name))) {
+      throw new HostedClientJournalError("JOURNAL_NOT_HOSTED_CLIENT", directory, `'${directory}' holds files but no store; a hosted client journal is an empty or journal-only directory`);
+    }
+    // Decide on a read-only open first, which changes no file.
+    const inspected = await open(backendOptions(true));
+    try {
+      await inspect(inspected, directory);
+    } finally {
+      await inspected.close();
+    }
+  }
+
+  const backend = await open(backendOptions(false));
   try {
-    await adopt(backend, directory);
-    return new FileHostedClientJournal(backend, await fileSize(path.join(directory, FILE_JOURNAL_SNAPSHOT)));
+    // The lock is held from here: the directory must still be the private one checked above.
+    const held = await privateDirectory(directory, { mayBeAbsent: false });
+    if (existing && (held!.ino !== existing.ino || held!.dev !== existing.dev)) {
+      throw new HostedClientJournalError("JOURNAL_DIRECTORY_NOT_PRIVATE", directory, `'${directory}' was replaced while the journal opened`);
+    }
+    if ((await inspect(backend, directory)) === "empty") {
+      await backend.writeMeta(HOSTED_CLIENT_JOURNAL_MARKER, { schemaVersion: HOSTED_CLIENT_JOURNAL_SCHEMA_VERSION }, { expected: { present: false }, requireEmptyJournal: true });
+    }
+    const journal = new FileHostedClientJournal(backend, await fileSize(path.join(directory, FILE_JOURNAL_SNAPSHOT)));
+    await journal.compactIfDue();
+    return journal;
   } catch (error) {
     await backend.close().catch(() => {});
     throw error;
   }
 }
 
-/** An existing directory must be a real one, private to its owner; an absent one is created 0700 by the backend. */
-async function assertPrivateDirectory(directory: string): Promise<void> {
+/**
+ * The directory's identity when it is a real directory private to this user, or undefined when
+ * it is absent and may be (the backend then creates it 0700). Windows has no POSIX mode bits or
+ * uids; its ACLs are the distribution's to check.
+ */
+async function privateDirectory(directory: string, options: { mayBeAbsent: boolean }): Promise<{ dev: number; ino: number } | undefined> {
   let stat;
   try {
     stat = await fs.lstat(directory);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && options.mayBeAbsent) return undefined;
     throw error;
   }
-  if (stat.isSymbolicLink()) throw new HostedClientJournalError("JOURNAL_DIRECTORY_NOT_PRIVATE", directory, `'${directory}' is a symbolic link; a hosted client journal is a real directory`);
-  // Windows has no POSIX mode bits; its ACLs are the distribution's to check.
-  if (process.platform !== "win32" && stat.isDirectory() && (stat.mode & 0o077) !== 0) {
-    throw new HostedClientJournalError("JOURNAL_DIRECTORY_NOT_PRIVATE", directory, `'${directory}' grants its group or others access (mode ${(stat.mode & 0o777).toString(8)}); a hosted client journal holds whole documents and is mode 0700`);
+  const refuse = (why: string) => new HostedClientJournalError("JOURNAL_DIRECTORY_NOT_PRIVATE", directory, `'${directory}' ${why}; a hosted client journal is a real directory of mode 0700 owned by this user`);
+  if (stat.isSymbolicLink()) throw refuse("is a symbolic link");
+  if (!stat.isDirectory()) throw refuse("is not a directory");
+  if (process.platform !== "win32") {
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) throw refuse(`is owned by uid ${stat.uid}`);
+    if ((stat.mode & 0o077) !== 0) throw refuse(`grants its group or others access (mode ${(stat.mode & 0o777).toString(8)})`);
   }
+  return { dev: stat.dev, ino: stat.ino };
 }
 
 /**
- * Decide whether the open store is this client's: a marked store of a known schema holding none
- * of a checkout's state, or an empty one, which is marked now. The empty check reads the index the
- * open just loaded under the directory's exclusive lock, before any other caller holds the
- * backend, and the marker is written with `expected: absent` and `requireEmptyJournal` so the
- * write itself re-checks its premise. A crash between the two leaves either nothing or a torn
+ * Whether the open store is this client's: `marked` (a marker of a known schema, none of a
+ * checkout's state) or `empty` (nothing at all, to be marked). Anything else is refused.
+ *
+ * The caller marks an empty store with `writeMeta(expected: absent, requireEmptyJournal)`. That
+ * write re-checks only the marker and the intents family; what makes the whole empty check hold
+ * is the directory's exclusive lock, held from this check through that write, with no other
+ * caller of the backend in between. A crash between the two leaves either nothing or a torn
  * marker record, which open truncates, so the next open finds the store empty and marks it.
  */
-async function adopt(backend: FileJournaledBackend, directory: string): Promise<void> {
+async function inspect(backend: FileJournaledBackend, directory: string): Promise<"marked" | "empty"> {
   const meta = await backend.listMeta();
   const foreign =
     (await backend.list()).length > 0 ||
@@ -175,12 +222,12 @@ async function adopt(backend: FileJournaledBackend, directory: string): Promise<
     if (schemaVersion !== HOSTED_CLIENT_JOURNAL_SCHEMA_VERSION) {
       throw new HostedClientJournalError("JOURNAL_SCHEMA_UNSUPPORTED", directory, `'${directory}' is a hosted client journal of schema ${String(schemaVersion)}; this version reads schema ${HOSTED_CLIENT_JOURNAL_SCHEMA_VERSION}`, { schemaVersion });
     }
-    return;
+    return "marked";
   }
   if (meta.length > 0 || (await backend.listBlobIntents()).length > 0) {
     throw new HostedClientJournalError("JOURNAL_NOT_HOSTED_CLIENT", directory, `'${directory}' holds a store with no hosted client journal marker`);
   }
-  await backend.writeMeta(HOSTED_CLIENT_JOURNAL_MARKER, { schemaVersion: HOSTED_CLIENT_JOURNAL_SCHEMA_VERSION }, { expected: { present: false }, requireEmptyJournal: true });
+  return "empty";
 }
 
 async function fileSize(file: string): Promise<number> {
@@ -211,8 +258,16 @@ class FileHostedClientJournal implements HostedClientJournal {
 
   async put(intent: HostedWriteIntent): Promise<void> {
     if (typeof intent !== "object" || intent === null) throw new TypeError("a held write is a record");
-    await this.#backend.writeMeta(keyOf(intent.requestId), { ...intent });
-    await this.#compactIfDue();
+    const key = keyOf(intent.requestId);
+    let record: HostedWriteIntent;
+    try {
+      // Only plain data is held, so the row can later be removed compare-and-swap against itself.
+      record = captureJournalValue({ ...intent });
+    } catch (cause) {
+      throw new TypeError("a held write holds only strings, numbers, booleans, null and plain records", { cause });
+    }
+    await this.#backend.writeMeta(key, record);
+    await this.compactIfDue();
   }
 
   async get(requestId: string): Promise<HostedWriteIntent | undefined> {
@@ -222,18 +277,19 @@ class FileHostedClientJournal implements HostedClientJournal {
 
   async delete(requestId: string): Promise<void> {
     const key = keyOf(requestId);
-    // Compare-and-swap against the row as read; a put that lands in between is read again.
-    for (;;) {
+    // Compare-and-swap against the row as read. A put to this key landing in between is read
+    // again, a bounded number of times; any other refusal is the caller's.
+    for (let attempt = 1; ; attempt++) {
       const current = await this.#backend.readMeta(key);
       if (current === undefined) return;
       try {
         await this.#backend.removeMeta(key, { expected: { present: true, value: current } });
         break;
       } catch (error) {
-        if (!(error instanceof JournalGuardConflict)) throw error;
+        if (!(error instanceof JournalGuardConflict) || error.target !== key || attempt >= DELETE_ATTEMPTS) throw error;
       }
     }
-    await this.#compactIfDue();
+    await this.compactIfDue();
   }
 
   async *list(): AsyncIterable<HostedWriteIntent> {
@@ -253,7 +309,7 @@ class FileHostedClientJournal implements HostedClientJournal {
    * so a failed compaction only leaves the log longer: it is not the caller's failure, and the
    * next mutation tries again.
    */
-  async #compactIfDue(): Promise<void> {
+  async compactIfDue(): Promise<void> {
     if (this.#compacting) return;
     this.#compacting = (async () => {
       try {

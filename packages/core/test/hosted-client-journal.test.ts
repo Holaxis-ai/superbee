@@ -30,6 +30,7 @@ import {
 } from "../src/hosted-client/node.js";
 import { openHostedClientJournalWith, type JournalTestSeam } from "../src/hosted-client/journal.js";
 import type { HostedWriteIntent } from "../src/hosted-client/write.js";
+import { JournalGuardConflict } from "../src/journaled-backend.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, "fixtures", "hosted-sync-v1");
@@ -363,6 +364,96 @@ test("marker: a crash between the empty check and the marker write leaves a stor
   });
 });
 
+/** Every file in the directory and its bytes, for a byte-for-byte "changed nothing" check. */
+async function contents(directory: string): Promise<[string, string][]> {
+  const names = (await fs.readdir(directory)).sort();
+  return Promise.all(names.map(async (name): Promise<[string, string]> => [name, (await fs.readFile(path.join(directory, name))).toString("base64")]));
+}
+
+test("refusal: a foreign store whose log is past the compaction floor is refused with its files byte-identical", async () => {
+  await withRoot(async (root) => {
+    const backend = await root.backend();
+    const body = "y".repeat(64 * 1024);
+    for (let index = 0; index < 24; index++) await backend.write(`notes/n${index}`, { id: `notes/n${index}`, frontmatter: { type: "Note" }, body: `${body}${index}` });
+    await backend.close();
+    assert.ok((await sizeOf(logFile(root))) > HOSTED_CLIENT_JOURNAL_COMPACT_FLOOR_BYTES);
+    const before = await contents(root.directory);
+    await assert.rejects(root.open(), refusedAs("JOURNAL_NOT_HOSTED_CLIENT"));
+    assert.deepEqual(await contents(root.directory), before, "no snapshot written, no log rewritten");
+  });
+});
+
+test("refusal: a foreign store with a torn tail is refused without truncating it", async () => {
+  await withRoot(async (root) => {
+    const backend = await root.backend();
+    await backend.writeMeta("other", 1);
+    await backend.close();
+    await fs.appendFile(logFile(root), Buffer.from("SBJR torn"));
+    const before = await contents(root.directory);
+    await assert.rejects(root.open(), refusedAs("JOURNAL_NOT_HOSTED_CLIENT"));
+    assert.deepEqual(await contents(root.directory), before);
+  });
+});
+
+// ── put and delete ─────────────────────────────────────────────────────────────────────────
+
+test("put: a value that is not plain data is refused before anything is stored", async () => {
+  await withRoot(async (root) => {
+    const journal = await root.open();
+    try {
+      const write = intent();
+      const size = await sizeOf(logFile(root));
+      await assert.rejects(journal.put({ ...write, createdAt: new Date() as unknown as string }), TypeError);
+      await assert.rejects(journal.put({ ...write, extra: new Map() } as unknown as HostedWriteIntent), TypeError);
+      assert.equal(await journal.get(write.requestId), undefined);
+      assert.equal(await sizeOf(logFile(root)), size);
+    } finally {
+      await journal.close();
+    }
+  });
+});
+
+test("delete: a persistent conflict on the key ends after a bounded number of attempts, typed", async () => {
+  await withRoot(async (root) => {
+    let removals = 0;
+    const journal = await root.open({
+      openBackend: async (options) => {
+        const backend = await FileJournaledBackend.open(options);
+        backend.removeMeta = async (key: string) => {
+          removals += 1;
+          throw new JournalGuardConflict(key);
+        };
+        return backend;
+      },
+    });
+    try {
+      const write = intent();
+      await journal.put(write);
+      await assert.rejects(journal.delete(write.requestId), (error: unknown) => error instanceof JournalGuardConflict && error.target === `hosted-client.write.${write.requestId}`);
+      assert.equal(removals, 8);
+      assert.deepEqual(await journal.get(write.requestId), write);
+    } finally {
+      await journal.close();
+    }
+  });
+});
+
+test("delete: a row the compare-and-swap cannot express is refused at once, not retried", async () => {
+  await withRoot(async (root) => {
+    await (await root.open()).close();
+    const write = intent();
+    const backend = await root.backend();
+    await backend.writeMeta(`hosted-client.write.${write.requestId}`, { ...write, createdAt: new Date(0) });
+    await backend.close();
+    const journal = await root.open();
+    try {
+      await assert.rejects(journal.delete(write.requestId), (error: unknown) => error instanceof JournalGuardConflict && error.target !== `hosted-client.write.${write.requestId}`);
+    } finally {
+      await journal.close();
+    }
+  });
+});
+
 // ── privacy ────────────────────────────────────────────────────────────────────────────────
 
 test("permissions: a created directory is 0700 and its files 0600", { skip: !POSIX }, async () => {
@@ -400,6 +491,65 @@ test("permissions: a symbolic link to a private directory is refused", { skip: !
     await fs.symlink(real, root.directory);
     await assert.rejects(root.open(), refusedAs("JOURNAL_DIRECTORY_NOT_PRIVATE"));
     assert.deepEqual(await fs.readdir(real), []);
+  });
+});
+
+test("permissions: an existing directory holding files but no store is refused and left as it was", async () => {
+  await withRoot(async (root) => {
+    await fs.mkdir(root.directory, { mode: 0o700 });
+    await fs.writeFile(path.join(root.directory, "id_ed25519"), "secret", { mode: 0o600 });
+    const before = await contents(root.directory);
+    await assert.rejects(root.open(), refusedAs("JOURNAL_NOT_HOSTED_CLIENT"));
+    assert.deepEqual(await contents(root.directory), before, "no log was created beside the file");
+  });
+});
+
+test("permissions: a directory owned by another user is refused", { skip: !POSIX || process.getuid?.() === 0 }, async () => {
+  // The root directory is owned by uid 0; the owner check runs before the mode check.
+  await assert.rejects(openHostedClientJournal({ directory: "/", lock: { waitMs: 0 } }), (error: unknown) => isHostedClientJournalError(error, "JOURNAL_DIRECTORY_NOT_PRIVATE") && /owned by uid 0/.test(error.message));
+});
+
+test("permissions: a directory swapped for a symbolic link before the lock is held is refused under the lock", { skip: !POSIX }, async () => {
+  await withRoot(async (root) => {
+    await fs.mkdir(root.directory, { mode: 0o700 });
+    const moved = path.join(root.base, "moved");
+    await assert.rejects(
+      root.open({
+        openBackend: async (options) => {
+          if (!options.readOnly) {
+            await fs.rename(root.directory, moved);
+            await fs.symlink(moved, root.directory);
+          }
+          return FileJournaledBackend.open(options);
+        },
+      }),
+      refusedAs("JOURNAL_DIRECTORY_NOT_PRIVATE"),
+    );
+    // The refusal released the lock and wrote no marker into the directory it reached.
+    const backend = await FileJournaledBackend.open({ directory: moved, lock: { lockRoot: root.lockRoot, waitMs: 0 } });
+    try {
+      assert.deepEqual(await backend.listMeta(), []);
+    } finally {
+      await backend.close();
+    }
+  });
+});
+
+test("permissions: a directory replaced by another before the lock is held is refused under the lock", { skip: !POSIX }, async () => {
+  await withRoot(async (root) => {
+    await fs.mkdir(root.directory, { mode: 0o700 });
+    await assert.rejects(
+      root.open({
+        openBackend: async (options) => {
+          if (!options.readOnly) {
+            await fs.rename(root.directory, path.join(root.base, "old"));
+            await fs.mkdir(root.directory, { mode: 0o700 });
+          }
+          return FileJournaledBackend.open(options);
+        },
+      }),
+      refusedAs("JOURNAL_DIRECTORY_NOT_PRIVATE"),
+    );
   });
 });
 

@@ -467,14 +467,18 @@ looks it up exactly as the first would have. A settled write is removed.
   cannot exclude a process on another host. Keep the journal on a local disk, never on NFS, SMB
   or another shared mount. Open does not detect a network mount; this is the operator's rule.
 - **Privacy.** The journal holds whole documents. A directory open creates is mode 0700, and its
-  files 0600. An existing directory that is a symbolic link, or that grants its group or others any
-  permission, is refused as `HostedClientJournalError` `JOURNAL_DIRECTORY_NOT_PRIVATE`.
+  files 0600. On POSIX, an existing directory that is a symbolic link, is owned by another user,
+  or grants its group or others any permission, is refused as `HostedClientJournalError`
+  `JOURNAL_DIRECTORY_NOT_PRIVATE`. The check runs again once the lock is held, and a directory
+  replaced in between is refused too. An existing directory that holds files but no store is
+  refused as `JOURNAL_NOT_HOSTED_CLIENT`, so a journal is never made inside a directory in use.
 - **Marker.** A new journal records `hosted-client.journal = { schemaVersion: 1 }` in its first
   transaction. Open refuses, as `JOURNAL_NOT_HOSTED_CLIENT`, a store with rows but no marker or one
   holding documents, blobs or a checkout's blob-sync state, so it is never pointed at a CLI checkout
-  store. A marker of another schema is `JOURNAL_SCHEMA_UNSUPPORTED`. A crash before the marker
+  store. A marker of another schema is `JOURNAL_SCHEMA_UNSUPPORTED`. Open decides on a read-only
+  pass first, so a refused directory's files are left byte for byte. A crash before the marker
   lands leaves an empty store, which the next open marks.
-- **Size.** The log is compacted into the snapshot whenever it grows past the greater of 1 MiB
+- **Size.** Once the store is adopted, the log is compacted into the snapshot whenever it grows past the greater of 1 MiB
   (`HOSTED_CLIENT_JOURNAL_COMPACT_FLOOR_BYTES`) and twice the last snapshot, so steady writing keeps
   it near 1 MiB. The snapshot, which holds every write still unsettled, and any one transaction are
   bounded at 256 MiB. A write that would pass that bound is refused before anything is recorded,
