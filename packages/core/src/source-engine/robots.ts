@@ -65,10 +65,14 @@ export function parseRobots(text: string): RobotsGroup[] {
   let current: RobotsGroup | undefined;
   let lastWasAgent = false;
   for (const raw of text.split(/\r?\n/)) {
-    const match = /^([A-Za-z-]+)\s*:\s*(.*)$/.exec(raw.replace(/#.*/, "").trim());
-    if (!match) continue;
-    const key = match[1]!.toLowerCase();
-    const value = match[2]!.trim();
+    // Split on the first colon by index: a regular expression here backtracks on long runs of
+    // whitespace, and the body is provider text.
+    const line = raw.replace(/#.*/, "").trim();
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    const key = line.slice(0, colon).trim().toLowerCase();
+    if (!/^[a-z-]+$/.test(key)) continue;
+    const value = line.slice(colon + 1).trim();
     if (key === "user-agent") {
       if (!lastWasAgent) groups.push((current = { agents: [], rules: [] }));
       // The product token ends at the first character outside letters, `_` and `-`.

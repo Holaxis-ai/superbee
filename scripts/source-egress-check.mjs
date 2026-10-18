@@ -13,7 +13,7 @@
  *
  *   node scripts/source-egress-check.mjs <file-or-directory>...
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 
@@ -157,25 +157,36 @@ export function egressViolations(files, options = {}) {
 
 /** Every module under the given files and directories, declaration files excluded, in path order. */
 export function collectSourceFiles(roots) {
+  if (!roots.length) throw new Error("usage: node scripts/source-egress-check.mjs <file-or-directory>...");
   const out = [];
-  const walk = (entry) => {
-    if (statSync(entry).isDirectory()) {
-      for (const name of readdirSync(entry).sort()) walk(path.join(entry, name));
-    } else if (SOURCE_EXTENSIONS.test(entry) && !/\.d\.[cm]?ts$/.test(entry)) {
-      out.push({ path: entry, text: readFileSync(entry, "utf8") });
+  const take = (file) => {
+    if (SOURCE_EXTENSIONS.test(file) && !/\.d\.[cm]?ts$/.test(file)) out.push({ path: file, text: readFileSync(file, "utf8") });
+  };
+  // Directory entries come from one read, so nothing is checked and then reopened; a symlinked
+  // module is read through its link rather than skipped.
+  const walk = (dir, entries) => {
+    for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, readdirSync(full, { withFileTypes: true }));
+      else if (entry.isFile() || entry.isSymbolicLink()) take(full);
     }
   };
-  for (const root of roots) walk(root);
+  for (const root of roots) {
+    let entries;
+    try {
+      entries = readdirSync(root, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code !== "ENOTDIR") throw error;
+      take(root);
+      continue;
+    }
+    walk(root, entries);
+  }
   return out;
 }
 
 if (isMainModule(import.meta.url)) {
-  const roots = process.argv.slice(2);
-  if (!roots.length) {
-    console.error("usage: node scripts/source-egress-check.mjs <file-or-directory>...");
-    process.exit(2);
-  }
-  const files = collectSourceFiles(roots);
+  const files = collectSourceFiles(process.argv.slice(2));
   const violations = egressViolations(files);
   for (const violation of violations) console.error(violation);
   console.log(`${files.length} module(s) checked, ${violations.length} violation(s)`);
