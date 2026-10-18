@@ -26,11 +26,11 @@ const leaves = {
 } as const;
 type Action = keyof typeof leaves;
 const descriptions: Record<Action, string> = {
-  set: "Assign one supported non-collection field. Literal values are strings, except that a Kind field declared in fields.types converts the literal to its type, and a string-list or https-url-list field is refused (set it with 'new' or replace the document); use --from-file for typed scalars or a complete list-free mapping. Other fields and the body remain unchanged.",
+  set: "Assign one supported non-collection field. Literal values are strings, except that a Kind field declared in fields.types converts the literal to its type, and a string-list or https-url-list field is refused (use replace-all); use --from-file for typed scalars or a complete list-free mapping. Other fields and the body remain unchanged.",
   add: "Make one exact tag string or source entry present. New members append; an identical addition is a no-op. Supply a tag literally or one source mapping with --from-file.",
   remove: "Make one exact tag membership or selected source absent. A missing member is a no-op. For sources, supply exactly one --id or --resource; no value is accepted.",
   edit: "Update supplied properties of one source, preserving its position, sibling sources and other properties. Requires --from-file, --expected-version and exactly one --id or --resource. An ID-less source may receive its first nonempty ID; an existing ID cannot be renamed.",
-  "replace-all": "Supply the complete final tags or sources list with --from-file and --expected-version. [] empties the list; omitted members are deliberately removed.",
+  "replace-all": "Supply the complete final list of tags, sources, or a field the document's Kind declares as string-list or https-url-list, with --from-file and --expected-version. The list is stored in the order given; [] empties it; omitted members are deliberately removed.",
 };
 export const DOC_FIELD_USAGE = `superbee doc field - explicit frontmatter actions
 
@@ -38,10 +38,14 @@ Usage:
   superbee doc field <action> <id> <field> [value/options]
 
 Actions: set, add, remove, edit, replace-all
-Collections: tags and sources only. sources requires OKF v0.2.
+Collections: add and remove change tags and sources; replace-all also
+replaces a field the document's Kind declares as string-list or
+https-url-list. sources requires OKF v0.2.
 Set supports type, title, description, resource, edition-supported status,
 stale_after and usage_window, and declared non-collection Kind fields.
 Managed provenance and verification fields are not generic set targets.
+Removing a field (core's unset action) is not offered here; use complete-document
+replacement: pull --doc-key <id>.md --out <file>, edit, then promote.
 Use 'superbee doc field <action> --help' for focused input and version rules.
 `;
 function help(action: Action): string {
@@ -52,6 +56,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
   const token = argv[0];
   if (token === undefined || token === "--help" || token === "-h") { stdout(renderUsage(DOC_FIELD_USAGE)); return; }
+  if (token === "unset") throw new CliError("USAGE", "doc field does not offer unset. Remove a field with complete-document replacement: pull --doc-key <id>.md --out <file>, edit that file, then promote <file> --doc-key <id>.md --expected-version <version-from-pull>.", { help: `${cliInvocation()} doc field --help` });
   if (!Object.prototype.hasOwnProperty.call(leaves, token)) throw new CliError("USAGE", `unknown doc field action: ${token}`, { help: `${cliInvocation()} doc field --help` });
   const action = token as Action;
   const leaf = leaves[action];
@@ -87,7 +92,8 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
   const selectorCount = Number(values.id !== undefined) + Number(values.resource !== undefined);
   if (needsSelector ? selectorCount !== 1 : selectorCount !== 0) fail(needsSelector ? "Select one source with exactly one --id or --resource." : "Selectors are only accepted for source edit/remove.");
   if (action === "edit" && field !== "sources") fail("edit supports sources only.");
-  if (action !== "set" && field !== "tags" && field !== "sources") fail("Collection actions support only tags and sources.");
+  const kindList = action === "replace-all" && field !== "tags" && field !== "sources";
+  if (action !== "set" && !kindList && field !== "tags" && field !== "sources") fail("add, remove and edit support only tags and sources; replace a Kind-declared list field whole with replace-all.");
   if (action === "remove" && field === "sources") {
     if (literal !== undefined || fromFile !== undefined) fail("Source remove accepts a selector, not a value.");
   } else if (literal === undefined && fromFile === undefined) fail("Supply one literal value or --from-file.");
@@ -117,7 +123,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
   try {
     const result = await mutateDoc({
       bundle, id, mode: "patch", onAbsent: "fail", registry,
-      strict: Boolean(values.strict) || (action === "set" && !isStandardDocumentSetField(field, edition)),
+      strict: Boolean(values.strict) || (action === "set" && !isStandardDocumentSetField(field, edition)) || kindList,
       helpOnKindReject: `${cliInvocation()} kinds`, actor, persistActor: true,
       expectedVersion: expectedVersion?.trim(), remoteUrl: values.remote,
       input: (existing, context) => {

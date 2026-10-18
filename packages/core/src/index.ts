@@ -385,8 +385,10 @@ export {
   isKindFieldType,
   kindFieldTypeProblem,
   kindFieldInputValue,
+  isKindListField,
 } from "./kinds.js";
 export { loadKinds } from "./kinds-load.js";
+export { compareCodePoints } from "./code-point-order.js";
 export type {
   KindClaimCoordinates,
   KindClaimPolicy,

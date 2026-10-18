@@ -2,7 +2,8 @@
 import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { InvalidInputError } from "./errors.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
-import { kindInputFieldNames, resolveKindFieldCoordinate, type KindRegistry } from "./kinds.js";
+import { KindConformanceError } from "./kind-conformance-error.js";
+import { isKindListField, kindInputFieldNames, resolveKindFieldCoordinate, validateAgainstKind, type KindConvention, type KindRegistry } from "./kinds.js";
 import { matchesSourceIdentity } from "./query-filter.js";
 import type { Frontmatter, OkfDocument } from "./types.js";
 import type { DocumentMutationCandidate } from "./document-mutation.js";
@@ -30,6 +31,11 @@ export class FieldActionError extends InvalidInputError {
 }
 export type FieldAction =
   | { action: "set"; field: string; value: unknown }
+  /**
+   * Remove one field: any field `set` admits apart from `type` and the fields the document's Kind
+   * requires (refused with that Kind's `KIND_FIELD_MISSING`). A no-op when the field is absent.
+   */
+  | { action: "unset"; field: string }
   | { action: "add"; field: "tags"; value: string }
   | { action: "add"; field: "sources"; value: SourceEntry }
   | { action: "remove"; field: "tags"; value: string }
@@ -43,7 +49,13 @@ export type FieldAction =
    */
   | { action: "upsert"; field: "sources"; value: SourceEntry & { id: string } }
   | { action: "replace-all"; field: "tags"; value: string[] }
-  | { action: "replace-all"; field: "sources"; value: SourceEntry[] };
+  | { action: "replace-all"; field: "sources"; value: SourceEntry[] }
+  /**
+   * The complete list of a field the document's Kind declares as `string-list` or `https-url-list`,
+   * kept in the given order: a Kind cannot say whether its list is a set, so ordering and
+   * deduplication belong to the caller (the Kind's type check refuses repeats on a strict write).
+   */
+  | { action: "replace-all"; field: string; value: string[] };
 export interface FieldActionScope {
   field: string;
   action: FieldAction["action"];
@@ -141,43 +153,90 @@ function selectorIndex(rows: unknown[], selector: SourceSelector, edit: boolean)
   return index;
 }
 
+/**
+ * The field `set` (and `unset`) may name on this document, resolved to its storage name: a standard
+ * set field of the edition or a field the document's Kind declares. Anything else is
+ * `unsupported-set-field`, listing what the action would accept.
+ */
+function admittedField(existing: OkfDocument, field: string, context: FieldActionContext, action: "set" | "unset"): { kind: KindConvention | undefined; storageField: string } {
+  const kind = context.registry.kinds.get(String(existing.frontmatter.type)) ?? undefined;
+  const coordinate = kind && resolveKindFieldCoordinate(context.okfVersion, kind, field);
+  if (context.okfVersion === "0.1" && (field === "stale_after" || field === "usage_window")) throw new InvalidInputError(`'${field}' requires OKF v0.2.`);
+  if (!isStandardDocumentSetField(field, context.okfVersion) && !coordinate) {
+    const supportedFields = [...new Set([
+      ...standard,
+      ...(context.okfVersion === "0.2" ? v02 : []),
+      ...(kind ? kindInputFieldNames(context.okfVersion, kind) : []),
+    ])].filter(name => {
+      if (isManagedDocumentMetadataField(name) || name === "tags" || name === "sources") return false;
+      if (context.okfVersion === "0.1" && (name === "stale_after" || name === "usage_window")) return false;
+      const storage = kind && resolveKindFieldCoordinate(context.okfVersion, kind, name);
+      if (action === "unset") return name !== "type" && !(kind && kind.fields.required.includes(storage?.storageField ?? name));
+      return !containsCollection(existing.frontmatter[storage?.storageField ?? name]);
+    }).sort();
+    throw new FieldActionError(`Unsupported ${action} field '${field}'; supported fields: ${supportedFields.join(", ")}.`, {
+      reason: "unsupported-set-field", field, supportedFields,
+    });
+  }
+  return { kind, storageField: coordinate?.storageField ?? field };
+}
+const timestampFor = (context: FieldActionContext): string => (context.now ?? (() => new Date().toISOString()))();
+
 export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldAction, context: FieldActionContext): PreparedDocumentFieldAction {
   if (!record(action) || typeof action.field !== "string") throw new InvalidInputError("A field action requires a field name.");
-  if (action.action === "set") assertAssignmentName(action.field);
+  if (action.action === "set" || action.action === "unset") assertAssignmentName(action.field);
   const keys = action.action === "edit" ? ["action", "field", "selector", "patch"]
     : action.action === "remove" && action.field === "sources" ? ["action", "field", "selector"]
+    : action.action === "unset" ? ["action", "field"]
     : ["action", "field", "value"];
   if (Object.keys(action).some(key => !keys.includes(key)) || keys.some(key => !has(action, key))) throw new InvalidInputError("Field action has missing or incompatible input properties.");
-  if ("value" in action && action.value === undefined) throw new InvalidInputError("A field action value must be supplied; removing a field is not supported.");
+  if ("value" in action && action.value === undefined) throw new InvalidInputError("A field action value must be supplied; remove a field with unset.");
   let storageField = action.field;
   let candidate: DocumentMutationCandidate = { frontmatter: structuredClone(existing.frontmatter), body: existing.body };
   const scope: FieldActionScope = { field: action.field, action: action.action, outcome: "unchanged" };
   if (action.action === "set") {
-    const kind = context.registry.kinds.get(String(existing.frontmatter.type));
-    const coordinate = kind && resolveKindFieldCoordinate(context.okfVersion, kind, action.field);
-    if (context.okfVersion === "0.1" && (action.field === "stale_after" || action.field === "usage_window")) throw new InvalidInputError(`'${action.field}' requires OKF v0.2.`);
-    if (!isStandardDocumentSetField(action.field, context.okfVersion) && !coordinate) {
-      const supportedFields = [...new Set([
-        ...standard,
-        ...(context.okfVersion === "0.2" ? v02 : []),
-        ...(kind ? kindInputFieldNames(context.okfVersion, kind) : []),
-      ])].filter(field => {
-        if (isManagedDocumentMetadataField(field) || field === "tags" || field === "sources") return false;
-        if (context.okfVersion === "0.1" && (field === "stale_after" || field === "usage_window")) return false;
-        const storage = kind && resolveKindFieldCoordinate(context.okfVersion, kind, field);
-        return !containsCollection(existing.frontmatter[storage?.storageField ?? field]);
-      }).sort();
-      throw new FieldActionError(`Unsupported set field '${action.field}'; supported fields: ${supportedFields.join(", ")}.`, {
-        reason: "unsupported-set-field", field: action.field, supportedFields,
-      });
-    }
-    storageField = coordinate?.storageField ?? action.field;
+    storageField = admittedField(existing, action.field, context, "set").storageField;
     candidate = prepareDocumentAssignments(existing, { [storageField]: action.value });
     if (!okfValuesEqual(existing.frontmatter[storageField], action.value)) scope.outcome = "edited";
-    if (scope.outcome !== "unchanged" && context.okfVersion === "0.1") candidate.frontmatter.timestamp = (context.now ?? (() => new Date().toISOString()))();
+    if (scope.outcome !== "unchanged" && context.okfVersion === "0.1") candidate.frontmatter.timestamp = timestampFor(context);
     return { candidate, scope, storageField };
   }
-  if (action.field !== "tags" && action.field !== "sources") throw new InvalidInputError("Collection actions support only tags and sources.");
+  const prototypeName = (): never => { throw new InvalidInputError("'__proto__' is not a writable frontmatter field."); };
+  if (action.action === "unset") {
+    if (action.field === "__proto__") prototypeName();
+    if (action.field === "type") throw new InvalidInputError("'type' cannot be removed; a document keeps its type.");
+    const admitted = admittedField(existing, action.field, context, "unset");
+    storageField = admitted.storageField;
+    const fields = candidate.frontmatter as Record<string, unknown>;
+    if (has(fields, storageField)) { delete fields[storageField]; scope.outcome = "removed"; }
+    const kind = admitted.kind;
+    if (kind && kind.fields.required.includes(storageField)) {
+      // The Kind's own finding for the candidate, so every consumer reads the code it already maps.
+      const missing = validateAgainstKind({ id: existing.id, ...candidate }, kind).filter(warning => warning.code === "KIND_FIELD_MISSING" && warning.field === storageField);
+      throw new KindConformanceError(existing.id, kind.governs, missing, context.okfVersion);
+    }
+    if (scope.outcome !== "unchanged" && context.okfVersion === "0.1") candidate.frontmatter.timestamp = timestampFor(context);
+    return { candidate, scope, storageField };
+  }
+  if (action.action === "replace-all" && action.field !== "tags" && action.field !== "sources") {
+    if (action.field === "__proto__") prototypeName();
+    const kind = context.registry.kinds.get(String(existing.frontmatter.type)) ?? undefined;
+    const coordinate = kind && resolveKindFieldCoordinate(context.okfVersion, kind, action.field);
+    if (isManagedDocumentMetadataField(action.field) || isStandardDocumentSetField(action.field, context.okfVersion) || !coordinate || !isKindListField(kind, coordinate.storageField)) {
+      throw new InvalidInputError(`replace-all supports tags, sources, and fields the document's Kind declares as string-list or https-url-list; '${action.field}' is none of these.`);
+    }
+    storageField = coordinate.storageField;
+    if (!Array.isArray(action.value)) throw new InvalidInputError("replace-all requires a complete list (including [] to empty it).");
+    if (action.value.some(member => typeof member !== "string")) throw new InvalidInputError(`'${action.field}' must be a list of strings.`);
+    const rows = structuredClone(action.value);
+    if (!okfValuesEqual(existing.frontmatter[storageField], rows)) {
+      (candidate.frontmatter as Record<string, unknown>)[storageField] = rows;
+      scope.outcome = "replaced";
+      if (context.okfVersion === "0.1") candidate.frontmatter.timestamp = timestampFor(context);
+    }
+    return { candidate, scope, storageField };
+  }
+  if (action.field !== "tags" && action.field !== "sources") throw new InvalidInputError("add, remove and edit support only tags and sources; replace a Kind-declared list field whole with replace-all.");
   if (!["add", "remove", "edit", "replace-all", "upsert"].includes(action.action)) throw new InvalidInputError("Unknown field action.");
   if (action.field === "sources" && context.okfVersion !== "0.2") throw new InvalidInputError("sources actions require OKF v0.2.");
   const previous = existing.frontmatter[action.field];
@@ -271,6 +330,6 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
   if (action.field === "sources" && action.action === "replace-all") {
     scope.affectedSourceIds = [...new Set([...(Array.isArray(previous) ? previous : []), ...rows].flatMap(row => record(row) && typeof row.id === "string" ? [row.id] : []))];
   }
-  if (scope.outcome !== "unchanged" && context.okfVersion === "0.1") candidate.frontmatter.timestamp = (context.now ?? (() => new Date().toISOString()))();
+  if (scope.outcome !== "unchanged" && context.okfVersion === "0.1") candidate.frontmatter.timestamp = timestampFor(context);
   return { candidate, scope, storageField };
 }

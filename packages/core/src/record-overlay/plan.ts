@@ -167,7 +167,8 @@ export async function planRecordOverlay(input: PlanInput): Promise<OverlayPlan> 
     if (Object.keys(decision.apply).length) {
       const fields = decision.apply;
       const props = sourcePropertiesOf(hooks, change);
-      // A removal cannot be expressed by a field action, so a step that removes keeps the patch shape.
+      // A step that removes a field never carries the upsert: the grouped write refuses removals,
+      // so such a step is written as a patch, or as field actions when it writes a declared list.
       const removes = Object.values(fields).some((v) => v.to === undefined);
       steps.push({
         op: "apply-owned-fields", target: overlay!.id, expected_version: overlay!.version, external_id: change.external_id, change_kind: change.change_kind, fields,

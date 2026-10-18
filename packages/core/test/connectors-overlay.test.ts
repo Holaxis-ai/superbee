@@ -285,7 +285,7 @@ test("bindSourceFeed checks the source against the bundle's Kind as it is now: l
     return buildKindRegistry([{ id: "conventions/event", frontmatter: fm as Frontmatter, body }]);
   };
   const cases: Array<[string, KindRegistry, string[]]> = [
-    ["event_url became a list", eventWith((fm) => { fm.fields.types.event_url = "https-url-list"; }), ["CONNECTOR_LIST_FIELD_UNSUPPORTED"]],
+    ["event_status became a list, mapped through a values table", eventWith((fm) => { fm.fields.types.event_status = "string-list"; }), ["CONNECTOR_LIST_FIELD_UNSUPPORTED"]],
     ["canceled left the enum", eventWith((fm) => { fm.fields.values.event_status = ["scheduled", "postponed"]; }), ["CONNECTOR_VALUES_INVALID"]],
     ["end became the claim owner", eventWith((fm) => { fm.claim = { owner_field: "end", state_field: "event_status" }; }), ["CONNECTOR_FIELD_NEVER_OWNED", "CONNECTOR_FIELD_NEVER_OWNED"]],
   ];
@@ -297,6 +297,8 @@ test("bindSourceFeed checks the source against the bundle's Kind as it is now: l
     );
   }
   assert.equal(bindSourceFeed(connector, { id: FEED_ID, frontmatter: FEED as unknown as Frontmatter }, eventWith(() => {})).resource, FEED_URL);
+  const listed = bindSourceFeed(connector, { id: FEED_ID, frontmatter: FEED as unknown as Frontmatter }, eventWith((fm) => { fm.fields.types.event_url = "https-url-list"; }));
+  assert.deepEqual(listed.policy.list_fields, ["event_url"], "a list field without a values table maps whole and reaches the policy as a set field");
 });
 
 // --------------------------------------------------------------------------------- two observations

@@ -28,6 +28,11 @@ export interface OverlayPolicy {
   time_zone?: string;
   exclude?: RegExp | null;
   exclude_ids?: ReadonlySet<string> | null;
+  /**
+   * The target Kind's `string-list` and `https-url-list` fields, which change detection compares as
+   * sets. Present only when the reader was given a target Kind that declares one.
+   */
+  list_fields?: string[];
 }
 
 /** Field checks for the reader: the target Kind's declared fields, or a presentation kind's fields. */

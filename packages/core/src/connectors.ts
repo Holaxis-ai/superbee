@@ -15,7 +15,8 @@
  * change; {@link findingsFor} turns diagnostics into findings for `planFindings`.
  * Storage-neutral: no Node globals or builtins.
  */
-import { PROGRESS_STATUS_FIELD, isPresent, type KindConvention, type KindRegistry } from "./kinds.js";
+import { compareCodePoints } from "./code-point-order.js";
+import { PROGRESS_STATUS_FIELD, isKindListField, isPresent, type KindConvention, type KindRegistry } from "./kinds.js";
 import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { overlayCanonicalJson, same } from "./record-overlay/canonical.js";
 import { OverlayRefusal, REFUSAL_CODES } from "./record-overlay/errors.js";
@@ -636,10 +637,12 @@ function sourceKindErrors(source: ConnectorSource, index: number, kind: KindConv
     const at = ["sources", index, "fields", field];
     if (work.has(field)) { errors.add("CONNECTOR_FIELD_NEVER_OWNED", at, `'${field}' holds the work state of ${kind.governs} and can never be mapped`); continue; }
     if (!declared.has(field)) { errors.add("CONNECTOR_FIELD_UNDECLARED", at, `${kind.governs} does not declare '${field}'`); continue; }
-    const types = kind.fields.types;
-    const type = types && Object.hasOwn(types, field) ? types[field] : undefined;
-    if (type === "string-list" || type === "https-url-list") { errors.add("CONNECTOR_LIST_FIELD_UNSUPPORTED", at, `'${field}' is a ${type}; list-valued fields cannot be mapped yet`); continue; }
     const allowed = Object.hasOwn(kind.fields.values, field) ? kind.fields.values[field] : undefined;
+    if (isKindListField(kind, field)) {
+      // A list maps whole: the profile flattens it, and there is no per-item value table yet.
+      if (mapping.values || Array.isArray(allowed)) errors.add("CONNECTOR_LIST_FIELD_UNSUPPORTED", at, `'${field}' is a ${kind.fields.types![field]}; a list field maps whole lists, without a values table or allowed values`);
+      continue;
+    }
     if (!Array.isArray(allowed)) continue;
     if (!mapping.values) { errors.add("CONNECTOR_VALUES_INVALID", at, `'${field}' is an enum of ${kind.governs}; map it through a values table`); continue; }
     for (const [native, target] of Object.entries(mapping.values)) {
@@ -847,7 +850,7 @@ export function bindSourceFeed(connector: Connector, feed: { id: ConceptId; fron
 
 // ----------------------------------------------------------------------------------------- mapping
 
-export type MappingDiagnosticCode = "VALUE_UNMAPPED" | "VALUE_NOT_SCALAR" | "VALUE_MISSING" | "RECORD_REFUSED" | "IDENTITY_MISSING" | "IDENTITY_INVALID";
+export type MappingDiagnosticCode = "VALUE_UNMAPPED" | "VALUE_NOT_SCALAR" | "VALUE_NOT_LIST" | "VALUE_MISSING" | "RECORD_REFUSED" | "IDENTITY_MISSING" | "IDENTITY_INVALID";
 
 /** Why a record's value was not written; `native` is the provider value, `external_id` the record's. */
 export interface MappingDiagnostic {
@@ -925,6 +928,12 @@ export function renderIdentity(source: ConnectorSource, bound: Pick<BoundFeed, "
 
 const scalar = (v: unknown): v is string | number | boolean => typeof v === "string" || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v));
 
+/** A list of nonblank text, deduplicated and in code point order; undefined for anything else. */
+function textSet(native: unknown): string[] | undefined {
+  if (!Array.isArray(native) || !native.every((member) => typeof member === "string" && isPresent(member))) return undefined;
+  return [...new Set(native as string[])].sort(compareCodePoints);
+}
+
 /**
  * Map one normalized record onto the target Kind's fields. An absent path leaves the field
  * unobserved. An empty value (`null` or blank text) clears an optional field and leaves a
@@ -933,6 +942,11 @@ const scalar = (v: unknown): v is string | number | boolean => typeof v === "str
  * `String(n)`, a boolean as `true` or `false`) and then follows `unmapped`: `keep` leaves the field
  * unobserved with `VALUE_UNMAPPED`; `refuse` refuses the whole record, which still counts as present.
  * A record whose identity cannot be rendered is refused and not present.
+ *
+ * A field the Kind declares as `string-list` or `https-url-list` is always a list: a list of
+ * nonblank text is written deduplicated and in code point order, and `null` is `[]` (empty, so the
+ * owned list empties). An empty list on a required field is `VALUE_MISSING`; anything else, a
+ * member that is not nonblank text included, is unobserved with `VALUE_NOT_LIST`.
  */
 export function mapRecord(source: ConnectorSource, value: unknown, kind: Pick<KindConvention, "fields">): MappedRecord {
   const id = renderId(source.identity.id, value);
@@ -952,6 +966,13 @@ export function mapRecord(source: ConnectorSource, value: unknown, kind: Pick<Ki
     const read = readPath(value, mapping.from);
     if (!read.found) { unobserved.push(field); continue; }
     const native = read.value;
+    if (isKindListField(kind, field)) {
+      const members = native === null ? [] : textSet(native);
+      if (members === undefined) { unobserved.push(field); note("VALUE_NOT_LIST", field, mapping.from, native); }
+      else if (members.length === 0 && required.has(field)) { unobserved.push(field); note("VALUE_MISSING", field, mapping.from, native); }
+      else fields[field] = members;
+      continue;
+    }
     const empty = (): void => {
       if (required.has(field)) { unobserved.push(field); note("VALUE_MISSING", field, mapping.from, native); }
       else cleared.push(field);
@@ -1008,6 +1029,7 @@ const FINDING_TEXT: Record<MappingDiagnosticCode, (field: string, native: string
   VALUE_UNMAPPED: (field, native) => `${field}: value ${JSON.stringify(native)} has no row in the values table; the stored value was kept`,
   RECORD_REFUSED: (field, native) => `${field}: value ${JSON.stringify(native)} has no row in the values table; the record was refused and left unchanged`,
   VALUE_NOT_SCALAR: (field) => `${field}: the provider sent a list or mapping; the stored value was kept`,
+  VALUE_NOT_LIST: (field) => `${field}: the provider sent something other than a list of text; the stored value was kept`,
   VALUE_MISSING: (field) => `${field}: required, and the provider sent no value; the stored value was kept`,
   IDENTITY_MISSING: () => "records without a value for the identity template were skipped",
   IDENTITY_INVALID: () => "records whose identity could collide with another's or is too long were skipped",
@@ -1018,19 +1040,19 @@ function* take<T>(items: Iterable<T>, n: number): Generator<T> {
   for (const item of items) { yield item; if (--n === 0) return; }
 }
 
-/** A native that carries no value of its own, named by its shape: `list`, `mapping` or `empty`. */
+/** A native named by its shape: `list`, `mapping`, `empty` (absent, `null` or blank text) or `scalar`. */
 function nativeShape(native: unknown): string {
   if (Array.isArray(native)) return "list";
   if (record(native)) return "mapping";
-  return "empty";
+  return native === null || native === undefined || (typeof native === "string" && !isPresent(native)) ? "empty" : "scalar";
 }
 
 /**
  * Findings for `planFindings`, so one problem across many records raises one Signal: an unknown
- * value one per source, field, code and native value; a list, mapping or empty value one per source,
- * field, code and shape; identity gaps one per source. `facts` hold the code, field and the clipped
- * native value or the shape, never a record id, so a dismissed finding stays dismissed until they
- * change; the summary names the count and a sample of record ids.
+ * value one per source, field, code and native value; a value of the wrong shape or an empty one
+ * one per source, field, code and shape; identity gaps one per source. `facts` hold the code, field
+ * and the clipped native value or the shape, never a record id, so a dismissed finding stays
+ * dismissed until they change; the summary names the count and a sample of record ids.
  */
 export function findingsFor(diagnostics: readonly MappingDiagnostic[], scope: { source: string }): Finding[] {
   const groups = new Map<string, { diagnostic: MappingDiagnostic; ids: Set<string> }>();
@@ -1038,7 +1060,7 @@ export function findingsFor(diagnostics: readonly MappingDiagnostic[], scope: { 
     const identity = d.code === "IDENTITY_MISSING" || d.code === "IDENTITY_INVALID";
     const key = identity
       ? `mapping:${scope.source}:${d.code}`
-      : d.code === "VALUE_NOT_SCALAR" || d.code === "VALUE_MISSING"
+      : d.code === "VALUE_NOT_SCALAR" || d.code === "VALUE_NOT_LIST" || d.code === "VALUE_MISSING"
         ? `mapping:${scope.source}:${d.field}:${d.code}:${nativeShape(d.native)}`
         // The string the values table was searched with, so 7 and "7" are one finding as one lookup.
         : `mapping:${scope.source}:${d.field}:${d.code}:${sha256Hex(typeof d.native === "string" ? d.native : String(d.native)).slice(0, 16)}`;
@@ -1047,7 +1069,7 @@ export function findingsFor(diagnostics: readonly MappingDiagnostic[], scope: { 
     if (d.external_id !== null) group.ids.add(d.external_id);
   }
   return [...groups].map(([key, { diagnostic: d, ids }]) => {
-    const byShape = d.code === "VALUE_NOT_SCALAR" || d.code === "VALUE_MISSING";
+    const byShape = d.code === "VALUE_NOT_SCALAR" || d.code === "VALUE_NOT_LIST" || d.code === "VALUE_MISSING";
     const native = d.code === "IDENTITY_MISSING" || d.code === "IDENTITY_INVALID" || byShape ? null : shown(d.native);
     const sample = [...take(ids, 3)].map((id) => clip(id, 60)).join(", ");
     const records = ids.size ? `${ids.size} record${ids.size === 1 ? "" : "s"} (${sample}${ids.size > 3 ? ", …" : ""})` : "records";
