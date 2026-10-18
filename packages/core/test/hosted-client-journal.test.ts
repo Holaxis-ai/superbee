@@ -414,6 +414,44 @@ for (const row of [
   });
 }
 
+for (const row of [
+  { name: "a store.log that is a symbolic link to another journal's log", file: FILE_JOURNAL_LOG, link: (from: string, to: string) => fs.symlink(from, to), refusesOther: false },
+  { name: "a store.log that is a hard link to another journal's log", file: FILE_JOURNAL_LOG, link: (from: string, to: string) => fs.link(from, to), refusesOther: true },
+  { name: "a store.snapshot that is a symbolic link to another journal's snapshot", file: FILE_JOURNAL_SNAPSHOT, link: (from: string, to: string) => fs.symlink(from, to), refusesOther: false },
+]) {
+  test(`refusal: ${row.name} is refused, and both directories are left byte-identical`, async () => {
+    await withRoot(async (root) => {
+      const other = path.join(root.base, "other");
+      const first = await openHostedClientJournalWith({ directory: other, lock: { waitMs: 0 } }, { lockRoot: root.lockRoot });
+      await first.put(intent());
+      await first.close();
+      const compacting = await FileJournaledBackend.open({ directory: other, lock: { lockRoot: root.lockRoot, waitMs: 0 } });
+      await compacting.compact();
+      await compacting.close();
+      await fs.mkdir(root.directory, { mode: 0o700 });
+      if (row.file === FILE_JOURNAL_SNAPSHOT) await fs.writeFile(logFile(root), "", { mode: 0o600 });
+      await row.link(path.join(other, row.file), path.join(root.directory, row.file));
+      const before = [await contents(root.directory), await contents(other)];
+      await assert.rejects(root.open(), refusedAs("JOURNAL_NOT_HOSTED_CLIENT"));
+      // A hard link is one file with two names, so the other journal is refused too until it is undone.
+      if (row.refusesOther) await assert.rejects(openHostedClientJournalWith({ directory: other, lock: { waitMs: 0 } }, { lockRoot: root.lockRoot }), refusedAs("JOURNAL_NOT_HOSTED_CLIENT"));
+      assert.deepEqual([await contents(root.directory), await contents(other)], before);
+      assert.ok((await fs.lstat(path.join(root.directory, row.file))).isSymbolicLink() === !row.refusesOther);
+    });
+  });
+}
+
+test("refusal: a store.log that is a directory is a typed refusal, left as it was", async () => {
+  await withRoot(async (root) => {
+    await fs.mkdir(path.join(root.directory, FILE_JOURNAL_LOG), { recursive: true, mode: 0o700 });
+    await fs.chmod(root.directory, 0o700);
+    await assert.rejects(root.open(), refusedAs("JOURNAL_NOT_HOSTED_CLIENT"));
+    assert.ok((await fs.lstat(logFile(root))).isDirectory());
+    assert.deepEqual(await fs.readdir(root.directory), [FILE_JOURNAL_LOG]);
+    assert.deepEqual(await fs.readdir(logFile(root)), []);
+  });
+});
+
 test("crash: a zero-filled first record (its data never landed) opens as an empty journal and is marked", async () => {
   await withRoot(async (root) => {
     await fs.mkdir(root.directory, { mode: 0o700 });

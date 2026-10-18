@@ -111,11 +111,13 @@ export interface HostedClientJournal extends HostedIntentStore {
  * - `FileJournalCorruptError` / `FileJournalFormatError` — the log or snapshot is damaged or in a
  *   newer format. Nothing is repaired: moving the directory aside loses the writes it holds.
  *
- * The directory may hold only the backend's store files. The decision is made on a read-only
- * open, which changes nothing, and the directory, its listing and its contents are checked again
- * under the writable open's lock before the marker is written. Only when another process changes
- * the directory between the two can the writable open, before refusing, have truncated a torn log
- * tail, removed a leftover snapshot temp, or created an empty log.
+ * The directory may hold only the backend's store files, each a regular file of its own. The
+ * decision is made on a read-only open, which changes nothing, and the directory, its listing,
+ * its files and its contents are checked again under the writable open's lock before the marker
+ * is written. Another process of the same user modifying the directory while it opens is out of
+ * scope: between the read-only decision and the writable lock, such a change can make the
+ * writable open truncate a torn or foreign log tail, remove a leftover snapshot temp, or create
+ * an empty log, and a foreign log truncated to nothing that way is adopted as an empty journal.
  */
 export function openHostedClientJournal(options: HostedClientJournalOptions): Promise<HostedClientJournal> {
   return openHostedClientJournalWith(options);
@@ -218,12 +220,36 @@ async function syncDirectory(directory: string): Promise<void> {
   }
 }
 
-/** The directory holds only store files, and a leftover snapshot temp only beside a log. */
+/**
+ * The directory holds only store files, a leftover snapshot temp only beside a log, and each
+ * store file is this directory's own: a regular file (not a symbolic link or a directory) with
+ * one link, owned on POSIX by this user. The lock is keyed by directory, so a store file linked
+ * into another directory would let two journals append to one log at once.
+ */
 async function assertStoreFilesOnly(directory: string): Promise<void> {
   const names = await fs.readdir(directory);
   const stray = names.filter((name) => !STORE_FILES.has(name));
   if (stray.length > 0 || (names.includes("store.snapshot.tmp") && !names.includes(FILE_JOURNAL_LOG))) {
     throw new HostedClientJournalError("JOURNAL_NOT_HOSTED_CLIENT", directory, `'${directory}' holds files that are not a journal's (${stray.length > 0 ? stray.join(", ") : "a snapshot temp with no log"}); a hosted client journal is an empty or journal-only directory`);
+  }
+  for (const name of names) {
+    let stat;
+    try {
+      stat = await fs.lstat(path.join(directory, name));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    const why = stat.isSymbolicLink()
+      ? "is a symbolic link"
+      : !stat.isFile()
+        ? "is not a regular file"
+        : stat.nlink !== 1
+          ? `has ${stat.nlink} links`
+          : process.platform !== "win32" && typeof process.getuid === "function" && stat.uid !== process.getuid()
+            ? `is owned by uid ${stat.uid}`
+            : undefined;
+    if (why) throw new HostedClientJournalError("JOURNAL_NOT_HOSTED_CLIENT", directory, `'${path.join(directory, name)}' ${why}; a hosted client journal's files are its own`);
   }
 }
 

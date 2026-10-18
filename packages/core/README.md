@@ -473,7 +473,11 @@ looks it up exactly as the first would have. A settled write is removed.
   replaced in between is refused too. The directory is the journal's alone: an existing one may
   hold only `store.log`, `store.snapshot` and `store.snapshot.tmp`, and any other entry (an
   operating system's `.DS_Store` included) is refused as `JOURNAL_NOT_HOSTED_CLIENT`, as is a
-  `store.log` that is not a journal's log. The listing is checked again under the lock.
+  `store.log` that is not a journal's log, and a store file that is a symbolic link, a
+  directory, has more than one link, or (on POSIX) belongs to another user. The listing and the
+  files are checked again under the lock. Another process of the same user changing the
+  directory while it opens is out of scope: in that window the open can truncate a torn or
+  foreign log tail.
 - **Marker.** A new journal records `hosted-client.journal = { schemaVersion: 1 }` in its first
   transaction. Open refuses, as `JOURNAL_NOT_HOSTED_CLIENT`, a store with rows but no marker or one
   holding documents, blobs or a checkout's blob-sync state, so it is never pointed at a CLI checkout
