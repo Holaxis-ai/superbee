@@ -533,7 +533,13 @@ export interface HostedBlobWriteOptions {
 
 export type HostedBlobOperation = "create" | "replace" | "delete";
 
-/** A refusal's code: the host's own, or one the client names (`invalid_input`, `scope_mismatch`, `unsettled_write`). */
+/**
+ * A refusal's code. The host's own: a recorded refusal (`backend_unavailable`, ...), or one it
+ * answers before dispatch and never records (`insufficient_scope`, `bundle_not_found`,
+ * `request_capacity`), which is final for the identity when every earlier attempt was proven not
+ * applied; after an unclear attempt the write stays `unknown` instead. Or one the client names
+ * before sending (`invalid_input`, `scope_mismatch`, `unsettled_write`).
+ */
 export type HostedBlobRefusalCode =
   | "insufficient_scope"
   | "bundle_not_found"
@@ -628,6 +634,7 @@ const OPERATIONS = { "blobs.create.v1": "create", "blobs.replace.v1": "replace",
 const ROUTES = { "blobs.create.v1": "blob-create", "blobs.replace.v1": "blob-replace", "blobs.delete.v1": "blob-delete" } as const;
 /** Refusals after which a held capabilities answer may be what went wrong. */
 const DROPPING_BLOB_REFUSALS: ReadonlySet<string> = new Set(["insufficient_scope", "bundle_not_found", "invalid_input"]);
+// `request_capacity` keeps the held answer: a quota says nothing about the bundle's capabilities.
 
 /** Run `task` after every earlier task on `name` in `locks`. */
 async function chained<T>(locks: Map<string, Promise<unknown>>, name: string, task: () => Promise<T>): Promise<T> {
@@ -751,6 +758,9 @@ async function submit(context: HostedBlobContext, bundleId: string, intent: Blob
       const known = await context.blobJournal.readBlobIntent(requestId);
       if (known) {
         const prior = decodePreparedBlobIntent(known.prepared).scope;
+        if (prior.origin !== context.origin || prior.prefix !== context.prefix) {
+          return { ...base, status: "refused", code: "scope_mismatch", message: "This request identity names a write recorded for another host or sync prefix than this client's; settle it from a client of that target. Nothing was sent." };
+        }
         const sameTarget = prior.origin === context.origin && prior.prefix === context.prefix && prior.bundleId === bundleId;
         const sameWrite = sameTarget && equalJournalValue(decodePreparedBlobIntent(known.prepared).intent, intent);
         if (!sameWrite || prior.workspaceSlug !== context.workspace) {

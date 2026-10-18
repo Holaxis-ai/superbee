@@ -269,15 +269,15 @@ test("golden: create conflict, read grant, replace no-op, type-only, stale type,
   }
 });
 
-test("golden: a read grant's refusal without the settled marker is not terminal; its forbidden lookup leaves it unknown", async () => {
+test("golden: a read grant's refusal on a first attempt is final: refused, retired, never looked up", async () => {
   const name = "blob-create-200-read-grant";
   const blobJournal = createMemoryBlobJournal();
-  const { fetch, sent } = golden({ capabilities: ["capabilities-200", "capabilities-200"], "blob-create": [name], outcome: ["blob-outcome-403-read-grant", "blob-outcome-403-read-grant", "blob-outcome-403-read-grant"] });
+  const { fetch, sent } = golden({ capabilities: ["capabilities-200", "capabilities-200"], "blob-create": [name] });
   const client = clientOf(fetch, { blobJournal });
   const result = await client.writeBlob(BUNDLE, { key: "reader.svg", bytes: FIXTURE_BYTES, contentType: SVG, expectAbsent: true }, { requestId: idOf(name) });
-  assert.equal(result.status, "unknown");
-  assert.deepEqual(blobRoutes(sent), ["blob-create", "outcome", "outcome", "outcome"]);
-  assert.equal((await blobJournal.listBlobIntents())[0]?.state, "unknown");
+  assert.deepEqual(result, { requestId: idOf(name), key: "reader.svg", operation: "create", status: "refused", code: "insufficient_scope", message: JSON.parse(fixture(name).response.body!).error.message });
+  assert.deepEqual(blobRoutes(sent), ["blob-create"]);
+  assert.deepEqual(await blobJournal.listBlobIntents(), []);
 });
 
 test("golden: a 400 answer is never a terminal blob answer: it is looked up, and absent stays unknown and held", async () => {
@@ -411,7 +411,7 @@ test("gate: a capability downgraded within the TTL is learned from the refusal; 
   let downgraded = false;
   const host = fakeHost({ capabilities: () => capabilitiesBody((caps) => { if (downgraded) caps.blobWrites = "refused"; }) });
   const readGrant = fixture("blob-create-200-read-grant").response.body!;
-  // Once downgraded, the host refuses an upload as a read grant: never terminal for a blob, so unknown.
+  // Once downgraded, the host refuses an upload as a read grant: final on a first attempt.
   const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     if (downgraded && String(input).endsWith("/blob-create")) {
       const id = new Headers(init?.headers).get("x-superbee-write-request")!;
@@ -424,11 +424,142 @@ test("gate: a capability downgraded within the TTL is learned from the refusal; 
   downgraded = true;
   // Still within the TTL: the held answer says allowed, so this one is sent and the host refuses it.
   const refused = await client.writeBlob(BUNDLE, { key: "b.svg", bytes: text("1"), contentType: SVG, expectAbsent: true });
-  assert.equal(refused.status, "unknown");
-  // That answer dropped the held capabilities: the next write reads them again and is not served.
+  assert.equal(refused.status === "refused" && refused.code, "insufficient_scope");
+  // That refusal dropped the held capabilities: the next write reads them again and is not served.
   await assert.rejects(client.writeBlob(BUNDLE, { key: "c.svg", bytes: text("1"), contentType: SVG, expectAbsent: true }), HostedBlobWritesNotServed);
-  assert.deepEqual(routes(host.sent), ["capabilities", "blob-create", "outcome", "capabilities"]);
-  assert.deepEqual((await client.heldBlobWrites()).map((held) => [held.key, held.state]), [["b.svg", "unknown"]]);
+  assert.deepEqual(routes(host.sent), ["capabilities", "blob-create", "capabilities"]);
+  assert.deepEqual(await client.heldBlobWrites(), []);
+});
+
+// ── refusals the host never records ────────────────────────────────────────────────────────
+
+const unrecorded: [string, number, Record<string, unknown>][] = [
+  ["insufficient_scope", 200, { code: "insufficient_scope", message: "no grant", retryable: false, writeState: "not_applied" }],
+  ["bundle_not_found", 200, { code: "bundle_not_found", message: "no bundle", retryable: false, writeState: "not_applied" }],
+  ["request_capacity", 200, { code: "request_capacity", message: "quota", retryable: false, writeState: "not_applied", scope: "bundle" }],
+  ["request_capacity", 429, { code: "request_capacity", message: "quota", retryable: false, writeState: "not_applied", scope: "principal", resetAt: "2026-10-18T00:00:00Z" }],
+];
+/** The fake host, refusing the next `count` uploads with `refusal` before dispatch. */
+function refusingHost(status: number, error: Record<string, unknown>, count = 1) {
+  const host = fakeHost();
+  let left = count;
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (left > 0 && String(input).endsWith("/blob-create")) {
+      left -= 1;
+      host.sent.push({ route: "blob-create", headers: new Headers(init?.headers), body: "" });
+      return status === 200 ? json({ ok: false, operationId: "blobs.create.v1", error }) : json({ error }, status);
+    }
+    return host.fetch(input, init);
+  }) as typeof globalThis.fetch;
+  return { host, fetch };
+}
+
+test("unrecorded refusals: each code on a first attempt is refused and retired, and the key takes the next write", async () => {
+  for (const [code, status, error] of unrecorded) {
+    const { host, fetch } = refusingHost(status, error);
+    const blobJournal = createMemoryBlobJournal();
+    const client = clientOf(fetch, { blobJournal });
+    const result = await client.writeBlob(BUNDLE, { key: "k.svg", bytes: text("1"), contentType: SVG, expectAbsent: true });
+    assert.equal(result.status === "refused" && result.code, code, `${status} ${code}`);
+    assert.deepEqual(blobRoutes(host.sent), ["blob-create"], "never looked up");
+    assert.deepEqual(await blobJournal.listBlobIntents(), [], "retired");
+    const next = await client.writeBlob(BUNDLE, { key: "k.svg", bytes: text("1"), contentType: SVG, expectAbsent: true });
+    assert.equal(next.status, "committed", `${status} ${code}: the key is free`);
+  }
+});
+
+test("unrecorded refusals: after an earlier unclear attempt the write stays unknown; it is only looked up, never re-uploaded", async () => {
+  for (const [code, status, error] of unrecorded) {
+    const { host, fetch } = refusingHost(status, error, 10);
+    host.fault("outcome", "throw");
+    host.fault("outcome", "throw");
+    host.fault("outcome", "throw");
+    const blobJournal = createMemoryBlobJournal();
+    // The first attempt is unclear: the request may have reached the host.
+    let first = true;
+    const unclearFirst = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (first && String(input).endsWith("/blob-create")) {
+        first = false;
+        throw new TypeError("connection reset");
+      }
+      return fetch(input, init);
+    }) as typeof globalThis.fetch;
+    const client = clientOf(unclearFirst, { blobJournal });
+    const written = await client.writeBlob(BUNDLE, { key: "k.svg", bytes: text("1"), contentType: SVG, expectAbsent: true });
+    assert.equal(written.status, "unknown", code);
+    host.sent.length = 0;
+    assert.equal((await client.settleBlobWrite(written.requestId)).status, "unknown", `${status} ${code}`);
+    assert.deepEqual(blobRoutes(host.sent), ["outcome"], "the refusing upload route is never asked again");
+    assert.equal((await blobJournal.listBlobIntents())[0]?.state, "unknown");
+  }
+});
+
+// ── may have been sent: never rolled back ──────────────────────────────────────────────────
+
+/** The record is held lookup-only: never pending, never with non-execution evidence. */
+async function lookupOnly(journal: BlobJournaledBackend, label: string): Promise<BlobIntentRecord> {
+  const [row] = await journal.listBlobIntents();
+  assert.ok(row, `${label}: the record is held`);
+  assert.ok(row.state === "in_flight" || row.state === "unknown", `${label}: state ${row.state} must be in_flight or unknown`);
+  assert.equal(row.notAppliedThrough, undefined, `${label}: never proven not applied`);
+  assert.equal(row.notDispatched, undefined, `${label}: no not_dispatched evidence`);
+  return row;
+}
+
+test("may have been sent: a caller abort while fetch holds the bytes is unknown and lookup-only, not not-dispatched", async () => {
+  const host = fakeHost();
+  const controller = new AbortController();
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (!String(input).endsWith("/blob-create")) return host.fetch(input, init);
+    // The upload reached fetch: its bytes may be on the wire. The caller aborts now; fetch honours it.
+    return new Promise<Response>((_resolve, reject) => {
+      init!.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      queueMicrotask(() => controller.abort());
+    });
+  }) as typeof globalThis.fetch;
+  const blobJournal = createMemoryBlobJournal();
+  const client = clientOf(fetch, { blobJournal });
+  const result = await client.writeBlob(BUNDLE, { key: "a.svg", bytes: text("<svg/>"), contentType: SVG, expectAbsent: true }, { signal: controller.signal });
+  assert.equal(result.status, "unknown");
+  const row = await lookupOnly(blobJournal, "abort after fetch");
+  host.sent.length = 0;
+  assert.equal((await client.settleBlobWrite(row.requestId)).status, "unknown");
+  assert.deepEqual(blobRoutes(host.sent), ["outcome"], "settled by lookup, never re-uploaded");
+});
+
+test("may have been sent: a fetch that ignores the abort past the settle wait is unknown and lookup-only", { timeout: 20_000 }, async () => {
+  const host = fakeHost();
+  const controller = new AbortController();
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (!String(input).endsWith("/blob-create")) return host.fetch(input, init);
+    queueMicrotask(() => controller.abort());
+    return new Promise<Response>((_resolve, reject) => setTimeout(() => reject(new TypeError("socket closed")), 2500));
+  }) as typeof globalThis.fetch;
+  const blobJournal = createMemoryBlobJournal();
+  const client = clientOf(fetch, { blobJournal });
+  const result = await client.writeBlob(BUNDLE, { key: "b.svg", bytes: text("<svg/>"), contentType: SVG, expectAbsent: true }, { signal: controller.signal });
+  assert.equal(result.status, "unknown");
+  const row = await lookupOnly(blobJournal, "fetch outlives the wait");
+  await new Promise((resolve) => setTimeout(resolve, 2700));
+  host.sent.length = 0;
+  assert.equal((await client.settleBlobWrite(row.requestId)).status, "unknown");
+  assert.deepEqual(blobRoutes(host.sent), ["outcome"]);
+});
+
+test("may have been sent: a delivery that throws after the upload reached the carrier is not rolled back", async () => {
+  const { fetch, sent } = recorder(() => { throw new TypeError("connection reset after send"); });
+  const carrier = createFetchCarrier({ baseUrl: ORIGIN, credentials: async () => ({ Authorization: "Bearer ok" }), fetch });
+  const journal = createMemoryBlobJournal();
+  const requestId = "4a2f9c1e-8b3d-4e6f-9a1b-0000000000d1";
+  const prepared = prepareBlobIntent({ scope: scopeOf(), intent: { operationId: "blobs.create.v1", key: "d.svg", expectedVersion: null, expectedContentType: null, version: digest(text("1")), contentType: SVG }, identity: { requestId, binding: FIXTURE_BINDING }, createdAt: new Date().toISOString() }, text("1"));
+  const capabilities = decodeHostedCapabilities(JSON.parse(capabilitiesBody()));
+  let sleeps = 0;
+  // The wait between lookups fails: the delivery throws after its send.
+  const sleep = async () => { sleeps += 1; throw new Error("timer failed"); };
+  await assert.rejects(driveJournaledBlob(journal, { scope: scopeOf(), carrier, capabilities: async () => capabilities, delivery: { sleep, lookupDelayMs: 1 } }, requestId, { start: "admit", prepared }), /timer failed/);
+  assert.ok(routes(sent).includes("blob-create"), "the upload reached fetch");
+  assert.ok(sleeps > 0);
+  assert.equal((await lookupOnly(journal, "throw after send")).state, "in_flight");
 });
 
 // ── durability: fsync failures and a process that dies after its claim ─────────────────────
@@ -748,6 +879,8 @@ test("scope: a record of another origin is refused scope_mismatch without a requ
   const row = heldRow("blob-create-200-ok", { state: "unknown", origin: "https://other.example" });
   const { fetch, sent } = recorder(() => assert.fail("nothing is sent"));
   const client = clientOf(fetch, { blobJournal: journalWith(row) });
+  const reused = await client.writeBlob(BUNDLE, { key: CAFE, bytes: FIXTURE_BYTES, contentType: SVG, expectAbsent: true }, { requestId: row.requestId });
+  assert.equal(reused.status === "refused" && reused.code, "scope_mismatch", "a reused identity recorded for another target");
   for (const call of [() => client.settleBlobWrite(row.requestId), () => client.lookupBlobWrite(row.requestId)]) {
     const result = await call();
     assert.equal(result.status === "refused" && result.code, "scope_mismatch");
@@ -793,6 +926,24 @@ test("forget: only an unknown write, only after one lookup answers absent; a fou
     assert.deepEqual(blobRoutes(sent), ["outcome"], "one lookup");
     assert.deepEqual(await blobJournal.listBlobIntents(), []);
   }
+});
+
+test("forget: writeBlob with a forgotten identity uploads it again under that identity, and the host settles it once", async () => {
+  const host = fakeHost();
+  host.fault("blob-create", "lost-request");
+  for (let i = 0; i < 3; i++) host.fault("outcome", "throw");
+  const blobJournal = createMemoryBlobJournal();
+  const client = clientOf(host.fetch, { blobJournal });
+  const input = { key: "f.svg", bytes: text("<svg/>"), contentType: SVG, expectAbsent: true as const };
+  const first = await client.writeBlob(BUNDLE, input);
+  assert.equal(first.status, "unknown");
+  assert.equal((await client.forgetBlobWrite(first.requestId)).status, "forgotten");
+  host.sent.length = 0;
+  const again = await client.writeBlob(BUNDLE, input, { requestId: first.requestId });
+  assert.equal(again.status, "committed");
+  assert.deepEqual(blobRoutes(host.sent), ["blob-create"]);
+  assert.equal(host.sent[0]!.headers.get("x-superbee-write-request"), first.requestId);
+  assert.deepEqual(await blobJournal.listBlobIntents(), []);
 });
 
 test("forget: the journal itself refuses to forget anything but an unknown, unproven record", async () => {

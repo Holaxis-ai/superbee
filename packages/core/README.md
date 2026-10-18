@@ -631,11 +631,18 @@ Each call returns one of:
   an absent key). Final for that identity.
 - `{ status: "conflict", reason: "concurrent_change", message }`: another write overlapped this one
   past the host's own retries. Nothing was applied.
-- `{ status: "refused", code, message }`: the host's own refusal (`bundle_not_found`,
-  `request_capacity`, `backend_unavailable`, ...), or one the client names: `invalid_input` (an
+- `{ status: "refused", code, message }`: the host's own refusal, or one the client names. The
+  host's codes are those it records under the identity (`backend_unavailable`, ...) and those it
+  answers before dispatch and never records (`insufficient_scope` for a grant without blob writes,
+  `bundle_not_found`, and `request_capacity` in a `200` or a `429`). A refusal of the second kind
+  proves only that this attempt did not run, so it is final only when every earlier attempt of the
+  write is proven not applied, which is always so for a write the client sends; a write whose
+  earlier attempt was unclear is never sent again, only looked up, and stays `unknown`.
+  `insufficient_scope`, `bundle_not_found` and `invalid_input` also drop the held capabilities
+  answer, so the next write reads them again. The client's own codes are `invalid_input` (an
   unsafe key, an invalid content type, a body over the host's `blobWriteBytes` or 16 MiB, or a held
-  identity reused for another write), `scope_mismatch` (a held write recorded for another origin or
-  sync prefix) or `unsettled_write` (an earlier write of the same key in the bundle is still
+  identity reused for another write), `scope_mismatch` (a held write, or a reused `requestId`, recorded
+  for another origin or sync prefix) or `unsettled_write` (an earlier write of the same key in the bundle is still
   unsettled: settle or forget it first). Nothing was sent for a client-named refusal.
 - `{ status: "held", deletions, baseline }`: the host holds this mass delete (`428
   deletions_held`). Nothing was applied. A person confirms the count, and
@@ -683,7 +690,10 @@ settled one a crash left behind.
   compare-and-swap is what keeps a later write from losing that update. Any other record is
   `{ status: "kept", reason: "not_unknown" }` (settle an `in_flight` one first), a lookup that fails,
   is refused or is malformed is `kept` with `lookup_unavailable`, and a lookup that finds the outcome
-  settles the write instead.
+  settles the write instead. A forgotten identity is no longer held, so `writeBlob` with that same
+  `requestId` journals and uploads it again under that identity. That is safe: the host answers a
+  delivery it recorded under the identity with the recorded result, and one it did not record is
+  checked against the expected pin like any write.
 
 All three answer `{ status: "unrecorded", requestId }` when the journal holds no blob write under the
 identity. A reused `requestId` with the same input resumes (settles) the held write; with different
@@ -718,8 +728,11 @@ changes, checked atomically with it.
   blob writes until the host authorizes the outcome route on its own (a hosted follow-up).
 - A lookup across principals is unverified: a new token of the same principal finds its outcomes
   (the binding travels in the journal), but what another principal's lookup gets is not yet proven.
-- Every journal record of a write carries its bytes, so writes of several MiB cost seconds of
-  validation; the format is sized for diagrams and documents' attachments, up to 16 MiB.
+- Every journal record of a write carries its bytes, and each transaction validates the record.
+  Validation is cached per payload, so a write costs about 0.17 s per MiB in Node (3 MiB about
+  0.5 s, 16 MiB about 2.6 s, measured with the in-memory journal); without the cache it was about
+  1.7 s per MiB (16 MiB about 28 s). The first validation of a payload still runs on the caller's
+  thread in one slice, about 1.2 s for 16 MiB.
 
 ### Inbox
 

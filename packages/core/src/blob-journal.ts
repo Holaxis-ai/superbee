@@ -131,7 +131,35 @@ export function prepareBlobIntent(input: BlobPreparedInput, bytes?: Uint8Array):
   if (new TextEncoder().encode(payload).byteLength > BLOB_JOURNAL_BOUNDS.preparedBytes) throw new RangeError("prepared blob exceeds its byte bound");
   return payload;
 }
+/**
+ * Payloads already validated, keyed by the payload text itself: validation is a pure function of
+ * that text, and one write validates its record's payload many times (every guard and transition
+ * re-captures it). Bounded by count and by payload length, oldest out first; each hit still
+ * returns a fresh copy, so no caller shares or can change a cached value.
+ */
+const DECODED = new Map<string, PreparedBlobIntent>();
+const DECODED_ENTRIES = 8;
+const DECODED_CHARS = 32 * 1024 * 1024;
+let decodedChars = 0;
+function copyPrepared(value: PreparedBlobIntent): PreparedBlobIntent {
+  return { ...value, scope: { ...value.scope }, intent: { ...value.intent }, identity: { ...value.identity } };
+}
 export function decodePreparedBlobIntent(payload: string): PreparedBlobIntent {
+  const cached = typeof payload === "string" ? DECODED.get(payload) : undefined;
+  if (cached) return copyPrepared(cached);
+  const decoded = decodeUncachedPreparedBlobIntent(payload);
+  if (payload.length <= DECODED_CHARS) {
+    DECODED.set(payload, copyPrepared(decoded));
+    decodedChars += payload.length;
+    for (const key of DECODED.keys()) {
+      if (DECODED.size <= DECODED_ENTRIES && decodedChars <= DECODED_CHARS) break;
+      DECODED.delete(key);
+      decodedChars -= key.length;
+    }
+  }
+  return decoded;
+}
+function decodeUncachedPreparedBlobIntent(payload: string): PreparedBlobIntent {
   if (typeof payload !== "string" || payload.length > BLOB_JOURNAL_BOUNDS.preparedBytes || new TextEncoder().encode(payload).byteLength > BLOB_JOURNAL_BOUNDS.preparedBytes) throw new TypeError("invalid prepared blob payload");
   const value: unknown = JSON.parse(payload);
   if (!object(value) || !only(value, ["schemaVersion", "scope", "intent", "identity", "createdAt", "bytesBase64"]) || value.schemaVersion !== 1) throw new TypeError("invalid prepared blob schema");

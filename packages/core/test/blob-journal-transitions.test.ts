@@ -23,6 +23,7 @@ import {
   nextBlobIntentRecord,
   type BlobPreparedInput,
   type MemoryBlobJournal,
+  decodePreparedBlobIntent,
 } from "../src/blob-journal.js";
 import { FileJournaledBackend, FileJournalCorruptError, FileJournalFormatError, FILE_JOURNAL_FORMAT_VERSION, FILE_JOURNAL_LOG, FILE_JOURNAL_SNAPSHOT } from "../src/file-journaled-backend.js";
 import type { OperationState } from "../src/uncertain-write.js";
@@ -530,3 +531,21 @@ test("a format-2 frame carrying not_dispatched is corrupt; a format above 3 is a
     await reopened.close();
   } finally { await one.cleanup(); }
 });
+
+test("a repeated decode of one payload is served from the cache as a fresh copy no caller can change", () => {
+  const payload = prepared(input(70, "replace", K));
+  const first = decodePreparedBlobIntent(payload);
+  (first.scope as { bundleId: string }).bundleId = "changed";
+  (first.intent as { key: string }).key = "changed";
+  (first.identity as { requestId: string }).requestId = "changed";
+  const second = decodePreparedBlobIntent(payload);
+  assert.deepEqual(second, decodePreparedBlobIntent(payload));
+  assert.equal(second.scope.bundleId, "notes.a");
+  assert.equal(second.intent.key, K);
+  assert.equal(second.identity.requestId, rid(70));
+  assert.notEqual(second.scope, decodePreparedBlobIntent(payload).scope);
+  // A malformed payload is refused every time, never cached.
+  assert.throws(() => decodePreparedBlobIntent(payload.replace(`"${K}"`, `"../x"`)));
+  assert.throws(() => decodePreparedBlobIntent(payload.replace(`"${K}"`, `"../x"`)));
+});
+
