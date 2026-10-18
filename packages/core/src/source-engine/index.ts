@@ -24,9 +24,9 @@ export {
 export type { FetchIdentity, RobotsGroup } from "./robots.js";
 export { DEFAULT_SOURCE_BUDGET, DEFAULT_STATUS_RULES, sourceHostSet } from "./guard.js";
 export type { HostSet } from "./guard.js";
-export { DEFAULT_MISSING_THRESHOLD, MAX_CURSOR_CHARS, observeSource, unsupportedContent } from "./observe.js";
+export { DEFAULT_MISSING_THRESHOLD, MAX_CURSOR_CHARS, MAX_REPLAY_FAILURES, observeSource, unsupportedContent } from "./observe.js";
 export { isSourceState, MachineStateConflict, MemoryMachineState } from "./machine-state.js";
-export type { MachineState, RecordEntry, SourceState } from "./machine-state.js";
+export type { MachineState, PendingChange, RecordEntry, SourceState } from "./machine-state.js";
 export type {
   CommitResult,
   HttpMethod,

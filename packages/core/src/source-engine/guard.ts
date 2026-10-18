@@ -122,7 +122,7 @@ export interface GuardContext {
    */
   conditional: boolean;
   signal?: AbortSignal;
-  /** Each request's own timeout, when the caller passed no deadline. */
+  /** Each request's own timeout. */
   requestTimeoutMs?: number;
 }
 

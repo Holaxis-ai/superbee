@@ -111,11 +111,22 @@ const CREDENTIALS = (): TransportCredential[] => [
 ];
 
 /** Every request that carried the credential's value toward a host it does not belong to. */
+/**
+ * Whether a request carries the credential anywhere: a header, the URL (decoded, so an encoded
+ * copy counts) or the body. The secret is the value's last word, so `Bearer x` is found as `x`.
+ */
+function carries(request: PeerRequest, credential: TransportCredential): boolean {
+  const secret = credential.value.split(/\s+/).at(-1)!;
+  let url = request.url;
+  try { url = decodeURIComponent(request.url.replaceAll("+", " ")); } catch { /* keep the raw URL */ }
+  return [...Object.values(request.headers), url, request.url, request.body ?? ""].some((text) => text.includes(secret));
+}
+
 function leaks(peer: ScriptedPeer, credential: TransportCredential): string[] {
   return peer.received.filter((request) => {
     const url = new URL(request.url);
     const allowed = url.protocol === "https:" && credential.hosts.includes(url.hostname);
-    return !allowed && Object.values(request.headers).some((value) => value.includes(credential.value));
+    return !allowed && carries(request, credential);
   }).map((request) => `${request.method} ${request.url}`);
 }
 
@@ -167,7 +178,7 @@ const CHECKS: Record<(typeof CONFORMANCE_SCENARIOS)[number], Check> = {
       for (const probe of CREDENTIAL_PROBES) {
         const before = peer.received.length;
         await direct(transport, probe.url, { credentialHost: probe.credentialHost });
-        const carried = peer.received.slice(before).filter((request) => Object.values(request.headers).some((value) => value.includes(credential.value)));
+        const carried = peer.received.slice(before).filter((request) => carries(request, credential));
         if (carried.length) problems.push(`${credential.header} sent toward ${probe.name}`);
       }
     }

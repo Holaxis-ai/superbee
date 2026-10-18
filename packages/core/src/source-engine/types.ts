@@ -155,9 +155,9 @@ export interface SourceBudget {
   redirects: number;
   /** Pages committed per run. */
   pages: number;
-  /** The run's deadline when the caller passes no `signal`; with one, the caller owns time. */
+  /** The run's deadline when the caller passes no `signal`; with one, the caller owns the run's time. */
   deadlineMs: number;
-  /** Each request's timeout when the caller passes no `signal`. */
+  /** Each request's timeout, with or without the caller's `signal`. */
   requestTimeoutMs: number;
 }
 
@@ -262,8 +262,8 @@ export interface ObserveSourceOptions<Spec = unknown, Cursor = unknown> {
   budget?: Partial<SourceBudget>;
   /**
    * The run's deadline: once aborted, no request starts, the one in flight and the profile's page
-   * are abandoned, and the run ends `deferred`. Without one the budget's `deadlineMs` and
-   * `requestTimeoutMs` apply.
+   * are abandoned, and the run ends `deferred`. Without one the budget's `deadlineMs` applies. A
+   * commit or state write in progress is never abandoned, so a hung one holds the run.
    */
   signal?: AbortSignal;
   now?: () => Date;

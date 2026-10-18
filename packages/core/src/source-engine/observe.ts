@@ -27,6 +27,11 @@ import type {
 export const DEFAULT_MISSING_THRESHOLD = 2;
 /** The largest stored cursor, as canonical JSON characters. */
 export const MAX_CURSOR_CHARS = 8192;
+/**
+ * Replays of a pending change whose commit threw, after which the change is dropped with a finding:
+ * the record is planned again when it is next observed.
+ */
+export const MAX_REPLAY_FAILURES = 5;
 
 const PROFILE_ID = /^[a-z][a-z0-9-]*$/;
 const UNSUPPORTED_CONTENT = "SOURCE_UNSUPPORTED_CONTENT";
@@ -243,6 +248,7 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   };
   let stop: Stop | undefined;
   let stopUrl: string | undefined;
+  const extraFindings: Finding[] = [];
   const finish = (): SourceRunReceipt => {
     if (stop) {
       receipt.outcome = stop.outcome;
@@ -254,7 +260,7 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
     }
     const mapping = findingsFor(receipt.diagnostics, { source: bound.source.name });
     const outcome = stop ? outcomeFinding(bound.source.name, stop, findingUrl(stopUrl)) : null;
-    receipt.findings = outcome ? [outcome, ...mapping] : mapping;
+    receipt.findings = [...(outcome ? [outcome] : []), ...extraFindings, ...mapping];
     return receipt;
   };
   const refuse = (reason: string, detail?: string): SourceRunReceipt => {
@@ -324,13 +330,13 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   const threshold = bound.policy.missing_threshold ?? DEFAULT_MISSING_THRESHOLD;
   const sourceComplete = bound.source.completeness === "complete";
 
-  // Without the caller's deadline the run has its own, and every request its own timeout.
+  // Without the caller's deadline the run has its own; every request has its own timeout either way.
   const ownDeadline = options.signal ? undefined : new AbortController();
   const timer = ownDeadline ? setTimeout(() => ownDeadline.abort(), budget.deadlineMs) : undefined;
   const signal = options.signal ?? ownDeadline!.signal;
   const guard = guardTransport({
     hosts: hostSet.hosts, transport: options.transport, identity, budget, rules: options.rules ?? {}, statuses, now, conditional: mode === "incremental",
-    signal, ...(options.signal ? {} : { requestTimeoutMs: budget.requestTimeoutMs }),
+    signal, requestTimeoutMs: budget.requestTimeoutMs,
   });
   receipt.requests = guard.requests;
 
@@ -349,29 +355,64 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
   };
 
   try {
-    // Changes an earlier commit asked to retry are planned again before anything is fetched.
-    const pendingIds = Object.keys(state.pending ?? {}).sort();
+    // Changes an earlier commit asked to retry are planned again before anything is fetched. A
+    // record that has since disappeared has nothing left to write.
+    const pendingIds = signal.aborted ? [] : Object.keys(state.pending ?? {}).sort();
     if (pendingIds.length) {
       const pending = state.pending!;
-      const changes = pendingIds.map((id) => pending[id]!.change);
+      const live = pendingIds.filter((id) => !state.records[id]?.gone);
+      const changes = live.map((id) => pending[id]!.change);
       const records: Record<string, { fields: Record<string, unknown> }> = {};
       for (const change of changes) records[change.external_id] = { fields: { ...(change.after ?? change.before ?? {}) } };
-      let result: { hold: Set<string>; retry: Set<string> };
-      try {
-        result = commitResult(await options.commit({
-          feed: key, provider: bound.policy.provider, observed_at: observedAt, page: 0, replay: true, changes, records, baseline: false, complete: false,
-        }));
-      } catch (error) {
-        stop = { outcome: "failed", reason: "commit_failed", retry: true, detail: errorText(error) };
-        return finish();
+      let result: { hold: Set<string>; retry: Set<string> } | undefined;
+      let failure: string | undefined;
+      if (live.length) {
+        try {
+          result = commitResult(await options.commit({
+            feed: key, provider: bound.policy.provider, observed_at: observedAt, page: 0, replay: true, changes, records, baseline: false, complete: false,
+          }));
+        } catch (error) {
+          failure = errorText(error);
+        }
       }
       const nextRecords = { ...state.records };
       const nextPending: Record<string, PendingChange> = {};
-      for (const id of pendingIds) {
-        if (result.retry.has(id)) nextPending[id] = pending[id]!;
-        else if (!result.hold.has(id)) nextRecords[id] = pending[id]!.entry;
+      const dropped: string[] = [];
+      for (const id of live) {
+        const entry = pending[id]!;
+        if (failure !== undefined) {
+          // A replay the commit cannot take stays pending, so a later sighting can still supersede
+          // it, until it has failed too often.
+          const failures = (entry.replay_failures ?? 0) + 1;
+          if (failures >= MAX_REPLAY_FAILURES) dropped.push(id);
+          else nextPending[id] = { ...entry, replay_failures: failures };
+        } else if (result!.retry.has(id)) {
+          nextPending[id] = entry;
+        } else if (!result!.hold.has(id)) {
+          // The record's absence since the hold is newer than the change, so its count stays.
+          const current = state.records[id];
+          nextRecords[id] = entryJson({ ...entry.entry, missing: current?.missing ?? 0, first_missing_at: current?.first_missing_at });
+        }
       }
-      receipt.held += pendingIds.filter((id) => result.retry.has(id) || result.hold.has(id)).length;
+      receipt.held += live.filter((id) => failure !== undefined || result!.retry.has(id) || result!.hold.has(id)).length;
+      if (failure !== undefined) {
+        extraFindings.push({
+          key: `source:${bound.source.name}:replay_failed`,
+          title: clip(`Source ${bound.source.name}: a held change could not be planned again`, 140),
+          summary: clip(`Replaying ${live.length} pending change${live.length === 1 ? "" : "s"} failed (${failure}); they stay pending and the run went on to read the provider.`, 600),
+          priority: "normal",
+          facts: { outcome: "failed", reason: "replay_failed" },
+        });
+      }
+      if (dropped.length) {
+        extraFindings.push({
+          key: `source:${bound.source.name}:replay_dropped`,
+          title: clip(`Source ${bound.source.name}: held changes dropped after ${MAX_REPLAY_FAILURES} failed replays`, 140),
+          summary: clip(`Dropped ${dropped.length} pending change${dropped.length === 1 ? "" : "s"} (${dropped.slice(0, 3).map((id) => clip(id, 60)).join(", ")}${dropped.length > 3 ? ", …" : ""}); each record is planned again when it is next observed.`, 600),
+          priority: "normal",
+          facts: { outcome: "failed", reason: "replay_dropped", count: dropped.length },
+        });
+      }
       const next: SourceState = { ...state, records: nextRecords };
       if (Object.keys(nextPending).length) next.pending = nextPending;
       else delete next.pending;
@@ -379,9 +420,13 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
     }
 
     const seen = new Set<string>();
+    /** The cursors this run has asked for; a page handing one back again has looped. */
+    const asked = new Set<string>();
     const lastRequestUrl = (): string | undefined => guard.requests.at(-1)?.url;
     for (let first = true; ; first = false) {
       if (signal.aborted) { stop = { outcome: "deferred", reason: "deadline", retry: true }; break; }
+      // A resumed pass may restart from its first page, so the cursor it resumes from is not a loop.
+      if (cursor !== null && !(first && resumed)) asked.add(overlayCanonicalJson(cursor)!);
       let raw: unknown;
       try {
         // The deadline bounds profile code too: a page still pending when it passes is discarded.
@@ -416,9 +461,9 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
         break;
       }
       const nextCursor = page.nextCursor ?? null;
-      // A page that promises more but hands back no cursor, or the one it was asked for, would read
-      // the same page until the budget runs out. A resumed pass may restart, so its first page may.
-      if (page.more && (nextCursor === null || (!(first && resumed) && overlayCanonicalJson(nextCursor) === overlayCanonicalJson(cursor)))) {
+      // A page that promises more but hands back no cursor, or one this run already asked for, would
+      // read the same pages until the budget runs out.
+      if (page.more && (nextCursor === null || asked.has(overlayCanonicalJson(nextCursor)!))) {
         stop = { outcome: "failed", reason: "cursor_stuck", retry: false };
         break;
       }
@@ -432,6 +477,18 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
       const missing = complete ? missingAfterComplete(merged, seen, threshold, observedAt) : { changes: [], entries: new Map<string, RecordEntry>() };
       const changes = [...diff.changes, ...missing.changes];
       const byId = new Map(changes.map((change) => [change.external_id, change]));
+      // A newer observation of a record, its listing or its absence from a complete pass, supersedes
+      // its pending change. Those entries are dropped and stored before the commit, so a crash after
+      // the commit never replays a change older than what the commit wrote.
+      const superseded = [...diff.seen, ...missing.entries.keys()].filter((id) => state.pending !== undefined && Object.hasOwn(state.pending, id));
+      if (superseded.length) {
+        const remaining: Record<string, PendingChange> = { ...state.pending };
+        for (const id of superseded) delete remaining[id];
+        const pre: SourceState = { ...state };
+        if (Object.keys(remaining).length) pre.pending = remaining;
+        else delete pre.pending;
+        if (!(await store(pre))) break;
+      }
       const records: Record<string, { fields: Record<string, unknown> }> = {};
       for (const change of changes) records[change.external_id] = { fields: { ...(change.after ?? change.before ?? {}) } };
 
@@ -450,8 +507,6 @@ export async function observeSource<Spec, Cursor>(options: ObserveSourceOptions<
       // The page committed: now, and only now, its records and cursor are stored.
       const nextRecords: Record<string, RecordEntry> = { ...state.records };
       const nextPending: Record<string, PendingChange> = { ...state.pending };
-      // A newer observation of a record supersedes its pending change.
-      for (const id of diff.seen) delete nextPending[id];
       for (const [id, entry] of [...diff.entries, ...missing.entries]) {
         if (byId.has(id) && result.retry.has(id)) nextPending[id] = { change: byId.get(id)!, entry: entryJson(entry), held_at: observedAt };
         else if (!notWritten(id)) nextRecords[id] = entryJson(entry);

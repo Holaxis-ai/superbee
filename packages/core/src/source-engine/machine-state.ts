@@ -25,6 +25,8 @@ export interface PendingChange {
   /** The record's entry once the change is written. */
   entry: RecordEntry;
   held_at: string;
+  /** Replays whose commit threw. */
+  replay_failures?: number;
 }
 
 export interface SourceState {

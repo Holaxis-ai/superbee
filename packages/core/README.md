@@ -330,10 +330,11 @@ toward a credential host; a keyless host is GET only. A GET with a body, a POST 
 headers `authorization`, `cookie`, `proxy-authorization`, `host`, `user-agent` and the method
 overrides are always refused; beyond `accept` a header needs `rules.header`, and the validators
 `if-none-match` and `if-modified-since` go out in incremental mode only. The budget counts every
-request, robots.txt and hops included. The deadline is the caller's `signal`; without one the run
-ends after `deadlineMs` (default 5 minutes) and each request after `requestTimeoutMs` (default 20
-seconds). The deadline bounds the profile's page too: a page still pending is discarded and the
-run ends `deferred`. Statuses map to outcomes: 401 and 403 `credential_refused` (no retry), 404 and
+request, robots.txt and hops included. Each request ends after `requestTimeoutMs` (default 20
+seconds). The deadline is the caller's `signal`; without one the run ends after `deadlineMs`
+(default 5 minutes). The deadline bounds the profile's page too: a page still pending is discarded
+and the run ends `deferred`. A commit or state write in progress is never abandoned, so a hung one
+holds the run. Statuses map to outcomes: 401 and 403 `credential_refused` (no retry), 404 and
 410 `not_found`, 429 `deferred` with `retry_after`, others `provider_unavailable` (503 included,
 with a retry); `statuses` moves a status between the sets. Any refusal or error status stops the
 run, even when the profile catches the error, and the guarded transport is closed when the run
@@ -341,16 +342,25 @@ ends.
 
 A profile runs in the engine's realm. The guard bounds what a declaration and a provider's data can
 reach; profile code itself is bounded by the repository's static egress check
-(`scripts/source-egress-check.mjs`) and by review, until profiles run in an isolate.
+(`scripts/source-egress-check.mjs`) and by review, until profiles run in an isolate. The check
+refuses globals outside a short list, imports outside an allowlist or the scanned roots, writes to
+anything reached from a global, the prototype, property-definition and descriptor names however
+they are read, `this` outside a class body and CommonJS; a key computed at run time is beyond any
+static check.
 
 Each page is mapped with `mapRecord`, diffed against the stored records into `RecordChange` rows
 and handed to `commit`; the cursor and the records are stored only after `commit` resolves. A page
-that promises more with no cursor, or with the cursor it was asked for, fails the run as
+that promises more with no cursor, or with a cursor the run already asked for, fails the run as
 `cursor_stuck`. `commit` may decline to write changes: a `retry` change (a lost compare-and-swap, a
 claimed Signal) stays pending in the machine state and is planned again at the start of every run,
 before anything is fetched, until it is written, refused for good, or superseded by a newer
-observation of the record; a `hold` change is not pending, and its record is planned again when it
-is next observed. Either way the cursor moves on, so one record never stops a feed. An incremental
+observation of the record (its listing, or its absence from a complete pass); a replay keeps the
+record's missing count, and a record that disappeared is not replayed. A replay whose commit throws
+stays pending with a finding while the run reads on, and is dropped with a finding after
+`MAX_REPLAY_FAILURES` (5). A page that supersedes pending changes stores their removal before its
+commit, so a crash after the commit never replays an older change. A `hold` change is not pending,
+and its record is planned again when it is next observed. Either way the cursor moves on, so one
+record never stops a feed. An incremental
 run continues the stored cursor (`resumed` when the last run left its pass open); a complete run
 lists from the start, sends no validator, and stops on a not-modified answer. A pass is a complete
 observation only when it ran in complete mode to its last page within the run, the profile claimed

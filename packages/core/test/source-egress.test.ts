@@ -5,7 +5,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,7 +45,7 @@ test("the engine and harness reach no network global and import only core module
   assert.deepEqual(egressViolations(files, {
     globals: ["AbortController", "structuredClone", "setTimeout", "clearTimeout", "queueMicrotask"],
     allowImport: insideSrc,
-    allowKeys: ["getPrototypeOf"],
+    allowKeys: ["getPrototypeOf", "assign"],
   }), []);
 });
 
@@ -79,6 +81,10 @@ for (const [name, text, expected] of [
   ["this in a function", `export function go(this: any) { return this; }`, /uses this outside a class body/],
   ["this at the top of a module", `export const self = this;`, /uses this outside a class body/],
   ["this in an object literal method", `export const p = { go() { return this; } };`, /uses this outside a class body/],
+  ["Object.assign", `export const go = (a: object, b: object) => Object.assign(a, b);`, /reads assign/],
+  ["getOwnPropertyDescriptor", `export const go = (o: object) => Object.getOwnPropertyDescriptor(o, "x");`, /reads getOwnPropertyDescriptor$/],
+  ["getOwnPropertyNames", `export const go = () => Object.getOwnPropertyNames(Set);`, /reads getOwnPropertyNames/],
+  ["a destructured refused key", `const { prototype: p } = Map;\nexport const go = () => p;`, /names prototype/],
 ] as const) {
   test(`the egress check refuses ${name}`, () => {
     const violations = check(text);
@@ -125,4 +131,60 @@ test("the egress check reads JavaScript modules too and names the allowlist it h
   assert.ok(check(`export const go = () => fetch("x");`, "planted.mjs").some((v) => /global fetch/.test(v)));
   assert.ok(EGRESS_ALLOWED_GLOBALS.includes("URL") && !EGRESS_ALLOWED_GLOBALS.includes("fetch"));
   assert.deepEqual(egressViolations([{ path: "x.ts", text: `export const go = () => globalThis;` }], { globals: ["globalThis"] }).length, 1, "globalThis cannot be allowed");
+});
+
+test("a symlink loop inside a root ends the walk, each directory scanned once", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "egress-loop-"));
+  try {
+    mkdirSync(path.join(base, "a"));
+    writeFileSync(path.join(base, "a", "p.ts"), "export const go = () => fetch(\"x\");\n");
+    symlinkSync(base, path.join(base, "a", "up"));
+    const files = collectSourceFiles([base]);
+    assert.deepEqual(files.map((file: { path: string }) => path.relative(base, file.path)), [path.join("a", "p.ts")]);
+    assert.ok(egressViolations(files, { roots: [base] }).some((v: string) => /global fetch/.test(v)));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("an import attribute is not a global, and the CLI fails a root with no module", () => {
+  assert.deepEqual(egressViolations([{ path: path.join(here, "fixtures/source-engine/p.ts"), text: `import data from "./data.json" with { type: "json" };\nexport const go = () => data;` }], { roots: [path.join(here, "fixtures/source-engine")] }), []);
+  const empty = mkdtempSync(path.join(tmpdir(), "egress-empty-"));
+  try {
+    assert.throws(() => execFileSync(process.execPath, [path.resolve(here, "../../../scripts/source-egress-check.mjs"), empty], { stdio: "pipe" }), (error: { status?: number }) => error.status === 1);
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test("a relative import is judged by its real path, so a link inside a root cannot admit a file outside it", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "egress-real-"));
+  try {
+    const root = path.join(base, "profiles");
+    mkdirSync(root);
+    mkdirSync(path.join(base, "outside"));
+    writeFileSync(path.join(base, "outside", "native.wasm"), "");
+    symlinkSync(path.join(base, "outside", "native.wasm"), path.join(root, "native.wasm"));
+    writeFileSync(path.join(root, "profile.ts"), `import "./native.wasm";\nexport const go = 1;\n`);
+    const violations = egressViolations(collectSourceFiles([root]), { roots: [root] });
+    assert.ok(violations.some((v: string) => /imports "\.\/native\.wasm"/.test(v)), JSON.stringify(violations));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("the walk follows a symlinked directory and scans the modules behind it", () => {
+  const base = mkdtempSync(path.join(tmpdir(), "egress-link-"));
+  try {
+    const root = path.join(base, "profiles");
+    mkdirSync(root);
+    mkdirSync(path.join(base, "outside"));
+    writeFileSync(path.join(base, "outside", "net.mjs"), "export const f = () => fetch(\"x\");\n");
+    symlinkSync(path.join(base, "outside"), path.join(root, "linked"));
+    const files = collectSourceFiles([root]);
+    assert.deepEqual(files.map((file: { path: string }) => path.relative(root, file.path)), [path.join("linked", "net.mjs")]);
+    assert.ok(egressViolations(files, { roots: [root] }).some((v: string) => /global fetch/.test(v)));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });

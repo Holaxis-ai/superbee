@@ -44,6 +44,10 @@ test("percent-encoding, product tokens and wildcards leave no way around a rule"
   assert.equal(canonicalRobotsPath("/%7euser/café?q=%2f"), "/~user/caf%C3%A9?q=%2F");
   assert.deepEqual(parseRobots("User-agent: A\nUser-agent: b-bot/2\nDisallow: /x # note\nAllow:\n"), [{ agents: ["a", "b-bot"], rules: [{ allow: false, path: "/x" }] }]);
   assert.equal(robotsDecision("User-agent: *\rDisallow: /private\r", "/private/x", "FairportBot").allow, false, "a bare CR ends a line");
+  assert.equal(robotsDecision("User-agent: a\n\u212Aey: x\nUser-agent: b\nDisallow: /\n", "/x", "a").allow, false, "a key that only lowercases to ASCII is not a key");
+  assert.equal(robotsRuleMatches("/a*b*c", "/aXbYcZ"), true, "two wildcards, an unanchored last part");
+  assert.equal(robotsRuleMatches("/a*b*c", "/aXcYb"), false);
+  assert.equal(robotsDecision("User-agent: *\nAllow: /p*q\nDisallow: /p*q\n", "/pxq", "x").allow, true, "Allow wins a tie between wildcard rules");
   assert.equal(robotsRuleMatches("/a*b$", "/aXXb"), true);
   assert.equal(robotsRuleMatches("/a*b$", "/aXXbc"), false);
   const started = Date.now();
@@ -58,6 +62,7 @@ test("private, local and unusual addresses are refused lexically", () => {
   ]) {
     assert.ok(refusedAddress(new URL(url)), url);
   }
+  assert.equal(refusedAddress(new URL("https://intranet/x")), "local_name", "a single-label host");
   assert.equal(refusedAddress(new URL("https://www.fairport.org/events?x=1")), undefined);
   assert.equal(refusedAddress(new URL("https://calendar.example.org/x")), undefined);
 });

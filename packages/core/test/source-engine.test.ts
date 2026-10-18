@@ -13,6 +13,7 @@ import { buildKindRegistry } from "../src/kinds.js";
 import {
   DEFAULT_MISSING_THRESHOLD,
   fetchIdentity,
+  MAX_REPLAY_FAILURES,
   isSourceState,
   MachineStateConflict,
   MemoryMachineState,
@@ -798,4 +799,103 @@ test("a newer observation supersedes a pending change; a held change is not pend
   assert.equal(held.held, 1);
   assert.equal(held.pending, 0);
   assert.equal((await state.read(FEED_ID))!.state.records.t1!.after.title, "Third name");
+});
+
+// -------------------------------------------------------------------- QA follow-up: smaller rules
+
+test("a caller signal keeps each request's timeout", { timeout: 5000 }, async () => {
+  const silent = { async request(input: { url: string }) { return input.url.endsWith("/robots.txt") ? { ok: true as const, status: 404, headers: {}, body: "", bytes: 0 } : new Promise<never>(() => {}); } };
+  const receipt = await harness(() => json([])).run({ transport: silent as never, signal: new AbortController().signal, budget: { requestTimeoutMs: 20 } });
+  assert.equal(receipt.reason, "timeout");
+});
+
+test("an aborted deadline skips the replay of pending changes", async () => {
+  const state = new MemoryMachineState();
+  await harness([page(ITEMS, [T1])], { state }).run({ mode: "complete" });
+  await harness([page(ITEMS, [ticket("t1", "Renamed")])], { state }).run({ mode: "complete", commit: async (p) => ({ retry: p.changes.map((c) => c.external_id) }) });
+  const controller = new AbortController();
+  controller.abort();
+  const seen: PageCommit[] = [];
+  const receipt = await harness(() => json([]), { state }).run({ signal: controller.signal, commit: async (p) => { seen.push(p); } });
+  assert.equal(receipt.reason, "deadline");
+  assert.deepEqual(seen, []);
+  assert.equal(receipt.pending, 1);
+});
+
+test("a replay that keeps failing is dropped with a finding after MAX_REPLAY_FAILURES, and each failure lets the run read on", async () => {
+  const state = new MemoryMachineState();
+  await harness([page(ITEMS, [T1], { next: "c1" })], { state }).run({ budget: { pages: 1 } });
+  await harness([page(after("c1"), [ticket("t1", "Renamed")], { next: "c2" })], { state }).run({ budget: { pages: 1 }, commit: async (p) => ({ retry: p.changes.map((c) => c.external_id) }) });
+  const failing = async (p: PageCommit) => { if (p.replay) throw new Error("cannot plan"); };
+  for (let n = 1; n <= MAX_REPLAY_FAILURES; n++) {
+    const h = harness([page(after(`c${n + 1}`), [], { next: `c${n + 2}` })], { state });
+    const receipt = await h.run({ budget: { pages: 1 }, commit: failing });
+    assert.equal(receipt.pages, 1, `run ${n} read the provider`);
+    const keys = receipt.findings.map((f) => f.key);
+    if (n < MAX_REPLAY_FAILURES) {
+      assert.deepEqual(keys, ["source:tickets:replay_failed"]);
+      assert.equal((await state.read(FEED_ID))!.state.pending?.t1?.replay_failures, n);
+    } else {
+      assert.deepEqual(keys, ["source:tickets:replay_failed", "source:tickets:replay_dropped"]);
+      assert.equal((await state.read(FEED_ID))!.state.pending, undefined);
+      assert.equal((await state.read(FEED_ID))!.state.records.t1!.after.title, "First");
+    }
+  }
+});
+
+test("a profile id change resets the cursor like a version change", async () => {
+  const state = new MemoryMachineState();
+  await harness([page(ITEMS, [T1], { next: "c1" }), { request: { url: after("c1") }, response: { status: 500, body: "" } }], { state }).run();
+  const renamed: SourceProfile<JsonPagesSpec, unknown> = { ...jsonPagesProfile, id: "json-pages-2" };
+  const connector = ticketConnector(CONNECTOR_MD.replace("profile: json-pages", "profile: json-pages-2"));
+  const h = harness([page(ITEMS, [T1])], { state, connector });
+  const receipt = await h.run({ profile: renamed });
+  assert.equal(receipt.cursor_reset, "profile_version");
+  assert.deepEqual(pages(h.peer), [ITEMS]);
+});
+
+test("robots.txt redirects past the limit, without a location, or over the bound leave the host unreadable", async () => {
+  const loop = harness((request) => {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("/robots")) return { status: 302, headers: { location: `/robots-${Number(url.searchParams.get("n") ?? 0) + 1}.txt` }, body: "" };
+    return json([T1]);
+  });
+  assert.equal((await loop.run()).reason, "robots_unavailable");
+  assert.equal(loop.peer.received.length, 6, "the robots read follows five redirects, then gives up");
+  for (const robots of [{ status: 301, body: "" }, { status: 200, body: "x".repeat(600_000) }] as const) {
+    const h = harness((request) => (new URL(request.url).pathname === "/robots.txt" ? robots : json([T1])));
+    assert.equal((await h.run({ budget: { maxBytes: 1000 } })).reason, "robots_unavailable");
+    assert.deepEqual(pages(h.peer), []);
+  }
+});
+
+test("the receipt counts written changes by kind and held ones apart", async () => {
+  const state = new MemoryMachineState();
+  await harness([page(ITEMS, [T1, T2])], { state }).run({ mode: "complete" });
+  const receipt = await harness([page(ITEMS, [ticket("t1", "Renamed"), ticket("t3", "Third")])], { state }).run({ mode: "complete", commit: async () => ({ retry: ["t3"] }) });
+  assert.deepEqual(receipt.changes, { new: 0, changed: 1, disappeared: 0 });
+  assert.equal(receipt.held, 1);
+  assert.equal(receipt.pending, 1);
+});
+
+test("a replay keeps the stored missing count and never replays a record that disappeared", async () => {
+  const state = new MemoryMachineState();
+  await harness([page(ITEMS, [T1, T2])], { state }).run({ mode: "complete" });
+  const { state: stored, version } = (await state.read(FEED_ID))!;
+  const entry = (title: string) => ({ after: { ...stored.records.t1!.after, title }, digest: "sha256:x", missing: 0, seen_at: AT });
+  const change = (id: string, title: string) => ({ external_id: id, change_kind: "changed", changed_fields: ["title"], before: stored.records[id]!.after, after: { ...stored.records[id]!.after, title }, content_digest: "sha256:x" });
+  await state.write(FEED_ID, {
+    ...stored,
+    records: { ...stored.records, t1: { ...stored.records.t1!, missing: 1, first_missing_at: AT }, t2: { ...stored.records.t2!, missing: 2, gone: true } },
+    pending: { t1: { change: change("t1", "Renamed"), entry: entry("Renamed"), held_at: AT }, t2: { change: change("t2", "Gone"), entry: entry("Gone"), held_at: AT } },
+  }, version);
+  const seen: PageCommit[] = [];
+  await harness(() => json([]), { state }).run({ commit: async (p) => { seen.push(p); } });
+  assert.deepEqual(seen[0]!.changes.map((c) => c.external_id), ["t1"], "the disappeared t2 is not replayed");
+  const after = (await state.read(FEED_ID))!.state;
+  assert.equal(after.records.t1!.after.title, "Renamed");
+  assert.equal(after.records.t1!.missing, 1);
+  assert.equal(after.records.t1!.first_missing_at, AT);
+  assert.equal(after.records.t2!.gone, true);
+  assert.equal(after.pending, undefined);
 });

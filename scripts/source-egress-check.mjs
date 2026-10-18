@@ -16,7 +16,7 @@
  *
  *   node scripts/source-egress-check.mjs <file-or-directory>...
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 
@@ -41,6 +41,8 @@ const IMPLICIT = new Set(["arguments"]);
 const REFUSED_KEYS = Object.freeze([
   "constructor", "__proto__", "prototype", "getPrototypeOf", "setPrototypeOf", "defineProperty", "defineProperties",
   "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
+  // Copying onto an object, and walking descriptors, reach a built-in's prototype by value.
+  "assign", "getOwnPropertyDescriptor", "getOwnPropertyDescriptors", "getOwnPropertyNames", "getOwnPropertySymbols",
 ]);
 const SOURCE_EXTENSIONS = /\.(?:[cm]?ts|[cm]?js)$/;
 
@@ -51,12 +53,16 @@ const isRelative = (specifier) => specifier.startsWith("./") || specifier.starts
  * inside one of `roots`, so nothing a scanned module imports escapes the check.
  */
 function defaultAllowImport(files, roots) {
-  const scanned = new Set(files.map((file) => path.resolve(file.path)));
-  const inside = roots.map((root) => path.resolve(root));
+  // Compared through real paths, so a link inside a root cannot stand for a module outside it.
+  const real = (file) => {
+    try { return realpathSync(file); } catch { return path.resolve(file); }
+  };
+  const scanned = new Set(files.map((file) => real(file.path)));
+  const inside = roots.map(real);
   return (specifier, file) => {
     if (!isRelative(specifier)) return EGRESS_ALLOWED_IMPORTS.includes(specifier);
     const target = path.resolve(path.dirname(file), specifier);
-    const candidates = [target, target.replace(/\.js$/, ".ts"), target.replace(/\.mjs$/, ".mts")];
+    const candidates = [target, target.replace(/\.js$/, ".ts"), target.replace(/\.mjs$/, ".mts")].map(real);
     return candidates.some((candidate) => scanned.has(candidate) || inside.some((root) => candidate === root || candidate.startsWith(`${root}${path.sep}`)));
   };
 }
@@ -98,7 +104,7 @@ function isReference(node) {
   if ((ts.isVariableDeclaration(parent) || ts.isFunctionDeclaration(parent) || ts.isFunctionExpression(parent) || ts.isClassDeclaration(parent)
     || ts.isClassExpression(parent) || ts.isParameter(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent)) && parent.name === node) return false;
   if (ts.isBindingElement(parent) && (parent.name === node || parent.propertyName === node)) return false;
-  if (ts.isImportSpecifier(parent) || ts.isNamespaceExport(parent)) return false;
+  if (ts.isImportSpecifier(parent) || ts.isNamespaceExport(parent) || ts.isImportAttribute(parent)) return false;
   // `export { a } from "m"` names another module's export; `export { a }` reads the local `a`.
   if (ts.isExportSpecifier(parent)) return parent.parent.parent.moduleSpecifier === undefined && (parent.propertyName ?? parent.name) === node;
   if ((ts.isLabeledStatement(parent) || ts.isBreakStatement(parent) || ts.isContinueStatement(parent)) && parent.label === node) return false;
@@ -210,8 +216,18 @@ export function egressViolations(files, options = {}) {
         if (ts.isIdentifier(root) && isGlobal(symbolOf(root))) flag(target, `${what} the global ${root.text} or something reached from it`);
       }
     };
+    /** The literal text of a property name, or undefined for a computed one built at run time. */
+    const nameText = (name) => (name && (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name) || ts.isNumericLiteral(name))
+      ? name.text
+      : name && ts.isComputedPropertyName(name) && (ts.isStringLiteral(name.expression) || ts.isNoSubstitutionTemplateLiteral(name.expression)) ? name.expression.text : undefined);
     const visit = (node) => {
       if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) flag(node, "dynamic import()");
+      // A refused key read by destructuring or named in an object literal (an assignment pattern
+      // included) reaches the same value as reading it by property access.
+      const named = ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent) ? nameText(node.propertyName ?? node.name)
+        : ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node) || (ts.isMethodDeclaration(node) && ts.isObjectLiteralExpression(node.parent)) ? nameText(node.name)
+          : undefined;
+      if (named !== undefined && refusedKeys.has(named)) flag(node, `names ${named}`);
       if (ts.isPropertyAccessExpression(node) && refusedKeys.has(node.name.text)) flag(node, `reads ${node.name.text}`);
       if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && refusedKeys.has(node.text)) flag(node, `names ${node.text}`);
       if (node.kind === ts.SyntaxKind.ThisKeyword && !inClassBody(node)) flag(node, "uses this outside a class body");
@@ -239,13 +255,30 @@ export function collectSourceFiles(roots) {
   const take = (file) => {
     if (SOURCE_EXTENSIONS.test(file) && !/\.d\.[cm]?ts$/.test(file)) out.push({ path: file, text: readFileSync(file, "utf8") });
   };
-  // Directory entries come from one read, so nothing is checked and then reopened; a symlinked
-  // module is read through its link rather than skipped.
+  // Directory entries come from one read, so nothing is checked and then reopened. A symlink is
+  // followed: to a directory it is walked, to a module it is read; a dangling one is skipped. Each
+  // directory is walked once by its real path, so a link loop ends.
+  const visited = new Set();
   const walk = (dir, entries) => {
+    let real;
+    try { real = realpathSync(dir); } catch { real = path.resolve(dir); }
+    if (visited.has(real)) return;
+    visited.add(real);
     for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full, readdirSync(full, { withFileTypes: true }));
-      else if (entry.isFile() || entry.isSymbolicLink()) take(full);
+      else if (entry.isFile()) take(full);
+      else if (entry.isSymbolicLink()) {
+        let linked;
+        try {
+          linked = readdirSync(full, { withFileTypes: true });
+        } catch (error) {
+          if (error?.code === "ENOTDIR") take(full);
+          else if (error?.code !== "ENOENT") throw error;
+          continue;
+        }
+        walk(full, linked);
+      }
     }
   };
   for (const root of roots) {
@@ -268,5 +301,6 @@ if (isMainModule(import.meta.url)) {
   const violations = egressViolations(files, { roots });
   for (const violation of violations) console.error(violation);
   console.log(`${files.length} module(s) checked, ${violations.length} violation(s)`);
-  process.exit(violations.length ? 1 : 0);
+  // A mistyped or empty root checks nothing, which is not a pass.
+  process.exit(violations.length || files.length === 0 ? 1 : 0);
 }

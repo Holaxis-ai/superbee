@@ -71,9 +71,13 @@ export function parseRobots(text: string): RobotsGroup[] {
     const line = raw.replace(/#.*/, "").trim();
     const colon = line.indexOf(":");
     if (colon <= 0) continue;
-    const key = line.slice(0, colon).trim().toLowerCase();
-    if (!/^[a-z-]+$/.test(key)) continue;
+    // The key is tested before lowercasing, where U+212A would become `k`; a value holding U+2028
+    // or U+2029 is skipped, as the line pattern this replaced never matched one.
+    const rawKey = line.slice(0, colon).trim();
+    if (!/^[A-Za-z-]+$/.test(rawKey)) continue;
+    const key = rawKey.toLowerCase();
     const value = line.slice(colon + 1).trim();
+    if (/[\u2028\u2029]/.test(value)) continue;
     if (key === "user-agent") {
       if (!lastWasAgent) groups.push((current = { agents: [], rules: [] }));
       // The product token ends at the first character outside letters, `_` and `-`.
