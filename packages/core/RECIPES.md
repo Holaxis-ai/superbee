@@ -55,8 +55,9 @@ vocabulary for acquisition adapters; the parser itself reports a missing manifes
   of eleven core types; `null` on a typed field fails), and sections. It does not prove linked targets exist,
   relationship cardinalities, authorization, or compatibility with an installed bundle.
 - Keep example records separate from distributable definitions-only recipes.
-- Use the CLI for existing recipe installation and evolution workflows. Parsing does not grant
-  permission to install or execute a View.
+- Use `@superbee/core/recipe-lifecycle` for installation and evolution, or the CLI adapter.
+  Built-in content and Kind authoring are opt-in subpaths documented in the core README. Parsing
+  does not grant permission to install or execute a View.
 
 The package proof installs core alone, typechecks the public subpaths, runs parsing and record
 checks in Node, and executes a browser-target bundle without Node globals. This is not a live

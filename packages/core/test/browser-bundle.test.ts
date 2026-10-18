@@ -69,6 +69,8 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "platform.js", symbol: "provenanceLabel" },
   { module: "hosted-transport/index.js", symbol: "createHostedReadAdapter" },
   { module: "hosted-client/index.js", symbol: "createHostedClient" },
+  { module: "builtin-recipes.js", symbol: "loadBuiltinRecipe" },
+  { module: "kind-authoring.js", symbol: "applyKindDraft" },
   { module: "recipe-lifecycle/index.js", symbol: "planRecipeEvolution" },
   { module: "record-overlay/index.js", symbol: "planRecordOverlay" },
   { module: "connectors.js", symbol: "parseConnectorDoc" },

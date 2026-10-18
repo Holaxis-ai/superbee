@@ -198,6 +198,14 @@
     "./search": {
       "types": "./dist/search/index.d.ts",
       "default": "./dist/search/index.js"
+    },
+    "./builtin-recipes": {
+      "types": "./dist/builtin-recipes.d.ts",
+      "default": "./dist/builtin-recipes.js"
+    },
+    "./kind-authoring": {
+      "types": "./dist/kind-authoring.d.ts",
+      "default": "./dist/kind-authoring.js"
     }
   },
   "files": [

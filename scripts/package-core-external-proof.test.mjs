@@ -71,6 +71,10 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/kinds.d.ts"));
     assert.ok(paths.includes("dist/recipes.js"));
     assert.ok(paths.includes("dist/recipes.d.ts"));
+    for (const module of ["builtin-recipes", "kind-authoring"]) {
+      assert.ok(paths.includes(`dist/${module}.js`));
+      assert.ok(paths.includes(`dist/${module}.d.ts`));
+    }
     assert.ok(paths.includes("dist/connectors.js"));
     assert.ok(paths.includes("dist/connectors.d.ts"));
     assert.ok(paths.includes("dist/recipe-lifecycle/index.js"));
@@ -511,6 +515,45 @@ export function exerciseRecipes() {
     const recipeProof = runInNewContext(recipeBundle.outputFiles[0].text + '\nJSON.stringify(RecipeProof.exerciseRecipes())', {}, { timeout: 5000 });
     assert.deepEqual(JSON.parse(recipeProof), { id: "glossary", invalidField: "title" });
 
+    // Use only installed public subpaths over the existing MemoryBackend and engine mutation seam.
+    await writeFile(path.join(scratch, "kind-authoring-consumer.mjs"), String.raw`import { MemoryBackend } from "@superbee/core/memory-backend";
+import { query } from "@superbee/core/engine";
+import { mutateDocument } from "@superbee/core/document-mutation";
+import { buildKindRegistry } from "@superbee/core/kinds";
+import { loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
+import { installRecipe } from "@superbee/core/recipe-lifecycle";
+import { prepareKindDraft, applyKindDraft, dismissKind, kindInstanceCandidate, KindAuthoringError } from "@superbee/core/kind-authoring";
+export async function exerciseKindAuthoring() {
+  const backend = new MemoryBackend(), bundle = { root: "memory://consumer", backend };
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Consumer\n");
+  const loaded = loadBuiltinRecipe("work-tracking");
+  if (!loaded || !loaded.ok) throw new Error("built-in load failed");
+  await installRecipe(bundle, loaded.recipe);
+  const empty = { kinds: new Map(), warnings: [] };
+  await mutateDocument({ bundle, id: "research/first", mode: "create-only", registry: empty, strict: false,
+    buildCandidate: () => ({ frontmatter: { type: "Research", title: "First" }, body: "# Summary\nObserved" }) });
+  const text = { inferredBody: () => "Accepted local shape.\n" };
+  const plan = await prepareKindDraft(bundle, "Research", text);
+  await applyKindDraft(bundle, "Research", plan.token, text);
+  const registry = buildKindRegistry(await query(backend, { prefix: "conventions/" }));
+  const kind = registry.kinds.get("Research");
+  if (!kind || !registry.kinds.has("Task")) throw new Error("structured bundle missing Kinds");
+  const candidate = kindInstanceCandidate(kind, { title: "Second" });
+  const created = await mutateDocument({ bundle, id: "research/second", mode: "create-only", registry, strict: true, buildCandidate: () => candidate });
+  const declined = await dismissKind(bundle, "Freeform", { body: () => "Deliberately freeform.\n" });
+  let refused = false;
+  try { await applyKindDraft(bundle, "Research", plan.token, text); }
+  catch (error) { refused = error instanceof KindAuthoringError && error.reason === "already-governed"; }
+  if (!refused || !declined.changed || created.warnings.length) throw new Error("authoring contract failed");
+  return { builtin: loaded.recipe.id, kind: created.doc.frontmatter.type, body: created.doc.body, declined: declined.id };
+}
+`);
+    await run(process.execPath, ["--input-type=module", "-e", 'import { exerciseKindAuthoring } from "./kind-authoring-consumer.mjs"; await exerciseKindAuthoring();'], scratch);
+    const authoringBundle = await build({ absWorkingDir: scratch, entryPoints: ["kind-authoring-consumer.mjs"], bundle: true,
+      platform: "browser", format: "iife", globalName: "KindAuthoringProof", write: false, logLevel: "silent" });
+    const authored = await runInNewContext(authoringBundle.outputFiles[0].text + '\nKindAuthoringProof.exerciseKindAuthoring()', { TextEncoder, TextDecoder, structuredClone }, { timeout: 5000 });
+    assert.deepEqual(JSON.parse(JSON.stringify(authored)), { builtin: "work-tracking", kind: "Research", body: "# Summary\n", declined: "conventions/freeform" });
+
     await writeFile(
       path.join(scratch, "worker-consumer.ts"),
       `import { queryHeads, writeDocVersioned } from "@superbee/core/engine";
@@ -524,6 +567,8 @@ import {
 import { RemoteBackend, RemoteError } from "@superbee/core/remote";
 import { memorySearchSource, searchDocuments, searchRowText, SearchInputError, textVersion, type SearchDocumentV1, type SearchResultV1, type SearchRowTextV1, type SearchSource } from "@superbee/core/search";
 import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
+import { builtinNames, loadBuiltinRecipe } from "@superbee/core/builtin-recipes";
+import { prepareKindDraft, applyKindDraft, dismissKind, kindInstanceCandidate, type KindDraftPlan } from "@superbee/core/kind-authoring";
 import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
 import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleError, type RecipeInstallState } from "@superbee/core/recipe-lifecycle";
 import { applyRecordOverlay, buildSourceIndex, OverlayRefusal, planRecordOverlay, type OverlayBundle, type OverlayPolicy, type OverlayReceipt, type RecordChange } from "@superbee/core/record-overlay";
@@ -548,6 +593,15 @@ export async function exercisePortableCore(): Promise<void> {
   await queryHeads(backend, { type: String(document.frontmatter.type) });
 }
 export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBackend, RemoteError };
+export async function exerciseKindAuthoringTypes(bundle: Parameters<typeof prepareKindDraft>[0]): Promise<KindDraftPlan> {
+  const loaded = loadBuiltinRecipe(builtinNames()[0]!);
+  if (loaded?.ok) await installRecipe(bundle, loaded.recipe);
+  const plan = await prepareKindDraft(bundle, "Research");
+  await applyKindDraft(bundle, "Research", plan.token);
+  await dismissKind(bundle, "Freeform");
+  kindInstanceCandidate(plan.candidateKind, { title: "typed" }, "");
+  return plan;
+}
 declare const lifecycleBundle: Parameters<typeof installRecipe>[0];
 export async function exerciseRecipeLifecycle(): Promise<string | undefined> {
   if (!recipe.ok) return undefined;
@@ -673,6 +727,7 @@ export async function exerciseSourceEngine(): Promise<[SourceRunReceipt, Conform
     assert.ok(installedManifest.exports["."]);
     assert.ok(installedManifest.exports["./kinds"]);
     assert.ok(installedManifest.exports["./recipes"]);
+    for (const module of ["builtin-recipes", "kind-authoring"]) assert.deepEqual(installedManifest.exports[`./${module}`], { types: `./dist/${module}.d.ts`, default: `./dist/${module}.js` });
     assert.ok(installedManifest.exports["./engine"]);
     assert.ok(installedManifest.exports["./remote"]);
     assert.ok(installedManifest.exports["./storage"]);
