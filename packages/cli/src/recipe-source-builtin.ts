@@ -1,5 +1,5 @@
 // CLI source routing only; optional content and parsing are core-owned.
-import { builtinNames, loadBuiltinRecipe, resolveBuiltinSync } from "@superbee/core/builtin-recipes";
+import { loadBuiltinRecipe, resolveBuiltinSync } from "@superbee/core/builtin-recipes";
 import type { RecipeSource } from "./recipe-source-contract.js";
 import { looksLikeRecipePath } from "./recipe-ref.js";
 export { builtinNames, resolveBuiltinSync } from "@superbee/core/builtin-recipes";
