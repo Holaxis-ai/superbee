@@ -93,6 +93,10 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/site-capabilities.d.ts"));
     assert.ok(paths.includes("dist/search/index.js"));
     assert.ok(paths.includes("dist/search/index.d.ts"));
+    assert.ok(paths.includes("dist/source-engine/index.js"));
+    assert.ok(paths.includes("dist/source-engine/index.d.ts"));
+    assert.ok(paths.includes("dist/source-harness/index.js"));
+    assert.ok(paths.includes("dist/source-harness/index.d.ts"));
     assert.ok(paths.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
 
     await writeFile(
@@ -313,6 +317,21 @@ try {
     );
     await run(process.execPath, ["search-consumer.mjs"], scratch);
 
+    await writeFile(
+      path.join(scratch, "source-consumer.mjs"),
+      `delete globalThis.Buffer;
+const { observeSource, MemoryMachineState, refusedAddress } = await import("@superbee/core/source-engine");
+const { peerTransport, runTransportConformance, REQUIRED_SCENARIOS } = await import("@superbee/core/source-harness");
+if (typeof Buffer !== "undefined") throw new Error("proof must execute without Buffer");
+const rows = await runTransportConformance({ name: "packed memory", create: (peer, credential) => peerTransport(peer, { credential }) });
+const failed = rows.filter((row) => !row.ok);
+if (rows.length !== 6 || failed.length) throw new Error("conformance failed: " + JSON.stringify(failed));
+if (refusedAddress(new URL("https://169.254.169.254/latest")) !== "ip_literal") throw new Error("address rule changed");
+if (!REQUIRED_SCENARIOS.includes("complete.disappear") || typeof observeSource !== "function" || typeof MemoryMachineState !== "function") throw new Error("source surface changed");
+`,
+    );
+    await run(process.execPath, ["source-consumer.mjs"], scratch);
+
     await writeFile(path.join(scratch, "view-consumer.mjs"), `
 import { admitActiveView, MAX_ACTIVE_VIEW_BYTES, ACTIVE_VIEW_CONTENT_TYPE } from "@superbee/core/view-admission";
 export function exerciseViewAdmission() {
@@ -510,6 +529,8 @@ import { installRecipe, installedRecipes, planRecipeEvolution, RecipeLifecycleEr
 import { applyRecordOverlay, buildSourceIndex, OverlayRefusal, planRecordOverlay, type OverlayBundle, type OverlayPolicy, type OverlayReceipt, type RecordChange } from "@superbee/core/record-overlay";
 import { bundleHealth, bundleKindFindings, type BindDependencies, type BundleHealthReport } from "@superbee/core/bundle-health";
 import { bindSourceFeed, changeBetween, connectorPinDigest, findingsFor, mapRecord, parseConnectorDoc, type Connector, type ConnectorError } from "@superbee/core/connectors";
+import { MemoryMachineState, observeSource, type ObservePage, type SourceProfile, type SourceRunReceipt, type Transport } from "@superbee/core/source-engine";
+import { peerTransport, runTransportConformance, type ConformanceRow, type ScriptedPeer, type TransportCredential } from "@superbee/core/source-harness";
 import type { BundleBinding } from "@superbee/core/cross-bundle";
 
 declare const backend: StorageBackend;
@@ -574,6 +595,28 @@ export async function exerciseSearch(): Promise<[SearchResultV1, SearchRowTextV1
   return [result, searchRowText(searchCorpus[0]!), textVersion()];
 }
 export const searchRuntime = { searchDocuments, SearchInputError };
+declare const sourceTransport: Transport;
+const workerProfile: SourceProfile<{ url: string }, { after: string }> = {
+  id: "worker-pages", version: 1, kind: "generic",
+  validateSpec: (spec) => ({ ok: true, spec: spec as { url: string } }),
+  hostsFor: (spec) => [new URL(spec.url).hostname],
+  async observe({ spec, cursor, transport }): Promise<ObservePage<{ after: string }>> {
+    const response = await transport.request({ url: cursor ? spec.url + "?after=" + encodeURIComponent(cursor.after) : spec.url });
+    return { records: JSON.parse(response.body) as Record<string, unknown>[], nextCursor: null, more: false, complete: true };
+  },
+};
+export async function exerciseSourceEngine(): Promise<[SourceRunReceipt, ConformanceRow[]] | ConnectorError[]> {
+  const parsed = parseConnectorDoc(connectorDocument, { kinds: overlayBundle.registry });
+  if (!parsed.ok) return parsed.errors;
+  const bound = bindSourceFeed(parsed.connector, sourceFeed, overlayBundle.registry);
+  const receipt = await observeSource({
+    connector: parsed.connector, bound, profile: workerProfile, spec: { url: "https://feeds.example.org/items" }, transport: sourceTransport,
+    state: new MemoryMachineState(), identity: { userAgent: "Worker/1 (+https://worker.example.org)", productToken: "Worker" },
+    signal: new AbortController().signal, commit: async (page) => ({ hold: page.changes.map((change: RecordChange) => change.external_id) }),
+  });
+  const rows = await runTransportConformance({ name: "worker", create: (peer: ScriptedPeer, credential: TransportCredential) => peerTransport(peer, { credential }) });
+  return [receipt, rows];
+}
 `,
     );
     await writeFile(
@@ -612,6 +655,8 @@ export const searchRuntime = { searchDocuments, SearchInputError };
     assert.equal(workerBundle.errors.length, 0);
     assert.ok(workerBundle.outputFiles[0].text.includes("RemoteBackend"));
     assert.ok(workerBundle.outputFiles[0].text.includes("connectorPinDigest"), "the connectors subpath bundles for a Worker");
+    assert.ok(workerBundle.outputFiles[0].text.includes("observeSource"), "the source engine subpath bundles for a Worker");
+    assert.ok(workerBundle.outputFiles[0].text.includes("runTransportConformance"), "the source harness subpath bundles for a Worker");
 
     const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
     const sourceManifest = JSON.parse(
@@ -640,6 +685,8 @@ export const searchRuntime = { searchDocuments, SearchInputError };
     assert.deepEqual(installedManifest.exports["./recipe-lifecycle"], { types: "./dist/recipe-lifecycle/index.d.ts", default: "./dist/recipe-lifecycle/index.js" });
     assert.deepEqual(installedManifest.exports["./record-overlay"], { types: "./dist/record-overlay/index.d.ts", default: "./dist/record-overlay/index.js" });
     assert.deepEqual(installedManifest.exports["./connectors"], { types: "./dist/connectors.d.ts", default: "./dist/connectors.js" });
+    assert.deepEqual(installedManifest.exports["./source-engine"], { types: "./dist/source-engine/index.d.ts", default: "./dist/source-engine/index.js" });
+    assert.deepEqual(installedManifest.exports["./source-harness"], { types: "./dist/source-harness/index.d.ts", default: "./dist/source-harness/index.js" });
     assert.deepEqual(installedManifest.exports["./bundle-health"], { types: "./dist/bundle-health/index.d.ts", default: "./dist/bundle-health/index.js" });
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file === "README.md" || file.startsWith("dist/")));
@@ -650,6 +697,10 @@ export const searchRuntime = { searchDocuments, SearchInputError };
     assert.ok(installedFiles.includes("dist/record-overlay/index.js"), "the record overlay subpath is packed");
     assert.ok(installedFiles.includes("dist/record-overlay/apply.js"), "the record overlay guards are packed");
     assert.ok(installedFiles.includes("dist/connectors.js"), "the connectors subpath is packed");
+    assert.ok(installedFiles.includes("dist/source-engine/index.js"), "the source engine subpath is packed");
+    assert.ok(installedFiles.includes("dist/source-engine/guard.js"), "the source engine's guarded transport is packed");
+    assert.ok(installedFiles.includes("dist/source-harness/index.js"), "the source harness subpath is packed");
+    assert.ok(installedFiles.includes("dist/source-harness/conformance.js"), "the transport conformance suite is packed");
     assert.ok(installedFiles.includes("dist/bundle-health/index.js"), "the bundle health subpath is packed");
     assert.ok(installedFiles.includes("dist/bundle-health/report.js"), "the bundle health report is packed");
     assert.ok(installedFiles.includes("dist/bundle-health/kind-findings.js"), "the Kind findings rule is packed");
