@@ -142,6 +142,12 @@ export interface HostedIdentity {
    * hosted document target names. Absent when the host states none or states one no target can carry.
    */
   readonly targetAuthorityKey?: string;
+  /**
+   * The workspaces (tenant ids, a subset of `tenantIds`) whose notification directory
+   * (`members.directory.v1`) the host offers this person. Absent when it offers none, or states
+   * nothing (a host from before the directory): a client then names recipients by principal id only.
+   */
+  readonly notificationDirectoryWorkspaces?: readonly string[];
 }
 
 export interface HostedWorkspace {
@@ -362,7 +368,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
     signal,
     async whoami() {
       const route = `${prefix}/whoami`;
-      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown; workspaces?: unknown; limits?: unknown; email?: unknown; targetAuthorityKey?: unknown } | undefined;
+      const body = (await json("whoami", IDENTITY_BYTES)) as { principalId?: unknown; tenantIds?: unknown; workspaces?: unknown; limits?: unknown; email?: unknown; targetAuthorityKey?: unknown; notificationDirectoryWorkspaces?: unknown } | undefined;
       if (
         typeof body?.principalId !== "string" ||
         body.principalId === "" ||
@@ -397,6 +403,7 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
         documentInputBytes: statedDocumentInputBytes(body.limits),
         email: typeof body.email === "string" && /^[^\s\p{Cc}\p{Cf}]{3,320}$/u.test(body.email) ? body.email : null,
         ...(isAuthorityKey(body.targetAuthorityKey) ? { targetAuthorityKey: body.targetAuthorityKey } : {}),
+        ...directoryWorkspaces(body.notificationDirectoryWorkspaces, tenantIds),
       };
     },
     async bundles() {
@@ -458,6 +465,17 @@ function clientIn(options: HostedClientOptions, signal: AbortSignal, slug: strin
 /** The document target decoder's key rule: printable ASCII without a slash or backslash, at most 256 characters. */
 function isAuthorityKey(value: unknown): value is string {
   return typeof value === "string" && /^[\x21-\x7e]{1,256}$/.test(value) && !/[\\/]/.test(value);
+}
+
+/**
+ * The stated directory workspaces the identity belongs to, sorted and once each; nothing when the
+ * field is absent, not a list, or names none of them. An entry outside `tenantIds` is dropped: the
+ * directory is only ever offered in a workspace the person is in.
+ */
+function directoryWorkspaces(value: unknown, tenantIds: readonly string[]): { notificationDirectoryWorkspaces?: readonly string[] } {
+  if (!Array.isArray(value)) return {};
+  const offered = tenantIds.filter((tenantId) => value.includes(tenantId));
+  return offered.length === 0 ? {} : { notificationDirectoryWorkspaces: offered };
 }
 
 /** The sync family's answer to a route it does not have: `404 {"error":"not_found"}`, nothing else. */

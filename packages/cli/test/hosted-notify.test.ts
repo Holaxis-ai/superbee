@@ -53,6 +53,10 @@ class AttentionFake {
   readonly scripted: Array<() => Response> = [];
   private seq = 0;
 
+  /** The notification directory's members, by principal id order, served a page at a time. */
+  directory: Array<{ principalId: string; displayName: string | null; email?: string | null; self: boolean }> = [];
+  directoryPage = 100;
+
   /** Producers other than the signed-in person's CLI, by item id. */
   readonly producers = new Map<string, Record<string, unknown>>();
 
@@ -122,6 +126,14 @@ class AttentionFake {
           Object.assign(item, { state: "acknowledged", revision: item.revision + 1, acknowledgedAt: Date.now() });
         }
         return ok({ entry: this.entry(item) });
+      case "members.directory.v1": {
+        const sorted = [...this.directory].sort((a, b) => (a.principalId < b.principalId ? -1 : 1));
+        const after = body.after as string | undefined;
+        const rest = after === undefined ? sorted : sorted.filter((entry) => entry.principalId > after);
+        const limit = Math.min((body.limit as number | undefined) ?? 100, this.directoryPage);
+        const page = rest.slice(0, limit);
+        return ok({ members: page, nextAfter: rest.length > limit ? page.at(-1)!.principalId : null });
+      }
       case "attention.cancel.v1":
         if (!item) return missing();
         if (item.state === "unread" || item.state === "read") Object.assign(item, { state: "withdrawn", revision: item.revision + 1 });
@@ -243,7 +255,7 @@ test("notify --doc on a host that does not report its document authority (every 
 test("notify checks what it can before any request: recipient, kind, thread, label", async () => {
   const h = await harness();
   const cases: Array<[string[], RegExp]> = [
-    [["ana@example.com", "hi"], /principal id or self; naming someone by email is not supported yet/],
+    [["bad\u0007name", "hi"], /is not a principal id or self/],
     [["self", "--kind", "ready"], /--kind ready needs --doc/],
     [["self", "--kind", "reply"], /--kind reply needs --thread/],
     [["self", "--kind", "shout"], /--kind must be one of/],
@@ -604,4 +616,149 @@ test("signed out with --host naming a host never signed in to: AUTH_REQUIRED and
   const error = await rejects(() => runAt({ auth, fetch: spy }, cwd, notify, ["self", "hi", "--host", "https://other.example"]));
   assert.deepEqual(requests, [], "a signed-out notify sent nothing");
   assert.equal(error.code, "AUTH_REQUIRED");
+});
+
+// ── naming a teammate through hosted's notification directory ─────────────────────────────────
+
+const TEAM = [
+  { principalId: PRINCIPAL, displayName: "Pat Doe", self: true },
+  { principalId: "person:ana", displayName: "Ana Lopez", self: false },
+  { principalId: "person:anna", displayName: "Anna Berg", self: false },
+  { principalId: "person:sam", displayName: "Sam \u001b[31mRed\u001b[0m", self: false },
+  { principalId: "person:quiet", displayName: null, self: false },
+];
+
+async function team(offered: boolean, members: AttentionFake["directory"] = TEAM) {
+  const h = await harness(offered ? { notificationDirectoryWorkspaces: [TENANT] } : {});
+  h.attention.directory = members.map((m) => ({ ...m }));
+  return h;
+}
+
+const sends = (h: Harness) => h.attention.calls.filter((call) => call.operationId === "attention.request.v1");
+const directoryReads = (h: Harness) => h.attention.calls.filter((call) => call.operationId === "members.directory.v1");
+
+test("where hosted offers the directory, a teammate's exact name (any case) or a unique start resolves to one principal", async () => {
+  const h = await team(true);
+  const exact = await json(h, notify, ["  ana LOPEZ ", "please look"]);
+  assert.deepEqual(sends(h)[0]!.body.recipient, { kind: "principal", principalId: "person:ana" });
+  assert.equal(exact.recipient, "Ana Lopez (person:ana)");
+  assert.equal(exact.matched_by, "name");
+  assert.deepEqual(directoryReads(h)[0]!.body, { limit: 100 });
+  assert.equal(directoryReads(h)[0]!.headers.get("superbee-workspace"), TENANT);
+  const prefix = await json(h, notify, ["Anna", "hi"]);
+  assert.deepEqual(sends(h)[1]!.body.recipient, { kind: "principal", principalId: "person:anna" });
+  assert.equal(prefix.matched_by, "name_prefix");
+  // Your own name resolves to you.
+  const me = await json(h, notify, ["pat doe", "note to self"]);
+  assert.equal(me.recipient, `self (${PRINCIPAL})`);
+});
+
+test("a name that fits several teammates or none is refused, listing them as ready commands by principal id; nothing is sent", async () => {
+  const h = await team(true);
+  const ambiguous = await rejects(() => run(h, notify, ["an", "hi"]));
+  assert.equal(ambiguous.code, "USAGE");
+  assert.equal(ambiguous.details?.reason, "recipient_ambiguous");
+  assert.match(ambiguous.message, /'an' matches 2 teammates; name one by principal id/);
+  assert.deepEqual(ambiguous.details?.candidates, [
+    { principal: "person:ana", name: "Ana Lopez" },
+    { principal: "person:anna", name: "Anna Berg" },
+  ]);
+  const commands = ambiguous.details?.commands as string[];
+  assert.match(commands[0]!, /notify person:ana hi --dir /);
+  assert.match(commands[1]!, /notify person:anna hi --dir /);
+  const none = await rejects(() => run(h, notify, ["bob", "hi"]));
+  assert.equal(none.code, "USAGE");
+  assert.equal(none.details?.reason, "recipient_not_found");
+  assert.match(none.message, /no teammate you can notify is named 'bob'/);
+  const listed = none.details?.candidates as Array<Record<string, unknown>>;
+  assert.equal(listed.length, TEAM.length);
+  // Teammates' names are other people's words: control characters never reach the terminal.
+  assert.ok(listed.some((c) => c.principal === "person:sam" && c.name === "Sam [31mRed[0m"));
+  assert.ok(listed.some((c) => c.principal === PRINCIPAL && c.self === true));
+  assert.ok(listed.some((c) => c.principal === "person:quiet" && c.name === null));
+  assert.equal(sends(h).length, 0, "nothing is sent on a guess");
+  // The ready command runs.
+  await run(h, notify, ["person:anna", "hi"]);
+  assert.deepEqual(sends(h)[0]!.body.recipient, { kind: "principal", principalId: "person:anna" });
+});
+
+test("an email matches only where the directory shares emails; absent, it is refused naming why", async () => {
+  const withEmail = await team(true, [...TEAM.slice(0, 2), { principalId: "person:kim", displayName: "Kim", email: "Kim@Example.com", self: false }]);
+  const sent = await json(withEmail, notify, ["kim@example.COM", "hi"]);
+  assert.equal(sent.matched_by, "email");
+  assert.deepEqual(sends(withEmail)[0]!.body.recipient, { kind: "principal", principalId: "person:kim" });
+  const unknown = await rejects(() => run(withEmail, notify, ["lee@example.com", "hi"]));
+  assert.equal(unknown.details?.reason, "recipient_not_found");
+
+  const withoutEmail = await team(true);
+  const refused = await rejects(() => run(withoutEmail, notify, ["ana@example.com", "hi"]));
+  assert.equal(refused.code, "USAGE");
+  assert.equal(refused.details?.reason, "directory_has_no_emails");
+  assert.match(refused.message, /does not share emails/);
+  assert.equal(sends(withoutEmail).length, 0);
+});
+
+test("a large directory is read page by page, and one larger than notify reads is refused rather than guessed", async () => {
+  const many = Array.from({ length: 250 }, (_, index) => ({ principalId: `person:m${String(index).padStart(3, "0")}`, displayName: `Member ${index}`, self: false }));
+  const h = await team(true, [...many, { principalId: "person:zoe", displayName: "Zoe", self: false }]);
+  h.attention.directoryPage = 100;
+  await run(h, notify, ["zoe", "hi"]);
+  assert.equal(directoryReads(h).length, 3);
+  assert.deepEqual(directoryReads(h).map((call) => call.body.after ?? null), [null, "person:m099", "person:m199"]);
+  h.attention.directoryPage = 1;
+  const big = await rejects(() => run(h, notify, ["zoe", "hi"]));
+  assert.equal(big.details?.reason, "directory_too_large");
+});
+
+test("self and a principal id are sent as before, with no directory read, whether or not it is offered", async () => {
+  for (const offered of [true, false]) {
+    const h = await team(offered);
+    await run(h, notify, ["self", "hi"]);
+    await run(h, notify, ["person:sam", "hi"]);
+    assert.deepEqual(sends(h).map((call) => (call.body.recipient as { principalId: string }).principalId), [PRINCIPAL, "person:sam"]);
+    assert.equal(directoryReads(h).length, 0, String(offered));
+  }
+  // Offered, an unqualified principal id is still found exactly, as a principal id.
+  const h = await team(true);
+  const record = await json(h, notify, [PRINCIPAL, "hi"]);
+  assert.equal(record.recipient, `self (${PRINCIPAL})`);
+});
+
+test("where hosted does not offer the directory, a name or email is refused as before: no mention of names or a directory, no directory read", async () => {
+  for (const options of [{}, { notificationDirectoryWorkspaces: ["tenant:other"] }]) {
+    const h = await harness(options);
+    h.attention.directory = TEAM.map((m) => ({ ...m }));
+    const named = await rejects(() => run(h, notify, ["Ana Lopez", "hi"]));
+    assert.equal(named.code, "USAGE");
+    assert.equal(named.message, "'Ana Lopez' is not a principal id or self");
+    const email = await rejects(() => run(h, notify, ["ana@example.com", "hi"]));
+    assert.match(email.message, /principal id or self; naming someone by email is not supported yet/);
+    for (const error of [named, email]) {
+      assert.doesNotMatch(`${error.message} ${error.help ?? ""} ${JSON.stringify(error.details ?? {})}`, /directory|teammate|name one/i);
+    }
+    assert.equal(directoryReads(h).length, 0);
+    assert.equal(sends(h).length, 0);
+  }
+});
+
+test("a directory the host will not list for this sign-in is refused in this CLI's words, sending nothing", async () => {
+  const h = await team(true);
+  h.attention.scripted.push(() => Response.json({ ok: false, operationId: "members.directory.v1", error: { code: "not_found", message: "HOST TEXT", retryable: false } }, { status: 404 }));
+  const error = await rejects(() => run(h, notify, ["ana", "hi"]));
+  assert.equal(error.code, "FORBIDDEN");
+  assert.equal(error.details?.reason, "directory_unavailable");
+  assert.doesNotMatch(error.message, /HOST TEXT/);
+  assert.equal(sends(h).length, 0);
+});
+
+test("a send by name with no answer is resent by the principal it resolved to, so the ticket carries the same input", async () => {
+  const h = await team(true);
+  const offline = () => {
+    throw new TypeError("socket hang up");
+  };
+  // The directory read answers; the three send attempts do not.
+  h.attention.scripted.push(() => h.attention.handle("members.directory.v1", { limit: 100 }), offline, offline, offline);
+  const error = await rejects(() => run(h, notify, ["Ana Lopez", "hi"]));
+  assert.equal(error.code, "TRANSIENT");
+  assert.match(error.help ?? "", new RegExp(`notify person:ana hi --ticket ${String(error.details?.ticket)} --dir `));
 });

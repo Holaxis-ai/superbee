@@ -226,6 +226,16 @@ test("whoami: a host that states its target authority key names it", async () =>
   assert.equal((await clientOf(fetch).whoami()).targetAuthorityKey, "superbee-orgs");
 });
 
+test("whoami: the workspaces offering the notification directory, only the person's own, and none when absent or malformed", async () => {
+  const offered = host(() => json({ principalId: "p", tenantIds: ["b", "a", "c"], notificationDirectoryWorkspaces: ["c", "zz", "a", "a"] }));
+  assert.deepEqual((await clientOf(offered.fetch).whoami()).notificationDirectoryWorkspaces, ["a", "c"]);
+  for (const notificationDirectoryWorkspaces of [undefined, [], ["zz"], "a", null, { a: true }]) {
+    const { fetch } = host(() => json({ principalId: "p", tenantIds: ["a"], ...(notificationDirectoryWorkspaces === undefined ? {} : { notificationDirectoryWorkspaces }) }));
+    const identity = await clientOf(fetch).whoami();
+    assert.equal(Object.hasOwn(identity, "notificationDirectoryWorkspaces"), false, JSON.stringify(notificationDirectoryWorkspaces));
+  }
+});
+
 test("whoami: a target authority key no document target can carry reads as none", async () => {
   for (const targetAuthorityKey of ["", "a/b", "a\\b", "has space", 7, "x".repeat(257)]) {
     const { fetch } = host(() => json({ principalId: "p", tenantIds: ["a"], targetAuthorityKey }));

@@ -18,8 +18,11 @@ import {
   HostedRouteNotServed,
   isAttentionTicket,
   isMalformedAnswer,
+  matchDirectoryMember,
   mintAttentionTicket,
+  readDirectory,
   RemoteError,
+  type DirectoryMember,
   type InboxEntry,
 } from "../src/hosted-client/index.js";
 
@@ -341,4 +344,93 @@ test("mintAttentionTicket is a UUIDv7 carrying its millisecond time", () => {
   assert.equal(Number.parseInt(ticket.slice(0, 8) + ticket.slice(9, 13), 16), at);
   assert.notEqual(mintAttentionTicket(at), ticket, "random bits differ");
   assert.equal(isAttentionTicket("01890a5d-ac96-674b-bcce-b302099a8057"), false, "a v6 is not a ticket");
+});
+
+// ── the notification directory ────────────────────────────────────────────────────────────────
+
+const member = (principalId: string, displayName: string | null, extra: Partial<DirectoryMember> = {}): DirectoryMember => ({ principalId, displayName, self: false, ...extra });
+
+test("directory posts members.directory.v1 in the workspace and decodes a page; email is optional", async () => {
+  const { fetch, sent } = host((path) =>
+    ok("members.directory.v1", {
+      members: [
+        { principalId: "person:ana", displayName: "Ana Lopez", self: false },
+        { principalId: "person:me", displayName: null, email: null, self: true },
+        { principalId: "person:sam", displayName: "Sam", email: "sam@example.com", self: false },
+      ],
+      nextAfter: path.length > 0 ? "person:sam" : null,
+    }),
+  );
+  const page = await inboxOf(fetch).directory({ limit: 3, after: "person:a" });
+  assert.deepEqual(page, {
+    members: [
+      { principalId: "person:ana", displayName: "Ana Lopez", self: false },
+      { principalId: "person:me", displayName: null, email: null, self: true },
+      { principalId: "person:sam", displayName: "Sam", email: "sam@example.com", self: false },
+    ],
+    nextAfter: "person:sam",
+  });
+  assert.equal(Object.hasOwn(page.members[0]!, "email"), false, "an absent email stays absent");
+  assert.equal(sent[0]!.path, "/sync/v1/attention/members.directory.v1");
+  assert.deepEqual(sent[0]!.body, { limit: 3, after: "person:a" });
+  assert.equal(sent[0]!.headers.get("superbee-workspace"), TENANT);
+  for (const bad of [
+    { members: [{ principalId: "", displayName: "x", self: false }], nextAfter: null },
+    { members: [{ principalId: "p:x", displayName: 7, self: false }], nextAfter: null },
+    { members: [{ principalId: "p:x", displayName: "x", email: 3, self: false }], nextAfter: null },
+    { members: [{ principalId: "p:x", displayName: "x" }], nextAfter: null },
+    { members: [], nextAfter: "" },
+    { members: "all" },
+  ]) {
+    const malformed = host(() => ok("members.directory.v1", bad));
+    assert.ok(isMalformedAnswer(await inboxOf(malformed.fetch).directory().catch((caught: unknown) => caught)), JSON.stringify(bad));
+  }
+  const refused = host(() => refusal("members.directory.v1", "attention_disabled", 403));
+  const error = await inboxOf(refused.fetch).directory().catch((caught: unknown) => caught);
+  assert.ok(error instanceof HostedAttentionRefusal);
+  assert.equal(error.operationId, "members.directory.v1");
+});
+
+test("readDirectory follows nextAfter to the last page, and says when it stopped early", async () => {
+  const pages: Record<string, unknown> = {
+    "": { members: [member("p:a", "A")], nextAfter: "p:a" },
+    "p:a": { members: [member("p:a", "A"), member("p:b", "B")], nextAfter: "p:b" },
+    "p:b": { members: [member("p:c", "C")], nextAfter: null },
+  };
+  const { fetch, sent } = host((_path, body) => ok("members.directory.v1", pages[String(body.after ?? "")]));
+  const whole = await readDirectory(inboxOf(fetch));
+  assert.deepEqual(whole.members.map((m) => m.principalId), ["p:a", "p:b", "p:c"], "a repeated member is listed once");
+  assert.equal(whole.complete, true);
+  assert.deepEqual(sent.map((request) => request.body), [{ limit: 100 }, { limit: 100, after: "p:a" }, { limit: 100, after: "p:b" }]);
+  const capped = await readDirectory(inboxOf(fetch), { maxPages: 2 });
+  assert.equal(capped.complete, false);
+  const stuck = host(() => ok("members.directory.v1", { members: [member("p:a", "A")], nextAfter: "p:a" }));
+  const looped = await readDirectory(inboxOf(stuck.fetch));
+  assert.equal(looped.complete, false, "a cursor that does not move ends the read");
+  assert.equal(stuck.sent.length, 2);
+});
+
+test("matchDirectoryMember: principal id, email when shared, exact name in any case, then a unique start; never a guess", () => {
+  const members = [
+    member("person:ana", "Ana Lopez", { email: "Ana@Example.com" }),
+    member("person:anna", "Anna  Berg", { email: "anna@example.com" }),
+    member("person:sam", "Sam"),
+    member("person:sam2", "sam "),
+    member("person:me", null, { self: true, email: null }),
+    member("person:zed", "Zed\u202e"),
+  ];
+  const by = (query: string) => matchDirectoryMember(members, query);
+  assert.deepEqual(by("person:me"), { outcome: "matched", member: members[4], by: "principal_id" });
+  assert.deepEqual(by("ana@example.COM"), { outcome: "matched", member: members[0], by: "email" });
+  assert.deepEqual(by("nobody@example.com"), { outcome: "none", emails: true });
+  assert.deepEqual(by("  ana LOPEZ "), { outcome: "matched", member: members[0], by: "name" });
+  assert.deepEqual(by("anna berg"), { outcome: "matched", member: members[1], by: "name" }, "spacing folds");
+  assert.deepEqual(by("anna"), { outcome: "matched", member: members[1], by: "name_prefix" });
+  assert.deepEqual(by("an"), { outcome: "ambiguous", by: "name_prefix", candidates: [members[0], members[1]] });
+  assert.deepEqual(by("SAM"), { outcome: "ambiguous", by: "name", candidates: [members[2], members[3]] }, "an exact tie is ambiguous, not the first");
+  assert.deepEqual(by("zed"), { outcome: "matched", member: members[5], by: "name" }, "format characters do not count");
+  assert.deepEqual(by("bob"), { outcome: "none", emails: true });
+  // The host shares no emails: an address cannot match, and says so.
+  const noEmails = members.map(({ email: _email, ...rest }) => rest);
+  assert.deepEqual(matchDirectoryMember(noEmails, "ana@example.com"), { outcome: "none", emails: false });
 });

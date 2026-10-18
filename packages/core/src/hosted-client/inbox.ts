@@ -34,6 +34,7 @@ export const ATTENTION_OPERATION_IDS = Object.freeze({
   get: "inbox.get.v1",
   open: "inbox.open.v1",
   ack: "inbox.ack.v1",
+  directory: "members.directory.v1",
 } as const);
 export type AttentionOperationId = (typeof ATTENTION_OPERATION_IDS)[keyof typeof ATTENTION_OPERATION_IDS];
 
@@ -234,6 +235,35 @@ export interface AttentionReceipt {
   readonly ticket: string;
 }
 
+/** The most members one directory page lists. */
+export const DIRECTORY_PAGE_MAX = 100;
+
+export interface DirectoryInput {
+  /** The previous page's `nextAfter`: members whose principal id sorts after it. */
+  readonly after?: string;
+  /** At most {@link DIRECTORY_PAGE_MAX} (the default). */
+  readonly limit?: number;
+}
+
+/**
+ * One workspace member the caller can notify. The name (and email, when the host shares it) is
+ * the host's record, for presentation and matching only: a request still names `principalId`.
+ */
+export interface DirectoryMember {
+  readonly principalId: string;
+  readonly displayName: string | null;
+  /** Present only where the host's policy shares addresses (off by default). */
+  readonly email?: string | null;
+  /** The caller, listed once whatever their own preference. */
+  readonly self: boolean;
+}
+
+export interface DirectoryPage {
+  readonly members: readonly DirectoryMember[];
+  /** Pass as `after` for the next page; null on the last. */
+  readonly nextAfter: string | null;
+}
+
 export interface AttentionCancelResult {
   readonly itemId: string;
   readonly state: InboxItemState;
@@ -369,6 +399,11 @@ export interface HostedInbox {
   request(input: AttentionRequestInput): Promise<AttentionReceipt>;
   /** Withdraw an unread or read item you sent. */
   cancel(itemId: string): Promise<AttentionCancelResult>;
+  /**
+   * One page of the members you can notify, by principal id. Offered only where the identity's
+   * `notificationDirectoryWorkspaces` names this workspace; {@link readDirectory} reads every page.
+   */
+  directory(input?: DirectoryInput): Promise<DirectoryPage>;
 }
 
 /** A fresh UUIDv7 (RFC 9562): 48-bit millisecond time, version 7, 74 random bits. */
@@ -441,6 +476,7 @@ export function createHostedInbox(client: Pick<HostedClient, "prefix" | "carrier
         if (typeof data.itemId !== "string" || !isState(data.state) || !isCount(data.revision)) throw new MalformedAnswer("not a cancel answer", route);
         return { itemId: data.itemId, state: data.state, revision: data.revision };
       }),
+    directory: (input = {}) => read(ATTENTION_OPERATION_IDS.directory, input, decodeDirectoryPage),
     async request(input) {
       const ticket = input.ticket ?? mintAttentionTicket(now());
       if (!isAttentionTicket(ticket)) throw new TypeError("a ticket is a UUIDv7");
@@ -591,6 +627,31 @@ function decodeSummary(data: Record<string, unknown>, route: string): InboxSumma
   };
   if (!isCount(data.newestSeq)) throw new MalformedAnswer("not an inbox summary", route);
   return { waitingThreads: count(data.waitingThreads), unreadUpdates: count(data.unreadUpdates), newestSeq: data.newestSeq };
+}
+
+function decodeDirectoryPage(data: Record<string, unknown>, route: string): DirectoryPage {
+  if (!Array.isArray(data.members) || !(data.nextAfter === null || (typeof data.nextAfter === "string" && data.nextAfter !== ""))) {
+    throw new MalformedAnswer("not a directory page", route);
+  }
+  const members = data.members.map((member): DirectoryMember => {
+    if (
+      !isRecord(member) ||
+      typeof member.principalId !== "string" ||
+      member.principalId === "" ||
+      !(member.displayName === null || typeof member.displayName === "string") ||
+      !(member.email === undefined || member.email === null || typeof member.email === "string") ||
+      typeof member.self !== "boolean"
+    ) {
+      throw new MalformedAnswer("not a directory member", route);
+    }
+    return {
+      principalId: member.principalId,
+      displayName: member.displayName,
+      ...(member.email === undefined ? {} : { email: member.email }),
+      self: member.self,
+    };
+  });
+  return { members, nextAfter: data.nextAfter as string | null };
 }
 
 function decodeReceipt(data: Record<string, unknown>, route: string): Omit<AttentionReceipt, "ticket"> {

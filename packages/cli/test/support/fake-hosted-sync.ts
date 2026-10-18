@@ -154,6 +154,8 @@ export interface FakeHostOptions {
   tenants?: string[];
   /** The document target authority key whoami states; absent (as the golden exchange) states none. */
   targetAuthorityKey?: string;
+  /** The workspaces whose notification directory whoami offers; absent (as the golden exchange) offers none. */
+  notificationDirectoryWorkspaces?: string[];
   bundles?: string[];
   principal?: string;
   /** Serve heads and snapshot this many documents to a page (the host's page size is 1,000). */
@@ -420,6 +422,7 @@ export class FakeHost {
           surface: "sync",
           ...this.limits(),
           ...(this.options.targetAuthorityKey === undefined ? {} : { targetAuthorityKey: this.options.targetAuthorityKey }),
+          ...(this.options.notificationDirectoryWorkspaces === undefined ? {} : { notificationDirectoryWorkspaces: this.options.notificationDirectoryWorkspaces }),
         });
       case "bundles":
         return Response.json({
