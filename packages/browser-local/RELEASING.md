@@ -13,6 +13,15 @@ is the durable process for every browser-local prerelease.
 | @superbee/browser-local | 0.1.0-pre.15 | public / next |
 | @superbee/markdown-renderer | 0.1.15 | existing restricted access / latest |
 
+**superbee#498 is breaking for direct `mutateDocument` callers.** Core mutation now owns the
+body replacement guards: a non-identical whole-body replacement that drops outbound links, or
+writes back a truncated body preview, is refused with `BodyReplaceError` unless the caller
+passes `bodyReplace` with the matching opt-in (`{ replaceLinks: true }` or
+`{ acceptTruncatedBody: true }`). Any set, assignment or patch of a field the Kind declares as
+`string-list` or `https-url-list` is refused with `TypedListPatchError`, whatever the value's
+shape; such fields are written only through the `replace-all` and `unset` field actions
+(superbee#496).
+
 This candidate carries core changes superbee#490 and #492 to #501. New public core subpaths:
 `@superbee/core/connectors` (superbee#490, target-agnostic connector declarations),
 `@superbee/core/search` (superbee#494, the one search engine behind a `SearchSource` seam),
@@ -26,20 +35,21 @@ adds the durable intent store `openHostedClientJournal` (superbee#495). The blob
 transitions have one owner, exported as pure functions through `@superbee/core/storage` with
 `createMemoryBlobJournal`, `checkBlobAdmission` and `isOrdinaryBlobKey` (superbee#497,
 #500). A file journal that records a not-dispatched blob claim is written as format 3, which
-an older core refuses with `FileJournalFormatError`. Core mutation now owns the body
-replacement guards (superbee#498): a whole-body replacement that drops outbound links or
-writes back a truncated preview is refused unless the caller passes `bodyReplace`, and a
-scalar patch of a Kind-declared list field is refused. Core field actions gain `unset` and
+an older core refuses with `FileJournalFormatError`. Core field actions gain `unset` and
 Kind-list `replace-all` (superbee#496). Server moves with core with no source change.
 
-Browser-local 0.1.0-pre.15 moves its exact pin to core pre.18 and carries the browser-local
-source change of superbee#498: editor saves and reviewed conflict resolutions pass
+Browser-local 0.1.0-pre.14 was never published, so 0.1.0-pre.15 is the first browser-local
+publish since 0.1.0-pre.13. It moves its exact pin to core pre.18 and carries two
+browser-local source changes. From superbee#486: push pauses, and persists the pause, when an
+unknown outcome carries an authorization refusal, as it does for a settled one; the intent
+stays pending. From superbee#498: editor saves and reviewed conflict resolutions pass
 `bodyReplace: { replaceLinks: true }`, so a person's deliberate link removal still commits,
-while a save that would write back a truncated preview is still refused. Renderer 0.1.15
-extends its core peer allowance through pre.18 with no source change since 0.1.14. Each is a
-new version because a version is never reused for different bytes, and each is included so
-consumers can align their root core without overriding peer checks. Hand publication of
-either is optional.
+while a save that would write back a truncated preview is still refused.
+
+Renderer 0.1.15 extends its core peer allowance through pre.18 with no source change since
+0.1.14. Each is a new version because a version is never reused for different bytes, and each
+is included so consumers can align their root core without overriding peer checks. Hand
+publication of either is optional.
 
 ## Before release
 
