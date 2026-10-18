@@ -1,3 +1,4 @@
+import { assertTypedListPatch } from "./body-replace-guards.js";
 /** Explicit frontmatter intent. Collection construction is owned here, before CAS metadata. */
 import { isManagedDocumentMetadataField } from "./managed-document-metadata.js";
 import { InvalidInputError } from "./errors.js";
@@ -195,7 +196,9 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
   let candidate: DocumentMutationCandidate = { frontmatter: structuredClone(existing.frontmatter), body: existing.body };
   const scope: FieldActionScope = { field: action.field, action: action.action, outcome: "unchanged" };
   if (action.action === "set") {
-    storageField = admittedField(existing, action.field, context, "set").storageField;
+    const admitted = admittedField(existing, action.field, context, "set");
+    storageField = admitted.storageField;
+    if (admitted.kind) assertTypedListPatch(admitted.kind, storageField);
     candidate = prepareDocumentAssignments(existing, { [storageField]: action.value });
     if (!okfValuesEqual(existing.frontmatter[storageField], action.value)) scope.outcome = "edited";
     if (scope.outcome !== "unchanged" && context.okfVersion === "0.1") candidate.frontmatter.timestamp = timestampFor(context);

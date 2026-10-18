@@ -92,6 +92,8 @@ export async function createRequestDrivenRuntime(options: RequestDrivenRuntimeOp
           mode: "patch",
           registry: EMPTY_REGISTRY,
           strict: false,
+          // An explicit editor Save owns the complete body, including relationship removals.
+          bodyReplace: { replaceLinks: true },
           ...(edit.expectedVersion === undefined ? {} : { expectedVersion: edit.expectedVersion }),
           ...(actor === undefined ? {} : { actor }),
           ...(now === undefined ? {} : { now }),

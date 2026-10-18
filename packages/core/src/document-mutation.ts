@@ -1,3 +1,4 @@
+import { assertTypedListPatch, guardBodyReplace, type BodyReplacePosture } from "./body-replace-guards.js";
 /**
  * CLI-neutral document mutation policy.
  *
@@ -100,6 +101,8 @@ export interface MutateDocumentOptions {
   ) => DocumentMutationCandidate | Promise<DocumentMutationCandidate>;
   /** Actual semantic intent, evaluated on each fresh read. Mutually exclusive with buildCandidate. */
   input?: DocumentMutationInput | ((existing: OkfDocument, context: DocumentMutationContext) => DocumentMutationInput | Promise<DocumentMutationInput>);
+  /** Explicit acceptance of preview bodies or outbound link removal on a whole-body replacement. */
+  bodyReplace?: BodyReplacePosture;
   /** Adapter invariants observe every fresh candidate, regardless of input route. */
   assertCandidate?: (existing: OkfDocument | undefined, candidate: DocumentMutationCandidate, context: DocumentMutationContext) => void | Promise<void>;
   /** Patch only: require an existing target or allow an expect-absent create. */
@@ -396,6 +399,10 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     scope = undefined;
     scopes = undefined;
     let candidate: DocumentMutationCandidate;
+    const assertTypedAssignments = (fields: readonly string[]) => {
+      const kind = existing && opts.registry.kinds.get(String(existing.frontmatter.type));
+      if (kind) for (const field of fields) assertTypedListPatch(kind, field);
+    };
     if (opts.input !== undefined) {
       if (!existing) throw new DocumentNotFoundError(opts.id);
       const input = typeof opts.input === "function" ? await opts.input(structuredClone(existing), context) : opts.input;
@@ -417,6 +424,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         candidate = { frontmatter: working.frontmatter, body: working.body };
         scopes = prepared;
       } else if (input.kind === "assign") {
+        assertTypedAssignments(Object.keys(input.assignments));
         candidate = prepareDocumentAssignments(existing, input.assignments);
         if (input.body !== undefined) candidate.body = input.body;
         if (input.refreshTimestamp && okfVersion === "0.1") candidate.frontmatter.timestamp = decisionNow();
@@ -427,8 +435,12 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       else throw new InvalidInputError("Unknown document mutation input.");
     } else {
       candidate = await opts.buildCandidate!(existing === undefined ? undefined : structuredClone(existing), context);
-      if (existing && opts.mode === "patch") assertOrdinaryPatch(existing.frontmatter, candidate.frontmatter);
+      if (existing && opts.mode === "patch") {
+        assertTypedAssignments(Object.keys(candidate.frontmatter).filter(field => !okfValuesEqual(existing.frontmatter[field], candidate.frontmatter[field])));
+        assertOrdinaryPatch(existing.frontmatter, candidate.frontmatter);
+      }
     }
+    if (existing) guardBodyReplace(opts.bundle, existing, candidate.body, opts.bodyReplace);
     await opts.assertCandidate?.(existing === undefined ? undefined : structuredClone(existing), structuredClone(candidate), context);
     return candidate;
   };
@@ -607,3 +619,6 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings: outcome.result.warnings, ...scoped }
     : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings: outcome.result.warnings, ...scoped };
 }
+
+export { TypedListPatchError, assertTypedListPatch, BodyReplaceError, bodyPreviewFinding, computeDroppedLinks, guardBodyReplace, guardTruncatedBodyPreview, guardDroppedLinks, droppedLinks } from "./body-replace-guards.js";
+export type { BodyReplaceFinding, BodyPreviewFinding, BodyReplacePosture } from "./body-replace-guards.js";

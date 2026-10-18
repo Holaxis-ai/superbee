@@ -432,6 +432,8 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
         ...(edit.expectedVersion === undefined ? {} : { expectedVersion: edit.expectedVersion }),
         ...(actor === undefined ? {} : { actor }),
         ...(now === undefined ? {} : { now }),
+        // An explicit editor Save owns relationship removals; preview protection still applies.
+        bodyReplace: { replaceLinks: true },
         buildCandidate: (existing) => ({ frontmatter: existing!.frontmatter, body: edit.body }),
       });
       // A local write is pending by construction; only the journal, never this write, says
