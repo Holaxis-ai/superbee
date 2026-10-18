@@ -287,8 +287,10 @@ const result = await searchDocuments(source, { query: "lock keeper", limit: 10 }
 
 `key` identifies the corpus; a cursor is refused for another key, scope, query, match or filters
 (`type`, `tag`, `prefix`). A request outside the contract throws `SearchInputError`; a corpus over a
-bound, or a request whose terms hold more than `maxEvidenceInstances` capped instances (a
-`searchDocuments` option, at most `SEARCH_LIMITS.maxEvidenceInstances`), throws `SearchLimitError`.
+bound throws `SearchLimitError`; a request whose terms hold more than `maxEvidenceInstances` capped
+instances (a `searchDocuments` option, at most `SEARCH_LIMITS.maxEvidenceInstances`) throws
+`SearchBroadQueryError`, a `SearchLimitError` whose message asks for fewer or more specific terms.
+A source must hold one document per id.
 A document over 65,536 body terms is left out and counted: the result's `corpus` reports
 `documents`, `indexed`, `skipped` and `reindexPending`. `searchRowText` is what one document
 contributes to any index, and `textVersion()` names the algorithm, `SEARCH_TEXT_REVISION` and the

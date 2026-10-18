@@ -13,6 +13,7 @@ import {
   searchRowText,
   SEARCH_GUIDANCE,
   SearchAbortError,
+  SearchBroadQueryError,
   SearchInputError,
   SearchLimitError,
   SEARCH_LIMITS,
@@ -141,6 +142,86 @@ test("a page of long hits that would pass the answer budget ends early with a cu
     walked,
     documents.map((document) => document.id),
   );
+
+  // A budget the first page cannot meet cuts it below the page limit, with a cursor at the cut.
+  const budget = 8 * 1024;
+  const unbudgeted = await searchDocuments(source, { query, limit: 50 });
+  assert.ok(utf8(JSON.stringify(unbudgeted)) > budget);
+  const cut: string[] = [];
+  const sizes: number[] = [];
+  cursor = undefined;
+  do {
+    const answer = await searchDocuments(source, { query, limit: 50, ...(cursor ? { cursor } : {}) }, {}, undefined, {
+      maxResultBytes: budget,
+    });
+    const bytes = utf8(JSON.stringify(answer));
+    assert.ok(bytes <= budget, `${bytes} bytes`);
+    sizes.push(answer.hits.length);
+    cut.push(...answer.hits.map((hit) => hit.id));
+    cursor = answer.nextCursor;
+  } while (cursor);
+  assert.ok(sizes[0]! > 1 && sizes[0]! < 50, `first page held ${sizes[0]} hits`);
+  assert.deepEqual(cut, documents.map((document) => document.id), "the cut pages walk the unbudgeted order");
+  // One hit larger than the budget alone is still answered, one at a time, with a cursor.
+  const tiny = await searchDocuments(source, { query, limit: 50 }, {}, undefined, { maxResultBytes: 500 });
+  assert.equal(tiny.hits.length, 1);
+  assert.ok(utf8(JSON.stringify(tiny)) > 500);
+  assert.equal(tiny.hits[0]!.id, unbudgeted.hits[0]!.id);
+  assert.ok(tiny.nextCursor);
+});
+
+test("a term in a document's type and tags scores the type and tag weights, and the hit carries its fields", async () => {
+  const source = memorySearchSource(
+    [
+      doc("notes/log", { title: "Lock log", type: "Field Note", tags: ["canal", "history"], description: "Daily." }, "nothing"),
+      doc("notes/plain", { title: "Plain" }, "field canal"),
+    ],
+    { key: "k" },
+  );
+  const answer = await searchDocuments(source, { query: "field canal" });
+  assert.deepEqual(answer.hits, [
+    {
+      id: "notes/log",
+      version: "v:notes/log",
+      title: "Lock log",
+      type: "Field Note",
+      tags: ["canal", "history"],
+      // "field" in the type (250) and "canal" in a tag (250).
+      score: 500,
+      matchedTerms: [
+        { term: "field", fields: ["type"] },
+        { term: "canal", fields: ["tag"] },
+      ],
+      excerpt: "Daily.",
+    },
+    {
+      id: "notes/plain",
+      version: "v:notes/plain",
+      title: "Plain",
+      tags: [],
+      // One body occurrence of each term (10 each).
+      score: 20,
+      matchedTerms: [
+        { term: "field", fields: ["body"] },
+        { term: "canal", fields: ["body"] },
+      ],
+      excerpt: "field canal",
+    },
+  ]);
+  assert.ok(!("type" in answer.hits[1]!));
+});
+
+test("after the automatic fallback the excerpt centres on the relaxed terms, not the conversational words", async () => {
+  const filler = "Filler words about weather and boats. ".repeat(14);
+  const body = `The keeper wrote this note. ${filler}The lockkeeper logged every boat.`;
+  assert.ok(utf8(body.slice(0, body.indexOf("lockkeeper"))) > SEARCH_LIMITS.excerptBytes);
+  const source = memorySearchSource([doc("notes/keeper", { title: "Keeper" }, body)], { key: "k" });
+  const answer = await searchDocuments(source, { query: "what is the lockkeeper zzzz" });
+  assert.equal(answer.query.fallbackUsed, true);
+  assert.deepEqual(answer.query.terms, ["lockkeeper", "zzzz"]);
+  assert.equal(answer.hits.length, 1);
+  assert.match(answer.hits[0]!.excerpt, /lockkeeper/u);
+  assert.doesNotMatch(answer.hits[0]!.excerpt, /^The keeper wrote/u);
 });
 
 test("facets count type and tags over every hit, most frequent first, at most 50 values", async () => {
@@ -269,8 +350,9 @@ test("a corpus over an index limit or a host bound is refused whole, with the bi
   memorySearchSource(documents, { key: "k", maxSourceBytes: 269 });
   const over = (options: Parameters<typeof memorySearchSource>[1]) => () => memorySearchSource(documents, options);
   assert.throws(over({ key: "k", maxSourceBytes: 268 }), (error: unknown) => {
-    assert.ok(error instanceof SearchLimitError);
+    assert.ok(error instanceof SearchLimitError && !(error instanceof SearchBroadQueryError));
     assert.deepEqual([error.limit, error.max, error.actual], ["maxSourceBytes", 268, 269]);
+    assert.equal(error.message, "The search corpus exceeds its maxSourceBytes limit.");
     return true;
   });
   assert.throws(over({ key: "k", maxDocuments: 1 }), { name: "SearchLimitError", limit: "maxDocuments" });
@@ -283,6 +365,25 @@ test("a corpus over an index limit or a host bound is refused whole, with the bi
   });
   for (const options of [{ key: "" }, { key: "k", maxSourceBytes: 0 }, { key: "k", maxDocuments: 1.5 }])
     assert.throws(over(options as never), TypeError, JSON.stringify(options));
+});
+
+test("two documents under one id are refused, since text() answers one document per id", () => {
+  const twice = [doc("notes/a", {}, "alpha in the first copy"), { ...doc("notes/a", {}, "alpha in the second copy"), version: "v2" }];
+  assert.throws(() => memorySearchSource(twice, { key: "k" }), {
+    name: "TypeError",
+    message: "memorySearchSource needs one document per id",
+  });
+  memorySearchSource([twice[0]!, doc("notes/b", {}, "alpha")], { key: "k" });
+});
+
+test("type, tag and prefix filters must be well-formed text, so every source can bind them", async () => {
+  const source = memorySearchSource(parity.documents, { key: "parity" });
+  for (const filters of [{ type: "Note\uD800" }, { tag: "\uDC00blue" }, { prefix: "notes/\uD83D" }]) {
+    assert.equal((await refusal(searchDocuments(source, { query: "alpha", ...filters }))).reason, "filter", JSON.stringify(filters));
+    assert.throws(() => validateSearchRequest({ query: "alpha", ...filters }), { reason: "filter" });
+  }
+  // A surrogate pair is one well-formed character.
+  assert.equal((await searchDocuments(source, { query: "alpha", tag: "\uD83D\uDC1D" })).total, 0);
 });
 
 test("cancellation rejects a build and a search; a host check stops them as it throws", async () => {
@@ -489,7 +590,11 @@ test("a request whose terms hold more instances than maxEvidenceInstances is ref
     assert.equal(batch.volume, expected, terms.join(" "));
     // Filters do not change the volume; the bound empties the walk.
     assert.equal((await source.evidence(terms, { type: "Note" }, { maxInstances: 1 })).volume, expected);
-    if (expected > 0) assert.deepEqual((await source.evidence(terms, {}, { maxInstances: expected - 1 })).documents, []);
+    if (expected > 0) {
+      assert.deepEqual((await source.evidence(terms, {}, { maxInstances: expected - 1 })).documents, []);
+      // At the bound exactly the source still walks: only a volume above it is refused.
+      assert.ok((await source.evidence(terms, {}, { maxInstances: expected })).documents.length > 0, terms.join(" "));
+    }
   }
   const echo = (await source.evidence(["echo"], {}, { maxInstances: 1_000 })).documents;
   // 30 body occurrences capped at 20, and 3; the evidence carries the capped body count.
@@ -505,7 +610,9 @@ test("a request whose terms hold more instances than maxEvidenceInstances is ref
   await assert.rejects(
     searchDocuments(source, { query: "echo" }, {}, undefined, { maxEvidenceInstances: 22 }),
     (error: unknown) => {
-      assert.ok(error instanceof SearchLimitError);
+      // A broad query is its own type, still a SearchLimitError, so a kernel can tell it from a corpus over a bound.
+      assert.ok(error instanceof SearchBroadQueryError && error instanceof SearchLimitError);
+      assert.equal(error.name, "SearchBroadQueryError");
       assert.deepEqual([error.limit, error.max, error.actual], ["maxEvidenceInstances", 22, 23]);
       assert.equal(error.message, SEARCH_GUIDANCE.broad);
       return true;

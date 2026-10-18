@@ -102,7 +102,7 @@ export function searchRowText(document: SearchDocumentV1): SearchRowTextV1 {
 // split tokens, and characters from recent Unicode versions (Glagolitic U+2C2F and U+2C5F from 14.0,
 // U+1E030 from 15.0, Cyrillic TJE U+1C89 and U+1C8A from 16.0), so a runtime whose Unicode tables
 // differ prints another fingerprint.
-const FINGERPRINT_SAMPLE = Object.freeze([
+export const FINGERPRINT_SAMPLE = Object.freeze([
   "ﬁ ﬂ ＡＢ ½ ℀ ㎃ ① Ⅸ ⁵ µ ㍿ ｶ ﾞ",
   "café Å Å ñ 가 क़",
   "ΟΔΟΣ Σίσυφος ǅ Ǆ İ ẞ Ꭰ ꭰ Ა Ⴀ Ꙁ",

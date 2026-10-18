@@ -39,6 +39,8 @@ test("the parity fixture is the recorded portal-webmcp 0.3.1 golden, byte for by
 
 test("the memory source indexes, ranks, scores and excerpts the parity corpus exactly as portal-webmcp 0.3.1", async () => {
   const source = memorySearchSource(parity.documents, { key: "parity" });
+  const byId = new Map(parity.documents.map((document) => [document.id, document]));
+  const seen = new Set<string>();
   // The lazy identity is Portal's, byte for byte: it hashes every body occurrence's byte range.
   assert.equal(source.indexDigest, parity.indexDigest);
   for (const { request, expected } of parity.cases) {
@@ -54,5 +56,30 @@ test("the memory source indexes, ranks, scores and excerpts the parity corpus ex
     // Byte identity, member order included.
     assert.equal(JSON.stringify(recorded), JSON.stringify(expected), label);
     assert.equal(answer.corpus.documents, parity.documents.length, label);
+    // The members the golden does not store are pure functions of the fixture document's frontmatter.
+    for (const hit of answer.hits) {
+      const document = byId.get(hit.id)!;
+      const { title, type, tags } = document.frontmatter;
+      assert.deepEqual(
+        { version: hit.version, title: hit.title, type: hit.type, tags: hit.tags },
+        {
+          version: document.version,
+          title: typeof title === "string" ? title : undefined,
+          type: typeof type === "string" ? type : undefined,
+          tags: Array.isArray(tags) ? tags.filter((tag) => typeof tag === "string") : [],
+        },
+        `${label} ${hit.id}`,
+      );
+      assert.equal("title" in hit, typeof title === "string", `${label} ${hit.id} title member`);
+      assert.equal("type" in hit, typeof type === "string", `${label} ${hit.id} type member`);
+      for (const [member, present] of [
+        ["title", hit.title !== undefined],
+        ["type", hit.type !== undefined],
+        ["tags", hit.tags.length > 0],
+      ] as const)
+        seen.add(`${member}:${present}`);
+    }
   }
+  // The table reaches hits with and without each of those members.
+  assert.deepEqual([...seen].sort(), ["tags:false", "tags:true", "title:false", "title:true", "type:false", "type:true"]);
 });

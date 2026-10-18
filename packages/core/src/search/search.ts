@@ -20,7 +20,7 @@ import {
   type SearchResultV1,
   type SearchStopV1,
 } from "./contract.js";
-import { SearchInputError, SearchLimitError, stopIfAsked } from "./errors.js";
+import { SearchBroadQueryError, SearchInputError, stopIfAsked } from "./errors.js";
 import { base64UrlDecode, base64UrlEncode, canonicalJson } from "./identity.js";
 import { excerptOf, facetsOf, rankEvidence } from "./rank.js";
 import type { SearchSource, SearchTextV1 } from "./source.js";
@@ -43,9 +43,13 @@ export interface SearchOptionsV1 {
 const CURSOR_VERSION = 1;
 const REQUEST_MEMBERS = new Set(["query", "match", "type", "tag", "prefix", "limit", "cursor", "facets"]);
 
+/** A lone surrogate: matched by code unit in memory, but it has no UTF-8 form a native index can bind. */
+const LONE_SURROGATE = /[\uD800-\uDFFF]/u;
+
 function optionalFilter(value: unknown, maxBytes: number = SEARCH_LIMITS.maxFilterBytes): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || value === "" || utf8ByteLength(value) > maxBytes) throw new SearchInputError("filter");
+  if (typeof value !== "string" || value === "" || utf8ByteLength(value) > maxBytes || LONE_SURROGATE.test(value))
+    throw new SearchInputError("filter");
   return value;
 }
 
@@ -171,9 +175,9 @@ function decodeCursor(cursor: unknown, binding: string, total: number): number {
 
 /**
  * Runs one request over a source. Throws `SearchInputError` for a request outside the contract
- * (including a cursor minted for another corpus, scope, query, match or filters), `SearchLimitError`
- * when the request's terms exceed `maxEvidenceInstances` or as the source does, and stops as `stop`
- * asks.
+ * (including a cursor minted for another corpus, scope, query, match or filters),
+ * `SearchBroadQueryError` when the request's terms exceed `maxEvidenceInstances`, `SearchLimitError`
+ * as the source does, and stops as `stop` asks.
  */
 export async function searchDocuments(
   source: SearchSource,
@@ -199,7 +203,7 @@ export async function searchDocuments(
   )
     throw new TypeError("the search source answered a malformed evidence batch");
   // The same bound on every source, whether or not the source stopped before its walk.
-  if (batch.volume > maxInstances) throw new SearchLimitError("maxEvidenceInstances", maxInstances, batch.volume);
+  if (batch.volume > maxInstances) throw new SearchBroadQueryError(maxInstances, batch.volume);
 
   let effectiveMatch: SearchMatchModeV1 = requestedMatch === "any" ? "any" : "all";
   let effectiveQuery = query;

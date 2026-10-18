@@ -28,7 +28,13 @@ export {
   type SearchResultV1,
   type SearchStopV1,
 } from "./contract.js";
-export { SearchAbortError, SearchInputError, SearchLimitError, type SearchInputReason } from "./errors.js";
+export {
+  SearchAbortError,
+  SearchBroadQueryError,
+  SearchInputError,
+  SearchLimitError,
+  type SearchInputReason,
+} from "./errors.js";
 export {
   normalize,
   normalizeQuery,

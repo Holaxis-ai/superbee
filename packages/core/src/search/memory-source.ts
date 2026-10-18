@@ -114,7 +114,8 @@ function indexBody(body: string, maxTermsPerDocument: number): Map<string, BodyT
 /**
  * Builds the in-memory source over a complete corpus. The corpus limits (SEARCH_LIMITS: documents,
  * source bytes) and the host's bounds throw `SearchLimitError`; a document over the per-document
- * term cap is skipped and counted; a stop throws as its check does.
+ * term cap is skipped and counted; two documents with one id throw `TypeError`; a stop throws as
+ * its check does.
  */
 export function memorySearchSource(
   documents: readonly SearchDocumentV1[],
@@ -133,9 +134,13 @@ export function memorySearchSource(
   stopIfAsked(stop);
   if (documents.length > maxDocuments.max) limitExceeded(maxDocuments.name, maxDocuments.max, documents.length);
   const rows: IndexedDocument[] = [];
+  const ids = new Set<string>();
   let sourceBytes = 0;
   for (const [position, document] of documents.entries()) {
     if (position % SIGNAL_INTERVAL === 0) stopIfAsked(stop);
+    // text() answers by id, so two documents under one id would share one excerpt.
+    if (ids.has(document.id)) throw new TypeError("memorySearchSource needs one document per id");
+    ids.add(document.id);
     // Check the total source budget before allocating postings for this document.
     const documentBytes = documentSourceBytes(document);
     if (sourceBytes + documentBytes > maxSourceBytes.max) {
@@ -174,8 +179,7 @@ export function memorySearchSource(
     });
   }
   Object.freeze(rows);
-  const byId = new Map<string, IndexedDocument>();
-  for (const row of rows) if (!byId.has(row.indexedId)) byId.set(row.indexedId, row);
+  const byId = new Map(rows.map((row) => [row.indexedId, row]));
   let digest: `sha256:${string}` | undefined;
   const size = Object.freeze({
     documents: documents.length,

@@ -6,6 +6,9 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
+import { createHash } from "node:crypto";
+
+import { FINGERPRINT_SAMPLE } from "../src/search/row-text.js";
 import {
   BODY_OCCURRENCE_CAP,
   memorySearchSource,
@@ -81,4 +84,14 @@ test("the text version names the algorithm, the text revision and this runtime's
   assert.equal(normalizerFingerprint(), fingerprint);
   assert.equal(textVersion(), `${SEARCH_ALGORITHM}/${SEARCH_TEXT_REVISION}/${fingerprint}`);
   assert.equal(SEARCH_TEXT_REVISION, 1);
+});
+
+test("the fingerprint sample's text is pinned", () => {
+  // The input text, not its normalized form, so a runtime whose Unicode tables differ still prints
+  // another fingerprint. Changing the sample changes textVersion() everywhere and marks every stored
+  // index row for re-derivation: change it only together with a planned backfill.
+  assert.equal(
+    createHash("sha256").update(JSON.stringify(FINGERPRINT_SAMPLE)).digest("hex"),
+    "ecbed22daf459e266fbfc97831264eab6af6814cb0eec93d4434696cb56bbad1",
+  );
 });
