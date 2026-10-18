@@ -289,6 +289,92 @@ one problem across many records raises one Signal.
 `examples/recipes/source-feeds` is an example recipe with the `Source Feed` and `Signal` Kinds a
 connector-backed feed uses.
 
+## Source engine
+
+`@superbee/core/source-engine` is the portable half of the integration source engine: the one
+loop that observes a bound Source Feed for an author's test, a local run or a managed runner. It
+uses no Node globals or builtins and never calls `fetch`; the caller supplies the network as a
+`Transport`.
+
+```ts
+import { MemoryMachineState, fetchIdentity, observeSource } from "@superbee/core/source-engine";
+
+const receipt = await observeSource({
+  connector, bound, profile, spec, transport, state: new MemoryMachineState(),
+  identity: fetchIdentity("Product/1.0 (+https://example.org/about)")!,
+  mode: "incremental", signal: AbortSignal.timeout(60_000),
+  commit: async (page) => {
+    const plan = await planRecordOverlay({ content, ops, policy: bound.policy, changes: page.changes, observedAt: page.observed_at, records: page.records });
+    await applyRecordOverlay(plan, { content, ops, policy: bound.policy, actor: "process:calendar-sync" });
+  },
+});
+```
+
+A `SourceProfile` (`id`, `version`, `kind`, `validateSpec`, `hostsFor`, `observe`) turns a bound
+feed, a cursor and a transport into pages of normalized records: `{ records, nextCursor, more,
+complete }`. It never opens a socket, never sees a credential and never writes. A `Transport`
+answers `{ url, method, headers, body, maxBytes, signal }`; it never follows a redirect and returns
+`{ ok: false, refused: "too_large" }` rather than a truncated body. A credential-injecting
+transport adds its credential only toward the auth kind's credential hosts over https, per URL.
+
+The profile sees the engine's guarded transport, which checks every URL and every redirect hop:
+https only, the lexical address rule (`refusedAddress`: no IP literal, local name, port or
+userinfo), and a host within the profile's `hostsFor` and the connector's credential hosts plus
+keyless `domains`. A `hostsFor` naming any other host refuses the run before a request. A redirect
+never changes host when either side is a credential host. Keyless hosts are read through robots.txt
+(RFC 9309, the declared identity's product token) first. Only `GET` is sent unless `rules.post`
+admits a POST; a GET with a body, a POST redirect, and the headers `authorization`, `cookie`,
+`proxy-authorization`, `host`, `user-agent` and the method overrides are always refused; beyond
+`accept` a header needs `rules.header`, and the validators `if-none-match` and `if-modified-since`
+go out in incremental mode only. The budget counts every request,
+robots.txt and hops included, and the deadline is the caller's `signal`. Statuses map to outcomes:
+401 and 403 `credential_refused` (no retry), 404 and 410 `not_found`, 429 `deferred` with
+`retry_after`, others `provider_unavailable`; `statuses` moves a status between the sets. Any
+refusal or error status stops the run, even when the profile catches the error.
+
+Each page is mapped with `mapRecord`, diffed against the stored records into `RecordChange` rows
+and handed to `commit`; the cursor and the records are stored only after `commit` resolves, and
+`hold` keeps named records where they were so the next observation plans them again. An
+incremental run continues the stored cursor (`resumed` when the last run left its pass open); a
+complete run lists from the start, sends no validator, and stops on a not-modified answer. A pass is a complete observation only when
+it ran in complete mode to its last page within the run, the profile claimed it complete and the
+source is declared `complete`; only then is a listed record's absence counted, and a record is
+`disappeared` after the feed's `missing_threshold` (default 2) of them. A cursor from another
+profile id or version is never handed back. The receipt names the outcome, every request, the
+pass, the stored cursor, the mapping diagnostics and the findings for `planFindings`.
+`MachineState` is the port for the stored state, written with a compare-and-swap;
+`MemoryMachineState` keeps it in memory.
+
+## Source harness
+
+`@superbee/core/source-harness` is how a profile and a transport prove the engine's rules offline.
+It returns rows and problem lists rather than asserting, so any test runner can use it, and it uses
+no Node globals or builtins.
+
+```ts
+import { peerTransport, runSourceFixture, runTransportConformance } from "@superbee/core/source-harness";
+
+const { problems, missing } = await runSourceFixture(fixture, scenarios);
+const rows = await runTransportConformance({ name: "mine", create: (peer, credential) => myTransport(peer, credential) });
+```
+
+`runSourceScenario` replays a scenario's scripted provider answers (`exchanges`, each used once,
+matched on method and URL; a `hang` answer aborts the run's deadline) through `observeSource`,
+writing each committed page through record-overlay over a MemoryBackend bundle built from the
+fixture's documents, with editor edits between runs. `checkScenario` holds the result to the rule
+of its required scenario (`REQUIRED_SCENARIOS`: provider errors, an incomplete page, cursor resume,
+a hostile cursor, disappearance only from complete observations, owned-field conflicts, unmapped
+and empty values, a missing identity, a cross-host redirect and an undeclared host), and fails any
+request to an undeclared host or one the fixture did not script; a name may add a variant
+(`cursor.resume.page-number`). `missingScenarios` lists what a fixture lacks.
+
+`runTransportConformance` is the suite every transport passes against a `ScriptedPeer`, the
+network that records exactly what arrived: the credential reaches its host under its own header
+name (a custom `accessToken` included) and no other host, a redirect is returned unfollowed, a body
+over the bound is refused while one at the bound is returned whole, and behind the engine a
+redirect to another host or a private address reaches nothing. `peerTransport` is a memory
+transport that passes it.
+
 ## Bundle health
 
 `@superbee/core/bundle-health` computes the health report behind `superbee status` from a core

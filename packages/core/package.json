@@ -51,6 +51,14 @@
       "types": "./dist/connectors.d.ts",
       "default": "./dist/connectors.js"
     },
+    "./source-engine": {
+      "types": "./dist/source-engine/index.d.ts",
+      "default": "./dist/source-engine/index.js"
+    },
+    "./source-harness": {
+      "types": "./dist/source-harness/index.d.ts",
+      "default": "./dist/source-harness/index.js"
+    },
     "./recipe-lifecycle": {
       "types": "./dist/recipe-lifecycle/index.d.ts",
       "default": "./dist/recipe-lifecycle/index.js"

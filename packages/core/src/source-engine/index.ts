@@ -1,0 +1,53 @@
+/**
+ * `@superbee/core/source-engine`: the portable half of the integration source engine.
+ *
+ * A {@link SourceProfile} turns a bound Source Feed, a cursor and a transport into pages of
+ * normalized records; it never opens a socket, never sees a credential and never writes. A
+ * {@link Transport} is the one network port: it never follows a redirect and refuses a body over
+ * its byte bound. {@link observeSource} wraps the transport before a profile sees it and owns the
+ * host guard (every URL and redirect hop within the profile's hosts, the auth kind's credential
+ * hosts and the declared keyless domains, plus the address rule), robots.txt for keyless hosts,
+ * the method rule and header allowlist, the budget and deadline, the status-to-outcome mapping,
+ * the cursor rule (a cursor is stored only after its page commits), completeness, and the diff into
+ * record-overlay changes, with disappearance only from a complete observation.
+ *
+ * Storage-neutral and Worker-free: no Node globals or builtins, and nothing here calls `fetch`.
+ */
+export {
+  canonicalRobotsPath,
+  fetchIdentity,
+  parseRobots,
+  refusedAddress,
+  robotsDecision,
+  robotsRuleMatches,
+} from "./robots.js";
+export type { FetchIdentity, RobotsGroup } from "./robots.js";
+export { DEFAULT_SOURCE_BUDGET, DEFAULT_STATUS_RULES, sourceHostSet } from "./guard.js";
+export type { HostSet } from "./guard.js";
+export { DEFAULT_MISSING_THRESHOLD, MAX_CURSOR_CHARS, observeSource, unsupportedContent } from "./observe.js";
+export { isSourceState, MachineStateConflict, MemoryMachineState } from "./machine-state.js";
+export type { MachineState, RecordEntry, SourceState } from "./machine-state.js";
+export type {
+  CommitResult,
+  HttpMethod,
+  NormalizedRecord,
+  ObserveContext,
+  ObservePage,
+  ObserveSourceOptions,
+  PageCommit,
+  ProfileDiagnostic,
+  ProfileRequest,
+  ProfileResponse,
+  ProfileTransport,
+  RequestRules,
+  SourceBudget,
+  SourceOutcome,
+  SourceProfile,
+  SourceRequestRow,
+  SourceRunReceipt,
+  SpecResult,
+  StatusRules,
+  Transport,
+  TransportRequest,
+  TransportResult,
+} from "./types.js";
