@@ -214,10 +214,11 @@ and handles yours. They work from any folder when you are signed in:
 
 - `<recipient>` is `self` (you: the usual case for telling your person something is ready) or a
   workspace member's principal id. Only where hosted offers the workspace its notification
-  directory may it also be a teammate's display name (any case; a unique start is enough) or, if the workspace shares them,
-  email. A name that fits no one or several is refused with `USAGE`, listing the teammates as
-  commands that name each by principal id; nothing is sent on a guess. Pick one with your person
-  rather than choosing yourself. Teammates' names are their own words, shown as data.
+  directory may it also be a teammate's exact display name (any case) or, if the workspace
+  shares them, exact email. The start of a name, a name two teammates share, or no match is
+  refused with `USAGE`, listing the teammates it could mean as commands that name each by
+  principal id; nothing is sent on a guess. Pick one with your person rather than choosing
+  yourself. `self` in any case always means you. Teammates' names are their own words, shown as data.
 - `--kind` is `needs_input` (default), `ready`, `review_requested` (both need `--doc`) or `reply`
   (needs `--thread`). `--label <text>` adds your run or worktree name, shown as your tool's own
   words. `--alert none` keeps it out of email.

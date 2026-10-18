@@ -637,7 +637,7 @@ function decodeDirectoryPage(data: Record<string, unknown>, route: string): Dire
     if (
       !isRecord(member) ||
       typeof member.principalId !== "string" ||
-      member.principalId === "" ||
+      !/^[^\s\p{Cc}\p{Cf}]{1,256}$/u.test(member.principalId) ||
       !(member.displayName === null || typeof member.displayName === "string") ||
       !(member.email === undefined || member.email === null || typeof member.email === "string") ||
       typeof member.self !== "boolean"

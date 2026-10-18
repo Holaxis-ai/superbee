@@ -376,6 +376,7 @@ test("directory posts members.directory.v1 in the workspace and decodes a page; 
   assert.equal(sent[0]!.headers.get("superbee-workspace"), TENANT);
   for (const bad of [
     { members: [{ principalId: "", displayName: "x", self: false }], nextAfter: null },
+    { members: [{ principalId: "p:x\u001b", displayName: "x", self: false }], nextAfter: null },
     { members: [{ principalId: "p:x", displayName: 7, self: false }], nextAfter: null },
     { members: [{ principalId: "p:x", displayName: "x", email: 3, self: false }], nextAfter: null },
     { members: [{ principalId: "p:x", displayName: "x" }], nextAfter: null },
@@ -410,7 +411,7 @@ test("readDirectory follows nextAfter to the last page, and says when it stopped
   assert.equal(stuck.sent.length, 2);
 });
 
-test("matchDirectoryMember: principal id, email when shared, exact name in any case, then a unique start; never a guess", () => {
+test("matchDirectoryMember: principal id, email when shared, exact name in any case; the start of a name only suggests; never a guess", () => {
   const members = [
     member("person:ana", "Ana Lopez", { email: "Ana@Example.com" }),
     member("person:anna", "Anna  Berg", { email: "anna@example.com" }),
@@ -425,12 +426,18 @@ test("matchDirectoryMember: principal id, email when shared, exact name in any c
   assert.deepEqual(by("nobody@example.com"), { outcome: "none", emails: true });
   assert.deepEqual(by("  ana LOPEZ "), { outcome: "matched", member: members[0], by: "name" });
   assert.deepEqual(by("anna berg"), { outcome: "matched", member: members[1], by: "name" }, "spacing folds");
-  assert.deepEqual(by("anna"), { outcome: "matched", member: members[1], by: "name_prefix" });
-  assert.deepEqual(by("an"), { outcome: "ambiguous", by: "name_prefix", candidates: [members[0], members[1]] });
+  assert.deepEqual(by("anna"), { outcome: "prefix", candidates: [members[1]] }, "a unique start is a suggestion, not a match");
+  assert.deepEqual(by("an"), { outcome: "prefix", candidates: [members[0], members[1]] });
   assert.deepEqual(by("SAM"), { outcome: "ambiguous", by: "name", candidates: [members[2], members[3]] }, "an exact tie is ambiguous, not the first");
   assert.deepEqual(by("zed"), { outcome: "matched", member: members[5], by: "name" }, "format characters do not count");
   assert.deepEqual(by("bob"), { outcome: "none", emails: true });
   // The host shares no emails: an address cannot match, and says so.
   const noEmails = members.map(({ email: _email, ...rest }) => rest);
   assert.deepEqual(matchDirectoryMember(noEmails, "ana@example.com"), { outcome: "none", emails: false });
+});
+
+test("matchDirectoryMember: an id with @ is matched as an id first, and takes part in every tie", () => {
+  const members = [member("person:alice@acme.com", "Alice Smith"), member("person:7f00", "Alice Jones")];
+  assert.deepEqual(matchDirectoryMember(members, "person:alice@acme.com"), { outcome: "matched", member: members[0], by: "principal_id" });
+  assert.deepEqual(matchDirectoryMember(members, "alice"), { outcome: "prefix", candidates: members });
 });

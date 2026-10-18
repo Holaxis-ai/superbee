@@ -637,7 +637,7 @@ async function team(offered: boolean, members: AttentionFake["directory"] = TEAM
 const sends = (h: Harness) => h.attention.calls.filter((call) => call.operationId === "attention.request.v1");
 const directoryReads = (h: Harness) => h.attention.calls.filter((call) => call.operationId === "members.directory.v1");
 
-test("where hosted offers the directory, a teammate's exact name (any case) or a unique start resolves to one principal", async () => {
+test("where hosted offers the directory, a teammate's exact name (any case) resolves to one principal; a unique start only offers their command", async () => {
   const h = await team(true);
   const exact = await json(h, notify, ["  ana LOPEZ ", "please look"]);
   assert.deepEqual(sends(h)[0]!.body.recipient, { kind: "principal", principalId: "person:ana" });
@@ -645,9 +645,13 @@ test("where hosted offers the directory, a teammate's exact name (any case) or a
   assert.equal(exact.matched_by, "name");
   assert.deepEqual(directoryReads(h)[0]!.body, { limit: 100 });
   assert.equal(directoryReads(h)[0]!.headers.get("superbee-workspace"), TENANT);
-  const prefix = await json(h, notify, ["Anna", "hi"]);
-  assert.deepEqual(sends(h)[1]!.body.recipient, { kind: "principal", principalId: "person:anna" });
-  assert.equal(prefix.matched_by, "name_prefix");
+  const prefix = await rejects(() => run(h, notify, ["Anna", "hi"]));
+  assert.equal(prefix.code, "USAGE");
+  assert.equal(prefix.details?.reason, "recipient_not_exact");
+  assert.equal(prefix.details?.matched_by, "name_prefix");
+  assert.deepEqual(prefix.details?.candidates, [{ principal: "person:anna", name: "Anna Berg" }]);
+  assert.match((prefix.details?.commands as string[])[0]!, /notify person:anna hi --dir /);
+  assert.equal(sends(h).length, 1, "the start of a name never sends");
   // Your own name resolves to you.
   const me = await json(h, notify, ["pat doe", "note to self"]);
   assert.equal(me.recipient, `self (${PRINCIPAL})`);
@@ -658,7 +662,7 @@ test("a name that fits several teammates or none is refused, listing them as rea
   const ambiguous = await rejects(() => run(h, notify, ["an", "hi"]));
   assert.equal(ambiguous.code, "USAGE");
   assert.equal(ambiguous.details?.reason, "recipient_ambiguous");
-  assert.match(ambiguous.message, /'an' matches 2 teammates; name one by principal id/);
+  assert.match(ambiguous.message, /'an' starts 2 teammates' names and names none exactly; name one by principal id/);
   assert.deepEqual(ambiguous.details?.candidates, [
     { principal: "person:ana", name: "Ana Lopez" },
     { principal: "person:anna", name: "Anna Berg" },
@@ -761,4 +765,45 @@ test("a send by name with no answer is resent by the principal it resolved to, s
   const error = await rejects(() => run(h, notify, ["Ana Lopez", "hi"]));
   assert.equal(error.code, "TRANSIENT");
   assert.match(error.help ?? "", new RegExp(`notify person:ana hi --ticket ${String(error.details?.ticket)} --dir `));
+});
+
+test("self in any case or spacing is you, never a teammate named Self or Selfridge", async () => {
+  const h = await team(true, [...TEAM, { principalId: "person:sr", displayName: "Selfridge", self: false }, { principalId: "person:self-named", displayName: "Self", self: false }]);
+  for (const word of ["Self", "SELF", "self "]) {
+    const record = await json(h, notify, [word, "note to me"]);
+    assert.equal(record.recipient, `self (${PRINCIPAL})`, word);
+  }
+  assert.ok(sends(h).every((call) => (call.body.recipient as { principalId: string }).principalId === PRINCIPAL));
+  assert.equal(directoryReads(h).length, 0, "self is never looked up");
+});
+
+test("a principal id with @ is an id: it takes part in every tie, and is sent as is with or without the directory", async () => {
+  const alices = [
+    { principalId: "person:alice@acme.com", displayName: "Alice Smith", self: false },
+    { principalId: "person:7f00", displayName: "Alice Jones", self: false },
+  ];
+  const h = await team(true, alices);
+  const error = await rejects(() => run(h, notify, ["alice", "hi"]));
+  assert.equal(error.code, "USAGE");
+  assert.equal(error.details?.reason, "recipient_ambiguous");
+  assert.deepEqual((error.details?.candidates as Array<{ principal: string }>).map((c) => c.principal).sort(), ["person:7f00", "person:alice@acme.com"]);
+  assert.equal(sends(h).length, 0);
+  // Two members with one exact name, one of them an id with @: still a tie.
+  const twins = await team(true, [alices[0]!, { principalId: "person:7f01", displayName: "alice smith", self: false }]);
+  assert.equal((await rejects(() => run(twins, notify, ["Alice Smith", "hi"]))).details?.reason, "recipient_ambiguous");
+  for (const offered of [true, false]) {
+    const a = await team(offered, alices);
+    await run(a, notify, ["person:alice@acme.com", "hi"]);
+    assert.deepEqual(sends(a)[0]!.body.recipient, { kind: "principal", principalId: "person:alice@acme.com" }, String(offered));
+    assert.equal(directoryReads(a).length, 0);
+  }
+});
+
+test("a one-letter start of a name does not send: notify i offers İrem Kaya's command", async () => {
+  const h = await team(true, [{ principalId: "person:irem", displayName: "İrem Kaya", self: false }]);
+  const error = await rejects(() => run(h, notify, ["i", "hi"]));
+  assert.equal(error.code, "USAGE");
+  assert.equal(error.details?.reason, "recipient_not_exact");
+  assert.match((error.details?.commands as string[])[0]!, /notify person:irem hi --dir /);
+  assert.equal(sends(h).length, 0);
 });

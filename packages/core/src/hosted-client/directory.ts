@@ -1,8 +1,9 @@
 // Finding a teammate in a hosted workspace's notification directory (decision
 // notification-directory-2026-10-17): reading every page, and the one matching rule every client
 // uses to turn what a person typed (a principal id, an email, a name) into one member, or into a
-// refusal that names the candidates. A match never guesses: two members that fit equally are
-// ambiguous, and the caller asks again with a principal id.
+// refusal that names the candidates. A match never guesses: only an exact principal id, email or
+// name names a member; two that fit equally are ambiguous, and the start of a name only suggests
+// members, because someone who turned the directory off is not there to make it ambiguous.
 import { stripHostControls } from "../host-text.js";
 import { DIRECTORY_PAGE_MAX, type DirectoryMember, type HostedInbox } from "./inbox.js";
 
@@ -36,12 +37,14 @@ export async function readDirectory(inbox: Pick<HostedInbox, "directory">, optio
   return { members, complete: false };
 }
 
-/** How a member matched: its principal id, its email, its whole name, or the start of its name. */
-export type DirectoryMatchBy = "principal_id" | "email" | "name" | "name_prefix";
+/** How a member matched exactly: its principal id, its email, or its whole name. */
+export type DirectoryMatchBy = "principal_id" | "email" | "name";
 
 export type DirectoryMatch =
   | { readonly outcome: "matched"; readonly member: DirectoryMember; readonly by: DirectoryMatchBy }
   | { readonly outcome: "ambiguous"; readonly by: Exclude<DirectoryMatchBy, "principal_id">; readonly candidates: readonly DirectoryMember[] }
+  /** No exact match, but these names start with the query: suggestions, never a recipient. */
+  | { readonly outcome: "prefix"; readonly candidates: readonly DirectoryMember[] }
   /** `emails` false: the query was an email and the directory shares none, so it cannot match one. */
   | { readonly outcome: "none"; readonly emails: boolean };
 
@@ -56,8 +59,8 @@ export function directoryNameKey(value: string): string {
 /**
  * The one member `query` names, by these rules in order: an exact principal id; with an `@`, an
  * exact email (any case) when the directory shares emails; else an exact display name (any case,
- * spacing folded), then a unique start of one. Several at the first rule that matches any are
- * ambiguous; nothing at every rule is none.
+ * spacing folded). Several at the first rule that matches any are ambiguous. With no exact name,
+ * the names that start with the query are returned as `prefix` suggestions; nothing at all is none.
  */
 export function matchDirectoryMember(members: readonly DirectoryMember[], query: string): DirectoryMatch {
   const byId = members.find((member) => member.principalId === query);
@@ -75,8 +78,12 @@ export function matchDirectoryMember(members: readonly DirectoryMember[], query:
   const named = members.filter((member): member is DirectoryMember & { displayName: string } => member.displayName !== null);
   return (
     settle(named.filter((member) => directoryNameKey(member.displayName) === key), "name") ??
-    settle(named.filter((member) => directoryNameKey(member.displayName).startsWith(key)), "name_prefix") ?? { outcome: "none", emails: true }
+    suggest(named.filter((member) => directoryNameKey(member.displayName).startsWith(key))) ?? { outcome: "none", emails: true }
   );
+}
+
+function suggest(found: readonly DirectoryMember[]): DirectoryMatch | null {
+  return found.length === 0 ? null : { outcome: "prefix", candidates: found };
 }
 
 function settle(found: readonly DirectoryMember[], by: Exclude<DirectoryMatchBy, "principal_id">): DirectoryMatch | null {
