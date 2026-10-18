@@ -3,8 +3,8 @@
  *
  * A Connector is a `type: Connector` document under `connectors/` that says what an integration
  * is: the credential kind (whose hosts come only from core's {@link AUTH_PROVIDERS} table, never
- * from the document), keyless `domains`, sources that map normalized records onto one target
- * Kind's fields, and actions and events as declared shapes. The document holds no authority:
+ * from the document), keyless `domains`, `record_sources` that map normalized records onto one
+ * target Kind's fields, and actions and events as declared shapes. The document holds no authority:
  * nothing here fetches, executes or receives. {@link parseConnectorDoc} is the one parser, every
  * nested block is closed by {@link CONNECTOR_KEYS}, and {@link connectorPinDigest} reads the same
  * table, so a key cannot be accepted without being pinned.
@@ -57,6 +57,13 @@ export const CONNECTOR_KEYS = Object.freeze({
   signature: Object.freeze(["scheme", "header"]),
 }) satisfies Readonly<Record<string, readonly string[]>>;
 export type ConnectorBlock = keyof typeof CONNECTOR_KEYS;
+
+/**
+ * The top-level keys a Connector declares beside OKF's `type`, `title` and `description`. None may
+ * be an OKF standard or managed field of either edition: OKF v0.2 reserves `sources` for
+ * provenance, which is why the declaration's sources live under `record_sources`.
+ */
+export const CONNECTOR_DOCUMENT_KEYS = Object.freeze(["version", "auth", "domains", "record_sources", "actions", "events"] as const);
 
 export const CONNECTOR_ERROR_CODES = Object.freeze([
   "CONNECTOR_MALFORMED",
@@ -138,6 +145,7 @@ export interface Connector {
   version?: string;
   auth: ConnectorAuth;
   domains: string[];
+  /** The document's `record_sources`. */
   sources: ConnectorSource[];
   actions: ConnectorAction[];
   events: ConnectorEvent[];
@@ -250,8 +258,8 @@ const keyHoldsSecret = (key: string): boolean =>
  */
 function keysAreDataNames(path: Path): boolean {
   const n = path.length;
-  return (n === 3 && path[0] === "sources" && path[2] === "fields")
-    || (n === 5 && path[0] === "sources" && path[2] === "fields" && path[4] === "values")
+  return (n === 3 && path[0] === "record_sources" && path[2] === "fields")
+    || (n === 5 && path[0] === "record_sources" && path[2] === "fields" && path[4] === "values")
     || (n === 3 && path[0] === "actions" && path[2] === "input")
     || (n === 2 && path[0] === "auth" && path[1] === "permissions");
 }
@@ -524,7 +532,7 @@ function parseMapping(field: string, raw: unknown, at: Path, errors: Errors): Co
 }
 
 function parseSource(raw: unknown, index: number, errors: Errors): ConnectorSource | undefined {
-  const at = ["sources", index] as const;
+  const at = ["record_sources", index] as const;
   if (!record(raw)) { errors.add("CONNECTOR_MALFORMED", at, "a source must be a mapping"); return undefined; }
   const before = errors.list.length;
   errors.closed("source", raw, at);
@@ -619,7 +627,7 @@ function parseEvent(raw: unknown, index: number, sourceNames: ReadonlySet<string
   return { name: raw.name as string, signature: { scheme: "hmac-sha256", header: signature.header as string }, references: [...seen] };
 }
 
-function duplicates(items: readonly unknown[], block: "sources" | "actions" | "events", what: string, errors: Errors): void {
+function duplicates(items: readonly unknown[], block: "record_sources" | "actions" | "events", what: string, errors: Errors): void {
   const seen = new Set<string>();
   items.forEach((item, index) => {
     const name = record(item) ? item.name : undefined;
@@ -635,7 +643,7 @@ function sourceKindErrors(source: ConnectorSource, index: number, kind: KindConv
   const work = workStateFields(kind, ["0.1", "0.2"]);
   const declared = new Set([...kind.fields.required, ...kind.fields.optional, "title"]);
   for (const [field, mapping] of Object.entries(source.fields)) {
-    const at = ["sources", index, "fields", field];
+    const at = ["record_sources", index, "fields", field];
     if (work.has(field)) { errors.add("CONNECTOR_FIELD_NEVER_OWNED", at, `'${field}' holds the work state of ${kind.governs} and can never be mapped`); continue; }
     if (!declared.has(field)) { errors.add("CONNECTOR_FIELD_UNDECLARED", at, `${kind.governs} does not declare '${field}'`); continue; }
     const allowed = Object.hasOwn(kind.fields.values, field) ? kind.fields.values[field] : undefined;
@@ -685,13 +693,13 @@ export function parseConnectorDoc(doc: OkfDocument, ctx: { kinds?: KindRegistry 
   }
   const auth = parseAuth(fm.auth, errors);
   const domains = parseDomains(fm.domains, auth, errors);
-  const rawSources = list(fm.sources, ["sources"], errors, "sources");
+  const rawSources = list(fm.record_sources, ["record_sources"], errors, "record_sources");
   const rawActions = list(fm.actions, ["actions"], errors, "actions");
   const rawEvents = list(fm.events, ["events"], errors, "events");
   if (rawSources && rawActions && rawEvents && rawSources.length + rawActions.length + rawEvents.length === 0) {
     errors.add("CONNECTOR_MALFORMED", [], "a Connector declares at least one source, action or event");
   }
-  duplicates(rawSources ?? [], "sources", "source", errors);
+  duplicates(rawSources ?? [], "record_sources", "source", errors);
   duplicates(rawActions ?? [], "actions", "action", errors);
   duplicates(rawEvents ?? [], "events", "event", errors);
   const sources = (rawSources ?? []).map((raw, index) => parseSource(raw, index, errors));
@@ -706,7 +714,7 @@ export function parseConnectorDoc(doc: OkfDocument, ctx: { kinds?: KindRegistry 
       if (!source) return;
       const kind = ctx.kinds!.kinds.get(source.target_kind);
       if (kind) errors.list.push(...sourceKindErrors(source, index, kind));
-      else warnings.push({ code: "CONNECTOR_TARGET_KIND_DEFERRED", message: `source '${source.name}' targets ${source.target_kind}, which the given registry does not declare; its Kind rules run against the bundle`, field: pointer(["sources", index, "target_kind"]), severity: "warning" });
+      else warnings.push({ code: "CONNECTOR_TARGET_KIND_DEFERRED", message: `source '${source.name}' targets ${source.target_kind}, which the given registry does not declare; its Kind rules run against the bundle`, field: pointer(["record_sources", index, "target_kind"]), severity: "warning" });
     });
   }
   if (errors.list.length || !auth) return { ok: false, errors: errors.list };
@@ -728,7 +736,7 @@ export function parseConnectorDoc(doc: OkfDocument, ctx: { kinds?: KindRegistry 
 export function checkConnectorAgainstKinds(connector: Connector, kinds: KindRegistry): ConnectorError[] {
   return connector.sources.flatMap((source, index) => {
     const kind = kinds.kinds.get(source.target_kind);
-    if (!kind) return [{ code: "CONNECTOR_TARGET_KIND_INVALID" as const, path: pointer(["sources", index, "target_kind"]), message: `${source.target_kind} is not declared in this bundle` }];
+    if (!kind) return [{ code: "CONNECTOR_TARGET_KIND_INVALID" as const, path: pointer(["record_sources", index, "target_kind"]), message: `${source.target_kind} is not declared in this bundle` }];
     return sourceKindErrors(source, index, kind);
   });
 }
@@ -775,6 +783,7 @@ export function connectorPinDigest(connector: Connector): string {
     // Core's resolution of the provider, so a host joining a row changes every pin on that provider.
     credential_hosts: [...credentialHosts(connector.auth)].sort(),
     domains: [...connector.domains].sort(),
+    // The parsed sources, under the same label whichever document key they were read from.
     sources: byName(connector.sources).map((source) => pinBlock("source", PIN_DEFAULTS.source(source), {
       identity: (v) => pinBlock("identity", v as object),
       fields: mapOf("mapping", PIN_DEFAULTS.mapping),

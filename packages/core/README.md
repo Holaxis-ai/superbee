@@ -253,9 +253,12 @@ const findings = findingsFor(mapped.diagnostics, { source: bound.source.name });
 `auth.kind` is `none`, `token`, `github-app`, `oauth2` or `signed-webhook`. A credential's hosts
 come only from core: `token` and `oauth2` name a row of `AUTH_PROVIDERS`, `github-app` is fixed,
 and `credentialHosts` is the one reader. `domains` lists hosts for keyless fetches and may not
-repeat a credential host. Each source names a catalog `profile`, a `target_kind`, mode `overlay`,
-an identity template (`identity.resource`, an https URL whose placeholders are feed parameters, and
-`identity.id` over record paths), `completeness`, and `fields`: target field to a dotted record
+repeat a credential host. The sources live under `record_sources` (OKF v0.2 reserves `sources` for
+provenance, and `CONNECTOR_DOCUMENT_KEYS` lists every top-level key a Connector adds, none of them
+an OKF field); the parsed `Connector.sources` holds them. Each source names a catalog `profile`, a
+`target_kind`, mode `overlay`, an identity template (`identity.resource`, an https URL whose
+placeholders are feed parameters, and `identity.id` over record paths), `completeness`, and
+`fields`: target field to a dotted record
 path, or to `{ from, values, unmapped }`. Mapping keys are the most a Source Feed may own; never-owned
 fields, managed metadata, work state, the body and list-typed fields are refused. Actions and events
 are declared shapes only. Every nested block is closed by `CONNECTOR_KEYS`; `parseConnectorDoc`

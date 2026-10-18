@@ -458,7 +458,7 @@ test("core/connectors parses, binds, maps and drives record-overlay over MemoryB
     const registry = buildKindRegistry(conventions, [], { okfVersion: "0.2" });
     const parsed = parseConnectorDoc({ id: "connectors/calendar", body: "Prose.\\n", frontmatter: {
       type: "Connector", title: "Calendar", auth: { kind: "none" }, domains: ["calendar.example.org"],
-      sources: [{ name: "events", profile: "ics", target_kind: "Event", identity: { resource: "https://calendar.example.org/{feed}.ics", id: "{uid}" },
+      record_sources: [{ name: "events", profile: "ics", target_kind: "Event", identity: { resource: "https://calendar.example.org/{feed}.ics", id: "{uid}" },
         fields: { title: "summary", event_status: { from: "status", values: { CONFIRMED: "scheduled", CANCELLED: "canceled" } } }, completeness: "complete" }],
     } }, { kinds: registry });
     if (!parsed.ok) throw new Error(JSON.stringify(parsed.errors));
@@ -543,7 +543,7 @@ test("core/source-engine runs a paged observation and core/source-harness passes
     const conformance = await runTransportConformance({ name: "memory", create: (peer, credential) => peerTransport(peer, { credential }) });
     const registry = buildKindRegistry([{ id: "conventions/item", body: "", frontmatter: { type: "Convention", title: "Item", governs: "Item", fields: { required: ["title"] } } }], [], { okfVersion: "0.2" });
     const parsed = parseConnectorDoc({ id: "connectors/items", body: "", frontmatter: { type: "Connector", title: "Items", auth: { kind: "none" }, domains: ["items.example.org"],
-      sources: [{ name: "items", profile: "pages", target_kind: "Item", identity: { resource: "https://items.example.org/{list}", id: "{id}" }, fields: { title: "name" }, completeness: "complete" }] } }, { kinds: registry });
+      record_sources: [{ name: "items", profile: "pages", target_kind: "Item", identity: { resource: "https://items.example.org/{list}", id: "{id}" }, fields: { title: "name" }, completeness: "complete" }] } }, { kinds: registry });
     if (!parsed.ok) throw new Error(JSON.stringify(parsed.errors));
     const bound = bindSourceFeed(parsed.connector, { id: "source-feeds/items", frontmatter: { type: "Source Feed", connector: "connectors/items", source: "items", url: "https://items.example.org/all", owned_fields: ["title"] } }, registry);
     const profile = { id: "pages", version: 1, kind: "generic", validateSpec: (spec) => ({ ok: true, spec }), hostsFor: () => ["items.example.org"],

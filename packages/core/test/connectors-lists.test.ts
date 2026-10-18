@@ -32,7 +32,7 @@ auth:
   kind: none
 domains:
   - tracker.example.org
-sources:
+record_sources:
   - name: issues
     profile: issues
     target_kind: Work Item
@@ -173,8 +173,8 @@ test("a list field maps whole: a values table or a Kind's allowed values on it i
     assert.equal(parsed.ok, false);
     assert.deepEqual(parsed.ok ? [] : parsed.errors.map((e) => [e.code, e.path]), [["CONNECTOR_LIST_FIELD_UNSUPPORTED", path]]);
   };
-  refused(CONNECTOR.replace("      labels: labels\n", "      labels:\n        from: labels\n        values: { Bug: bug }\n"), "/sources/0/fields/labels");
-  refused(CONNECTOR.replace("      labels: labels\n", "      labels: labels\n      topics: topics\n"), "/sources/0/fields/topics");
+  refused(CONNECTOR.replace("      labels: labels\n", "      labels:\n        from: labels\n        values: { Bug: bug }\n"), "/record_sources/0/fields/labels");
+  refused(CONNECTOR.replace("      labels: labels\n", "      labels: labels\n      topics: topics\n"), "/record_sources/0/fields/topics");
   assert.ok(connectorOf(CONNECTOR, kinds).sources[0]!.fields.labels, "a plain list mapping parses");
 });
 
@@ -182,7 +182,7 @@ test("a Kind typing an OKF standard field as a list cannot have it owned as a li
   const kinds = buildKindRegistry([{ id: "conventions/work-item", body: "", frontmatter: { ...WORK_ITEM, fields: { ...WORK_ITEM.fields, optional: [...WORK_ITEM.fields.optional, "description"], types: { ...WORK_ITEM.fields.types, description: "string-list" } } } as unknown as Frontmatter }]);
   const { frontmatter, body } = parseMarkdown(CONNECTOR.replace("      labels: labels\n", "      labels: labels\n      description: summary\n"));
   const parsed = parseConnectorDoc({ id: "connectors/tracker", frontmatter, body } as OkfDocument, { kinds });
-  assert.deepEqual(parsed.ok ? [] : parsed.errors.map((e) => [e.code, e.path]), [["CONNECTOR_LIST_FIELD_UNSUPPORTED", "/sources/0/fields/description"]]);
+  assert.deepEqual(parsed.ok ? [] : parsed.errors.map((e) => [e.code, e.path]), [["CONNECTOR_LIST_FIELD_UNSUPPORTED", "/record_sources/0/fields/description"]]);
 });
 
 // ------------------------------------------------------------------------------------- end to end

@@ -55,7 +55,7 @@ auth:
   kind: none
 domains:
   - calendar.example.org
-sources:
+record_sources:
   - name: events
     profile: ics
     target_kind: Event
