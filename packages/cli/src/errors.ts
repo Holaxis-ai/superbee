@@ -11,6 +11,7 @@
 import { FieldActionError, InvalidInputError, MalformedDocumentError, OkfActorError, RemoteError, VersionConflict } from "@superbee/core";
 import { isBoardGitError, type BoardGitError } from "@superbee/board-git";
 import {
+  ConnectorTargetUnsatisfied,
   RecipeAssetConflict,
   RecipeEditionChanged,
   RecipeEvolutionBlocked,
@@ -309,6 +310,23 @@ const RECIPE_ERROR_BLOCKER_CAP = 20;
  */
 export function cliErrorFromRecipeLifecycle(err: RecipeLifecycleError): CliError {
   if (err instanceof RecipeInputError) return new CliError("USAGE", err.message);
+  if (err instanceof ConnectorTargetUnsatisfied) {
+    return new CliError("USAGE", err.message, {
+      details: {
+        recipe: err.recipe,
+        connector: err.connector,
+        source: err.source,
+        kind: err.kind,
+        code: err.code,
+        ...(err.fields.length > 0 ? { fields: [...err.fields] } : {}),
+      },
+      help: err.code === "CONNECTOR_TARGET_KIND_INVALID"
+        ? `declare the ${err.kind} Kind (install the recipe that declares it), then add this recipe again`
+        : err.code === "CONNECTOR_FIELD_UNDECLARED"
+          ? `declare ${err.fields.join(", ")} on the ${err.kind} Kind, then add this recipe again`
+          : `the Connector's mapping does not fit the ${err.kind} Kind (${err.code}); change the Kind to fit, or use a recipe version whose Connector does`,
+    });
+  }
   if (err instanceof RecipeAssetConflict) {
     return new CliError("ALREADY_EXISTS", err.message, { details: { recipe: err.recipe, key: err.key } });
   }

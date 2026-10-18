@@ -487,3 +487,86 @@ test("T11: a conventions-only recipe governing View or Convention is refused in 
   await rm(source, { recursive: true, force: true });
   await rm(h.home, { recursive: true, force: true });
 });
+
+/** A Connector a recipe may carry (designs/recipe-connectors-2026-10-17, section 5.5). */
+const CONNECTOR_MD = `---
+type: Connector
+title: Calendar
+auth:
+  kind: none
+domains:
+  - calendar.example.org
+record_sources:
+  - name: events
+    profile: ics
+    target_kind: Event
+    mode: overlay
+    identity:
+      resource: "https://calendar.example.org/{feed}.ics"
+      id: "{uid}"
+    fields:
+      title: summary
+    completeness: complete
+---
+A calendar.
+`;
+const CONNECTORS_INSTEAD = "keep this recipe for local and Git bundles until hosted workspaces can enable Connections";
+
+test("allowed: a recipe carrying a Connector is refused with its own reason, ahead of a View, and no publish advice; no other recipe is", async () => {
+  const h = await harness("allowed");
+  const context = { home: h.home, cwd: h.cwd };
+  const connector = (id: string) => ({ doc: { id, frontmatter: { type: "Connector", title: "Calendar" }, body: "" } });
+  const recipeOf = (extra: Record<string, unknown>) => ({
+    id: "feeds",
+    docs: [{ id: "conventions/event", frontmatter: { type: "Convention", title: "Event", governs: "Event" }, body: "" }],
+    pages: [],
+    references: [],
+    ...extra,
+  }) as unknown as Parameters<typeof assertKindOnlyRecipe>[2];
+  const refusal = (words: string, recipe: Parameters<typeof assertKindOnlyRecipe>[2]) => assertKindOnlyRecipe(words, h.folder, recipe, context).then(
+    () => assert.fail("the recipe was not refused"),
+    (caught: unknown) => caught as CliError,
+  );
+  await assertKindOnlyRecipe("recipe add", h.folder, recipeOf({}), context);
+  await assertKindOnlyRecipe("recipe add", h.folder, recipeOf({ connectors: [] }), context);
+  const view = { pages: [{ registry: { id: "views-registry/board" }, entry: "views/board.html" }] };
+  for (const extra of [{ connectors: [connector("connectors/calendar")] }, { ...view, connectors: [connector("connectors/calendar")] }]) {
+    for (const words of ["recipe add", "recipe evolve"]) {
+      const error = await refusal(words, recipeOf(extra));
+      assert.equal(error.code, "FORBIDDEN");
+      assert.deepEqual(
+        [error.details?.reason, error.details?.command, error.details?.connectors, error.details?.connectors_total, error.details?.artifacts],
+        ["connectors", words, "connectors/calendar", "1", undefined],
+      );
+      assert.equal(error.help, CONNECTORS_INSTEAD);
+      assert.equal(error.message, `'${words}' refused in a hosted checkout: recipe 'feeds' declares 1 Connector(s), which need a Connection, and hosted workspaces cannot enable one yet; ${CONNECTORS_INSTEAD}`);
+      assert.doesNotMatch(`${error.message} ${error.help}`, /publish/);
+    }
+  }
+  // A recipe with a View and no Connector keeps its refusal word for word.
+  const viewOnly = await refusal("recipe add", recipeOf(view));
+  assert.deepEqual([viewOnly.details?.reason, viewOnly.help], ["not_syncable", "to design Kinds, work in a local or Git bundle and publish it"]);
+  // Outside a checkout it is not a hosted refusal at all.
+  const plain = await realpath(await mkdtemp(path.join(tmpdir(), "sb-defs-plain-")));
+  await assertKindOnlyRecipe("recipe add", plain, recipeOf({ connectors: [connector("connectors/calendar")] }), context);
+  await rm(h.home, { recursive: true, force: true });
+});
+
+test("allowed: recipe add refuses a connector recipe end to end, before any write, and the checkout holds no connectors/ document", async () => {
+  const h = await harness("allowed");
+  const dir = await mkdtemp(path.join(tmpdir(), "sb-defs-connector-recipe-"));
+  await mkdir(path.join(dir, "conventions"), { recursive: true });
+  await mkdir(path.join(dir, "connectors"), { recursive: true });
+  await writeFile(path.join(dir, "recipe.md"), '---\ntype: Recipe\nid: feeds\ntitle: Feeds\nversion: "1"\nsummary: An Event Kind and a connector.\ncontent_policy: definitions-only\nconnectors:\n  - connectors/calendar.md\n---\n');
+  await writeFile(path.join(dir, "conventions/event.md"), "---\ntype: Convention\ntitle: Event\ngoverns: Event\n---\n# Event\n");
+  await writeFile(path.join(dir, "connectors/calendar.md"), CONNECTOR_MD);
+  for (const sub of ["add", "evolve"]) {
+    await assert.rejects(runRecipe(h, [sub, dir]), (error: unknown) => error instanceof CliError && error.code === "FORBIDDEN" && error.details?.reason === "connectors" && error.details?.connectors === "connectors/calendar");
+  }
+  await assert.rejects(readFile(path.join(h.folder, "conventions/event.md"), "utf8"), "nothing was written");
+  await assert.rejects(readFile(path.join(h.folder, "connectors/calendar.md"), "utf8"), "no connectors/ document");
+  assert.deepEqual((await runSync(h)).rows, []);
+  assert.deepEqual(sentOrder(h), []);
+  await rm(dir, { recursive: true, force: true });
+  await rm(h.home, { recursive: true, force: true });
+});

@@ -27,7 +27,7 @@ import type { HostedSyncClient } from "./client.js";
 import { bindingHostArgument, checkoutMarkerPath, unboundCopyInfo } from "./marker.js";
 import { DEFINITIONS_REFUSED, heldPathReason, type HeldFile, type HeldReason } from "./sync-scan.js";
 
-type RefusalReason = "not_syncable" | "checkout_target";
+type RefusalReason = "not_syncable" | "checkout_target" | "connectors";
 
 interface RefusalRow {
   /** The command words, e.g. `["doc", "delete"]`; `"*"` matches any subcommand. */
@@ -48,6 +48,9 @@ interface RefusalRow {
 }
 
 const KINDS_INSTEAD = "to design Kinds, work in a local or Git bundle and publish it";
+
+/** No publish advice: publishing would deliver the Connector to the host as an ordinary document. */
+const CONNECTORS_INSTEAD = "keep this recipe for local and Git bundles until hosted workspaces can enable Connections";
 
 /** Kinds the host never lets a checkout change (a View or Convention governing convention). */
 const RESERVED_GOVERNS: ReadonlySet<string> = new Set(["View", CONVENTION_TYPE]);
@@ -148,6 +151,9 @@ export function hostedCheckoutRefusal(row: RefusalRow, words: string, binding: C
       help: "choose another folder for a local bundle",
     });
   }
+  if (row.reason === "connectors") {
+    return new CliError("FORBIDDEN", `'${words}' refused in a hosted checkout: ${row.why}; ${row.instead}`, { details, help: row.instead });
+  }
   if (row.definitions && binding.definition_writes === "refused") {
     const { why, instead } = DEFINITIONS_REFUSED;
     return new CliError("FORBIDDEN", `'${words}' refused: ${why} (bundle ${binding.bundle_id} on ${binding.origin}); ${instead}`, {
@@ -194,16 +200,19 @@ export async function assertAllowedInHostedCheckout(command: string, args: reado
  * document is refused before anything is written, naming them; those are published with the
  * bundle. So is a recipe with a convention governing `View` or `Convention`: the host refuses
  * every definition write to such a Kind, so its recipe stamp would land locally and fail at sync.
- * The up-front refusal has already let the command run only for a person the host allows.
+ * A recipe carrying Connectors gets its own refusal, ahead of the others: a Connector needs a
+ * Connection, which no hosted workspace can enable yet, and no hosted component reads one before
+ * then. The up-front refusal has already let the command run only for a person the host allows.
  * Resolves for any other target.
  */
 export async function assertKindOnlyRecipe(
   words: string,
   dir: string | undefined,
-  recipe: Pick<LoadedRecipe, "id" | "docs" | "pages" | "references">,
+  recipe: Pick<LoadedRecipe, "id" | "docs" | "pages" | "references" | "connectors">,
   context: RefusalContext = {},
 ): Promise<void> {
-  const artifacts = [...recipe.docs.map((doc) => doc.id), ...recipe.pages.flatMap((page) => [page.registry.id, page.entry]), ...recipe.references.map((reference) => reference.doc.id)];
+  const connectors = (recipe.connectors ?? []).map((connector) => connector.doc.id);
+  const artifacts = [...recipe.docs.map((doc) => doc.id), ...recipe.pages.flatMap((page) => [page.registry.id, page.entry]), ...recipe.references.map((reference) => reference.doc.id), ...connectors];
   const outside = artifacts.filter((id) => !isConventionId(id));
   const reserved = recipe.docs.filter((doc) => {
     const governs = doc.frontmatter?.governs;
@@ -212,6 +221,14 @@ export async function assertKindOnlyRecipe(
   if (outside.length === 0 && reserved.length === 0) return;
   const binding = await checkoutFor("recipe", dir, context.home ?? homedir(), context.cwd ?? process.cwd());
   if (!binding) return;
+  if (connectors.length > 0) {
+    throw hostedCheckoutRefusal(
+      { words: words.split(" "), reason: "connectors", why: `recipe '${recipe.id}' declares ${connectors.length} Connector(s), which need a Connection, and hosted workspaces cannot enable one yet`, instead: CONNECTORS_INSTEAD },
+      words,
+      binding,
+      { recipe: recipe.id, connectors: connectors.slice(0, 20).join(", "), connectors_total: String(connectors.length) },
+    );
+  }
   if (outside.length === 0) {
     throw hostedCheckoutRefusal(
       { words: words.split(" "), reason: "not_syncable", why: `recipe '${recipe.id}' declares ${reserved.length} Kind(s) governing View or Convention, which the host does not let a checkout change`, instead: KINDS_INSTEAD },

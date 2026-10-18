@@ -37,8 +37,11 @@ Applies a recipe's definitions to the bundle. <name-or-path> is a built-in name 
 with '~' — a local folder literally named 'foo' is reachable only as './foo'). A recipe folder
 is 'recipe.md' (type: Recipe manifest) plus one or more 'conventions/*.md' docs. A portable recipe
 may opt into 'content_policy: definitions-only' and explicitly declare static 'type: Reference'
-docs plus self-contained View registry/HTML pairs; instance data and undeclared files are then
-rejected before any write.
+docs, self-contained View registry/HTML pairs, and 'type: Connector' declarations under
+'connectors/' (the manifest's 'connectors:' list); instance data and undeclared files are then
+rejected before any write. A Connector says what an integration is; adding one runs nothing. Each
+Connector's sources must map onto a Kind the bundle declares (or the recipe brings), checked
+before anything is written.
 
 Idempotent: a doc the recipe would install that already exists is left untouched (changed:false
 for that doc) rather than overwritten. If its definition differs from the recipe source, the
@@ -54,10 +57,13 @@ writes each changed convention with exact-version CAS. Concurrent non-target cha
 by a postcondition check and reported with completed work. It never replaces existing values,
 active View assets, or artifacts omitted from the source. It may add a field type (fields.types) or
 an enum (fields.values) to a declared field only when every existing instance conforms; otherwise
-the plan names the violating documents. It never changes or removes a type or an enum.
+the plan names the violating documents. It never changes or removes a type or an enum. A Connector
+has no additive merge: a changed one replaces the installed document whole, and only one this
+recipe wrote that nobody changed since. A Connector a person edited, an unstamped one that differs
+and another recipe's Connector each block the plan and are never rewritten.
 
-Every convention 'recipe add' creates or 'recipe evolve' writes carries an 'x_recipe' stamp naming
-the recipe version, in the same write. A plan with changed:false and writes above zero still has an
+Every convention and Connector 'recipe add' creates or 'recipe evolve' writes carries an 'x_recipe'
+stamp naming the recipe version, in the same write. A plan with changed:false and writes above zero still has an
 apply command: it records stamps only, which is how a bundle from before stamps gets them.
 
 Options:
@@ -129,7 +135,10 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
 
   const loaded = await resolveRecipe(ref);
   if (!loaded.ok) {
-    throw new CliError("USAGE", loaded.error.message, { help: `${cliInvocation()} recipes` });
+    throw new CliError("USAGE", loaded.error.message, {
+      help: `${cliInvocation()} recipes`,
+      ...(loaded.error.connector ? { details: { connector: loaded.error.connector } } : {}),
+    });
   }
   const remote = await resolveRemoteFlag(values.remote, values.dir);
   if (remote === undefined) await assertKindOnlyRecipe("recipe evolve", values.dir, loaded.recipe);
@@ -208,7 +217,10 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
 
   const loaded = await resolveRecipe(ref);
   if (!loaded.ok) {
-    throw new CliError("USAGE", loaded.error.message, { help: `${cliInvocation()} recipes` });
+    throw new CliError("USAGE", loaded.error.message, {
+      help: `${cliInvocation()} recipes`,
+      ...(loaded.error.connector ? { details: { connector: loaded.error.connector } } : {}),
+    });
   }
 
   const remote = await resolveRemoteFlag(values.remote, values.dir);
@@ -245,6 +257,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
     stamp: result.stamp,
     docs: result.docs,
   };
+  if (result.connectors.length > 0) receipt.connectors = result.connectors;
   if (result.pages.length > 0) receipt.pages = result.pages;
   if (result.references.length > 0) receipt.references = result.references;
   // Honest artifact tally — `legacy_present` > 0 means an existing legacy-named install already

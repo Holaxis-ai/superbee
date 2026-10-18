@@ -185,6 +185,48 @@ Evidence:
 `packages/cli/test/recipe-evolve-golden.test.ts`, the stamp tests in
 `packages/cli/test/recipes.test.ts` and `packages/cli/test/hosted-definition-writes.test.ts`.
 
+## Recipe connectors
+
+For every recipe that carries no Connector, `recipe add`, `recipe evolve` and `recipes` are
+unchanged: the stamps, source digests, plans and plan tokens they write and read are
+byte-identical to the release before connectors. A recipe whose manifest declares `connectors:`
+(a list of `connectors/<slug>.md` paths, under `content_policy: definitions-only`) carries
+`type: Connector` declarations, parsed by core; a malformed one fails the parse with
+`details.connector` (`id`, `code`, `path` and `count`, the first refusal and how many there were).
+A Connector's sources live under `record_sources`, since OKF v0.2 reserves `sources`.
+
+Every stamp such a recipe writes, on its conventions and its Connectors alike, gains
+`connectors: <n>` after `of`, which keeps counting conventions; a release that predates the key
+reads the recipe as `installed`. `recipe add` checks each Connector's sources against the Kinds the
+bundle will hold before any write and otherwise refuses with `USAGE`, `details` of `recipe`,
+`connector`, `source`, `kind`, `code` and `fields`, and a `help` naming what to declare. Its
+receipt gains `connectors` rows (`id`, `changed`, `source_differs`) after `docs`, and `counts`
+include them. In `recipe evolve`, each Connector is a `definitions` row after the conventions, with
+`governs: Connector` and empty `added_paths`. A changed Connector replaces the installed document
+whole, and only when this recipe's stamp holds and its definition digest shows nobody changed it;
+an unchanged one under a new version is a stamp-only write, as is an unstamped one equal to the
+recipe's. A Connector a person edited, an unstamped one that differs, another recipe's Connector
+and one whose digest rules this release does not read each block with
+`RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED` at `/`, a document of another type at its id with
+`RECIPE_EVOLUTION_IDENTITY_CONFLICT`, a missing one with `RECIPE_EVOLUTION_ASSET_MISSING`, and a
+target Kind the plan would leave unable to take its mapping with `RECIPE_EVOLUTION_CONNECTOR_TARGET`
+(its `field` a JSON pointer into the Connector). With a bundle, `recipes` reads Connectors under
+`connectors/` beside the conventions: a recipe with connectors adds `connectors` (how many carry its
+stamp) and `connectors_of` (how many it declares) after `of`, its `records` count `connectors`, an
+unstamped Connector is listed in `unstamped`, and `stamp_help` gains a Connector sentence when such
+a row is not `installed`.
+
+In a hosted checkout whose host allows model changes, `recipe add` and `recipe evolve` refuse a
+recipe carrying a Connector before anything is written, with `FORBIDDEN`, `details.reason:
+"connectors"`, `connectors` and `connectors_total`, and `help` "keep this recipe for local and Git
+bundles until hosted workspaces can enable Connections", never publish advice. This refusal wins
+over the View, Reference and reserved-Kind ones for a recipe that also carries those; every other
+refusal is unchanged. Exit codes are unchanged. Evidence:
+`packages/core/test/recipe-connectors.test.ts`, `packages/cli/test/recipe-connectors.test.ts`, the
+Connector rows in `packages/cli/test/hosted-definition-writes.test.ts` and
+`packages/cli/test/error-boundary.test.ts`, and the unchanged
+`packages/cli/test/recipe-evolve-golden.test.ts`.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test
