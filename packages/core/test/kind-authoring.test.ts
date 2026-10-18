@@ -7,7 +7,7 @@ import { mutateDocument } from "../src/document-mutation.js";
 import { builtinNames, builtinRecipeFiles, loadBuiltinRecipe } from "../src/builtin-recipes.js";
 import { installRecipe } from "../src/recipe-lifecycle/index.js";
 import { loadKinds } from "../src/kinds-load.js";
-import { KindAuthoringError, prepareKindDraft, prepareKindDraftMutation, applyKindDraft, prepareKindDismissal, dismissKind, kindInstanceCandidate, kindDeclaresAnything, draftPlanToken } from "../src/kind-authoring.js";
+import { KindAuthoringError, prepareKindDraft, prepareKindDraftMutation, applyKindDraft, prepareKindDismissal, dismissKind, kindInstanceCandidate, kindDeclaresAnything, draftPlanToken, conventionSlugForType } from "../src/kind-authoring.js";
 import type { OkfDocument, WriteOptions, Bundle } from "../src/types.js";
 
 async function fixture(backend = new MemoryBackend(), edition = "0.2") {
@@ -190,4 +190,29 @@ for (const type of ["Research", "研究 – Résumé / α?"]) test(`canonical pu
   await assert.rejects(() => prepareKindDraft(bundle, padded), refusal("already-governed"));
   await assert.rejects(() => prepareKindDismissal(bundle, padded), refusal("dismiss-governed"));
   await assert.rejects(() => dismissKind(bundle, padded), refusal("dismiss-governed"));
+});
+
+
+test("convention slugs preserve legacy cleanup behavior after punctuation runs collapse", () => {
+  const punctuation = "!?_-".repeat(50_000);
+  const cases = [
+    { input: "Context Note", expected: "context-note" },
+    { input: "  Mixed CASE  ", expected: "mixed-case" },
+    { input: "--Already---Hyphenated--", expected: "already-hyphenated" },
+    { input: "foo.bar/baz", expected: "foo-bar-baz" },
+    { input: "A0_9Z", expected: "a0-9z" },
+    { input: "研究 – Résumé / α?", expected: "r-sum" },
+    { input: "", expected: "kind" },
+    { input: " \t\n ", expected: "kind" },
+    { input: "-", expected: "kind" },
+    { input: "研究", expected: "kind" },
+    { input: punctuation, expected: "kind" },
+    { input: punctuation + "Context Note" + punctuation, expected: "context-note" },
+    { input: "A" + punctuation + "Z", expected: "a-z" },
+  ];
+  const legacy = (type: string) => type.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "kind";
+  for (const { input, expected } of cases) {
+    assert.equal(conventionSlugForType(input), expected);
+    assert.equal(conventionSlugForType(input), legacy(input));
+  }
 });

@@ -112,7 +112,7 @@ export function conventionSlugForType(type: string): string {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-|-$/g, "");
   return slug === "" ? "kind" : slug;
 }
 
